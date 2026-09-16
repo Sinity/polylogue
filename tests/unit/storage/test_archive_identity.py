@@ -499,14 +499,25 @@ def test_assert_owns_archive_location_rejects_a_never_acquired_or_released_token
 
     # 1. Constructed directly: the public constructor never takes the lock.
     root_fd = archive_identity._open_archive_root_fd(location.configured_root)
+    anchor_dir = archive_identity.durable_anchor_directory(location)
+    anchor_fd = archive_identity._open_archive_root_fd(anchor_dir)
     try:
         metadata = os.fstat(root_fd)
-        unacquired = OwnedArchiveLocation(location, root_fd=root_fd, root_identity=(metadata.st_dev, metadata.st_ino))
+        anchor_metadata = os.fstat(anchor_fd)
+        unacquired = OwnedArchiveLocation(
+            location,
+            root_fd=root_fd,
+            root_identity=(metadata.st_dev, metadata.st_ino),
+            anchor_dir=anchor_dir,
+            anchor_fd=anchor_fd,
+            anchor_identity=(anchor_metadata.st_dev, anchor_metadata.st_ino),
+        )
         assert unacquired.holds_ownership is False
         with pytest.raises(ArchiveOwnershipError, match="never acquired or has been released"):
             assert_owns_archive_location(unacquired, location)
     finally:
         os.close(root_fd)
+        os.close(anchor_fd)
 
     # 2. Acquired then released: the token returns to the same shape.
     owned = OwnedArchiveLocation.acquire(location)

@@ -12,7 +12,8 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from polylogue.sources.parsers.codex import CodexRecord, _redacted_validation_errors
+from polylogue.sources.parsers.codex import _redacted_validation_errors
+from polylogue.sources.providers.codex import CodexRecord
 
 _CANARY = "SECRETVALUE_LEAK_CANARY"
 
