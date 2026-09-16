@@ -24,15 +24,6 @@ from polylogue.daemon.intake import (
     IntakeAdapter,
     IntakeItem,
 )
-from polylogue.sources.hooks import (
-    HookSpoolSourceSpec,
-    _acknowledge,
-    _iter_pending_event_paths,
-    _persist_record,
-    hook_spool_sources,
-    pending_hook_spool_dir,
-    read_hook_spool_record,
-)
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
@@ -44,7 +35,6 @@ __all__ = [
     "DaemonIntakeService",
     "FileIntakeAdapter",
     "MultiplexIntakeAdapter",
-    "HookSpoolIntakeAdapter",
     "CallbackIntakeAdapter",
     "RawMaterializationIntakeAdapter",
     "RawMaterializationDiscovery",
@@ -359,82 +349,6 @@ class MultiplexIntakeAdapter(IntakeAdapter):
         adapter = self._by_item.pop(item.item_id, None)
         if adapter is not None:
             await adapter.acknowledge(item)
-
-
-class HookSpoolIntakeAdapter(IntakeAdapter):
-    """Hook adapter with an explicit commit-before-carrier-move boundary."""
-
-    def __init__(
-        self, context: DaemonIntakeContext, spec: HookSpoolSourceSpec, *, class_name: str = "hook_spool"
-    ) -> None:
-        self.context = context
-        self.spec = spec
-        self.class_name = class_name
-
-    async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
-        paths = _iter_pending_event_paths(pending_hook_spool_dir(self.spec.root), limit=limit)
-        items: list[IntakeItem] = []
-        for path in paths:
-            try:
-                size = path.stat().st_size
-            except OSError:
-                size = 1
-            items.append(
-                IntakeItem(
-                    item_id=f"hook:{self.spec.source_id}:{path.name}",
-                    class_name=self.class_name,
-                    payload=path,
-                    estimated_cost=max(1, size),
-                )
-            )
-        return tuple(items)
-
-    async def admit(self, item: IntakeItem) -> AdmissionResult:
-        path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
-        if path is None or not path.is_file():
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="hook carrier vanished")
-        try:
-            record = read_hook_spool_record(path)
-            await self.context.run_write(
-                f"intake.hook.admit.{self.spec.source_id}",
-                _persist_hook_record,
-                self.context.archive_root,
-                path,
-                record,
-                self.spec,
-            )
-        except (OSError, ValueError) as exc:
-            return AdmissionResult(AdmissionOutcome.TERMINAL, reason=f"invalid hook record: {exc}")
-        except Exception as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"hook admission failed: {exc}")
-        return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=max(1, path.stat().st_size))
-
-    async def acknowledge(self, item: IntakeItem) -> None:
-        path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
-        if path is not None:
-            await self.context.run_write(
-                f"intake.hook.ack.{self.spec.source_id}", _acknowledge, path, root=self.spec.root
-            )
-
-
-def _persist_hook_record(archive_root: Path, path: Path, record: dict[str, object], spec: HookSpoolSourceSpec) -> None:
-    from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
-
-    if not _source_tier_acquisition_required():
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-        initialize_active_archive_root(archive_root)
-    store = _open_archive_for_live_write(archive_root)
-    with store as archive:
-        _persist_record(
-            archive,
-            path,
-            record,
-            source_id=spec.source_id,
-            source_root=pending_hook_spool_dir(spec.root),
-            role=spec.role,
-        )
-        archive.commit()
 
 
 class CallbackIntakeAdapter(IntakeAdapter):
@@ -759,8 +673,14 @@ def build_intake_adapters(
 
     result: list[tuple[str, IntakeAdapter]] = []
     local: list[FileIntakeAdapter] = []
+    hook_carriers: list[FileIntakeAdapter] = []
     for source in context.sources:
         if source.role in {"primary-writable", "legacy-read-only"}:
+            # Hook carriers are acquired by the ordinary file route -- they are
+            # append-only JSONL like every other live source. They keep their
+            # own intake class so a burst of hook traffic cannot crowd out
+            # session files under the dispatcher's per-class fair share.
+            hook_carriers.append(FileIntakeAdapter(context, source, class_name="hook_carrier"))
             continue
         if source.name == "browser-capture":
             result.append(("browser_capture", FileIntakeAdapter(context, source, class_name="browser_capture")))
@@ -768,9 +688,8 @@ def build_intake_adapters(
             local.append(FileIntakeAdapter(context, source, class_name="configured_local"))
     if local:
         result.append(("configured_local", MultiplexIntakeAdapter(local)))
-    hooks = [HookSpoolIntakeAdapter(context, spec) for spec in hook_spool_sources()]
-    if hooks:
-        result.append(("hook_spool", MultiplexIntakeAdapter(hooks)))
+    if hook_carriers:
+        result.append(("hook_carrier", MultiplexIntakeAdapter(hook_carriers)))
     if remote_callback is not None:
         result.append(("configured_remote", CallbackIntakeAdapter("configured_remote", remote_callback)))
     if raw_callback is not None:

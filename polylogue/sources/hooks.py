@@ -1,83 +1,69 @@
-"""Durable local spool for Claude Code, Codex, and Hermes hook events.
+"""Append-only hook-event carriers for Claude Code, Codex, and Hermes.
 
 Hook commands must return promptly and cannot rely on the archive daemon being
-up.  They therefore atomically place one immutable envelope in ``pending``.
-The daemon drains those envelopes into ``source.db`` and only moves a file to
-``acknowledged`` after its ``raw_hook_events`` row has committed.  A crash in
-between is safe: replay uses the stable event id as the source-tier key.
+up. They therefore append exactly one newline-terminated line -- the validated
+envelope, compact JSON -- to their own carrier under
+``carriers/<provider>/<UTC day>/<pid>.ndjson``, with a single ``O_APPEND``
+write and no fsync. The archive then acquires that carrier like any other
+append-only source and materializes its events out of the retained bytes.
 
-The write side -- envelope validation and the atomic publish -- lives in
+That ordering is the whole design. The retired shape was one atomically
+renamed JSON file per event, drained one commit at a time: measured at 67 ms
+and four fsyncs per event against a 690,297-event backlog, it projected to
+roughly 13 hours of serial writer time for hooks alone -- more than the entire
+session corpus (polylogue-xa33k). The cost was never the parsing; it was
+paying blob publication, a ``synchronous=FULL`` reservation commit and two
+directory fsyncs per *event*. A carrier pays them per *carrier revision*.
+
+One file per producer process per day is what makes a bare ``O_APPEND`` write
+sufficient. The earlier objection to an append-only journal was real -- a
+concurrent append is only atomic below ``PIPE_BUF`` and hook payloads (tool
+output previews) are not reliably under that bound -- but it assumed one
+shared journal. Two harness processes never share a carrier, so there is no
+concurrent appender to interleave with, and a short write can only ever be
+completed by the process that started it.
+
+The write side -- envelope validation and the carrier append -- lives in
 :mod:`polylogue.sources.hook_producer`, which stays runnable without this
 package so the installed hook command pays no package import. This module
-imports it rather than keeping a second copy the drain could read differently
-than the producer wrote.
-
-Both ``pending`` and ``acknowledged`` are sharded into UTC day-of-arrival
-subdirectories (``pending/2026-07-31/<event_id>.json``) so a stalled consumer
-cannot silently accumulate six figures of dentries in one directory again
-(polylogue-31r1 follow-up: a hook drain root pointed at a stale archive path
-sat un-drained for ~17 days and grew to 108K+ flat files, making every
-liveness/glob pass over the directory increasingly expensive). A day shard is
-a natural retention unit -- it self-bounds to roughly one day's arrival
-volume, and an emptied shard directory is removed opportunistically so the
-shard count itself stays small. File-per-event (not an append-only journal)
-is kept deliberately: an append-only journal needs either a cross-process
-file lock or a write smaller than ``PIPE_BUF`` to guarantee atomic concurrent
-appends, and hook payloads (tool output previews, etc.) are not reliably
-under that bound -- a torn concurrent write would corrupt evidence. Atomic
-``mkstemp`` + ``os.replace`` per event avoids that risk entirely and is what
-this module already had proven safe.
-
-A *legacy* flat ``pending/<event_id>.json`` layout (no day subdirectory) is
-still recognized on drain for backward compatibility with envelopes enqueued
-before day-sharding landed, or migrated in from a stale spool root.
+imports it rather than keeping a second copy that could read a carrier
+differently than the producer wrote it.
 
 Hermes support (fs1.7) reuses this exact mechanism rather than inventing a
-parallel spool: Hermes lifecycle hooks are best-effort in the same way Claude
-Code/Codex hooks are (a synchronous call can be lost during an outage), so the
-same atomic-enqueue/idempotent-drain contract applies unchanged. The one
-Hermes-specific addition is a payload hygiene guard
-(``reject_duplicated_transcript``) enforcing that lifecycle events carry
-ids/hashes/timings/outcomes, never a second copy of message text. See
-``polylogue.sources.parsers.hermes_lifecycle`` for the event-type taxonomy and
-snapshot reconciliation, and ``docs/design/hermes-archival-export-contract.md``
-for the durability/finalization semantics this spool exists to capture.
+parallel capture surface: Hermes lifecycle hooks are best-effort in the same
+way Claude Code/Codex hooks are. The one Hermes-specific addition is a payload
+hygiene guard (``reject_duplicated_transcript``) enforcing that lifecycle
+events carry ids/hashes/timings/outcomes, never a second copy of message text.
+See ``polylogue.sources.parsers.hermes_lifecycle`` for the event-type taxonomy
+and ``docs/design/hermes-archival-export-contract.md`` for the durability
+semantics this capture exists to serve.
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
-import os
-import re
-import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from polylogue.core.sqlite_introspection import table_exists
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import emit, get_logger
 from polylogue.sources.hook_producer import (
-    PENDING_DIRNAME as _PENDING_DIRNAME,
+    CARRIERS_DIRNAME as _CARRIERS_DIRNAME,
 )
 from polylogue.sources.hook_producer import (
     HookSpoolRecordError,
-    _fsync_directory,
-    enqueue_event,
-)
-from polylogue.sources.hook_producer import (
-    day_shard as _day_shard,
+    append_event,
 )
 from polylogue.sources.hook_producer import (
     validated_record as _validated_record,
 )
-from polylogue.sources.walk_faults import WalkFault, WalkFaultRecorder, WalkRefusedError
-
-if TYPE_CHECKING:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 # Hook producers run in fresh interpreters. Keep their imports independent of
 # archive DDL; drain functions load archive dependencies locally.
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.source_write import CarrierHookEvent
 
 logger = get_logger(__name__)
 
@@ -199,41 +185,6 @@ def validate_hook_spool_topology(
     )
 
 
-@dataclass(frozen=True, slots=True)
-class HookSpoolDrainResult:
-    """Outcome of one durable hook-spool drain attempt.
-
-    ``remaining`` is a lower-bound signal, not an exact backlog count: it
-    equals the batch's own unacknowledged count, plus 1 if collection proved
-    at least one more path exists beyond this batch. A bounded caller only
-    needs ``remaining <= failed`` to know whether draining again would make
-    progress; computing an *exact* backlog size would require a full listing
-    of the pending directory, which is exactly the O(n) cost this module
-    exists to avoid at scale.
-    """
-
-    acknowledged: int
-    failed: int
-    remaining: int = 0
-    #: Spool directories this drain could not list. Reported apart from
-    #: ``failed`` (which counts envelopes that were seen and not committed):
-    #: an unreadable shard's envelopes were never counted at all, so
-    #: ``remaining`` is a floor rather than a measurement while it is set.
-    unreadable_paths: tuple[str, ...] = ()
-
-
-def pending_hook_spool_dir(root: Path | None = None) -> Path:
-    """Return the directory that hook commands append to atomically."""
-
-    return (root or hook_spool_root()) / _PENDING_DIRNAME
-
-
-def acknowledged_hook_spool_dir(root: Path | None = None) -> Path:
-    """Return the receipt directory for source-tier-acknowledged events."""
-
-    return (root or hook_spool_root()) / _ACKNOWLEDGED_DIRNAME
-
-
 def hook_spool_root() -> Path:
     """Resolve the hook spool root shared by producer and daemon.
 
@@ -250,165 +201,25 @@ def hook_spool_root() -> Path:
     return hooks_sidecar_dir()
 
 
-_DAY_SHARD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+def hook_carrier_dir(root: Path | None = None) -> Path:
+    """The carrier tree hook producers append to under one spool root."""
+
+    return (root or hook_spool_root()) / _CARRIERS_DIRNAME
 
 
-def _collection_order_key(relative_path: str) -> tuple[int, str, str]:
-    """Position of a carrier's relative path in collection order.
+def hook_carrier_provider_dir(provider: str, root: Path | None = None) -> Path:
+    """The one watched directory holding ``provider``'s carriers.
 
-    :func:`_iter_pending_event_paths` emits legacy flat files first, then day
-    shards oldest-first with each shard's files sorted. Shard names are
-    fixed-width dates, so within the sharded class the relative path sorts
-    lexicographically in exactly that order; the leading class index keeps the
-    flat files ahead of it.
+    Carriers are partitioned by harness because acquisition is
+    provider-scoped: the watch source, the origin-spec artifact rule and the
+    materialized ``origin`` all follow the directory, so a carrier never has
+    to be opened to learn which provider wrote it.
     """
 
-    shard, separator, name = relative_path.rpartition("/")
-    return (1, shard, name) if separator else (0, "", relative_path)
+    return hook_carrier_dir(root) / provider
 
 
-def _iter_pending_event_paths(
-    pending: Path,
-    *,
-    limit: int | None = None,
-    faults: WalkFaultRecorder | None = None,
-    after: tuple[int, str, str] | None = None,
-) -> list[Path]:
-    """Collect up to ``limit`` pending envelope paths without enumerating the
-    entire backlog.
-
-    Walks day-shard subdirectories oldest-first (bounded by day count, not
-    event count) plus any legacy flat ``*.json`` files sitting directly under
-    ``pending`` (pre-sharding envelopes, or files migrated in from a stale
-    root). Stops as soon as ``limit`` paths are collected: a 108K-file
-    backlog no longer costs an ``O(n log n)`` full listing+sort on every
-    bounded drain call, only ``O(limit)`` plus one cheap directory listing per
-    shard actually visited.
-
-    ``after`` resumes collection strictly past a position in that same order.
-    A legacy read-only root never acknowledges (deletes) what it drained, so
-    without a resume position every bounded pass re-collected the same head of
-    the listing forever and reported the repeats as fresh progress.
-
-    A directory that cannot be read is never dropped. Pass ``faults`` to
-    collect it as counted evidence the caller reports (the drain does this, so
-    one unreadable shard cannot stop the readable ones from draining); omit it
-    and collection refuses with :class:`WalkRefusedError`, so no caller receives a
-    short list that reads as an empty spool.
-    """
-
-    collected: list[Path] = []
-
-    def want_more() -> bool:
-        return limit is None or len(collected) < limit
-
-    def fault(path: Path, detail: str) -> None:
-        if faults is None:
-            raise WalkRefusedError("hook spool collection could not read a directory", [WalkFault(path, detail)])
-        faults.record(path, detail)
-
-    try:
-        entries = sorted(pending.iterdir())
-    except OSError as exc:
-        fault(pending, f"pending spool directory could not be listed: {exc}")
-        return collected
-    shard_dirs = [entry for entry in entries if entry.is_dir() and _DAY_SHARD_RE.match(entry.name)]
-    legacy_files = [entry for entry in entries if entry.is_file() and entry.suffix == ".json"]
-    for legacy in sorted(legacy_files):
-        if not want_more():
-            return collected
-        if after is not None and (0, "", legacy.name) <= after:
-            continue
-        collected.append(legacy)
-    for shard in shard_dirs:
-        if not want_more():
-            return collected
-        if after is not None and after[0] == 1 and shard.name < after[1]:
-            continue
-        try:
-            with os.scandir(shard) as it:
-                for dirent in sorted(it, key=lambda e: e.name):
-                    if not want_more():
-                        break
-                    if not (dirent.is_file() and dirent.name.endswith(".json")):
-                        continue
-                    if after is not None and (1, shard.name, dirent.name) <= after:
-                        continue
-                    collected.append(Path(dirent.path))
-        except OSError as exc:
-            fault(shard, f"pending shard could not be listed: {exc}")
-            continue
-    return collected
-
-
-def hook_spool_pending_depth(root: Path | None = None, *, cap: int = 5000) -> int:
-    """Bounded pending-event count for observability, never an exact backlog size.
-
-    Returns ``cap`` (not the true count) once the backlog reaches ``cap``, so
-    a daemon health/heartbeat pass can log "queue depth >= N, growing
-    unbounded" without itself paying for the O(n) listing that caused the
-    original incident (a stalled consumer let 108K+ files accumulate silently
-    for ~17 days before a human happened to notice a directory listing).
-    Callers should treat ``depth >= cap`` as "alert now", not "count later".
-    """
-
-    pending = pending_hook_spool_dir(root)
-    faults = WalkFaultRecorder()
-    depth = len(_iter_pending_event_paths(pending, limit=cap, faults=faults))
-    if faults:
-        # A spool directory that cannot be listed hides an unknown number of
-        # envelopes. Reporting the readable remainder would let an unreadable
-        # spool look like a drained one, so it reads as "alert now" instead.
-        emit(
-            "source.hook_spool.depth_unreadable",
-            level=WARNING,
-            outcome="degraded",
-            errors=len(faults),
-            path=faults.paths()[0],
-            error_detail="; ".join(str(fault) for fault in faults),
-        )
-        return cap
-    return depth
-
-
-def hook_spool_has_pending_events(root: Path | None = None) -> bool:
-    """O(1)-ish liveness check: is there at least one pending hook envelope?
-
-    Unlike a full listing, this stops at the first ``*.json`` dentry it finds
-    -- an existence probe, not an enumeration -- so it stays cheap regardless
-    of how large the backlog is. Used by the daemon's hook-aware maintenance
-    passes instead of materializing the whole pending directory just to ask
-    a yes/no question.
-    """
-
-    pending = pending_hook_spool_dir(root)
-    try:
-        entries = sorted(pending.iterdir())
-    except FileNotFoundError:
-        return False
-    except OSError:
-        # Unknown is not empty. Answering ``False`` here let an unreadable
-        # spool mean "nothing pending"; answering ``True`` routes the caller
-        # into the drain, which reports the unreadable directory by name.
-        emit("source.hook_spool.probe_unreadable", level=WARNING, outcome="degraded", path=str(pending))
-        return True
-    for entry in entries:
-        if entry.is_file() and entry.suffix == ".json":
-            return True
-    for entry in entries:
-        if not (entry.is_dir() and _DAY_SHARD_RE.match(entry.name)):
-            continue
-        try:
-            with os.scandir(entry) as it:
-                if any(dirent.is_file() and dirent.name.endswith(".json") for dirent in it):
-                    return True
-        except OSError:
-            emit("source.hook_spool.probe_unreadable", level=WARNING, outcome="degraded", path=str(entry))
-            return True
-    return False
-
-
-def enqueue_hook_event(
+def append_hook_event(
     *,
     event_type: str,
     session_id: str,
@@ -418,10 +229,10 @@ def enqueue_hook_event(
     root: Path | None = None,
     event_id: str | None = None,
 ) -> Path:
-    """Atomically enqueue one hook event before the daemon receives it."""
+    """Append one hook event to this process's carrier."""
 
     return Path(
-        enqueue_event(
+        append_event(
             event_type=event_type,
             session_id=session_id,
             provider=provider,
@@ -433,277 +244,174 @@ def enqueue_hook_event(
     )
 
 
-def drain_hook_event_spool(
-    archive_root: Path,
-    *,
-    root: Path | None = None,
-    limit: int | None = None,
-    source_id: str = "primary-hook-spool",
-    role: Literal["primary-writable", "legacy-read-only"] = "primary-writable",
-) -> HookSpoolDrainResult:
-    """Persist pending events and acknowledge only committed records.
+def validated_hook_record(value: dict[str, object]) -> dict[str, object]:
+    """Normalize one envelope exactly as materialization does.
 
-    Pending files deliberately remain in place when archive writes or envelope
-    validation fail.  The next daemon pass can retry a transient write failure;
-    a malformed producer record remains inspectable rather than disappearing.
-
-    The archive is opened ONCE per drain, not per record: this runs on the
-    daemon's single writer, and a per-record open/initialize turned a few
-    thousand spooled events into a multi-minute writer monopoly that starved
-    every other ingest path (observed live 2026-07-18). ``limit`` bounds one
-    writer hold; the caller loops on ``remaining``.
-
-    Path collection is bounded (:func:`_iter_pending_event_paths`), not a full
-    listing, so a large backlog cannot inflate the cost of asking for one
-    bounded batch. ``remaining`` therefore reports "at least this many are
-    still pending" rather than an exact backlog size when the backlog exceeds
-    what one collection pass inspected.
+    The record the archive stores is not the carrier line's bytes:
+    ``observed_at_ms`` is derived here and serialization is independent on
+    both sides. Any comparison against stored hook material must go through
+    this route rather than compare bytes.
     """
 
-    pending = pending_hook_spool_dir(root)
-    if not pending.exists():
-        return HookSpoolDrainResult(acknowledged=0, failed=0)
-    # Collect one extra path beyond the limit (when bounded) purely to learn
-    # whether more remain after this batch, without paying for a full count.
-    probe_limit = None if limit is None else limit + 1
-    # Counted degradation, not refusal: a drain that refused wholesale would
-    # let one unreadable day-shard stop every readable shard from draining.
-    # The unreadable shards travel back on the result instead.
-    faults = WalkFaultRecorder()
-    paths = _iter_pending_event_paths(
-        pending,
-        limit=probe_limit,
-        faults=faults,
-        after=_drained_carrier_cursor(archive_root, source_id) if role == "legacy-read-only" else None,
-    )
-    unreadable_paths = faults.paths()
-    if unreadable_paths:
-        emit(
-            "source.hook_spool.drain_unreadable",
-            level=WARNING,
-            outcome="degraded",
-            source_id=source_id,
-            errors=len(unreadable_paths),
-            path=unreadable_paths[0],
-            error_detail="; ".join(str(fault) for fault in faults),
-        )
-    more_remain_beyond_batch = limit is not None and len(paths) > limit
-    selected = paths if limit is None else paths[:limit]
-    if not selected:
-        return HookSpoolDrainResult(acknowledged=0, failed=0, unreadable_paths=unreadable_paths)
-    acknowledged = 0
-    failed = 0
-    try:
-        # Import after this module has initialized: ``sources.live.__init__``
-        # exposes the watcher, and the watcher imports this spool module.
-        from polylogue.sources.live.archive_open import (
-            _open_archive_for_live_write,
-            _source_tier_acquisition_required,
-        )
-
-        if not _source_tier_acquisition_required():
-            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-            initialize_active_archive_root(archive_root)
-        store = _open_archive_for_live_write(archive_root)
-    except (OSError, sqlite3.Error, ValueError):
-        logger.warning("hook spool drain could not open the archive; all events remain pending", exc_info=True)
-        return HookSpoolDrainResult(
-            acknowledged=0,
-            failed=len(selected),
-            remaining=len(selected) + (1 if more_remain_beyond_batch else 0),
-            unreadable_paths=unreadable_paths,
-        )
-    touched_shards: set[Path] = set()
-    with store as archive:
-        for path in selected:
-            touched_shards.add(path.parent)
-            try:
-                record = _read_record(path)
-                _persist_record(archive, path, record, source_id=source_id, source_root=pending, role=role)
-                archive.commit()
-                if role == "primary-writable":
-                    _acknowledge(path, root=root)
-            except (HookSpoolRecordError, OSError, sqlite3.Error, ValueError):
-                with contextlib.suppress(Exception):
-                    archive.rollback()
-                failed += 1
-                logger.warning("hook spool event remains pending: %s", path, exc_info=True)
-            else:
-                acknowledged += 1
-    _prune_empty_shards(touched_shards, pending)
-    return HookSpoolDrainResult(
-        acknowledged=acknowledged,
-        failed=failed,
-        remaining=(len(selected) - acknowledged) + (1 if more_remain_beyond_batch else 0),
-        unreadable_paths=unreadable_paths,
-    )
-
-
-def _drained_carrier_cursor(archive_root: Path, source_id: str) -> tuple[int, str, str] | None:
-    """Resume position for a root whose carriers are never acknowledged.
-
-    ``hook_event_carriers`` already records one durable row per physical
-    carrier keyed ``(source_id, relative_path)``, so the furthest position a
-    previous drain reached is derivable rather than needing a second ledger.
-    Drains advance in collection order, so the recorded carriers for this
-    source form a prefix of it and the maximum is a valid cursor. Sharded
-    carriers all sort after flat ones, so one sharded row makes the flat class
-    fully drained.
-    """
-
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-    source_db = archive_root / "source.db"
-    if not source_db.exists():
-        return None
-    with open_readonly_connection(source_db, timeout=5.0) as conn:
-        if not table_exists(conn, "hook_event_carriers"):
-            # An archive without the carriers table yet has no drained prefix;
-            # a first drain must still run.
-            return None
-        sharded = conn.execute(
-            "SELECT MAX(relative_path) FROM hook_event_carriers WHERE source_id = ? AND instr(relative_path, '/') > 0",
-            (source_id,),
-        ).fetchone()
-        if sharded is not None and sharded[0] is not None:
-            return _collection_order_key(str(sharded[0]))
-        flat = conn.execute(
-            "SELECT MAX(relative_path) FROM hook_event_carriers WHERE source_id = ? AND instr(relative_path, '/') = 0",
-            (source_id,),
-        ).fetchone()
-    if flat is None or flat[0] is None:
-        return None
-    return _collection_order_key(str(flat[0]))
-
-
-def _prune_empty_shards(shards: set[Path], pending_root: Path) -> None:
-    """Remove a day-shard directory once it has been fully drained.
-
-    Keeps the shard count itself bounded (only recent/still-arriving days
-    persist) instead of accumulating one empty directory per day forever.
-    Best-effort: a shard that still has a legacy-format neighbor or a
-    concurrent late arrival simply fails ``rmdir`` and is left for the next
-    pass.
-    """
-
-    for shard in shards:
-        if shard == pending_root:
-            continue
-        with contextlib.suppress(OSError):
-            shard.rmdir()
-
-
-def read_hook_spool_record(path: Path) -> dict[str, object]:
-    """Read one spool file through the same validation acquisition applies.
-
-    The record acquisition stores is not the file's bytes: ``observed_at_ms``
-    is derived here, and serialization is independent on both sides. Any
-    comparison against stored hook material must go through this route rather
-    than compare bytes.
-    """
-
-    return _read_record(path)
-
-
-def _read_record(path: Path) -> dict[str, object]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise HookSpoolRecordError(f"invalid hook spool JSON: {path.name}") from exc
-    if not isinstance(value, dict):
-        raise HookSpoolRecordError(f"hook spool envelope must be an object: {path.name}")
     return _validated_record(value)
 
 
-def _persist_record(
-    archive: ArchiveStore,
-    path: Path,
-    record: dict[str, object],
-    *,
-    source_id: str = "primary-hook-spool",
-    source_root: Path | None = None,
-    role: Literal["primary-writable", "legacy-read-only"] = "primary-writable",
-) -> None:
-    provider_token = str(record["provider"])
-    from polylogue.core.enums import Origin, Provider
-    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+@dataclass(frozen=True, slots=True)
+class CarrierLine:
+    """One decoded carrier line and the byte offset it starts at."""
 
-    provider = Provider.from_string(provider_token)
+    byte_offset: int
+    line_bytes: int
+    record: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class CarrierRefusal:
+    """One carrier line materialization will not admit, and why."""
+
+    byte_offset: int
+    reason: str
+
+
+def read_hook_carrier(payload: bytes) -> tuple[tuple[CarrierLine, ...], tuple[CarrierRefusal, ...]]:
+    """Decode one carrier's retained bytes into admissible lines and refusals.
+
+    A refusal is counted and carried back, never dropped and never fatal: one
+    malformed line in a carrier must not strand every well-formed event
+    beside it, and it must not make the carrier eternally unmaterialized
+    either. The offset is the coordinate the source tier keys the event by, so
+    it is computed from the byte stream rather than from a line ordinal --
+    lines are fixed in place once written, ordinals are not.
+
+    A trailing partial line (no terminating newline) is deliberately *not*
+    returned: the producer appends whole lines, so an unterminated tail is a
+    write in flight, and the next acquisition of the same carrier will see it
+    complete.
+    """
+
+    lines: list[CarrierLine] = []
+    refusals: list[CarrierRefusal] = []
+    offset = 0
+    for raw in payload.splitlines(keepends=True):
+        length = len(raw)
+        start = offset
+        offset += length
+        if not raw.endswith(b"\n"):
+            break
+        body = raw.strip()
+        if not body:
+            continue
+        try:
+            value = json.loads(body)
+            if not isinstance(value, dict):
+                raise HookSpoolRecordError("carrier line must be a JSON object")
+            record = _validated_record(value)
+        except (UnicodeDecodeError, json.JSONDecodeError, HookSpoolRecordError) as exc:
+            refusals.append(CarrierRefusal(start, f"{type(exc).__name__}: {exc}"))
+            continue
+        lines.append(CarrierLine(start, length, record))
+    return tuple(lines), tuple(refusals)
+
+
+def find_carrier_event(root: Path | None, event_id: str) -> tuple[Path, dict[str, object]] | None:
+    """Locate one event by id anywhere in a spool root's carriers.
+
+    Only ``carriers/`` counts as present: that is the one tree acquisition
+    watches. An ``acknowledged/`` file is a record of what the one-shot legacy
+    fold already folded, which nothing acquires; treating one as the
+    destination's copy would report an event restored while leaving it
+    unacquirable.
+    """
+
+    for carrier in sorted(hook_carrier_dir(root).rglob("*.ndjson")):
+        if not carrier.is_file():
+            continue
+        try:
+            lines, _refusals = read_hook_carrier(carrier.read_bytes())
+        except OSError:
+            continue
+        for line in lines:
+            if line.record.get("event_id") == event_id:
+                return carrier, line.record
+    return None
+
+
+def hook_event_origin(provider_token: str) -> object:
+    """Map a hook provider wire token onto its public source origin."""
+
+    from polylogue.core.enums import Origin
+
     try:
         origin_token = _ORIGIN_TOKEN_BY_PROVIDER[provider_token]
     except KeyError as exc:
         # ``_validated_record`` already rejects any provider outside
         # ``SUPPORTED_PROVIDERS`` before a record reaches this point, so this
-        # should be unreachable in the current call path -- but silently
-        # defaulting an unrecognized provider to "codex-session" would
-        # misclassify genuinely-unknown providers as Codex if that upstream
-        # invariant ever drifts (e.g. a provider added to one set but not the
-        # other). Raise instead of guessing.
+        # should be unreachable -- but silently defaulting an unrecognized
+        # provider to "codex-session" would misclassify genuinely-unknown
+        # providers as Codex if that upstream invariant ever drifts. Raise
+        # instead of guessing.
         raise HookSpoolRecordError(f"no origin mapping for hook provider: {provider_token!r}") from exc
-    origin = Origin.from_string(origin_token)
-    payload = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    observed_at_ms_value = record["observed_at_ms"]
-    if not isinstance(observed_at_ms_value, int):
-        raise HookSpoolRecordError("hook spool envelope has an invalid observed timestamp")
-    observed_at_ms = observed_at_ms_value
-    source_path = str(path)
-    coordinate_root = source_root or path.parent
-    try:
-        relative_path = path.relative_to(coordinate_root).as_posix()
-    except ValueError as exc:
-        raise HookSpoolRecordError(f"hook carrier is outside declared root: {path}") from exc
-    # A hook event is evidence WITHIN a session, keyed to it by
-    # ``session_native_id`` -- never a session of its own. Persisting it as a
-    # raw_sessions row (as this path once did) minted an empty standalone
-    # session per hook and inflated the archive with tens of thousands of
-    # content-less session shells (polylogue-31r1). ``write_hook_event`` keeps
-    # the durable blob + raw_hook_events row and skips the raw_sessions insert.
-    archive.write_hook_event(
-        provider=provider,
-        payload=payload,
-        source_path=source_path,
-        acquired_at_ms=observed_at_ms,
-        hook_event=ArchiveHookEvent(
-            hook_event_id=f"hook:{record['event_id']}",
-            origin=origin,
-            source_path=source_path,
-            event_type=str(record["event_type"]),
-            payload=record,
-            observed_at_ms=observed_at_ms,
-            native_id=f"{record['session_id']}:{record['event_type']}:{record['event_id']}",
-            session_native_id=str(record["session_id"]),
-        ),
-        carrier_source_id=source_id,
-        carrier_relative_path=relative_path,
-        carrier_role=role,
-    )
+    return Origin.from_string(origin_token)
 
 
-def _acknowledge(path: Path, *, root: Path | None) -> None:
-    # Shard acknowledged receipts by day-of-acknowledgment (not the pending
-    # file's original arrival day): acknowledgment always has a well-defined
-    # "now", whereas a replayed/migrated pending file may carry no shard
-    # context at all (legacy flat layout). Keeps ``acknowledged`` bounded the
-    # same way ``pending`` is, without needing to parse the source path.
-    acknowledged = acknowledged_hook_spool_dir(root) / _day_shard()
-    acknowledged.mkdir(parents=True, exist_ok=True)
-    _fsync_directory(path.parent)
-    os.replace(path, acknowledged / path.name)
-    _fsync_directory(acknowledged)
+def carrier_hook_events(
+    lines: Sequence[CarrierLine],
+    *,
+    source_path: str,
+) -> tuple[CarrierHookEvent, ...]:
+    """Build the source-tier rows one carrier's decoded lines materialize into.
+
+    A hook event is evidence WITHIN a session, keyed to it by
+    ``session_native_id`` -- never a session of its own. Persisting one as a
+    ``raw_sessions`` row (as an earlier route did) minted an empty standalone
+    session per hook and inflated the archive with tens of thousands of
+    content-less session shells (polylogue-31r1). ``origin`` and
+    ``session_native_id`` travel on every row so session excision reaches hook
+    evidence by construction (polylogue-14ucm).
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent, CarrierHookEvent
+
+    built: list[CarrierHookEvent] = []
+    for line in lines:
+        record = line.record
+        observed_at_ms = record["observed_at_ms"]
+        if not isinstance(observed_at_ms, int):
+            raise HookSpoolRecordError("hook carrier line has an invalid observed timestamp")
+        built.append(
+            CarrierHookEvent(
+                byte_offset=line.byte_offset,
+                line_bytes=line.line_bytes,
+                event=ArchiveHookEvent(
+                    hook_event_id=f"hook:{record['event_id']}",
+                    origin=hook_event_origin(str(record["provider"])),  # type: ignore[arg-type]
+                    source_path=source_path,
+                    event_type=str(record["event_type"]),
+                    payload=record,
+                    observed_at_ms=observed_at_ms,
+                    native_id=f"{record['session_id']}:{record['event_type']}:{record['event_id']}",
+                    session_native_id=str(record["session_id"]),
+                ),
+            )
+        )
+    return tuple(built)
 
 
 __all__ = [
-    "HookSpoolDrainResult",
+    "CarrierLine",
+    "CarrierRefusal",
     "HookSpoolRecordError",
     "HookSpoolSourceSpec",
-    "hook_spool_sources",
     "HookSpoolTopologyError",
-    "acknowledged_hook_spool_dir",
-    "drain_hook_event_spool",
-    "enqueue_hook_event",
+    "append_hook_event",
+    "carrier_hook_events",
+    "find_carrier_event",
+    "hook_carrier_dir",
+    "hook_carrier_provider_dir",
+    "hook_event_origin",
     "hook_spool_root",
-    "pending_hook_spool_dir",
-    "read_hook_spool_record",
+    "hook_spool_sources",
+    "read_hook_carrier",
     "validate_hook_spool_topology",
+    "validated_hook_record",
 ]

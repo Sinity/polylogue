@@ -7,13 +7,11 @@ script path under ``python -I -S``, which skips ``site`` and never puts
 site-packages on ``sys.path``; the module therefore imports stdlib only, and
 only stdlib that is cheap to load. ``uuid`` and ``re`` each cost more to
 import than they save here, so the event id comes from ``os.urandom`` and the
-id charset is a frozenset. ``pathlib`` and ``tempfile`` are the exception:
-they carry the atomic-publish shape (``mkstemp`` for exclusive creation,
-``os.replace`` for the rename); hand-rolling those to save their import is not
-worth owning a second unreviewed publish path. The producer does not fsync:
-see :func:`atomic_json_write`.
+id charset is a frozenset. ``pathlib`` is the exception: it carries the
+carrier path arithmetic and is already imported by every consumer of this
+module. The producer does not fsync: see :func:`append_event`.
 
-It is also the single implementation of the pending envelope:
+It is also the single implementation of the carrier line:
 :mod:`polylogue.sources.hooks` imports this module's validation and atomic
 write rather than keeping a second copy that could drift from what the drain
 reads back.
@@ -30,7 +28,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -91,6 +88,17 @@ EVENTS_BY_HARNESS: dict[str, tuple[str, ...]] = {
 # produces only the two harnesses ``polylogue hooks install`` can wire.
 SUPPORTED_PROVIDERS = frozenset({"claude-code", "codex", "hermes"})
 
+#: The append-only carrier topology this producer writes. One file per
+#: producer process per UTC day per harness:
+#: ``carriers/<provider>/<YYYY-MM-DD>/<pid>.ndjson``. A hook process only ever
+#: appends to its own file, so a partial write can only ever be completed by
+#: the process that started it and no other producer can interleave a line
+#: into the gap.
+CARRIERS_DIRNAME = "carriers"
+
+#: The retired file-per-event spool. Retained as a name only so the one-shot
+#: ``--compact`` fold can find what the old producer left behind; nothing
+#: writes here any more.
 PENDING_DIRNAME = "pending"
 
 # Event bodies carry ids/hashes/timings/outcomes, never a duplicate transcript
@@ -106,7 +114,10 @@ MAX_TRANSCRIPT_LIKE_FIELD_CHARS = 2000
 # Equivalent to ``^[A-Za-z0-9_-]+$`` without paying for ``re``.
 _EVENT_ID_ALPHABET = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
 
-_USAGE = "Usage: polylogue-hook <event-type> [--provider claude-code|codex] [--sidecar-dir PATH]"
+_USAGE = (
+    "Usage: polylogue-hook <event-type> [--provider claude-code|codex] [--sidecar-dir PATH]\n"
+    "       polylogue-hook --compact [--sidecar-dir PATH]"
+)
 
 
 class HookSpoolRecordError(ValueError):
@@ -219,12 +230,24 @@ def validated_record(value: dict[str, object]) -> dict[str, object]:
 
 
 def day_shard(moment: datetime | None = None) -> str:
-    """UTC ``YYYY-MM-DD`` bucket name a pending/acknowledged file lands under."""
+    """UTC ``YYYY-MM-DD`` bucket name a carrier lands under."""
 
     return (moment or datetime.now(UTC)).strftime("%Y-%m-%d")
 
 
-def enqueue_event(
+def carrier_path(root: str | Path, provider: str, *, moment: datetime | None = None, pid: int | None = None) -> Path:
+    """Return the carrier this process appends to for ``provider`` today.
+
+    One file per producer process per UTC day per harness. The pid segment is
+    what makes a bare ``O_APPEND`` write sufficient: two harness processes
+    never share a carrier, so interleaving is impossible by construction
+    rather than by a size bound nobody can enforce on a tool-output preview.
+    """
+
+    return Path(root) / CARRIERS_DIRNAME / provider / day_shard(moment) / f"{pid or os.getpid()}.ndjson"
+
+
+def append_event(
     *,
     event_type: str,
     session_id: str,
@@ -234,7 +257,15 @@ def enqueue_event(
     root: str,
     event_id: str | None = None,
 ) -> str:
-    """Atomically place one validated envelope in the day-sharded pending spool."""
+    """Append one validated envelope to this process's NDJSON carrier.
+
+    No temporary file, no rename, no fsync: one ``O_APPEND`` write of one
+    newline-terminated line. The consumer acquires the carrier's bytes like
+    any other append-only source and materializes the events out of the
+    retained bytes, so the producer owes durability to nobody -- the only loss
+    window is a power failure before the page cache drains, which costs a
+    missing event, never a corrupt one.
+    """
 
     record: dict[str, object] = {
         "event_id": event_id or os.urandom(16).hex(),
@@ -247,47 +278,228 @@ def enqueue_event(
     normalized = validated_record(record)
     resolved_id = str(normalized["event_id"])
     if not resolved_id or not _EVENT_ID_ALPHABET.issuperset(resolved_id):
-        raise HookSpoolRecordError("hook spool event_id must contain only letters, digits, '_' or '-'")
-    shard = Path(root) / PENDING_DIRNAME / day_shard()
-    shard.mkdir(parents=True, exist_ok=True)
-    target = shard / f"{resolved_id}.json"
-    if target.exists():
-        return str(target)
-    atomic_json_write(target, normalized)
+        raise HookSpoolRecordError("hook carrier event_id must contain only letters, digits, '_' or '-'")
+    target = carrier_path(root, str(normalized["provider"]))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    append_carrier_line(target, normalized)
     return str(target)
 
 
-def atomic_json_write(path: Path, payload: dict[str, object]) -> None:
-    """Publish one envelope by rename. No fsync: this runs inside the harness's
-    hook budget on every tool call, and a directory fsync under host I/O
-    pressure has measured in seconds. The rename is atomic against every
-    reader; the only loss window is a power failure before the page cache
-    drains, which the drain path tolerates (a missing envelope is a missing
-    event, never a corrupt one). Durability of the retained bytes is the
-    consumer's job, taken under its own fsync when it acknowledges."""
+def carrier_line(record: dict[str, object]) -> bytes:
+    """Serialize one validated envelope as its carrier line.
 
-    handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary_name)
+    Compact, key-sorted, newline-terminated, and never containing a raw
+    newline of its own (``json.dumps`` escapes them), so a line is a record
+    and a byte offset into the carrier is a stable event coordinate.
+    """
+
+    return json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
+def append_carrier_line(path: Path, record: dict[str, object]) -> None:
+    """Append one line with a single ``O_APPEND`` write.
+
+    ``O_APPEND`` makes the seek-to-end and the write one atomic step against
+    every other writer of the same file, so a concurrent appender can never
+    land inside this line. A short write is completed here rather than left
+    torn; only this process writes this carrier, so the continuation cannot be
+    interleaved either.
+    """
+
+    line = carrier_line(record)
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as output:
-            output.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-            output.write("\n")
-        # ast-grep-ignore: replace-without-parent-fsync
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
+        written = 0
+        while written < len(line):
+            written += os.write(descriptor, line[written:])
+    finally:
+        os.close(descriptor)
 
 
-def _fsync_directory(path: Path) -> None:
-    """Persist a rename's directory entry; used by the consumer's acknowledgement,
-    never on the producer path."""
+def fsync_directory(path: Path) -> None:
+    """Persist a directory entry.
+
+    Never used on the producer path. The one-shot ``--compact`` fold of the
+    retired file-per-event spool uses it to prove a carrier is durable before
+    it retires the files it folded.
+    """
 
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+#: One compacted carrier stays small enough to acquire, materialize and
+#: replay as a single unit. 64 MiB is roughly 60k real envelopes.
+MAX_COMPACTED_CARRIER_BYTES = 64 * 1024 * 1024
+
+ACKNOWLEDGED_DIRNAME = "acknowledged"
+
+
+def derived_event_id(record: dict[str, object]) -> str:
+    """Content-derived id for a legacy envelope that carries none.
+
+    The 383 root-level ``<provider>-<session>.jsonl`` mirrors predate
+    ``event_id`` entirely. An ordinal would renumber every later event when a
+    mirror gains or loses a line, so the id is a digest of the envelope's own
+    declared fields: the same event folded twice yields the same id and the
+    source-tier write is idempotent, which is exactly what a one-shot fold
+    that may be interrupted and re-run needs.
+    """
+
+    import hashlib
+
+    material = json.dumps(
+        {key: record.get(key) for key in ("event_type", "session_id", "timestamp", "provider", "payload")},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+class _CompactionSink:
+    """Append folded envelopes to size-bounded compacted carriers."""
+
+    def __init__(self, root: Path, *, max_bytes: int = MAX_COMPACTED_CARRIER_BYTES) -> None:
+        self._root = root
+        self._max_bytes = max_bytes
+        self._open: dict[tuple[str, str], tuple[Path, int, int]] = {}
+        self.carriers: list[Path] = []
+
+    def append(self, record: dict[str, object]) -> Path:
+        provider = str(record["provider"])
+        day = str(record["timestamp"])[:10]
+        if len(day) != 10 or not day[:4].isdigit():
+            day = day_shard()
+        key = (provider, day)
+        line = carrier_line(record)
+        path, index, size = self._open.get(key, (None, 0, 0))  # type: ignore[assignment]
+        if path is None or size + len(line) > self._max_bytes:
+            index = index + 1 if path is not None else 0
+            directory = self._root / CARRIERS_DIRNAME / provider / day
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"compacted-{index}.ndjson"
+            size = path.stat().st_size if path.exists() else 0
+            self.carriers.append(path)
+        append_carrier_line(path, record)
+        self._open[key] = (path, index, size + len(line))
+        return path
+
+    def seal(self) -> None:
+        """Fsync every carrier written, and the directories holding them."""
+
+        directories: set[Path] = set()
+        for path in self.carriers:
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            directories.add(path.parent)
+        for directory in directories:
+            fsync_directory(directory)
+
+
+def _retire(path: Path, root: Path, bucket: str) -> None:
+    acknowledged = root / ACKNOWLEDGED_DIRNAME / bucket
+    acknowledged.mkdir(parents=True, exist_ok=True)
+    os.replace(path, acknowledged / path.name)
+
+
+def compact_legacy_spool(root: Path, *, max_bytes: int = MAX_COMPACTED_CARRIER_BYTES) -> dict[str, object]:
+    """Fold the retired file-per-event spool into append-only carriers, once.
+
+    Reads every ``pending/**/*.json`` envelope and every root-level
+    ``<provider>-<session>.jsonl`` mirror, appends each as one carrier line,
+    fsyncs the carriers, and only then retires the originals under
+    ``acknowledged/``. Ordering is: durable carrier first, retirement second,
+    so an interrupted run re-folds at worst a prefix -- and a re-folded
+    envelope is the same content-derived event the archive already holds.
+
+    Refusals are counted and named, never silently dropped: a hidden
+    atomic-write tempname is not a published envelope, a zero-byte file is not
+    a record, and a payload this producer would refuse to write is not one it
+    will fold in through the back door.
+    """
+
+    folded = 0
+    refused: dict[str, int] = {}
+
+    def refuse(reason: str) -> None:
+        refused[reason] = refused.get(reason, 0) + 1
+
+    sink = _CompactionSink(root, max_bytes=max_bytes)
+    retire: list[tuple[Path, str]] = []
+
+    pending = root / PENDING_DIRNAME
+    for path in sorted(pending.rglob("*")) if pending.is_dir() else []:
+        if not path.is_file():
+            continue
+        if path.name.startswith("."):
+            refuse("hidden atomic-write tempname is not a published envelope")
+            continue
+        if path.suffix != ".json":
+            refuse(f"unrecognized spool member suffix: {path.suffix or '(none)'}")
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            refuse("unreadable")
+            continue
+        if not raw.strip():
+            refuse("zero-byte file carries no record")
+            continue
+        try:
+            value = json.loads(raw)
+            if not isinstance(value, dict):
+                raise HookSpoolRecordError("envelope must be an object")
+            record = validated_record(value)
+        except (json.JSONDecodeError, HookSpoolRecordError) as exc:
+            refuse(f"invalid envelope: {type(exc).__name__}")
+            continue
+        sink.append(record)
+        folded += 1
+        retire.append((path, day_shard()))
+
+    for path in sorted(root.glob("*.jsonl")):
+        if not path.is_file():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            refuse("unreadable")
+            continue
+        accepted = 0
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+                if not isinstance(value, dict):
+                    raise HookSpoolRecordError("envelope must be an object")
+                value.setdefault("event_id", derived_event_id(value))
+                record = validated_record(value)
+            except (json.JSONDecodeError, HookSpoolRecordError) as exc:
+                refuse(f"invalid mirror line: {type(exc).__name__}")
+                continue
+            sink.append(record)
+            accepted += 1
+        folded += accepted
+        if accepted:
+            retire.append((path, "mirrors"))
+
+    sink.seal()
+    for path, bucket in retire:
+        _retire(path, root, bucket)
+    return {
+        "folded": folded,
+        "carriers": sorted({str(path) for path in sink.carriers}),
+        "refused": dict(sorted(refused.items())),
+        "retired": len(retire),
+    }
 
 
 def _option_value(args: list[str], name: str) -> str | None:
@@ -352,6 +564,12 @@ def main(argv: list[str] | None = None) -> int:
         print(_USAGE, file=sys.stderr)
         return 1
 
+    if "--compact" in args:
+        sidecar = _option_value(args, "--sidecar-dir")
+        root = Path(os.path.expanduser(sidecar) if sidecar else default_sidecar_dir())
+        print(json.dumps(compact_legacy_spool(root), sort_keys=True))
+        return 0
+
     event_type = args[0]
     options = args[1:]
     provider_arg = _option_value(options, "--provider")
@@ -400,7 +618,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = os.path.expanduser(sidecar_dir_arg) if sidecar_dir_arg else default_sidecar_dir()
     try:
-        enqueue_event(
+        append_event(
             event_type=event_type,
             session_id=session_id,
             provider=provider,

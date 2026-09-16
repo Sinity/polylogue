@@ -776,52 +776,23 @@ async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
-        await asyncio.to_thread(_log_spool_depth_if_notable, sources)
+        await asyncio.to_thread(_log_spool_depth_if_notable)
 
 
-# A healthy hook spool drains at roughly one daemon tick's worth of arrivals
-# (observed ~200/hour); a depth at or above this threshold means the
-# consumer has stopped draining, not that traffic spiked -- exactly the
-# silent-for-17-days failure this alerts on instead of leaving to a human to
-# notice a directory listing.
-_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD = 2000
 _BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP = 2000
 
 
-def _log_spool_depth_if_notable(sources: tuple[WatchSource, ...] = ()) -> None:
+def _log_spool_depth_if_notable() -> None:
     """Log pending-queue depth once per heartbeat when it looks abnormal.
 
-    Bounded/capped counts only (see ``hook_spool_pending_depth`` and the
-    browser-capture count below) -- this must never itself become an O(n)
-    scan of an unboundedly large backlog.
+    Bounded/capped counts only -- this must never itself become an O(n) scan
+    of an unboundedly large backlog. Hook carriers are deliberately absent:
+    they are ordinary watched files whose backlog is the dispatcher's intake
+    backlog, so a second hook-specific depth probe would be a parallel ledger
+    of the same fact (polylogue-k3ahm).
     """
     from polylogue.hooks import hook_install_sidecar_drift
-    from polylogue.sources.hooks import hook_spool_pending_depth
 
-    hook_sources: tuple[WatchSource | None, ...] = tuple(
-        source
-        for source in sources
-        if source.source_id is not None and source.role in {"primary-writable", "legacy-read-only"}
-    )
-    if not hook_sources:
-        hook_sources = tuple(source for source in sources if source.name == "hooks")
-    if not hook_sources:
-        hook_sources = (None,)
-    for source in hook_sources:
-        with contextlib.suppress(Exception):
-            root = None if source is None else (source.root.parent if source.root.name == "pending" else source.root)
-            hook_depth = hook_spool_pending_depth(root=root, cap=_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD * 4)
-            if hook_depth >= _HOOK_SPOOL_DEPTH_ALERT_THRESHOLD:
-                emit(
-                    "daemon.hook_spool.backlog",
-                    level=WARNING,
-                    outcome="degraded",
-                    reason="spool_not_draining",
-                    loop="heartbeat",
-                    source_id="default" if source is None else (source.source_id or source.name),
-                    depth=hook_depth,
-                    limit=_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD,
-                )
     for harness in ("claude-code", "codex"):
         with contextlib.suppress(Exception):
             drift = hook_install_sidecar_drift(harness)

@@ -264,12 +264,14 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
     ArchiveSourceBlobRef,
+    CarrierHookEvent,
     delete_source_hook_event,
     deterministic_blob_hash,
     deterministic_raw_session_id,
     list_hook_events,
     record_raw_container_coordinate,
     write_source_hook_event,
+    write_source_hook_event_batch,
 )
 from polylogue.storage.sqlite.archive_tiers.types import (
     ArchiveTier,
@@ -1581,6 +1583,40 @@ class ArchiveStore:
             carrier_role=carrier_role,
             manage_transaction=True,
             policy_snapshot=policy_snapshot,
+        )
+
+    def write_hook_events_from_carrier(
+        self,
+        *,
+        carrier_source_id: str,
+        carrier_relative_path: str,
+        carrier_role: str,
+        carrier_blob_hash: bytes,
+        carrier_source_path: str,
+        events: Sequence[CarrierHookEvent],
+        acquired_at_ms: int,
+    ) -> int:
+        """Persist every event carried by one NDJSON carrier in one transaction.
+
+        The counterpart of :meth:`write_hook_event` for the carrier route: the
+        bytes are already durable as the carrier's own acquisition, so this
+        publishes no blob and takes no publication reservation. That is the
+        whole point -- the per-event route paid a blob write, a
+        ``synchronous=FULL`` reservation commit and four fsyncs for every
+        single event.
+        """
+
+        self._require_writable("write source.db hook evidence")
+        return write_source_hook_event_batch(
+            self._ensure_source_conn(),
+            carrier_source_id=carrier_source_id,
+            carrier_relative_path=carrier_relative_path,
+            carrier_role=carrier_role,
+            carrier_blob_hash=carrier_blob_hash,
+            carrier_source_path=carrier_source_path,
+            events=events,
+            acquired_at_ms=acquired_at_ms,
+            policy_snapshot=build_excision_policy_snapshot(self.archive_root),
         )
 
     def delete_hook_event(self, hook_event_id: str) -> bool:
