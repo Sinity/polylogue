@@ -712,7 +712,10 @@ def test_transcript_duplication_policy_stays_in_sync_across_hook_producers() -> 
 
     contrib_source = Path("contrib/polylogue-hook").resolve().read_text(encoding="utf-8")
     keys_match = re.search(r"for _key in \(([^)]*)\):", contrib_source)
-    threshold_match = re.search(r"len\(_value\) > (\d+)", contrib_source)
+    # The comparison moved from ``len(_value)`` to a ``_transcript_like_chars``
+    # helper bound to ``_size``; the guard is the threshold literal inside the
+    # transcript loop, not the expression that produced the size.
+    threshold_match = re.search(r"if _size > (\d+):", contrib_source)
     assert keys_match is not None, "contrib/polylogue-hook: transcript-key loop not found"
     assert threshold_match is not None, "contrib/polylogue-hook: transcript threshold not found"
     contrib_keys = [item.strip().strip('"') for item in keys_match.group(1).split(",") if item.strip()]
@@ -1203,3 +1206,59 @@ def test_pending_collection_counts_an_unreadable_shard_for_the_drain(
 
     assert collected == [kept]
     assert faults.paths() == (str(blocked),)
+
+
+def test_legacy_hook_root_drains_past_its_first_bounded_batch(tmp_path: Path) -> None:
+    """polylogue-zxpgj: a legacy root never acknowledges, so it needs a resume position.
+
+    ``drain_hook_event_spool`` acknowledges (moves aside) only
+    ``primary-writable`` records. A ``legacy-read-only`` root therefore leaves
+    every drained file in ``pending``, and ``_iter_pending_event_paths``
+    collects from the head of the listing every time -- so the same first batch
+    was re-persisted on every pass while ``acknowledged`` was reported as fresh
+    progress and the events past the batch limit were never archived.
+
+    Anti-vacuity: drop the ``after=_drained_carrier_cursor(...)`` argument in
+    ``drain_hook_event_spool`` and the second batch re-collects the first two
+    events, so ``archived`` below stays at 2 instead of reaching 4.
+    """
+    spool_root = tmp_path / "legacy-hooks"
+    archive_root = tmp_path / "archive"
+    for index in range(4):
+        enqueue_hook_event(
+            event_id=f"legacy-evt-{index}",
+            provider="codex",
+            event_type="PostToolUse",
+            session_id=f"sess-{index}",
+            timestamp="2026-07-22T10:00:00Z",
+            payload={"tool_name": "Bash", "tool_call_id": f"call-{index}"},
+            root=spool_root,
+        )
+
+    for _ in range(2):
+        result = drain_hook_event_spool(
+            archive_root,
+            root=spool_root,
+            limit=2,
+            source_id="legacy-hook-spool-0",
+            role="legacy-read-only",
+        )
+        assert result.failed == 0
+
+    # Nothing was acknowledged away: the legacy root is read-only.
+    assert len(list(pending_hook_spool_dir(spool_root).rglob("*.json"))) == 4
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        archived = conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0]
+        sessions = {row[0] for row in conn.execute("SELECT session_native_id FROM raw_hook_events")}
+    assert archived == 4
+    assert sessions == {f"sess-{index}" for index in range(4)}
+
+    # A third pass over a fully drained legacy root reports nothing remaining.
+    final = drain_hook_event_spool(
+        archive_root,
+        root=spool_root,
+        limit=2,
+        source_id="legacy-hook-spool-0",
+        role="legacy-read-only",
+    )
+    assert (final.acknowledged, final.failed, final.remaining) == (0, 0, 0)

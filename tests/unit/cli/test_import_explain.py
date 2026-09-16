@@ -290,3 +290,50 @@ def test_import_explain_zip_allows_archive_comfortably_under_aggregate_cap(
     payload = explain_import_path(archive)
 
     assert not any("aggregate uncompressed size" in row.reason for row in payload.skipped)
+
+
+def test_import_explain_names_the_container_origin_of_a_claude_ai_export_zip(tmp_path: Path) -> None:
+    """polylogue-erf3: the container carried no origin identity while its contents did.
+
+    ``polylogue import --explain`` on a claude.ai GDPR export ZIP reported
+    detector=zip.container with detected_origin=unknown-export, even though
+    every inner entry lowered to a claude-ai session. The container now takes
+    its identity from the same member-dominance rule acquisition uses.
+
+    Anti-vacuity: drop the ``sniff_zip_provider`` block in ``_explain_zip`` and
+    ``detected_origin`` falls back to ``unknown-export``.
+    """
+    archive = tmp_path / "claude-ai-data-batch-0000.zip"
+    conversations = json.dumps(
+        [
+            {
+                "uuid": "conv-1",
+                "name": "Export conversation",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "chat_messages": [
+                    {
+                        "uuid": "m-1",
+                        "sender": "human",
+                        "text": "hello",
+                        "created_at": "2026-01-01T00:00:00Z",
+                    },
+                    {
+                        "uuid": "m-2",
+                        "sender": "assistant",
+                        "text": "hi",
+                        "created_at": "2026-01-01T00:00:01Z",
+                    },
+                ],
+            }
+        ]
+    )
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("conversations.json", conversations)
+
+    payload = explain_import_path(archive)
+    container = payload.entries[0]
+
+    assert container.detector == "zip.container"
+    assert container.detected_origin == "claude-ai-export"
+    assert container.detected_provider == Provider.CLAUDE_AI.value

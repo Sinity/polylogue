@@ -522,7 +522,6 @@ class _RawDiscoveryBinding:
     archive_root: str
     source_revision: str
     recipe_version: str
-    raw_frontier: int
 
 
 class RawMaterializationDiscovery:
@@ -530,6 +529,18 @@ class RawMaterializationDiscovery:
 
     The cursor is an intake scheduling hint. It never records validity or an
     admission result, so losing it merely starts a new bounded traversal.
+
+    Two lanes feed it. The *sweep* lane pages through the canonical required-key
+    space and retains its continuation. The *arrival* lane serves raws admitted
+    since this process last looked, read straight off the append-only
+    ``raw_sessions`` rowid frontier. A new raw can sort lexically before the
+    sweep cursor, so without the arrival lane it would wait for a whole
+    traversal to wrap; but restarting the sweep for it -- what this class used
+    to do -- meant that under a sustained arrival rate the cursor was reset
+    before it ever advanced past its first page, and every obligation behind
+    that page was never reached. Serving the new raws directly reaches them
+    without discarding the sweep's position, and the lanes alternate so an
+    unbroken stream of arrivals cannot stall the sweep either.
     """
 
     def __init__(self, archive_root: Path, *, max_payload_bytes: int) -> None:
@@ -540,24 +551,37 @@ class RawMaterializationDiscovery:
         #: The continuation start of the page currently being offered, and how
         #: many of its keys were still unprocessed when it was last inspected.
         self._held_page: tuple[str | None, int] | None = None
+        self._frontier: int = 0
+        self._arrivals_first = False
 
     def _raw_frontier(self) -> int:
-        """Return the durable high-water mark for admitted raw observations.
-
-        The cursor only says where this process last looked.  A new raw can
-        sort before that position, so an index-generation binding alone would
-        let it wait for the whole old sweep to wrap around.  ``raw_sessions``
-        is append-only for admitted observations; its rowid high-water mark is
-        therefore a bounded durable invalidation signal, not a second pending
-        queue or a validity cache.  Changes made while publishing an existing
-        raw do not advance it and consequently do not restart discovery.
-        """
+        """Return the durable high-water mark for admitted raw observations."""
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
         source_db = self._archive_root / "source.db"
         with open_readonly_connection(source_db, timeout=5.0) as conn:
             row = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions").fetchone()
         return int(row[0]) if row is not None else 0
+
+    def _arrived_since_frontier(self, limit: int) -> tuple[tuple[str, ...], int]:
+        """Raw ids admitted after the recorded frontier, oldest first.
+
+        ``raw_sessions`` is append-only for admitted observations, so a bounded
+        ``rowid >`` page is the whole arrival set and its last rowid is the new
+        frontier. Publishing changes to an existing raw does not advance the
+        rowid and therefore produces no arrival.
+        """
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        source_db = self._archive_root / "source.db"
+        with open_readonly_connection(source_db, timeout=5.0) as conn:
+            rows = conn.execute(
+                "SELECT rowid, raw_id FROM raw_sessions WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                (self._frontier, limit),
+            ).fetchall()
+        if not rows:
+            return (), self._frontier
+        return tuple(str(row[1]) for row in rows), int(rows[-1][0])
 
     def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
         """Inspect one bounded canonical page and retain its continuation.
@@ -573,7 +597,6 @@ class RawMaterializationDiscovery:
         """
         if limit <= 0:
             return ()
-        from polylogue.operations.operation_context import open_operation_read
         from polylogue.operations.raw_observation_derivation import raw_observation_frame
         from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationDerivation
 
@@ -582,20 +605,45 @@ class RawMaterializationDiscovery:
             archive_root=frame.archive_root,
             source_revision=frame.source_revision,
             recipe_version=frame.recipe_version(RAW_OBSERVATION_DOMAIN),
-            raw_frontier=self._raw_frontier(),
         )
         if binding != self._binding:
+            # A replacement generation invalidates the traversal itself, not
+            # merely its position: start a fresh sweep and treat everything
+            # already durable as swept rather than as an arrival.
             self._binding = binding
             self._cursor = None
             self._held_page = None
+            self._frontier = self._raw_frontier()
+            self._arrivals_first = False
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = RawObservationDerivation(self._archive_root, max_payload_bytes=self._max_payload_bytes)
+        self._arrivals_first = not self._arrivals_first
+        lanes: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
+            (self._arrival_selected, self._sweep_selected)
+            if self._arrivals_first
+            else (self._sweep_selected, self._arrival_selected)
+        )
+        for lane in lanes:
+            selected = lane(frame, adapter, inspected_limit)
+            if selected:
+                return self._with_costs(selected)
+        return ()
+
+    def _arrival_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
+        page, frontier = self._arrived_since_frontier(limit)
+        self._frontier = frontier
+        if not page:
+            return ()
+        statuses = adapter.inspect(frame, page)
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _sweep_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         # At most one released page is skipped per call, so a stalled head
         # costs one extra bounded page read rather than the whole cycle.
         for _attempt in range(2):
             page_cursor = self._cursor
-            page, next_cursor = adapter.required_page(frame, cursor=page_cursor, limit=inspected_limit)
+            page, next_cursor = adapter.required_page(frame, cursor=page_cursor, limit=limit)
             # An empty or fully valid page is progress through the required-key
             # space. ``None`` is the completed-traversal marker; the following
             # pass starts a fresh sweep so new work before this cursor is
@@ -626,10 +674,15 @@ class RawMaterializationDiscovery:
             # re-inspected on the next pass.
             self._held_page = (page_cursor, len(selected))
             self._cursor = page_cursor
-            with open_operation_read(self._archive_root) as pinned:
-                sizes = pinned.archive.raw_payload_sizes(selected)
-            return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
+            return selected
         return ()
+
+    def _with_costs(self, selected: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
+        from polylogue.operations.operation_context import open_operation_read
+
+        with open_operation_read(self._archive_root) as pinned:
+            sizes = pinned.archive.raw_payload_sizes(selected)
+        return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)
 
 
 def discover_pending_raw_ids(archive_root: Path, limit: int, max_payload_bytes: int) -> tuple[tuple[str, int], ...]:

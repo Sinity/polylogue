@@ -188,6 +188,49 @@ def test_mid_stream_corruption_raises_partial_decode_error() -> None:
     assert "sessions.json" in str(err)
 
 
+def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> None:
+    """polylogue-fkqxx: the generic handler had the opposite policy.
+
+    ``_stream_prefixed_items`` raised ``PartialJsonStreamError`` for a
+    mid-stream ``JSONError`` after reasoning that returning the partial set
+    "silently truncates the session set", then twenty lines later returned the
+    partial set at DEBUG level for every other exception type. The loss is
+    identical; only the exception class differs.
+
+    Anti-vacuity: drop the ``if found_any`` guard from the generic ``except
+    Exception`` branch and this returns two records instead of raising.
+    """
+    import ijson
+
+    from polylogue.sources.decoder_json import iter_json_stream_with
+
+    class FailingIjson:
+        common = ijson.common
+
+        @staticmethod
+        def items(_handle: object, _prefix: str) -> object:
+            def generate() -> object:
+                yield {"id": 1}
+                yield {"id": 2}
+                raise OSError("backing store vanished mid-stream")
+
+            return generate()
+
+    import logging
+
+    with pytest.raises(PartialJsonStreamError) as excinfo:
+        list(
+            iter_json_stream_with(
+                logging.getLogger(__name__),
+                cast(object, FailingIjson),  # type: ignore[arg-type]
+                io.BytesIO(b"[]"),
+                "sessions.json",
+            )
+        )
+
+    assert excinfo.value.recovered == 2
+
+
 def test_clean_array_does_not_raise() -> None:
     """A well-formed array must still decode all records without raising."""
     handle = io.BytesIO(b'[{"id": 1}, {"id": 2}, {"id": 3}]')

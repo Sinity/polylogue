@@ -18,6 +18,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.import_explain import explain_import_path
 from polylogue.sources.parsers import hermes_verification
@@ -463,3 +465,28 @@ def test_empty_verification_evidence_db_produces_no_sessions_not_a_crash(tmp_pat
 
     fidelity = hermes_verification.import_fidelity_declaration(sessions)
     assert fidelity.capabilities["command_evidence"].status == "absent"
+
+
+def test_verification_evidence_db_refuses_a_row_count_past_the_declared_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-v85tn: the parser loaded both tables with no row or byte budget.
+
+    ``decode`` routes any structurally-matching SQLite path here ahead of the
+    generic JSON decoder, so the producer's documented limits are not
+    enforceable on the consumer side. The bound is a counted refusal, never a
+    silent truncation of verification evidence.
+
+    Anti-vacuity: remove the ``_MAX_VERIFICATION_EVENT_ROWS`` check and this
+    parses all the rows and returns sessions instead of raising.
+    """
+    from polylogue.sources.parsers import hermes_verification
+
+    monkeypatch.setattr(hermes_verification, "_MAX_VERIFICATION_EVENT_ROWS", 1)
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM verification_events").fetchone()[0] > 1
+
+    with pytest.raises(hermes_verification.HermesVerificationTooLargeError, match="refusing"):
+        hermes_verification.parse_verification_evidence_db(path)

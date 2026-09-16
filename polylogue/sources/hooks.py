@@ -252,8 +252,26 @@ def hook_spool_root() -> Path:
 _DAY_SHARD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _collection_order_key(relative_path: str) -> tuple[int, str, str]:
+    """Position of a carrier's relative path in collection order.
+
+    :func:`_iter_pending_event_paths` emits legacy flat files first, then day
+    shards oldest-first with each shard's files sorted. Shard names are
+    fixed-width dates, so within the sharded class the relative path sorts
+    lexicographically in exactly that order; the leading class index keeps the
+    flat files ahead of it.
+    """
+
+    shard, separator, name = relative_path.rpartition("/")
+    return (1, shard, name) if separator else (0, "", relative_path)
+
+
 def _iter_pending_event_paths(
-    pending: Path, *, limit: int | None = None, faults: WalkFaultRecorder | None = None
+    pending: Path,
+    *,
+    limit: int | None = None,
+    faults: WalkFaultRecorder | None = None,
+    after: tuple[int, str, str] | None = None,
 ) -> list[Path]:
     """Collect up to ``limit`` pending envelope paths without enumerating the
     entire backlog.
@@ -265,6 +283,11 @@ def _iter_pending_event_paths(
     backlog no longer costs an ``O(n log n)`` full listing+sort on every
     bounded drain call, only ``O(limit)`` plus one cheap directory listing per
     shard actually visited.
+
+    ``after`` resumes collection strictly past a position in that same order.
+    A legacy read-only root never acknowledges (deletes) what it drained, so
+    without a resume position every bounded pass re-collected the same head of
+    the listing forever and reported the repeats as fresh progress.
 
     A directory that cannot be read is never dropped. Pass ``faults`` to
     collect it as counted evidence the caller reports (the drain does this, so
@@ -293,17 +316,24 @@ def _iter_pending_event_paths(
     for legacy in sorted(legacy_files):
         if not want_more():
             return collected
+        if after is not None and (0, "", legacy.name) <= after:
+            continue
         collected.append(legacy)
     for shard in shard_dirs:
         if not want_more():
             return collected
+        if after is not None and after[0] == 1 and shard.name < after[1]:
+            continue
         try:
             with os.scandir(shard) as it:
                 for dirent in sorted(it, key=lambda e: e.name):
                     if not want_more():
                         break
-                    if dirent.is_file() and dirent.name.endswith(".json"):
-                        collected.append(Path(dirent.path))
+                    if not (dirent.is_file() and dirent.name.endswith(".json")):
+                        continue
+                    if after is not None and (1, shard.name, dirent.name) <= after:
+                        continue
+                    collected.append(Path(dirent.path))
         except OSError as exc:
             fault(shard, f"pending shard could not be listed: {exc}")
             continue
@@ -439,7 +469,12 @@ def drain_hook_event_spool(
     # let one unreadable day-shard stop every readable shard from draining.
     # The unreadable shards travel back on the result instead.
     faults = WalkFaultRecorder()
-    paths = _iter_pending_event_paths(pending, limit=probe_limit, faults=faults)
+    paths = _iter_pending_event_paths(
+        pending,
+        limit=probe_limit,
+        faults=faults,
+        after=_drained_carrier_cursor(archive_root, source_id) if role == "legacy-read-only" else None,
+    )
     unreadable_paths = faults.paths()
     if unreadable_paths:
         emit(
@@ -502,6 +537,46 @@ def drain_hook_event_spool(
         remaining=(len(selected) - acknowledged) + (1 if more_remain_beyond_batch else 0),
         unreadable_paths=unreadable_paths,
     )
+
+
+def _drained_carrier_cursor(archive_root: Path, source_id: str) -> tuple[int, str, str] | None:
+    """Resume position for a root whose carriers are never acknowledged.
+
+    ``hook_event_carriers`` already records one durable row per physical
+    carrier keyed ``(source_id, relative_path)``, so the furthest position a
+    previous drain reached is derivable rather than needing a second ledger.
+    Drains advance in collection order, so the recorded carriers for this
+    source form a prefix of it and the maximum is a valid cursor. Sharded
+    carriers all sort after flat ones, so one sharded row makes the flat class
+    fully drained.
+    """
+
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    source_db = archive_root / "source.db"
+    if not source_db.exists():
+        return None
+    try:
+        with open_readonly_connection(source_db, timeout=5.0) as conn:
+            sharded = conn.execute(
+                "SELECT MAX(relative_path) FROM hook_event_carriers "
+                "WHERE source_id = ? AND instr(relative_path, '/') > 0",
+                (source_id,),
+            ).fetchone()
+            if sharded is not None and sharded[0] is not None:
+                return _collection_order_key(str(sharded[0]))
+            flat = conn.execute(
+                "SELECT MAX(relative_path) FROM hook_event_carriers "
+                "WHERE source_id = ? AND instr(relative_path, '/') = 0",
+                (source_id,),
+            ).fetchone()
+    except sqlite3.Error:
+        # An archive without the carriers table yet simply has no drained
+        # prefix; refusing here would stop a first drain from ever running.
+        return None
+    if flat is None or flat[0] is None:
+        return None
+    return _collection_order_key(str(flat[0]))
 
 
 def _prune_empty_shards(shards: set[Path], pending_root: Path) -> None:
