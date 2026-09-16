@@ -30,9 +30,13 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
+from polylogue.sources.parsers.codex import (
+    _JsScanRefusals,
+    _scan_code_mode_child_calls,
+    parse_stream,
+)
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
-from polylogue.sources.parsers.codex import parse_stream
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "codex_event_stream"
 
@@ -543,6 +547,9 @@ class TestFunctionsExecLowering:
                 "block_position": 0,
             },
             "source_span": [21, 92],
+            "call_site_origin": "program_source",
+            "execution_evidence": "transport_result",
+            "executed": True,
             "structural_result_fields": {"byte_count": 5},
         }
 
@@ -560,6 +567,187 @@ class TestFunctionsExecLowering:
             "codex_functions_exec_registry_type": "exec_command",
             "byte_count": 5,
         }
+
+    def test_source_scanned_call_that_never_ran_is_marked_unexecuted(self) -> None:
+        """A call site inside a never-invoked function must not read as an execution.
+
+        ``function unused(){ tools.apply_patch(...) }`` scans byte-for-byte like
+        a call that ran, and the parser still promotes its structural
+        ``paths``. Only the producer's item/output evidence decides execution,
+        so the persisted provenance carries ``call_site_origin`` and
+        ``execution_evidence``. Anti-vacuity: delete the discriminator block in
+        ``_child_tool_input`` and the ``executed is False`` assertion — and the
+        contrast against the executed child below — go red, because the two
+        blocks become indistinguishable.
+        """
+        fabricated = _parse(
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "codex-fabricated", "timestamp": "2026-07-15T10:00:00Z", "cwd": "/repo"},
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "id": "ctc-fab",
+                        "call_id": "exec-fab",
+                        "name": "exec",
+                        "input": 'function unused(){ tools.apply_patch("*** Update File: sensitive.py"); }',
+                    },
+                },
+            ],
+            "functions-exec-fabricated",
+        )
+        children = [
+            block
+            for block in self._blocks(fabricated, BlockType.TOOL_USE)
+            if block.tool_id == "exec-fab::polylogue-child::0"
+        ]
+        assert len(children) == 1
+        tool_input = children[0].tool_input
+        assert tool_input is not None
+        # The fabrication is still promoted structurally ...
+        assert tool_input["paths"] == ["sensitive.py"]
+        provenance = self._mapping(tool_input["_polylogue"])
+        assert provenance["parse_state"] == "parsed"
+        # ... but it is explicitly marked as a source-read call site that has
+        # no execution evidence behind it.
+        assert provenance["call_site_origin"] == "program_source"
+        assert provenance["execution_evidence"] == "none"
+        assert provenance["executed"] is False
+
+        executed = _parse(_load_catalog("functions_exec_single.jsonl"), "functions-exec-single")
+        executed_child = self._blocks(executed, BlockType.TOOL_USE)[1]
+        assert executed_child.tool_input is not None
+        executed_provenance = self._mapping(executed_child.tool_input["_polylogue"])
+        assert executed_provenance["executed"] is True
+        assert executed_provenance["execution_evidence"] != provenance["execution_evidence"]
+
+    def test_unexecuted_discriminator_survives_an_archive_write(self, tmp_path: Path) -> None:
+        """The discriminator must land in a persisted column, not in-process only.
+
+        ``ParsedContentBlock.metadata`` is dropped by the writer (bd
+        polylogue-9x22), so the discriminator rides in ``tool_input``, which
+        the writer serializes into the ``blocks.tool_input`` column. Reading
+        the session back out of the archive must still show
+        ``executed is False``. Anti-vacuity: move the discriminator onto
+        ``block.metadata`` and this read-back goes red while the in-memory
+        assertions above stay green.
+        """
+        import sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.archive_tiers.write import (
+            read_archive_session_envelope,
+            write_parsed_session_to_archive,
+        )
+
+        session = _parse(
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "codex-fab-write", "timestamp": "2026-07-15T10:00:00Z", "cwd": "/repo"},
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "id": "ctc-fab-write",
+                        "call_id": "exec-fab-write",
+                        "name": "exec",
+                        "input": 'function unused(){ tools.apply_patch("*** Update File: sensitive.py"); }',
+                    },
+                },
+            ],
+            "functions-exec-fabricated-write",
+        )
+        conn = sqlite3.connect(tmp_path / "index.db")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        session_id = write_parsed_session_to_archive(conn, session)
+        envelope = read_archive_session_envelope(conn, session_id)
+        conn.close()
+
+        stored = [
+            json.loads(block.tool_input)
+            for message in envelope.messages
+            for block in message.blocks
+            if block.block_type == BlockType.TOOL_USE.value and block.tool_input
+        ]
+        child = [value for value in stored if "_polylogue" in value]
+        assert len(child) == 1
+        provenance = child[0]["_polylogue"]
+        assert provenance["call_site_origin"] == "program_source"
+        assert provenance["execution_evidence"] == "none"
+        assert provenance["executed"] is False
+
+    def test_regex_literal_does_not_swallow_the_following_call(self) -> None:
+        """A quote inside a regex literal must not be read as a string opener.
+
+        ``const re = /["]/;`` previously entered the string skipper at the
+        ``"``, never terminated, and silently swallowed the remainder of the
+        program — dropping the real ``tools.exec`` call after it. Anti-vacuity:
+        remove the regex branch from ``_skip_js_string_or_comment`` and no
+        child block is emitted at all.
+        """
+        session = _parse(
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "codex-regex", "timestamp": "2026-07-15T10:00:00Z", "cwd": "/repo"},
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "id": "ctc-regex",
+                        "call_id": "exec-regex",
+                        "name": "exec",
+                        "input": 'const re = /["]/;\ntools.exec("ls -la");',
+                    },
+                },
+            ],
+            "functions-exec-regex",
+        )
+        children = [
+            block
+            for block in self._blocks(session, BlockType.TOOL_USE)
+            if block.tool_id == "exec-regex::polylogue-child::0"
+        ]
+        assert len(children) == 1
+        assert children[0].tool_name == "exec"
+        tool_input = children[0].tool_input
+        assert tool_input is not None
+        assert tool_input["input"] == "ls -la"
+
+    def test_undecidable_slash_is_a_counted_refusal_not_a_guess(self) -> None:
+        """A ``/`` whose left context is a block comment is refused, not guessed.
+
+        The previous-significant-token rule cannot see through ``*/``, so the
+        scanner counts the refusal and leaves the slash unconsumed rather than
+        swallowing the rest of the program. Anti-vacuity: guessing either way
+        (regex or division) leaves ``unresolvable_slash`` at 0.
+        """
+        refusals = _JsScanRefusals()
+        calls = _scan_code_mode_child_calls('/* note */ /x; tools.exec("ls");', refusals=refusals)
+        assert refusals.unresolvable_slash == 1
+        # The refusal is not silence: the call after the undecidable slash is
+        # still scanned.
+        assert [call.tool_name for call in calls] == ["exec"]
+
+    def test_division_after_a_value_is_not_read_as_a_regex(self) -> None:
+        """``a / b`` is division; treating it as a regex would eat the next call.
+
+        Anti-vacuity: drop the previous-significant-token check and treat every
+        ``/`` as a regex opener, and the ``tools.exec`` call disappears.
+        """
+        refusals = _JsScanRefusals()
+        calls = _scan_code_mode_child_calls('const r = a / b; tools.exec("ls");', refusals=refusals)
+        assert [call.tool_name for call in calls] == ["exec"]
+        assert refusals.total == 0
 
     def test_child_result_metadata_routes_to_session_events(self) -> None:
         """``ParsedContentBlock.metadata`` on a code-mode child result must also

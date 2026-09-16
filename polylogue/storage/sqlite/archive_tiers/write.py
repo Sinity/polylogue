@@ -6129,8 +6129,8 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
         total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
-        occurred_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        occurred_at_ms, request_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -6178,11 +6178,22 @@ def _provider_usage_event_row(
         total_reasoning,
         total_tokens,
         to_epoch_ms(event.timestamp, numeric_unit="seconds"),
+        _sqlite_text(_payload_string(event.payload, "request_id")),
     )
 
 
 def _provider_usage_event_row_has_evidence(row: tuple[object, ...]) -> bool:
-    return any(isinstance(value, int) and value for value in row[5:17])
+    """Return whether the row carries any fact worth a ``session_provider_usage_events`` row.
+
+    Numeric usage (``row[5:17]``) is the usual evidence, but it is not the
+    only kind: ``message_usage`` is in ``_SESSION_EVENTS_REDUNDANT_TYPES`` on
+    the premise that this typed row carries the whole payload, so a payload
+    whose only fact is the provider ``request_id`` (``row[18]``) must still
+    produce a row or the id is dropped on the floor.
+    """
+    if any(isinstance(value, int) and value for value in row[5:17]):
+        return True
+    return bool(row[18])
 
 
 def _provider_usage_cumulative_baseline(

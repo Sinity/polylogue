@@ -6,7 +6,7 @@ The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordina
 
 `run_daemon_services` composes FTS, embedding and session-profile callbacks once. FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner (`polylogue/daemon/cli.py:2562-2574`; `polylogue/daemon/cli.py:2629-2643`; `polylogue/daemon/cli.py:2664-2681`; `polylogue/daemon/cli.py:2746-2760`). These are source-route facts, not live deployment evidence.
 
-Convergence emits structured events (`emit`/`span` from `polylogue/logging.py`) rather than free-form log lines: field names pass an allowlist and quarantined names are redacted, so a rebuild is read from named events such as `daemon.barrier.failed` and their typed fields (`polylogue/logging.py:349-364`; `polylogue/logging.py:400-409`; `polylogue/daemon/convergence.py:959-975`).
+Convergence emits structured events (`emit`/`span` from `polylogue/logging.py`) rather than free-form log lines: field names pass an allowlist and quarantined names are stripped from both rendered forms when `POLYLOGUE_LOG_REDACT=1` is set, so a rebuild is read from named events such as `daemon.barrier.failed` and their typed fields (`polylogue/logging.py:349-364`; `polylogue/logging.py:400-409`; `polylogue/daemon/convergence.py:959-975`).
 
 Correlation crosses the compute boundary explicitly. Neither `threading.Thread`
 nor `ThreadPoolExecutor.submit` copies contextvars, so both derivation-kernel

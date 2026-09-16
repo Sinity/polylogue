@@ -16,6 +16,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
+    _classify_deduped_nodes,
     append_source_revision,
     classify_historical_full_revision_streams,
     classify_historical_full_revisions,
@@ -102,10 +103,13 @@ def test_streamed_historical_full_classifier_matches_byte_proof_without_eager_pa
     # comparison it actually participates in.
     assert set(opened) == {"oldest", "middle", "newest"}
     # Pin the read amplification instead of only lower-bounding it: 3 hashing
-    # opens plus one is_prefix comparison per smaller/larger candidate pair
-    # (2 opens each) across this 3-member chain. Tighten this number if the
-    # comparison strategy changes; do not relax it silently.
-    assert len(opened) == 9
+    # opens plus 2 opens per is_prefix comparison. The classifier places nodes
+    # into a prefix forest in ascending size order and compares each node
+    # against the forest's leaves first, so this 3-member chain costs 2
+    # comparisons (oldest->middle, then middle as the matching leaf for
+    # newest), not the 3 an all-pairs scan would pay. Tighten this number if
+    # the comparison strategy changes; do not relax it silently.
+    assert len(opened) == 7
 
 
 @pytest.mark.parametrize("payloads", [[b"left", b"right"]])
@@ -924,3 +928,75 @@ def test_append_parent_requires_exact_cursor_revision(tmp_path: Path) -> None:
             1,
         )
         assert append_source_revision("revision-a", "payload") != append_source_revision("revision-a", "other-payload")
+
+
+def test_prefix_forest_placement_matches_all_pairs_with_linear_comparisons() -> None:
+    """Chained placement reproduces the all-pairs verdicts at far fewer is_prefix calls.
+
+    Anti-vacuity: reverting ``_classify_deduped_nodes`` to the all-pairs
+    candidate scan makes the comparison-count bound red (that scan costs
+    N(N-1)/2 comparisons), and a chaining bug that attaches a node to the
+    wrong ancestor -- or loses an edge -- makes the verdict-equality
+    assertion against the in-test brute-force reference red.
+    """
+    payloads: dict[str, bytes] = {}
+    body = b""
+    for index in range(24):
+        body += b"line-%02d\n" % index
+        payloads[f"chain-{index:02d}"] = body
+    trunk = payloads["chain-10"]
+    # Divergent branch off the middle of the trunk, plus a same-size sibling:
+    # two incomparable nodes of identical size that must not be confused for
+    # one another or for a prefix relation.
+    payloads["branch-a"] = trunk + b"branch-aaa\n"
+    payloads["branch-b"] = trunk + b"branch-bbb\n"
+    payloads["branch-a2"] = payloads["branch-a"] + b"tip-a\n"
+    sizes = {raw_id: len(payload) for raw_id, payload in payloads.items()}
+    node_ids = sorted(payloads)
+
+    comparisons: list[tuple[str, str]] = []
+
+    def counting_is_prefix(parent: str, child: str) -> bool:
+        assert sizes[parent] < sizes[child]
+        comparisons.append((parent, child))
+        return payloads[child].startswith(payloads[parent])
+
+    decisions = _classify_deduped_nodes(node_ids, sizes, counting_is_prefix)
+
+    # Brute-force all-pairs reference: the maximal strictly-smaller prefix
+    # ancestor of each node, then the same cleanliness walk.
+    reference_parents: dict[str, str | None] = {}
+    reference_children: dict[str, list[str]] = {raw_id: [] for raw_id in node_ids}
+    for child in sorted(node_ids, key=lambda raw_id: (sizes[raw_id], raw_id)):
+        candidates = [
+            parent
+            for parent in node_ids
+            if parent != child and sizes[parent] < sizes[child] and payloads[child].startswith(payloads[parent])
+        ]
+        parent = max(candidates, key=lambda raw_id: (sizes[raw_id], raw_id)) if candidates else None
+        reference_parents[child] = parent
+        if parent is not None:
+            reference_children[parent].append(child)
+    reference_roots = [raw_id for raw_id in node_ids if reference_parents[raw_id] is None]
+    assert len(reference_roots) == 1
+    clean: dict[str, bool] = {reference_roots[0]: True}
+    expected: dict[str, tuple[RawRevisionAuthority, str, str | None]] = {}
+    for raw_id in sorted(node_ids, key=lambda value: (sizes[value], value)):
+        parent = reference_parents[raw_id]
+        if parent is not None:
+            clean[raw_id] = clean.get(parent, False) and len(reference_children[parent]) == 1
+        if clean.get(raw_id, False):
+            expected[raw_id] = (
+                RawRevisionAuthority.BYTE_PROVEN,
+                "baseline" if parent is None else "predecessor",
+                parent,
+            )
+        else:
+            expected[raw_id] = (RawRevisionAuthority.QUARANTINED, "ambiguous", None)
+
+    assert {
+        raw_id: (decision.authority, decision.relation, decision.predecessor_raw_id)
+        for raw_id, decision in decisions.items()
+    } == expected
+    # All-pairs would cost 27 * 26 / 2 = 351 comparisons on this cohort.
+    assert len(comparisons) <= 4 * len(node_ids)

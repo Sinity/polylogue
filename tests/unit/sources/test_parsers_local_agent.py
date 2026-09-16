@@ -704,6 +704,48 @@ def test_hermes_snapshot_codex_message_items_prose_reaches_a_block() -> None:
     assert len(extras) == 2
 
 
+def test_codex_item_dedup_suppresses_exact_repeats_only_not_substrings() -> None:
+    """A segment that is a strict substring of an earlier one is kept (polylogue-e2e25).
+
+    Goes red if the dedup returns to ``text.strip() in covered`` against a
+    growing concatenation: the short segment is a substring of the long one,
+    so containment swallows genuinely distinct model output -- and the scan
+    is quadratic in segment bytes on an untrusted Codex file. The exact-repeat
+    half keeps the fix from degenerating into no dedup at all.
+    """
+    long_text = "The wrapper stayed untouched while the stale config migrated."
+    short_text = "the stale config migrated."
+    assert short_text in long_text
+
+    def item(*prose: str) -> JSONDocument:
+        return {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text} for text in prose],
+            "id": "msg_0888",
+            "phase": "commentary",
+        }
+
+    payload: JSONDocument = {
+        "session_id": "hermes-session-4",
+        "model": "local-model",
+        "session_start": "2026-05-07T08:39:43.000000",
+        "last_updated": "2026-05-07T08:46:00.000000",
+        "messages": [
+            {"role": "user", "content": "migrate the config"},
+            {"role": "assistant", "content": "", "codex_message_items": [item(long_text, short_text)]},
+            {"role": "assistant", "content": "", "codex_message_items": [item(long_text, long_text)]},
+        ],
+    }
+
+    [session] = parse_payload("hermes", payload, "fallback")
+
+    substring_case, exact_case = session.messages[1], session.messages[2]
+    assert [block.text for block in substring_case.blocks if block.type is BlockType.TEXT] == [long_text, short_text]
+    assert [block.text for block in exact_case.blocks if block.type is BlockType.TEXT] == [long_text]
+
+
 def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
@@ -1679,3 +1721,148 @@ def test_gemini_cli_display_only_user_turn_is_kept() -> None:
     [session] = parse_payload("gemini-cli", payload, "fallback")
 
     assert [block.text for block in session.messages[0].blocks] == ["summarize @notes.md"]
+
+
+def _gemini_cli_checkpoint_stream() -> list[JSONDocument]:
+    """Neutral synthetic mirror of a real ``~/.gemini/tmp/*/chats/*.jsonl`` log."""
+    return [
+        {
+            "sessionId": "stream-session-1",
+            "projectHash": "project-hash",
+            "startTime": "2026-05-02T09:00:00.000Z",
+            "lastUpdated": "2026-05-02T09:00:00.000Z",
+            "kind": "main",
+        },
+        {
+            "$set": {
+                "messages": [
+                    {
+                        "id": "ctx",
+                        "timestamp": "2026-05-02T09:00:00.100Z",
+                        "type": "user",
+                        "content": [{"text": "<session_context>setup</session_context>"}],
+                    }
+                ]
+            }
+        },
+        {
+            "id": "u1",
+            "timestamp": "2026-05-02T09:00:10.000Z",
+            "type": "user",
+            "content": [{"text": "list the fixtures"}],
+        },
+        {"$set": {"lastUpdated": "2026-05-02T09:00:10.000Z"}},
+        {
+            "id": "e1",
+            "timestamp": "2026-05-02T09:00:11.000Z",
+            "type": "error",
+            "content": "[API Error: synthetic failure]",
+        },
+        {"$set": {"lastUpdated": "2026-05-02T09:00:11.000Z"}},
+        {
+            "id": "i1",
+            "timestamp": "2026-05-02T09:00:11.500Z",
+            "type": "info",
+            "content": "This request failed.",
+        },
+        {
+            "id": "a1",
+            "timestamp": "2026-05-02T09:00:20.000Z",
+            "type": "gemini",
+            "content": "two fixtures",
+            "model": "gemini-test",
+            "thoughts": [{"subject": "Scanning", "description": "checking the fixture directory"}],
+            "tokens": {"input": 120, "output": 8, "cached": 0, "thoughts": 15, "tool": 0, "total": 143},
+            "toolCalls": [
+                {
+                    "id": "grep_search_1",
+                    "name": "grep_search",
+                    "args": {"pattern": "fixture"},
+                    "status": "success",
+                    "result": [
+                        {
+                            "functionResponse": {
+                                "id": "grep_search_1",
+                                "name": "grep_search",
+                                "response": {"output": "2 matches"},
+                            }
+                        }
+                    ],
+                }
+            ],
+        },
+        {"$set": {"lastUpdated": "2026-05-02T09:00:20.000Z"}},
+    ]
+
+
+def test_gemini_cli_checkpoint_stream_parses_through_dispatch() -> None:
+    """polylogue-8u1p: the ``.jsonl`` checkpoint log becomes a real session.
+
+    Anti-vacuity: delete the checkpoint-stream fold from
+    ``_lower_payload_specs``'s ``GEMINI_CLI`` branch and the payload lowers to
+    zero specs -- ``parse_payload`` returns no session at all and every
+    assertion below is unreachable.
+    """
+    payload = _gemini_cli_checkpoint_stream()
+
+    assert detect_provider(payload) is Provider.GEMINI_CLI
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    assert session.source_name is Provider.GEMINI_CLI
+    # Identity comes from the stub line, not from the fallback id.
+    assert session.provider_session_id == "stream-session-1:main:2026-05-02T09:00:00.000Z"
+    assert session.created_at == "2026-05-02T09:00:00.000Z"
+    # The final ``$set`` patch folded into session metadata, replacing the
+    # stub's opening value.
+    assert session.updated_at == "2026-05-02T09:00:20.000Z"
+    assert session.provider_project_ref == "project-hash"
+
+    assert [message.provider_message_id for message in session.messages] == ["ctx", "u1", "e1", "i1", "a1"]
+    assert [message.position for message in session.messages] == [0, 1, 2, 3, 4]
+    assert session.messages[1].role == "user"
+    assert session.messages[4].role == "assistant"
+    assert session.messages[4].model_name == "gemini-test"
+    assert session.messages[4].input_tokens == 120
+    assert session.messages[4].output_tokens == 8
+    assert session.active_leaf_message_provider_id == "a1"
+
+    # ``error``/``info`` lines are kept as transcript records, matching what
+    # the single-document shape stores inside its ``messages`` array.
+    assert session.messages[2].text == "[API Error: synthetic failure]"
+    assert session.messages[3].text == "This request failed."
+
+    assistant_blocks = session.messages[4].blocks
+    assert {block.type for block in assistant_blocks} >= {
+        BlockType.TEXT,
+        BlockType.THINKING,
+        BlockType.TOOL_USE,
+        BlockType.TOOL_RESULT,
+    }
+    tool_use = next(block for block in assistant_blocks if block.type is BlockType.TOOL_USE)
+    assert tool_use.tool_name == "grep_search"
+
+
+def test_gemini_cli_single_document_shape_is_unaffected_by_the_stream_fold() -> None:
+    """polylogue-8u1p: the ``.json`` document route keeps its own lowering.
+
+    Anti-vacuity: route the single document through the checkpoint-stream
+    fold (whose first record must carry no ``messages`` key) and this payload
+    lowers to zero specs, so the unpacking below raises.
+    """
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-1",
+        "projectHash": "project-hash",
+        "startTime": "2026-04-08T20:45:00.000Z",
+        "lastUpdated": "2026-04-08T20:47:00.000Z",
+        "kind": "chat",
+        "messages": [
+            {"id": "u1", "timestamp": "2026-04-08T20:45:01.000Z", "type": "user", "content": ["hello"]},
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    assert session.provider_session_id == "gemini-session-1:chat:2026-04-08T20:45:00.000Z"
+    assert [message.provider_message_id for message in session.messages] == ["u1"]
+    assert session.updated_at == "2026-04-08T20:47:00.000Z"

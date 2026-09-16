@@ -534,8 +534,18 @@ def span(name: str, /, **fields: object) -> Iterator[Span]:
 # -- rendering views --------------------------------------------------------
 
 
-def render_json(record: Event) -> str:
-    """The storage form: one JSON object per line, stable key order."""
+def render_json(record: Event, *, redact: bool = False) -> str:
+    """The storage form: one JSON object per line, stable key order.
+
+    ``redact`` strips the quarantined free-text fields, exactly as
+    :func:`render_console` does. The storage form is the one an unattended
+    rebuild keeps on disk and the one most likely to be handed to someone
+    else, so ``POLYLOGUE_LOG_REDACT=1`` has to reach it too -- a redaction
+    switch that only cleaned the operator's terminal would be a promise the
+    retained artefact does not keep.
+    """
+    if redact:
+        record = {key: value for key, value in record.items() if key not in QUARANTINED_FIELDS}
     return json.dumps(record, separators=(",", ":"), sort_keys=True, default=str)
 
 
@@ -582,7 +592,7 @@ def make_stream_sink(stream: object, *, fmt: str = "json", redact: bool = False)
     """Build a sink writing rendered records to ``stream``, one line each."""
 
     def sink(record: Event) -> None:
-        line = render_json(record) if fmt == "json" else render_console(record, redact=redact)
+        line = render_json(record, redact=redact) if fmt == "json" else render_console(record, redact=redact)
         write = getattr(stream, "write", None)
         if write is None:
             return

@@ -5973,3 +5973,60 @@ def test_hermes_observer_refuses_the_literal_events_artifact_name_as_a_parent(tm
         assert rows == []
     finally:
         conn.close()
+
+
+def test_message_usage_request_id_and_thinking_budget_survive_the_write(tmp_path: Path) -> None:
+    """``requestId`` and ``thinkingMetadata.maxThinkingTokens`` must both be readable back (polylogue-07rfc).
+
+    ``message_usage`` is in ``_SESSION_EVENTS_REDUNDANT_TYPES`` on the premise
+    that ``session_provider_usage_events`` carries its whole payload, so the
+    provider ``request_id`` needs a typed column there; the thinking budget
+    rides its own non-redundant ``claude_thinking_budget`` event and is
+    asserted from ``session_events`` rather than duplicated into the usage row
+    (write each fact once).
+
+    Anti-vacuity: drop the ``request_id`` column (or revert
+    ``_provider_usage_event_row_has_evidence`` to the numeric-only check, which
+    also deletes the row when usage is all zeros) and the first assert goes
+    red; add ``message_usage``'s sibling event to the redundant set and the
+    second does.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-usage-identity",
+                "requestId": "req_synthetic_0001",
+                "thinkingMetadata": {"maxThinkingTokens": 31999},
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "synthetic"}],
+                    "model": "claude-sonnet-4-20250514",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            },
+        ],
+        "sess-usage-identity",
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    request_ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT request_id FROM session_provider_usage_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+    ]
+    assert request_ids == ["req_synthetic_0001"]
+
+    budgets = [
+        json.loads(row[0])["max_thinking_tokens"]
+        for row in conn.execute(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'claude_thinking_budget'",
+            (session_id,),
+        ).fetchall()
+    ]
+    assert budgets == [31999]

@@ -5,7 +5,7 @@ from typing import Any
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider, TitleSource
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.ids import session_revision_projection
+from polylogue.pipeline.ids import session_id, session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import grok
 
@@ -87,7 +87,7 @@ def test_parse_conversation_nested_response_shape() -> None:
     session = grok.parse_conversation(_nested_conversation(), "grok-1")
 
     assert session.source_name is Provider.GROK
-    assert session.provider_session_id == "grok-1"
+    assert session.provider_session_id.startswith("conversation-")
     assert session.title == "Debugging a React hook"
     assert session.title_source is TitleSource.ORIGIN
     assert session.created_at == "2024-04-01T19:33:20+00:00"
@@ -182,7 +182,65 @@ def test_parse_conversation_id_stable_across_reparse() -> None:
     payload = _nested_conversation()
     first = grok.parse_conversation(payload, "grok-1")
     second = grok.parse_conversation(payload, "grok-1")
-    assert first.provider_session_id == second.provider_session_id == "grok-1"
+    assert first.provider_session_id == second.provider_session_id
+    assert first.provider_session_id.startswith("conversation-")
+
+
+def test_session_id_distinct_for_same_stem_in_different_directories() -> None:
+    """Two different conversations exported as ``~/a/grok.json`` and
+    ``~/b/grok.json`` both arrive with fallback id ``grok``; identity must come
+    from the conversation, not the acquisition coordinate.
+
+    Anti-vacuity: restoring the stem/index identity (``provider_session_id=
+    fallback_id``) makes both ids ``grok`` and turns this red -- which is the
+    bug, since the second ingest then full-replaces the first session's
+    messages under ``grok:grok`` (polylogue-31zag)."""
+    from_dir_a = grok.parse_conversation(_nested_conversation(), "grok")
+    from_dir_b = grok.parse_conversation(_flat_conversation(), "grok")
+
+    assert from_dir_a.provider_session_id != from_dir_b.provider_session_id
+    assert session_id(Provider.GROK, from_dir_a.provider_session_id) != session_id(
+        Provider.GROK, from_dir_b.provider_session_id
+    )
+
+
+def test_session_id_survives_reordered_re_export_under_a_different_filename() -> None:
+    """The same conversation re-exported later -- its responses reordered
+    within the file, the file itself named differently, and its position in
+    the export array changed -- is the same session.
+
+    Anti-vacuity: seeding the identity from the array index or the filename
+    stem makes the ids differ; hashing the array-order first message rather
+    than the timestamp-ordered opening turn makes the reordering alone make it
+    red."""
+    payload = _nested_conversation()
+    reordered = {**payload, "responses": list(reversed(payload["responses"]))}
+
+    first_export = parse_payload(Provider.GROK, {"conversations": [payload]}, "grok")
+    second_export = parse_payload(
+        Provider.GROK,
+        {"conversations": [_flat_conversation(), reordered]},
+        "prod-grok-backend",
+    )
+
+    assert len(first_export) == 1
+    assert len(second_export) == 2
+    assert first_export[0].provider_session_id in {s.provider_session_id for s in second_export}
+
+
+def test_contentless_conversation_falls_back_to_the_acquisition_id() -> None:
+    """The one narrow exception: no admitted response and no create_time means
+    there is literally nothing intrinsic to hash.
+
+    Anti-vacuity: widening the fallback to any conversation lacking a
+    create_time (or lacking responses) makes the second assertion red."""
+    empty = grok.parse_conversation({"conversation": {"title": "T"}, "responses": []}, "stem")
+    assert empty.provider_session_id == "stem"
+
+    timestamped = grok.parse_conversation(
+        {"conversation": {"title": "T", "create_time": 1712000000}, "responses": []}, "stem"
+    )
+    assert timestamped.provider_session_id.startswith("conversation-")
 
 
 def test_parse_conversation_reordered_idless_responses_keep_revision_identity() -> None:
@@ -234,18 +292,22 @@ def test_parse_payload_splits_multi_conversation_export_into_n_sessions() -> Non
     sessions = parse_payload(Provider.GROK, document, "grok-export")
 
     assert len(sessions) == 2
-    assert {s.provider_session_id for s in sessions} == {"grok-export-0", "grok-export-1"}
+    assert len({s.provider_session_id for s in sessions}) == 2
+    assert all(s.provider_session_id.startswith("conversation-") for s in sessions)
     assert all(s.source_name is Provider.GROK for s in sessions)
     assert {s.title for s in sessions} == {"Debugging a React hook", "Flat shape chat"}
     assert origin_from_provider(Provider.GROK) is Origin.GROK_EXPORT
 
 
-def test_parse_payload_keeps_bare_fallback_id_for_single_conversation_export() -> None:
+def test_parse_payload_single_conversation_export_matches_direct_parse_identity() -> None:
     document = {"conversations": [_nested_conversation()]}
     sessions = parse_payload(Provider.GROK, document, "grok-export")
 
     assert len(sessions) == 1
-    assert sessions[0].provider_session_id == "grok-export"
+    assert (
+        sessions[0].provider_session_id
+        == grok.parse_conversation(_nested_conversation(), "grok-export").provider_session_id
+    )
 
 
 def test_parse_payload_unwraps_single_element_wrapped_grok_document() -> None:
@@ -283,6 +345,9 @@ def test_parse_payload_skips_malformed_entries_in_mixed_validity_export() -> Non
     assert len(sessions) == 2
     assert all(s.messages for s in sessions)
     assert {s.title for s in sessions} == {"Debugging a React hook", "Flat shape chat"}
-    # Malformed entries are skipped, not renumbered around -- surviving specs
-    # keep their original array-position suffix.
-    assert {s.provider_session_id for s in sessions} == {"grok-export-0", "grok-export-4"}
+    # Identity is content-derived, so a skipped malformed neighbour cannot
+    # shift a surviving conversation's id the way an array-position suffix did.
+    assert {s.provider_session_id for s in sessions} == {
+        grok.parse_conversation(_nested_conversation(), "x").provider_session_id,
+        grok.parse_conversation(_flat_conversation(), "y").provider_session_id,
+    }
