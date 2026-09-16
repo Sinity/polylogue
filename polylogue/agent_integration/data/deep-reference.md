@@ -820,15 +820,21 @@ Prompts: `cost_of`.
 
 ### Stable target resources
 
-- `polylogue://session/{id}` — objects session; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://message/{id}` — objects message; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://block/{id}` — objects block; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://action/{id}` — objects action; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://file/{id}` — objects file; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://query/{id}` — objects query; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://result-set/{id}` — objects result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://recall-pack/{id}` — objects recall-pack; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://agent/manual` — objects agent-asset; required capability `read`; standing agent manual text; no mutation authority.
+- `polylogue://agent/reference` — objects agent-asset; required capability `read`; standing agent reference text; no mutation authority.
+- `polylogue://agent/manifest` — objects agent-asset, capability; required capability `read`; capability-scoped surface manifest; no mutation authority.
+- `polylogue://stats` — objects result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://sessions` — objects session, result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://tags` — objects tag, result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://readiness` — objects capability; required capability `read`; derived read-model readiness; no mutation authority.
 - `polylogue://capabilities/query` — objects capability, query, result-set; required capability `read`; executable query vocabulary and recovery guidance; no mutation authority.
+- `polylogue://capabilities/action-affordances` — objects capability, action; required capability `read`; declared action affordances; no mutation authority.
+- `polylogue://session/{conv_id}` — objects session; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://messages/{conv_id}` — objects message; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://session-tree/{conv_id}` — objects session; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://origin/{name}/recent` — objects session, result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://raw-authority-census/{census_id}/{offset}` — objects result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}` — objects result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
 
 ### Workflow prompts
 

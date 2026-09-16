@@ -199,15 +199,21 @@ Use `query_ref` to identify the stable query definition and `result_ref` to iden
 
 Stable objects are addressable as MCP resources and as `read`/`get` refs. Current target templates are:
 
-- `polylogue://session/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://message/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://block/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://action/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://file/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://query/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://result-set/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://recall-pack/{id}` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://agent/manual` — standing agent manual text; no mutation authority.
+- `polylogue://agent/reference` — standing agent reference text; no mutation authority.
+- `polylogue://agent/manifest` — capability-scoped surface manifest; no mutation authority.
+- `polylogue://stats` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://sessions` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://tags` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://readiness` — derived read-model readiness; no mutation authority.
 - `polylogue://capabilities/query` — executable query vocabulary and recovery guidance; no mutation authority.
+- `polylogue://capabilities/action-affordances` — declared action affordances; no mutation authority.
+- `polylogue://session/{conv_id}` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://messages/{conv_id}` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://session-tree/{conv_id}` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://origin/{name}/recent` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://raw-authority-census/{census_id}/{offset}` — read-only object projection; resources never acquire instruction or mutation authority.
+- `polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}` — read-only object projection; resources never acquire instruction or mutation authority.
 - `polylogue://agent/manual` — this generated standing manual.
 - `polylogue://agent/reference` — the generated deep reference.
 - `polylogue://agent/manifest` — capability-scoped target/runtime reconciliation for this server.

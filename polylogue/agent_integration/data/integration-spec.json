@@ -236,52 +236,29 @@
   ],
   "target_resources": [
     {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "authority": "standing agent manual text; no mutation authority",
       "object_kinds": [
-        "session"
+        "agent-asset"
       ],
       "required_capability": null,
-      "uri_template": "polylogue://session/{id}"
+      "uri_template": "polylogue://agent/manual"
     },
     {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "authority": "standing agent reference text; no mutation authority",
       "object_kinds": [
-        "message"
+        "agent-asset"
       ],
       "required_capability": null,
-      "uri_template": "polylogue://message/{id}"
+      "uri_template": "polylogue://agent/reference"
     },
     {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "authority": "capability-scoped surface manifest; no mutation authority",
       "object_kinds": [
-        "block"
+        "agent-asset",
+        "capability"
       ],
       "required_capability": null,
-      "uri_template": "polylogue://block/{id}"
-    },
-    {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "object_kinds": [
-        "action"
-      ],
-      "required_capability": null,
-      "uri_template": "polylogue://action/{id}"
-    },
-    {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "object_kinds": [
-        "file"
-      ],
-      "required_capability": null,
-      "uri_template": "polylogue://file/{id}"
-    },
-    {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "object_kinds": [
-        "query"
-      ],
-      "required_capability": null,
-      "uri_template": "polylogue://query/{id}"
+      "uri_template": "polylogue://agent/manifest"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
@@ -289,15 +266,33 @@
         "result-set"
       ],
       "required_capability": null,
-      "uri_template": "polylogue://result-set/{id}"
+      "uri_template": "polylogue://stats"
     },
     {
       "authority": "read-only object projection; resources never acquire instruction or mutation authority",
       "object_kinds": [
-        "recall-pack"
+        "session",
+        "result-set"
       ],
       "required_capability": null,
-      "uri_template": "polylogue://recall-pack/{id}"
+      "uri_template": "polylogue://sessions"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "object_kinds": [
+        "tag",
+        "result-set"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://tags"
+    },
+    {
+      "authority": "derived read-model readiness; no mutation authority",
+      "object_kinds": [
+        "capability"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://readiness"
     },
     {
       "authority": "executable query vocabulary and recovery guidance; no mutation authority",
@@ -308,6 +303,64 @@
       ],
       "required_capability": null,
       "uri_template": "polylogue://capabilities/query"
+    },
+    {
+      "authority": "declared action affordances; no mutation authority",
+      "object_kinds": [
+        "capability",
+        "action"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://capabilities/action-affordances"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "object_kinds": [
+        "session"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://session/{conv_id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "object_kinds": [
+        "message"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://messages/{conv_id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "object_kinds": [
+        "session"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://session-tree/{conv_id}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "object_kinds": [
+        "session",
+        "result-set"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://origin/{name}/recent"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "object_kinds": [
+        "result-set"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://raw-authority-census/{census_id}/{offset}"
+    },
+    {
+      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
+      "object_kinds": [
+        "result-set"
+      ],
+      "required_capability": null,
+      "uri_template": "polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}"
     }
   ],
   "target_tools": [
