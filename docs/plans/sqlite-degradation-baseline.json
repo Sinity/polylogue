@@ -676,23 +676,7 @@
     },
     {
       "file": "polylogue/sources/codex_state_projection.py",
-      "digest": "4a7d58e048b145d7b7bfd6064579c47cf93b33d5"
-    },
-    {
-      "file": "polylogue/sources/codex_state_projection.py",
-      "digest": "870de46d7937dc0d582d50df3de3b7a99f48825c"
-    },
-    {
-      "file": "polylogue/sources/codex_state_projection.py",
-      "digest": "a393281dc7ed982a3503757c039957b625e7c228"
-    },
-    {
-      "file": "polylogue/sources/codex_state_projection.py",
       "digest": "a3e9a8c5fe67a3d0714645814220240e680e8e88"
-    },
-    {
-      "file": "polylogue/sources/codex_state_projection.py",
-      "digest": "d16c35f14b1a73673b0f0210387ea5d01c5c7a31"
     },
     {
       "file": "polylogue/sources/hooks.py",
@@ -930,6 +914,22 @@
       "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
       "digest": "59587c74ed7fbadd083e40c83fc0a7381be43f44",
       "count": 2
+    },
+    {
+      "file": "polylogue/storage/sqlite/agent_thread_state.py",
+      "digest": "4a5bdd9359f15bafda7bf01f764e2efc6a7f9492"
+    },
+    {
+      "file": "polylogue/storage/sqlite/agent_thread_state.py",
+      "digest": "521aacc1dc4345c4827c7c3ace113ce663bd8b96"
+    },
+    {
+      "file": "polylogue/storage/sqlite/agent_thread_state.py",
+      "digest": "52288e7e0e6669cca36a3d5bd21a7e1ea820c696"
+    },
+    {
+      "file": "polylogue/storage/sqlite/agent_thread_state.py",
+      "digest": "a49c0a49b54461538ac63dafb21e94f1e16ed1ea"
     },
     {
       "file": "polylogue/storage/sqlite/archive_tiers/archive.py",

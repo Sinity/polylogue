@@ -1,7 +1,7 @@
 """Hook-evidence authority on the LIVE topology write path.
 
 Codex ``thread_spawn_edges`` reach ``index.db`` as the
-``codex_thread_spawn_edges`` projection of the retained state export, but
+thread-state graph projection of the retained state export, but
 nothing consumed them for topology: the only artifact was
 ``context/codex_spawn_edge_correlation.reconcile_codex_spawn_edges``, a
 READ-ONLY counter reachable solely through the API facade. It reports
@@ -60,6 +60,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.thread_state import seed_spawn_edges
 
 _CHILD = "child-thread"
 _HOOK_PARENT = "hook-parent-thread"
@@ -109,17 +110,12 @@ def _session(provider_session_id: str, *, parent: str | None = None) -> ParsedSe
 def _write_spawn_edge(
     conn: sqlite3.Connection, *, parent: str, child: str, observed_at_ms: int = 1_760_000_000_000
 ) -> None:
-    """Insert one projected ``codex_thread_spawn_edges`` row.
+    """Project one spawn edge through the production thread-state writer.
 
-    Mirrors ``sources/codex_state_projection.py``. The child-side lookup under
-    test resolves the parent from ``child_thread_id``.
+    The child-side lookup under test resolves the parent from the child's
+    thread id.
     """
-    conn.execute(
-        "INSERT INTO codex_thread_spawn_edges (parent_thread_id, child_thread_id, status, observed_at_ms) "
-        "VALUES (?, ?, 'spawned', ?)",
-        (parent, child, observed_at_ms),
-    )
-    conn.commit()
+    seed_spawn_edges(conn, [(parent, child, "spawned")], observed_at_ms=observed_at_ms)
 
 
 def _links(conn: sqlite3.Connection, src_session_id: str) -> dict[str, sqlite3.Row]:

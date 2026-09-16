@@ -412,7 +412,7 @@ class CodexAssemblySpec:
                     }
                 )
 
-        # 3b. codex_thread_state -- the SAME threads.title column step 3 reads
+        # 3b. the thread-state graph -- the SAME threads.title column step 3 reads
         # live, projected from the retained logical export rather than from the
         # operator's file. Only fills the gap left by a live-read miss
         # (state_5.sqlite rotated, deleted, or momentarily locked past step 3's

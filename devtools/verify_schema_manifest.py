@@ -349,6 +349,50 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
     return violations
 
 
+#: Source-origin tokens that must not name an index-tier relation or column
+#: (polylogue-qvxun). Provider-specific evidence belongs in the neutral
+#: relations -- the work-evidence graph, session_links, session_events -- with
+#: the provider identity carried in the row, never in the schema.
+_PROVIDER_TOKENS = (
+    "codex",
+    "claude",
+    "gemini",
+    "hermes",
+    "chatgpt",
+    "antigravity",
+    "aistudio",
+    "anthropic",
+    "openai",
+)
+
+_RELATION_RE = re.compile(
+    r"CREATE\s+(?:VIRTUAL\s+)?(?:TABLE|VIEW|TRIGGER|(?:UNIQUE\s+)?INDEX)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.I,
+)
+_COLUMN_RE = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s+(?:TEXT|INTEGER|REAL|BLOB|ANY)\b", re.I | re.M)
+
+
+def _strip_sql_noise(ddl: str) -> str:
+    """Drop comments and string literals so only identifiers remain.
+
+    ``origin IN ('claude-code-session', ...)`` is a vocabulary value, not a
+    provider-named schema object; the check must not confuse the two.
+    """
+    without_comments = re.sub(r"--[^\n]*", "", ddl)
+    return re.sub(r"'[^']*'", "''", without_comments)
+
+
+def _provider_named_index_objects() -> list[str]:
+    """Return index-tier relation/column names carrying a provider token."""
+    ddl = _strip_sql_noise(ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX])
+    names = {match.group(1) for match in _RELATION_RE.finditer(ddl)}
+    names.update(match.group(1) for match in _COLUMN_RE.finditer(ddl))
+    return sorted(
+        f"{name} (provider token '{token}')" for name in names for token in _PROVIDER_TOKENS if token in name.lower()
+    )
+
+
 def _check_tier(tier: ArchiveTier, path: Path | None) -> dict[str, Any]:
     expected = canonical_schema_manifest(tier)
     result: dict[str, Any] = {"tier": tier.value, "version": expected.version, "ok": True}
@@ -397,11 +441,13 @@ def main(argv: list[str] | None = None) -> int:
         path = args.archive_root / f"{tier.value}.db" if args.archive_root is not None else None
         results.append(_check_tier(tier, path))
     benign_violations = _benign_ddl_violations()
+    provider_named = _provider_named_index_objects()
     payload = {
         "kind": "polylogue.schema-manifest",
-        "ok": all(item["ok"] for item in results) and not benign_violations,
+        "ok": all(item["ok"] for item in results) and not benign_violations and not provider_named,
         "tiers": results,
         "benign_ddl_violations": benign_violations,
+        "provider_named_index_objects": provider_named,
     }
     if args.json:
         print(json.dumps(payload, sort_keys=True))
@@ -410,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{item['tier']}: {'PASS' if item['ok'] else 'FAIL'} (v{item['version']})")
         for violation in benign_violations:
             print(f"FAIL: benign-ddl {violation}")
+        for violation in provider_named:
+            print(f"FAIL: provider-named index-tier object {violation}")
         print("schema-manifest: PASS" if payload["ok"] else "schema-manifest: FAIL")
     return 0 if payload["ok"] else 1
 

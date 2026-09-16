@@ -48,14 +48,6 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "attachment_refs": frozenset(),
     "attachments": frozenset(),
     "blocks": frozenset(),
-    # Retained Codex state exports are source-derived index projections. The
-    # replay route must reproduce their complete row sets, including the
-    # source receipt that prevents an older export overwriting a newer one.
-    # Their timestamps/order are durable source evidence, not run-local clock
-    # observations, so they intentionally have no volatile exclusions.
-    "codex_thread_spawn_edges": frozenset(),
-    "codex_thread_state": frozenset(),
-    "codex_thread_state_provenance": frozenset(),
     "delegation_facts": frozenset(),
     "delegation_refresh_scope": frozenset(),
     "derived_refresh_guard": frozenset(),
@@ -82,6 +74,11 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_working_dirs": frozenset(),
     "sessions": frozenset(),
     "web_content_constructs": frozenset(),
+    # Retained runtime state exports reach these relations as source-derived
+    # projections. The replay route must reproduce their complete row sets,
+    # including the source receipt that prevents an older export overwriting a
+    # newer one. Those timestamps/order are durable source evidence, not
+    # run-local clock observations, so they have no volatile exclusions.
     "work_evidence_edges": frozenset(),
     "work_evidence_graphs": frozenset(),
     "work_evidence_nodes": frozenset(),

@@ -44,6 +44,7 @@ from polylogue.storage.index_generation import IndexGenerationStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
+from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1345,7 +1346,7 @@ def test_codex_state_replay_applies_payload_budget_before_sqlite_parse(tmp_path:
         ).fetchone() == (None, None)
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM codex_thread_state").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM work_evidence_nodes").fetchone() == (0,)
 
 
 def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) -> None:
@@ -1373,9 +1374,8 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
     census_historical_revision_evidence(tmp_path)
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        title = conn.execute("SELECT title FROM codex_thread_state WHERE thread_id = 'codex-state-thread'").fetchone()
-    assert title is not None
-    assert title[0] == "title A"
+        titles = read_thread_titles(conn, thread_ids=["codex-state-thread"])
+    assert titles == {"codex-state-thread": "title A"}
 
 
 def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_path: Path) -> None:
@@ -1403,9 +1403,8 @@ def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_pa
     census_historical_revision_evidence(tmp_path)
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        title = conn.execute("SELECT title FROM codex_thread_state WHERE thread_id = 'codex-state-thread'").fetchone()
-    assert title is not None
-    assert title[0] == "newer title"
+        titles = read_thread_titles(conn, thread_ids=["codex-state-thread"])
+    assert titles == {"codex-state-thread": "newer title"}
 
 
 def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> None:

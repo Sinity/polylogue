@@ -5,8 +5,9 @@
 own transcript (``source.subagent.thread_spawn`` / ``forked_from_id``).
 Acquisition separately retains Codex's own orchestration-level record of the
 same relationship -- ``thread_spawn_edges`` from ``state_5.sqlite`` -- and
-projects it into ``index.db``'s ``codex_thread_spawn_edges``
-(``sources/codex_state_projection.py``).
+projects it into ``index.db``'s provider-neutral thread-state graph
+(``sources/codex_state_projection.py``,
+``storage/sqlite/agent_thread_state.py``).
 
 This is a read-only reconciliation, mirroring the pattern
 ``context.hermes_lifecycle_reconciliation`` established: a bridge over two
@@ -67,7 +68,7 @@ def _inferred_subagent_edges(index_conn: sqlite3.Connection) -> set[tuple[str, s
 def reconcile_codex_spawn_edges(index_conn: sqlite3.Connection) -> CodexSpawnEdgeReconciliation:
     """Reconcile acquired Codex spawn-edge evidence against inferred topology.
 
-    ``index_conn`` reads both the projected ``codex_thread_spawn_edges`` and
+    ``index_conn`` reads both the projected spawn edges and
     the ingested ``session_links`` topology. Neither side is mutated -- see
     the module docstring for why this stays read-only for now.
     """

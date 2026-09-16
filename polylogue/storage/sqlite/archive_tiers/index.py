@@ -461,7 +461,16 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # become the code-mode child's tool_result text and its structural
 # ``tool_outcome``. SEMANTIC_REPARSE: the evidence exists only in the acquired
 # source, so stored rows cannot recover it.
-INDEX_SCHEMA_VERSION = 98
+# polylogue-qvxun: v99 folds the three Codex-named projection tables
+# (``codex_thread_state``, ``codex_thread_spawn_edges``,
+# ``codex_thread_state_provenance``) into the provider-neutral work-evidence
+# graph -- one graph per evidence scope, threads as execution-context nodes,
+# titles as claimed claim nodes, spawns as ``invoked`` edges, and the retained
+# export as the graph's snapshot/evidence/receipt-order columns. The index tier
+# now carries no provider-named table. SEMANTIC_REPARSE: the rows exist only in
+# the acquired export, so they are recomputed from it rather than copied
+# across.
+INDEX_SCHEMA_VERSION = 99
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1472,61 +1481,15 @@ ON work_evidence_edges(graph_id, source_ref, edge_kind);
 CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_target
 ON work_evidence_edges(graph_id, target_ref, edge_kind);
 
--- Codex's own orchestration record of a thread: the curated title and the
--- parent/child spawn edges, projected from the retained state export. The
--- export is the durable evidence; these rows are recomputed from it, so a
--- reindex reproduces them and nothing here is a second authority.
-CREATE TABLE IF NOT EXISTS codex_thread_state (
-    -- A Codex install is the evidence scope.  Native thread ids are not
-    -- globally unique across installs, and one root's newer snapshot must
-    -- never make another root's evidence disappear.
-    source_scope     TEXT NOT NULL DEFAULT '',
-    thread_id        TEXT NOT NULL,
-    title            TEXT,
-    cwd              TEXT,
-    created_at_ms    INTEGER,
-    updated_at_ms    INTEGER,
-    source           TEXT,
-    model            TEXT,
-    agent_nickname   TEXT,
-    agent_role       TEXT,
-    archived         INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
-    observed_at_ms   INTEGER NOT NULL,
-    observation_order INTEGER NOT NULL DEFAULT 0,
-    -- A complete native snapshot can be silent about an older thread.  Keep
-    -- that retained evidence readable while recording that it is absent from
-    -- the newest source snapshot.
-    source_present   INTEGER NOT NULL DEFAULT 1 CHECK(source_present IN (0, 1)),
-    PRIMARY KEY (source_scope, thread_id)
-) STRICT;
+-- A runtime's own orchestration record of a thread -- the curated title and
+-- the parent/child spawn relationships -- lands in the work-evidence graph
+-- above, one graph per evidence scope
+-- (``polylogue/storage/sqlite/agent_thread_state.py``): the thread is an
+-- execution-context node, its title a claimed claim node, and a spawn an
+-- ``invoked`` edge. The retained export stays the durable evidence.
 
-CREATE TABLE IF NOT EXISTS codex_thread_spawn_edges (
-    source_scope     TEXT NOT NULL DEFAULT '',
-    parent_thread_id TEXT NOT NULL,
-    child_thread_id  TEXT NOT NULL,
-    status           TEXT NOT NULL,
-    observed_at_ms   INTEGER NOT NULL,
-    observation_order INTEGER NOT NULL DEFAULT 0,
-    source_present   INTEGER NOT NULL DEFAULT 1 CHECK(source_present IN (0, 1)),
-    PRIMARY KEY (source_scope, parent_thread_id, child_thread_id)
-) STRICT;
-
--- The write path resolves a parent from the CHILD's thread id.
-CREATE INDEX IF NOT EXISTS idx_codex_thread_spawn_edges_child
-ON codex_thread_spawn_edges(source_scope, child_thread_id);
-
--- Which retained export the two projections above were computed from, so a
--- newer acquisition is recognised without rereading the export.
-CREATE TABLE IF NOT EXISTS codex_thread_state_provenance (
-    source_scope      TEXT PRIMARY KEY,
-    raw_id            TEXT NOT NULL,
-    blob_hash         TEXT NOT NULL,
-    observed_at_ms    INTEGER NOT NULL,
-    -- Durable receipt order of the export this projection was computed from.
-    -- Replay applies raws in no particular order, so an older export reaching
-    -- the projection after a newer one must not overwrite it.
-    observation_order INTEGER NOT NULL DEFAULT 0
-) STRICT;
+CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_kind_target
+ON work_evidence_edges(edge_kind, target_ref);
 
 -- 100% derivable from existing tables. Keep the public relation name as the
 -- view so delegation readers do not depend on a materialized copy.

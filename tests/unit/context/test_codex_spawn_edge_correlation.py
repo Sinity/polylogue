@@ -12,6 +12,7 @@ import sqlite3
 
 from polylogue.context.codex_spawn_edge_correlation import reconcile_codex_spawn_edges
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
+from tests.infra.thread_state import seed_spawn_edges
 
 _HASH = b"x" * 32
 
@@ -26,12 +27,7 @@ def _index_conn() -> sqlite3.Connection:
 def _write_spawn_edge(
     index_conn: sqlite3.Connection, *, parent_thread_id: str, child_thread_id: str, status: str = "closed"
 ) -> None:
-    index_conn.execute(
-        "INSERT INTO codex_thread_spawn_edges (parent_thread_id, child_thread_id, status, observed_at_ms) "
-        "VALUES (?, ?, ?, ?)",
-        (parent_thread_id, child_thread_id, status, 1_000),
-    )
-    index_conn.commit()
+    seed_spawn_edges(index_conn, [(parent_thread_id, child_thread_id, status)])
 
 
 def _seed_subagent_link(index_conn: sqlite3.Connection, *, parent_thread_id: str, child_thread_id: str) -> None:

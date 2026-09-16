@@ -365,6 +365,7 @@ def test_append_capability_receipt_is_keyed_to_live_identity_contract(
 
 
 from polylogue.sources.sqlite_export import open_logical_source
+from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
@@ -1464,12 +1465,8 @@ def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_p
         assert conn.execute("SELECT count(*) FROM raw_hook_events").fetchone() == (0,)
         assert conn.execute("SELECT count(*) FROM blob_refs WHERE ref_type = 'hook_payload'").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT thread_id, title FROM codex_thread_state").fetchall() == [
-            ("codex-thread", "Recover retained state")
-        ]
-        assert conn.execute(
-            "SELECT parent_thread_id, child_thread_id, status FROM codex_thread_spawn_edges"
-        ).fetchall() == [("codex-thread", "codex-child", "closed")]
+        assert read_thread_titles(conn) == {"codex-thread": "Recover retained state"}
+        assert read_spawn_edges(conn) == {("codex-thread", "codex-child"): "closed"}
 
 
 @pytest.mark.parametrize(
