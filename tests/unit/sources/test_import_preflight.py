@@ -153,3 +153,40 @@ def test_preflight_rejects_oversized_json_before_open(tmp_path: Path, monkeypatc
     assert opened == []
     assert result.status is ImportPreflightStatus.MALFORMED
     assert result.malformed_count == 1
+
+
+def test_preflight_bounds_a_large_trajectory_store_and_says_so(tmp_path: Path) -> None:
+    """polylogue-sifoy: preflight fully materialized an untrusted trajectory DB.
+
+    ``parse_trajectory_db`` is a generator running one ``steps`` query per
+    ``trajectory_meta`` row, and preflight wrapped it in ``list()``, so the
+    cost of the admissibility question scaled with the crafted file rather
+    than with the question. It now probes a bounded prefix and reports the
+    unexamined remainder as a counted caveat.
+
+    Anti-vacuity: restore the ``list(...)`` and no caveat is emitted -- the
+    result claims "supported" on a full inspection it never bounded.
+    """
+    source = tmp_path / "wide-trajectory.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (trajectory_id TEXT, idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            """
+        )
+        for index in range(40):
+            connection.execute(
+                "INSERT INTO trajectory_meta VALUES (?, ?)",
+                (f"trajectory-{index:03d}", f"cascade-{index:03d}"),
+            )
+            connection.execute(
+                'INSERT INTO steps VALUES (?, 0, \'message\', \'v1\', \'{"role":"user","text":"hello"}\')',
+                (f"trajectory-{index:03d}",),
+            )
+
+    result = preflight_import_source(source)
+
+    assert result.status is ImportPreflightStatus.SUPPORTED
+    assert result.providers == (Provider.ANTIGRAVITY,)
+    assert any("the remainder was not inspected" in caveat for caveat in result.caveats)

@@ -194,3 +194,25 @@ def test_a_proven_unready_domain_outranks_an_unmeasured_one() -> None:
     assert entry.determinate is True
     assert entry.reason == "fts index incomplete"
     assert entry.signal == "derived_domain_readiness.fts"
+
+
+def test_unreadable_writer_evidence_withholds_perf_measurable() -> None:
+    """Unreadable writer evidence is not proof that nothing is writing.
+
+    ``_live_ingest_attempt_summary_info`` returns a zero-count summary on an
+    unreadable attempt ledger, which used to render as
+    ``perf_measurable: true, reason="no concurrent archive write/rebuild
+    detected"`` (polylogue-g88v4). Anti-vacuity: dropping
+    ``active_writer_determinate`` back to its default, or deriving ``value``
+    from ``active_writer`` alone, makes this entry determinate again and turns
+    this test red.
+    """
+    kwargs = _base_kwargs()
+    kwargs["active_writer"] = False
+    kwargs["active_writer_determinate"] = False
+    kwargs["active_writer_summary"] = "ingest workload inspection unavailable; cannot rule out a concurrent writer"
+    guard = derive_claim_guard(**kwargs).to_dict()  # type: ignore[arg-type]
+
+    assert guard["perf_measurable"]["value"] is None
+    assert guard["perf_measurable"]["determinate"] is False
+    assert "cannot rule out" in str(guard["perf_measurable"]["reason"])

@@ -45,6 +45,12 @@ There is no dedicated `polylogued run` flag for the Hermes root specifically
 typed default sources; it does not change the Hermes root. Use the environment
 variable or config file when the Hermes state root itself must move.
 
+`--root` is additive by design. To watch *only* the given roots — isolating a
+temporary or separately-served archive — pass `--no-default-sources`, which
+drops the typed defaults (Hermes root included) so the `--root` values are the
+complete watch set. The flag requires at least one `--root`; without one there
+is nothing left to watch. `polylogued watch` accepts the same flag.
+
 Source: `ConfigInventoryEntry("hermes_root", toml_path="sources.hermes.root",
 env_var="POLYLOGUE_HERMES_ROOT", ...)` in `polylogue/config.py:780-786`, resolved
 into `ResolvedRuntimeConfig.source_paths.hermes` at `polylogue/config.py:1718-1721`
@@ -535,10 +541,12 @@ polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.j
 polylogue --origin hermes-session find "hermes" then read --all --format json
 ```
 
-`--root` does not isolate a watcher. Use a disposable `HOME` for fixture-only
-daemon runs; `--no-source-catchup` only disables configured non-watch sources.
-A configured root reaches the daemon through its own environment variable, so
-the smoke also clears the five that outrank `HOME`/XDG discovery.
+`--root` on its own does not isolate a watcher: it is additive. Add
+`--no-default-sources` to make the listed roots the complete watch set, or use
+a disposable `HOME` for fixture-only daemon runs; `--no-source-catchup` only
+disables configured non-watch sources. A configured root reaches the daemon
+through its own environment variable, so the smoke above also clears the five
+that outrank `HOME`/XDG discovery.
 
 ## Related docs
 

@@ -2332,7 +2332,7 @@ class TestWebUIV2:
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        message_count = 45  # > SESSION_READ_MESSAGE_LIMIT (30)
+        message_count = 65  # > DEFAULT_MESSAGE_PAGE_LIMIT (50)
         with ArchiveStore(workspace_env["archive_root"]) as archive:
             session_id = write_index_session(
                 archive,
@@ -2357,27 +2357,27 @@ class TestWebUIV2:
             status, _, html_body = _get_text(base_url, f"/sessions/{quote(session_id, safe='')}")
             assert status == HTTPStatus.OK
             # First paint composed only the first page: the true total is
-            # reported, but a message beyond SESSION_READ_MESSAGE_LIMIT is
+            # reported, but a message beyond DEFAULT_MESSAGE_PAGE_LIMIT is
             # not present in the SSR body.
-            assert "Showing 30 of 45 messages" in html_body
+            assert "Showing 50 of 65 messages" in html_body
             assert "message body 0" in html_body
-            assert "message body 29" in html_body
-            assert "message body 30" not in html_body
-            assert "message body 44" not in html_body
+            assert "message body 49" in html_body
+            assert "message body 50" not in html_body
+            assert "message body 64" not in html_body
 
             # The "load more" API reaches the remaining messages, and its
             # own total also reflects the true count, not the page size.
             r_status, remainder = _get_json_ex(
                 base_url,
-                f"/api/sessions/{quote(session_id, safe='')}/read?view=messages&limit=30&offset=30",
+                f"/api/sessions/{quote(session_id, safe='')}/read?view=messages&limit=50&offset=50",
             )
         assert r_status == 200, remainder
         remainder_payload = cast(dict[str, object], remainder["payload"])
         remainder_messages = cast(list[dict[str, object]], remainder_payload["messages"])
-        assert remainder_payload["total"] == 45
+        assert remainder_payload["total"] == 65
         assert len(remainder_messages) == 15
-        assert remainder_messages[0]["text"] == "message body 30"
-        assert remainder_messages[-1]["text"] == "message body 44"
+        assert remainder_messages[0]["text"] == "message body 50"
+        assert remainder_messages[-1]["text"] == "message body 64"
 
     def test_cost_page_serves_lane_legend_and_honest_absence_with_no_priced_sessions(
         self,
@@ -3803,3 +3803,45 @@ class TestDeclaredRouteExamples:
         with _running_server(workspace_env) as (_, base_url):
             status, _ = _get_json_ex(base_url, request_path)
         assert status == 400
+
+
+def test_full_session_read_route_aborts_when_the_client_disconnects(workspace_env: dict[str, Path]) -> None:
+    """An abandoned full (unbounded) session read releases its slot instead of composing.
+
+    polylogue-lr47v: the bounded routes ran through
+    ``_run_archive_bounded_query`` (SQLite progress handler + disconnect
+    probe) while the ``limit=None`` composition did not, so a browser that
+    navigated away mid-read still paid for the whole transcript.
+
+    Anti-vacuity: call ``archive.read_session(session_id)`` directly in the
+    ``limit is None`` branch of ``_do_archive_get_session`` (the pre-fix
+    shape) and the disconnected read returns a full envelope instead of
+    raising, so the first assertion fails. The live-peer half of the test
+    fails if the guard is made unconditional.
+    """
+    from polylogue.daemon.http import DaemonAPIHandler
+    from tests.infra.storage_records import SessionBuilder, db_setup
+
+    db_path = db_setup(workspace_env)
+    builder = (
+        SessionBuilder(db_path, "abandoned-full-read")
+        .provider("codex")
+        .title("Abandoned full read")
+        .add_message("m-1", role="user", text="compose the whole transcript")
+    )
+    builder.save()
+    archive_root = db_path.parent
+    session_id = builder.native_session_id()
+
+    handler = object.__new__(DaemonAPIHandler)
+    handler.path = f"/api/sessions/{session_id}"
+
+    handler._client_disconnected = lambda: True  # type: ignore[method-assign]
+    with pytest.raises(ConnectionAbortedError):
+        handler._do_archive_get_session(archive_root, session_id)
+
+    # With a live peer the same unbounded call still composes the transcript.
+    handler._client_disconnected = lambda: False  # type: ignore[method-assign]
+    payload = handler._do_archive_get_session(archive_root, session_id)
+    assert isinstance(payload, dict)
+    assert payload["message_count"] == 1

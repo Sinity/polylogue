@@ -20,9 +20,15 @@ from typing import Any, cast
 
 import pytest
 
+# Bound before any test monkeypatches ``storage.derived.raw.RawObservationDerivation``:
+# ``operations.raw_observation_derivation`` reads ``RawObservationDerivation.recipe_version``
+# at module scope, so a first import that happens under a patched fake class raises
+# AttributeError. Which test imports it first depends on the pytest-randomly seed.
+import polylogue.operations.raw_observation_derivation as _raw_observation_derivation  # noqa: F401
 from polylogue.core.enums import Provider
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.daemon.intake import (
+    UNMEASURABLE_INTAKE_COST_BYTES,
     AdmissionOutcome,
     AdmissionResult,
     FairIntakeDispatcher,
@@ -32,6 +38,7 @@ from polylogue.daemon.intake import (
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.operations.intake_adapters import (
+    CallbackIntakeAdapter,
     DaemonIntakeContext,
     FileIntakeAdapter,
     RawMaterializationDiscovery,
@@ -374,10 +381,14 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
         (
             DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
             DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
+            DerivationFrame(str(tmp_path), "index-v1", recipe_versions={"raw_observation": "recipe-v1"}),
             DerivationFrame(str(tmp_path), "index-v2", recipe_versions={"raw_observation": "recipe-v1"}),
         )
     )
     cursors: list[str | None] = []
+    # The continuation only passes keys the output relation reports as done,
+    # so the fake must publish a key once the pass that offered it is over.
+    materialized: set[str] = set()
 
     class FakeRawObservationDerivation:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -390,7 +401,7 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
             return ((first,), first) if cursor is None else ((second,), None)
 
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
-            return dict.fromkeys(keys, "missing")
+            return {key: "valid" if key in materialized else "missing" for key in keys}
 
     monkeypatch.setattr(
         "polylogue.operations.raw_observation_derivation.raw_observation_frame",
@@ -400,9 +411,65 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
     discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
 
     assert discovery.discover_pending_raw_ids(1)[0][0] == first
+    materialized.add(first)
+    assert discovery.discover_pending_raw_ids(1) == ()
     assert discovery.discover_pending_raw_ids(1)[0][0] == second
-    assert discovery.discover_pending_raw_ids(1)[0][0] == first
-    assert cursors == [None, first, None]
+    materialized.add(second)
+    assert discovery.discover_pending_raw_ids(1) == ()
+    assert cursors == [None, None, first, None]
+
+
+def test_raw_discovery_cursor_stays_behind_ids_the_dispatcher_never_admitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partly-admitted page keeps its continuation until the page is drained.
+
+    The dispatcher walks the offered items only while its class budget lasts,
+    so a producer that advances over the whole inspected page drops the tail
+    for a whole sweep -- the shape ``DerivationRunner.run_domain`` avoids with
+    its ``stopped_at`` offset.
+
+    Anti-vacuity: restore the unconditional ``self._cursor = next_cursor`` and
+    the second pass resumes at ``page-1``: ``b`` and ``c`` are never offered
+    again until the traversal wraps. Drop the no-progress release instead and
+    the never-admitted ``c`` pins the cursor forever, so ``d`` is never
+    reached.
+    """
+    bootstrap_archive_root(tmp_path)
+    cursors: list[str | None] = []
+    materialized: set[str] = set()
+
+    class FakeRawObservationDerivation:
+        # ``raw_observation_derivation`` binds this at import time.
+        recipe_version = "recipe-v1"
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            cursors.append(cursor)
+            if cursor is None:
+                return (("a", "b", "c"), "page-1")
+            return (("d",), None)
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            return {key: "valid" if key in materialized else "missing" for key in keys}
+
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["a", "b", "c"]
+    materialized.add("a")  # the class budget covered exactly one admission
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["b", "c"]
+    materialized.add("b")
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["c"]
+    # ``c`` is isolated by the dispatcher and never becomes valid. A pass that
+    # makes no progress releases the hold and moves on within the same call,
+    # rather than starving the rest of the traversal behind it.
+    assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["d"]
+    assert cursors == [None, None, None, None, "page-1"]
 
 
 def test_raw_discovery_restarts_for_a_new_raw_before_its_cursor(tmp_path: Path) -> None:
@@ -952,3 +1019,227 @@ def test_discovery_refusal_is_counted_on_the_class_report() -> None:
     assert report.discovered == 0
     assert report.reason is not None
     assert "/srv/locked" in report.reason
+
+
+@pytest.mark.asyncio
+async def test_a_durably_excluded_file_is_not_reported_as_a_duplicate(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """polylogue-onbz3: a refused intake file is EXCLUDED, never DUPLICATE progress.
+
+    Anti-vacuity: restore the ``AdmissionOutcome.DUPLICATE`` return for a pass
+    that admitted nothing and this goes red three ways -- the outcome is
+    ``duplicate``, the class report counts a duplicate so ``IntakePass.progressed``
+    claims progress for a pass that admitted nothing, and the "admitted nothing
+    for N planned path(s)" line stays absent from the intake path.
+    """
+
+    capture = tmp_path / "capture.json"
+    capture.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class ExcludingWatcher:
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            assert paths == [capture]
+            return SimpleNamespace(
+                succeeded_file_count=0,
+                failed_file_count=0,
+                stale_cursor_write_count=0,
+                excluded_file_count=1,
+                excluded_reasons={"unsupported_shape": 1},
+                source_payload_read_bytes=len("{}"),
+            )
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=ExcludingWatcher(), sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    item = IntakeItem(item_id=f"file:{capture.resolve()}", class_name="capture", payload=capture, estimated_cost=2)
+
+    with caplog.at_level("INFO"):
+        result = await adapter.admit(item)
+
+    assert result.outcome is AdmissionOutcome.EXCLUDED
+    assert result.acknowledgeable is True
+    assert "admitted nothing for 1 planned path(s)" in caplog.text
+
+    class OneFileAdapter:
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            return (item,) if limit else ()
+
+        async def admit(self, _item: IntakeItem) -> AdmissionResult:
+            return result
+
+        async def acknowledge(self, _item: IntakeItem) -> None:
+            return None
+
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=OneFileAdapter(), page_size=4)])
+    intake_pass = await dispatcher.run_once(budget=8)
+
+    report = intake_pass.require_report("capture")
+    assert (report.excluded, report.duplicates, report.admitted) == (1, 0, 0)
+    assert intake_pass.progressed is False
+
+
+def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A steady stream of new raws must not pin the sweep on its first page.
+
+    Anti-vacuity: put the durable raw frontier back into the discovery binding
+    so an arrival resets ``self._cursor`` to ``None``, and every recorded sweep
+    cursor below becomes ``None`` -- the obligations behind page one are then
+    never reached however long the daemon runs.
+    """
+    bootstrap_archive_root(tmp_path)
+    cursors: list[str | None] = []
+
+    class FakeRawObservationDerivation:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            cursors.append(cursor)
+            nxt = "page1" if cursor is None else f"page{int(str(cursor)[4:]) + 1}"
+            return (nxt,), nxt
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            # The whole swept space is already materialized; only the arrivals
+            # are outstanding, which is exactly the starvation condition.
+            return {key: "valid" if key.startswith("page") else "missing" for key in keys}
+
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert discovery.discover_pending_raw_ids(4) == ()
+    for index in range(5):
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=f"arrival-{index}".encode(),
+                source_path=f"arrival-{index}.json",
+                acquired_at_ms=index + 1,
+            )
+        discovery.discover_pending_raw_ids(4)
+
+    assert cursors == [None, "page1", "page2", "page3"]
+
+
+def test_raw_discovery_is_an_empty_page_before_the_raw_tier_exists(tmp_path: Path) -> None:
+    """A fresh archive root reports no pending raw work instead of raising.
+
+    polylogue-f7pdm: the daemon used to decide raw-materialization
+    availability once, at startup, from ``source.db`` existing. On the
+    declared build route that file does not exist yet, so the class was never
+    registered for the process lifetime and the whale pass logged a failure
+    every thirty seconds. Discovery owns the absence now.
+
+    Anti-vacuity: removing the missing-tier guard makes this raise
+    ``sqlite3.OperationalError`` rather than return an empty page.
+    """
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert not (tmp_path / "source.db").exists()
+    assert discovery.discover_pending_raw_ids(4) == ()
+
+
+def test_raw_discovery_admits_work_once_the_tier_appears_without_a_restart(tmp_path: Path) -> None:
+    """One long-lived discovery re-evaluates availability every pass.
+
+    Anti-vacuity: latching availability at construction -- the startup-only
+    check this bead replaces -- keeps the second call empty and makes this
+    test red.
+    """
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+    assert discovery.discover_pending_raw_ids(4) == ()
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=b"raw-after-bootstrap",
+            source_path="late.json",
+            acquired_at_ms=1,
+        )
+
+    assert [found for found, _cost in discovery.discover_pending_raw_ids(4)] == [raw_id]
+
+
+@pytest.mark.asyncio
+async def test_an_unmeasurable_callback_class_reserves_a_budget_share() -> None:
+    """A remote sync cannot buy a whole pass for one byte.
+
+    polylogue-swicx: ``CallbackIntakeAdapter`` charged the literal ``1``
+    while the deficit is denominated in payload bytes, so an arbitrarily
+    large Drive sync starved its byte-denominated siblings.
+
+    Anti-vacuity: restoring ``estimated_cost=1`` drops the charged estimate
+    to one byte and makes this assertion red.
+    """
+    adapter = CallbackIntakeAdapter("configured_remote", lambda: 1)
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="configured_remote", adapter=cast(Any, adapter))])
+
+    result = await dispatcher.run_once()
+
+    report = result.require_report("configured_remote")
+    assert report.admitted == 1
+    assert report.estimated_cost == UNMEASURABLE_INTAKE_COST_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_pass_of_only_duplicates_is_not_progress() -> None:
+    """A static source must back off to the idle delay, not spin.
+
+    polylogue-swicx: ``DaemonIntakeService`` sleeps 0.05 s when a pass
+    progressed, so counting re-recognised duplicates as progress re-ran
+    discovery about twenty times a second on a source with nothing new.
+
+    Anti-vacuity: restoring ``admitted or duplicates`` in ``progressed``
+    makes this assertion red.
+    """
+    adapter = FakeAdapter(
+        "codex",
+        ["x0"],
+        outcome_for=lambda _item: AdmissionResult(AdmissionOutcome.DUPLICATE),
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="codex", adapter=cast(Any, adapter))])
+
+    result = await dispatcher.run_once()
+
+    assert result.require_report("codex").duplicates == 1
+    assert result.progressed is False
+
+
+@pytest.mark.asyncio
+async def test_a_raising_discovery_is_published_unmeasured_not_as_zeros() -> None:
+    """A class that could not look is never a real reading of nothing.
+
+    polylogue-swicx: the dispatcher published the failed class through the
+    measured branch with admitted=duplicates=discovered=0, so status could
+    not distinguish a broken spool from an idle one and the reason was lost.
+
+    Anti-vacuity: publishing this report through ``Observation.measured``
+    again leaves the state ``MEASURED`` and makes this test red.
+    """
+
+    class BrokenAdapter(FakeAdapter):
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            raise OSError("spool directory vanished")
+
+    board = ObservationBoard()
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="broken", adapter=cast(Any, BrokenAdapter("broken", [])))],
+        board=board,
+    )
+
+    result = await dispatcher.run_once()
+
+    assert result.require_report("broken").discovery_failed is True
+    observation = board.snapshot()["intake.broken"]
+    assert observation.state is ObservationState.FAILED
+    assert "spool directory vanished" in (observation.reason or "")

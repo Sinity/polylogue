@@ -207,6 +207,33 @@ class TestSharedLimitCeiling:
         assert search_limit(plan) == MAX_QUERY_LIMIT
         assert search_limit(plan) != 10000
 
+    def test_explicit_cli_limit_is_capped_at_the_shared_ceiling(self) -> None:
+        """polylogue-fawr7: an explicit ``--limit`` obeys the same ceiling.
+
+        ``archive_query._limit`` returned any positive int verbatim, so the
+        explicit CLI page size was the one read route that could ask for a page
+        above ``MAX_QUERY_LIMIT`` while MCP, daemon HTTP and the declared
+        ``cli.query`` operation all clamped. Anti-vacuity: restoring the bare
+        ``return value`` in ``_limit`` makes the first assertion return 99999.
+        """
+        from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT, MAX_QUERY_LIMIT
+        from polylogue.cli.archive_query import _limit
+
+        assert _limit({"limit": 99999}) == MAX_QUERY_LIMIT
+        # Valid explicit overrides are untouched, and non-positive/absent
+        # requests keep falling back to the list default rather than widening
+        # to the ceiling.
+        assert _limit({"limit": 25}) == 25
+        assert _limit({"limit": MAX_QUERY_LIMIT}) == MAX_QUERY_LIMIT
+        # A non-positive explicit limit is a usage fault (polylogue-45pkf);
+        # only an absent limit falls back to the list default.
+        import click
+
+        for bad in (0, -5):
+            with pytest.raises(click.UsageError):
+                _limit({"limit": bad})
+        assert _limit({}) == DEFAULT_SESSION_LIST_LIMIT
+
 
 # ---------------------------------------------------------------------------
 # AC#6 — retrieval_lane validation: unknown values rejected

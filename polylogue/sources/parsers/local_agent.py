@@ -34,7 +34,7 @@ from .base import (
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
 from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
-from .hermes_identity import profile_root_for_session_snapshot as _profile_root_for_session_snapshot
+from .hermes_identity import profile_root_for_artifact as _profile_root_for_artifact
 from .hermes_identity import qualified_session_id as _qualified_session_id
 
 
@@ -149,6 +149,55 @@ def is_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> bool:
     return True
 
 
+def fold_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> JSONDocument | None:
+    """Fold a Gemini CLI ``.jsonl`` checkpoint log into its equivalent document.
+
+    The ``.jsonl`` checkpoint is an append-only *log* of the same state the
+    single-JSON-document ``.json`` checkpoint holds outright: line 1 is the
+    session-open stub (the envelope -- ``sessionId``/``projectHash``/
+    ``startTime``/``lastUpdated``/``kind`` -- with no ``messages`` key),
+    every later line is either a ``{"$set": {...}}`` patch against that
+    envelope or one turn/event record appended to the transcript. Replaying
+    the log yields exactly the document shape ``parse_gemini_cli`` already
+    consumes, so this returns that document rather than re-implementing a
+    second rendering route: block/thought/toolCall/usage mapping,
+    identity composition, lineage and sidecar joining all stay in one place.
+
+    ``$set`` is folded key-by-key onto the envelope; ``$set.messages``
+    replaces the transcript wholesale (Gemini CLI writes the session-context
+    turn that way), matching the producer's own last-writer-wins semantics.
+    ``type`` values ``error`` and ``info`` are deliberately kept as ordinary
+    transcript records, not demoted to session events: the ``.json`` shape
+    stores the identical records inside its ``messages`` array, where
+    ``_parse_gemini_message`` already maps them, and the two shapes must not
+    disagree about what the transcript contained.
+
+    Returns ``None`` when the payload is not this shape.
+    """
+    if not is_gemini_cli_checkpoint_stream(payload):
+        return None
+    records = list(payload)
+    header = records[0]
+    if not isinstance(header, dict):
+        return None
+    document: dict[str, JSONValue] = dict(header)
+    messages: list[JSONValue] = []
+    for record in records[1:]:
+        if not isinstance(record, dict):
+            continue
+        patch = record.get("$set")
+        if set(record) == {"$set"} and isinstance(patch, dict):
+            for key, value in patch.items():
+                if key == "messages":
+                    messages = list(value) if isinstance(value, list) else []
+                else:
+                    document[key] = value
+            continue
+        messages.append(record)
+    document["messages"] = messages
+    return json_document(document)
+
+
 def looks_like_hermes(payload: JSONDocument) -> bool:
     return (
         isinstance(payload.get("session_id"), str)
@@ -167,11 +216,14 @@ def parse_gemini_cli(
 ) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
     chat_id = gemini_cli_chat_identity(payload, session_id)
+    is_subagent_session = payload.get("kind") == "subagent"
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     models_used: set[str] = set()
     for index, item in enumerate(_list(payload.get("messages")), start=1):
-        parsed = _parse_gemini_message(item, index=index, position=len(messages))
+        parsed = _parse_gemini_message(
+            item, index=index, position=len(messages), is_subagent_session=is_subagent_session
+        )
         if parsed is not None:
             messages.append(parsed)
             if parsed.model_name:
@@ -195,7 +247,7 @@ def parse_gemini_cli(
         created_at=_string(payload.get("startTime")),
         updated_at=_string(payload.get("lastUpdated")),
         messages=messages,
-        branch_type=BranchType.SUBAGENT if payload.get("kind") == "subagent" else None,
+        branch_type=BranchType.SUBAGENT if is_subagent_session else None,
         session_events=session_events,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
         models_used=sorted(models_used),
@@ -367,11 +419,13 @@ def _hermes_qualified_session_id(raw_session_id: str, source_path: str | Path | 
         return raw_session_id
     return _qualified_session_id(
         raw_session_id,
-        _profile_key(_profile_root_for_session_snapshot(Path(source_path))),
+        _profile_key(_profile_root_for_artifact(Path(source_path))),
     )
 
 
-def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedMessage | None:
+def _parse_gemini_message(
+    item: object, *, index: int, position: int, is_subagent_session: bool = False
+) -> ParsedMessage | None:
     record = json_document(item)
     if not record:
         return None
@@ -450,6 +504,12 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
             gemini_blocks[matching_index] = matching.model_copy(
                 update={"metadata": {**(matching.metadata or {}), "gemini_display_content": True}},
             )
+    classified = classify_material_origin(
+        role=gemini_role,
+        message_type=gemini_message_type,
+        text=text,
+        block_types=tuple(block.type for block in gemini_blocks),
+    )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
         # _message_revision_match_id's content-anchor fallback run instead.
@@ -470,18 +530,16 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         duration_ms=_non_negative_int(
             record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
         ),
-        # polylogue-gzgyl: Gemini CLI has no agent/subagent artifact ambiguity
-        # for a plain user turn -- positive-evidence override for the shared
-        # classify_material_origin no-fallthrough (#2502).
-        material_origin=human_authored_override(
-            gemini_role,
-            gemini_message_type,
-            classify_material_origin(
-                role=gemini_role,
-                message_type=gemini_message_type,
-                text=text,
-                block_types=tuple(block.type for block in gemini_blocks),
-            ),
+        # polylogue-gzgyl: a plain user turn in an ordinary Gemini CLI chat has
+        # no agent/subagent artifact ambiguity -- positive-evidence override for
+        # the shared classify_material_origin no-fallthrough (#2502).
+        # polylogue-670mf: a ``kind == "subagent"`` session is exactly the
+        # ambiguity the override's contract excludes: its user turns are
+        # relayed context, not the operator's own words, so the override is
+        # withheld and the classification stands (UNKNOWN when nothing
+        # positive decides it).
+        material_origin=(
+            classified if is_subagent_session else human_authored_override(gemini_role, gemini_message_type, classified)
         ),
     )
 
@@ -844,6 +902,22 @@ def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:
     return []
 
 
+def _covered_text_set(covered_text: str | None) -> set[str]:
+    """Seed the exact-text dedup set from the message text already projected.
+
+    The whole covered text and each of its non-blank lines count as covered:
+    the shape this suppresses is a Codex item field repeating prose the
+    message already carries, which appears either as the entire text or as
+    one of its lines. Anything else is emitted -- see
+    :func:`_codex_output_text_blocks` on why containment is not used.
+    """
+    if not covered_text:
+        return set()
+    covered = {covered_text.strip()}
+    covered.update(line.strip() for line in covered_text.splitlines() if line.strip())
+    return covered
+
+
 def _codex_output_text_blocks(items: object, *, covered_text: str | None) -> list[ParsedContentBlock]:
     """Project ``codex_message_items`` assistant prose into TEXT blocks.
 
@@ -853,16 +927,25 @@ def _codex_output_text_blocks(items: object, *, covered_text: str | None) -> lis
     it reaches neither the block-derived display text nor FTS, both of which
     read ``blocks`` alone.
 
-    Segments whose text ``covered_text`` already carries are skipped: the two
+    Segments whose text is EXACTLY one already covered are skipped: the two
     fields usually hold the same prose, and projecting it again would double
     every such turn in the display text and in the search index.
+
+    Dedup is by exact stripped text held in a set, not by substring search
+    against a growing concatenation -- the latter is quadratic in segment
+    bytes, and an untrusted Codex file controls both the count and the size
+    of the segments. The deliberate consequence (polylogue-e2e25) is that a
+    segment which is a *strict substring* of an earlier one is now emitted
+    rather than swallowed: it is genuinely distinct text the model produced,
+    and a containment test cannot tell a redundant re-projection from a short
+    turn that happens to appear inside a longer one.
     """
     if isinstance(items, str):
         try:
             items = json.loads(items)
         except json.JSONDecodeError:
             return []
-    covered = covered_text or ""
+    covered = _covered_text_set(covered_text)
     blocks: list[ParsedContentBlock] = []
     for item in _list(items):
         record = json_document(item)
@@ -874,7 +957,7 @@ def _codex_output_text_blocks(items: object, *, covered_text: str | None) -> lis
             if text is None or text.strip() in covered:
                 continue
             blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=text))
-            covered = f"{covered}\n{text}"
+            covered.add(text.strip())
     return blocks
 
 
@@ -885,7 +968,7 @@ def _codex_reasoning_blocks(items: object, *, covered_text: str | None) -> list[
             items = json.loads(items)
         except json.JSONDecodeError:
             return []
-    covered = covered_text or ""
+    covered = _covered_text_set(covered_text)
     blocks: list[ParsedContentBlock] = []
     for item in _list(items):
         record = json_document(item)
@@ -904,7 +987,7 @@ def _codex_reasoning_blocks(items: object, *, covered_text: str | None) -> list[
             if text is None or text.strip() in covered:
                 continue
             blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=text))
-            covered = f"{covered}\n{text}"
+            covered.add(text.strip())
     return blocks
 
 
@@ -969,6 +1052,40 @@ def _fullest_tool_result_text(output: str | None, error: str | None, result_disp
     return output or error or display
 
 
+#: ``blocks.media_type`` value marking the second TOOL_RESULT block that carries
+#: Gemini CLI's ``resultDisplay`` rendering when it diverges from the stored
+#: model-facing text. ``ParsedContentBlock.metadata`` is NOT a persisted column
+#: (the archive writer folds it into the block content hash only), so the marker
+#: has to land on a real column; ``media_type`` is written verbatim by
+#: ``_write_blocks`` and is unused on tool_result blocks.
+TOOL_RESULT_DISPLAY_MEDIA_TYPE = "text/vnd.polylogue.tool-result-display"
+
+
+def _divergent_display_text(primary: str | None, output: str | None, result_display: object) -> str | None:
+    """Return ``resultDisplay``'s rendering when it diverges from an unmasked ``output``.
+
+    Neither-is-a-substring-of-the-other is the divergence test: for 240 of the
+    measured corpus's calls the terminal rendering the user saw and the
+    model-facing ``output`` are simply different renderings, so keeping only one
+    of them drops text no route can recover (polylogue-xnk51). When one field is
+    a prefix or excerpt of the other, ``_fullest_tool_result_text`` already
+    picked the fuller one and a second block would only duplicate it.
+
+    Masked output is excluded: there ``resultDisplay`` is the provider's summary
+    of the very content the envelope withheld (and the sidecar join later
+    replaces the envelope with that content), so it is a lossy view of one
+    rendering rather than a second one.
+    """
+    if not primary or not output or primary != output or is_masked_tool_output(output):
+        return None
+    display = _content_text(result_display)
+    if not display:
+        return None
+    if display in primary or primary in display:
+        return None
+    return display
+
+
 def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[ParsedContentBlock]:
     tool_id = _string(record.get("id")) or _string(record.get("call_id")) or fallback_id
     status = _string(record.get("status"))
@@ -991,16 +1108,36 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
         if function_name:
             result_metadata["function_name"] = function_name
         response_is_error, response_reason = _status_outcome(status, is_error=True if error else status_is_error)
+        result_tool_id = _string(function_response.get("id")) or tool_id
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
-                tool_id=_string(function_response.get("id")) or tool_id,
+                tool_id=result_tool_id,
                 text=text or f"[{status}]",
                 metadata=result_metadata or None,
                 is_error=response_is_error,
                 outcome_unknown_reason=response_reason,
             )
         )
+        display_text = _divergent_display_text(text, output, record.get("resultDisplay"))
+        if display_text is not None:
+            # Same tool_id and the same structural outcome: this renders the
+            # same call's result, not a second verdict. ``action_pairs`` pairs
+            # by rank, so the primary block (emitted first) stays the paired
+            # result and this one is an extra, unpaired tool_result.
+            display_metadata = dict(result_metadata)
+            display_metadata["tool_result_rendering"] = "result_display"
+            blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT,
+                    tool_id=result_tool_id,
+                    text=display_text,
+                    media_type=TOOL_RESULT_DISPLAY_MEDIA_TYPE,
+                    metadata=display_metadata,
+                    is_error=response_is_error,
+                    outcome_unknown_reason=response_reason,
+                )
+            )
     if blocks:
         return blocks
     display_text = _content_text(record.get("resultDisplay"))
@@ -1084,6 +1221,8 @@ def _list(value: object) -> list[object]:
 
 __all__ = [
     "apply_gemini_tool_output_sidecars",
+    "fold_gemini_cli_checkpoint_stream",
+    "is_gemini_cli_checkpoint_stream",
     "looks_like_gemini_cli",
     "looks_like_hermes",
     "parse_gemini_cli",

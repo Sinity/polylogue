@@ -34,7 +34,7 @@ fall back to an operator's live archive (polylogue-0bgr).
 
 Opens `source.db`/`index.db` read-only (`mode=ro`); never mutates the
 archive. Cross-checks its totals against
-`polylogue ops maintenance attachment-acquisition-debt --output-format json`
+`scan_attachment_coverage --output-format json`
 (also captured verbatim as `reconcile-attachment-acquisition-debt.json`) and
 records `reconciliation.totals_match` in `census.json`.
 

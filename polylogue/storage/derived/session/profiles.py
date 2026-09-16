@@ -196,16 +196,18 @@ def session_enrichment_payload(
         # Classify boundary posture from the current terminal-state vocabulary.
         # These are not claims about whether the goal itself succeeded.
         match profile.terminal_state:
-            case "clean_finish":
-                goal_outcome = "ended_cleanly"
             case "error_left":
                 goal_outcome = "ended_with_error"
             case "question_left":
                 goal_outcome = "awaiting_user"
             case "tool_left":
                 goal_outcome = "pending_tool"
-            case "agent_hanging":
-                goal_outcome = "inactive_pending"
+            case "refused":
+                goal_outcome = "declined"
+            case "truncated":
+                goal_outcome = "cut_off"
+            case "unknown":
+                goal_outcome = None
             case _:
                 goal_outcome = None
 

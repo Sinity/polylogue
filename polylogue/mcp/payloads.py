@@ -224,8 +224,18 @@ class MCPContextDeliveryListPayload(SurfacePayloadModel):
 
 
 class MCPFencedCodeBlock(TypedDict):
+    """One fenced code block extracted from a transcript, for an agent.
+
+    ``code`` is clipped to a bounded budget.  ``code_length`` is the length of
+    the *original* block and ``truncated`` says whether the clip fired, so an
+    agent that may reason about -- or run -- this code can tell a complete
+    snippet from a fragment (polylogue-lb15e).
+    """
+
     language: str
     code: str
+    code_length: int
+    truncated: bool
 
 
 class MCPSessionSummaryListPayload(MCPRootPayload[list[MCPSessionSummaryPayload]]):

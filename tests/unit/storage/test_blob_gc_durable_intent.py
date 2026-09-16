@@ -18,7 +18,6 @@ import pytest
 import polylogue.storage.blob_gc as blob_gc
 from polylogue.storage.blob_liveness import BlobLiveness
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
@@ -168,14 +167,12 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection | None,
         candidate_hash: str,
-        *,
-        legacy_hook_stage: HookPayloadRefMatchStage,
     ) -> tuple[BlobLiveness, BlobLiveness]:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise RuntimeError("fault after intent commit")
-        return original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
+        return original_final(source_conn, index_conn, candidate_hash)
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_before_final)
     with pytest.raises(RuntimeError, match="after intent commit"):
@@ -277,9 +274,7 @@ def test_pending_member_recovers_after_device_number_change_with_stable_marker(
     monkeypatch.setattr(
         blob_gc,
         "_final_gc_member_liveness",
-        lambda _source, _index, _hash, *, legacy_hook_stage: (_ for _ in ()).throw(
-            RuntimeError("leave intent pending")
-        ),
+        lambda _source, _index, _hash: (_ for _ in ()).throw(RuntimeError("leave intent pending")),
     )
     with pytest.raises(RuntimeError, match="leave intent pending"):
         blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)
@@ -318,11 +313,9 @@ def test_member_reconciliation_keeps_the_observed_namespace_after_batch_check(
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection | None,
         candidate_hash: str,
-        *,
-        legacy_hook_stage: HookPayloadRefMatchStage,
     ) -> tuple[BlobLiveness, BlobLiveness]:
         nonlocal swapped
-        result = original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
+        result = original_final(source_conn, index_conn, candidate_hash)
         if not swapped:
             swapped = True
             store.root.rename(original_root)
@@ -715,14 +708,12 @@ def test_partial_generation_restarts_only_its_exact_pending_member(
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection | None,
         candidate_hash: str,
-        *,
-        legacy_hook_stage: HookPayloadRefMatchStage,
     ) -> tuple[BlobLiveness, BlobLiveness]:
         nonlocal calls
         calls += 1
         if calls == 2:
             raise RuntimeError("fault during partial batch")
-        return original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
+        return original_final(source_conn, index_conn, candidate_hash)
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", crash_second)
     with pytest.raises(RuntimeError, match="partial batch"):
@@ -766,8 +757,6 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
         source_conn: sqlite3.Connection,
         index_conn: sqlite3.Connection | None,
         candidate_hash: str,
-        *,
-        legacy_hook_stage: HookPayloadRefMatchStage,
     ) -> tuple[BlobLiveness, BlobLiveness]:
         if kind == "referent":
             source_conn.execute(
@@ -782,7 +771,7 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
                 "VALUES ('introduced-reservation', ?, ?, 'test', 1)",
                 (bytes.fromhex(blob_hash), size),
             )
-        return original_final(source_conn, index_conn, candidate_hash, legacy_hook_stage=legacy_hook_stage)
+        return original_final(source_conn, index_conn, candidate_hash)
 
     monkeypatch.setattr(blob_gc, "_final_gc_member_liveness", introduce_protection)
     report = blob_gc.run_blob_gc_report(tmp_path / "source.db", store.root)

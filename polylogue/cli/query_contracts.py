@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.errors import PolylogueError
+from polylogue.surfaces.projection_spec import RenderDestination
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
@@ -20,7 +21,6 @@ QueryParamSource: TypeAlias = Mapping[str, object] | SessionQuerySpec
 QueryResult: TypeAlias = "Session | SessionSummary"
 
 QueryOutputFormat: TypeAlias = str
-QueryDeliveryName: TypeAlias = Literal["stdout", "browser", "clipboard"]
 
 
 def coerce_query_terms(value: object) -> tuple[str, ...]:
@@ -51,19 +51,25 @@ class QueryDeliveryTarget:
     """Single parsed delivery target for query output."""
 
     raw: str
-    kind: QueryDeliveryName | Literal["path"]
+    #: The shared render-destination vocabulary (polylogue-j1vs). This used to
+    #: be a private three-member ``QueryDeliveryName`` Literal plus a fourth
+    #: ``"path"`` token, so the same concept was spelled two ways and the CLI's
+    #: own ``--render destination`` values did not all exist here.
+    kind: RenderDestination
     path: Path | None = None
 
     @classmethod
     def parse(cls, value: str) -> QueryDeliveryTarget:
-        normalized = value.strip() or "stdout"
-        if normalized == "stdout":
-            return cls(raw=normalized, kind="stdout")
-        if normalized == "browser":
-            return cls(raw=normalized, kind="browser")
-        if normalized == "clipboard":
-            return cls(raw=normalized, kind="clipboard")
-        return cls(raw=normalized, kind="path", path=Path(normalized))
+        normalized = value.strip() or RenderDestination.STDOUT.value
+        for destination in (
+            RenderDestination.TERMINAL,
+            RenderDestination.STDOUT,
+            RenderDestination.BROWSER,
+            RenderDestination.CLIPBOARD,
+        ):
+            if normalized == destination.value:
+                return cls(raw=normalized, kind=destination)
+        return cls(raw=normalized, kind=RenderDestination.FILE, path=Path(normalized))
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +86,7 @@ class QueryOutputSpec:
     def from_params(cls, params: Mapping[str, object]) -> QueryOutputSpec:
         output_dest = str(params.get("output") or "stdout")
         destinations = tuple(QueryDeliveryTarget.parse(part) for part in output_dest.split(",") if part.strip()) or (
-            QueryDeliveryTarget.parse("stdout"),
+            QueryDeliveryTarget.parse(RenderDestination.STDOUT.value),
         )
         return cls(
             output_format=str(params.get("output_format") or "markdown"),

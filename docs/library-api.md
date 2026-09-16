@@ -381,7 +381,7 @@ asyncio.run(main())
 | `list_sessions(origin, limit)` | List with optional filtering |
 | `search(query, limit, source, since)` | Search returning evidence snippets; text matches report message evidence and Drive/Gemini `provider_id` / `id` / `fileId` / `driveId` attachment-id matches report attachment evidence |
 | `parse_file(path, source_name)` | Parse a single export file |
-| `parse_sources(sources, download_assets)` | Parse from configured sources |
+| `parse_sources(sources)` | Parse from configured sources |
 | `explain_import(path, source_name, limit)` | Explain provider detection, artifact classification, parser mode, produced row counts, skips, and caveats without writing archive rows |
 | `stats()` | Archive statistics (returns `ArchiveStats`) |
 | `filter()` | Fluent filter builder (sync, reuses `SessionFilter`) |

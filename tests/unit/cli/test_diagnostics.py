@@ -853,3 +853,102 @@ async def test_tools_renders_against_real_archive_backed_store(tmp_path: Path) -
     assert "bash" in rendered
     # The normalized public Origin token, not a persistence-layer source_name.
     assert "claude-ai-export" in rendered
+
+
+def test_drift_command_reports_no_ops_db(tmp_path: Path) -> None:
+    """Anti-vacuity: deleting the ops.db existence branch would raise instead of reporting."""
+    result = CliRunner().invoke(
+        diagnostics.drift_command,
+        ["--format", "json"],
+        obj=_env_with_archive_root(tmp_path),
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == {"fts": [], "schema": [], "unavailable_reason": "ops.db does not exist"}
+
+
+def test_drift_command_surfaces_recorded_drift_ledgers(tmp_path: Path) -> None:
+    """Anti-vacuity: unwiring either drift reader leaves its ledger section empty.
+
+    Both ``fts_drift_samples`` and ``schema_drift_samples`` are written on every
+    convergence pass and had no operator-facing reader (polylogue-g31s,
+    polylogue-1bkl). A regression that drops ``list_fts_drift_samples`` or
+    ``list_schema_drift_samples`` from the command turns one of these
+    assertions red because its list becomes empty.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import (
+        record_fts_drift_sample,
+        record_schema_drift_sample,
+    )
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    conn = sqlite3.connect(ops_db)
+    now_ms = int(time.time() * 1000)
+    for index, missing in enumerate((7, 3)):
+        record_fts_drift_sample(
+            conn,
+            surface="blocks",
+            state="stale",
+            source_rows=100,
+            indexed_rows=100 - missing,
+            missing_rows=missing,
+            excess_rows=1,
+            duplicate_rows=0,
+            identity_mismatch_rows=0,
+            sampled_at_ms=now_ms - 2000 + index,
+            sample_id=f"fts-{index}",
+        )
+    record_fts_drift_sample(
+        conn,
+        surface="blocks",
+        state="stale",
+        source_rows=100,
+        indexed_rows=100,
+        missing_rows=0,
+        excess_rows=0,
+        duplicate_rows=0,
+        identity_mismatch_rows=0,
+        sampled_at_ms=now_ms - (240 * 3600 * 1000),
+        sample_id="fts-outside-window",
+    )
+    record_schema_drift_sample(
+        conn,
+        origin="chatgpt-export",
+        element_kind="message",
+        classification="new_field",
+        unseen_key_signature="a,b",
+        native_id_example="n1",
+        raw_id="r1",
+        observed_at_ms=now_ms - 1000,
+        sample_id="schema-0",
+    )
+    conn.close()
+
+    result = CliRunner().invoke(
+        diagnostics.drift_command,
+        ["--format", "json", "--since-hours", "24"],
+        obj=_env_with_archive_root(tmp_path),
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert len(payload["fts"]) == 1
+    fts = payload["fts"][0]
+    assert fts["surface"] == "blocks"
+    # The out-of-window sample is excluded by --since-hours.
+    assert fts["sample_count"] == 2
+    assert fts["magnitudes"] == [8, 4]
+    assert fts["latest_magnitude"] == 4
+    assert fts["max_magnitude"] == 8
+    assert payload["schema"] == [
+        {
+            "origin": "chatgpt-export",
+            "classification": "new_field",
+            "sample_count": 1,
+            "latest_observed_at": payload["schema"][0]["latest_observed_at"],
+            "element_kinds": ["message"],
+        }
+    ]

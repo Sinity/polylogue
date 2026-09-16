@@ -14,7 +14,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.daemon import status as status_module
-from polylogue.daemon.health import DaemonHealth
+from polylogue.daemon.health import DaemonHealth, HealthTier
 from polylogue.daemon.status import build_daemon_status
 from polylogue.operations.status_protocol import StatusComponentRegistry
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -107,7 +107,8 @@ def _patch_healthy_collectors(
 
 def _build(**kwargs: Any) -> Any:
     specs = status_module._daemon_status_component_specs(
-        checked_health=lambda: DaemonHealth(),
+        checked_health=lambda _tiers: DaemonHealth(),
+        health_tiers=lambda: {HealthTier.FAST},
         include_raw_replay_backlog=False,
         include_exact_raw_materialization_readiness=False,
     )
@@ -166,8 +167,9 @@ def test_unreadable_ingest_ledger_cannot_certify_performance_is_measurable(
     status = _build()
 
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
-    assert claim_guard["perf_measurable"]["value"] is False
-    assert "cannot rule out a concurrent archive writer" in str(claim_guard["perf_measurable"]["reason"])
+    # Withheld, not refuted: the ledger was never read (polylogue-g88v4).
+    assert claim_guard["perf_measurable"]["value"] is None
+    assert claim_guard["perf_measurable"]["determinate"] is False
     readiness = cast(dict[str, dict[str, object]], status.component_readiness)
     assert readiness["daemon_ingest"]["state"] == "unknown"
 

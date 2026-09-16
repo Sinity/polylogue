@@ -169,6 +169,7 @@ def record_raw_replay_decision(conn, decision: RawReplayDecision) -> bool:
     same-digest row with different content is a collision, not an update.
     """
 
+
 def raw_replay_decisions_for(conn, digests: Sequence[str]) -> dict[str, RawReplayDecision]:
     """Bounded lookup for one page of candidate components."""
 ```
@@ -230,9 +231,7 @@ component set today. It becomes a page contract with a resumable position,
 the same shape the derivation kernel declares:
 
 ```python
-def iter_replay_components(
-    conn: sqlite3.Connection, *, cursor: str | None, limit: int
-) -> ComponentPage:
+def iter_replay_components(conn: sqlite3.Connection, *, cursor: str | None, limit: int) -> ComponentPage:
     """One page of authority components, ordered by logical source key.
 
     ``next_cursor`` is the last key of the page; the next call resumes with
@@ -445,7 +444,7 @@ an artifact that is re-parsed on every pass forever.
 | Frontier reconciler | `storage/raw_reconciler.py:1327, 1771, 1844, 1947` | Same replacement; frontier previews stop writing a census. |
 | `_delete_orphaned_raw_authority_plans` | `storage/raw_retention.py:2055-2106` | Deleted with `raw_authority_plans`; its three-way anti-join has no subject. |
 | `prune_raw_authority_census_history` | `raw_authority.py:930-1070` | Deleted; there is no per-pass history to compact. |
-| `reset_raw_authority_census_ledger`, `prune_orphaned_index_revision_seeds` | `raw_authority.py:2382`, `:2425` | Already unreferenced at this HEAD; deleted with the tables they count. |
+| `reset_raw_authority_census_ledger` | `raw_authority.py:2382` | Already unreferenced at this HEAD; deleted with the tables it counts. `prune_orphaned_index_revision_seeds` and `OrphanedIndexRevisionSeedCounts` were deleted ahead of this change (polylogue-uy1a5). |
 
 ## 7. Fixture sketches
 
@@ -457,8 +456,8 @@ archive. Each names the mutation that makes it red.
 
 ```python
 def test_a_second_pass_over_unchanged_inputs_opens_no_durable_write(archive):
-    converge_raw_materialization(archive.root)            # first pass settles
-    before = source_db_change_counter(archive.root)       # PRAGMA data_version
+    converge_raw_materialization(archive.root)  # first pass settles
+    before = source_db_change_counter(archive.root)  # PRAGMA data_version
     report = converge_raw_materialization(archive.root)
     assert source_db_change_counter(archive.root) == before
     assert report.executed == 0 and report.quiescent
@@ -470,17 +469,19 @@ membership row) and the change counter moves.
 
 ```python
 def test_admitted_rejected_and_ambiguous_decisions_survive_index_and_ops_loss(tmp_path):
-    archive = synthetic_archive(cohorts=[
-        admitted_cohort("logical-a"),        # one proven full revision
-        superseded_cohort("logical-b"),      # a later revision displaces an earlier
-        ambiguous_cohort("logical-c"),       # two unorderable revisions
-    ])
+    archive = synthetic_archive(
+        cohorts=[
+            admitted_cohort("logical-a"),  # one proven full revision
+            superseded_cohort("logical-b"),  # a later revision displaces an earlier
+            ambiguous_cohort("logical-c"),  # two unorderable revisions
+        ]
+    )
     converge_raw_materialization(archive.root)
-    before = snapshot_decisions(archive.root)      # raw_replay_decisions + frontier
+    before = snapshot_decisions(archive.root)  # raw_replay_decisions + frontier
 
     (archive.root / "index.db").unlink()
     (archive.root / "ops.db").unlink()
-    converge_raw_materialization(archive.root)     # reconverge from source alone
+    converge_raw_materialization(archive.root)  # reconverge from source alone
 
     assert snapshot_decisions(archive.root) == before
     for raw_id, blob_hash in archive.expected_bytes.items():
@@ -617,8 +618,7 @@ Exact code deletion targets at M4/M5, all verified present at this HEAD in
 `recover_interrupted_raw_authority_censuses:1834`,
 `reject_stale_raw_replay_plan:2248` (becomes a decision write),
 `reject_invalid_raw_replay_application:2314`,
-`reset_raw_authority_census_ledger:2382`,
-`prune_orphaned_index_revision_seeds:2425`; constants
+`reset_raw_authority_census_ledger:2382`; constants
 `RAW_AUTHORITY_CENSUS_PLAN_RETENTION:60`,
 `RAW_AUTHORITY_CENSUS_HEADER_RETENTION:74`,
 `RAW_AUTHORITY_CENSUS_QUERY_PREFIX:45`,

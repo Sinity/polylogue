@@ -4403,3 +4403,101 @@ def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, mon
     # ordering shortcut cannot make these manifests agree by luck.
     assert lineage_manifest["session_links"] == lexicographic_manifest["session_links"]
     assert lineage_manifest == lexicographic_manifest
+
+
+# -----------------------------------------------------------------------------
+# ANTIGRAVITY .pb REPLAY DRIFT (bd polylogue-t1vl6)
+# -----------------------------------------------------------------------------
+
+
+def test_antigravity_pb_replay_refuses_a_drifted_trajectory(tmp_path: Path) -> None:
+    """A rewritten ``.pb`` is a typed refusal, not a silent substitution.
+
+    Antigravity decoding needs a live language-server client, so replay
+    re-derives from the file on disk. Antigravity rewrites
+    ``conversations/<cascade_id>.pb`` in place, so the existence and
+    session-count guards both pass for a CHANGED file and current content
+    would be replayed under an older revision's ``raw_id``.
+
+    Anti-vacuity: remove the content-hash comparison and this call no longer
+    raises -- it proceeds into ``iter_language_server_exports`` against bytes
+    that are not the retained blob.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import AntigravityTrajectoryDriftError, _parse_one_raw
+
+    conversations = tmp_path / "conversations"
+    conversations.mkdir(parents=True)
+    trajectory = conversations / "cascade-1.pb"
+    trajectory.write_bytes(b"live bytes after an in-place rewrite")
+
+    with pytest.raises(AntigravityTrajectoryDriftError):
+        _parse_one_raw(Provider.ANTIGRAVITY, b"retained bytes", str(trajectory))
+
+
+def test_frozen_shard_replay_degrades_named_for_prefix_sharing_child(tmp_path: Path) -> None:
+    """polylogue-k00uq: a prefix-sharing child must not abort the whole replay.
+
+    The lineage fixture is a real Codex resume shape: the child's raw
+    physically re-contains the parent's entire prefix, so the writer slices
+    it against the already-archived parent and refuses the shard's rows
+    (sealed by a parse worker with no DB read, therefore describing the
+    UNSLICED session). Shard replay must record that as a counted, named
+    degradation and write the unit inline -- never skip it, never abort.
+
+    Anti-vacuity: restoring the bare ``prepared_required_raw_ids`` marking
+    without the ``PreparedSessionWriteRefusedError`` handler in
+    ``backfill_historical_revision_evidence`` makes this red -- the refusal
+    escapes the ``sqlite3.IntegrityError``-only guard and the call raises
+    instead of returning a result at all.
+    """
+    root = tmp_path / "lineage-shard"
+    bootstrap_archive_root(root)
+    parent_texts = [f"parent-{index}" for index in range(4)]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for native_id, texts, forked_from in (
+            ("zparent", parent_texts, None),
+            ("achild0", [*parent_texts, "child-0-tail"], "zparent"),
+        ):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_codex_session_payload(native_id, texts, forked_from_id=forked_from),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=1,
+                revision=RawRevisionEnvelope(
+                    logical_source_key=f"codex-session:{native_id}",
+                    kind=RawRevisionKind.FULL,
+                    source_revision=f"{native_id}-v1",
+                    acquisition_generation=0,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            archive.classify_raw_revision_cohort_for_rebuild_repair(f"codex-session:{native_id}")
+    census_historical_revision_evidence(root)
+    generation = IndexGenerationStore.for_archive_root(root).create(source_snapshot="lineage-shard-test")
+
+    result = backfill_historical_revision_evidence(
+        Path(generation.index_path).parent,
+        owned_inactive_generation=(generation.generation_id, generation.owner_id),
+        use_session_shards=True,
+    )
+
+    assert result.shard_lowering_degraded == 1
+    with sqlite3.connect(generation.index_path) as conn:
+        session_ids = {row[0] for row in conn.execute("SELECT session_id FROM sessions")}
+        assert session_ids == {"codex-session:zparent", "codex-session:achild0"}
+        link = conn.execute(
+            """SELECT resolved_dst_session_id, branch_point_message_id, inheritance
+               FROM session_links WHERE src_session_id = ?""",
+            ("codex-session:achild0",),
+        ).fetchone()
+        assert link is not None
+        assert link[0] == "codex-session:zparent"
+        assert link[1] is not None
+        assert link[2] == "prefix-sharing"
+        # The sliced tail is what landed: only the child's own divergent
+        # message, with the parent's four-message prefix left to the parent.
+        assert (
+            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", ("codex-session:achild0",)).fetchone()[0]
+            == 1
+        )

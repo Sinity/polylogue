@@ -712,7 +712,8 @@ class StageState(Enum):
     PENDING = "pending"  # work needed
     IN_PROGRESS = "in_progress"  # work running
     DONE = "done"  # converged
-    SKIPPED = "skipped"  # not applicable
+    SKIPPED = "skipped"  # not applicable to this subject at all
+    NOT_RUN = "not_run"  # applicable, deliberately not executed by this pass
     FAILED = "failed"  # error, will retry
 
 
@@ -1162,9 +1163,15 @@ class DaemonConverger:
         """Converge a changed source batch with per-subject stage barriers.
 
         ``whole_archive=False`` bounds the pass to the batch's own subjects:
-        stages declared ``whole_archive`` are recorded ``SKIPPED`` (converged,
-        no debt) because their staleness is re-derived from archive content by
-        the next whole-archive pass, never from this batch's outcome.
+        stages declared ``whole_archive`` are recorded ``NOT_RUN``. Their
+        staleness is re-derived from archive content by the next whole-archive
+        pass, never from this batch's outcome -- but "a later pass owes this
+        work" is not the same claim as "this stage converged", so the state is
+        distinct from ``SKIPPED`` (not applicable at all) and does not count
+        towards ``FileState.converged``. It lands as *deferred* convergence
+        debt, which keeps the outstanding work visible to operators and stops
+        a bounded catch-up from clearing debt for stages it never ran
+        (polylogue-zbzxs, polylogue-tjtua).
 
         Stage ``check``/``check_many`` time is charged to ``<stage>.check`` in
         the returned ledger so the batch's convergence time is fully attributed.
@@ -1190,7 +1197,7 @@ class DaemonConverger:
                 continue
             if stage.whole_archive and not whole_archive:
                 for path in active_paths:
-                    self._file_states[path].stages[stage_name] = StageState.SKIPPED
+                    self._file_states[path].stages[stage_name] = StageState.NOT_RUN
                 continue
 
             if stage.check_many is None or stage.execute_many is None:

@@ -2241,6 +2241,112 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
     assert decode_search_cursor(payload["next_cursor"]).lane == "semantic"
 
 
+def test_async_execute_query_archive_refuses_a_cursor_minted_by_a_different_query(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cursor minted by one ranked query is refused by a different query.
+
+    Round trip through the CLI route: query A mints ``next_cursor``, and
+    presenting that token to query B (a different ``similar_text``, so a
+    different request identity) raises the typed ``click.UsageError`` instead
+    of silently paginating B with A's page offset.
+
+    Anti-vacuity (polylogue-t4l2q): emptying the
+    ``_validate_cursor_request_identity`` call site in
+    ``polylogue/cli/archive_query.py`` makes this test red -- query B would
+    then accept A's cursor and return rows. The direct-helper tests do not
+    cover that wiring.
+    """
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeVectorProvider:
+        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+            del text, limit
+            return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+
+    class FakeArchiveStore(ArchiveStoreDouble):
+        index_db_path = archive_root / "index.db"
+
+        def semantic_summaries(
+            self,
+            scored_message_ids: list[tuple[str, float]],
+            **kwargs: object,
+        ) -> list[ArchiveSessionSearchHit]:
+            del kwargs
+            return [
+                ArchiveSessionSearchHit(
+                    rank=index,
+                    session_id=session_id,
+                    block_id=f"{session_id}:m1:0",
+                    message_id=f"{session_id}:m1",
+                    origin="codex-session",
+                    title=f"Semantic {index}",
+                    snippet="semantic hit",
+                )
+                for index, (message_id, _score) in enumerate(scored_message_ids, start=1)
+                for session_id in (message_id.rsplit(":", 1)[0],)
+            ]
+
+        def read_summary(self, session_id: str) -> ArchiveSessionSummary:
+            native_id = session_id.removeprefix("codex-session:")
+            return ArchiveSessionSummary(
+                session_id=session_id,
+                native_id=native_id,
+                origin="codex-session",
+                title=f"Semantic {native_id[-1]}",
+                created_at=None,
+                updated_at=None,
+                message_count=1,
+                word_count=1,
+                tags=(),
+            )
+
+    install_archive_store_double(monkeypatch, FakeArchiveStore())
+    monkeypatch.setattr(
+        "polylogue.operations.daemon_reads.DaemonReadDependencies.vector_provider",
+        property(lambda _self: FakeVectorProvider()),
+    )
+
+    asyncio.run(
+        _execute_query_params(
+            env,
+            {
+                "archive": True,
+                "similar_text": "first ranked prompt",
+                "limit": 1,
+                "output_format": "json",
+            },
+        )
+    )
+    minted = json.loads(capsys.readouterr().out)["next_cursor"]
+    # The refusal is only meaningful if the cursor actually carries the
+    # minting request's identity.
+    assert decode_search_cursor(minted).query_hash is not None
+
+    with pytest.raises(click.UsageError) as exc_info:
+        asyncio.run(
+            _execute_query_params(
+                env,
+                {
+                    "archive": True,
+                    "similar_text": "an entirely different ranked prompt",
+                    "limit": 1,
+                    "cursor": minted,
+                    "output_format": "json",
+                },
+            )
+        )
+    assert "different ranked-search request" in str(exc_info.value)
+
+
 def test_async_execute_query_archive_uses_vector_provider_for_session_seed_similarity(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -2981,7 +3087,7 @@ def test_async_execute_query_archive_reads_session_by_id(
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "session"
     assert payload["session_id"] == "codex-session:native-1"
-    assert payload["source"] == "codex-session"
+    assert "source" not in payload
     assert payload["origin"] == "codex-session"
     assert payload["messages"][0]["blocks"][0]["text"] == "hello from v1"
 

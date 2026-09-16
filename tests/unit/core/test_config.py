@@ -544,7 +544,7 @@ class TestPolylogueConfigDefaults:
         from polylogue.config import load_polylogue_config
 
         cfg = load_polylogue_config()
-        assert cfg.notification_backend == "log"
+        assert cfg.raw["notification_backend"] == "log"
 
     def test_health_interval_default(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
@@ -618,7 +618,7 @@ class TestPolylogueConfigEnvOverrides:
 
         monkeypatch.setenv("POLYLOGUE_NOTIFICATION_BACKEND", "stdout")
         cfg = load_polylogue_config()
-        assert cfg.notification_backend == "stdout"
+        assert cfg.raw["notification_backend"] == "stdout"
 
     def test_env_overrides_health_interval(
         self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
@@ -1150,3 +1150,23 @@ def test_stderr_proxy_exposes_terminal_capabilities() -> None:
     proxy = _StderrProxy()
     assert isinstance(proxy.isatty(), bool)
     assert isinstance(proxy.fileno(), int)
+
+
+class TestSecurityBooleanBlankRefusal:
+    """A blank value for a security-relevant boolean refuses instead of failing open.
+
+    The SMTP accessor that motivated this (``notification_email_use_tls``) was
+    retired with the other dead ``notification_*`` accessors (polylogue-v6xh);
+    the remaining rule is the opt-in set. Anti-vacuity: dropping ``allow_blank``
+    from the opt-in booleans makes the first assertion below raise, and
+    removing the strict token check lets ``"flase"`` resolve to ``True``.
+    """
+
+    def test_blank_opt_in_boolean_stays_not_opted_in(self) -> None:
+        """A blank opt-in boolean resolves closed; a typo in one still refuses."""
+        from polylogue.config import SECURITY_OPT_IN_BOOLEANS
+
+        assert "api_allow_no_auth" in SECURITY_OPT_IN_BOOLEANS
+        assert PolylogueConfig({"api_allow_no_auth": ""}).api_allow_no_auth is False
+        with pytest.raises(ConfigError, match="not a recognized boolean"):
+            _ = PolylogueConfig({"api_allow_no_auth": "flase"}).api_allow_no_auth

@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
+from polylogue.core.sqlite_introspection import relation_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle_from_connection
 from polylogue.storage.tier_access import capture_sqlite_read
 
@@ -38,15 +39,6 @@ _REQUIRED_CONVERGENCE_DEBT_COLUMNS = frozenset(
     )
 )
 _PATH_REDACTION_RE = re.compile(r"/(?:[a-zA-Z0-9._\-]+/)*[a-zA-Z0-9._\-]+")
-
-
-def _table_exists(conn: sqlite3.Connection, schema: str, table: str) -> bool:
-    return (
-        conn.execute(
-            f"SELECT 1 FROM {schema}.sqlite_schema WHERE type IN ('table', 'view') AND name = ?", (table,)
-        ).fetchone()
-        is not None
-    )
 
 
 def _require_reader_schema(schema: str) -> None:
@@ -92,9 +84,9 @@ def _ops_workload_status_from_present_connection(
     schema: str,
 ) -> dict[str, object]:
     """Read workload facts after the storage seam captured query availability."""
-    if not _table_exists(conn, schema, "ingest_attempts"):
+    if not relation_exists(conn, "ingest_attempts", schema=schema):
         return {"available": False, "reason": "missing_ingest_attempts"}
-    if not _table_exists(conn, schema, "convergence_debt"):
+    if not relation_exists(conn, "convergence_debt", schema=schema):
         return {"available": False, "reason": "missing_convergence_debt"}
     missing = _missing_convergence_debt_columns(conn, schema)
     if missing:
@@ -137,8 +129,7 @@ def _ops_workload_status_from_ready_connection(
         )
     throughput_row = conn.execute(
         f"""
-        SELECT COUNT(*), COALESCE(SUM(parsed_raw_count), 0), COALESCE(SUM(materialized_count), 0),
-               COALESCE(SUM(finished_at_ms - started_at_ms), 0)
+        SELECT COUNT(*), COALESCE(SUM(parsed_raw_count), 0), COALESCE(SUM(materialized_count), 0)
         FROM {schema}.ingest_attempts
         WHERE status = 'completed' AND finished_at_ms >= ?
         """,
@@ -147,9 +138,13 @@ def _ops_workload_status_from_ready_connection(
     batches = int(throughput_row[0] or 0) if throughput_row is not None else 0
     files = int(throughput_row[1] or 0) if throughput_row is not None else 0
     materialized = int(throughput_row[2] or 0) if throughput_row is not None else 0
-    busy_ms = int(throughput_row[3] or 0) if throughput_row is not None else 0
+    # Throughput is a rate over the advertised wall window.  Summing per-attempt
+    # busy time double-counts concurrent attempts (``running_count`` exists
+    # because concurrency is expected) and understates the rate by exactly the
+    # concurrency factor.
+    window_seconds = _WORKLOAD_THROUGHPUT_WINDOW_MS / 1000.0
     cursor: dict[str, int] = {}
-    if _table_exists(conn, schema, "ingest_cursor"):
+    if relation_exists(conn, "ingest_cursor", schema=schema):
         cursor = {
             "tracked": _count(conn, f"SELECT COUNT(*) FROM {schema}.ingest_cursor"),
             "excluded": _count(conn, f"SELECT COUNT(*) FROM {schema}.ingest_cursor WHERE excluded = 1"),
@@ -177,7 +172,7 @@ def _ops_workload_status_from_ready_connection(
             "batches": batches,
             "files": files,
             "materialized": materialized,
-            "files_per_second": round(files / (busy_ms / 1000.0), 2) if busy_ms else 0.0,
+            "files_per_second": round(files / window_seconds, 2) if window_seconds > 0 else None,
         },
         "cursor": cursor,
         "debt": {"total": sum(debt.values()), "by_status": debt},
@@ -229,7 +224,7 @@ def _convergence_status_from_present_connection(
     unavailable: dict[str, object],
 ) -> dict[str, object]:
     """Read convergence facts after the storage seam captured query availability."""
-    if not _table_exists(conn, schema, "convergence_debt"):
+    if not relation_exists(conn, "convergence_debt", schema=schema):
         return unavailable
     missing = _missing_convergence_debt_columns(conn, schema)
     if missing:
@@ -375,7 +370,7 @@ def _raw_failure_status_from_present_connection(
 ) -> dict[str, object]:
     """Unguarded projection body; see the wrapper for the failure contract."""
 
-    if not _table_exists(conn, schema, "raw_sessions"):
+    if not relation_exists(conn, "raw_sessions", schema=schema):
         return unavailable
     if schema != "main":
         # The source reader is opened as its own pinned handle.  The existing

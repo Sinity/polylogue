@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Literal, get_args
 
 import aiosqlite
 
 from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_values
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.topology.edge import topology_status_composes_sql
-from polylogue.core.enums import MaterialOrigin
+from polylogue.core.enums import MaterialOrigin, MessageType
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.logging import get_logger
 from polylogue.storage.runtime import (
@@ -25,7 +25,12 @@ from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
 logger = get_logger(__name__)
 
+#: polylogue-jglh: the same seven members as :class:`MessageType`, which
+#: owns them. Kept as a name because callers pass the plain strings.
 MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
+
+if frozenset(get_args(MessageTypeName)) != frozenset(member.value for member in MessageType):
+    raise RuntimeError("MessageTypeName drifted from MessageType")
 MaterialOriginFilter = MaterialOrigin | str | tuple[MaterialOrigin | str, ...] | list[MaterialOrigin | str]
 
 _MESSAGE_RECORD_SELECT = MESSAGES_SPEC.record_select_column_names("m")

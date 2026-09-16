@@ -15,7 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import tomllib
 
@@ -320,7 +320,28 @@ def _parse_memory_budget_bytes(value: object, *, source: str) -> int | None:
     return parsed
 
 
-def _require_bool_config_value(data: Mapping[str, object], key: str) -> bool:
+# The security-relevant booleans that are *opt-in*: their restrictive state is
+# "not set", so a blank value means "not opted in" and resolving it to ``False``
+# is the closed direction rather than the open one. Every other
+# security-relevant boolean -- notably the ones whose safe state is the default
+# ``True`` (SMTP TLS/STARTTLS) -- refuses a blank value instead, because there
+# ``bool("")`` would silently turn the protection off. An unrecognized non-blank
+# token such as ``"flase"`` refuses in both groups: ``bool("flase")`` is
+# ``True``, which would open a boundary on a typo.
+SECURITY_OPT_IN_BOOLEANS: Final[tuple[str, ...]] = (
+    "api_allow_no_auth",
+    "browser_capture_allow_remote",
+    "browser_capture_allow_no_auth",
+)
+
+
+def _require_bool_config_value(
+    data: Mapping[str, object],
+    key: str,
+    *,
+    default: bool = False,
+    allow_blank: bool = False,
+) -> bool:
     """Strictly resolve a capability-boundary boolean config value.
 
     Fails closed rather than falling back to Python truthiness on an
@@ -337,8 +358,16 @@ def _require_bool_config_value(data: Mapping[str, object], key: str) -> bool:
     if isinstance(value, bool):
         return value
     if value is None:
-        return False
+        return default
     if isinstance(value, str):
+        if not value.strip():
+            if allow_blank:
+                return False
+            raise ConfigError(
+                f"{key}='' is blank; a blank value for this security-relevant boolean is a refusal "
+                "rather than a silent fall back to its permissive reading. "
+                "Set one of 1/true/yes/on or 0/false/no/off, or remove the key to keep the default."
+            )
         parsed = _parse_bool_token(value)
         if parsed is not None:
             return parsed
@@ -480,7 +509,7 @@ class PolylogueConfig:
 
     @property
     def api_allow_no_auth(self) -> bool:
-        return bool(self._data.get("api_allow_no_auth"))
+        return _require_bool_config_value(self._data, "api_allow_no_auth", allow_blank=True)
 
     @property
     def browser_capture_port(self) -> int:
@@ -489,78 +518,6 @@ class PolylogueConfig:
     @property
     def browser_capture_allowed_origins(self) -> str:
         return str(self._data.get("browser_capture_allowed_origins", "chrome-extension://*"))
-
-    @property
-    def notification_backend(self) -> str:
-        return str(self._data.get("notification_backend", "log"))
-
-    @property
-    def notification_webhook_url(self) -> str | None:
-        v = self._data.get("notification_webhook_url")
-        return v if isinstance(v, str) and v else None
-
-    @property
-    def notification_webhook_secret(self) -> str | None:
-        v = self._data.get("notification_webhook_secret")
-        return v if isinstance(v, str) and v else None
-
-    @property
-    def notification_apprise_urls(self) -> tuple[str, ...]:
-        v = self._data.get("notification_apprise_urls")
-        if isinstance(v, (list, tuple)):
-            return tuple(str(s) for s in v if str(s).strip())
-        if isinstance(v, str) and v.strip():
-            return tuple(s.strip() for s in v.split(",") if s.strip())
-        return ()
-
-    @property
-    def notification_email_host(self) -> str | None:
-        v = self._data.get("notification_email_host")
-        return v if isinstance(v, str) and v else None
-
-    @property
-    def notification_email_port(self) -> int:
-        return int(str(self._data.get("notification_email_port", 587)))
-
-    @property
-    def notification_email_username(self) -> str | None:
-        value = self._data.get("notification_email_username")
-        return value if isinstance(value, str) and value else None
-
-    @property
-    def notification_email_password(self) -> str | None:
-        value = self._data.get("notification_email_password")
-        return value if isinstance(value, str) and value else None
-
-    @property
-    def notification_email_from(self) -> str | None:
-        v = self._data.get("notification_email_from")
-        return v if isinstance(v, str) and v else None
-
-    @property
-    def notification_email_to(self) -> tuple[str, ...]:
-        v = self._data.get("notification_email_to")
-        if isinstance(v, (list, tuple)):
-            return tuple(str(s) for s in v if str(s).strip())
-        if isinstance(v, str) and v.strip():
-            return tuple(s.strip() for s in v.split(",") if s.strip())
-        return ()
-
-    @property
-    def notification_email_subject_prefix(self) -> str:
-        return str(self._data.get("notification_email_subject_prefix", "[polylogue]"))
-
-    @property
-    def notification_email_use_tls(self) -> bool:
-        return bool(self._data.get("notification_email_use_tls", True))
-
-    @property
-    def notification_email_use_starttls(self) -> bool:
-        return bool(self._data.get("notification_email_use_starttls", True))
-
-    @property
-    def notification_email_max_per_hour(self) -> int:
-        return int(str(self._data.get("notification_email_max_per_hour", 12)))
 
     @property
     def health_check_interval_s(self) -> int:
@@ -624,11 +581,11 @@ class PolylogueConfig:
 
     @property
     def browser_capture_allow_remote(self) -> bool:
-        return bool(self._data.get("browser_capture_allow_remote"))
+        return _require_bool_config_value(self._data, "browser_capture_allow_remote", allow_blank=True)
 
     @property
     def browser_capture_allow_no_auth(self) -> bool:
-        return bool(self._data.get("browser_capture_allow_no_auth"))
+        return _require_bool_config_value(self._data, "browser_capture_allow_no_auth", allow_blank=True)
 
     @property
     def source_roots(self) -> tuple[str, ...]:

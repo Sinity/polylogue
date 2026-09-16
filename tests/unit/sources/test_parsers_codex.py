@@ -3150,3 +3150,68 @@ class TestReEmbeddedTextConservation:
                 "a user turn that only the history kept",
             ]
         )
+
+
+def test_event_msg_message_rollout_both_classifies_and_parses() -> None:
+    """polylogue-1wom1: a Codex rollout whose conversational content arrives as
+    ``event_msg`` payloads of type ``user_message``/``agent_message`` is a
+    supported stream. ``parse`` has always materialized those two turns, but
+    ``is_supported_session_stream`` refused the stream, so artifact
+    classification declined ``parse_as_session`` and the messages reached the
+    archive from nowhere -- silent evidence loss for a shape the parser
+    handles.
+
+    Anti-vacuity: dropping the ``event_msg`` branch from ``_message_record``
+    leaves ``has_message`` False in ``_session_stream_supported`` and the
+    classification assertion goes red while the parse assertion still passes --
+    exactly the disagreement this test exists to forbid.
+    """
+    records: list[object] = [
+        {"type": "session_meta", "payload": {"id": "event-msg-sess", "timestamp": "2026-04-01T00:00:00Z"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "hello there"}},
+        {"type": "event_msg", "payload": {"type": "agent_message", "message": "hi back"}},
+    ]
+
+    assert is_supported_session_stream(records) is True
+
+    session = parse(records, "fallback")
+    assert [(message.role, message.text) for message in session.messages] == [
+        (Role.USER, "hello there"),
+        (Role.ASSISTANT, "hi back"),
+    ]
+
+
+def test_world_state_state_keys_are_stored_or_declared_exempt() -> None:
+    """polylogue-w54q3: ``world_state.state`` keeps every key it carries except
+    the declared context-file text in ``_WORLD_STATE_INSTRUCTION_TEXT_KEYS``.
+    ``host_skills``, ``permissions`` and ``collaboration_mode`` were previously
+    dropped with no reason at all; the exemption set is now the one declaration
+    and a new upstream key is stored rather than silently discarded.
+
+    Anti-vacuity: dropping ``permissions`` back out of the stored payload, or
+    widening the exemption set to cover an unnamed key, makes the
+    stored-or-exempt partition assertion go red.
+    """
+    from polylogue.sources.parsers.codex import _WORLD_STATE_INSTRUCTION_TEXT_KEYS
+
+    state = {
+        "environments": {"local": {"cwd": "/tmp", "status": "available"}},
+        "permissions": {"approved_command_prefixes": [["ls"]]},
+        "collaboration_mode": {"mode": "default"},
+        "host_skills": {"body": "## Skills\nrepeated catalog text"},
+        "agents_md": {"text": "repeated context-file text"},
+        "skills": {"includeInstructions": True},
+    }
+    records: list[object] = [
+        {"type": "session_meta", "payload": {"id": "world-state-sess", "timestamp": "2026-04-01T00:00:00Z"}},
+        {"type": "event_msg", "payload": {"type": "user_message", "message": "go"}},
+        {"type": "world_state", "payload": {"state": state}},
+    ]
+
+    session = parse(records, "fallback")
+    event = next(event for event in session.session_events if event.event_type == "world_state")
+    stored = set(event.payload) - {"source_index"}
+
+    assert stored | _WORLD_STATE_INSTRUCTION_TEXT_KEYS >= set(state)
+    assert stored & _WORLD_STATE_INSTRUCTION_TEXT_KEYS == set()
+    assert {"environments", "permissions", "collaboration_mode"} <= stored

@@ -25,7 +25,7 @@ from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .dispatch import is_jsonl_source_path
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
-from .parsers import antigravity, hermes_state, hermes_verification
+from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
@@ -373,7 +373,7 @@ def parse_one_source_path(
         for session in hermes_state.parse_state_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=(original_source_path or path).parent,
+            profile_root=hermes_identity.profile_root_for_artifact(original_source_path or path),
             immutable=True,
         ):
             yield (raw_data, session)
@@ -407,7 +407,7 @@ def parse_one_source_path(
         for session in hermes_verification.parse_verification_evidence_db(
             retained_path,
             fallback_id=path.stem,
-            profile_root=(original_source_path or path).parent,
+            profile_root=hermes_identity.profile_root_for_artifact(original_source_path or path),
             immutable=True,
         ):
             yield (raw_data, session)

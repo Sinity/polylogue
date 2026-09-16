@@ -48,6 +48,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, runtime_checkable
 
+from polylogue.core.enums import PrincipalSurface
 from polylogue.operations.machine_receipts import MachineHistoricalReceipt, encode_machine_receipt
 
 if TYPE_CHECKING:
@@ -63,7 +64,6 @@ if TYPE_CHECKING:
 #: rebuildable derived state without removing authored evidence.
 DestructiveClass = Literal["additive", "reversible", "maintenance", "reset", "delete", "excise"]
 
-Surface = Literal["cli", "api", "mcp", "daemon", "maintenance", "internal"]
 IdempotencyPolicy = Literal["none", "effect_key", "convergent", "compare_and_set"]
 RecoveryPolicy = Literal[
     "rebuild",
@@ -169,7 +169,7 @@ class MutationPrincipal:
 
     actor_ref: str
     capabilities: frozenset[str]
-    surface: Surface
+    surface: PrincipalSurface
     role_label: str | None = None
 
     def __post_init__(self) -> None:
@@ -519,7 +519,7 @@ class MutationAuthorization:
     token: str | None = None
     expires_at_ms: int | None = None
     capabilities: tuple[str, ...] = ()
-    surface: Surface | None = None
+    surface: PrincipalSurface | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1420,7 +1420,7 @@ def recover_interrupted_operations(archive_root: Path) -> None:
                 audit.record_recovery_disposition(operation.operation_id, unreadable)
 
 
-def make_target_ref(kind: Literal["session", "message", "block", "source", "index"], value: object) -> str:
+def make_target_ref(kind: Literal["session", "message", "block", "source", "index", "path"], value: object) -> str:
     """Return a stable ``kind:value`` target ref, the shared vocabulary for plans/receipts."""
 
     return f"{kind}:{value}"
@@ -1452,7 +1452,7 @@ __all__ = [
     "RecoveryOperation",
     "RecoveryTargetDisposition",
     "RecoveryPolicy",
-    "Surface",
+    "PrincipalSurface",
     "SurfaceDeniedError",
     "StartedBoundMutation",
     "TargetAuthorityPolicy",

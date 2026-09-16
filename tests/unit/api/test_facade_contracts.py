@@ -6574,3 +6574,366 @@ async def test_resolve_ref_actions_quote_archive_derived_refs(tmp_path: Path) ->
             assert shlex.join(tokens) == command, command
     finally:
         await archive.close()
+
+
+# ---------------------------------------------------------------------------
+# Honest denominators on the read facades
+# ---------------------------------------------------------------------------
+
+
+async def test_pathology_report_counts_unreadable_sessions_as_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A matched session whose digest cannot be read is reported as failed,
+    never folded into the analyzed count (polylogue-dvhe7).
+
+    Anti-vacuity: revert the ``failed`` bookkeeping in
+    ``PolylogueArchiveMixin.pathology_report`` -- i.e. let a ``None`` digest
+    simply be skipped -- and the report claims ``matched=2, analyzed=1`` with
+    nothing naming the missing session, so an unmeasured session renders as a
+    measured pathology-free one. The assertion that the three counts conserve
+    the matched denominator is what fails.
+    """
+    archive = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(archive.config.db_path)
+        summaries = await archive.list_summaries()
+        assert len(summaries) == 2
+        unreadable = str(summaries[0].id)
+
+        from polylogue.api.archive import PolylogueArchiveMixin
+
+        original = PolylogueArchiveMixin._session_digest
+
+        async def _digest(self: PolylogueArchiveMixin, session_id: str) -> object:
+            if session_id == unreadable:
+                return None
+            return await original(self, session_id)
+
+        monkeypatch.setattr(PolylogueArchiveMixin, "_session_digest", _digest)
+
+        report = await archive.pathology_report()
+
+        assert report.matched_session_count == 2
+        assert report.failed_session_count == 1
+        assert report.analyzed_session_count == 1
+        assert report.dropped_session_count == 0
+        assert (
+            report.analyzed_session_count + report.failed_session_count + report.dropped_session_count
+            == report.matched_session_count
+        )
+    finally:
+        await archive.close()
+
+
+async def test_facets_denominator_ignores_page_limit_and_names_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Facet buckets roll the whole matched scope, and a capped scope stops
+    reporting its families as complete (polylogue-8374p).
+
+    Anti-vacuity: let ``spec.limit`` reach the scope query again and the first
+    assertion reads ``total_sessions == 1`` for a two-session archive; drop the
+    ``scope_gaps`` signal and the capped response still lists every family in
+    ``complete_families`` with outcome ``ok``, which is a truncated count
+    rendered as a measured complete one.
+    """
+    from polylogue.archive.query.spec import SessionQuerySpec
+
+    archive = _archive(tmp_path)
+    try:
+        await _seed_two_sessions(archive.config.db_path)
+
+        spec = SessionQuerySpec(query_terms=("body",), limit=1)
+        response = await archive.facets(spec, include_idf=False, include_deferred=False)
+        assert response.scoped_to_query is True
+        assert response.total_sessions == 2, "a page size must never become the facet denominator"
+        assert response.complete_families
+        assert response.family_errors == {}
+
+        monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
+        capped = await archive.facets(spec, include_idf=False, include_deferred=False)
+
+        assert capped.complete_families == ()
+        assert capped.family_errors, "a truncated scope must name the gap"
+        assert all(reason.startswith("facet_scope_truncated:") for reason in capped.family_errors.values())
+        assert capped.outcome.state == "degraded"
+    finally:
+        await archive.close()
+
+
+async def test_stuck_latency_route_forwards_session_id_and_offset(tmp_path: Path) -> None:
+    """The stuck-latency route forwards ``session_id`` and ``offset`` to the
+    general list route instead of widening to the archive and page one
+    (polylogue-o90gu).
+
+    Anti-vacuity: restore the previous body (no ``session_id`` parameter,
+    ``offset=0`` hard-coded) and the recorded kwargs lose the scoped session id
+    and carry ``offset=0`` for a second-page request, so a scoped request is
+    answered with other sessions.
+    """
+    recorded: dict[str, object] = {}
+
+    def _record(self: ArchiveStore, **kwargs: object) -> list[object]:
+        recorded.update(kwargs)
+        return []
+
+    with ArchiveStore(tmp_path) as store:
+        original = ArchiveStore.list_session_latency_profile_insights
+        try:
+            ArchiveStore.list_session_latency_profile_insights = _record  # type: ignore[assignment,method-assign]
+            store.find_stuck_session_latency_profile_insights(
+                session_id="codex-session:scoped",
+                origin=Origin.CODEX_SESSION.value,
+                limit=10,
+                offset=20,
+            )
+        finally:
+            ArchiveStore.list_session_latency_profile_insights = original  # type: ignore[method-assign]
+
+    assert recorded["session_id"] == "codex-session:scoped"
+    assert recorded["offset"] == 20
+    assert recorded["limit"] == 10
+    assert recorded["only_stuck"] is True
+
+
+async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) -> None:
+    """``list_session_cost_insights`` refuses an unimplemented ``model`` filter
+    and evaluates ``status`` over the matched scope before the page is cut
+    (polylogue-3zvsd).
+
+    Anti-vacuity: restore ``if model is not None: return []`` and the refusal
+    assertion fails -- an unwired filter would again be indistinguishable from
+    "nothing matches". Move the ``status`` filter back after the SQL
+    ``LIMIT``/``OFFSET`` and the second assertion fails: with ``limit=1`` the
+    SQL page holds only the newest (non-matching) session, so the matching
+    older session disappears from a query that asked for it.
+    """
+    import sqlite3
+
+    from polylogue.core.errors import UnsupportedInsightFilterError
+    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
+
+    newer_unpriced = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="cost-filter-newer",
+        title="Newer unpriced",
+        created_at="2026-03-02T00:00:00Z",
+        updated_at="2026-03-02T00:05:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="unpriced")],
+            )
+        ],
+    )
+    older_priced = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="cost-filter-older",
+        title="Older priced",
+        reported_cost_usd=2.5,
+        created_at="2026-03-01T00:00:00Z",
+        updated_at="2026-03-01T00:05:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                model_name="claude-sonnet-4-5",
+                input_tokens=1_000,
+                output_tokens=500,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="priced")],
+            )
+        ],
+    )
+
+    with ArchiveStore(tmp_path) as store:
+        write_index_session(store, newer_unpriced)
+        priced_id = write_index_session(store, older_priced)
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        upsert_session_profile_costs(
+            conn,
+            priced_id,
+            cost_usd=2.5,
+            cost_credits=25.0,
+            cost_is_estimated=False,
+            cost_provenance="priced",
+            priced_with="cost-filter-test",
+            priced_at_ms=1_772_000_000_000,
+        )
+
+    with ArchiveStore(tmp_path) as store:
+        with pytest.raises(UnsupportedInsightFilterError):
+            store.list_session_cost_insights(model="claude-sonnet-4-5")
+
+        everything = store.list_session_cost_insights(limit=None)
+        assert [insight.session_id for insight in everything][0] != priced_id, (
+            "the priced session must not be the newest row, or the page-cut regression is untestable"
+        )
+        priced_status = next(insight.estimate.status for insight in everything if insight.session_id == priced_id)
+        newest_status = everything[0].estimate.status
+        assert newest_status != priced_status, (
+            "the two seeded sessions must differ in cost status, or the filter is untested"
+        )
+
+        paged = store.list_session_cost_insights(status=priced_status, limit=1)
+
+    assert [insight.session_id for insight in paged] == [priced_id]
+
+
+def test_open_rejects_unknown_keyword_arguments(tmp_path: Path) -> None:
+    """A misspelled construction keyword is a ``TypeError``, not a silent no-op.
+
+    ``Polylogue.open`` took ``**kwargs``, read exactly ``archive_root`` and
+    ``db_path`` out of it, and dropped the rest. ``open(archive_roots=...)``
+    therefore returned a facade bound to the ambient resolved runtime while
+    the caller believed it had pointed the facade at their directory.
+
+    Anti-vacuity: restore the ``**kwargs: object`` signature with the two
+    ``kwargs.get(...)`` lookups and the call below returns a ``Polylogue``
+    instead of raising, so the ``pytest.raises`` goes red.
+    """
+    with pytest.raises(TypeError):
+        Polylogue.open(archive_roots=tmp_path)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("method_name", ["postmortem_bundle", "pathology_report", "portfolio_bundle"])
+async def test_analysis_scope_refuses_a_nonpositive_limit(tmp_path: Path, method_name: str) -> None:
+    """A nonpositive analysis cap is a typed usage error, not the 200-session default.
+
+    Each scope resolved its cap as ``limit if limit is not None and limit > 0
+    else 200``, so ``limit=0`` -- asking for no sessions -- silently compiled
+    digests for up to 200 of them, the most expensive read on the surface.
+
+    Anti-vacuity: restore the ``and limit > 0`` fallback and the call returns a
+    bundle computed over the default cap instead of raising, so this
+    ``pytest.raises`` goes red.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="limit must be a positive integer"):
+            await getattr(archive, method_name)(limit=0)
+    finally:
+        await archive.close()
+
+
+async def test_parse_sources_does_not_accept_a_download_assets_switch(tmp_path: Path) -> None:
+    """The removed ``download_assets`` flag refuses loudly instead of no-opping.
+
+    ``parse_sources`` accepted ``download_assets`` and ``del``'d it on the next
+    statement: the archive ingest route it delegates to fetches no assets and
+    has no switch to forward the flag to, so ``download_assets=False`` promised
+    a behaviour change and delivered none. Removing the parameter makes the
+    request fail where it is made.
+
+    Anti-vacuity: re-add ``download_assets: bool = True`` to the signature and
+    this call succeeds (parsing an empty source list) instead of raising
+    ``TypeError``, so the assertion goes red.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with pytest.raises(TypeError):
+            await archive.parse_sources(sources=[], download_assets=False)  # type: ignore[call-arg]
+    finally:
+        await archive.close()
+
+
+async def test_blocked_receipt_is_not_rendered_as_a_no_op(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``blocked`` receipt is a refusal, never an idempotent no-op.
+
+    ``SessionExcisionActuator.apply`` returns ``status="blocked"`` with
+    ``affected_count=0`` when lineage dependents refuse the excision, so a
+    facade that reads only ``affected_count`` reports the refusal as
+    ``no_op``/``already_present``. This drives the same shape through the
+    real ``add_tag`` facade route.
+
+    Anti-vacuity: restore ``changed = receipt.affected_count`` as the only
+    thing read from the receipt (i.e. drop the ``blocked`` check in
+    ``_execute_facade_mutation``) and this returns ``no_op`` instead of
+    raising, making the test red.
+    """
+    from polylogue.api.archive import MutationBlockedError
+    from polylogue.operations.mutation_transaction import MutationReceipt, OperationExecutor
+
+    archive = _archive(tmp_path)
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="blocked-receipt",
+            title="Blocked receipt",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="blocked")],
+                )
+            ],
+        )
+        with ArchiveStore(tmp_path) as archive_db:
+            session_id = write_index_session(archive_db, session)
+
+        def _blocked(self: object, binding: Any, preview: Any, authorization: Any, args: Any) -> MutationReceipt:
+            return MutationReceipt(
+                operation=preview.plan.operation,
+                plan_hash=preview.plan.plan_hash,
+                status="blocked",
+                target_refs=preview.plan.target_refs,
+                affected_count=0,
+                detail="lineage_dependents_present",
+                receipt_ref=None,
+                applied_at=preview.plan.prepared_at,
+            )
+
+        monkeypatch.setattr(OperationExecutor, "execute_bound", _blocked)
+        with pytest.raises(MutationBlockedError) as blocked:
+            await archive.add_tag(session_id, "review")
+        assert blocked.value.detail == "lineage_dependents_present"
+    finally:
+        await archive.close()
+
+
+async def test_apply_time_keyerror_is_not_reported_as_a_missing_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A target that vanishes after AUTHORIZE is not a missing input.
+
+    Anti-vacuity: re-widen the facade handler back to ``except KeyError ->
+    SessionNotFoundError`` around the whole mutation cycle and this test is
+    red, because the apply-time failure is again reported as a session that
+    does not exist.
+    """
+    from polylogue.api.archive import MutationTargetVanishedError
+    from polylogue.operations.mutation_transaction import OperationExecutor
+
+    archive = _archive(tmp_path)
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="vanished-target",
+            title="Vanished target",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="vanish")],
+                )
+            ],
+        )
+        with ArchiveStore(tmp_path) as archive_db:
+            session_id = write_index_session(archive_db, session)
+
+        def _vanish(self: object, binding: Any, preview: Any, authorization: Any, args: Any) -> None:
+            raise KeyError(session_id)
+
+        monkeypatch.setattr(OperationExecutor, "execute_bound", _vanish)
+        with pytest.raises(MutationTargetVanishedError):
+            await archive.add_tag(session_id, "review")
+
+        # The unknown-session route still answers SessionNotFoundError, from
+        # the narrowed lookup window rather than the whole cycle.
+        monkeypatch.undo()
+        with pytest.raises(SessionNotFoundError):
+            await archive.add_tag("codex-session:never-existed", "review")
+    finally:
+        await archive.close()

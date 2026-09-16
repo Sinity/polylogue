@@ -361,7 +361,7 @@ def _prune_attachment_refs(conn: sqlite3.Connection, session_id: str, keep_ref_i
 
 def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
     """Upsert a session record."""
-    from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
+    from polylogue.core.timestamps import to_epoch_ms
 
     res = conn.execute(
         """
@@ -412,8 +412,8 @@ def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
             record.git_branch,
             record.git_repository_url,
             record.provider_project_ref,
-            _timestamp_ms(record.created_at),
-            _timestamp_ms(record.updated_at),
+            to_epoch_ms(record.created_at, numeric_unit="seconds"),
+            to_epoch_ms(record.updated_at, numeric_unit="seconds"),
         ),
     )
     return bool(res.rowcount > 0)

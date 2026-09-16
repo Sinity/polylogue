@@ -1324,3 +1324,80 @@ def test_origin_usage_report_for_archive_root_defaults_when_setting_unset(tmp_pa
     )
 
     assert report.subscription_credit_usd == pytest.approx(pro_report.subscription_credit_usd)
+
+
+# -----------------------------------------------------------------------------
+# USAGE LANE PARTITION AND MISSING-MODEL SAMPLING (bd polylogue-3ad8j)
+# -----------------------------------------------------------------------------
+
+
+def test_separate_reasoning_lane_does_not_subtract_reasoning_twice() -> None:
+    """A disjoint-lane provider keeps its whole output lane as completion tokens.
+
+    ``counters.output_tokens`` already excludes reasoning when
+    ``output_includes_reasoning`` is False, so subtracting again understates
+    completion tokens and breaks the class's own ``has_disjoint_partitions``
+    invariant (``completion_output_tokens == provider_output_tokens``).
+
+    Anti-vacuity: restore the unconditional ``- reasoning`` and the separate
+    lane reports 70 completion tokens against a 100-token provider output,
+    and ``has_disjoint_partitions()`` goes False.
+    """
+    from polylogue.storage.usage import ProviderUsageLanes, UsageCounters
+
+    counters = UsageCounters(input_tokens=50, output_tokens=100, reasoning_output_tokens=30)
+    separate = ProviderUsageLanes.from_counters(
+        counters, reported=True, input_includes_cache=False, output_includes_reasoning=False
+    )
+    assert separate.completion_output_tokens == 100
+    assert separate.reasoning_output_tokens == 30
+    assert separate.has_disjoint_partitions()
+
+    inclusive = ProviderUsageLanes.from_counters(
+        counters, reported=True, input_includes_cache=False, output_includes_reasoning=True
+    )
+    assert inclusive.completion_output_tokens == 70
+    assert inclusive.has_disjoint_partitions()
+
+
+def test_whitespace_only_model_name_is_both_counted_and_sampled(tmp_path: Path) -> None:
+    """The missing-model sample uses the aggregate's explicit TRIM character set.
+
+    SQLite's bare ``TRIM`` strips only U+0020, so a model name of non-space
+    whitespace was classified missing by the aggregate yet excluded from the
+    sample meant to explain that count.
+
+    Anti-vacuity: revert the sample predicate to bare ``TRIM(e.model_name)``
+    and the sample comes back empty while the count stays 1 -- a non-zero
+    missing-model count with no explanatory session.
+    """
+    from polylogue.storage.usage import _sample_event_sessions
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="whitespace-model",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    text="hi",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, session)
+        conn.execute(
+            """
+            INSERT INTO session_provider_usage_events (
+                session_id, position, provider_event_type, model_name
+            ) VALUES (?, 0, 'message_usage', ?)
+            """,
+            ("codex-session:whitespace-model", "\t\x1f"),
+        )
+
+        sampled = _sample_event_sessions(conn, None, None, missing_model=True)
+        assert sampled == {"codex-session": ("codex-session:whitespace-model",)}
+    finally:
+        conn.close()

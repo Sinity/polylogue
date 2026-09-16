@@ -8,17 +8,21 @@ existing content-addressed store before the observation is committed.
 from __future__ import annotations
 
 import hashlib
+import http.client
+import ipaddress
 import json
 import mimetypes
+import socket
 import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 
@@ -102,6 +106,143 @@ def extraction_manifest(payload: bytes, media_type: str | None) -> dict[str, obj
         # metadata or synthetic/public fixtures by default.
         manifest["text"] = {"available": True, "encoding": media_type or "unknown"}
     return manifest
+
+
+class MaterialDestinationRefusedError(Exception):
+    """Permanent refusal: the destination is not an admissible acquisition target.
+
+    This is a policy outcome, not a transport failure. It never becomes
+    retryable convergence debt; callers record it as a permanent observation.
+    """
+
+    def __init__(self, diagnostic: str) -> None:
+        super().__init__(diagnostic)
+        self.diagnostic = diagnostic
+
+
+_MAX_REDIRECT_HOPS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def _address_is_refused(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Reject anything that is not a globally routable unicast destination."""
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        address = mapped
+    return bool(
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def _resolve_addresses(host: str, port: int) -> list[str]:
+    """Resolve one host to literal addresses; the sole DNS seam for acquisition."""
+    infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    ordered: list[str] = []
+    for info in infos:
+        literal = str(info[4][0])
+        if literal not in ordered:
+            ordered.append(literal)
+    return ordered
+
+
+def _vet_destination(url: str) -> tuple[str, int, str]:
+    """Return (host, port, pinned address) or refuse permanently.
+
+    Every resolved address must pass; a DNS-rebinding answer that mixes a
+    public and a private address is refused rather than partially trusted.
+    """
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise MaterialDestinationRefusedError(
+            f"unsupported material URI scheme or missing host: {parsed.scheme or '<none>'}"
+        )
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    addresses = _resolve_addresses(host, port)
+    if not addresses:
+        raise MaterialDestinationRefusedError(f"destination {host!r} resolved to no addresses")
+    for literal in addresses:
+        candidate = ipaddress.ip_address(literal)
+        if _address_is_refused(candidate):
+            raise MaterialDestinationRefusedError(
+                f"destination policy refused non-public address {literal} for host {host!r}"
+            )
+    return host, port, addresses[0]
+
+
+def _pinned_connection_factory(address: str, is_https: bool) -> Callable[..., http.client.HTTPConnection]:
+    """Build a connection factory that dials the vetted address, not the name again.
+
+    Only the socket target is pinned: ``self.host`` keeps the original name, so
+    the ``Host`` header and the TLS SNI value stay correct while a second DNS
+    lookup can no longer substitute a private address (rebinding).
+    """
+
+    def _create_connection(destination: tuple[str, int], *args: object, **kwargs: object) -> socket.socket:
+        return socket.create_connection((address, destination[1]), *args, **kwargs)  # type: ignore[arg-type]
+
+    def factory(host: str, **kwargs: Any) -> http.client.HTTPConnection:
+        connection: http.client.HTTPConnection = (
+            http.client.HTTPSConnection(host, **kwargs) if is_https else http.client.HTTPConnection(host, **kwargs)
+        )
+        connection._create_connection = _create_connection  # type: ignore[attr-defined]
+        return connection
+
+    return factory
+
+
+class _NoRedirectErrorProcessor(urllib.request.HTTPErrorProcessor):
+    """Hand 3xx responses back to the caller so every hop is re-vetted."""
+
+    def http_response(self, request: urllib.request.Request, response: Any) -> Any:
+        code: Any = getattr(response, "status", None) or getattr(response, "code", 200)
+        if int(code or 200) in _REDIRECT_STATUSES:
+            return response
+        return super().http_response(request, response)
+
+    https_response = http_response
+
+
+def _open_url(url: str, address: str, timeout: float) -> Any:
+    """Open one hop against the vetted address without following redirects."""
+    is_https = urllib.parse.urlparse(url).scheme == "https"
+    factory = _pinned_connection_factory(address, is_https)
+
+    base: Any = urllib.request.HTTPSHandler if is_https else urllib.request.HTTPHandler
+
+    class _Handler(base):
+        def _open(self, req: urllib.request.Request) -> Any:
+            return self.do_open(factory, req)
+
+        http_open = _open
+        https_open = _open
+
+    opener = urllib.request.build_opener(_NoRedirectErrorProcessor, _Handler)
+    return opener.open(url, timeout=timeout)
+
+
+def _acquire_response(url: str, timeout: float) -> tuple[Any, str]:
+    """Follow redirects manually, re-vetting the destination at every hop."""
+    current = url
+    for _ in range(_MAX_REDIRECT_HOPS + 1):
+        _host, _port, address = _vet_destination(current)
+        response = _open_url(current, address, timeout)
+        status = int(getattr(response, "status", None) or getattr(response, "code", 200) or 200)
+        if status not in _REDIRECT_STATUSES:
+            return response, current
+        location = response.headers.get("Location")
+        close = getattr(response, "close", None)
+        if callable(close):
+            close()
+        if not location:
+            raise MaterialDestinationRefusedError(f"redirect from {current} carried no Location header")
+        current = urllib.parse.urljoin(current, location)
+    raise MaterialDestinationRefusedError(f"redirect chain exceeded {_MAX_REDIRECT_HOPS} hops from {url}")
 
 
 def admit_material(
@@ -225,11 +366,12 @@ def acquire_material(
 ) -> MaterialObservation:
     """Acquire a URL while retaining a durable claim for every outcome.
 
-    The response is streamed into memory only up to ``max_bytes``. HTTP
-    redirects are followed by urllib and the final URL is recorded in the
-    diagnostic when it differs from the admitted source URI. Transport and
-    policy failures remain material observations rather than exceptions that
-    erase the original link.
+    The response is streamed into memory only up to ``max_bytes``. Redirects
+    are followed manually so that every hop is re-vetted by the destination
+    policy, and the final URL is recorded in the diagnostic when it differs
+    from the admitted source URI. Transport failures remain retryable material
+    observations; a destination the policy refuses is a permanent
+    ``access_denied`` observation with no bytes retained.
     """
     if not source_uri.strip() or not referrer_ref.strip():
         raise ValueError("source_uri and referrer_ref are required")
@@ -251,7 +393,8 @@ def acquire_material(
             privacy_classification=privacy_classification,
         )
     try:
-        with urllib.request.urlopen(source_uri, timeout=timeout_seconds) as response:
+        opened, final_uri = _acquire_response(source_uri, timeout_seconds)
+        with opened as response:
             response_media_type = response.headers.get_content_type()
             response_charset = response.headers.get_content_charset()
             chunks: list[bytes] = []
@@ -264,7 +407,6 @@ def acquire_material(
                 total += len(chunk)
                 if total > max_bytes:
                     payload = b"".join(chunks)[:max_bytes]
-                    final_uri = response.geturl()
                     diagnostic = f"response exceeded bounded acquisition size {max_bytes} bytes"
                     if final_uri != source_uri:
                         diagnostic += f"; redirected to {final_uri}"
@@ -283,7 +425,6 @@ def acquire_material(
                         retryable=True,
                         privacy_classification=privacy_classification,
                     )
-            final_uri = response.geturl()
             diagnostic = "" if final_uri == source_uri else f"redirected to {final_uri}"
             return admit_material(
                 conn,
@@ -298,6 +439,19 @@ def acquire_material(
                 diagnostic=diagnostic,
                 privacy_classification=privacy_classification,
             )
+    except MaterialDestinationRefusedError as exc:
+        return admit_material(
+            conn,
+            blob_store=blob_store,
+            source_uri=source_uri,
+            referrer_ref=referrer_ref,
+            observed_at_ms=observed_at_ms,
+            filename=filename,
+            state="access_denied",
+            diagnostic=exc.diagnostic,
+            retryable=False,
+            privacy_classification=privacy_classification,
+        )
     except urllib.error.HTTPError as exc:
         status = int(exc.code)
         state: MaterialFetchState = (
@@ -494,6 +648,7 @@ def list_material_links(conn: sqlite3.Connection, material_id: str) -> list[Mate
 
 
 __all__ = [
+    "MaterialDestinationRefusedError",
     "MaterialObservation",
     "admit_material",
     "admit_material_file",

@@ -526,8 +526,8 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_live_ingest_storage_route_total{route="archive_full"} 1' in body
         assert 'polylogue_live_ingest_storage_route_total{route="unknown"} 1' in body
         assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="min"} 3.0' in body
-        assert "polylogue_ingest_throughput_sessions_per_second 3.0" in body
-        assert "polylogue_ingest_throughput_messages_per_second 2.0" in body
+        assert "polylogue_ingest_throughput_raw_rows_per_second 3.0" in body
+        assert "polylogue_ingest_throughput_sessions_per_second 2.0" in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 88.0' in body
         assert 'polylogue_live_ingest_memory_mebibytes{kind="cgroup_file"} 33.0' in body
 
@@ -552,8 +552,45 @@ class TestFormatMetricsReadsArchiveState:
 
         body = format_metrics(db)
 
-        assert "polylogue_ingest_throughput_sessions_per_second 4.0" in body
-        assert "polylogue_ingest_throughput_messages_per_second 2.0" in body
+        assert "polylogue_ingest_throughput_raw_rows_per_second 4.0" in body
+        assert "polylogue_ingest_throughput_sessions_per_second 2.0" in body
+
+    def test_messages_per_second_never_carries_the_session_numerator(self, tmp_path: Path) -> None:
+        """No message-throughput series at all while the ledger counts no messages.
+
+        ``ingest_attempts`` records raw rows and materialized sessions only, so
+        the honest rendering is an absent series -- not the session numerator
+        under a messages name, and not the sample-less ``name 0`` line, which
+        would assert a measured zero.
+
+        Anti-vacuity: re-emitting the name, with either ``materialized_count``
+        or an empty sample list, makes a
+        ``polylogue_ingest_throughput_messages_per_second`` line appear and
+        this assertion fail.
+        """
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        db = tmp_path / "index.db"
+        ops_db = db.with_name("ops.db")
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            record_ingest_attempt(
+                conn,
+                attempt_id="v1-completed",
+                status="completed",
+                started_at_ms=1_770_000_010_000,
+                finished_at_ms=1_770_000_020_000,
+                parsed_raw_count=100,
+                materialized_count=50,
+            )
+
+        body = format_metrics(db)
+
+        assert "polylogue_ingest_throughput_messages_per_second" not in body
+        assert "polylogue_ingest_throughput_raw_rows_per_second 10.0" in body
+        assert "polylogue_ingest_throughput_sessions_per_second 5.0" in body
 
     def test_live_ingest_metrics_read_ops_tier_from_archive_tiers(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database

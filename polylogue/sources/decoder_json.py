@@ -263,6 +263,26 @@ def _stream_prefixed_items(
             ) from exc
         return (found_any, records)
     except Exception as exc:
+        if found_any:
+            # Same failure, and therefore the same handling as the JSONError
+            # branch above: records were already recovered, so returning the
+            # partial set silently truncates the session set. Only the
+            # exception type differs (an OS read fault, a decoder assertion, a
+            # backend-specific error), and the type does not change what was
+            # lost.
+            logger_obj.warning(
+                "Partial JSON stream decode of %s (strategy %s): %s after %d record(s)",
+                path_name,
+                strategy_name,
+                type(exc).__name__,
+                len(records),
+            )
+            raise PartialJsonStreamError(
+                path_name,
+                recovered=len(records),
+                offset=_json_error_offset(exc),
+                cause=exc,
+            ) from exc
         logger_obj.debug("Strategy %s failed for %s: %s", strategy_name, path_name, exc)
         return (found_any, records)
 

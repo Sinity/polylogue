@@ -518,3 +518,115 @@ def test_delegation_is_revoked_when_its_lease_fails() -> None:
         with pytest.raises(UnleasedWriteError, match="revoked"):
             with adopt_write_lease(delegation):
                 pass
+
+
+def test_an_inheriting_thread_cannot_bind_itself_into_the_live_lease() -> None:
+    """polylogue-1oa7o residual 1: binding must be delegated, not self-served.
+
+    ``bind_write_lease_thread()`` used to read the ambient lease and add the
+    calling thread's id to it. On this free-threading build *every* thread
+    spawned during a hold inherits that lease, so any of them could join the
+    daemon's live authority by calling it. Binding now requires a single-use
+    grant the owner minted before the thread existed.
+
+    Anti-vacuity: restore the no-argument self-binding form and the worker
+    below joins ``bound_thread_ids``, so both assertions go red. The
+    inheritance itself is real (asserted first), so this is not vacuous.
+    """
+    from polylogue.storage.sqlite.write_lease import bind_write_lease_thread
+
+    observed: dict[str, object] = {}
+
+    def worker() -> None:
+        observed["inherited_lease"] = current_write_lease()
+        try:
+            bind_write_lease_thread(None)  # type: ignore[arg-type]
+        except (UnleasedWriteError, AttributeError) as exc:
+            observed["outcome"] = f"refused: {type(exc).__name__}"
+        else:
+            observed["outcome"] = "bound"
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+        thread = threading.Thread(target=worker, name="self-binding-worker")
+        thread.start()
+        thread.join()
+
+        assert observed["inherited_lease"] is lease
+        assert str(observed["outcome"]).startswith("refused: ")
+        assert lease.authorized_threads() == frozenset({lease.owner_thread_id})
+
+
+def test_a_granted_thread_may_bind_and_write() -> None:
+    """The owner-minted grant is the admitted path the coordinator uses."""
+    from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
+
+    observed: dict[str, object] = {}
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+        grant = grant_write_lease_thread()
+
+        def worker() -> None:
+            bind_write_lease_thread(grant)
+            observed["lease"] = require_write_lease("granted worker write")
+
+        thread = threading.Thread(target=worker, name="granted-worker")
+        thread.start()
+        thread.join()
+
+        assert observed["lease"] is lease
+        assert threading.get_ident() in lease.authorized_threads()
+
+
+def test_a_grant_authorizes_exactly_one_thread() -> None:
+    from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
+
+    outcomes: list[str] = []
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer"):
+        grant = grant_write_lease_thread()
+
+        def worker() -> None:
+            try:
+                bind_write_lease_thread(grant)
+            except UnleasedWriteError:
+                outcomes.append("refused")
+            else:
+                outcomes.append("bound")
+
+        first = threading.Thread(target=worker)
+        first.start()
+        first.join()
+        second = threading.Thread(target=worker)
+        second.start()
+        second.join()
+
+    assert outcomes == ["bound", "refused"]
+
+
+def test_a_nested_lease_in_an_inheriting_thread_is_refused() -> None:
+    """polylogue-1oa7o residual 2: the re-entrant branch had no thread check.
+
+    An inheriting thread asking for ``write_lease(...)`` took the re-entrant
+    path and was handed the parent's lease, creating neither its own authority
+    nor a refusal.
+
+    Anti-vacuity: drop the ``require_write_lease`` call from the re-entrant
+    branch of ``write_lease`` and the worker below reports "granted".
+    """
+    observed: dict[str, object] = {}
+
+    def worker() -> None:
+        try:
+            with write_lease("nested.worker"):
+                observed["outcome"] = "granted"
+        except UnleasedWriteError as exc:
+            observed["outcome"] = f"refused: {exc}"
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+        assert lease is not None
+        thread = threading.Thread(target=worker, name="nested-inheriting-worker")
+        thread.start()
+        thread.join()
+
+    assert str(observed["outcome"]).startswith("refused: ")
+    assert "unauthorized thread" in str(observed["outcome"])

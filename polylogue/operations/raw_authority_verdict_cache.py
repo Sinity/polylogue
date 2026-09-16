@@ -18,7 +18,7 @@ def find_raw_authority_verdict_cache_work(archive_root: Path) -> RawAuthorityVer
         return None
     conn = open_readonly_connection(source_db, timeout_class="background-read")
     try:
-        from polylogue.storage.introspection import table_exists
+        from polylogue.core.sqlite_introspection import table_exists
         from polylogue.storage.raw_authority_verdict_cache import find_raw_authority_verdict_cache_work as find_work
 
         if not table_exists(conn, "raw_sessions") or not table_exists(conn, "raw_authority_verdicts"):

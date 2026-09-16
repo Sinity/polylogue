@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,6 +47,7 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.security.lifecycle import LifecycleMode
 from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -445,6 +447,93 @@ class IdentityResetActuator(_FailClosedRecovery):
 
 
 # ---------------------------------------------------------------------------
+# Filesystem reset (polylogue-4fbgw)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemResetArgs:
+    """Exact set of already-resolved filesystem targets one reset will delete."""
+
+    archive_root: Path
+    #: ``(display name, absolute path)`` pairs, resolved by the daemon from
+    #: the request flags before PREPARE. Carrying the resolved set (rather
+    #: than the flags) keeps PREPARE and APPLY over the identical targets.
+    targets: tuple[tuple[str, Path], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemResetActuator(_FailClosedRecovery):
+    """Actuator for ``mutate-filesystem-reset``: delete archive files and trees.
+
+    This is the largest destructive surface in the product -- it unlinks
+    archive databases and ``shutil.rmtree``s the blob/assets/cache trees.
+    Before polylogue-4fbgw it ran straight out of the daemon handler with the
+    ``audit``/``snapshot`` arguments unused, so an operator who lost their
+    archive to it had no durable record that the operation was attempted, by
+    whom, against which targets, or how far it got -- and an interruption left
+    no attempt row for ``recover_abandoned_attempts`` to sweep. Routing it
+    through :class:`OperationExecutor` writes the preview, authorization and
+    attempt rows *before* the first ``unlink``.
+
+    ``prepare`` re-stats every target so a path that disappeared between
+    resolution and APPLY is reported rather than counted, and never mutates.
+    """
+
+    operation: str = "mutate-filesystem-reset"
+    destructive_class: DestructiveClass = "reset"
+    required_confirmation: ConfirmationStrength = "bound_token"
+
+    def prepare(self, args: FilesystemResetArgs) -> MutationPlan:
+        present = tuple((name, path) for name, path in args.targets if path.exists())
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reset",
+            target_refs=tuple(make_target_ref("path", str(path)) for _name, path in args.targets),
+            affected_tiers=("filesystem",),
+            reversible=False,
+            context={
+                "targets": [[name, str(path)] for name, path in args.targets],
+                "present": [str(path) for _name, path in present],
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: FilesystemResetArgs) -> MutationReceipt:
+        import shutil
+
+        deleted: list[str] = []
+        missing: list[str] = []
+        for name, path in args.targets:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+                deleted.append(name)
+            elif path.is_dir():
+                shutil.rmtree(path)
+                deleted.append(name)
+            else:
+                missing.append(name)
+
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied" if deleted else "already_satisfied",
+            target_refs=plan.target_refs,
+            affected_count=len(deleted),
+            detail=None if deleted else "no_existing_targets",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={
+                "deleted": len(deleted),
+                "targets": deleted,
+                # Named rather than silently folded into the count: a target
+                # that vanished between PREPARE and APPLY is evidence about
+                # the archive, not a successful deletion.
+                "absent_at_apply": missing,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
 # Pending blob-GC generation abandonment
 # ---------------------------------------------------------------------------
 
@@ -677,10 +766,10 @@ class BulkTagActuator(_FailClosedRecovery):
     """Actuator for ``mutate-bulk-tag-sessions``: reversible multi-target tagging.
 
     Real production mutation: ``ArchiveStore.add_user_tags`` applied per
-    resolved session, mirroring ``PolylogueArchiveMixin.bulk_tag_sessions``'s
-    existing skip-unresolved behavior -- ``prepare`` only plans sessions that
-    resolve against live state right now, same pattern as
-    ``SessionDeleteActuator``.
+    resolved session. ``prepare`` plans the sessions that resolve against live
+    state right now and records the ones that do not as a named gap, so an id
+    excised between selection and execution makes the receipt ``degraded``
+    instead of a success over a silently smaller set.
     """
 
     operation: str = "mutate-bulk-tag-sessions"
@@ -688,12 +777,7 @@ class BulkTagActuator(_FailClosedRecovery):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: BulkTagArgs) -> MutationPlan:
-        resolved: list[str] = []
-        for session_id in dict.fromkeys(args.session_ids):
-            try:
-                resolved.append(args.archive.resolve_session_id(session_id))
-            except KeyError:
-                continue
+        resolved, _unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -701,7 +785,7 @@ class BulkTagActuator(_FailClosedRecovery):
             affected_tiers=("user",),
             reversible=True,
             context={
-                "session_ids": resolved,
+                "session_ids": list(resolved),
                 "tags": list(args.tags),
                 "requested_session_count": len(args.session_ids),
             },
@@ -720,6 +804,8 @@ class BulkTagActuator(_FailClosedRecovery):
             assertions += changed
             if changed > 0:
                 affected += 1
+        _, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        outcome = _narrowed_plan_outcome(matched=affected, unresolved=unresolved)
         status: MutationTargetStatus = "applied" if affected else "already_satisfied"
         return MutationReceipt(
             operation=self.operation,
@@ -727,7 +813,7 @@ class BulkTagActuator(_FailClosedRecovery):
             status=status,
             target_refs=plan.target_refs,
             affected_count=affected,
-            detail=None if affected else "no_sessions_changed",
+            detail=_narrowed_plan_detail(affected=affected, unresolved=unresolved),
             receipt_ref=None,
             applied_at=plan.prepared_at,
             domain_receipt={
@@ -735,6 +821,8 @@ class BulkTagActuator(_FailClosedRecovery):
                 "tag_count": len(tags),
                 "affected_count": affected,
                 "skipped_count": requested_count - affected,
+                "unresolved_session_ids": list(unresolved),
+                "outcome": outcome.to_dict(),
                 # Sessions changed (``affected_count``) and session/tag pairs
                 # written differ whenever more than one tag is applied; a
                 # surface that reports pairs needs the second number.
@@ -818,10 +906,11 @@ class BulkMetadataSetActuator(_FailClosedRecovery):
     Real production mutation: ``ArchiveStore.set_user_metadata`` applied per
     resolved session, the multi-target sibling of ``MetadataSetActuator`` in
     the same relationship ``BulkTagActuator`` has to ``TagAddActuator``.
-    ``prepare`` plans only sessions that resolve against live state, so a
-    session deleted between selection and execution is skipped rather than
-    failing the whole batch.  Key validation stays in the adapter, matching
-    the single-target actuator's contract.
+    ``prepare`` plans only sessions that resolve against live state and carries
+    the unresolved ids as a named gap, so a session deleted between selection
+    and execution degrades the receipt rather than failing the whole batch or
+    vanishing from it.  Key validation stays in the adapter, matching the
+    single-target actuator's contract.
     """
 
     operation: str = "mutate-bulk-set-metadata"
@@ -829,12 +918,7 @@ class BulkMetadataSetActuator(_FailClosedRecovery):
     required_confirmation: ConfirmationStrength = "role_only"
 
     def prepare(self, args: BulkMetadataSetArgs) -> MutationPlan:
-        resolved: list[str] = []
-        for session_id in dict.fromkeys(args.session_ids):
-            try:
-                resolved.append(args.archive.resolve_session_id(session_id))
-            except KeyError:
-                continue
+        resolved, _unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -842,7 +926,7 @@ class BulkMetadataSetActuator(_FailClosedRecovery):
             affected_tiers=("user",),
             reversible=True,
             context={
-                "session_ids": resolved,
+                "session_ids": list(resolved),
                 "pairs": [[key, value] for key, value in args.pairs],
                 "requested_session_count": len(args.session_ids),
             },
@@ -860,6 +944,8 @@ class BulkMetadataSetActuator(_FailClosedRecovery):
             assertions += changed
             if changed > 0:
                 affected += 1
+        _, unresolved = _partition_requested_session_ids(args.archive, args.session_ids)
+        outcome = _narrowed_plan_outcome(matched=affected, unresolved=unresolved)
         status: MutationTargetStatus = "applied" if affected else "already_satisfied"
         return MutationReceipt(
             operation=self.operation,
@@ -867,7 +953,7 @@ class BulkMetadataSetActuator(_FailClosedRecovery):
             status=status,
             target_refs=plan.target_refs,
             affected_count=affected,
-            detail=None if affected else "no_sessions_changed",
+            detail=_narrowed_plan_detail(affected=affected, unresolved=unresolved),
             receipt_ref=None,
             applied_at=plan.prepared_at,
             domain_receipt={
@@ -875,6 +961,8 @@ class BulkMetadataSetActuator(_FailClosedRecovery):
                 "key_count": len(pairs),
                 "affected_count": affected,
                 "skipped_count": requested_count - affected,
+                "unresolved_session_ids": list(unresolved),
+                "outcome": outcome.to_dict(),
                 # Sessions changed and session/key pairs written differ
                 # whenever more than one key is set; see ``BulkTagActuator``.
                 "assertion_count": assertions,
@@ -2173,13 +2261,11 @@ class InsightsRebuildActuator(_FailClosedRecovery):
         if args.session_ids is None:
             resolved = tuple(summary.session_id for summary in args.archive.list_summaries(limit=1_000_000))
         else:
-            resolved = tuple(
-                dict.fromkeys(
-                    resolved_id
-                    for session_id in args.session_ids
-                    for resolved_id in _resolve_session_id(args.archive, session_id)
-                )
-            )
+            # An explicitly named session that does not resolve is a caller
+            # error, not a smaller sweep: every single-target actuator lets
+            # ``resolve_session_id`` raise here, and dropping the id would
+            # rebuild a narrower scope than the caller authorized.
+            resolved = tuple(dict.fromkeys(args.archive.resolve_session_id(sid) for sid in args.session_ids))
         scope_kind: Literal["explicit", "full"] = "full" if args.session_ids is None else "explicit"
         manifest_digest = hashlib.sha256(
             json.dumps(
@@ -2238,14 +2324,58 @@ class InsightsRebuildActuator(_FailClosedRecovery):
         )
 
 
-def _resolve_session_id(archive: ArchiveStore, session_id: str) -> tuple[str, ...]:
-    try:
-        return (archive.resolve_session_id(session_id),)
-    except KeyError:
-        return ()
+#: The one named gap a multi-target mutation reports when the caller named a
+#: session the archive could not resolve at PREPARE time.
+UNRESOLVED_SESSION_GAP = "unresolved_session_ids"
+
+
+def _partition_requested_session_ids(
+    archive: ArchiveStore, session_ids: Sequence[str]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split caller-named ids into (resolved, unresolved), preserving order.
+
+    A multi-target mutation may not silently shrink to the ids that still
+    resolve: an id excised between selection and execution is a *named gap*,
+    not an absence of intent. PREPARE plans the resolved half; APPLY re-runs
+    this split over the caller's own ids so it can decide one honest terminal
+    outcome instead of reporting success over a smaller set than the caller
+    asked for. The declared plan context is a closed model
+    (``machine_plan_context``), so the gap is carried on the receipt, which is
+    where the terminal outcome is decided anyway.
+    """
+
+    resolved: list[str] = []
+    unresolved: list[str] = []
+    for session_id in dict.fromkeys(session_ids):
+        try:
+            resolved.append(archive.resolve_session_id(session_id))
+        except KeyError:
+            unresolved.append(session_id)
+    return tuple(resolved), tuple(unresolved)
+
+
+def _narrowed_plan_outcome(*, matched: int, unresolved: Sequence[str]) -> OutcomeEnvelope:
+    """Decide the terminal outcome of a mutation whose plan named a gap.
+
+    ``degraded`` outranks ``empty``: a bulk mutation that changed nothing
+    because every named id had been excised is not an empty scope.
+    """
+
+    return decide_outcome(
+        matched=matched,
+        degraded=(UNRESOLVED_SESSION_GAP,) if unresolved else (),
+        detail={UNRESOLVED_SESSION_GAP: list(unresolved)} if unresolved else None,
+    )
+
+
+def _narrowed_plan_detail(*, affected: int, unresolved: Sequence[str]) -> str | None:
+    if unresolved:
+        return UNRESOLVED_SESSION_GAP
+    return None if affected else "no_sessions_changed"
 
 
 __all__ = [
+    "UNRESOLVED_SESSION_GAP",
     "AnnotationDeleteActuator",
     "AnnotationDeleteArgs",
     "AnnotationSaveActuator",

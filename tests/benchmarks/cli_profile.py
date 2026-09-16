@@ -33,8 +33,6 @@ PROFILE_METRICS: tuple[str, ...] = (
     "warm_roundtrip_ms",
     "static_completion_ms",
     "live_completion_ms",
-    "first_byte_ms",
-    "full_render_ms",
     "fuzzy_launch_ms",
     "pagination_ms",
     "cancellation_ms",

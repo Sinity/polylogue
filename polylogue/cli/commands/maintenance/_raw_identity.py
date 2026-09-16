@@ -242,9 +242,18 @@ def raw_authority_blocker_resolve_command(
     )
     receipt_result = result.get("result")
     receipt = receipt_result if isinstance(receipt_result, dict) else {}
+    affected_value = result.get("affected_count", 0)
+    affected = affected_value if isinstance(affected_value, int) else 0
     if output_format == "json":
         click.echo(json.dumps(receipt, indent=2, sort_keys=True))
+        if not affected:
+            raise SystemExit(1)
         return
+    if not affected:
+        # The actuator answered ``already_satisfied`` with a zero affected
+        # count: nothing was resolved. Printing "Resolved <id>" here reported a
+        # no-op as a durable effect -- the defect this branch exists to close.
+        raise click.ClickException(f"blocker {blocker_id} not found or already resolved; nothing was mutated")
     click.echo(f"Resolved {blocker_id}")
     current_plan = receipt.get("current_plan")
     if isinstance(current_plan, dict):

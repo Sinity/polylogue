@@ -34,6 +34,7 @@ from polylogue.surfaces.payloads import (
     model_json_document,
     session_list_envelope_from_summary,
 )
+from polylogue.surfaces.projection_spec import RenderDestination
 from polylogue.surfaces.query_rows import TITLE_BUDGET, search_row, session_row
 
 logger = get_logger(__name__)
@@ -203,11 +204,11 @@ def deliver_query_output(
 ) -> None:
     """Deliver a rendered query document to every requested destination."""
     for destination in document.destinations:
-        if destination.kind == "stdout":
+        if destination.kind in (RenderDestination.STDOUT, RenderDestination.TERMINAL):
             click.echo(document.content)
-        elif destination.kind == "browser":
+        elif destination.kind is RenderDestination.BROWSER:
             open_in_browser(env, document.content, document.output_format, document.session)
-        elif destination.kind == "clipboard":
+        elif destination.kind is RenderDestination.CLIPBOARD:
             copy_to_clipboard(env, document.content)
         else:
             assert destination.path is not None

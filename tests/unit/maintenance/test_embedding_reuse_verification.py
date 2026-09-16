@@ -17,6 +17,7 @@ from polylogue.maintenance.embedding_preservation import (
     recomputed_vector_hashes,
     verify_embedding_reuse,
 )
+from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -86,7 +87,7 @@ def _reuse_fixture(tmp_path: Path, *, restored: tuple[bytes, ...] | None = None)
     """A preserved copy, plus a fresh embeddings tier holding ``restored``."""
     index = tmp_path / "index.db"
     _index_db(index, _PROSE)
-    recomputed = recomputed_vector_hashes(index, model=_MODEL)
+    recomputed = recomputed_vector_hashes(index, recipe=EmbeddingRecipe.current(model=_MODEL, dimensions=1024))
     wanted = tuple(sorted(recomputed.values()))
 
     source = tmp_path / "source.db"
@@ -106,7 +107,7 @@ def test_recomputed_hashes_come_from_the_production_embeddable_relation(tmp_path
     index = tmp_path / "index.db"
     _index_db(index, _PROSE)
 
-    recomputed = recomputed_vector_hashes(index, model=_MODEL)
+    recomputed = recomputed_vector_hashes(index, recipe=EmbeddingRecipe.current(model=_MODEL, dimensions=1024))
 
     assert set(recomputed) == {"msg-0", "msg-1"}
     assert recomputed["msg-0"] == vector_derivation_hash(model=_MODEL, input_text=_PROSE[0])

@@ -12,10 +12,10 @@ import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
 __all__ = [

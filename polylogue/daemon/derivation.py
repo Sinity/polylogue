@@ -784,6 +784,10 @@ class _Pass:
         def _publish(adapter: DerivationAdapter = adapter, replacement: ReplacementLike = replacement) -> bool:
             return adapter.publish(self.frame, replacement)
 
+        # The publication budget bounds *attempts*, not successes. Counting
+        # only certified publications lets an adapter that always mis-publishes
+        # issue unbounded publish() calls inside one pass (polylogue-tjtua).
+        self.published += 1
         try:
             accepted = self.publisher(adapter.domain, _publish) if self.publisher is not None else _publish()
         except Exception as exc:
@@ -873,7 +877,6 @@ class _Pass:
             )
             return
 
-        self.published += 1
         self.record(KeyOutcome(key=derivation_key, outcome=Outcome.DONE, elapsed_s=elapsed))
 
     # ── one domain ─────────────────────────────────────────────────
@@ -955,10 +958,13 @@ class _Pass:
                                     error=f"inspect: {key_exc}",
                                 )
                             )
-                            # A recorded verdict prevents the main loop from
-                            # trying to compute a key whose authority it could
-                            # not inspect; exact dependants observe FAILED.
-                            statuses[key] = KeyStatus.VALID
+                            # A recorded FAILED verdict already stops the main
+                            # loop from computing a key whose authority could
+                            # not be inspected, and dependants observe FAILED.
+                            # Claiming VALID here would additionally assert the
+                            # output *is* up to date, which the failed inspect
+                            # is precisely the absence of evidence for
+                            # (polylogue-tjtua). Leave the status unrecorded.
                 self.inspected += len(keys)
             else:
                 statuses = dict.fromkeys(keys, KeyStatus.EXCESS)

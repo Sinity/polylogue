@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pickle
 import shutil
@@ -9,7 +10,7 @@ import sqlite3
 import tempfile
 import threading
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
@@ -65,7 +66,7 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
@@ -89,7 +90,12 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     apply_source_raw_state_update,
     upsert_raw_artifact,
 )
-from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, prepare_session_rows, prepare_session_shard
+from polylogue.storage.sqlite.archive_tiers.write import (
+    PreparedRows,
+    PreparedSessionWriteRefusedError,
+    prepare_session_rows,
+    prepare_session_shard,
+)
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
@@ -679,6 +685,14 @@ class RevisionBackfillResult:
     replayed_logical_sources: int
     quarantined: int
     adoption_deferred: int = 0
+    #: How many replay units fell back from shard-resident lowering to inline
+    #: lowering because the writer refused the prepared rows (polylogue-k00uq).
+    #: A shard is sealed by a parse worker with no archive connection, so it
+    #: cannot slice the prefix-tail a prefix-sharing child actually stores --
+    #: ``_extract_prefix_tail`` needs a live read of the already-archived
+    #: parent. The unit is still written, by the ordinary inline path; this
+    #: names and counts the degradation instead of aborting the whole replay.
+    shard_lowering_degraded: int = 0
     #: Wall-clock seconds per named stage of this backfill call, keyed by the
     #: SAME names logged as ``"backfill stage timings: ..."`` below --
     #: ``census``/``census_receipt``/``spill_load`` (decode-side, computed
@@ -983,6 +997,17 @@ class RawRevisionReplayResourceBlockedError(RuntimeError):
         self.limit_bytes = limit_bytes
         self.total_bytes = total_bytes
         super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
+
+
+class AntigravityTrajectoryDriftError(RuntimeError):
+    """The live ``.pb`` trajectory no longer matches the retained blob.
+
+    Antigravity replay cannot decode retained bytes on its own (protobuf
+    decoding needs a live language-server client), so it re-reads the file.
+    When that file has drifted, replaying it would bind current content to an
+    older revision's ``raw_id``. This refusal counts as a replay degradation
+    exactly the way the other replay ``RuntimeError``s do.
+    """
 
 
 class RebuildDeadlineExceededError(RuntimeError):
@@ -2517,6 +2542,7 @@ def backfill_historical_revision_evidence(
 
     adoption_deferred = 0
     quarantined = 0
+    shard_lowering_degraded = 0
     stage_timings: dict[str, float] = {}
     whale_envelope: dict[str, int] = {}
     logical_keys: set[str] = set()
@@ -2674,7 +2700,11 @@ def backfill_historical_revision_evidence(
         ordered_logical_keys = list(replay_schedule.order)
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
-            decode_prefetcher = _ReplaySpillPrefetcher(spill, archive_root=archive_root)
+            decode_prefetcher = _ReplaySpillPrefetcher(
+                spill,
+                archive_root=archive_root,
+                index_db_path=archive.index_db_path if archive.index_connection is not None else None,
+            )
             spill.attach_prefetcher(decode_prefetcher)
             decode_prefetcher.start_phase(ordered_logical_keys, provisional_full_raw_ids)
         try:
@@ -2827,8 +2857,40 @@ def backfill_historical_revision_evidence(
                             if len(plan.accepted_raw_ids) == 1
                             else shard_transport.add_composed(tip_raw_id, composed[0])
                         )
-                        with archive.attached_session_shard(shard_path, required=True) as bindings:
-                            prepared = _required_shard_prepared_rows(tip_raw_id, composed[0], bindings)
+                        try:
+                            with archive.attached_session_shard(shard_path, required=True) as bindings:
+                                prepared = _required_shard_prepared_rows(tip_raw_id, composed[0], bindings)
+                                archive.apply_raw_revision_replay(
+                                    plan,
+                                    parsed_by_raw_id,
+                                    acquired_at_ms=0,
+                                    stage_timings_s=stage_timings,
+                                    manage_transaction=True,
+                                    bulk_fts=bulk_fts,
+                                    bulk_build=bulk_build,
+                                    fresh_build=fresh_build,
+                                    fresh_build_batch=fresh_build_batch,
+                                    prepared_aggregate_rows=prepared[tip_raw_id],
+                                    prepared_required_raw_ids=frozenset({tip_raw_id}),
+                                )
+                        except PreparedSessionWriteRefusedError as exc:
+                            # polylogue-k00uq: the writer sliced this session's
+                            # messages against an already-archived parent
+                            # (``lineage_inheritance == 'prefix-sharing'``), so
+                            # the shard's rows -- sealed off-thread with no DB
+                            # read -- describe the unsliced session and are
+                            # correctly refused. The refusal is raised before
+                            # the write transaction opens, so nothing of this
+                            # unit landed; write it by the ordinary inline path
+                            # and count the named degradation. Never a skip.
+                            shard_lowering_degraded += 1
+                            _LOGGER.warning(
+                                "shard_lowering_degraded: logical_key=%s tip_raw_id=%s falling back to inline "
+                                "lowering (%s)",
+                                plan.logical_source_key,
+                                tip_raw_id,
+                                exc,
+                            )
                             archive.apply_raw_revision_replay(
                                 plan,
                                 parsed_by_raw_id,
@@ -2839,8 +2901,6 @@ def backfill_historical_revision_evidence(
                                 bulk_build=bulk_build,
                                 fresh_build=fresh_build,
                                 fresh_build_batch=fresh_build_batch,
-                                prepared_aggregate_rows=prepared[tip_raw_id],
-                                prepared_required_raw_ids=frozenset({tip_raw_id}),
                             )
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
@@ -2969,10 +3029,37 @@ def backfill_historical_revision_evidence(
                     else:
                         accepted_raw_id = classification.accepted_raw_ids[-1]
                         accepted_session = member_sessions[accepted_raw_id]
-                        with archive.attached_session_shard(
-                            shard_transport.path_for_raw(accepted_raw_id), required=True
-                        ) as bindings:
-                            prepared = _required_shard_prepared_rows(accepted_raw_id, accepted_session, bindings)
+                        try:
+                            with archive.attached_session_shard(
+                                shard_transport.path_for_raw(accepted_raw_id), required=True
+                            ) as bindings:
+                                prepared = _required_shard_prepared_rows(accepted_raw_id, accepted_session, bindings)
+                                archive.apply_raw_membership_classification(
+                                    logical_key,
+                                    classification,
+                                    member_sessions,
+                                    projections,
+                                    acquired_at_ms=0,
+                                    stage_timings_s=stage_timings,
+                                    manage_transaction=True,
+                                    bulk_fts=bulk_fts,
+                                    bulk_build=bulk_build,
+                                    fresh_build=fresh_build,
+                                    fresh_build_batch=fresh_build_batch,
+                                    prepared_by_raw_id=prepared,
+                                    prepared_required_raw_ids=frozenset({accepted_raw_id}),
+                                )
+                        except PreparedSessionWriteRefusedError as exc:
+                            # polylogue-k00uq, membership half: same cause and
+                            # same remedy as the byte-replay branch above.
+                            shard_lowering_degraded += 1
+                            _LOGGER.warning(
+                                "shard_lowering_degraded: logical_key=%s accepted_raw_id=%s falling back to "
+                                "inline lowering (%s)",
+                                logical_key,
+                                accepted_raw_id,
+                                exc,
+                            )
                             archive.apply_raw_membership_classification(
                                 logical_key,
                                 classification,
@@ -2985,8 +3072,6 @@ def backfill_historical_revision_evidence(
                                 bulk_build=bulk_build,
                                 fresh_build=fresh_build,
                                 fresh_build_batch=fresh_build_batch,
-                                prepared_by_raw_id=prepared,
-                                prepared_required_raw_ids=frozenset({accepted_raw_id}),
                             )
                 except sqlite3.IntegrityError as exc:
                     raise sqlite3.IntegrityError(
@@ -3047,6 +3132,7 @@ def backfill_historical_revision_evidence(
         replayed,
         census.quarantined + quarantined,
         adoption_deferred,
+        shard_lowering_degraded,
         stage_timings_s=stage_timings,
         whale_envelope=whale_envelope,
     )
@@ -3178,8 +3264,10 @@ def census_parse_worker(
 #: ``profile_root``/artifact path from ``source_path``
 #: (the retired Antigravity brain-metadata session route);
 #: ``Provider.HERMES``'s ATOF/ATIF/verification-evidence modes likewise
-#: derive ``profile_root`` from ``source_path``. Those three keep the
-#: conservative same-path-only dedup below. ``Provider.UNKNOWN`` (browser
+#: derive ``profile_root`` from ``source_path``. Those keep the
+#: conservative same-path-only dedup below. ``Provider.GROK`` is
+#: path-independent: its identity is content-derived (polylogue-31zag), so
+#: two same-bytes exports at different paths are one conversation. ``Provider.UNKNOWN`` (browser
 #: capture / unclassified) is also excluded out of caution -- its identity
 #: derivation is not centrally audited here.
 _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
@@ -3381,14 +3469,41 @@ def _normalize_retained_parse_sessions(
     return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
 
 
+#: Counted enrichment degradations, keyed by reason. ``_replay_safe_enrich_sessions``
+#: is the single enrichment entry point for every replay decode path; when a
+#: caller cannot supply the evidence handles the provider's ladder needs, the
+#: shortfall is counted HERE rather than silently falling through to a
+#: parsed-content heuristic. Replay determinism is then auditable: a nonzero
+#: count means some raw's title/assembly came from content, not durable
+#: evidence, and the receipt says so.
+_ENRICHMENT_DEGRADATIONS: Counter[str] = Counter()
+_ENRICHMENT_DEGRADATIONS_LOCK = threading.Lock()
+
+
+def _count_enrichment_degradation(reason: str) -> None:
+    with _ENRICHMENT_DEGRADATIONS_LOCK:
+        _ENRICHMENT_DEGRADATIONS[reason] += 1
+
+
+def replay_enrichment_degradations() -> dict[str, int]:
+    """Snapshot the counted enrichment degradations (test/receipt surface)."""
+    with _ENRICHMENT_DEGRADATIONS_LOCK:
+        return dict(_ENRICHMENT_DEGRADATIONS)
+
+
+def reset_replay_enrichment_degradations() -> None:
+    with _ENRICHMENT_DEGRADATIONS_LOCK:
+        _ENRICHMENT_DEGRADATIONS.clear()
+
+
 def _replay_safe_enrich_sessions(
     *,
     provider: Provider,
     sessions: list[ParsedSession],
-    index_conn: sqlite3.Connection | None = None,
-    source_conn: sqlite3.Connection | None = None,
-    blob_root: Path | None = None,
-    source_path: str | None = None,
+    index_conn: sqlite3.Connection | None,
+    source_conn: sqlite3.Connection | None,
+    blob_root: Path | None,
+    source_path: str | None,
 ) -> list[ParsedSession]:
     """Enrich one retained parse without consulting ambient source files.
 
@@ -3397,6 +3512,14 @@ def _replay_safe_enrich_sessions(
     same curated titles a live ingest does instead of baking in the
     content-heuristic first-prompt fallback. Without an index connection the
     bundle stays empty and only the parsed-content fallbacks apply.
+
+    polylogue-sqy57: every handle is a REQUIRED keyword, with no default. The
+    cache-miss decode paths (the spill prefetcher's reparse and
+    ``_ParsedSessionSpill.for_raw``'s inline reparse) previously omitted them
+    and silently produced heuristic titles, making replay output depend on
+    cache state instead of durable evidence. A caller that genuinely has no
+    handle passes ``None`` and the shortfall is counted by
+    ``replay_enrichment_degradations()``; it is never silent.
     """
     from polylogue.sources.assembly import SidecarData, get_assembly_spec
 
@@ -3404,6 +3527,8 @@ def _replay_safe_enrich_sessions(
     if spec is None:
         return sessions
     sidecar_data = cast("SidecarData", {})
+    if provider is Provider.CODEX and index_conn is None:
+        _count_enrichment_degradation("codex_titles_without_index_conn")
     if provider is Provider.CODEX and index_conn is not None:
         from polylogue.sources.codex_state_projection import read_thread_titles
 
@@ -3411,6 +3536,8 @@ def _replay_safe_enrich_sessions(
         titles = read_thread_titles(index_conn, thread_ids=thread_ids, source_path=source_path)
         if titles:
             sidecar_data = cast("SidecarData", {"retained_state_titles": titles})
+    if source_conn is None or blob_root is None or not source_path:
+        _count_enrichment_degradation("retained_assembly_without_source_evidence")
     if source_conn is not None and blob_root is not None and source_path:
         # polylogue-ximhz: Claude Code index/history and ChatGPT asset maps
         # are retained source artifacts. Replay resolves them from the source
@@ -3768,12 +3895,19 @@ class _ReplaySpillPrefetcher:
         spill: _ParsedSessionSpill,
         *,
         archive_root: Path,
+        index_db_path: Path | None = None,
         max_buffered_tree_bytes: int | None = None,
     ) -> None:
         self._spill = spill
         self._archive_root = archive_root
         self._source_db_path = archive_root / "source.db"
         self._blob_root = archive_root / "blob"
+        # polylogue-sqy57: the worker thread must never touch the writer's
+        # handles (sqlite connections are thread-affine), so it opens its own
+        # read-only index.db snapshot from this path. ``None`` means the
+        # archive holds no index tier at all; the enrichment entry point then
+        # counts the shortfall instead of silently degrading.
+        self._index_db_path = index_db_path
         if max_buffered_tree_bytes is not None:
             self._budget = max_buffered_tree_bytes
         else:
@@ -3879,6 +4013,8 @@ class _ReplaySpillPrefetcher:
             stats["spill_prefetch.reparse_hits"] = float(self.reparse_hits)
             stats["spill_prefetch.consumed"] = float(self.consumed)
             stats["spill_prefetch.decode_concurrent"] = self.decode_seconds
+        for reason, count in replay_enrichment_degradations().items():
+            stats[f"replay_enrichment_degraded.{reason}"] = float(count)
         return stats
 
     def _drop_buffer_locked(self) -> None:
@@ -3900,6 +4036,17 @@ class _ReplaySpillPrefetcher:
         # NOTE: ``with sqlite_connection(...)`` would only manage a
         # transaction, not the connection lifetime -- close explicitly.
         source_conn = sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0)
+        # Per-thread read-only index handle (WAL: snapshot reads never block
+        # the writer). Opened and closed entirely on this worker thread so no
+        # connection is ever shared across threads.
+        index_conn: sqlite3.Connection | None = None
+        if self._index_db_path is not None and self._index_db_path.exists():
+            try:
+                index_conn = sqlite3.connect(f"file:{self._index_db_path}?mode=ro", uri=True, timeout=30.0)
+                index_conn.execute("PRAGMA busy_timeout = 30000")
+            except sqlite3.Error:
+                _LOGGER.warning("replay prefetch could not open a read-only index handle", exc_info=True)
+                index_conn = None
         spill_conn: sqlite3.Connection | None = None
         try:
             plan, descriptors = self._build_plan(source_conn, keys, extra_members)
@@ -3920,6 +4067,7 @@ class _ReplaySpillPrefetcher:
                 decoded = self._decode(
                     spill_conn,
                     source_conn,
+                    index_conn,
                     raw_id,
                     descriptors,
                 )
@@ -3939,6 +4087,8 @@ class _ReplaySpillPrefetcher:
         finally:
             if spill_conn is not None:
                 spill_conn.close()
+            if index_conn is not None:
+                index_conn.close()
             source_conn.close()
 
     def _wait_for_budget(self, generation: int, seq: int) -> bool:
@@ -4030,6 +4180,7 @@ class _ReplaySpillPrefetcher:
         self,
         spill_conn: sqlite3.Connection,
         source_conn: sqlite3.Connection,
+        index_conn: sqlite3.Connection | None,
         raw_id: str,
         descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
     ) -> tuple[list[ParsedSession], int, bool] | None:
@@ -4073,6 +4224,10 @@ class _ReplaySpillPrefetcher:
         sessions_or_none = _replay_safe_enrich_sessions(
             provider=provider,
             sessions=sessions_or_none,
+            index_conn=index_conn,
+            source_conn=source_conn,
+            blob_root=self._blob_root,
+            source_path=source_path,
         )
         self.reparse_hits += 1
         self.decode_seconds += time.perf_counter() - started
@@ -4355,11 +4510,14 @@ class _ParsedSessionSpill:
         if rows:
             return [pickle.loads(bytes(row[0])) for row in rows], int(rows[0][1])
         sessions, payload_bytes, _kind = _parse_retained_raw(archive, raw_id)
-        provider, _blob_hash, _source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
         sessions = _replay_safe_enrich_sessions(
             provider=provider,
             sessions=sessions,
             index_conn=archive.index_connection,
+            source_conn=archive.source_connection,
+            blob_root=Path(archive.archive_root) / "blob",
+            source_path=source_path,
         )
         self.add(raw_id, sessions, payload_bytes=payload_bytes)
         return sessions, payload_bytes
@@ -4564,6 +4722,25 @@ def _parse_one_raw(
             raise RuntimeError(
                 f"Antigravity raw replay requires its original conversations/<cascade_id>.pb trajectory: {source_path}"
             )
+        # Antigravity decoding needs a live language-server client, so this
+        # replay re-derives from the file on disk rather than from the
+        # retained bytes. Antigravity rewrites conversations/<cascade_id>.pb
+        # in place, so an unchecked replay would return CURRENT content under
+        # an OLDER revision's raw_id -- rebuildable state derived from mutable
+        # source instead of from the archived bytes. Existence and session
+        # count do not detect that; only the bytes do. A drifted file is a
+        # typed refusal, never a silent substitution.
+        try:
+            live_bytes = trajectory_path.read_bytes()
+        except OSError as exc:
+            raise AntigravityTrajectoryDriftError(
+                f"Antigravity trajectory is unreadable for replay: {source_path}: {exc}"
+            ) from exc
+        if hashlib.sha256(live_bytes).digest() != hashlib.sha256(payload).digest():
+            raise AntigravityTrajectoryDriftError(
+                "Antigravity trajectory on disk no longer matches the retained blob for this revision; "
+                f"refusing to replay current content under the retained raw id: {source_path}"
+            )
         cascade_id = trajectory_path.stem
         sessions = list(antigravity.iter_language_server_exports(root, only_cascade_ids=frozenset({cascade_id})))
         if len(sessions) != 1 or sessions[0].provider_session_id != cascade_id:
@@ -4582,14 +4759,14 @@ def _parse_one_raw(
                 return hermes_state.parse_state_db(
                     sqlite_path,
                     fallback_id=fallback_id,
-                    profile_root=Path(source_path).parent,
+                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
                     immutable=True,
                 )
             if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
                 return hermes_verification.parse_verification_evidence_db(
                     sqlite_path,
                     fallback_id=fallback_id,
-                    profile_root=Path(source_path).parent,
+                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
                     immutable=True,
                 )
     if provider is Provider.ANTIGRAVITY and looks_like_logical_source_bytes(payload):

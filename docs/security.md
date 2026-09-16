@@ -154,7 +154,14 @@ warranted, excise.
 `polylogue ops scan-secrets --session <id>` is the production entrypoint
 (`scan_session_for_secret_candidates`, `polylogue/cli/commands/
 scan_secrets.py`): it reads the session's block text/tool-input from
-`index.db`, scans it, and writes candidates into `user.db`. Without this
+`index.db`, scans it, and writes candidates into `user.db`. Coverage is not
+block-only: `_scan_targets_for_session` also scans `sessions.instructions_text`
+(the system prompt), `sessions.title`, `sessions.git_repository_url` and
+`messages.user_context_text`, recorded under `session:`/`message:` refs that
+excision already resolves (polylogue-97o2z). Both the single-session and
+archive-wide sweeps go through that one helper, so a column cannot be covered
+by one route and missed by the other; `SECRET_SCAN_VERSION` was bumped to 2 so
+existing coverage rows rescan. Without this
 caller the regex/entropy rules and the write path exist but nothing in the
 running archive ever invokes them (fix-round note, 2026-07-14).
 
@@ -194,6 +201,13 @@ directly, reusing the same never-log-the-literal invariant:
   streaming fast paths, immediately after) the file lands on disk, and a
   finding prints the same warning to the console. Still not a hard block —
   same rationale as the pre-commit gate.
+
+`scan_path_for_secret_candidates` returns a typed `PathScanResult`, not a
+bare finding list: a file above the 20 MB cap, unreadable, or not valid UTF-8
+comes back `scanned=False` with a reason, and the CLI prints an explicit
+`NOT SCANNED … review this file before sharing it` notice. Returning `[]` for
+those cases reported the largest and most shareable exports — exactly the
+streaming case the chokepoint exists for — as clean (polylogue-xv0pf).
 
 Coverage: `tests/unit/security/test_precommit_scan.py`,
 `tests/unit/security/test_secret_scan.py::TestScanPathForSecretCandidates`,
@@ -284,6 +298,34 @@ reported as `ExcisionReceipt.retained_hook_events`, which makes
 `ExcisionReceipt.complete` false and appends an `INCOMPLETE:` clause to the
 CLI's success line — a privacy operation never reports unqualified success
 over content that survived it.
+
+**Declared reach.** Which source-tier relations an excision must reach is
+derived from the live schema rather than from a hand-kept list
+(`polylogue/security/excision_carriers.py`). Every table carrying a session
+key — a `raw_id` column, or an `(origin, session_native_id)` pair — must have
+a declared reach: `raw-cascade` (removed by the database when the
+`raw_sessions` row goes, re-checked against the live
+`PRAGMA foreign_key_list`), `excised` (deleted by the apply by name),
+`container` (per-member disposition below), or `retired`. A session-keyed
+table with no declared reach makes `resolve_session_excision_target` raise
+`UnclassifiedSessionCarrierError` naming it, so a newly added evidence class
+is either covered or loudly refused — never silently exempt.
+
+**Telemetry spans.** `otlp_spans` carries the same `(origin,
+session_native_id)` key as hook evidence and no raw row; its
+attributes/events are deleted with the session.
+
+**Container payloads.** One `source_items` row can be a container export
+covering many sessions, and it is a blob-liveness owner, so deleting the
+session's raw acquisition alone left the bytes GC-rooted. Disposition is per
+member: the session's `source_item_raw_members` rows are deleted (each
+member's blob hash marked excised), and the container row itself is deleted
+only when no member with a live `raw_id` remains. A container kept alive by
+another session's member still holds the excised bytes, so it is reported as
+`ExcisionReceipt.retained_source_containers`, makes `complete` false, and
+appends an `INCOMPLETE:` clause to the CLI's success line. Any
+`blob_publication_reservations` row reserving a now-excised hash is dropped
+with it.
 
 **Fact-tier evidence.** Artifacts admitted `parse_policy='fact'` mint no
 `sessions` row. Claude Code TODO plan snapshots

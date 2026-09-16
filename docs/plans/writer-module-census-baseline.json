@@ -1,0 +1,432 @@
+[
+  {
+    "file": "polylogue/analysis/claude_workflow_materializer.py",
+    "tiers": [
+      "index",
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/analysis/delegation_work_evidence_materializer.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/api/archive.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/archive/write_effects.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/browser_capture/capture_jobs.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/context/scheduler.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/daemon/cursor_lag_baseline.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/daemon/events.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/daemon/fts_automerge.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/demo/seed.py",
+    "tiers": [
+      "embeddings",
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/maintenance/embedding_preservation.py",
+    "tiers": [
+      "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/operations/attachment_convergence.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/operations/audit.py",
+    "tiers": [
+      "audit"
+    ]
+  },
+  {
+    "file": "polylogue/operations/slo.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/pipeline/services/ingest_batch/_core.py",
+    "tiers": [
+      "index",
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/schemas/generation/observation_journal.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/schemas/source_cache.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/schemas/source_inference.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/schemas/validation/corpus.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/security/excision.py",
+    "tiers": [
+      "embeddings",
+      "index",
+      "source",
+      "user"
+    ]
+  },
+  {
+    "file": "polylogue/security/query_excision.py",
+    "tiers": [
+      "user"
+    ]
+  },
+  {
+    "file": "polylogue/security/secret_scan.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/sinex/obligations.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/sources/codex_state_evidence.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/sources/codex_state_projection.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/sources/live/cursor.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/sources/live/hook_paste_enrichment.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/sources/revision_backfill.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/sources/sqlite_export.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/storage/attachment_relink.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/blob_gc.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/blob_integrity.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/blob_publication.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/derived/feedback/__init__.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/storage/derived/session/derivation.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/derived/session/rebuild.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/derived/session/refresh.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/derived/session/repo_observations.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/derived/session/storage.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/derived/session/summary.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/embeddings/derivation.py",
+    "tiers": [
+      "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/storage/embeddings/materialization.py",
+    "tiers": [
+      "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/storage/embeddings/reconcile.py",
+    "tiers": [
+      "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/storage/embeddings/tuple_generation.py",
+    "tiers": [
+      "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/storage/fts/derivation.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/fts/fts_lifecycle.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/index_generation.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/materials.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/raw_authority.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/raw_authority_verdict_cache.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/raw_reconciler.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/raw_retention.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/repository/archive/repository_writes.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/search_providers/sqlite_vec_queries.py",
+    "tiers": [
+      "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
+    "tiers": [
+      "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/storage/session_replacement.py",
+    "tiers": [
+      "embeddings",
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/action_pairs.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/audit_continuity.py",
+    "tiers": [
+      "audit",
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/delegation_facts.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/durable_change_train.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/holdout_cohorts.py",
+    "tiers": [
+      "user"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/_bulk_replace.py",
+    "tiers": []
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/artifacts.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/attachment_mutations.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/cursor.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/raw_state.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/raw_writes.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/sessions_writes.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/queries/work_evidence.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/query_objects.py",
+    "tiers": [
+      "user"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/schema.py",
+    "tiers": [
+      "ops"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/schema_bootstrap.py",
+    "tiers": [
+      "ops"
+    ]
+  }
+]

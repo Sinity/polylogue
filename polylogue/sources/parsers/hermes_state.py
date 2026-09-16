@@ -14,11 +14,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import Literal, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
 from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
@@ -27,6 +27,7 @@ from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessio
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
 from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
+from .hermes_identity import profile_root_for_artifact
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .local_agent import (
     _codex_output_text_blocks,
@@ -174,14 +175,12 @@ _SESSION_METADATA_FIELDS = (
     "compression_failure_error",
 )
 
-HermesFidelityStatus: TypeAlias = Literal["exact", "absent", "redacted", "degraded", "inferred"]
-
 
 @dataclass(frozen=True, slots=True)
 class HermesFidelityCapability:
     """One source capability and the evidence that supports its status."""
 
-    status: HermesFidelityStatus
+    status: SourceFidelityStatus
     observed: int
     expected: int
     counts: dict[str, int]
@@ -298,7 +297,7 @@ def parse_state_db(
         session_columns = _columns(conn, "sessions")
         message_columns = _columns(conn, "messages")
         schema_version = _schema_version(conn)
-        resolved_profile_root = profile_root or path.parent
+        resolved_profile_root = profile_root or profile_root_for_artifact(path)
         session_rows = list(
             conn.execute(
                 """
@@ -550,7 +549,7 @@ def _fidelity_capability(
     detail: str,
     counts: dict[str, int] | None = None,
 ) -> HermesFidelityCapability:
-    status: HermesFidelityStatus
+    status: SourceFidelityStatus
     if observed == 0:
         status = "absent"
     elif observed < expected:
@@ -1178,7 +1177,7 @@ def _optional_float(value: object) -> float | None:
 __all__ = [
     "HERMES_STATE_DB_MARKER",
     "HermesFidelityCapability",
-    "HermesFidelityStatus",
+    "SourceFidelityStatus",
     "HermesImportFidelity",
     "import_fidelity_declaration",
     "looks_like_state_db_path",

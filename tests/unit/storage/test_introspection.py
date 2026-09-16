@@ -1,4 +1,4 @@
-"""tests for polylogue.storage.introspection.
+"""tests for polylogue.core.sqlite_introspection.
 
 polylogue-a7xr.9: the canonical table_exists()/table_exists_async() this
 module exports had never been exercised against a real connection --
@@ -19,7 +19,7 @@ import sqlite3
 import aiosqlite
 import pytest
 
-from polylogue.storage.introspection import (
+from polylogue.core.sqlite_introspection import (
     column_exists,
     column_exists_async,
     index_exists,

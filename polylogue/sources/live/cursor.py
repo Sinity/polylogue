@@ -22,6 +22,7 @@ from typing import Any, cast
 from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.core.enums import Origin
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.timestamps import iso_from_epoch_ms, to_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.sources.live.convergence_debt_retry import (
@@ -49,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
 # Upper bound on stage events buffered inside one ``ops_write_scope``. Reaching
@@ -207,20 +209,8 @@ def _ingest_attempt_source_paths(source_path: object, source_paths_json: object)
     return paths
 
 
-def _epoch_ms(value: str | None) -> int | None:
-    if value is None:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return int(parsed.timestamp() * 1000)
-
-
 def _required_epoch_ms(value: str | None) -> int:
-    parsed = _epoch_ms(value)
+    parsed = to_epoch_ms(value, numeric_unit="milliseconds")
     if parsed is None:
         return int(datetime.now(UTC).timestamp() * 1000)
     return parsed
@@ -261,8 +251,12 @@ def _origin_value_for_source_name(source_name: str | None) -> str | None:
     return origin_from_provider(Provider.from_string(source_name)).value
 
 
-def _iso_from_epoch_ms(value: object) -> str:
-    return datetime.fromtimestamp(_required_int(value) / 1000, tz=UTC).isoformat()
+def _required_iso_text(value: object) -> str:
+    """Totality adapter over the shared kernel for non-optional cursor columns."""
+    text = iso_from_epoch_ms(_required_int(value))
+    if text is None:
+        raise ValueError(f"cursor timestamp is out of representable range: {value!r}")
+    return text
 
 
 def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> CursorRecord:
@@ -273,8 +267,8 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         byte_offset=_required_int(row[2] or 0),
         last_complete_newline=_required_int(row[3] or 0),
         record_count=_required_int(row[4] or 0),
-        updated_at=_iso_from_epoch_ms(row[15]),
-        last_record_ts=_iso_from_epoch_ms(row[5]) if row[5] is not None else None,
+        updated_at=_required_iso_text(row[15]),
+        last_record_ts=iso_from_epoch_ms(row[5]) if row[5] is not None else None,
         parser_fingerprint=_optional_str(row[6]),
         content_fingerprint=_optional_str(row[7]),
         tail_hash=_optional_str(row[8]),
@@ -380,7 +374,16 @@ class CursorStore:
         exit path, including an exception or a cancellation. Nothing is carried
         across a chunk boundary -- the failure shape of polylogue-5llcz (#5098)
         was an obligation deferred past the boundary that an interrupt then lost.
+
+        Sharing one connection makes the scope a cross-ingest sharing path
+        (polylogue-vgxkk): two concurrent ``ingest_files`` calls on one event
+        loop run on one thread, so they would land in the same thread-local
+        scope and one caller's commit would commit the other's in-flight
+        statement. The scope therefore asserts the writer lease it has always
+        implicitly relied on, so a second, unserialized entrant raises
+        :class:`UnleasedWriteError` instead of silently interleaving commits.
         """
+        require_write_lease("live ingest ops write scope")
         state = self._ops_scope
         if getattr(state, "conn", None) is not None:
             state.depth += 1
@@ -461,7 +464,7 @@ class CursorStore:
         fair intake. Rewound file cursors retain acquisition's independent
         obligation to revisit an interrupted input.
         """
-        now_ms = _epoch_ms(datetime.now(UTC).isoformat())
+        now_ms = to_epoch_ms(datetime.now(UTC), numeric_unit="milliseconds")
         interrupted_source_paths: list[str] = []
 
         def write() -> None:
@@ -547,6 +550,7 @@ class CursorStore:
                             deferred_end_offset=None,
                             updated_at=datetime.now(UTC).isoformat(),
                         ),
+                        manage_transaction=False,
                     )
 
         best_effort_cursor_write("archive ops rewind interrupted unparsed cursor", write)
@@ -610,7 +614,15 @@ class CursorStore:
         best_effort_cursor_write("archive ops convergence-debt stage migration", write)
 
     @staticmethod
-    def _write_cursor_record_on_conn(conn: sqlite3.Connection, record: CursorRecord) -> None:
+    def _write_cursor_record_on_conn(
+        conn: sqlite3.Connection, record: CursorRecord, *, manage_transaction: bool = True
+    ) -> None:
+        """Write one cursor row on an existing connection.
+
+        Callers that opened their own ``BEGIN IMMEDIATE`` pass
+        ``manage_transaction=False`` so the batch stays one transaction
+        (polylogue-5pv1p).
+        """
         origin = _origin_value_for_source_name(record.source_name)
         upsert_archive_ingest_cursor(
             conn,
@@ -621,7 +633,7 @@ class CursorStore:
             byte_offset=record.byte_offset,
             last_complete_newline=record.last_complete_newline,
             record_count=record.record_count,
-            last_record_ts_ms=_epoch_ms(record.last_record_ts),
+            last_record_ts_ms=to_epoch_ms(record.last_record_ts, numeric_unit="milliseconds"),
             parser_fingerprint=record.parser_fingerprint,
             content_fingerprint=record.content_fingerprint,
             tail_hash=record.tail_hash,
@@ -632,6 +644,7 @@ class CursorStore:
             next_retry_at=record.next_retry_at,
             excluded=bool(record.excluded),
             deferred_end_offset=record.deferred_end_offset,
+            manage_transaction=manage_transaction,
         )
 
     def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
@@ -1272,9 +1285,9 @@ class CursorStore:
         return [
             LiveIngestAttempt(
                 attempt_id=str(row[0]),
-                started_at=_iso_from_epoch_ms(row[1]),
-                updated_at=_iso_from_epoch_ms(row[2] if row[2] is not None else row[1]),
-                completed_at=_iso_from_epoch_ms(row[3]) if row[3] is not None else None,
+                started_at=_required_iso_text(row[1]),
+                updated_at=_required_iso_text(row[2] if row[2] is not None else row[1]),
+                completed_at=iso_from_epoch_ms(row[3]) if row[3] is not None else None,
                 status=str(row[4]),
                 phase=str(row[5]),
                 queued_file_count=int_metric(str(row[0]), "queued_file_count"),
@@ -1479,6 +1492,7 @@ class CursorStore:
                             st_ino=rebase.st_ino,
                             mtime_ns=rebase.mtime_ns,
                         ),
+                        manage_transaction=False,
                     )
                     updated += 1
 
@@ -1796,8 +1810,8 @@ class CursorStore:
                 subject_id=str(row[2]),
                 status=str(row[3]),
                 failure_count=int(row[4] or 0),
-                first_failed_at=_iso_from_epoch_ms(row[5]),
-                last_failed_at=_iso_from_epoch_ms(row[6]),
+                first_failed_at=_required_iso_text(row[5]),
+                last_failed_at=_required_iso_text(row[6]),
                 next_retry_at=_optional_str(row[8]),
                 materializer_version=_optional_str(row[9]),
                 last_error=_optional_str(row[7]),
@@ -1843,7 +1857,7 @@ class CursorStore:
             WholeArchiveConvergencePledge(
                 pledge_id=str(row[0]),
                 anchor_path=Path(str(row[1])),
-                created_at=_iso_from_epoch_ms(row[2]),
+                created_at=_required_iso_text(row[2]),
             )
             for row in rows
         )

@@ -78,7 +78,7 @@ ingest and full replay/reindex.
 | `index.db` | rebuildable | parsed tree, FTS, links, costs, materialized insights |
 | `embeddings.db` | expensive to rebuild | vectors, meta, status; preserve reusable vectors before replacement |
 | `user.db` | durable, irreplaceable | unified `assertions`, settings, annotation schemas/provenance |
-| `audit.db` | durable, append-only | previews, authorizations, attempts, continuity |
+| `audit.db` | durable, continuity-chained | previews, authorizations, attempts, continuity |
 | `ops.db` | disposable | cursors, attempts, convergence debt, daemon telemetry |
 
 A mutable SQLite source is the one material that is not its own bytes: a
@@ -161,10 +161,12 @@ explicit-and-retryable or a typed permanent refusal.
   updates the dispatcher's verb table (`EXPECTED_TOOL_NAMES` is derived; a
   missing tool contract fails discovery). Session operations have typed
   per-operation contracts (`docs/session-operations.md`); other operations
-  retain tool-level contracts. MCP insight projections still bypass the
-  registry.
+  retain tool-level contracts. `query(projection=...)` derives its insight
+  tokens from the registry; the four dispatcher-compiled reports
+  (postmortem, pathologies, abandoned_sessions, stuck_sessions) are declared
+  separately because they are bundles over a session query, not descriptors.
 - **Insights** are descriptor-driven (`analysis/registry.py`); one registry
-  drives plaintext and JSON (MCP: see the caveat above).
+  drives plaintext, JSON and MCP.
 - **Terminal outcome**: every row-bearing envelope carries `outcome` in
   {ok, empty, degraded, error}, decided once at the operation boundary
   (`surfaces/outcome.py`). `degraded` outranks `empty`, so zero rows behind a

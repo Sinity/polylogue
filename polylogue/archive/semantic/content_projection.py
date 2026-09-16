@@ -12,6 +12,7 @@ from polylogue.archive.message.artifacts import strip_leading_system_reminders, 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.core.tool_identity import tool_input_command, tool_input_path
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
@@ -393,11 +394,11 @@ def _attachment_text(block: Mapping[str, object]) -> str:
 def _tool_input_summary(value: object) -> str:
     if not isinstance(value, Mapping):
         return ""
-    path = value.get("file_path") or value.get("path") or value.get("file")
+    path = tool_input_path(value)
     if path:
         return f"`{path}`"
-    command = value.get("command")
-    if isinstance(command, str) and command:
+    command = tool_input_command(value)
+    if command:
         return f"`{command[:77]}...`" if len(command) > 80 else f"`{command}`"
     pattern = value.get("pattern")
     if pattern:

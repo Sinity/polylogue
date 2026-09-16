@@ -102,10 +102,17 @@ class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsigh
         *,
         config: Config | None = None,
         runtime: ResolvedRuntimeConfig | None = None,
-        **kwargs: object,
+        archive_root: str | Path | None = None,
+        db_path: str | Path | None = None,
     ) -> Polylogue:
-        archive_root: str | Path | None = kwargs.get("archive_root")  # type: ignore[assignment]
-        db_path: str | Path | None = kwargs.get("db_path")  # type: ignore[assignment]
+        """Construct a facade from the four declared construction inputs.
+
+        The keyword set is declared rather than swallowed through ``**kwargs``:
+        a misspelled option (``archive-root``, ``dbpath``) configured nothing
+        and returned a facade bound to the ambient runtime instead, so the
+        caller's intent was silently discarded. Python now raises ``TypeError``
+        for any name outside this signature.
+        """
         return cls(archive_root=archive_root, db_path=db_path, runtime=runtime, config=config)
 
     async def __aenter__(self) -> Polylogue:

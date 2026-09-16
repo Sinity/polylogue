@@ -21,10 +21,11 @@ from polylogue.archive.revision_authority import (
     parser_census_is_complete,
 )
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.sqlite_introspection import column_exists as _column_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
 from polylogue.storage.derived.session.status import session_insight_status_sync
-from polylogue.storage.introspection import column_exists as _column_exists
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_detail_query_handle
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -640,8 +641,10 @@ def _raw_materialization_readiness_from_pinned_index(
         )
     total = int(row[4] or 0)
     parse_failed = int(row[5] or 0)
-    classified = sum(count for category, count in classified_counts.items() if category != "parse-failed")
-    affected_actionable = classified_counts.get("parse-failed", 0)
+    classified = sum(count for category, count in classified_counts.items() if category not in _RAW_GAP_OWED_CATEGORIES)
+    affected_actionable = classified_counts.get("parse-failed", 0) + classified_counts.get(
+        RAW_ALIAS_BLOB_MISSING_CATEGORY, 0
+    )
     unchecked = max(total - classified - affected_actionable - adoption_deferred_count, 0)
     category_counts: dict[str, int] = {
         "raw_id_join_gap": unchecked,
@@ -1109,10 +1112,11 @@ def raw_materialization_readiness_snapshot(
     raw_parse_failed = int(row["parse_failed"] or 0)
     parsed_without_index_session = int(row["parsed_without_index_session"] or 0)
     parse_failed = classified_counts.get("parse-failed", 0)
-    classified = sum(count for category, count in classified_counts.items() if category != "parse-failed")
+    classified = sum(count for category, count in classified_counts.items() if category not in _RAW_GAP_OWED_CATEGORIES)
+    alias_blob_missing = classified_counts.get(RAW_ALIAS_BLOB_MISSING_CATEGORY, 0)
     actionable = len(parse_failed_origins)
     critical = actionable
-    affected_actionable = parse_failed
+    affected_actionable = parse_failed + alias_blob_missing
     unchecked = max(total - classified - affected_actionable - adoption_deferred_count, 0)
     classification = "cheap_projection" if classify_gaps and (classified or adoption_deferred_count) else "not_run"
     raw_id_join_gap_count = unchecked
@@ -1341,6 +1345,34 @@ def _raw_gap_select_columns(raw_columns: frozenset[str]) -> str:
     return ",\n                        ".join(column(name) for name in names)
 
 
+#: A raw row whose logical session is present under an alias, but whose own
+#: content-addressed blob is absent. The alias reconciles identity, not bytes:
+#: the indexed session is a different (usually older) snapshot, so this row is
+#: still owed work and must never be reported as a satisfied materialization.
+RAW_ALIAS_BLOB_MISSING_CATEGORY = "materialized-alias-blob-missing"
+
+#: Gap categories that are owed work rather than benign classifications. They
+#: are excluded from ``classified`` and counted as actionable.
+_RAW_GAP_OWED_CATEGORIES = frozenset({"parse-failed", RAW_ALIAS_BLOB_MISSING_CATEGORY})
+
+
+def _raw_gap_blob_present(archive_root: Path, row: sqlite3.Row, *, raw_columns: frozenset[str]) -> bool:
+    """Report whether this row's own content-addressed blob exists on disk.
+
+    An unreadable or absent hash is reported as "not present": an unmeasured
+    blob is never allowed to stand in for a proven one.
+    """
+    if "blob_hash" not in raw_columns:
+        return False
+    blob_hash = row["blob_hash"]
+    if blob_hash is None:
+        return False
+    hex_hash = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
+    if len(hex_hash) < 3:
+        return False
+    return (archive_root / "blob" / hex_hash[:2] / hex_hash[2:]).exists()
+
+
 def _classify_raw_gap_rows(
     conn: sqlite3.Connection,
     archive_root: Path,
@@ -1395,7 +1427,12 @@ def _raw_gap_category(
         session_columns=session_columns,
         source_schema=source_schema,
     ):
-        return "materialized-alias"
+        # The alias proves a same-identity session is indexed; it does not
+        # prove this artifact's bytes survive. Without its own blob the row is
+        # a distinct, unrecoverable snapshot and stays reported as owed work.
+        if _raw_gap_blob_present(archive_root, row, raw_columns=raw_columns):
+            return "materialized-alias"
+        return RAW_ALIAS_BLOB_MISSING_CATEGORY
     if can_reconcile_alias and _raw_gap_matches_missing_index_raw_link(
         conn,
         row,
@@ -1621,19 +1658,6 @@ def _safe_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
-def _schema_object_exists(conn: sqlite3.Connection, name: str, *, types: tuple[str, ...]) -> bool:
-    placeholders = ", ".join("?" for _ in types)
-    row = conn.execute(
-        f"SELECT 1 FROM sqlite_master WHERE type IN ({placeholders}) AND name = ? LIMIT 1",
-        (*types, name),
-    ).fetchone()
-    return row is not None
-
-
-def _view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    return _schema_object_exists(conn, view_name, types=("view",))
-
-
 def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:
     """Return exact, non-vacuous evidence for the derived ``actions`` view."""
     tool_use_block_count = (
@@ -1641,7 +1665,7 @@ def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:
         if _table_exists(conn, "blocks")
         else 0
     )
-    actions_view_present = _view_exists(conn, "actions")
+    actions_view_present = view_exists(conn, "actions")
     action_count = 0
     actions_view_error: str | None = None
     if actions_view_present:

@@ -120,9 +120,6 @@ FACADE_CONSERVATION_REGISTRY: tuple[FacadeConservationSpec, ...] = (
         "find_stuck_session_latency_profile_insights",
         SessionLatencyProfileInsightQuery,
         facade_effect_fields=frozenset({"only_stuck"}),
-        # polylogue-o90gu: this route's session_id/offset are currently not
-        # forwarded to its lower reader.
-        dropped_fields=frozenset({"session_id", "offset"}),
     ),
     _insight_spec("list_cost_rollup_insights", CostRollupInsightQuery),
     _insight_spec("list_usage_timeline_insights", UsageTimelineInsightQuery),

@@ -11,6 +11,7 @@ import click
 
 from polylogue.api.archive import SessionNotFoundError
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.cli.read_view_registry import MESSAGE_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
     ReadViewInvocation,
@@ -22,6 +23,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.surfaces.payloads import message_row_envelope_from_domain, model_json_document
+from polylogue.surfaces.projection_spec import RenderDestination
 
 
 def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOptions:
@@ -46,10 +48,10 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     limit = projection.body_limit if projection is not None and projection.body_limit is not None else options.limit
     if options.full:
         limit = None
-    limit = limit if limit is not None else 50
+    limit = limit if limit is not None else DEFAULT_MESSAGE_PAGE_LIMIT
     offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
 
-    if invocation.destination == "file" and invocation.output_format in {"json", "ndjson"}:
+    if invocation.destination == RenderDestination.FILE and invocation.output_format in {"json", "ndjson"}:
         assert invocation.out_path is not None
         _write_messages_file(
             env,
@@ -63,7 +65,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         )
         return
 
-    if invocation.destination in ("file", "clipboard"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD):
         buf = io.StringIO()
 
         def _captured_echo(message: object = None, **_kwargs: object) -> None:
@@ -169,14 +171,11 @@ def _write_messages_file(
                 fh.write(f'  "offset": {offset}\n')
                 fh.write("}\n")
 
-        from polylogue.security.secret_scan import describe_secret_candidate_spans, scan_path_for_secret_candidates
+        from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
 
-        spans = scan_path_for_secret_candidates(out_path)
-        if spans:
-            click.echo(
-                f"secret-scan: {out_path}: {describe_secret_candidate_spans(spans)} -- "
-                "review before sharing this file (candidate detector, not proof of a real secret)."
-            )
+        notice = describe_path_scan_result(scan_path_for_secret_candidates(out_path))
+        if notice is not None:
+            click.echo(notice)
         click.echo(f"Wrote to {out_path}")
 
     run_coroutine_sync(_run())
@@ -191,11 +190,11 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
     options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
     projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
     limit = projection.body_limit if projection is not None and projection.body_limit is not None else options.limit
-    limit = limit if limit is not None else 50
+    limit = limit if limit is not None else DEFAULT_MESSAGE_PAGE_LIMIT
     offset = projection.body_offset if projection is not None and projection.body_offset is not None else options.offset
     output_format = invocation.output_format or "json"
 
-    if invocation.destination in ("file", "clipboard", "stdout"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.STDOUT):
         buf = io.StringIO()
 
         def _captured_echo_raw(message: object = None, **_kwargs: object) -> None:
@@ -274,7 +273,7 @@ def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewIn
 
         content = yaml.dump(evidence) + "\n"
 
-    if invocation.destination in ("file", "clipboard", "stdout"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.STDOUT):
         deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
         return
     click.echo(content, nl=False)

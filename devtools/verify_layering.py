@@ -88,6 +88,8 @@ class WriterModulePolicy:
     mutation_roots: tuple[str, ...]
     modules: tuple[WriterModuleSpec, ...]
     twin_write_contracts: dict[str, TwinWriteContract]
+    census_roots: tuple[str, ...] = ()
+    census_baseline: str | None = None
 
 
 @dataclass(frozen=True)
@@ -408,6 +410,10 @@ def _writer_module_policy(manifest: dict[str, object]) -> WriterModulePolicy | N
         mutation_roots=_strings(raw_policy.get("mutation_roots")),
         modules=tuple(modules),
         twin_write_contracts=contracts,
+        census_roots=_strings(raw_policy.get("census_roots")),
+        census_baseline=(
+            str(raw_policy["census_baseline"]) if isinstance(raw_policy.get("census_baseline"), str) else None
+        ),
     )
 
 
@@ -642,6 +648,85 @@ def _contract_is_audited(
         and set(contract.entrypoints).issubset(spec.entrypoints)
         and bool(contract.reason)
     )
+
+
+def _load_writer_module_census_baseline(baseline_path: Path) -> dict[str, tuple[str, ...]]:
+    """Load the out-of-root DML census ratchet.
+
+    ``mutation_roots`` proves the *inventory* inside the archive-tier facade.
+    It cannot prove the property the inventory implies -- that only declared
+    modules write -- because nothing outside that directory is scanned. This
+    baseline is the exact, checked-in census of DML-bearing modules that sit
+    outside the inventory today, keyed by path with the tiers observed at the
+    time it was written. A file may leave the census (its DML moved behind an
+    inventoried entrypoint) but a file that is not byte-for-byte in this file
+    fails the gate, so a new unpoliced write path cannot appear silently.
+    """
+    if not baseline_path.exists():
+        return {}
+    with open(baseline_path, encoding="utf-8") as f:
+        raw = json.load(f)
+    entries: dict[str, tuple[str, ...]] = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            file_rel = item.get("file")
+            if isinstance(file_rel, str):
+                tiers = item.get("tiers")
+                entries[file_rel] = tuple(t for t in tiers if isinstance(t, str)) if isinstance(tiers, list) else ()
+    return entries
+
+
+def _census_mutation_files(repo_root: Path, policy: WriterModulePolicy) -> dict[str, frozenset[str]]:
+    """Return every DML-bearing module under the census roots, with its tiers."""
+    inventoried = {spec.path for spec in policy.modules}
+    in_root = tuple(root.rstrip("/") + "/" for root in policy.mutation_roots)
+    found: dict[str, frozenset[str]] = {}
+    for root in policy.census_roots:
+        root_path = repo_root / root
+        if not root_path.is_dir():
+            continue
+        for py_file in sorted(root_path.rglob("*.py")):
+            rel = py_file.relative_to(repo_root).as_posix()
+            if rel in inventoried or rel.startswith(in_root):
+                continue
+            try:
+                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            if not _mutation_calls(tree):
+                continue
+            found[rel] = _mutation_tiers(tree)
+    return found
+
+
+def _collect_writer_module_census_violations(
+    repo_root: Path, policy: WriterModulePolicy | None
+) -> list[dict[str, object]]:
+    if policy is None or not policy.census_roots or policy.census_baseline is None:
+        return []
+    baseline = _load_writer_module_census_baseline(repo_root / policy.census_baseline)
+    observed = _census_mutation_files(repo_root, policy)
+    violations: list[dict[str, object]] = []
+    for rel in sorted(set(observed) - set(baseline)):
+        violations.append(
+            {
+                "file": rel,
+                "rule": "writer_module_uncensused_mutation",
+                "tiers": sorted(observed[rel]),
+                "baseline": policy.census_baseline,
+            }
+        )
+    for rel in sorted(set(baseline) - set(observed)):
+        violations.append(
+            {
+                "file": rel,
+                "rule": "writer_module_census_baseline_stale",
+                "baseline": policy.census_baseline,
+            }
+        )
+    return violations
 
 
 def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolicy | None) -> list[dict[str, object]]:
@@ -1065,6 +1150,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     violations.extend(_collect_writer_module_violations(repo_root, writer_modules))
+    violations.extend(_collect_writer_module_census_violations(repo_root, writer_modules))
     violations.extend(_top_level_package_docstring_violations(repo_root))
     sqlite_violations, sqlite_shrunk = _sqlite_degradation_findings(repo_root, manifest)
     violations.extend(sqlite_violations)

@@ -31,6 +31,7 @@ from polylogue.core.enums import (
 )
 from polylogue.core.identity_law import split_message_local_id
 from polylogue.core.json import JSONValue
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.core.web_urls import native_id_from_session_id
 from polylogue.material_protocol.v1 import (
     AttachmentInput,
@@ -92,31 +93,8 @@ def _int(value: object, default: int = 0) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
-def _timestamp_ms(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-        return int(normalized.timestamp() * 1000)
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value)
-    if isinstance(value, str):
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=UTC)
-        return int(parsed.timestamp() * 1000)
-    return None
-
-
 def _revision_created_at(value: object) -> str:
-    milliseconds = _timestamp_ms(value)
+    milliseconds = to_epoch_ms(value, numeric_unit="seconds")
     if milliseconds is None:
         return "1970-01-01T00:00:00+00:00"
     return datetime.fromtimestamp(milliseconds / 1000, tz=UTC).isoformat()
@@ -426,7 +404,7 @@ def _parsed_event_input(position: int, event: ParsedSessionEvent) -> SessionEven
         summary=summary,
         payload=payload,
         source_message_native_id=event.source_message_provider_id,
-        occurred_at_ms=_timestamp_ms(event.timestamp),
+        occurred_at_ms=to_epoch_ms(event.timestamp, numeric_unit="seconds"),
     )
 
 
@@ -501,7 +479,9 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
                 message_type=message.message_type,
                 material_origin=message.material_origin,
                 occurred_at_ms=(
-                    message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp)
+                    message.occurred_at_ms
+                    if message.occurred_at_ms is not None
+                    else to_epoch_ms(message.timestamp, numeric_unit="seconds")
                 ),
                 model_name=message.model_name,
                 parent_native_id=message.parent_message_provider_id,
@@ -548,7 +528,9 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
                 inheritance="prefix-sharing",
                 status="unresolved",
                 confidence=1.0,
-                observed_at_ms=_timestamp_ms(parsed_session.updated_at or parsed_session.created_at),
+                observed_at_ms=to_epoch_ms(
+                    parsed_session.updated_at or parsed_session.created_at, numeric_unit="seconds"
+                ),
             )
         )
 
@@ -560,8 +542,8 @@ def session_material_from_parsed_session(parsed_session: ParsedSession, *, sessi
         native_id=native_id,
         title=parsed_session.title,
         session_kind=parsed_session.session_kind,
-        created_at_ms=_timestamp_ms(parsed_session.created_at),
-        updated_at_ms=_timestamp_ms(parsed_session.updated_at),
+        created_at_ms=to_epoch_ms(parsed_session.created_at, numeric_unit="seconds"),
+        updated_at_ms=to_epoch_ms(parsed_session.updated_at, numeric_unit="seconds"),
         git_branch=parsed_session.git_branch,
         git_repository_url=parsed_session.git_repository_url,
         provider_project_ref=parsed_session.provider_project_ref,
@@ -604,7 +586,7 @@ def session_material_from_session(session: Session) -> SessionMaterial:
                 content_occurrence=stored_content_occurrence,
                 message_type=message.message_type,
                 material_origin=message.material_origin,
-                occurred_at_ms=_timestamp_ms(message.timestamp),
+                occurred_at_ms=to_epoch_ms(message.timestamp, numeric_unit="seconds"),
                 model_name=message.model_name,
                 input_tokens=message.input_tokens,
                 output_tokens=message.output_tokens,
@@ -619,8 +601,8 @@ def session_material_from_session(session: Session) -> SessionMaterial:
         native_id=native_id,
         title=session.title,
         session_kind=session.session_kind,
-        created_at_ms=_timestamp_ms(session.created_at),
-        updated_at_ms=_timestamp_ms(session.updated_at),
+        created_at_ms=to_epoch_ms(session.created_at, numeric_unit="seconds"),
+        updated_at_ms=to_epoch_ms(session.updated_at, numeric_unit="seconds"),
         git_branch=session.git_branch,
         git_repository_url=session.git_repository_url,
         provider_project_ref=session.provider_project_ref,

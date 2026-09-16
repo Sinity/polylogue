@@ -736,11 +736,12 @@ def _drive_structural_growth_predecessor(
     strictly additive typed-lineage improvement, never a narrowing of what
     the legacy path already proves.
     """
-    # Import lazily: importing the Drive package also initializes the live
-    # watcher package, whose acquisition helpers depend on the batch worker.
-    # This classifier is only needed for this Drive-specific lineage branch;
-    # keeping it out of the batch module's import graph preserves the
-    # ingest-worker entry point's acyclic startup path.
+    # Import lazily: this classifier is only needed for this Drive-specific
+    # lineage branch, so it stays out of the batch module's import graph and
+    # off the ingest-worker entry point's startup cost.  (The import cycle the
+    # comment here used to name does not exist: sources/live/__init__.py is
+    # fully lazy and sources/live/admission.py references neither
+    # batch_support nor ingest_batch.)
     from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
 
     new_row = source_conn.execute(
@@ -1313,8 +1314,6 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
             summary.max_result_raw_id = ir.raw_id
     if ir.schema_drift is not None:
         summary.schema_drift_observations.append(ir.schema_drift)
-    if ir.sessions_unenriched:
-        summary.counts["sessions_unenriched"] += 1
 
 
 def _observe_current_rss(summary: _IngestBatchSummary) -> None:

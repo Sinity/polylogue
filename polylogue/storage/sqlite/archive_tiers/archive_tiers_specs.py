@@ -43,6 +43,7 @@ from polylogue.core.enums import (
 from polylogue.core.errors import DatabaseError
 from polylogue.core.json import loads
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.tool_identity import TOOL_COMMAND_INPUT_KEYS, TOOL_PATH_INPUT_KEYS, sql_coalesced_json_extract
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -53,6 +54,9 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     nullable_check,
 )
 from polylogue.storage.sqlite.archive_tiers.types import DelegationMappingState, DelegationResultStatus
+
+_TOOL_COMMAND_SQL = sql_coalesced_json_extract("tool_input", TOOL_COMMAND_INPUT_KEYS)
+_TOOL_PATH_SQL = sql_coalesced_json_extract("tool_input", TOOL_PATH_INPUT_KEYS)
 
 
 def _value(name: str) -> Callable[[dict[str, object]], object]:
@@ -574,16 +578,21 @@ BLOCKS_SPEC = _make_table_spec(
         ),
         _raw_column("signature", "signature TEXT", record_name="signature", domain_name="signature"),
         _raw_column("content_hash", "content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)"),
+        # polylogue-7k3n0: the generated columns and the FTS projection read
+        # the one declared key vocabulary, so the stored authority can never
+        # again be narrower than the Python readers of the same fact.
         _raw_column(
-            "tool_command", "tool_command TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL"
+            "tool_command",
+            f"tool_command TEXT GENERATED ALWAYS AS ({_TOOL_COMMAND_SQL}) VIRTUAL",
         ),
         _raw_column(
             "tool_path",
-            "tool_path TEXT GENERATED ALWAYS AS (COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))) VIRTUAL",
+            f"tool_path TEXT GENERATED ALWAYS AS ({_TOOL_PATH_SQL}) VIRTUAL",
         ),
         _raw_column(
             "search_text",
-            "search_text TEXT GENERATED ALWAYS AS (trim(COALESCE(text, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(json_extract(tool_input, '$.command'), '') || ' ' || COALESCE(json_extract(tool_input, '$.file_path'), '') || ' ' || COALESCE(json_extract(tool_input, '$.path'), ''))) VIRTUAL",
+            "search_text TEXT GENERATED ALWAYS AS (trim(COALESCE(text, '') || ' ' || COALESCE(tool_name, '')"
+            f" || ' ' || COALESCE({_TOOL_COMMAND_SQL}, '') || ' ' || COALESCE({_TOOL_PATH_SQL}, ''))) VIRTUAL",
         ),
         _raw_column(
             "tool_detail_text",
@@ -1553,6 +1562,12 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
             """total_tokens                   INTEGER CHECK(total_tokens IS NULL OR total_tokens >= 0)""",
         ),
         _raw_column("occurred_at_ms", """occurred_at_ms                 INTEGER"""),
+        # The provider's own correlation key for the call this usage describes
+        # (Anthropic ``requestId``). The parser lifts it into the
+        # ``message_usage`` event payload, and ``message_usage`` is in the
+        # writer's redundant set because this typed row is meant to carry the
+        # whole payload -- without a column for it the id was dropped.
+        _raw_column("request_id", """request_id                     TEXT"""),
     ),
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
 )

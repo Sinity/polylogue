@@ -8,8 +8,8 @@ from functools import lru_cache
 from pathlib import Path
 
 from polylogue.core.errors import DatabaseError
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.search.cache import SearchCacheKey
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import build_ranked_session_search_query, session_web_url

@@ -32,8 +32,9 @@ from polylogue.sources.dispatch import (
     parse_payload,
     parse_stream_payload,
 )
-from polylogue.sources.parsers import antigravity, hermes_spans, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, hermes_identity, hermes_spans, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.source_acquisition_components import sniff_zip_provider
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.surfaces.payloads import (
     ImportDetectorEvidencePayload,
@@ -498,7 +499,9 @@ def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportEx
     """Inspect the real Hermes SQLite parser path without writing a raw blob."""
 
     try:
-        sessions = hermes_state.parse_state_db(path, fallback_id=path.stem, profile_root=path.parent)
+        sessions = hermes_state.parse_state_db(
+            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
+        )
     except (OSError, sqlite3.Error, ValueError) as exc:
         return _skipped_entry(
             path,
@@ -536,7 +539,7 @@ def _explain_hermes_verification_evidence_db(path: Path, *, provider_hint: Provi
 
     try:
         sessions = hermes_verification.parse_verification_evidence_db(
-            path, fallback_id=path.stem, profile_root=path.parent
+            path, fallback_id=path.stem, profile_root=hermes_identity.profile_root_for_artifact(path)
         )
     except (OSError, sqlite3.Error, ValueError) as exc:
         return _skipped_entry(
@@ -592,8 +595,26 @@ def _explain_zip(
         ),
         _evidence("zip.container", matched=True, reason="ZIP container"),
     ]
+    container_provider = provider_hint
     try:
         with zipfile.ZipFile(path) as archive:
+            if container_provider is Provider.UNKNOWN:
+                # The container carried no origin identity while its contents
+                # did: a claude.ai GDPR export ZIP reported
+                # detected_origin=unknown-export even though every inner entry
+                # lowered to a claude-ai session. Establish it from the members
+                # through the same dominance rule acquisition uses, so the
+                # container and its entries cannot disagree.
+                sniffed = sniff_zip_provider(archive, archive.infolist())
+                if sniffed is not None and sniffed is not Provider.UNKNOWN:
+                    container_provider = sniffed
+                    detector_evidence.append(
+                        _evidence(
+                            "zip.member_dominance",
+                            matched=True,
+                            reason=f"dominant member provider: {sniffed.value}",
+                        )
+                    )
             validator = ZipEntryValidator(provider_hint, cursor_state=None, zip_path=path)
 
             def record_rejection(info: zipfile.ZipInfo, reason: str) -> None:
@@ -674,8 +695,8 @@ def _explain_zip(
         source_path=str(path),
         artifact_kind=path_classification.kind.value if path_classification is not None else "zip",
         provider_hint=provider_hint.value,
-        detected_origin=_origin_value(provider_hint),
-        detected_provider=provider_hint.value,
+        detected_origin=_origin_value(container_provider),
+        detected_provider=container_provider.value,
         detector="zip.container",
         detector_evidence=tuple(detector_evidence),
         parser="zip entries",

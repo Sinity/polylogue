@@ -474,7 +474,7 @@ def test_two_dispatchers_can_quarantine_the_same_conflict(
     def quarantine(dispatcher: _McpCallLogDispatcher) -> None:
         try:
             barrier.wait(timeout=2.0)
-            dispatcher._quarantine_permanent(path, 409)
+            dispatcher._quarantine(path, reason="permanent_rejection", status_code=409)
         except BaseException as exc:
             failures.append(exc)
 
@@ -492,6 +492,38 @@ def test_two_dispatchers_can_quarantine_the_same_conflict(
     assert not failures
     assert not path.exists()
     assert (path.parent.parent / "quarantine" / path.name).is_file()
+
+
+def test_unparseable_record_is_quarantined_once_and_releases_the_root(
+    workspace_env: dict[str, Path],
+) -> None:
+    """An unreadable outbox record settles into quarantine instead of spinning forever.
+
+    Anti-vacuity: restoring the bare ``continue`` for a parse failure leaves the
+    record pending, so the root stays registered and is rescanned every
+    ``_SCAN_INTERVAL_S`` -- the root-release wait below then times out.
+    """
+    del workspace_env
+    config = load_polylogue_config()
+    root = _outbox_root(config)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    poison = root / "poison.json"
+    poison.write_text("{not json", encoding="utf-8")
+
+    dispatcher = _McpCallLogDispatcher()
+    try:
+        dispatcher.register(config)
+        _wait_until(lambda: root not in dispatcher._roots, timeout=2.0)
+    finally:
+        dispatcher.shutdown()
+
+    assert not poison.exists()
+    quarantined = root.parent / "quarantine" / "poison.json"
+    assert quarantined.is_file()
+    assert quarantined.read_text(encoding="utf-8") == "{not json"
+    status = dispatcher.status(config)
+    assert status.pending_count == 0
+    assert status.quarantined_count == 1
 
 
 def test_quiesce_stops_the_worker_clears_routing_and_allows_restart(tmp_path: Path) -> None:

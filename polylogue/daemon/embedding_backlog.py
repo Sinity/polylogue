@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import OperationStatus
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
@@ -20,6 +20,26 @@ if TYPE_CHECKING:
 
     from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
     from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
+
+# Statuses that end a catch-up receipt. Everything else in the persisted
+# vocabulary is unfinished and must be swept at startup: the receipt's own
+# transitions only ever leave ``running``, so a row parked in any other
+# non-terminal state was permanent debt no sweep would ever reach
+# (polylogue-f7bf9). Deriving the sweep set as the complement keeps a newly
+# added OperationStatus member recovered by default rather than stranded by
+# an IN-list nobody updated.
+TERMINAL_CATCHUP_RECEIPT_STATUSES: frozenset[str] = frozenset(
+    {
+        OperationStatus.COMPLETED.value,
+        OperationStatus.FAILED.value,
+        OperationStatus.INTERRUPTED.value,
+        OperationStatus.REJECTED.value,
+        "completed_with_failures",
+    }
+)
+UNFINISHED_CATCHUP_RECEIPT_STATUSES: tuple[str, ...] = tuple(
+    sorted({status.value for status in OperationStatus} - TERMINAL_CATCHUP_RECEIPT_STATUSES)
+)
 
 EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS = 60
 EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS = 900
@@ -35,15 +55,16 @@ def recover_embedding_catchup_receipts(archive_root: Path) -> int:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
+    placeholders = ", ".join("?" for _ in UNFINISHED_CATCHUP_RECEIPT_STATUSES)
     with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
         updated = conn.execute(
-            """
+            f"""
             UPDATE embedding_catchup_runs
             SET status = 'interrupted', finished_at_ms = ?,
                 error_message = COALESCE(error_message, 'daemon restarted before catch-up receipt completed')
-            WHERE status IN ('accepted', 'pending', 'running')
+            WHERE status IN ({placeholders})
             """,
-            (int(time.time() * 1000),),
+            (int(time.time() * 1000), *UNFINISHED_CATCHUP_RECEIPT_STATUSES),
         ).rowcount
         conn.commit()
     return int(updated)
@@ -309,6 +330,8 @@ __all__ = [
     "EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS",
     "EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT",
     "EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS",
+    "TERMINAL_CATCHUP_RECEIPT_STATUSES",
+    "UNFINISHED_CATCHUP_RECEIPT_STATUSES",
     "embedding_catchup_estimated_cost_this_month",
     "periodic_embedding_backlog_check",
     "periodic_embedding_orphan_reconcile_check",

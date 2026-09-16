@@ -26,8 +26,12 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
     return _implementation().require_write_lease(purpose, archive_root=archive_root)
 
 
-def bind_write_lease_thread() -> None:
-    _implementation().bind_write_lease_thread()
+def grant_write_lease_thread() -> Any:
+    return _implementation().grant_write_lease_thread()
+
+
+def bind_write_lease_thread(grant: Any) -> None:
+    _implementation().bind_write_lease_thread(grant)
 
 
 @contextmanager
@@ -65,6 +69,12 @@ def adopt_write_lease(delegation: Any) -> Iterator[Any]:
 
 def __getattr__(name: str) -> Any:
     """Expose the implementation's lease types without a ring-crossing import."""
-    if name in {"WriteLease", "WriteLeaseDelegation", "UnleasedWriteError", "WriteHoldExceededError"}:
+    if name in {
+        "WriteLease",
+        "WriteLeaseDelegation",
+        "WriteLeaseThreadGrant",
+        "UnleasedWriteError",
+        "WriteHoldExceededError",
+    }:
         return getattr(_implementation(), name)
     raise AttributeError(name)

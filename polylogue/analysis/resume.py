@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from pydantic import Field, field_validator
 
@@ -25,6 +25,7 @@ from polylogue.analysis.archive_models import ArchiveInsightModel, ObjectivePost
 from polylogue.analysis.objective_posture import resolve_session_objective_posture
 from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 from polylogue.archive.session.domain_models import Session
+from polylogue.core.enums import TERMINAL_STATE_VALUES, TerminalState
 from polylogue.logging import get_logger
 from polylogue.storage.search.query_support import normalize_fts5_query
 
@@ -612,15 +613,27 @@ def _candidate_title(profile: SessionProfileInsight) -> str:
     return inferred or profile.title or str(profile.session_id)
 
 
+#: Resume ranking weight per terminal state (higher = more likely to still
+#: have open work). Typed and asserted total so a new member cannot fall
+#: through to the "unknown" weight unnoticed (polylogue-hjvow).
+_TERMINAL_WEIGHT: dict[TerminalState, float] = {
+    "tool_left": 1.0,
+    # A cut-off stream is unfinished work by construction -- the strongest
+    # resume material after a genuinely pending tool call.
+    "truncated": 0.97,
+    "error_left": 0.95,
+    "question_left": 0.85,
+    # A declined turn still names something the operator wanted done.
+    "refused": 0.8,
+    "unknown": 0.25,
+}
+
+if set(_TERMINAL_WEIGHT) != TERMINAL_STATE_VALUES:
+    raise RuntimeError("every terminal state needs a declared resume weight")
+
+
 def _terminal_weight(state: str) -> float:
-    return {
-        "tool_left": 1.0,
-        "error_left": 0.95,
-        "question_left": 0.85,
-        "agent_hanging": 0.8,
-        "unknown": 0.25,
-        "clean_finish": 0.0,
-    }.get(state, 0.25)
+    return _TERMINAL_WEIGHT.get(cast("TerminalState", state), 0.25)
 
 
 def _posture_weight(posture: str) -> float:

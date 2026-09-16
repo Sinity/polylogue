@@ -1275,3 +1275,58 @@ def test_complete_corpus_run_records_a_usable_testmon_graph(tmp_path: Path) -> N
         environments = [row[0] for row in connection.execute("SELECT environment_name FROM environment")]
     assert recorded == 2
     assert environments == [TESTMON_ENVIRONMENT]
+
+
+def test_two_verify_runs_in_one_checkout_do_not_share_a_report_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Preparing a second run must not clear the first run's open report spool.
+
+    Anti-vacuity: drop the per-step rebinding and both commands resolve to the
+    shared last-pytest.json, so the second run's preparation unlinks the first
+    run's spool and the first assembles an incomplete report for tests that
+    passed.
+    """
+    # The shared "current-*" projections are relative to the checkout; keep
+    # this test's clearing inside tmp_path so it cannot touch the run
+    # executing it.
+    for name in (
+        "PYTEST_PROGRESS_PATH",
+        "PYTEST_EVENTS_PATH",
+        "PYTEST_EVENTS_DIR",
+        "PYTEST_SELECTION_PATH",
+        "PYTEST_SUMMARY_PATH",
+    ):
+        monkeypatch.setattr(verify, name, tmp_path / "current" / name.lower())
+
+    first_step = tmp_path / "runs" / "first" / "steps" / "01-pytest"
+    second_step = tmp_path / "runs" / "second" / "steps" / "01-pytest"
+    for step in (first_step, second_step):
+        step.mkdir(parents=True)
+
+    from devtools.pytest_stream_report import report_file_argument
+
+    command = [
+        "python",
+        "-m",
+        "pytest",
+        f"--junitxml={verify.PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
+        report_file_argument(verify.PYTEST_REPORT_PATH),
+    ]
+    first = verify._bind_pytest_reports_to_step(command, SimpleNamespace(step_dir=first_step))
+    second = verify._bind_pytest_reports_to_step(command, SimpleNamespace(step_dir=second_step))
+
+    first_report = verify._pytest_report_path(first)
+    second_report = verify._pytest_report_path(second)
+    assert first_report != second_report
+    assert first_report.parent == first_step
+    assert second_report.parent == second_step
+
+    # The first run is mid-flight with an open spool; preparing the second must
+    # leave it alone.
+    spool = first_report.parent / f"{first_report.name}.4242.parts"
+    spool.write_text("{}", encoding="utf-8")
+    verify._clear_pytest_report(second)
+
+    assert spool.exists()
+    assert all(not argument.endswith("verify-latest.xml") for argument in first)

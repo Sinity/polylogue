@@ -25,7 +25,6 @@ from contextlib import closing
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 from pathlib import Path
-from typing import Literal
 
 from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.evaluator import (
@@ -197,12 +196,8 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
         )
 
 
-Surface = Literal["cli", "mcp", "daemon-web", "api", "daemon-internal"]
-
-
 __all__ = [
     "ArchiveCanonicalPlanEvaluator",
     "LegacyQueryDefinitionNotExecutableError",
-    "Surface",
     "UnsupportedEvaluationGrainError",
 ]

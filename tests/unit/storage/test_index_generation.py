@@ -1150,3 +1150,35 @@ class TestRebuildLeaseStatus:
             with pytest.raises(RebuildLeaseUnavailableError):
                 with RebuildLease(tmp_path):
                     pass
+
+
+def test_source_snapshot_opens_through_the_validated_descriptor_alias(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Descriptor opens use ``descriptor_alias_path``, not a hardcoded /proc/self/fd.
+
+    ``descriptor_alias_path`` probes /dev/fd as well as /proc/self/fd and
+    validates that the alias resolves to the same inode as the descriptor.
+    Anti-vacuity: with the literal ``f"file:/proc/self/fd/{fd}?mode=ro"``
+    restored, the recorder below is never called and the first assertion is
+    red; making the helper return None must also refuse rather than fall back,
+    which the second half asserts.
+    """
+    import polylogue.storage.index_generation as index_generation_module
+
+    _archive(tmp_path)
+
+    calls: list[int] = []
+    from polylogue.storage.sqlite.connection_profile import descriptor_alias_path as real_alias
+
+    def _recording_alias(fd: int) -> Path | None:
+        calls.append(fd)
+        return real_alias(fd)
+
+    monkeypatch.setattr(index_generation_module, "descriptor_alias_path", _recording_alias)
+    assert source_revision_snapshot(tmp_path)
+    assert calls
+
+    monkeypatch.setattr(index_generation_module, "descriptor_alias_path", lambda fd: None)
+    with pytest.raises(RuntimeError, match="no validated descriptor alias"):
+        source_revision_snapshot(tmp_path)

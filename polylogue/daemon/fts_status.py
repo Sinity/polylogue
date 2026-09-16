@@ -8,9 +8,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 

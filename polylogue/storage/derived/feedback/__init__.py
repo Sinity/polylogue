@@ -27,7 +27,7 @@ from polylogue.analysis.feedback import (
     now_utc,
     parse_correction_kind,
 )
-from polylogue.storage.introspection import table_exists_async
+from polylogue.core.sqlite_introspection import table_exists_async
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_AUTHOR_KIND,
     ASSERTION_DEFAULT_AUTHOR_REF,

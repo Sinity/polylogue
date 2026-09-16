@@ -768,3 +768,85 @@ def test_a_queued_run_publishes_its_result_document(tmp_path: Path, capsys: pyte
     assert published["status"] == "success"
     assert published["memory"]["observed_samples"] >= 1
     assert published["memory"]["processes"], "the run's own processes are named"
+
+
+def test_the_startup_sweep_reclaims_only_dead_owners(tmp_path: Path) -> None:
+    """``tmp-<pid>-*`` trees survive exactly as long as their owning pid does.
+
+    A run killed outright runs no handler at all, so the next run's startup is
+    the first moment anything can reclaim its basetemp (evidence: 514 such
+    trees, 56.7 GiB, across this host's worktrees). Anti-vacuity: dropping the
+    liveness check deletes the live owner's tree out from under a concurrent
+    run and turns this red; dropping the sweep leaves the dead one behind.
+    """
+    from devtools.pytest_slot import sweep_stale_temp_trees
+
+    proc = tmp_path / "proc"
+    (proc / "4242").mkdir(parents=True)
+    root = tmp_path / "verify"
+    live = root / "tmp-4242-a1"
+    dead = root / "tmp-4243-b2"
+    dead_scratch = root / "tmp-4243-b2.tmpdir"
+    unrelated = root / "runs"
+    for directory in (live, dead, dead_scratch, unrelated):
+        directory.mkdir(parents=True)
+    (dead / "fixture").mkdir()
+
+    removed = sweep_stale_temp_trees(root, proc=proc)
+
+    assert sorted(path.name for path in removed) == ["tmp-4243-b2", "tmp-4243-b2.tmpdir"]
+    assert live.exists()
+    assert unrelated.exists()
+    assert not dead.exists()
+    assert not dead_scratch.exists()
+
+
+@pytest.mark.uses_real_clock("waits on a real child process it signals")
+@pytest.mark.parametrize("kill_signal", [signal.SIGTERM, signal.SIGKILL])
+def test_a_killed_run_leaves_no_temporary_tree(tmp_path: Path, kill_signal: signal.Signals) -> None:
+    """A signalled run leaves nothing: the guard on SIGTERM, the sweep on SIGKILL.
+
+    Anti-vacuity: removing the signal handlers from the guard leaves the
+    SIGTERM tree behind, and removing the startup sweep leaves the SIGKILL one
+    behind -- neither can be reclaimed by the ``finally`` the ordinary route
+    relies on.
+    """
+    from devtools.pytest_slot import sweep_stale_temp_trees
+
+    root = tmp_path / "verify"
+    root.mkdir()
+    ready = tmp_path / "ready"
+    program = (
+        "import os, pathlib, sys, time\n"
+        "from devtools.pytest_slot import guard_temp_trees\n"
+        f"root = pathlib.Path({str(root)!r})\n"
+        "tree = root / f'tmp-{os.getpid()}-deadbeef'\n"
+        "(tree / 'fixture').mkdir(parents=True)\n"
+        "guard_temp_trees(tree)\n"
+        f"pathlib.Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", program],
+        cwd=str(Path(__file__).parents[3]),
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).parents[3])},
+    )
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists(), "the guarded child never started"
+        tree = root / f"tmp-{child.pid}-deadbeef"
+        assert tree.exists()
+        child.send_signal(kill_signal)
+        child.wait(timeout=30)
+    finally:
+        if child.poll() is None:  # pragma: no cover - only on a stuck child
+            child.kill()
+            child.wait(timeout=30)
+
+    if kill_signal is signal.SIGKILL:
+        assert tree.exists(), "SIGKILL cannot run a handler; the sweep is the mechanism"
+        sweep_stale_temp_trees(root)
+    assert not tree.exists()
+    assert list(root.iterdir()) == []

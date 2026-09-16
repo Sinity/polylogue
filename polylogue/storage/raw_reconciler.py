@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, TypeVar, cast
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
@@ -696,12 +696,17 @@ def _strategy_overrides(
 ) -> dict[str, _StrategyOverride]:
     """Ask legacy incident inspectors for proofs, never for plan identity."""
     from polylogue.storage.raw_convergence import (
+        BROWSER_ORIGIN_READ_FAILED_STATUS,
         inspect_browser_canonical_authority_conflicts,
         inspect_browser_capture_origin_mismatches,
         inspect_quarantined_accepted_raws,
     )
 
     overrides: dict[str, _StrategyOverride] = {}
+    # polylogue-roaof: raws whose durable evidence could not be read. Nothing
+    # was proven about them, so no override -- conflict or otherwise -- may be
+    # derived; the next pass retries once the blob is readable again.
+    unread_evidence_ids: set[str] = set()
     browser_ids = sorted(
         {
             str(row["accepted_raw_id"])
@@ -723,6 +728,15 @@ def _strategy_overrides(
                     reason="browser-origin strategy proved an exact evidence-preserving copy-forward",
                     witness=_browser_strategy_witness(browser_item),
                     input_raw_ids=_browser_strategy_raw_ids(browser_item),
+                )
+            elif browser_item.status == BROWSER_ORIGIN_READ_FAILED_STATUS:
+                unread_evidence_ids.add(browser_item.raw_id)
+                emit(
+                    "storage.raw_reconciler.browser_origin_evidence_unreadable",
+                    level=WARNING,
+                    outcome="degraded",
+                    raw_id=browser_item.raw_id,
+                    reason=browser_item.reason,
                 )
             elif browser_item.terminally_ineligible:
                 overrides[browser_item.raw_id] = _StrategyOverride(
@@ -746,6 +760,21 @@ def _strategy_overrides(
         )
         for conflict_item in conflicts.items:
             if conflict_item.raw_id in overrides:
+                continue
+            if conflict_item.raw_id in unread_evidence_ids:
+                continue
+            if conflict_item.status == BROWSER_ORIGIN_READ_FAILED_STATUS:
+                # polylogue-roaof: the durable evidence was never read, so no
+                # conflict was proven and no durable judgment row may be
+                # derived from it. Leave the raw in its unrecorded state so the
+                # next pass retries once the blob is readable again.
+                emit(
+                    "storage.raw_reconciler.browser_authority_evidence_unreadable",
+                    level=WARNING,
+                    outcome="degraded",
+                    raw_id=conflict_item.raw_id,
+                    reason=conflict_item.reason,
+                )
                 continue
             if conflict_item.competing_raw_id is None:
                 overrides[conflict_item.raw_id] = _StrategyOverride(

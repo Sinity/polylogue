@@ -645,6 +645,7 @@ export type SearchEnvelope = {
   readonly route_state?: RouteReadinessPayload | null;
   readonly sort?: string | null;
   readonly total: number | null;
+  readonly total_unit?: string | null;
   readonly unavailable_lanes?: ReadonlyArray<string>;
 };
 

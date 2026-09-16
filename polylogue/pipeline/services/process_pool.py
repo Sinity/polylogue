@@ -171,18 +171,34 @@ def resolve_archive_ingest_dispatch(*, path_count: int, total_bytes: int, worker
     return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(path_count, cpus, worker_ceiling)))
 
 
-def resolve_validation_dispatch(*, record_count: int) -> ParseDispatchPlan:
-    """Worker-count decision for ``validation_flow.py``'s raw-record validation batch.
+#: Below this aggregate blob size a validation batch runs in-process. Same
+#: tier boundary :func:`resolve_ingest_batch_dispatch` uses, for the same
+#: reason: a spawn-based pool is a fresh interpreter per worker re-importing
+#: polylogue, which costs far more than validating a few small records.
+VALIDATION_SEQUENTIAL_BLOB_BYTES = 8 * 1024 * 1024
 
-    Unchanged formula: ``min(record_count, cpus, 8)``, always a process pool.
-    Deliberately ignores :func:`parallel_threads_effective` -- unlike every
-    other site here, this one's process-pool preference is *itself* the
-    measured result, independent of GIL/free-threading: JSON decode's native
-    C extension accelerator releases the GIL, so ``ProcessPoolExecutor``
-    measured 605 MB/s at 8 workers against 160 MB/s for 24 threads (3.7x),
-    a GIL-build result threads cannot approach regardless of build. Do not
-    gate this on ``parallel_threads_effective()``.
+
+def resolve_validation_dispatch(*, record_count: int, total_blob_bytes: int | None = None) -> ParseDispatchPlan:
+    """Pool-kind + worker-count decision for ``validation_flow.py``'s raw-record batch.
+
+    Above the byte tier the formula is unchanged: ``min(record_count, cpus, 8)``
+    on a process pool. Deliberately ignores :func:`parallel_threads_effective`
+    -- unlike every other site here, this one's process-pool preference is
+    *itself* the measured result, independent of GIL/free-threading: JSON
+    decode's native C extension accelerator releases the GIL, so
+    ``ProcessPoolExecutor`` measured 605 MB/s at 8 workers against 160 MB/s for
+    24 threads (3.7x), a GIL-build result threads cannot approach regardless of
+    build. Do not gate this on ``parallel_threads_effective()``.
+
+    What *is* new (polylogue-oa9w8): the byte tier. ``validate_raw_ids`` walks
+    raw ids in batches of 50 and this function was consulted per batch with no
+    size floor, so a whole-corpus validation pass constructed one spawn-based
+    pool per batch -- ~863 fresh-interpreter pools for 43,124 raws -- no matter
+    how small the records were. ``total_blob_bytes=None`` keeps the old
+    unconditional process answer for a caller that cannot weigh its batch.
     """
+    if total_blob_bytes is not None and total_blob_bytes <= VALIDATION_SEQUENTIAL_BLOB_BYTES:
+        return ParseDispatchPlan(PoolKind.SEQUENTIAL, 1)
     cpus = available_cpus() or 4
     return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(record_count, cpus, 8)))
 
@@ -294,6 +310,7 @@ __all__ = [
     "resolve_ingest_batch_dispatch",
     "resolve_parse_worker_count",
     "resolve_revision_backfill_census_dispatch",
+    "VALIDATION_SEQUENTIAL_BLOB_BYTES",
     "resolve_validation_dispatch",
     "select_ingest_worker_count",
     "terminate_process_pool",

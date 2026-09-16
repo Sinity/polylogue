@@ -7,6 +7,7 @@ transport; browser code owns presentation and enhancement.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import json
@@ -21,10 +22,11 @@ from typing import Any
 from urllib.parse import quote
 
 from polylogue.archive.query.execution_control import classify_unit_expression_workload
-from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
+from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT, DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.logging import WARNING, emit
+from polylogue.rendering.semantic_cards import DEFAULT_PREVIEW_MAX_CHARS
 from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitEnvelope
 
 ARCHIVE_OVERVIEW_EXPRESSION = "messages where words >= 0 | sort by time desc"
@@ -35,6 +37,16 @@ _HASHED_ASSET_RE = re.compile(r"^[A-Za-z0-9._-]+-[A-Za-z0-9_-]{8,}\.(?:css|js)$"
 
 class WebUIAssetError(RuntimeError):
     """Raised when the packaged Vite manifest or one of its assets is invalid."""
+
+
+class WebUIUnitContractError(RuntimeError):
+    """Raised when a query envelope's rows do not match its declared unit.
+
+    ``QueryUnitEnvelope`` types ``items`` as the union of every unit row, so an
+    envelope declaring ``unit="message"`` while carrying session or block rows
+    validates. Dropping those rows renders as "No indexed message activity" -
+    an unmeasured state shown as a measured empty archive.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,7 +143,15 @@ class WebUIAssetBundle:
         resource = self._root.joinpath(normalized)
         if not resource.is_file():
             raise WebUIAssetError(f"manifest asset is missing: {normalized}")
-        body = resource.read_bytes()
+        try:
+            body = resource.read_bytes()
+        except OSError as exc:
+            # ``is_file()`` passing does not make the bytes readable (permission
+            # loss, a truncated package, a filesystem error).  The manifest read
+            # path already turns this class into ``WebUIAssetError`` so the
+            # handler answers with the structured 503; the asset body read must
+            # not instead escape as an untyped OSError and drop the connection.
+            raise WebUIAssetError(f"manifest asset is unreadable: {normalized}") from exc
         content_type = "text/javascript; charset=utf-8" if normalized.endswith(".js") else "text/css; charset=utf-8"
         digest = hashlib.sha256(body).hexdigest()
         return WebUIAsset(
@@ -209,6 +229,9 @@ def load_archive_overview_page(archive_root: Path) -> QueryUnitEnvelope:
     )
     if not isinstance(payload, QueryUnitEnvelope) or payload.unit != "message":
         raise RuntimeError("archive overview query returned an unexpected envelope")
+    # Validate the unit/row contract here, inside the handler's typed error
+    # block, so a mismatched row is a semantic 500 rather than an empty panel.
+    _message_rows(payload)
     return payload
 
 
@@ -283,12 +306,6 @@ def render_archive_overview_page(
   </body>
 </html>
 """
-
-
-# Compatibility alias for callers that imported the daemon constant before
-# session-list defaults moved to the shared query specification.
-SESSION_LIST_LIMIT = DEFAULT_SESSION_LIST_LIMIT
-SESSION_READ_MESSAGE_LIMIT = 30
 
 
 def render_session_list_page(
@@ -460,11 +477,11 @@ def render_session_read_page(
     origin = str(session.get("origin") or "unknown-export")
     all_messages = session.get("messages")
     messages = all_messages if isinstance(all_messages, list) else []
-    # The caller already bounds ``messages`` to SESSION_READ_MESSAGE_LIMIT at
+    # The caller already bounds ``messages`` to DEFAULT_MESSAGE_PAGE_LIMIT at
     # the storage layer (read_session_page, polylogue-07g6), so this is
     # already the first page, not a slice of a larger in-memory list.
     # ``message_count`` carries the TRUE composed total either way.
-    first_page = messages[:SESSION_READ_MESSAGE_LIMIT]
+    first_page = messages[:DEFAULT_MESSAGE_PAGE_LIMIT]
     total_messages = session.get("message_count")
     if not isinstance(total_messages, int):
         total_messages = len(messages)
@@ -648,6 +665,25 @@ def _render_semantic_entry(raw: object) -> str:
     return ""
 
 
+def _bounded_render_text(text: str) -> tuple[str, int]:
+    """Apply the shared preview ceiling, reporting exactly how much was elided.
+
+    Provider exports are untrusted: one very large block otherwise renders in
+    full into the page. The ceiling is ``DEFAULT_PREVIEW_MAX_CHARS`` - the same
+    bound ``build_preview`` applies on the preview path - and the elision is
+    always counted, never silent.
+    """
+    if len(text) <= DEFAULT_PREVIEW_MAX_CHARS:
+        return text, 0
+    return text[:DEFAULT_PREVIEW_MAX_CHARS], len(text) - DEFAULT_PREVIEW_MAX_CHARS
+
+
+def _elision_notice(omitted: int) -> str:
+    if omitted <= 0:
+        return ""
+    return f'<p class="elision-notice" data-omitted-characters="{omitted}">{omitted:,} characters elided</p>'
+
+
 def _render_card_field_value(value: str) -> str:
     """Render a card field value, hyperlinking the registry's ``session:``/``message:`` ref convention.
 
@@ -659,6 +695,9 @@ def _render_card_field_value(value: str) -> str:
     reference - gets working navigation for free.
     """
 
+    value, omitted = _bounded_render_text(value)
+    if omitted:
+        return f'<code class="card__field-value">{html.escape(value)}</code>{_elision_notice(omitted)}'
     if value.startswith("session:") and len(value) > len("session:"):
         session_ref = value[len("session:") :]
         return f'<a class="card__field-value" href="/sessions/{quote(session_ref, safe="")}"><code>{html.escape(value)}</code></a>'
@@ -821,7 +860,10 @@ def _render_semantic_prose(prose: Mapping[str, object]) -> str:
         if meta_bits
         else ""
     )
-    text_markup = f'<p class="prose__text">{html.escape(text)}</p>' if text else ""
+    bounded_text, omitted = _bounded_render_text(text)
+    text_markup = (
+        f'<p class="prose__text">{html.escape(bounded_text)}</p>{_elision_notice(omitted)}' if bounded_text else ""
+    )
     return f'<div class="prose" data-semantic-block-type="{html.escape(block_type, quote=True)}">{meta_markup}{text_markup}</div>'
 
 
@@ -850,6 +892,18 @@ def _render_site_header(current_path: str) -> str:
         + link("/observability", "Observability")
         + "</nav></header>"
     )
+
+
+def _exception_detail(exc: BaseException) -> str:
+    """Return a never-empty rendering of an exception.
+
+    A bare ``RuntimeError()`` stringifies to ``""``. Carrying that through as
+    the panel's error made every ``if error:`` test read the failure as absent,
+    so a failed fetch rendered as a measured empty result. Degraded state is
+    keyed on the exception's presence; this only decides what to *show*.
+    """
+    detail = str(exc)
+    return detail if detail else f"{type(exc).__name__} raised without detail"
 
 
 COST_ROLLUP_LIMIT = 20
@@ -904,7 +958,7 @@ async def build_cost_payload(operations: object) -> dict[str, object]:
         try:
             items = await fetch_insights_async(descriptor, operations, **kwargs)
         except ArchiveInsightUnavailableError as exc:
-            return [], str(exc)
+            return [], _exception_detail(exc)
         except Exception as exc:
             emit(
                 "daemon.webui.panel_degraded",
@@ -915,7 +969,7 @@ async def build_cost_payload(operations: object) -> dict[str, object]:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
-            return [], str(exc)
+            return [], _exception_detail(exc)
         return [item.model_dump(mode="json") for item in items], None
 
     rollups, rollups_error = await _fetch("cost_rollups", limit=COST_ROLLUP_LIMIT)
@@ -1008,7 +1062,7 @@ def _render_cost_rollups_section(rollups: Mapping[str, object]) -> str:
     error = rollups.get("error")
     items_raw = rollups.get("items")
     items = items_raw if isinstance(items_raw, list) else []
-    if error and not items:
+    if error is not None and not items:
         body = f'<p class="cost-degraded">{html.escape(str(error))}</p>'
     elif not items:
         body = "<p>No cost rollups are materialized yet.</p>"
@@ -1086,7 +1140,7 @@ def _render_usage_timeline_section(timeline: Mapping[str, object]) -> str:
     error = timeline.get("error")
     items_raw = timeline.get("items")
     items = items_raw if isinstance(items_raw, list) else []
-    if error and not items:
+    if error is not None and not items:
         body = f'<p class="cost-degraded">{html.escape(str(error))}</p>'
     elif not items:
         body = "<p>No usage timeline is materialized yet.</p>"
@@ -1135,7 +1189,7 @@ def _render_session_cost_drilldown(sessions: Mapping[str, object]) -> str:
     error = sessions.get("error")
     items_raw = sessions.get("items")
     items = items_raw if isinstance(items_raw, list) else []
-    if error and not items:
+    if error is not None and not items:
         body = f'<p class="cost-degraded">{html.escape(str(error))}</p>'
     elif not items:
         body = "<p>No session-level cost estimates are materialized yet.</p>"
@@ -1345,93 +1399,141 @@ def _highlight_snippet(snippet: str) -> str:
     return escaped.replace("[", "<mark>").replace("]", "</mark>")
 
 
+#: Per-descriptor wall-clock budget for one observability insight fetch.
+#: The page fetches every registered descriptor concurrently, so a descriptor
+#: that blocks forever degrades only its own panel instead of starving its
+#: siblings until the request-level deadline 503s the whole page.
+INSIGHT_PANEL_TIMEOUT_S = 10.0
+
+
 async def build_observability_payload(
     operations: object,
     status: Mapping[str, object],
     *,
     registry: Mapping[str, Any] | None = None,
+    panel_timeout_s: float = INSIGHT_PANEL_TIMEOUT_S,
 ) -> dict[str, object]:
     """Return descriptor-owned insight panels and a status-snapshot adapter.
 
     The browser receives display fields from the insight registry, not a copy
-    of its accessors or readiness rules.  A failed descriptor is rendered in
-    place and cannot suppress healthy sibling panels.
+    of its accessors or readiness rules.  A failed, stalled, or unavailable
+    descriptor is rendered in place and cannot suppress healthy sibling panels:
+    descriptors are fetched concurrently, each under its own timeout, and a
+    timed-out fetch is cancelled rather than left holding the request.
     """
-    from polylogue.analysis.archive import ArchiveInsightUnavailableError
-    from polylogue.analysis.registry import INSIGHT_REGISTRY, fetch_insights_async
+    from polylogue.analysis.registry import INSIGHT_REGISTRY
 
-    panels: list[dict[str, object]] = []
     active_registry: Mapping[str, Any] = INSIGHT_REGISTRY if registry is None else registry
-    for name, descriptor in sorted(active_registry.items()):
-        fields = tuple(descriptor.fields)
-        query_kwargs: dict[str, object] = {}
-        if descriptor.query_model is not None and "limit" in descriptor.query_model.model_fields:
-            query_kwargs["limit"] = min(12, descriptor.mcp_default_limit)
-        panel: dict[str, object] = {
-            "name": name,
-            "display_name": descriptor.display_name,
-            "json_key": descriptor.json_key,
-            "fields": [field.label for field in fields],
-            "readiness": _insight_readiness(status, descriptor.readiness_exempt),
-            "state": "available",
-            "items": [],
-            "error": None,
-        }
-        try:
-            items = await fetch_insights_async(descriptor, operations, **query_kwargs)
-        except ArchiveInsightUnavailableError as exc:
-            panel["state"] = "unavailable"
-            panel["error"] = str(exc)
-        except Exception as exc:
-            emit(
-                "daemon.webui.panel_degraded",
-                level=WARNING,
-                outcome="degraded",
-                reason="insight_panel_failed",
-                component=name,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
+    ordered = sorted(active_registry.items())
+    panels = list(
+        await asyncio.gather(
+            *(
+                _build_insight_panel(name, descriptor, operations, status, panel_timeout_s)
+                for name, descriptor in ordered
             )
-            panel["state"] = "degraded"
-            panel["error"] = str(exc)
-        else:
-            try:
-                rendered_items: list[dict[str, object]] = []
-                for item in items:
-                    plain_fields: list[dict[str, str]] = []
-                    for field in fields:
-                        try:
-                            value = field.accessor(item)
-                        except (AttributeError, KeyError, TypeError):
-                            value = "-"
-                        plain_fields.append({"label": field.label, "value": str(value)})
-                    item_json = item.model_dump(mode="json")
-                    provenance = item_json.get("provenance")
-                    if provenance is None:
-                        provenance = {
-                            key: item_json[key]
-                            for key in ("materializer_version", "materialized_at", "evidence_refs")
-                            if key in item_json
-                        }
-                    rendered_items.append({"fields": plain_fields, "json": item_json, "provenance": provenance})
-            except Exception as exc:
-                emit(
-                    "daemon.webui.panel_degraded",
-                    level=WARNING,
-                    outcome="degraded",
-                    reason="insight_projection_failed",
-                    component=name,
-                    error_type=type(exc).__name__,
-                    error_detail=str(exc),
-                )
-                panel["state"] = "degraded"
-                panel["error"] = str(exc)
-            else:
-                panel["items"] = rendered_items
-                if not rendered_items:
-                    panel["state"] = "empty"
-        panels.append(panel)
+        )
+    )
     return {"contract_version": 1, "status": _status_panel_payload(status), "insights": panels}
+
+
+async def _build_insight_panel(
+    name: str,
+    descriptor: Any,
+    operations: object,
+    status: Mapping[str, object],
+    panel_timeout_s: float,
+) -> dict[str, object]:
+    """Fetch and project one descriptor into its own panel, absorbing its failures."""
+    from polylogue.analysis.archive import ArchiveInsightUnavailableError
+    from polylogue.analysis.registry import fetch_insights_async
+
+    fields = tuple(descriptor.fields)
+    query_kwargs: dict[str, object] = {}
+    if descriptor.query_model is not None and "limit" in descriptor.query_model.model_fields:
+        query_kwargs["limit"] = min(12, descriptor.mcp_default_limit)
+    panel: dict[str, object] = {
+        "name": name,
+        "display_name": descriptor.display_name,
+        "json_key": descriptor.json_key,
+        "fields": [field.label for field in fields],
+        "readiness": _insight_readiness(status, descriptor.readiness_exempt),
+        "state": "available",
+        "items": [],
+        "error": None,
+    }
+    try:
+        items = await asyncio.wait_for(
+            fetch_insights_async(descriptor, operations, **query_kwargs),
+            timeout=panel_timeout_s,
+        )
+    except TimeoutError as exc:
+        # ``wait_for`` cancels the pending fetch, so the stalled descriptor does
+        # not keep holding its worker after this panel is decided.
+        emit(
+            "daemon.webui.panel_degraded",
+            level=WARNING,
+            outcome="degraded",
+            reason="insight_panel_timed_out",
+            component=name,
+            error_type=type(exc).__name__,
+            error_detail=f"{panel_timeout_s}s",
+        )
+        panel["state"] = "degraded"
+        panel["error"] = f"insight fetch exceeded its {panel_timeout_s:g}s panel budget"
+        return panel
+    except ArchiveInsightUnavailableError as exc:
+        panel["state"] = "unavailable"
+        panel["error"] = _exception_detail(exc)
+        return panel
+    except Exception as exc:
+        emit(
+            "daemon.webui.panel_degraded",
+            level=WARNING,
+            outcome="degraded",
+            reason="insight_panel_failed",
+            component=name,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        panel["state"] = "degraded"
+        panel["error"] = _exception_detail(exc)
+        return panel
+    try:
+        rendered_items: list[dict[str, object]] = []
+        for item in items:
+            plain_fields: list[dict[str, str]] = []
+            for field in fields:
+                try:
+                    value = field.accessor(item)
+                except (AttributeError, KeyError, TypeError):
+                    value = "-"
+                plain_fields.append({"label": field.label, "value": str(value)})
+            item_json = item.model_dump(mode="json")
+            provenance = item_json.get("provenance")
+            if provenance is None:
+                provenance = {
+                    key: item_json[key]
+                    for key in ("materializer_version", "materialized_at", "evidence_refs")
+                    if key in item_json
+                }
+            rendered_items.append({"fields": plain_fields, "json": item_json, "provenance": provenance})
+    except Exception as exc:
+        emit(
+            "daemon.webui.panel_degraded",
+            level=WARNING,
+            outcome="degraded",
+            reason="insight_projection_failed",
+            component=name,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        panel["state"] = "degraded"
+        panel["error"] = _exception_detail(exc)
+        return panel
+    panel["items"] = rendered_items
+    if not rendered_items:
+        panel["state"] = "empty"
+    return panel
 
 
 def _insight_readiness(status: Mapping[str, object], exempt: bool) -> dict[str, object]:
@@ -1452,12 +1554,37 @@ def _insight_readiness(status: Mapping[str, object], exempt: bool) -> dict[str, 
     return {"state": "unknown", "required": True, "reason": "daemon did not provide insight readiness"}
 
 
+#: Projection from ``CapabilityReadinessState`` (polylogue/readiness/capability.py)
+#: onto the browser's ``StatusComponentState`` union
+#: (webui/src/contracts/observability.ts). Every canonical readiness member is
+#: mapped explicitly: 'unavailable' must mean "no evidence", so 'rebuilding'
+#: (active recovery) and 'poisoned' (severe corruption) each carry their own
+#: destination rather than collapsing into the default.
+_COMPONENT_STATE_PROJECTION: Mapping[str, str] = {
+    "ready": "fresh",
+    "stale": "stale",
+    "running": "refreshing",
+    "pending": "refreshing",
+    "rebuilding": "refreshing",
+    "timed_out": "timed_out",
+    "blocked": "degraded",
+    "degraded": "degraded",
+    "poisoned": "degraded",
+    "missing": "unavailable",
+    "unknown": "unavailable",
+}
+
+
 def _status_panel_payload(status: Mapping[str, object]) -> dict[str, object]:
     """Adapt today's readiness map to the StatusComponentSnapshot protocol."""
     snapshot = status.get("status_snapshot")
     snapshot_payload = dict(snapshot) if isinstance(snapshot, Mapping) else {"state": "unavailable"}
     supplied = status.get("status_components")
     if isinstance(supplied, list):
+        # Not a dead branch: ``polylogue/daemon/status.py`` populates
+        # ``status_components`` from ``_status_component_metadata(snapshots)``
+        # and the HTTP status payload carries it verbatim, so the production
+        # daemon does reach this arm.
         return {"adapter": "status-component-snapshot", "snapshot": snapshot_payload, "components": supplied}
     legacy = status.get("component_readiness")
     components: list[dict[str, object]] = []
@@ -1465,19 +1592,15 @@ def _status_panel_payload(status: Mapping[str, object]) -> dict[str, object]:
         for name, value in sorted(legacy.items()):
             record = value if isinstance(value, Mapping) else {}
             legacy_state = str(record.get("state") or "unknown")
-            state = {
-                "ready": "fresh",
-                "stale": "stale",
-                "running": "refreshing",
-                "pending": "refreshing",
-                "timed_out": "timed_out",
-                "blocked": "degraded",
-                "degraded": "degraded",
-            }.get(legacy_state, "unavailable")
+            state = _COMPONENT_STATE_PROJECTION.get(legacy_state, "unavailable")
             components.append(
                 {
                     "name": str(name),
                     "state": state,
+                    # The projected vocabulary is lossy by construction (the
+                    # browser contract has no 'poisoned'), so the originating
+                    # CapabilityReadinessState travels alongside it as evidence.
+                    "readiness_state": legacy_state,
                     "detail": record.get("reason") or record.get("detail") or record.get("summary"),
                     "last_good": record.get("last_good"),
                     "age_s": snapshot_payload.get("age_s"),
@@ -1542,7 +1665,14 @@ def _render_status_component(raw: object) -> str:
     state = html.escape(str(component.get("state") or "unavailable"))
     detail = component.get("detail")
     detail_markup = f"<p>{html.escape(str(detail))}</p>" if detail else ""
-    return f'<li class="status-card" data-status-state="{state}"><h3>{name}</h3><p class="state-label">{state}</p>{detail_markup}</li>'
+    readiness_state = component.get("readiness_state")
+    readiness_markup = (
+        f' data-readiness-state="{html.escape(str(readiness_state), quote=True)}"' if readiness_state else ""
+    )
+    return (
+        f'<li class="status-card" data-status-state="{state}"{readiness_markup}><h3>{name}</h3>'
+        f'<p class="state-label">{state}</p>{detail_markup}</li>'
+    )
 
 
 def _render_insight_panel(raw: object) -> str:
@@ -1552,7 +1682,7 @@ def _render_insight_panel(raw: object) -> str:
     items = panel.get("items")
     rows = items if isinstance(items, list) else []
     error = panel.get("error")
-    if error:
+    if error is not None:
         body = f"<p>{html.escape(str(error))}</p>"
     elif not rows:
         body = "<p>No materialized rows are available for this bounded view.</p>"
@@ -1667,12 +1797,18 @@ def render_typed_data_page(
 
 
 def _message_rows(page: QueryUnitEnvelope | None) -> tuple[MessageQueryRowPayload, ...]:
+    """Return the envelope's message rows, refusing any row of another unit."""
     if page is None:
         return ()
+    if page.unit != "message":
+        raise WebUIUnitContractError(f"archive overview envelope declares unit {page.unit!r}, not 'message'")
     rows: list[MessageQueryRowPayload] = []
-    for item in page.items:
-        if isinstance(item, MessageQueryRowPayload):
-            rows.append(item)
+    for position, item in enumerate(page.items):
+        if not isinstance(item, MessageQueryRowPayload):
+            raise WebUIUnitContractError(
+                f"query envelope declares unit 'message' but item {position} is {type(item).__name__}"
+            )
+        rows.append(item)
     return tuple(rows)
 
 
@@ -1683,11 +1819,12 @@ def _render_message_row(row: MessageQueryRowPayload) -> str:
     if not preview:
         preview = "[empty message]"
     occurred_at = _format_timestamp(row.occurred_at_ms)
-    time_markup = (
-        "<span>Time unavailable</span>"
-        if occurred_at is None
-        else f'<time datetime="{occurred_at[0]}">{occurred_at[1]}</time>'
-    )
+    if occurred_at is None:
+        time_markup = "<span>Time unavailable</span>"
+    elif occurred_at[0] is None:
+        time_markup = f'<span data-time-state="out-of-range">{html.escape(occurred_at[1])}</span>'
+    else:
+        time_markup = f'<time datetime="{html.escape(occurred_at[0], quote=True)}">{html.escape(occurred_at[1])}</time>'
     return f"""          <li class="activity-row" data-message-id="{html.escape(str(row.message_id), quote=True)}">
             <div class="activity-row__meta"><span class="activity-row__origin">{html.escape(row.origin)}</span>{time_markup}</div>
             <h3><a href="/sessions/{quote(session_id, safe="")}#msg-{quote(str(row.message_id), safe="")}">{html.escape(title)}</a></h3>
@@ -1703,10 +1840,22 @@ def _compact_preview(text: str, limit: int = 180) -> str:
     return compact[: limit - 1].rstrip() + "…"
 
 
-def _format_timestamp(value: int | None) -> tuple[str, str] | None:
+def _format_timestamp(value: int | None) -> tuple[str | None, str] | None:
+    """Render an epoch-milliseconds value, or a typed placeholder when it cannot be.
+
+    ``occurred_at_ms`` is a SQLite integer; the representable range of
+    ``datetime.fromtimestamp`` is far narrower. Returning ``None`` means "no
+    timestamp recorded"; returning ``(None, text)`` means "a timestamp was
+    recorded but is outside the representable range" - two distinct absences,
+    neither of which may render as a measured instant. Raising here would
+    escape the handler's query-exception block and drop the connection.
+    """
     if value is None:
         return None
-    timestamp = datetime.fromtimestamp(value / 1000, tz=UTC)
+    try:
+        timestamp = datetime.fromtimestamp(value / 1000, tz=UTC)
+    except (ValueError, OverflowError, OSError):
+        return None, f"Timestamp out of range ({value} ms)"
     return timestamp.isoformat(), timestamp.strftime("%b %d, %Y · %H:%M UTC")
 
 
@@ -1725,16 +1874,16 @@ __all__ = [
     "ARCHIVE_OVERVIEW_EXPRESSION",
     "ARCHIVE_OVERVIEW_LIMIT",
     "COST_ROLLUP_LIMIT",
+    "INSIGHT_PANEL_TIMEOUT_S",
     "SEARCH_EXAMPLE_QUERIES",
     "SEARCH_RESULT_LIMIT",
     "SESSION_COST_DRILLDOWN_LIMIT",
-    "SESSION_LIST_LIMIT",
-    "SESSION_READ_MESSAGE_LIMIT",
     "USAGE_TIMELINE_LIMIT",
     "WebUIAsset",
     "WebUIAssetBundle",
     "WebUIAssetError",
     "WebUIEntrypoint",
+    "WebUIUnitContractError",
     "build_cost_payload",
     "build_observability_payload",
     "load_archive_overview_page",

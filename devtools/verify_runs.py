@@ -944,6 +944,12 @@ def prune_successful_verify_runs(
     evidence. The append-only history remains the compact structured summary.
     Any symlink, malformed receipt, unsafe path, or active retention lock
     causes pruning to retain the affected evidence and report the refusal.
+
+    A detail tree whose run has no durable history row is outside the bound by
+    construction: its summary was never appended, so pruning it would destroy
+    the only record of that run. Those are reported as
+    ``orphaned_detail_run_ids`` so a tree count above the documented bound can
+    be read as the backlog it is rather than as a bound that stopped running.
     """
     if max_successful < 0 or max_failed < 0 or max_failed_age_s < 0 or max_failed_bytes < 0:
         raise ValueError("successful verify detail limit must be non-negative")
@@ -992,6 +998,11 @@ def prune_successful_verify_runs(
                 durable[run_id] = row
 
         candidates: list[dict[str, Any]] = []
+        # Detail trees with no durable history row of their own. The bound
+        # cannot reach them -- pruning one would destroy the only copy of its
+        # cost evidence -- so they are counted and reported rather than
+        # silently making the retained tree count look like a broken bound.
+        orphaned_detail_run_ids: list[str] = []
         with os.scandir(runs_fd) as entries:
             for entry in entries:
                 info = entry.stat(follow_symlinks=False)
@@ -1012,6 +1023,8 @@ def prune_successful_verify_runs(
                     or history is None
                     or payload.get("status") != history.get("status")
                 ):
+                    if isinstance(run_id, str) and history is None:
+                        orphaned_detail_run_ids.append(run_id)
                     continue
                 finished_at = payload.get("finished_at")
                 try:
@@ -1108,6 +1121,7 @@ def prune_successful_verify_runs(
             "retained_run_ids": retained,
             "retained_failure_run_ids": retained_failures,
             "pruned_run_ids": pruned,
+            "orphaned_detail_run_ids": sorted(orphaned_detail_run_ids),
             "history_durable": True,
             "retention_locked": False,
         }

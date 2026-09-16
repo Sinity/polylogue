@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 import sys
 from dataclasses import replace
@@ -1174,3 +1175,157 @@ class TestSemanticSourceClosureMemo:
 
         assert alpha == ((roots[0] / "polylogue" / "sources" / "emitter.py").resolve(),)
         assert beta == ((roots[1] / "polylogue" / "sources" / "emitter.py").resolve(),)
+
+
+# -----------------------------------------------------------------------------
+# BOUNDED ADMISSION PROBES (bd polylogue-dhkuu, finding B)
+# -----------------------------------------------------------------------------
+
+
+def test_hermes_json_probe_refuses_above_the_inspection_ceiling(tmp_path: Path) -> None:
+    """A candidate larger than the ceiling is refused on its stat size, unread.
+
+    ``recognize_source_class`` runs in the daemon's normal mode over
+    semi-trusted provider roots and previously did
+    ``json.loads(path.read_text())`` with no ceiling. The caller already holds
+    ``stat().st_size``, so the size decides before any read.
+
+    Anti-vacuity: drop the ``source_size_bytes`` gate and this call reads and
+    parses the file, returning the structural signature instead of the typed
+    refusal.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.origin_specs import SOURCE_CLASS_JSON_PROBE_MAX_BYTES, recognize_source_class
+
+    candidate = tmp_path / "trajectory.json"
+    candidate.write_text("{}", encoding="utf-8")
+
+    recognition = recognize_source_class(
+        Provider.HERMES, candidate, source_size_bytes=SOURCE_CLASS_JSON_PROBE_MAX_BYTES + 1
+    )
+
+    assert recognition is not None
+    assert recognition.source_class == "unsupported"
+    assert "inspection ceiling" in recognition.reason
+
+
+def test_hermes_jsonl_probe_skips_an_oversized_record(tmp_path: Path) -> None:
+    """One over-long JSONL record is skipped, not read whole.
+
+    The 32-record cap left each ``json.loads(line)`` unbounded. A record above
+    ``JSONL_RECORD_INSPECTION_BYTES`` buys no classification accuracy (the
+    signature is decided by leading keys), so it is skipped and the next real
+    record still classifies the file.
+
+    Anti-vacuity: restore the plain ``for line in handle`` loop and the
+    oversized record is parsed in full before the recognizer ever sees the
+    ATOF record that decides the answer.
+    """
+    from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
+    from polylogue.sources.origin_specs import _bounded_jsonl_records
+
+    candidate = tmp_path / "events.jsonl"
+    huge = json.dumps({"pad": "x" * (JSONL_RECORD_INSPECTION_BYTES * 2)})
+    candidate.write_text(huge + "\n" + json.dumps({"kept": True}) + "\n", encoding="utf-8")
+
+    records = _bounded_jsonl_records(candidate, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
+
+    assert records == [{"kept": True}]
+
+
+def _reset_closure_caches(module: object) -> None:
+    """Drop every in-process closure cache, leaving only what the disk memo holds."""
+    module._semantic_source_closure.cache_clear()  # type: ignore[attr-defined]
+    module._local_import_paths.cache_clear()  # type: ignore[attr-defined]
+    module._SOURCE_DIGESTS.clear()  # type: ignore[attr-defined]
+    module._IMPORT_EDGES = None  # type: ignore[attr-defined]
+    module._IMPORT_EDGES_ADDED = False  # type: ignore[attr-defined]
+
+
+def test_the_import_closure_memo_outlives_the_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parsing the closure is paid once per file version, not once per process.
+
+    Re-deriving the import graph cost about 9.6 s of a 14 s single-file pytest
+    collection and was paid again by every xdist worker and every CLI start.
+
+    Anti-vacuity: delete the memo lookup in ``_local_import_paths`` and this
+    goes red -- the second walk re-parses, which the sabotaged ``_import_bases``
+    turns into a failure.
+    """
+    from polylogue.sources import origin_specs as module
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "a.py").write_text("from .b import B\n", encoding="utf-8")
+    (package / "b.py").write_text("B = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "_SOURCE_ROOT", tmp_path)
+    _reset_closure_caches(module)
+    first = module._semantic_source_paths(("pkg/a.py",))
+    assert {path.name for path in first} == {"a.py", "b.py"}
+    assert (tmp_path / ".cache" / "source-fingerprints" / "import-edges-v1.json").is_file()
+
+    _reset_closure_caches(module)
+
+    def _refuse(signature: tuple[str, str, int]) -> tuple[str, ...]:
+        raise AssertionError(f"re-parsed {signature[0]} despite an unchanged file")
+
+    monkeypatch.setattr(module, "_import_bases", _refuse)
+    assert module._semantic_source_paths(("pkg/a.py",)) == first
+
+
+def test_a_memoized_closure_still_sees_a_module_that_appeared_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The memo holds what a file's text says, never which imports resolved then.
+
+    ``from .c import C`` against an absent ``c.py`` contributes nothing to the
+    closure; the day ``c.py`` lands, the unedited importer's closure must grow,
+    or a semantic file joins the fingerprint without moving it.
+
+    Anti-vacuity: memoize resolved paths instead of lexical bases -- the shape
+    this replaced -- and the second assertion still reports two members.
+    """
+    from polylogue.sources import origin_specs as module
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "a.py").write_text("from .b import B\nfrom .c import C\n", encoding="utf-8")
+    (package / "b.py").write_text("B = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "_SOURCE_ROOT", tmp_path)
+    _reset_closure_caches(module)
+    assert {path.name for path in module._semantic_source_paths(("pkg/a.py",))} == {"a.py", "b.py"}
+
+    (package / "c.py").write_text("C = 1\n", encoding="utf-8")
+    _reset_closure_caches(module)
+
+    assert {path.name for path in module._semantic_source_paths(("pkg/a.py",))} == {"a.py", "b.py", "c.py"}
+
+
+def test_hermes_skill_asset_templates_are_not_admitted_as_sessions() -> None:
+    """polylogue-6d7fx: the hermes-agent checkout bundled under the watched
+    Hermes root ships prompt templates that are bare role/content message
+    lists -- message-shaped by construction, so only their path can refuse
+    them. The declared ``skill_asset`` rule must make
+    ``path_declaration_refuses_session`` true for them while leaving a real
+    ``~/.hermes/sessions`` transcript admissible.
+
+    Anti-vacuity: deleting the ``skill_asset`` rule from ``_hermes_spec``
+    (or loosening its ``parse_policy`` off ``raw-only``) makes the first
+    assertion False.
+    """
+    from polylogue.sources.origin_specs import artifact_rule_for_path, path_declaration_refuses_session
+
+    template = "/home/operator/.hermes/hermes-agent/optional-skills/security/godmode/templates/prefill.json"
+    transcript = "/home/operator/.hermes/sessions/2026-09-01-session.json"
+
+    assert path_declaration_refuses_session(Provider.HERMES, template) is True
+    assert path_declaration_refuses_session(Provider.HERMES, transcript) is False
+
+    rule = artifact_rule_for_path(Provider.HERMES, template)
+    assert rule is not None
+    assert rule.kind == "skill_asset"
+    assert rule.parse_policy == "raw-only"

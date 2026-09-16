@@ -9,6 +9,8 @@ from typing import TypeAlias, cast
 
 import aiosqlite
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists_sync
+from polylogue.core.sqlite_introspection import table_exists_async as _table_exists_async
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     BLOCKS_FTS_TRIGGER_DDL,
@@ -36,8 +38,6 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
     trigram_insert_session_rows_sql,
 )
-from polylogue.storage.introspection import table_exists as _table_exists_sync
-from polylogue.storage.introspection import table_exists_async as _table_exists_async
 from polylogue.storage.sqlite.connection_profile import (
     BOUNDED_REPAIR_CACHE_SIZE_KIB,
     BOUNDED_REPAIR_MMAP_SIZE_BYTES,

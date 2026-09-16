@@ -17,6 +17,7 @@ from typing import Any
 from polylogue.config import Config, load_polylogue_config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.core.sqlite_introspection import relation_exists
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.readiness.capability import (
     LEGACY_READINESS_SOURCE_TYPES,
@@ -241,14 +242,6 @@ def _skipped_index_check(db_error: str) -> ReadinessCheck:
 _MESSAGE_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
 
-def _archive_table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
-
-
 def _message_fts_triggers_present(conn: sqlite3.Connection) -> bool:
     placeholders = ",".join("?" for _ in _MESSAGE_FTS_TRIGGERS)
     present = {
@@ -267,7 +260,7 @@ def _archive_messages_fts_readiness(conn: sqlite3.Connection, *, exact_counts: b
     The search index is ``messages_fts`` (contentless FTS5 over ``blocks``),
     maintained by ``messages_fts_a{i,d,u}`` triggers.
     """
-    exists = _archive_table_exists(conn, "messages_fts")
+    exists = relation_exists(conn, "messages_fts")
     if not exists:
         return {"exists": False, "indexed_rows": 0, "total_rows": 0, "ready": False, "triggers_present": False}
 
@@ -377,7 +370,7 @@ def _fts_sync_check(conn: sqlite3.Connection) -> ReadinessCheck:
     Reports a warning when the message FTS table is absent (desynced/dropped)
     or when its maintenance triggers are missing.
     """
-    if not _archive_table_exists(conn, "messages_fts"):
+    if not relation_exists(conn, "messages_fts"):
         return ReadinessCheck(
             "fts_sync",
             VerifyStatus.WARNING,
@@ -420,7 +413,15 @@ def _orphaned_messages_check(conn: sqlite3.Connection) -> ReadinessCheck:
 
 
 def _empty_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
-    """Sessions with no messages — surfaced as a warning."""
+    """Sessions with no messages -- surfaced as a warning.
+
+    The current ingest route cannot produce this row: the batch writer skips a
+    new session with no messages, and the worker refuses a session with no
+    positive conversational evidence. So a hit here is a historical archive
+    shape or an externally modified database, not an ingest defect -- which is
+    exactly why this deep readiness probe still runs over an arbitrary archive
+    file, and why its test constructs the row with raw SQL.
+    """
     empty_count = int(
         conn.execute(
             """
@@ -436,7 +437,11 @@ def _empty_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
         "empty_sessions",
         VerifyStatus.OK if empty_count == 0 else VerifyStatus.WARNING,
         count=empty_count,
-        summary="No empty sessions" if empty_count == 0 else f"{empty_count} session(s) with no messages",
+        summary=(
+            "No empty sessions"
+            if empty_count == 0
+            else f"{empty_count} session(s) with no messages (historical or externally written shape)"
+        ),
     )
 
 
@@ -514,13 +519,20 @@ def _collect_table_status_best_effort(
     (`no such table: ...`), continue with the integrity checks that can be
     answered from the opened archive.
     """
+    from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
     if probe_only and not deep:
         return {}
     try:
         return collect_derived_model_statuses_sync(conn, verify_full=deep)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        # An empty mapping reads as "this archive has no derived models".
+        # Contention and corruption prove nothing of the sort, so they are
+        # raised for the caller to report as a degraded condition rather than
+        # laundered into absence.
+        if is_transient_sqlite_lock(exc) or is_corrupt_sqlite_database(exc):
+            raise
         return {}
 
 
@@ -666,9 +678,23 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
 
         # Run table-dependent collectors best-effort so archive integrity
         # probes above always register.
-        derived_statuses = _collect_table_status_best_effort(conn, deep=deep, probe_only=probe_only or not deep)
-        checks.extend(_derived_model_checks(derived_statuses))
-        checks.extend(_transcript_embedding_checks(derived_statuses))
+        try:
+            derived_statuses = _collect_table_status_best_effort(conn, deep=deep, probe_only=probe_only or not deep)
+        except sqlite3.OperationalError as exc:
+            # Contention or corruption: the collector answered nothing, so the
+            # report says so instead of reporting an archive with no derived
+            # models.
+            derived_statuses = {}
+            checks.append(
+                ReadinessCheck(
+                    "derived_models",
+                    VerifyStatus.ERROR,
+                    summary=f"Derived-model statuses are unavailable, not absent: {exc}",
+                )
+            )
+        else:
+            checks.extend(_derived_model_checks(derived_statuses))
+            checks.extend(_transcript_embedding_checks(derived_statuses))
 
     # --- source checks ---
     checks.extend(_build_source_readiness_checks(config))

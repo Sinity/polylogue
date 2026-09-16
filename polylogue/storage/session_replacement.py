@@ -6,27 +6,10 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.storage.introspection import table_exists as _table_exists_sync
-from polylogue.storage.introspection import table_exists_async as _table_exists_async
+from polylogue.core.sqlite_introspection import table_exists as _table_exists_sync
+from polylogue.core.sqlite_introspection import table_exists_async as _table_exists_async
+from polylogue.core.sqlite_introspection import trigger_exists, trigger_exists_async
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
-
-
-def _trigger_exists_sync(conn: sqlite3.Connection, trigger_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?",
-        (trigger_name,),
-    ).fetchone()
-    return row is not None
-
-
-async def _trigger_exists_async(conn: aiosqlite.Connection, trigger_name: str) -> bool:
-    row = await (
-        await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?",
-            (trigger_name,),
-        )
-    ).fetchone()
-    return row is not None
 
 
 async def _ensure_sqlite_vec_async(conn: aiosqlite.Connection) -> bool:
@@ -35,7 +18,7 @@ async def _ensure_sqlite_vec_async(conn: aiosqlite.Connection) -> bool:
 
 
 def _purge_message_fts_sync(conn: sqlite3.Connection, session_id: str) -> None:
-    if _trigger_exists_sync(conn, "messages_fts_ad"):
+    if trigger_exists(conn, "messages_fts_ad"):
         return
     if not _table_exists_sync(conn, "messages_fts") or not _table_exists_sync(conn, "messages_fts_docsize"):
         return
@@ -50,7 +33,7 @@ def _purge_message_fts_sync(conn: sqlite3.Connection, session_id: str) -> None:
 
 
 async def _purge_message_fts_async(conn: aiosqlite.Connection, session_id: str) -> None:
-    if await _trigger_exists_async(conn, "messages_fts_ad"):
+    if await trigger_exists_async(conn, "messages_fts_ad"):
         return
     if not await _table_exists_async(conn, "messages_fts") or not await _table_exists_async(
         conn, "messages_fts_docsize"

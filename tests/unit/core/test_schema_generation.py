@@ -31,6 +31,7 @@ from polylogue.schemas.operator.schema_inference import (
     load_samples_from_sessions,
 )
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
+from polylogue.storage.archive_identity import ArchiveLocation
 from tests.infra.schema_access import schema_properties, schema_property, schema_values
 from tests.infra.workload_artifacts import SeededArchiveArtifact, clone_seeded_archive
 
@@ -87,17 +88,77 @@ class TestProviderSchemaGeneration:
         assert not failure.success
 
 
-def test_generation_records_aggregate_phase_receipt(schema_sample_db: Path) -> None:
+@pytest.fixture
+def chatgpt_phase_receipt_archive(tmp_path: Path) -> tuple[Path, ArchiveLocation]:
+    """A minimal archive root that definitely carries chatgpt raw samples.
+
+    The shared ``seeded_archive`` carries no chatgpt samples, which used to turn
+    this test into a permanent skip (polylogue-59qy). Sample availability here is
+    a fixture fact the repository controls, so it is seeded and asserted rather
+    than skipped.
+    """
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    root = tmp_path / "chatgpt-samples"
+    initialize_active_archive_root(root)
+    for index in range(3):
+        payload = json.dumps(
+            [
+                {
+                    "id": f"conv-{index}",
+                    "title": f"Conversation {index}",
+                    "create_time": 1_700_000_000 + index,
+                    "mapping": {
+                        "node-0": {
+                            "id": "node-0",
+                            "message": {
+                                "id": f"msg-{index}",
+                                "author": {"role": "user"},
+                                "content": {"content_type": "text", "parts": ["hello"]},
+                            },
+                            "parent": None,
+                            "children": [],
+                        }
+                    },
+                }
+            ]
+        ).encode()
+        BlobStore(root / "blob").write_from_bytes(payload)
+        with sqlite3.connect(root / "source.db") as conn:
+            write_source_raw_session(
+                conn,
+                origin=origin_from_provider("chatgpt"),
+                source_path=f"/conversations-{index}.json",
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=0,
+            )
+    return root / "index.db", ArchiveLocation.resolve(root)
+
+
+def test_generation_records_aggregate_phase_receipt(
+    chatgpt_phase_receipt_archive: tuple[Path, ArchiveLocation],
+) -> None:
+    """Anti-vacuity: an empty chatgpt sample set fails the precondition instead of skipping.
+
+    The phase receipt is only produced on a successful generation, so a
+    regression that stops emitting ``observe_and_cluster``/``assemble_packages``/
+    ``build_catalog`` phases, or stops reporting progress state, turns this red.
+    """
+    db_path, archive_location = chatgpt_phase_receipt_archive
     events: list[JSONDocument] = []
     result = generate_provider_schema(
         "chatgpt",
-        db_path=schema_sample_db,
+        db_path=db_path,
+        archive_location=archive_location,
         max_samples=10,
         progress_callback=lambda _phase, payload: events.append(payload),
     )
 
-    if result.sample_count == 0:
-        pytest.skip("seeded archive has no chatgpt samples")
+    assert result.sample_count > 0, f"seeded chatgpt archive produced no samples: {result.error}"
     assert result.success
     assert result.phase_receipt["status"] == "succeeded"
     phases = result.phase_receipt["phases"]

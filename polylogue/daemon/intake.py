@@ -62,6 +62,17 @@ class AdmissionOutcome(str, Enum):
     DUPLICATE = "duplicate"
     """Already admitted under this identity; acknowledging again is safe."""
 
+    EXCLUDED = "excluded"
+    """The domain durably refused this item; acknowledging is safe, but it is
+    not progress.
+
+    Distinct from :attr:`DUPLICATE` (polylogue-onbz3): a refused item was never
+    admitted under any identity, so reporting it as a duplicate turns a pass
+    that admitted nothing into one that claims to have re-seen prior work. The
+    exclusion is durable (``live_cursor.excluded``), so the queue entry is
+    released and the item is not retried, but it does not count toward
+    :attr:`IntakePass.progressed`."""
+
     RETRYABLE = "retryable"
     """This attempt failed; the item may succeed later."""
 
@@ -81,7 +92,11 @@ class AdmissionResult:
     @property
     def acknowledgeable(self) -> bool:
         """Whether the item's queue entry may be released."""
-        return self.outcome in (AdmissionOutcome.ADMITTED, AdmissionOutcome.DUPLICATE)
+        return self.outcome in (
+            AdmissionOutcome.ADMITTED,
+            AdmissionOutcome.DUPLICATE,
+            AdmissionOutcome.EXCLUDED,
+        )
 
 
 @runtime_checkable
@@ -107,6 +122,17 @@ Every adapter denominates ``IntakeItem.estimated_cost`` in payload bytes and
 reconciles against ``source_payload_read_bytes``, so the cycle budget shares
 that unit. Declared once here; ``DaemonIntakeService`` reads it rather than
 keeping a second copy.
+"""
+
+UNMEASURABLE_INTAKE_COST_BYTES = DEFAULT_INTAKE_BYTE_BUDGET
+"""Byte cost charged by a class whose payload size cannot be measured.
+
+A remote sync reports a changed-row count, never bytes, so it has no honest
+estimate in the budget's unit. Charging the literal ``1`` it used to charge
+(polylogue-swicx) let an arbitrarily large Drive sync consume one byte of a
+64 MiB deficit and run again on every pass while its siblings waited. An
+unmeasurable-size sync therefore reserves a full budget share rather than
+under-reporting: it still runs, but it pays for the passes it occupies.
 """
 
 
@@ -136,11 +162,23 @@ class IntakeClassReport:
     name: str
     admitted: int = 0
     duplicates: int = 0
+    excluded: int = 0
+    """Items the domain durably refused. Acknowledged, never counted as progress."""
+
     retried: int = 0
     isolated: int = 0
     """Terminal items set aside for the remainder of this process."""
 
     discovered: int = 0
+    discovery_failed: bool = False
+    """Discovery raised, so every count here is an absence of measurement.
+
+    A halted report already publishes unmeasured. This flag separates the
+    third case -- a class that was scheduled, tried, and could not look --
+    from a genuine zero. ``reason`` alone cannot: a halted report carries one
+    too (polylogue-swicx).
+    """
+
     estimated_cost: int = 0
     actual_cost: int = 0
     reconciled_cost: int = 0
@@ -162,7 +200,14 @@ class IntakePass:
 
     @property
     def progressed(self) -> bool:
-        return any(report.admitted or report.duplicates for report in self.classes)
+        """Whether this pass admitted new work.
+
+        Re-recognising a duplicate is not progress: the caller shortens its
+        sleep when a pass progressed, and counting duplicates here made a
+        static source re-run discovery about twenty times a second forever
+        (polylogue-swicx). An idle class backs off to the idle delay.
+        """
+        return any(report.admitted for report in self.classes)
 
     def report_for(self, name: str) -> IntakeClassReport | None:
         for report in self.classes:
@@ -291,9 +336,9 @@ class FairIntakeDispatcher:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
-            return IntakeClassReport(name=spec.name, reason=f"discovery failed: {exc}")
+            return IntakeClassReport(name=spec.name, discovery_failed=True, reason=f"discovery failed: {exc}")
 
-        admitted = duplicates = retried = isolated = 0
+        admitted = duplicates = excluded = retried = isolated = 0
         estimated_cost = actual_cost = 0
         for item in page:
             if runtime.deficit <= 0:
@@ -310,7 +355,7 @@ class FairIntakeDispatcher:
             # still gets one bounded admission attempt; otherwise a large
             # but valid source would wait forever while its siblings consume
             # the deficit in later passes.
-            if runtime.deficit < item_cost and (admitted or duplicates or retried or isolated):
+            if runtime.deficit < item_cost and (admitted or duplicates or excluded or retried or isolated):
                 break
             # Charge the estimate before admission. An adapter cannot hide a
             # large item behind a cheap synthetic page identity.
@@ -323,6 +368,7 @@ class FairIntakeDispatcher:
                     name=spec.name,
                     admitted=admitted,
                     duplicates=duplicates,
+                    excluded=excluded,
                     retried=retried,
                     isolated=isolated,
                     discovered=len(page),
@@ -343,6 +389,8 @@ class FairIntakeDispatcher:
                 runtime.deficit -= item_actual_cost - item_cost
                 if result.outcome is AdmissionOutcome.ADMITTED:
                     admitted += 1
+                elif result.outcome is AdmissionOutcome.EXCLUDED:
+                    excluded += 1
                 else:
                     duplicates += 1
                 continue
@@ -382,6 +430,7 @@ class FairIntakeDispatcher:
             name=spec.name,
             admitted=admitted,
             duplicates=duplicates,
+            excluded=excluded,
             retried=retried,
             isolated=isolated,
             discovered=len(page),
@@ -424,12 +473,12 @@ class FairIntakeDispatcher:
             return
         for report in result.classes:
             component = f"intake.{report.name}"
-            if report.halted:
+            if report.halted or report.discovery_failed:
                 self._board.publish(
                     Observation.unmeasured(
                         component,
                         ObservationState.FAILED,
-                        reason=report.reason or "halted",
+                        reason=report.reason or ("halted" if report.halted else "discovery failed"),
                         frame=self._frame or None,
                     )
                 )
@@ -440,6 +489,7 @@ class FairIntakeDispatcher:
                     {
                         "admitted": report.admitted,
                         "duplicates": report.duplicates,
+                        "excluded": report.excluded,
                         "retried": report.retried,
                         "isolated": report.isolated,
                         "discovered": report.discovered,

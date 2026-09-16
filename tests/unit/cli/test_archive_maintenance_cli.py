@@ -308,16 +308,14 @@ def test_raw_authority_blocker_resolution_cli_refuses_unknown_blocker(
     that owns the resolution, so the daemon has to be present for this to be a
     test of that judgment rather than of the daemon's absence.
 
-    The judgment survived the move into the daemon: BlockerResolveActuator.apply
-    returns status ``already_satisfied`` with detail
-    ``blocker_not_found_or_already_resolved`` and a zero affected count. What
-    did not survive is any route for that judgment to reach the operator --
-    _execute_named_mutation forwards only ``domain_receipt`` as the CLI's
-    result, so neither the status nor the detail is reachable from the command
-    at all. The strongest thing the CLI can still be held to is therefore the
-    durable invariant asserted here: a typo'd id mutates nothing.
+    The judgment survives the move into the daemon: BlockerResolveActuator.apply
+    returns status ``already_satisfied`` with a zero affected count, and the
+    envelope ``_execute_named_mutation`` returns carries that ``affected_count``
+    through to the command. The JSON route therefore exits non-zero for a no-op
+    as well, so a scripted caller cannot read "nothing was resolved" as success.
 
-    See the strict xfail below for the reporting half of this defect.
+    Anti-vacuity: rendering the receipt without consulting ``affected_count``
+    restores exit 0 here and turns this red.
     """
     with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
         result = cli_runner.invoke(
@@ -336,7 +334,7 @@ def test_raw_authority_blocker_resolution_cli_refuses_unknown_blocker(
                 "json",
             ],
         )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     receipt = json.loads(result.stdout)
     # Nothing was resolved, so there is no durable receipt reference to show.
     assert not receipt.get("receipt_ref")
@@ -346,25 +344,21 @@ def test_raw_authority_blocker_resolution_cli_refuses_unknown_blocker(
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone() == (0,)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known defect: plain-mode raw-authority-blocker-resolve reports 'Resolved <id>' and exits 0 for a "
-        "blocker that does not exist. The daemon receipt correctly says already_satisfied / "
-        "blocker_not_found_or_already_resolved / affected_count 0 "
-        "(BlockerResolveActuator.apply, polylogue/operations/mutation_actuators.py), but "
-        "raw_authority_blocker_resolve_command ignores the receipt status on the plain path "
-        "(polylogue/cli/commands/maintenance/_raw_identity.py). Before the CLI direct-writer bypasses "
-        "were deleted this exited non-zero with 'not found or already resolved'. Remove this xfail "
-        "when the plain path consults the receipt."
-    ),
-)
 def test_raw_authority_blocker_resolution_plain_output_reports_unknown_blocker(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The lost half of the refusal above, pinned so that fixing it turns this red."""
+    """The reporting half of the refusal above: a no-op never renders as success.
+
+    The daemon receipt says ``already_satisfied`` /
+    ``blocker_not_found_or_already_resolved`` with ``affected_count`` 0. The
+    plain path consults that count and refuses, restoring the "not found or
+    already resolved" message that survived nowhere in the product.
+
+    Anti-vacuity: printing ``Resolved <id>`` unconditionally -- the behaviour
+    this replaces -- exits 0 and turns both assertions red.
+    """
     with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
         result = cli_runner.invoke(
             cli,
@@ -382,6 +376,7 @@ def test_raw_authority_blocker_resolution_plain_output_reports_unknown_blocker(
         )
     assert result.exit_code != 0
     assert "Resolved does-not-exist" not in result.output
+    assert "not found or already resolved" in result.output
 
 
 def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(

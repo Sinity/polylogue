@@ -24,7 +24,7 @@ from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import DEBUG, WARNING, emit, get_logger
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -197,7 +197,6 @@ class _CodexExecChildCall:
 
 @dataclass(frozen=True, slots=True)
 class _CodexExecChildResult:
-    raw: object
     text: str | None
     is_error: bool | None
     exit_code: int | None
@@ -207,9 +206,51 @@ class _CodexExecChildResult:
     item_id: str | None = None
 
 
+# Every key the code-mode item readers below consult by name:
+# ``_code_mode_item_child`` (type, command, cwd, parsed_cmd, changes, id),
+# ``_code_mode_item_commands`` (command, parsed_cmd),
+# ``_code_mode_item_outcome`` (exit_code, status) and the matcher (type).
+_CODE_MODE_ITEM_MATCH_KEYS = ("type", "id", "command", "parsed_cmd", "cwd", "changes", "exit_code", "status")
+
+
+def _reduced_code_mode_item(item: dict[str, object]) -> dict[str, object]:
+    """Reduce one ``item_completed`` payload to the evidence the parser reads.
+
+    polylogue-ro922: a session file is untrusted input and the lookahead used
+    to retain the whole ``payload.item`` mapping for every code-mode item for
+    the length of the parse, so a 52 MB file of small items cost half a
+    gigabyte resident. The readers consult a fixed key set plus one selected
+    output text, and derive paths/byte counts structurally; the structural
+    derivations are evaluated here, over the complete item, and stored under
+    their own canonical keys first, so a later ``_structural_paths`` /
+    ``_structural_byte_count`` over the reduction returns exactly what it
+    would have returned over the original.
+    """
+    reduced: dict[str, object] = {}
+    paths = _structural_paths(item)
+    if paths:
+        reduced["paths"] = list(paths)
+    byte_count = _structural_byte_count(item)
+    if byte_count is not None:
+        reduced["byte_count"] = byte_count
+    for key in _CODE_MODE_ITEM_MATCH_KEYS:
+        if key in item:
+            reduced[key] = item[key]
+    for key in _CODE_MODE_ITEM_TEXT_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            reduced[key] = value
+            break
+    return reduced
+
+
 @dataclass(frozen=True, slots=True)
 class _CodexExecItemRecord:
-    """One ``item_completed`` execution plus the transport calls around it."""
+    """One ``item_completed`` execution plus the transport calls around it.
+
+    ``item`` is the reduction from :func:`_reduced_code_mode_item`, not the
+    acquired mapping.
+    """
 
     item: dict[str, object]
     # The call whose record span contains this item, and the most recent call
@@ -292,13 +333,41 @@ def _has_continuation_evidence(
     return cwd_match or repo_match
 
 
+def _redacted_validation_errors(exc: ValidationError) -> str:
+    """Structural summary of a validation failure, carrying no payload content.
+
+    ``str(exc)`` and ``exc.errors()`` both reproduce the rejected input by
+    default. This keeps only each error's ``loc`` (the field path) and
+    ``type`` (the rule that fired), which is what a parse-skip diagnosis
+    needs, and drops ``msg``/``input``/``ctx`` -- ``msg`` can quote the input
+    and ``ctx`` can carry it verbatim.
+    """
+    return "; ".join(
+        f"{'.'.join(str(part) for part in error.get('loc', ()))}: {error.get('type', 'unknown')}"
+        for error in exc.errors(include_url=False, include_context=False, include_input=False)
+    )
+
+
 def _validate_record(item: object, *, index: int, context: str = "record") -> CodexRecord | None:
     if not isinstance(item, dict):
         return None
     try:
         return CodexRecord.model_validate(item)
     except ValidationError as exc:
-        logger.debug("Skipping invalid %s at index %d: %s", context, index, exc)
+        # Never interpolate the ValidationError itself: Pydantic v2's __str__
+        # embeds ``input_value``, i.e. raw captured payload content, into the
+        # log line (2026-07-31 leak audit L13, polylogue-tztk). Only the
+        # structural coordinates -- which field failed and how -- are needed
+        # to diagnose a parse skip, and those carry no content.
+        emit(
+            "parser.codex.record_skipped",
+            level=DEBUG,
+            outcome="degraded",
+            reason="record failed CodexRecord validation",
+            context=context,
+            index=index,
+            errors=_redacted_validation_errors(exc),
+        )
         return None
 
 
@@ -476,12 +545,24 @@ def _is_message(record: dict[str, object]) -> bool:
     return _is_direct_message(record)
 
 
+#: ``event_msg`` payload types that ARE conversational content. ``parse``
+#: materializes them through ``_codex_event_message``; naming them here is what
+#: lets stream classification agree with the parser (polylogue-1wom1) instead
+#: of refusing a rollout whose only messages arrive in this shape.
+_EVENT_MESSAGE_PAYLOAD_TYPES: frozenset[str] = frozenset({"user_message", "agent_message"})
+
+
 def _message_record(record: dict[str, object]) -> dict[str, object] | None:
     if _is_state(record):
         return None
     if _record_type(record) == "response_item":
         inner = _payload_record(record)
         return inner if inner is not None and _is_message(inner) else None
+    if _record_type(record) == "event_msg":
+        inner = _payload_record(record)
+        if inner is not None and _record_type(inner) in _EVENT_MESSAGE_PAYLOAD_TYPES:
+            return inner
+        return None
     return record if _is_message(record) else None
 
 
@@ -1221,7 +1302,18 @@ _CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE = "codex_replacement_context"
 # reconstruction authority; the omission event below carries enough typed
 # evidence to make the decision visible to readers.
 _CODEX_REPLACEMENT_CONTEXT_MAX_CHARS = 256 * 1024
+# polylogue-ro922: the per-value cap above bounds one context, not their
+# number. One compacted session is untrusted input and may declare an
+# unbounded count of distinct small replacement texts, each of which would
+# become its own retained candidate and its own durable session event. These
+# are the aggregate ceilings per session; everything past them degrades into
+# the same digest-only omission event the per-value cap already uses, so the
+# omission stays one observable channel and nothing is silently dropped.
+_CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT = 512
+_CODEX_REPLACEMENT_CONTEXT_MAX_TOTAL_CHARS = 4 * 1024 * 1024
 _CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE = "codex_replacement_context_omitted"
+_CODEX_REPLACEMENT_CEILING_OMISSION_KEY = "session_context_ceiling"
+_CODEX_REPLACEMENT_CEILING_POLICY = "omitted_over_session_context_ceiling"
 
 
 @dataclass
@@ -1251,6 +1343,12 @@ class _CodexTextConservation:
     def __init__(self) -> None:
         self._by_text: dict[str, _CodexTextCandidate] = {}
         self._unresolved = 0
+
+    def contains(self, text: str) -> bool:
+        """Report whether ``text`` is already a registered candidate."""
+        if text in self._by_text:
+            return True
+        return not text.isascii() and unicodedata.normalize("NFC", text) in self._by_text
 
     def add(self, text: str) -> tuple[_CodexTextCandidate, bool]:
         """Register ``text``; the flag reports whether this value is new."""
@@ -1344,6 +1442,12 @@ class _CodexReplacementContextOmission:
     content_chars: int
     content_sha256: str
     occurrences: int = 1
+    # ``omitted_oversized_reembedded_text`` for one value past the per-value
+    # cap; ``_CODEX_REPLACEMENT_CEILING_POLICY`` for the aggregate record that
+    # absorbs everything past the session ceiling.
+    content_policy: str = "omitted_oversized_reembedded_text"
+    # Incremental hasher backing an aggregate record's running digest.
+    running_digest: hashlib._Hash | None = None
 
 
 def _codex_replacement_context_event(context: _CodexReplacementContext) -> ParsedSessionEvent:
@@ -1374,7 +1478,7 @@ def _codex_replacement_context_omission_event(
     payload: dict[str, object] = {
         "source_index": context.source_index,
         "context_kind": "replacement_history",
-        "content_policy": "omitted_oversized_reembedded_text",
+        "content_policy": context.content_policy,
         "content_chars": context.content_chars,
         "content_sha256": context.content_sha256,
         "occurrences": context.occurrences,
@@ -1660,13 +1764,136 @@ def _parse_js_literal(text: str) -> tuple[object, bool]:
         return candidate, False
 
 
-def _skip_js_string_or_comment(source: str, position: int) -> int | None:
+@dataclass(slots=True)
+class _JsScanRefusals:
+    """Counted refusals from one JavaScript source scan.
+
+    A ``/`` whose regex-literal-vs-division reading is not decidable by the
+    previous-significant-token rule is refused and counted here rather than
+    guessed. A refused slash is never consumed, so the scan continues past it
+    instead of swallowing the remainder of the program.
+    """
+
+    unresolvable_slash: int = 0
+    unterminated_regex: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.unresolvable_slash + self.unterminated_regex
+
+
+#: Tokens after which a ``/`` begins a regular-expression literal rather than a
+#: division. This is the standard practical disambiguation (the same rule real
+#: JavaScript lexers use before parsing): after an operator, an opening
+#: bracket, a separator or a statement keyword the next ``/`` cannot be a
+#: division because there is no left operand.
+_JS_REGEX_PRECEDING_PUNCTUATION = frozenset("(,=:[!&|?{};+-*%<>^~")
+_JS_REGEX_PRECEDING_KEYWORDS = frozenset(
+    {
+        "return",
+        "typeof",
+        "instanceof",
+        "in",
+        "of",
+        "new",
+        "delete",
+        "void",
+        "throw",
+        "case",
+        "do",
+        "else",
+        "yield",
+        "await",
+    }
+)
+
+
+def _previous_js_significant_token(source: str, position: int) -> str | None:
+    """The last significant token before ``position``, or ``None`` at the start.
+
+    Returns the literal sentinel ``"*/"`` when the preceding token is a block
+    comment terminator: the token before that comment is not recoverable by a
+    backward scan, so the caller refuses instead of guessing.
+    """
+    index = position - 1
+    while index >= 0 and source[index].isspace():
+        index -= 1
+    if index < 0:
+        return None
+    if index >= 1 and source[index - 1 : index + 1] == "*/":
+        return "*/"
+    char = source[index]
+    if _is_js_identifier_part(char):
+        end = index + 1
+        while index >= 0 and _is_js_identifier_part(source[index]):
+            index -= 1
+        return source[index + 1 : end]
+    if char in "+-" and index >= 1 and source[index - 1] == char:
+        # ``x++`` / ``y--`` are postfix updates, so the value is on the left.
+        return char * 2
+    return char
+
+
+def _skip_js_regex_literal(source: str, position: int) -> int | None:
+    """Skip a regex literal starting at ``source[position] == '/'``.
+
+    Handles escapes and character classes, inside which ``/`` is an ordinary
+    character. Returns ``None`` for an unterminated literal (a newline or the
+    end of input before the closing delimiter).
+    """
+    index = position + 1
+    in_class = False
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\n":
+            return None
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        elif char == "/" and not in_class:
+            index += 1
+            while index < len(source) and _is_js_identifier_part(source[index]):
+                index += 1
+            return index
+        index += 1
+    return None
+
+
+def _skip_js_string_or_comment(
+    source: str,
+    position: int,
+    *,
+    refusals: _JsScanRefusals | None = None,
+) -> int | None:
     if source.startswith("//", position):
         newline = source.find("\n", position + 2)
         return len(source) if newline == -1 else newline + 1
     if source.startswith("/*", position):
         end = source.find("*/", position + 2)
         return len(source) if end == -1 else end + 2
+    if position < len(source) and source[position] == "/":
+        previous = _previous_js_significant_token(source, position)
+        if previous == "*/":
+            if refusals is not None:
+                refusals.unresolvable_slash += 1
+            return None
+        starts_regex = (
+            previous is None
+            or (len(previous) == 1 and previous in _JS_REGEX_PRECEDING_PUNCTUATION)
+            or previous in _JS_REGEX_PRECEDING_KEYWORDS
+        )
+        if not starts_regex:
+            return None
+        regex_end = _skip_js_regex_literal(source, position)
+        if regex_end is None:
+            if refusals is not None:
+                refusals.unterminated_regex += 1
+            return None
+        return regex_end
     if position >= len(source) or source[position] not in {'"', "'", "`"}:
         return None
     quote = source[position]
@@ -1734,12 +1961,17 @@ def _parse_js_member_chain(source: str, position: int) -> tuple[tuple[str, ...],
         return tuple(parts), position
 
 
-def _balanced_js_call_argument(source: str, open_position: int) -> tuple[str, int, bool]:
+def _balanced_js_call_argument(
+    source: str,
+    open_position: int,
+    *,
+    refusals: _JsScanRefusals | None = None,
+) -> tuple[str, int, bool]:
     depth = 1
     position = open_position + 1
     argument_start = position
     while position < len(source):
-        skipped = _skip_js_string_or_comment(source, position)
+        skipped = _skip_js_string_or_comment(source, position, refusals=refusals)
         if skipped is not None:
             position = skipped
             continue
@@ -1754,12 +1986,12 @@ def _balanced_js_call_argument(source: str, open_position: int) -> tuple[str, in
     return source[argument_start:], len(source), False
 
 
-def _first_js_argument(arguments: str) -> str:
+def _first_js_argument(arguments: str, *, refusals: _JsScanRefusals | None = None) -> str:
     depths = {"(": 0, "[": 0, "{": 0}
     closers = {")": "(", "]": "[", "}": "{"}
     position = 0
     while position < len(arguments):
-        skipped = _skip_js_string_or_comment(arguments, position)
+        skipped = _skip_js_string_or_comment(arguments, position, refusals=refusals)
         if skipped is not None:
             position = skipped
             continue
@@ -1807,11 +2039,15 @@ def _code_mode_tool_name(tool_path: tuple[str, ...], registry_type: str) -> str:
     return registry_type if registry_type not in {"mcp", "unknown"} else raw_name
 
 
-def _scan_code_mode_child_calls(source: str) -> tuple[_CodexExecChildCall, ...]:
+def _scan_code_mode_child_calls(
+    source: str,
+    *,
+    refusals: _JsScanRefusals | None = None,
+) -> tuple[_CodexExecChildCall, ...]:
     calls: list[_CodexExecChildCall] = []
     position = 0
     while position < len(source):
-        skipped = _skip_js_string_or_comment(source, position)
+        skipped = _skip_js_string_or_comment(source, position, refusals=refusals)
         if skipped is not None:
             position = skipped
             continue
@@ -1830,8 +2066,8 @@ def _scan_code_mode_child_calls(source: str) -> tuple[_CodexExecChildCall, ...]:
         if len(tool_path) < 2 or after_chain >= len(source) or source[after_chain] != "(":
             position = max(after_chain, position + 1)
             continue
-        raw_arguments, call_end, balanced = _balanced_js_call_argument(source, after_chain)
-        first_argument = _first_js_argument(raw_arguments)
+        raw_arguments, call_end, balanced = _balanced_js_call_argument(source, after_chain, refusals=refusals)
+        first_argument = _first_js_argument(raw_arguments, refusals=refusals)
         argument, parsed = _parse_js_literal(first_argument)
         registry_type = _classify_code_mode_child(tool_path)
         calls.append(
@@ -2291,7 +2527,6 @@ def _code_mode_item_result(
             is_error, exit_code = existing.is_error, existing.exit_code
     item_id = item.get("id")
     return _CodexExecChildResult(
-        raw=item,
         text=text,
         is_error=is_error,
         exit_code=exit_code,
@@ -2402,7 +2637,6 @@ def _code_mode_child_results(output: object, *, child_count: int) -> tuple[_Code
         is_error, exit_code, reason = _codex_tool_result_outcome(item)
         results.append(
             _CodexExecChildResult(
-                raw=item,
                 text=_codex_tool_output_text(item),
                 is_error=is_error,
                 exit_code=exit_code,
@@ -2463,7 +2697,7 @@ def _codex_lookahead(
             if executed is not None and str(executed.get("type") or "") in _CODE_MODE_ITEM_CHILD_TYPES:
                 executed_items.append(
                     _CodexExecItemRecord(
-                        item=executed,
+                        item=_reduced_code_mode_item(executed),
                         open_call_index=open_call_index,
                         last_call_index=last_call_index,
                     )
@@ -2706,6 +2940,26 @@ def _child_tool_input(
         provenance["source_span"] = [child.source_start, child.source_end]
     if child.item_id is not None:
         provenance["item_completed_id"] = child.item_id
+    # Provenance discriminator. A child read out of the program source is a
+    # *call site*, not an execution: ``function unused(){ tools.apply_patch(
+    # "*** Update File: sensitive.py") }`` scans exactly like a call that ran.
+    # Only the producer's item list is ground truth for execution, so the
+    # route the child came in on and whatever execution evidence it carries
+    # are both recorded. These land in ``blocks.tool_input`` (persisted JSON),
+    # not ``ParsedContentBlock.metadata``, which the writer drops.
+    if child.source_start is not None:
+        provenance["call_site_origin"] = "program_source"
+    elif child.item_id is not None:
+        provenance["call_site_origin"] = "producer_item"
+    else:
+        provenance["call_site_origin"] = "structured_child_list"
+    if child.item_id is not None or (result is not None and result.item_id is not None):
+        provenance["execution_evidence"] = "item_completed"
+    elif result is not None:
+        provenance["execution_evidence"] = "transport_result"
+    else:
+        provenance["execution_evidence"] = "none"
+    provenance["executed"] = provenance["execution_evidence"] != "none"
     if result is not None and (result.paths or result.byte_count is not None):
         result_fields: dict[str, object] = {}
         if result.paths:
@@ -2741,6 +2995,31 @@ def _code_mode_child_use_blocks(envelope: _CodexExecEnvelope) -> list[ParsedCont
             )
         )
     return blocks
+
+
+#: ``world_state.state`` keys deliberately NOT stored (polylogue-w54q3). Each
+#: one is the prompt scaffolding Codex re-sends verbatim on every snapshot --
+#: instruction/context-file bodies, skill catalogs and usage hints -- not
+#: evidence about the session: ``host_skills`` alone measures ~4.6 MB across
+#: 443 observed records and ``agents_md`` ~9.0 MB, both near-identical text
+#: repeated per snapshot. Every OTHER ``state`` key is stored, so a new
+#: upstream key is carried rather than silently dropped, and
+#: ``test_world_state_state_keys_are_stored_or_declared_exempt`` fails loudly
+#: if a key is neither.
+_WORLD_STATE_INSTRUCTION_TEXT_KEYS: frozenset[str] = frozenset(
+    {
+        "agents_md",
+        "apps_instructions",
+        "context_window_guidance",
+        "environments_instructions",
+        "host_skills",
+        "managed_developer_instructions",
+        "multi_agent_usage_hint",
+        "orchestrator_skills",
+        "plugins_instructions",
+        "skills",
+    }
+)
 
 
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
@@ -3504,6 +3783,10 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     conservation = _CodexTextConservation()
     pending_replacement_context: list[_CodexReplacementContext] = []
     pending_replacement_omissions: dict[tuple[int, str], _CodexReplacementContextOmission] = {}
+    # Session-wide ceiling on distinct replacement-context candidates; see
+    # _CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT.
+    replacement_context_count = 0
+    replacement_context_chars = 0
     pending_task_complete: list[tuple[ParsedSessionEvent, _CodexTextCandidate]] = []
     admission = AdmissionLedger()
 
@@ -3577,6 +3860,11 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                         if not isinstance(content_text, str) or not content_text:
                             continue
                         history_text_count += 1
+                        over_ceiling = (
+                            replacement_context_count >= _CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT
+                            or replacement_context_chars + len(content_text)
+                            > _CODEX_REPLACEMENT_CONTEXT_MAX_TOTAL_CHARS
+                        ) and not conservation.contains(content_text)
                         if len(content_text) > _CODEX_REPLACEMENT_CONTEXT_MAX_CHARS:
                             # The raw source remains durable and can reproduce
                             # this value.  Keep a digest-only event instead of
@@ -3599,8 +3887,42 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                             else:
                                 omission.occurrences += 1
                             continue
+                        if over_ceiling:
+                            # Past the session ceiling the excess degrades into
+                            # the same digest-only channel, folded into one
+                            # record per compaction: a per-value record here
+                            # would just move the unbounded retention from the
+                            # candidate table into ``session_event_rows``.
+                            # ``content_sha256`` is the running digest of the
+                            # omitted values in source order, so the set that
+                            # was dropped stays provable against the raw blob.
+                            ceiling_key = (id(compaction_event), _CODEX_REPLACEMENT_CEILING_OMISSION_KEY)
+                            omission = pending_replacement_omissions.get(ceiling_key)
+                            if omission is None:
+                                hasher = hashlib.sha256()
+                                hasher.update(content_text.encode("utf-8"))
+                                pending_replacement_omissions[ceiling_key] = _CodexReplacementContextOmission(
+                                    insert_at=insert_at,
+                                    timestamp=timestamp,
+                                    source_index=idx,
+                                    entry_type=None,
+                                    role=None,
+                                    phase=None,
+                                    content_chars=len(content_text),
+                                    content_sha256=hasher.hexdigest(),
+                                    content_policy=_CODEX_REPLACEMENT_CEILING_POLICY,
+                                    running_digest=hasher,
+                                )
+                            elif omission.running_digest is not None:
+                                omission.running_digest.update(content_text.encode("utf-8"))
+                                omission.occurrences += 1
+                                omission.content_chars += len(content_text)
+                                omission.content_sha256 = omission.running_digest.hexdigest()
+                            continue
                         candidate, is_new = conservation.add(content_text)
                         if is_new:
+                            replacement_context_count += 1
+                            replacement_context_chars += len(content_text)
                             history_contexts.append((candidate, entry_type, entry_role, entry_phase))
             if history_text_count:
                 compaction_event.payload["replacement_history_text_count"] = history_text_count
@@ -3924,19 +4246,22 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
         # (`state.environments.subagents`) -- outside the
         # session_meta/turn_context/response_item shapes handled above, so
         # they previously fell through the whole dispatch chain unrecorded.
-        # Only `environments` is carried: the other `state` keys on a full
-        # snapshot (agents_md/apps_instructions/skills) are large repeated
-        # context-file text with no ranked evidence of parser blindness yet.
+        # Every `state` key is carried except the declared context-file text
+        # in ``_WORLD_STATE_INSTRUCTION_TEXT_KEYS`` (polylogue-w54q3).
         if _record_type(record) == "world_state":
             world_payload = _payload_record(record) or {}
             state = _dict_record(world_payload.get("state"))
-            environments = _dict_record(state.get("environments")) if state else None
-            if environments:
+            retained = (
+                {key: value for key, value in state.items() if key not in _WORLD_STATE_INSTRUCTION_TEXT_KEYS}
+                if state
+                else {}
+            )
+            if retained:
                 session_events.append(
                     ParsedSessionEvent(
                         event_type="world_state",
                         timestamp=_iso_or_none(_record_timestamp(record)),
-                        payload={"source_index": idx, "environments": dict(environments)},
+                        payload={"source_index": idx, **retained},
                     )
                 )
             continue

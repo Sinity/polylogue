@@ -78,6 +78,12 @@ class DiscoveryCoverageReport:
 
     @property
     def status(self) -> Literal["pass", "fail"]:
+        # A denominator of zero is not a pass: an empty selection checked no
+        # route step at all, and reporting that as "pass" made the
+        # discovery-coverage half of the overall ok/fail signal a rubber stamp
+        # for the run.
+        if self.checked_steps <= 0:
+            return "fail"
         return "pass" if not self.gaps else "fail"
 
     def to_dict(self) -> dict[str, object]:
@@ -220,9 +226,18 @@ async def run_continuity_evidence(
 
 
 def _scenario_names(value: str) -> tuple[str, ...] | None:
+    """Parse ``--scenario``; an all-blank value is a usage error, not "all".
+
+    Returning the empty tuple here made the two lanes disagree: the replay lane
+    reads it as "no filter" and ran everything, while the coverage lane read it
+    as "this exact empty selection" and checked nothing.
+    """
     if value == "all":
         return None
-    return tuple(part.strip() for part in value.split(",") if part.strip())
+    names = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not names:
+        raise argparse.ArgumentTypeError(f"--scenario selects no scenario: {value!r} (use 'all' for every scenario)")
+    return names
 
 
 def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:

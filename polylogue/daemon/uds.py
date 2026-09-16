@@ -9,6 +9,7 @@ import socket
 import socketserver
 import struct
 import threading
+import time
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -107,14 +108,32 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
             return
 
     def _reject(self, status: int, code: str, detail: str) -> None:
-        self._send(
-            status,
-            {
-                "protocol": DAEMON_OPERATION_PROTOCOL,
-                "outcome": "rejected",
-                "error": {"code": code, "detail": detail, "retryable": False},
-            },
-        )
+        """Refuse before dispatch, marking the refusal so no client can call it indeterminate.
+
+        Every path here runs before ``operation_runtime.call``, so the actuator
+        provably never ran. The ``pre_dispatch`` marker states that fact on the
+        envelope itself instead of leaving the client to whitelist refusal
+        codes one at a time and fail open into ``indeterminate`` for the rest.
+        The correlating ``operation``/``request_id`` are echoed whenever the
+        request parsed far enough to carry them.
+        """
+
+        payload: dict[str, object] = {
+            "protocol": DAEMON_OPERATION_PROTOCOL,
+            "outcome": "rejected",
+            "pre_dispatch": True,
+            "error": {"code": code, "detail": detail, "retryable": False},
+        }
+        if self._request_identity is not None:
+            operation, request_id = self._request_identity
+            payload["operation"] = operation
+            if request_id is not None:
+                payload["request_id"] = request_id
+        self._send(status, payload)
+
+    #: Correlating identity of the in-flight request, once the body parsed.
+    #: ``None`` while a refusal can only be framing- or transport-level.
+    _request_identity: tuple[str, str | None] | None = None
 
     def do_GET(self) -> None:
         self._reject(405, "method_not_allowed", "machine operations require POST")
@@ -136,6 +155,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         started = monotonic()
+        self._request_identity = None
         if self.request_version != "HTTP/1.1":
             self._reject(505, "unsupported_http_version", "machine operations require HTTP/1.1")
             return
@@ -175,6 +195,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         except (ValueError, TypeError, RecursionError, UnicodeDecodeError, TimeoutError) as exc:
             self._reject(400, "invalid_request", str(exc))
             return
+        self._request_identity = (request.operation, request.request_id)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
         if length > spec.max_body_bytes:
@@ -228,6 +249,9 @@ def _unlink_stale_socket(socket_path: Path) -> None:
 class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     request_queue_size = 24
+    #: Bounded window for draining a refused caller's in-flight request so it
+    #: reads the 503 instead of a reset. Never a retry or a wait for work.
+    refusal_drain_seconds = 1.0
 
     def __init__(
         self,
@@ -270,6 +294,7 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
                     {
                         "protocol": DAEMON_OPERATION_PROTOCOL,
                         "outcome": "rejected",
+                        "pre_dispatch": True,
                         "error": {
                             "code": "connection_backpressure",
                             "detail": "machine connection capacity is exhausted",
@@ -284,6 +309,17 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
                     f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
                 ).encode()
                 request.sendall(headers + body)
+                # Closing here while the caller is still writing its request
+                # resets the connection, and the caller sees a broken pipe
+                # instead of the refusal just sent -- losing exactly the
+                # explicit no-execution guarantee this branch exists to give.
+                # Half-close and drain what the caller is still sending so its
+                # write completes and it can read the 503.
+                request.shutdown(socket.SHUT_WR)
+                deadline = time.monotonic() + self.refusal_drain_seconds
+                while time.monotonic() < deadline:
+                    if not request.recv(65536):
+                        break
             except OSError:
                 # An already-disconnected caller must not stop the accept loop.
                 pass

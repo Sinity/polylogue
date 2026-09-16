@@ -19,6 +19,9 @@
     "https://x.com/*",
     "https://twitter.com/*",
     "https://gemini.google.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "optional_host_permissions": [
     "http://127.0.0.1/*"
   ],
   "background": {

@@ -33,6 +33,7 @@ from polylogue.sources.live.gemini_tool_output_sidecars import (
     tool_output_files_from_directory,
 )
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.local_agent import TOOL_RESULT_DISPLAY_MEDIA_TYPE
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 
 _MASK = (
@@ -151,6 +152,49 @@ def test_unmasked_output_is_kept_even_when_result_display_is_longer() -> None:
     [session] = parse_payload("gemini-cli", payload, "fallback")
 
     assert _tool_result_texts(session) == ["ok"]
+
+
+def test_divergent_result_display_is_kept_as_a_marked_second_block() -> None:
+    """Both renderings survive when neither field is a truncation of the other.
+
+    For 240 unmasked calls in the census the ANSI-cell ``resultDisplay`` and
+    ``functionResponse.response.output`` are different renderings -- neither a
+    substring of the other -- and only ``output`` was stored, so ~633,000
+    characters of what the user actually saw reached no route
+    (polylogue-xnk51). The display rendering is stored as a second tool_result
+    block marked by its ``media_type``; ``ParsedContentBlock.metadata`` alone
+    is not persisted by the archive writer.
+
+    Anti-vacuity: dropping either rendering leaves one of the two asserted
+    texts missing, and dropping the ``media_type`` marker makes the display
+    block indistinguishable from the model-facing one.
+    """
+    cells: JSONValue = [
+        [{"text": "FILE", "fg": "cyan", "bold": True}],
+        [{"text": "alpha.txt", "fg": "white", "bold": False}],
+    ]
+    payload = _session(
+        [
+            {
+                "id": "a1",
+                "type": "gemini",
+                "timestamp": "2026-03-14T21:41:02.000Z",
+                "content": "listed it",
+                "toolCalls": [_tool_call("list_directory_1_0", output="alpha.txt\n", result_display=cells)],
+            }
+        ]
+    )
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+    results = [block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT]
+
+    assert [block.text for block in results] == ["alpha.txt\n", "FILE\nalpha.txt"]
+    primary, display = results
+    assert primary.media_type is None
+    assert display.media_type == TOOL_RESULT_DISPLAY_MEDIA_TYPE
+    assert display.tool_id == primary.tool_id
+    assert display.is_error == primary.is_error
+    assert display.outcome_unknown_reason == primary.outcome_unknown_reason
 
 
 def test_masked_output_is_kept_when_result_display_holds_no_more() -> None:

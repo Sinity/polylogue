@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import replace
 from pathlib import Path
 from time import time
@@ -149,10 +148,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
             raise ValueError("reset is unsafe for a managed active generation")
         names = [("index database", "index.db")] if flags["index"] else []
         if flags["database"]:
+            # ``embeddings.db`` is absent deliberately: bootstrap classifies it
+            # ``expensive_rebuild`` because nothing replays its vectors from
+            # source.db -- they are re-purchased from the embedding provider.
+            # Deleting it is a repurchase, not a reset, so ``--database`` keeps
+            # it and the CLI names the embedding-preservation route instead.
             names = [
                 ("source database", "source.db"),
                 ("index database", "index.db"),
-                ("embeddings database", "embeddings.db"),
                 ("ops database", "ops.db"),
             ]
             if not bool(payload.get("include_source_db", False)):
@@ -204,23 +207,20 @@ def maintenance_reset(
     audit: AuditRepository,
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
+    """Delete the resolved reset targets under the audited executor.
+
+    polylogue-4fbgw: this used to unlink files and ``rmtree`` trees inline
+    with ``audit``/``snapshot`` unused, so the product's largest destructive
+    surface wrote no operation_previews / operation_authorizations /
+    operation_runs / operation_attempts rows at all. Targets are resolved once
+    here and handed to :class:`FilesystemResetActuator`, so PREPARE and APPLY
+    see the identical set and the audit rows precede the first deletion.
+    """
+    from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
+
     targets = _reset_targets(context.archive_root, request.payload)
-    deleted = 0
-    for _name, path in targets:
-        if path.is_file():
-            path.unlink()
-            deleted += 1
-        elif path.is_dir():
-            shutil.rmtree(path)
-            deleted += 1
-    return {
-        "operation": request.operation,
-        "outcome": "completed",
-        "sequence": 1,
-        "effect": "committed" if deleted else "no-effect",
-        "affected_count": deleted,
-        "result": {"deleted": deleted, "targets": [name for name, _path in targets]},
-    }
+    args = FilesystemResetArgs(archive_root=context.archive_root, targets=tuple(targets))
+    return _execute_named_mutation(request, context, audit, snapshot, FilesystemResetActuator(), args)
 
 
 def maintenance_blob_gc_recover(

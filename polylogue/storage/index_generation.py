@@ -32,6 +32,7 @@ from polylogue.storage.archive_identity import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import descriptor_alias_path
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
@@ -1631,7 +1632,10 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
         if (opened.st_dev, opened.st_ino) != expected_identity:
             raise RuntimeError(f"source snapshot changed during descriptor admission: {path}")
         _require_path_identity(path, expected_identity, label="source snapshot")
-        with closing(sqlite3.connect(f"file:/proc/self/fd/{fd}?mode=ro", uri=True)) as conn:
+        alias = descriptor_alias_path(fd)
+        if alias is None:
+            raise RuntimeError(f"no validated descriptor alias for source snapshot: {path}")
+        with closing(sqlite3.connect(f"file:{alias}?mode=ro", uri=True)) as conn:
             yield conn
     finally:
         os.close(fd)
@@ -1779,7 +1783,10 @@ def _checkpoint_truncate(path: Path, *, label: str) -> None:
             raise RuntimeError(f"{label} changed during descriptor validation: {path}")
         os.close(reopened_fd)
         reopened_fd = -1
-        with closing(sqlite3.connect(f"/proc/self/fd/{fd}")) as conn:
+        alias = descriptor_alias_path(fd)
+        if alias is None:
+            raise RuntimeError(f"no validated descriptor alias for {label}: {path}")
+        with closing(sqlite3.connect(str(alias))) as conn:
             checkpoint = checkpoint_connection(conn, "TRUNCATE", boundary="exclusive")
     finally:
         if reopened_fd >= 0:

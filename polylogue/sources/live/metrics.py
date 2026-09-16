@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, TypeVar
+
+_T = TypeVar("_T")
 
 #: Typed reasons a batch offered a file and ingested none of it. Every byte
 #: of ``input_bytes`` that is neither ingested nor failed lands under exactly
@@ -14,6 +16,21 @@ REFUSED_DAEMON_DEGRADED = "daemon_degraded"
 REFUSED_DEFERRED_PENDING_AUTHORITY = "deferred_pending_authority"
 REFUSED_UNATTEMPTED_TIME_BUDGET = "unattempted_time_budget"
 REFUSED_UNATTEMPTED = "unattempted"
+
+#: Declared cap on the identity lists embedded in one ``ingestion_batch``
+#: payload. The batching controls bound file count and aggregate bytes, not
+#: how many sessions one admitted file yields, so a single large export would
+#: otherwise amplify into an arbitrarily large persisted event. Every payload
+#: that carries a truncated list also carries its ``*_omitted`` count, so a
+#: shortened list is always visibly shortened; the scalar counts stay exact.
+LIVE_BATCH_IDENTITY_LIST_LIMIT = 200
+
+
+def _capped(values: list[_T], limit: int = LIVE_BATCH_IDENTITY_LIST_LIMIT) -> tuple[list[_T], int]:
+    """Return the retained prefix and the count it left out."""
+    if len(values) <= limit:
+        return values, 0
+    return values[:limit], len(values) - limit
 
 
 class LiveFullIngestMetricKwargs(TypedDict):
@@ -164,6 +181,13 @@ class LiveBatchMetrics:
         ingested_mb_per_second = (
             round((self.ingested_bytes / 1_000_000) / self.total_time_s, 6) if self.total_time_s > 0 else 0.0
         )
+        changed_session_ids, changed_session_ids_omitted = _capped(list(self.changed_session_ids))
+        new_sessions, new_sessions_omitted = _capped(
+            [{"source_name": source_name, "session_id": sid} for source_name, sid in self.new_sessions]
+        )
+        updated_sessions, updated_sessions_omitted = _capped(
+            [{"source_name": source_name, "session_id": sid} for source_name, sid in self.updated_sessions]
+        )
         return {
             "queued_file_count": self.queued_file_count,
             "needed_file_count": self.needed_file_count,
@@ -198,7 +222,8 @@ class LiveBatchMetrics:
             "ingested_session_count": self.ingested_session_count,
             "ingested_message_count": self.ingested_message_count,
             "changed_session_count": self.changed_session_count,
-            "changed_session_ids": list(self.changed_session_ids),
+            "changed_session_ids": changed_session_ids,
+            "changed_session_ids_omitted": changed_session_ids_omitted,
             "parse_time_s": self.parse_time_s,
             "convergence_time_s": self.convergence_time_s,
             "total_time_s": self.total_time_s,
@@ -212,10 +237,10 @@ class LiveBatchMetrics:
             "stale_cursor_write_count": self.stale_cursor_write_count,
             "stage_timings_s": self.stage_timings_s,
             "failed_paths": self.failed_paths,
-            "new_sessions": [{"source_name": source_name, "session_id": sid} for source_name, sid in self.new_sessions],
-            "updated_sessions": [
-                {"source_name": source_name, "session_id": sid} for source_name, sid in self.updated_sessions
-            ],
+            "new_sessions": new_sessions,
+            "new_sessions_omitted": new_sessions_omitted,
+            "updated_sessions": updated_sessions,
+            "updated_sessions_omitted": updated_sessions_omitted,
             "time_budget_exceeded": self.time_budget_exceeded,
         }
 
@@ -242,6 +267,7 @@ class LiveFullIngestAggregate:
 
 
 __all__ = [
+    "LIVE_BATCH_IDENTITY_LIST_LIMIT",
     "REFUSED_DAEMON_DEGRADED",
     "REFUSED_DEFERRED_PENDING_AUTHORITY",
     "REFUSED_UNATTEMPTED",

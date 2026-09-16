@@ -16,6 +16,7 @@ from polylogue.config import Source
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 from polylogue.sources.live.tool_result_sidecars import (
+    _MAX_SIDECAR_FILE_BYTES,
     SidecarDebt,
     SidecarMatch,
     join_tool_result_sidecars,
@@ -26,7 +27,7 @@ from polylogue.sources.live.tool_result_sidecars import (
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.code_parser import apply_tool_result_sidecars, parse_code
 from polylogue.sources.revision_backfill import _parse_one
-from polylogue.sources.sidecar_evidence import RetainedSidecarScope
+from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope, SiblingTranscript
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
 _TRUNCATED_NEEDLE = "zz_sentinel_needle_only_in_full_output"
@@ -409,3 +410,52 @@ def test_sidecar_event_time_stays_unknown_when_the_file_carries_no_mtime_evidenc
     sidecar_events = [event for event in acquired.session_events if event.event_type == "claude_tool_result_sidecar"]
     assert len(sidecar_events) == 2
     assert [event.timestamp for event in sidecar_events] == [None, None]
+
+
+def test_session_scoped_join_reads_neither_sibling_owned_nor_oversize_sidecars(tmp_path: Path) -> None:
+    """polylogue-9k62p: filter first, read bounded.
+
+    The parent's pass must not read a sidecar a sibling owns (it discarded the
+    text afterwards anyway) and must not read one whose retained size exceeds
+    the join's ceiling -- the oversize file becomes named ``size_exceeded``
+    debt instead of an allocation. ``read_text`` raises here, so any read of
+    either file fails the test. Anti-vacuity: dropping the ownership skip, or
+    the size gate, makes the corresponding read fire and the test red.
+    """
+    project_dir = tmp_path / "project"
+    session_dir = project_dir / "sess-bounded"
+    parent_path = project_dir / "sess-bounded.jsonl"
+    subagent_path = session_dir / "subagents" / "agent-a.jsonl"
+
+    parent_payload = [_record("m-parent", "toolu_PARENT_BIG", "inline preview")]
+    subagent_payload = [_record("m-sub", "toolu_SUBAGENT", "inline preview")]
+
+    def _forbidden_read() -> str:
+        raise AssertionError("sidecar contents were read before the ownership/size filter")
+
+    scope = RetainedSidecarScope(
+        scope_key=str(session_dir / "tool-results"),
+        files=(
+            RetainedSidecarFile(
+                filename="toolu_SUBAGENT.txt",
+                byte_size=16,
+                file_mtime_ms=None,
+                read_text=_forbidden_read,
+            ),
+            RetainedSidecarFile(
+                filename="toolu_PARENT_BIG.txt",
+                byte_size=_MAX_SIDECAR_FILE_BYTES + 1,
+                file_mtime_ms=None,
+                read_text=_forbidden_read,
+            ),
+        ),
+        siblings=(SiblingTranscript(coordinate=str(subagent_path), open_records=lambda: iter(subagent_payload)),),
+        available=True,
+    )
+    _write_transcript(parent_path, parent_payload)
+    _write_transcript(subagent_path, subagent_payload)
+
+    result = join_tool_result_sidecars_session_scoped(parent_payload, scope, parent_path)
+
+    assert result.matched == ()
+    assert {(debt.filename, debt.reason) for debt in result.debt} == {("toolu_PARENT_BIG.txt", "size_exceeded")}

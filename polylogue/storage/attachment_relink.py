@@ -26,9 +26,7 @@ relink when a raw session's re-parsed content reproduces the *exact* same
 current ``messages`` table. Every other outcome -- no raw reproduces the
 identity at all, or a raw reproduces it but the owning message no longer
 exists in the current index -- is reported as ``ineligible`` with an exact
-reason, mirroring the read-only plan/execute split used by
-``raw_retention.plan_stale_supersession_reissue`` /
-``reissue_stale_supersession_receipts``.
+reason, through a read-only plan/execute split.
 """
 
 from __future__ import annotations

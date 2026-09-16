@@ -19,6 +19,7 @@ import ast
 import gzip
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -282,31 +283,135 @@ def _module_path(base: Path) -> Path | None:
     return package_init.resolve() if package_init.is_file() else None
 
 
+#: Bump when edge resolution below changes shape; it is part of the disk key.
+_IMPORT_EDGE_MEMO_VERSION = 1
+#: Import edges memoized across processes, keyed by ``label\0content digest``.
+#: ``None`` until the memo file has been consulted once.
+_IMPORT_EDGES: dict[str, list[str]] | None = None
+_IMPORT_EDGES_ADDED = False
+
+
+def _import_edge_memo_path() -> Path | None:
+    """Where the cross-process import-edge memo lives, or None where none can."""
+    root = _SOURCE_ROOT / ".cache" / "source-fingerprints"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return root / f"import-edges-v{_IMPORT_EDGE_MEMO_VERSION}.json"
+
+
+def _load_import_edges() -> dict[str, list[str]]:
+    """The memo as it stands on disk, read at most once per process."""
+    global _IMPORT_EDGES
+    if _IMPORT_EDGES is not None:
+        return _IMPORT_EDGES
+    edges: dict[str, list[str]] = {}
+    memo = _import_edge_memo_path()
+    if memo is not None:
+        try:
+            loaded = json.loads(memo.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            edges = {
+                key: [str(item) for item in value]
+                for key, value in loaded.items()
+                if isinstance(key, str) and isinstance(value, list)
+            }
+    _IMPORT_EDGES = edges
+    return edges
+
+
+def _flush_import_edges() -> None:
+    """Publish edges this process learned, merged over whatever is on disk now.
+
+    A concurrent writer's entries are kept: every key names a file's exact
+    contents, so two processes that both parsed a file agree on its value and
+    the merge can only lose an addition, never record a wrong edge.
+    """
+    global _IMPORT_EDGES_ADDED
+    if not _IMPORT_EDGES_ADDED or _IMPORT_EDGES is None:
+        return
+    memo = _import_edge_memo_path()
+    if memo is None:
+        _IMPORT_EDGES_ADDED = False
+        return
+    merged = dict(_IMPORT_EDGES)
+    try:
+        existing = json.loads(memo.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = None
+    if isinstance(existing, dict):
+        for key, value in existing.items():
+            if isinstance(key, str) and isinstance(value, list):
+                merged.setdefault(key, [str(item) for item in value])
+    try:
+        scratch = memo.with_name(f"{memo.name}.{os.getpid()}.tmp")
+        scratch.write_text(json.dumps(merged, sort_keys=True), encoding="utf-8")
+        scratch.replace(memo)
+    except OSError:
+        pass
+    _IMPORT_EDGES_ADDED = False
+
+
+def _import_edge_key(signature: tuple[str, str, int]) -> str:
+    """Identify one file's edges by where it sits and what it contains.
+
+    The content digest alone would not do: two byte-identical modules in
+    different packages resolve their relative imports to different files.
+    """
+    return f"{_fingerprint_path_label(Path(signature[0]))}\0{signature[1]}"
+
+
 @lru_cache(maxsize=2048)
 def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
-    """Return local Python dependencies of one parser-semantic source file."""
+    """Return local Python dependencies of one parser-semantic source file.
+
+    Parsing the closure is the dominant cost of importing the archive tiers --
+    about 9.6 s of a 14 s single-file pytest collection, paid again by every
+    xdist worker and every CLI start -- so the edges outlive the process in a
+    memo keyed by each file's contents. An edited file has a new key and is
+    re-parsed; nothing invalidates by time.
+    """
+    global _IMPORT_EDGES_ADDED
+    edges = _load_import_edges()
+    key = _import_edge_key(signature)
+    bases = edges.get(key)
+    if bases is None:
+        bases = list(_import_bases(signature))
+        edges[key] = bases
+        _IMPORT_EDGES_ADDED = True
+    found = {resolved for label in bases if (resolved := _module_path(_source_path(label, _SOURCE_ROOT))) is not None}
+    return tuple(sorted(str(item) for item in found))
+
+
+def _import_bases(signature: tuple[str, str, int]) -> tuple[str, ...]:
+    """The extensionless module bases one source file imports from this tree.
+
+    Deliberately lexical: what is memoized is what the file's own text says,
+    never which of those modules happened to exist when it was parsed. A
+    module added or deleted elsewhere changes the closure of an unedited
+    importer, and resolving the bases on every call is what keeps that true
+    while the parse stays memoized.
+    """
     path = Path(signature[0])
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    found: set[Path] = set()
+    bases: set[Path] = set()
     for node in ast.walk(tree):
-        candidate: Path | None = None
         if isinstance(node, ast.ImportFrom):
             if node.level:
                 base = path.parent
                 for _ in range(node.level - 1):
                     base = base.parent
-                candidate = _module_path(base / Path(*(node.module or "").split(".")))
+                bases.add(base / Path(*(node.module or "").split(".")))
             elif node.module and node.module.startswith("polylogue."):
-                candidate = _module_path(_SOURCE_ROOT / Path(*node.module.split(".")))
+                bases.add(_SOURCE_ROOT / Path(*node.module.split(".")))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith("polylogue."):
-                    resolved = _module_path(_SOURCE_ROOT / Path(*alias.name.split(".")))
-                    if resolved is not None:
-                        found.add(resolved)
-        if candidate is not None:
-            found.add(candidate)
-    return tuple(sorted(str(item) for item in found))
+                    bases.add(_SOURCE_ROOT / Path(*alias.name.split(".")))
+    return tuple(sorted(_fingerprint_path_label(item) for item in bases))
 
 
 @lru_cache(maxsize=64)
@@ -322,6 +427,7 @@ def _semantic_source_closure(root: Path, paths: tuple[str, ...], excluded_labels
         found.add(path)
         for dependency in _local_import_paths(_source_signature(path)):
             pending.append(Path(dependency))
+    _flush_import_edges()
     return tuple(sorted(found))
 
 
@@ -586,18 +692,58 @@ def _looks_like_extracted_transcript_corpus_path(
     return looks_like_extracted_transcript_corpus(dict_items)
 
 
+#: Ceiling on the whole-document read this structural probe is allowed to
+#: perform. Admission runs over semi-trusted provider roots, so a candidate
+#: larger than any real Hermes/Antigravity artifact is refused on its stat
+#: size rather than loaded to decide a source class. Peak here is several
+#: multiples of the file (bytes, decoded text, parsed tree), so the ceiling
+#: bounds the reader's working set, not the input.
+SOURCE_CLASS_JSON_PROBE_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _bounded_jsonl_records(path: Path, *, limit: int, max_record_bytes: int) -> list[object]:
+    """Parse at most ``limit`` JSONL records, never holding more than one record.
+
+    A record longer than ``max_record_bytes`` is skipped rather than read: the
+    structural signatures below are decided by a record's leading keys, so an
+    unbounded line buys no classification accuracy.
+    """
+    records: list[object] = []
+    with path.open(encoding="utf-8") as handle:
+        while len(records) < limit:
+            chunk = handle.readline(max_record_bytes + 1)
+            if not chunk:
+                break
+            if len(chunk) > max_record_bytes:
+                # Drain the rest of this oversized record in bounded steps so
+                # the next readline starts at a real record boundary.
+                while True:
+                    tail = handle.readline(max_record_bytes)
+                    if not tail or tail.endswith("\n"):
+                        break
+                continue
+            if chunk.strip():
+                records.append(json.loads(chunk))
+    return records
+
+
 def recognize_source_class(
     provider: Provider,
     source_path: str | Path,
     *,
     payload: object | None = None,
     source_only: bool = False,
+    source_size_bytes: int | None = None,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
     Keep this dispatch declaration-owned and structural; callers may still
     enumerate cheaply by suffix, but may not assign a provider session from
     that suffix alone.
+
+    ``source_size_bytes`` is the candidate's already-observed stat size. When
+    given, a whole-document probe above
+    :data:`SOURCE_CLASS_JSON_PROBE_MAX_BYTES` is refused instead of performed.
     """
     if provider is Provider.UNKNOWN:
         if source_only and Path(source_path).suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
@@ -672,15 +818,17 @@ def recognize_source_class(
     if payload is None:
         try:
             if path.suffix.lower() in {".jsonl", ".ndjson"}:
-                records: list[object] = []
-                with path.open(encoding="utf-8") as handle:
-                    for line in handle:
-                        if line.strip():
-                            records.append(json.loads(line))
-                        if len(records) >= 32:
-                            break
-                payload = records
+                # Imported lazily: ``archive.raw_payload`` imports
+                # ``sources.dispatch``, which imports this module back.
+                from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
+
+                payload = _bounded_jsonl_records(path, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
             else:
+                if source_size_bytes is not None and source_size_bytes > SOURCE_CLASS_JSON_PROBE_MAX_BYTES:
+                    return SourceClassRecognition(
+                        "unsupported",
+                        "candidate exceeds the structural source-class inspection ceiling",
+                    )
                 payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return SourceClassRecognition("unsupported", "Hermes candidate is not readable JSON")
@@ -2443,6 +2591,32 @@ def _hermes_spec() -> OriginSpec:
             "argument to the same function.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="skill_asset",
+                # polylogue-6d7fx: the hermes-agent checkout bundled under the
+                # watched Hermes root ships prompt templates whose bytes are a
+                # bare role/content message list -- message-shaped by
+                # construction and therefore indistinguishable by content
+                # shape from a transcript. They are static skill assets, never
+                # a conversation the operator had, so the path rule is the
+                # only reliable gate.
+                path_pattern=r"(?:^|/)hermes-agent/optional-skills/(?:[^/]+/)*templates/[^/]+$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="skill_asset",
+                fidelity_note=(
+                    "Skill-shipped prompt templates are retained as raw artifact evidence and never create a session."
+                ),
+                path_suffixes=(".json", ".jsonl", ".md", ".txt", ""),
+                watch_suffixes=(),
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "A shipped prompt template is skill content, not a provider record contract; retain the "
+                    "bytes and report non-applicability."
+                ),
+            ),
+        ),
         tool_outcome_unknown_reasons=frozenset(
             {
                 ToolResultUnknownReason.NOT_REPORTED,
@@ -2993,7 +3167,7 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             Provider.CLAUDE_AI,
             "accepted",
             detector_paths=("polylogue/sources/parsers/claude/ai_parser.py", "polylogue/sources/dispatch.py"),
-            raw_model_paths=("polylogue/sources/providers/claude_ai.py",),
+            raw_model_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
             parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
             normalizer_paths=("polylogue/sources/parsers/claude/common.py",),
             fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),

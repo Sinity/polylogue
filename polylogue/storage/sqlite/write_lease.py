@@ -8,6 +8,18 @@ unserialized writer raises instead of contending through the busy timeout.
 Enforcement is armed by the owner of the process's writer discipline (the
 daemon) and is off elsewhere: one-shot CLI and API writers are their own single
 writer and have no gate to be outside of.
+
+**Contexts do not isolate threads on this interpreter** (polylogue-1oa7o).
+This checkout runs a free-threading CPython build, and a new
+``threading.Thread`` or ``ThreadPoolExecutor.submit`` reads the *creating*
+thread's ``ContextVar`` values rather than the declared defaults. So every
+thread spawned while a lease is held inherits ``_ACTIVE`` -- the lease object
+itself, not a copy. Authority therefore rests entirely on explicit thread
+identity: ``WriteLease.bound_thread_ids`` and the ``owner_task_id`` check in
+:func:`require_write_lease`, never on "the context did not carry it". Every
+place that widens ``bound_thread_ids`` or hands back an existing lease
+re-checks that identity, because an inheriting thread would otherwise pass by
+default.
 """
 
 from __future__ import annotations
@@ -28,11 +40,13 @@ __all__ = [
     "WriteHoldExceededError",
     "WriteLease",
     "WriteLeaseDelegation",
+    "WriteLeaseThreadGrant",
     "adopt_write_lease",
     "arm_write_lease_enforcement",
     "bind_write_lease_thread",
     "current_write_lease",
     "delegate_write_lease",
+    "grant_write_lease_thread",
     "require_write_lease",
     "write_lease",
     "write_lease_enforced",
@@ -118,6 +132,22 @@ class WriteLease:
     owner_thread_id: int = 0
     bound_thread_ids: set[int] | None = None
     delegations: list[WriteLeaseDelegation] = field(default_factory=list)
+    #: Guards ``bound_thread_ids``. On a free-threading build several
+    #: inheriting threads can reach ``bind_write_lease_thread`` concurrently,
+    #: and the previous check-then-assign on a bare ``set`` was unsynchronized
+    #: (polylogue-1oa7o residual 4).
+    _bind_guard: threading.Lock = field(default_factory=threading.Lock)
+
+    def authorize_thread(self, thread_id: int) -> None:
+        """Add ``thread_id`` to the authorized set under the lease's guard."""
+        with self._bind_guard:
+            if self.bound_thread_ids is None:
+                self.bound_thread_ids = {self.owner_thread_id}
+            self.bound_thread_ids.add(thread_id)
+
+    def authorized_threads(self) -> frozenset[int]:
+        with self._bind_guard:
+            return frozenset(self.bound_thread_ids or {self.owner_thread_id})
 
     @property
     def held_seconds(self) -> float:
@@ -188,7 +218,7 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
     if lease is not None:
         task_id = _current_task_id()
         thread_id = threading.get_ident()
-        allowed_threads = lease.bound_thread_ids or {lease.owner_thread_id}
+        allowed_threads = lease.authorized_threads()
         if task_id is not None:
             if task_id != lease.owner_task_id:
                 raise UnleasedWriteError(f"{purpose} uses a write lease inherited by a child task")
@@ -210,14 +240,67 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
     )
 
 
-def bind_write_lease_thread() -> None:
-    """Authorize the current thread for a coordinator-owned sync operation."""
+@dataclass(eq=False, slots=True)
+class WriteLeaseThreadGrant:
+    """One single-use authorization for *one* thread to join a held lease.
+
+    polylogue-1oa7o residual 1: ``bind_write_lease_thread()`` used to read the
+    ambient lease and add ``threading.get_ident()`` to it. On a free-threading
+    build the ambient lease is inherited by *every* thread spawned during the
+    hold, so that call was self-authorization -- any inheriting thread could
+    bind itself into the daemon's live lease. Binding is now delegated by the
+    owner rather than self-served: only a context that already passes
+    :func:`require_write_lease` can mint a grant, and the spawned thread must
+    present it.
+    """
+
+    lease: WriteLease
+    _guard: threading.Lock = field(default_factory=threading.Lock)
+    _used: bool = False
+
+    def _claim(self) -> None:
+        with self._guard:
+            if self._used:
+                raise UnleasedWriteError(
+                    f"write lease thread grant for {self.lease.actor} was already used; one grant authorizes one thread"
+                )
+            self._used = True
+
+
+def grant_write_lease_thread() -> WriteLeaseThreadGrant:
+    """Mint a single-use authorization for one spawned thread to join this lease.
+
+    Callable only from a context that already holds the lease -- the check runs
+    through :func:`require_write_lease` -- so it can never manufacture
+    authority the caller does not have. The owner mints this *before* starting
+    the worker thread; the worker calls :func:`bind_write_lease_thread` with it.
+    """
+    lease = require_write_lease("granting a write lease thread binding")
+    if lease is None:
+        raise UnleasedWriteError(
+            "cannot grant a write lease thread binding without holding the lease; "
+            "mint the grant inside write_lease(...)"
+        )
+    return WriteLeaseThreadGrant(lease=lease)
+
+
+def bind_write_lease_thread(grant: WriteLeaseThreadGrant) -> None:
+    """Authorize the current thread for the lease ``grant`` was minted from.
+
+    Refuses a grant whose lease is not the one this thread inherited: an
+    inheriting thread must not be able to present a stale grant and join a
+    different, later hold.
+    """
     lease = _ACTIVE.get()
     if lease is None:
         raise UnleasedWriteError("cannot bind a thread without an active write lease")
-    if lease.bound_thread_ids is None:
-        lease.bound_thread_ids = {lease.owner_thread_id}
-    lease.bound_thread_ids.add(threading.get_ident())
+    if grant.lease is not lease:
+        raise UnleasedWriteError(
+            f"write lease thread grant for {grant.lease.actor} does not authorize the lease "
+            f"held by {lease.actor} in this thread"
+        )
+    grant._claim()
+    lease.authorize_thread(threading.get_ident())
 
 
 def delegate_write_lease() -> WriteLeaseDelegation:
@@ -294,6 +377,12 @@ def write_lease(
     """
     held = _ACTIVE.get()
     if held is not None:
+        # polylogue-1oa7o residual 2: the re-entrant branch used to hand back
+        # the inherited lease with no ownership check, so a thread that
+        # inherited it through free-threading contextvar propagation got the
+        # parent's authority simply by asking for a nested lease. Re-run the
+        # same identity check every write-mode open runs.
+        require_write_lease(f"nested write lease for {actor}")
         if (
             archive_root is not None
             and held.archive_root is not None

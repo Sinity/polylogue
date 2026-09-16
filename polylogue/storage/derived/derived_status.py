@@ -23,11 +23,11 @@ import sqlite3
 from collections.abc import Mapping
 from typing import TypeAlias
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.derived.insights import build_archive_insight_statuses, pending_docs, pending_rows
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
-from polylogue.storage.introspection import table_exists as _table_exists
 
 MetricValue: TypeAlias = int | bool
 Metrics: TypeAlias = dict[str, MetricValue]

@@ -36,6 +36,7 @@ from .parsers import (
     codex,
     drive,
     grok,
+    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -1527,6 +1528,18 @@ def _lower_payload_specs(
         record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_gemini_cli(record):
             return [_local_agent_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
+        # polylogue-8u1p: Gemini CLI's second on-disk shape is a ``.jsonl``
+        # checkpoint *log* -- a session-open stub line followed by one record
+        # per turn/event and ``{"$set": ...}`` envelope patches. It is not a
+        # single document, so the branch above yielded no specs at all and the
+        # file never became a queryable session. Folding the log back into the
+        # document it is a log of keeps one parser and one identity rule for
+        # both shapes; the single-document path above is untouched.
+        stream = _payload_sequence(shaped_payload)
+        if stream is not None:
+            folded = local_agent.fold_gemini_cli_checkpoint_stream(stream)
+            if folded is not None:
+                return [_local_agent_document_spec(runtime_provider, folded, fallback_id, source_path=source_path)]
         return []
     if runtime_provider in DRIVE_LIKE_PROVIDERS:
         return _lower_drive_like_payload(
@@ -1691,7 +1704,9 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
             hermes_spans.parse_atof_stream(
                 payloads,
                 spec.fallback_id,
-                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+                profile_root=(
+                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
+                ),
             )
             if payloads is not None
             else []
@@ -1724,14 +1739,18 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
             return hermes_verification.parse_verification_evidence_db_payload(
                 record,
                 spec.fallback_id,
-                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+                profile_root=(
+                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
+                ),
                 source_path=spec.source_path,
             )
         if spec.provider is Provider.HERMES and hermes_spans.looks_like_atif_payload(record):
             return hermes_spans.parse_atif_document(
                 record,
                 spec.fallback_id,
-                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+                profile_root=(
+                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
+                ),
             )
         if spec.provider is Provider.ANTIGRAVITY and antigravity.looks_like_markdown_export(record):
             return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
@@ -2005,7 +2024,7 @@ def parse_stream_payload(
         return hermes_spans.parse_atof_stream(
             payloads,
             fallback_id,
-            profile_root=Path(source_path).parent if source_path else None,
+            profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 

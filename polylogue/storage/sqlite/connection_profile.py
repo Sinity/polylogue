@@ -207,17 +207,6 @@ DAEMON_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
 )
 
-# One-tier operations (backup/checkpoint and similar maintenance) must not
-# attach sibling databases or renegotiate journal mode while another writer is
-# active.  The existing file mode is adopted as-is.
-ISOLATED_TIER_WRITE_PROFILE = SQLiteConnectionProfile(
-    role="write",
-    timeout_seconds=DB_TIMEOUT,
-    busy_timeout_ms=DB_TIMEOUT * 1000,
-    cache_size_kib=DAEMON_WRITE_CACHE_SIZE_KIB,
-    mmap_size_bytes=DAEMON_WRITE_MMAP_SIZE_BYTES,
-)
-
 # An owned INACTIVE index generation is never read by anything until
 # ``IndexGenerationStore.promote()`` swaps the ``index.db`` symlink, and is
 # unconditionally discarded (``discard_if_inactive``) if the pass raises.
@@ -1501,7 +1490,6 @@ __all__ = [
     "BULK_BUILD_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_CACHE_SIZE_KIB",
     "DAEMON_WRITE_CONNECTION_PROFILE",
-    "ISOLATED_TIER_WRITE_PROFILE",
     "DAEMON_WRITE_MMAP_SIZE_BYTES",
     "MEMORY_BUDGET_BYTES",
     "MEMORY_BUDGET_ENV_VAR",
@@ -1550,7 +1538,6 @@ __all__ = [
     "log_mapped_bytes_budget_check",
     "mapped_bytes_budget",
     "assert_tier_schema_supported",
-    "ISOLATED_TIER_WRITE_PROFILE",
     "open_isolated_write_connection",
     "open_daemon_connection",
     "open_connection",

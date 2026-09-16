@@ -35,9 +35,17 @@ AttachmentDirection = Literal["user_input", "model_output"]
 class AdmissionLedger:
     """Small mutable builder for the immutable parsed-session admission proof."""
 
+    # polylogue-ro922: a session file is untrusted input, so per-record
+    # retention here is a memory amplifier -- 200k records of an unhandled
+    # record type used to cost one Pydantic model each for the whole parse.
+    # Materialized outcomes carry no evidence beyond their own ordinal, so
+    # they are accumulated as half-open ordinal runs and only the
+    # evidence-bearing dispositions are kept as models.
     def __init__(self) -> None:
         self._expected: dict[AdmissionUnit, int] = {}
         self._outcomes: list[AdmissionOutcome] = []
+        self._counts: dict[AdmissionUnit, int] = {}
+        self._materialized: dict[AdmissionUnit, list[list[int]]] = {}
 
     def expect(self, unit: AdmissionUnit, count: int) -> None:
         if count < 0:
@@ -45,7 +53,7 @@ class AdmissionLedger:
         self._expected[unit] = self._expected.get(unit, 0) + count
 
     def next_ordinal(self, unit: AdmissionUnit) -> int:
-        return sum(1 for outcome in self._outcomes if outcome.unit is unit)
+        return self._counts.get(unit, 0)
 
     def _record(
         self,
@@ -62,7 +70,15 @@ class AdmissionLedger:
             disposition=disposition,
             reason=reason,
         )
-        self._outcomes.append(outcome)
+        self._counts[unit] = self._counts.get(unit, 0) + 1
+        if disposition is AdmissionDisposition.MATERIALIZED:
+            runs = self._materialized.setdefault(unit, [])
+            if runs and runs[-1][1] == ordinal:
+                runs[-1][1] = ordinal + 1
+            else:
+                runs.append([ordinal, ordinal + 1])
+        else:
+            self._outcomes.append(outcome)
         return outcome
 
     def materialized(self, unit: AdmissionUnit, ordinal: int, key: str) -> AdmissionOutcome:
@@ -87,7 +103,13 @@ class AdmissionLedger:
         return self._record(unit, ordinal, key, AdmissionDisposition.TYPED_REFUSAL, reason)
 
     def close(self) -> ParseAccounting:
-        accounting = ParseAccounting(expected=dict(self._expected), outcomes=list(self._outcomes))
+        accounting = ParseAccounting(
+            expected=dict(self._expected),
+            outcomes=list(self._outcomes),
+            materialized_ordinals={
+                unit: [(start, end) for start, end in runs] for unit, runs in self._materialized.items()
+            },
+        )
         accounting.assert_conserved()
         return accounting
 

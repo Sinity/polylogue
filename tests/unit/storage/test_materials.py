@@ -138,29 +138,69 @@ def test_text_manifest_does_not_copy_raw_content(tmp_path: Path) -> None:
     assert observation.extraction_manifest["text"] == {"available": True, "encoding": "text/plain"}
 
 
+class _StubResponse:
+    """Minimal stand-in for the object ``_open_url`` returns; never touches a socket."""
+
+    def __init__(self, *, status: int = 200, body: bytes = b"", location: str | None = None) -> None:
+        self.status = status
+        self._body = body
+        self._done = False
+        self.headers = SimpleNamespace(
+            get_content_type=lambda: "text/markdown",
+            get_content_charset=lambda: "utf-8",
+            get=lambda key, default=None: location if key.lower() == "location" else default,
+        )
+
+    def __enter__(self) -> _StubResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+    def read(self, size: int) -> bytes:
+        if self._done:
+            return b""
+        self._done = True
+        return self._body
+
+
+def _public_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every test hostname to a documentation-range public address."""
+    monkeypatch.setattr(
+        "polylogue.storage.materials._resolve_addresses",
+        lambda host, port: ["93.184.216.34"],
+    )
+
+
+def _refuse_connections(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make any actual connection attempt an explicit test failure."""
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise AssertionError("acquisition connected to a destination the policy must refuse")
+
+    monkeypatch.setattr("polylogue.storage.materials._open_url", _boom)
+
+
 def test_url_acquisition_keeps_redirect_provenance_and_bytes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    class Response:
-        headers = SimpleNamespace(get_content_type=lambda: "text/markdown", get_content_charset=lambda: "utf-8")
+    """Control case: a public destination still acquires, so the policy is not over-broad.
 
-        def __init__(self) -> None:
-            self.done = False
+    Anti-vacuity: refusing any destination unconditionally, or dropping the
+    per-hop redirect provenance, makes this red.
+    """
+    hops: list[str] = []
 
-        def __enter__(self) -> Response:
-            return self
+    def fake_open(url: str, address: str, timeout: float) -> _StubResponse:
+        hops.append(url)
+        assert address == "93.184.216.34"
+        if url == "https://example.test/result.md":
+            return _StubResponse(status=302, location="https://cdn.example/result.md")
+        return _StubResponse(body=b"# retained")
 
-        def __exit__(self, *args: object) -> None:
-            return None
-
-        def geturl(self) -> str:
-            return "https://cdn.example/result.md"
-
-        def read(self, size: int) -> bytes:
-            if self.done:
-                return b""
-            self.done = True
-            return b"# retained"
-
-    monkeypatch.setattr("polylogue.storage.materials.urllib.request.urlopen", lambda *args, **kwargs: Response())
+    _public_resolver(monkeypatch)
+    monkeypatch.setattr("polylogue.storage.materials._open_url", fake_open)
     conn = _source_db()
     observation = acquire_material(
         conn,
@@ -169,15 +209,134 @@ def test_url_acquisition_keeps_redirect_provenance_and_bytes(monkeypatch: pytest
         referrer_ref="message:codex:1",
         observed_at_ms=10,
     )
+    assert hops == ["https://example.test/result.md", "https://cdn.example/result.md"]
     assert observation.acquisition_state == "acquired"
     assert observation.diagnostic == "redirected to https://cdn.example/result.md"
     assert read_material(conn, observation.material_id, blob_store=BlobStore(tmp_path / "blobs")) == b"# retained"
 
 
-def test_url_and_file_failures_are_queryable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_loopback_material_url_is_permanently_refused_without_connecting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A loopback literal is refused before connecting and retains no bytes.
+
+    Anti-vacuity: removing the pre-connect address check makes the stubbed
+    opener raise AssertionError (a connection attempt), turning this red.
+    """
+    _refuse_connections(monkeypatch)
+    conn = _source_db()
+    observation = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="http://127.0.0.1:9/secrets",
+        referrer_ref="message:codex:1",
+        observed_at_ms=10,
+    )
+    assert observation.acquisition_state == "access_denied"
+    assert observation.retryable is False
+    assert observation.blob_hash is None
+    assert "127.0.0.1" in observation.diagnostic
+    with pytest.raises(FileNotFoundError):
+        read_material(conn, observation.material_id, blob_store=BlobStore(tmp_path / "blobs"))
+
+
+def test_link_local_metadata_url_is_permanently_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The cloud metadata link-local address is refused permanently.
+
+    Anti-vacuity: removing the link-local branch of the address check makes the
+    stubbed opener raise on a connection attempt, turning this red.
+    """
+    _refuse_connections(monkeypatch)
+    conn = _source_db()
+    observation = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="http://169.254.169.254/latest/meta-data/",
+        referrer_ref="message:codex:1",
+        observed_at_ms=11,
+    )
+    assert observation.acquisition_state == "access_denied"
+    assert observation.retryable is False
+    assert observation.blob_hash is None
+    assert "169.254.169.254" in observation.diagnostic
+
+
+def test_ipv6_loopback_and_mapped_ipv4_hosts_are_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """IPv6 loopback and IPv4-mapped IPv6 resolutions are refused like their v4 forms.
+
+    Anti-vacuity: dropping the ``ipv4_mapped`` unwrapping, or the IPv6 cases,
+    lets one of these connect and raise AssertionError.
+    """
+    _refuse_connections(monkeypatch)
     conn = _source_db()
     monkeypatch.setattr(
-        "polylogue.storage.materials.urllib.request.urlopen",
+        "polylogue.storage.materials._resolve_addresses",
+        lambda host, port: ["::ffff:10.0.0.5"] if host == "mapped.example" else [host],
+    )
+    mapped = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="https://mapped.example/resource",
+        referrer_ref="message:codex:1",
+        observed_at_ms=12,
+    )
+    literal = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="http://[::1]:9/resource",
+        referrer_ref="message:codex:1",
+        observed_at_ms=13,
+    )
+    assert mapped.acquisition_state == "access_denied"
+    assert mapped.retryable is False
+    assert literal.acquisition_state == "access_denied"
+    assert literal.retryable is False
+
+
+def test_redirect_to_private_address_is_refused_at_the_hop(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A public host redirecting to a private address is refused at the hop, not followed.
+
+    Anti-vacuity: restoring automatic redirect following, or skipping the
+    re-check on hops after the first, lets the second hop open and makes the
+    recorded state ``acquired`` instead of ``access_denied``.
+    """
+    opened: list[str] = []
+
+    def fake_open(url: str, address: str, timeout: float) -> _StubResponse:
+        opened.append(url)
+        if url == "https://example.test/start":
+            return _StubResponse(status=302, location="http://127.0.0.1:9/secrets")
+        return _StubResponse(body=b"leaked")
+
+    monkeypatch.setattr(
+        "polylogue.storage.materials._resolve_addresses",
+        lambda host, port: ["93.184.216.34"] if host == "example.test" else [host],
+    )
+    monkeypatch.setattr("polylogue.storage.materials._open_url", fake_open)
+    conn = _source_db()
+    observation = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="https://example.test/start",
+        referrer_ref="message:codex:1",
+        observed_at_ms=14,
+    )
+    assert opened == ["https://example.test/start"]
+    assert observation.acquisition_state == "access_denied"
+    assert observation.retryable is False
+    assert observation.blob_hash is None
+
+
+def test_url_and_file_failures_are_queryable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Transport failures stay retryable observations distinct from policy refusals.
+
+    Anti-vacuity: routing HTTP status failures through the permanent refusal
+    path would change ``expired``/``unavailable`` and turn this red.
+    """
+    conn = _source_db()
+    _public_resolver(monkeypatch)
+    monkeypatch.setattr(
+        "polylogue.storage.materials._open_url",
         lambda *args, **kwargs: (_ for _ in ()).throw(urllib.error.HTTPError("url", 410, "Gone", Message(), None)),
     )
     expired = acquire_material(

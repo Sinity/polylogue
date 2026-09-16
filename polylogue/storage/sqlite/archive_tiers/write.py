@@ -56,7 +56,7 @@ from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
-from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import (
     MessageContentIdentity,
@@ -77,6 +77,7 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
+from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_store import get_blob_store
@@ -2379,8 +2380,8 @@ def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
     it is legitimately behind ``blocks``.
     """
     from polylogue.core.errors import DatabaseError
+    from polylogue.core.sqlite_introspection import table_exists
     from polylogue.storage.fts.fts_lifecycle import MESSAGE_SEARCH_REPAIR_HINT
-    from polylogue.storage.introspection import table_exists
 
     match_query = normalize_fts5_query(query)
     if match_query is None:
@@ -2467,7 +2468,7 @@ def _build_message_rows(
             "content_hash": _message_content_hash(session_id, message, position=position, variant_index=variant_index),
             "occurred_at_ms": message.occurred_at_ms
             if message.occurred_at_ms is not None
-            else _timestamp_ms(message.timestamp),
+            else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
             "stop_reason": _enum_value(message.stop_reason),
         }
         content_identity, content_occurrence = content_identities[fallback_position]
@@ -2897,7 +2898,9 @@ def _build_file_edit_rows(
                     _sqlite_text(file_edit.new_string),
                     _sqlite_bool(file_edit.replace_all),
                     _sqlite_bool(file_edit.user_modified),
-                    message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
+                    message.occurred_at_ms
+                    if message.occurred_at_ms is not None
+                    else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
                 )
             )
     return rows
@@ -2940,7 +2943,9 @@ def _write_session_refs(conn: sqlite3.Connection, session_id: str, session: Pars
     every write, not appended incrementally, since the parser always emits
     the complete current set for a session.
     """
-    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    observed_at_ms = to_epoch_ms(session.updated_at, numeric_unit="seconds") or to_epoch_ms(
+        session.created_at, numeric_unit="seconds"
+    )
     for position, ref in enumerate(session.session_refs):
         conn.execute(
             """
@@ -4565,7 +4570,7 @@ def _write_paste_spans(
                     if evidence.observed_at_ms is not None
                     else message.occurred_at_ms
                     if message.occurred_at_ms is not None
-                    else _timestamp_ms(message.timestamp),
+                    else to_epoch_ms(message.timestamp, numeric_unit="seconds"),
                 ),
             )
 
@@ -4634,9 +4639,13 @@ class _HookParentClaim:
 
     ``evidence`` is merged into ``session_links.evidence_json`` so the row
     itself records which hook fields decided it.
+
+    ``parent_native_id`` is ``None`` when the hook evidence is present but
+    self-contradictory. That is not silence: no parent is adopted, and the
+    evidence explaining the refusal is still retained on the row.
     """
 
-    parent_native_id: str
+    parent_native_id: str | None
     evidence: Mapping[str, object]
 
 
@@ -4735,7 +4744,21 @@ def _codex_spawn_edge_parent_claim(
         from polylogue.sources.codex_state_projection import read_parent_thread_id
 
         projected_parent = read_parent_thread_id(conn, child_native_id)
-    except (ImportError, sqlite3.Error):
+    except (ImportError, sqlite3.Error) as exc:
+        # Silence here archives a child as a root with no parent edge and no
+        # trace that the projection was ever consulted (polylogue-3r36h). The
+        # spool fallback below may still supply the edge; when it does not,
+        # this line is the only evidence the lineage was lost to a failure
+        # rather than to absent evidence.
+        emit(
+            "storage.codex_spawn_edge.parent_projection_unavailable",
+            level=WARNING,
+            outcome="degraded",
+            reason="the child is archived as a root because its parent projection could not be read",
+            session_id=child_native_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         projected_parent = None
     if projected_parent is not None:
         return _HookParentClaim(projected_parent, {"codex_thread_spawn_edge_parent": projected_parent})
@@ -4850,10 +4873,33 @@ def _claude_agent_dispatch_parent_claim(
         agent_type = fields.get("agent_type")
         if agent_type is not None and agent_id not in agent_types:
             agent_types[agent_id] = agent_type
+    # One tool_use_id belongs to exactly one agent instance. Two hook records
+    # attributing the same id to different agents is a contradiction in the
+    # evidence itself, and the sorted iteration below would otherwise resolve
+    # it by arbitrary agent-id order. Flag the ambiguity instead: no parent is
+    # adopted, and the contested ids are retained as the reason.
+    claimants_by_tool_use_id: dict[str, set[str]] = defaultdict(set)
+    for agent_id, ids in tool_use_ids.items():
+        for tool_use_id in ids:
+            claimants_by_tool_use_id[tool_use_id].add(agent_id)
+    contested = {tool_use_id for tool_use_id, owners in claimants_by_tool_use_id.items() if len(owners) > 1}
     for agent_id in agent_ids:
         matches = _child_tool_use_id_matches(conn, child_session_id, sorted(tool_use_ids.get(agent_id, ())))
         if not matches:
             continue
+        contested_ids = sorted(tool_use_ids.get(agent_id, set()) & contested)
+        contested_matches = contested_ids if _child_tool_use_id_matches(conn, child_session_id, contested_ids) else []
+        if contested_matches:
+            return _HookParentClaim(
+                None,
+                {
+                    "claude_hook_parent_ambiguity": "one tool_use_id is claimed by more than one agent instance",
+                    "claude_hook_contested_tool_use_ids": contested_matches,
+                    "claude_hook_contested_agent_ids": sorted(
+                        {owner for tool_use_id in contested_matches for owner in claimants_by_tool_use_id[tool_use_id]}
+                    ),
+                },
+            )
         return _HookParentClaim(
             parent_candidate,
             {
@@ -5120,10 +5166,19 @@ def _write_session_link(
     authoritative marking on the next reindex.
     """
     origin = origin_from_provider(session.source_name).value
-    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0
+    observed_at_ms = (
+        to_epoch_ms(session.updated_at, numeric_unit="seconds")
+        or to_epoch_ms(session.created_at, numeric_unit="seconds")
+        or 0
+    )
     # Match exact stored provider identities and parser-emitted aliases after
     # the same normalization used for session native ids.
     parent_native_id = _sqlite_text((session.parent_session_provider_id or "").strip()) or None
+    if origin == Origin.HERMES_SESSION.value and parent_native_id is not None:
+        parent_native_id = _resolved_hermes_parent_native_id(conn, origin, parent_native_id)
+        session = session.model_copy(update={"parent_session_provider_id": parent_native_id})
+        if parent_native_id is None:
+            return
     hook_claim = _authoritative_parent_claim(
         conn,
         source_conn,
@@ -5172,6 +5227,10 @@ def _write_session_link(
     parent_tool_use_block_id = dispatch.block_id
     method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    if hook_claim is not None and hook_parent is None:
+        # Hook evidence spoke and contradicted itself. Retain it on the row
+        # rather than degrading to silence, so the refusal is inspectable.
+        evidence.update(hook_evidence)
     if origin == Origin.AISTUDIO_DRIVE.value and branch_point_message_id is None:
         evidence["branch_point_resolution"] = "unresolved-source-no-local-message-id"
     # A parser-asserted branch point is the only branch point available when
@@ -6014,7 +6073,7 @@ def _write_session_events(
                     _sqlite_text(event.event_type),
                     _sqlite_text(_event_summary(event) or ""),
                     _json_dumps(event.payload),
-                    _timestamp_ms(event.timestamp),
+                    to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                     event.boundary_start_position + position_offset
                     if event.boundary_start_position is not None
                     else None,
@@ -6031,7 +6090,7 @@ def _write_session_events(
                     _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
                     _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
                     _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
-                    _timestamp_ms(event.timestamp),
+                    to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                 ),
             )
         elif event.event_type in {"token_count", "message_usage"} and (
@@ -6084,8 +6143,8 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
         total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
-        occurred_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        occurred_at_ms, request_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -6132,12 +6191,23 @@ def _provider_usage_event_row(
         total_cache_write,
         total_reasoning,
         total_tokens,
-        _timestamp_ms(event.timestamp),
+        to_epoch_ms(event.timestamp, numeric_unit="seconds"),
+        _sqlite_text(_payload_string(event.payload, "request_id")),
     )
 
 
 def _provider_usage_event_row_has_evidence(row: tuple[object, ...]) -> bool:
-    return any(isinstance(value, int) and value for value in row[5:17])
+    """Return whether the row carries any fact worth a ``session_provider_usage_events`` row.
+
+    Numeric usage (``row[5:17]``) is the usual evidence, but it is not the
+    only kind: ``message_usage`` is in ``_SESSION_EVENTS_REDUNDANT_TYPES`` on
+    the premise that this typed row carries the whole payload, so a payload
+    whose only fact is the provider ``request_id`` (``row[18]``) must still
+    produce a row or the id is dropped on the floor.
+    """
+    if any(isinstance(value, int) and value for value in row[5:17]):
+        return True
+    return bool(row[18])
 
 
 def _provider_usage_cumulative_baseline(
@@ -6974,7 +7044,9 @@ def _write_repo_edges(
     *,
     update_session_observations: bool = True,
 ) -> None:
-    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    observed_at_ms = to_epoch_ms(session.updated_at, numeric_unit="seconds") or to_epoch_ms(
+        session.created_at, numeric_unit="seconds"
+    )
     raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
     origin_url = (session.git_repository_url or "").strip()
     # polylogue-cijx.4 decision 1: resolve each raw cwd to its git root before
@@ -8414,6 +8486,49 @@ def _branch_point_content_address_matches(
     return row[1] is not None and bytes(row[0]) == bytes(row[1])
 
 
+#: Artifact stems a Hermes observer batch can carry that are file names rather
+#: than session ids. The shared ``events.jsonl`` ATOF stream is the measured
+#: case: its own stem reached ``session_links`` as a parent raw id, asserting
+#: an edge to a session that cannot exist.
+_HERMES_NON_SESSION_PARENT_RAW_IDS = frozenset({"events"})
+
+
+def _resolved_hermes_parent_native_id(conn: sqlite3.Connection, origin_value: str, parent_native_id: str) -> str | None:
+    """Rebind a Hermes observer's parent key onto the conversational session.
+
+    Every ATIF/ATOF observer session composes its parent key from its OWN
+    artifact's profile root. On an install where the runtime spans and the
+    state db were acquired from different profile directories, that key names
+    a session that does not exist and the edge can never resolve. The raw
+    Hermes session id is the real join key; the profile qualifier is a
+    tie-break, the same shape
+    ``context/hermes_lifecycle_reconciliation.py`` already uses.
+
+    Returns ``None`` when nothing may be asserted, preserving the fail-closed
+    rule in ``hermes_spans.py``'s docstring: no edge is safer than a wrong one.
+    """
+    raw_id, _profile_key = split_qualified_session_id(parent_native_id)
+    if not raw_id or raw_id in _HERMES_NON_SESSION_PARENT_RAW_IDS:
+        return None
+    exact = conn.execute(
+        "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
+        (archive_session_id(origin_value, parent_native_id),),
+    ).fetchone()
+    if exact is not None:
+        return parent_native_id
+    rows = conn.execute(
+        """SELECT native_id FROM sessions
+           WHERE origin = ? AND (native_id = ? OR native_id LIKE ? || '@profile-%')
+           ORDER BY native_id""",
+        (origin_value, raw_id, raw_id),
+    ).fetchall()
+    # Exactly one conversational session carries this raw id, so the qualifier
+    # mismatch was an acquisition-path artifact, not a real ambiguity. Two or
+    # more is the genuine cross-install collision the qualifier exists to keep
+    # apart: leave the parser's own key, which stays visibly unresolved.
+    return str(rows[0][0]) if len(rows) == 1 else parent_native_id
+
+
 def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession, origin_value: str) -> str | None:
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
@@ -9136,11 +9251,6 @@ def _word_count(text: str | None) -> int:
     return len(text.split()) if text else 0
 
 
-def _timestamp_ms(value: str | None) -> int | None:
-    parsed = parse_timestamp(value) if value else None
-    return int(parsed.timestamp() * 1000) if parsed is not None else None
-
-
 def _event_summary(event: ParsedSessionEvent) -> str | None:
     summary = event.payload.get("summary") or event.payload.get("text")
     return str(summary) if summary is not None else None
@@ -9430,10 +9540,20 @@ def _write_attachment_native_ids(conn: sqlite3.Connection, ref_id: str, attachme
 
 
 def _hash_bytes(*parts: str) -> bytes:
+    """Digest an ordered field tuple under an unambiguous framing.
+
+    Each part is length-prefixed rather than NUL-separated. Imported message
+    and tool content legitimately contains U+0000, so a single-byte separator
+    lets two different field splits serialize to the same byte stream and so
+    to the same content-identity hash -- a dedup collision an attacker or an
+    ordinary provider export can both produce. A fixed 8-byte big-endian
+    length makes the encoding injective over any byte content.
+    """
     digest = hashlib.sha256()
     for part in parts:
-        digest.update(part.encode("utf-8", errors="surrogatepass"))
-        digest.update(b"\0")
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
     return digest.digest()
 
 

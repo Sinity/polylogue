@@ -34,6 +34,7 @@ from polylogue.analysis.archive_rollups import (
     workflow_shape_distribution_buckets,
 )
 from polylogue.archive.semantic.pricing import CostEstimatePayload
+from polylogue.core.enums import TERMINAL_STATE_VALUES
 
 
 def _provenance() -> ArchiveInsightProvenance:
@@ -224,18 +225,21 @@ def test_workflow_shape_distribution_rejects_invalid_group_by() -> None:
 
 def test_abandonment_severity_rank_is_the_canonical_vocabulary() -> None:
     assert ABANDONMENT_SEVERITY_RANK == {
+        "unknown": 0,
         "question_left": 1,
-        "error_left": 2,
-        "tool_left": 3,
-        "agent_hanging": 4,
+        "refused": 2,
+        "error_left": 3,
+        "tool_left": 4,
+        "truncated": 5,
     }
+    assert set(ABANDONMENT_SEVERITY_RANK) == TERMINAL_STATE_VALUES
 
 
 def test_abandoned_session_items_filters_by_min_severity() -> None:
     profiles = [
         _profile("c1", terminal_state="resolved"),
         _profile("c2", terminal_state="question_left"),
-        _profile("c3", terminal_state="agent_hanging"),
+        _profile("c3", terminal_state="truncated"),
     ]
     items = abandoned_session_items(profiles, min_severity="tool_left")
     assert [item["session_id"] for item in items] == ["c3"]

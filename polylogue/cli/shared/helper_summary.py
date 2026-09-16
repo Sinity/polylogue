@@ -70,9 +70,11 @@ def print_summary_impl(
         reason = embedding_stats.get("coverage_unmeasurable_reason") or "inspection unavailable"
         lines.append(f"Embeddings: coverage unknown ({reason})")
     elif embedding_stats is not None:
+        coverage_percent = embedding_stats["embedding_coverage_percent"]
+        coverage_text = "coverage unknown" if coverage_percent is None else f"{coverage_percent:.1f}%"
         embedding_line = (
             f"Embeddings: {embedding_stats['embedded_sessions']:,}/{embedding_stats['total_sessions']:,} convs, "
-            f"{embedding_stats['embedded_messages']:,} msgs ({embedding_stats['embedding_coverage_percent']:.1f}%)"
+            f"{embedding_stats['embedded_messages']:,} msgs ({coverage_text})"
         )
         pending_embedding_sessions = embedding_stats["pending_sessions"]
         stale_embedding_messages = embedding_stats["stale_messages"]

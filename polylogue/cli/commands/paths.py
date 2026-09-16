@@ -54,6 +54,7 @@ def paths_command(output_format: str) -> None:
     embeddings_db = location.active_tier("embeddings").resolved_path
     ops_db = location.active_tier("ops").resolved_path
     user_db = location.active_tier("user").resolved_path
+    audit_db = location.active_tier("audit").resolved_path
     # Membership is NOT a surface concern: enumerate the canonical tier set so a
     # tier added to ``ARCHIVE_TIER_SPECS`` is reported here without an edit. The
     # hand-written copy this replaces had already dropped ``audit``, so an
@@ -139,6 +140,9 @@ def paths_command(output_format: str) -> None:
             "user_database_path": str(user_db),
             "user_database_exists": user_db.exists(),
             "user_database_size_bytes": user_db.stat().st_size if user_db.exists() else None,
+            "audit_database_path": str(audit_db),
+            "audit_database_exists": audit_db.exists(),
+            "audit_database_size_bytes": audit_db.stat().st_size if audit_db.exists() else None,
             "config_file_path": str(toml_path),
             "config_file_exists": toml_path.exists(),
             "blob_store_root": str(blob),
@@ -171,6 +175,7 @@ def paths_command(output_format: str) -> None:
     )
     _print_line("Ops DB", str(ops_db), extra=_tier_extra("ops", ops_db, tier_versions))
     _print_line("User DB", str(user_db), extra=_tier_extra("user", user_db, tier_versions))
+    _print_line("Audit DB", str(audit_db), extra=_tier_extra("audit", audit_db, tier_versions))
     if active_db != db:
         _print_line("Active DB", str(active_db), extra=_size_fmt(active_db) if active_db.exists() else "not found")
     _print_line("Config file", str(toml_path), extra="exists" if toml_path.exists() else "not found")

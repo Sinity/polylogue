@@ -17,6 +17,7 @@ from typing import Any, TypeVar, cast
 
 from polylogue.daemon.intake import (
     DEFAULT_INTAKE_BYTE_BUDGET,
+    UNMEASURABLE_INTAKE_COST_BYTES,
     AdmissionOutcome,
     AdmissionResult,
     FairIntakeDispatcher,
@@ -33,7 +34,7 @@ from polylogue.sources.hooks import (
     read_hook_spool_record,
 )
 from polylogue.sources.live.source_selection import deepest_source_for_path
-from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 
 _T = TypeVar("_T")
@@ -275,6 +276,21 @@ class FileIntakeAdapter(IntakeAdapter):
                 return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {path}")
             succeeded = int(getattr(metrics, "succeeded_file_count", 0) or 0)
             if not succeeded:
+                # This route calls ``_ingest_files`` directly, so the watcher's
+                # own ``_log_ingest_metrics`` never runs for it and the
+                # "admitted nothing" line was invisible on the intake path.
+                _log_ingest_metrics(f"live.intake: {self.class_name}", metrics)
+                excluded = int(getattr(metrics, "excluded_file_count", 0) or 0)
+                if excluded:
+                    # polylogue-onbz3: a durable refusal is not "already
+                    # admitted under this identity". Reporting DUPLICATE here
+                    # advanced the cursor and counted the pass as progress.
+                    reasons = getattr(metrics, "excluded_reasons", {}) or {}
+                    return AdmissionResult(
+                        AdmissionOutcome.EXCLUDED,
+                        reason=f"source admission excluded {path}: {sorted(reasons)}",
+                        actual_cost=item.estimated_cost,
+                    )
                 return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item.estimated_cost)
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):
@@ -422,14 +438,21 @@ def _persist_hook_record(archive_root: Path, path: Path, record: dict[str, objec
 
 
 class CallbackIntakeAdapter(IntakeAdapter):
-    """One-shot bounded remote/raw adapter around an existing domain route."""
+    """One-shot bounded remote/raw adapter around an existing domain route.
+
+    The wrapped route reports a changed-row count, not payload bytes, so it
+    has no honest estimate in the dispatcher's unit. It therefore charges
+    ``UNMEASURABLE_INTAKE_COST_BYTES`` -- a full budget share -- rather than
+    the literal one byte that let a large remote sync starve its siblings
+    (polylogue-swicx).
+    """
 
     def __init__(
         self,
         class_name: str,
         callback: Callable[[], Awaitable[AdmissionResult | int] | AdmissionResult | int],
         *,
-        estimated_cost: int = 1,
+        estimated_cost: int = UNMEASURABLE_INTAKE_COST_BYTES,
         persistent: bool = True,
     ) -> None:
         self.class_name = class_name
@@ -507,7 +530,6 @@ class _RawDiscoveryBinding:
     archive_root: str
     source_revision: str
     recipe_version: str
-    raw_frontier: int
 
 
 class RawMaterializationDiscovery:
@@ -515,6 +537,18 @@ class RawMaterializationDiscovery:
 
     The cursor is an intake scheduling hint. It never records validity or an
     admission result, so losing it merely starts a new bounded traversal.
+
+    Two lanes feed it. The *sweep* lane pages through the canonical required-key
+    space and retains its continuation. The *arrival* lane serves raws admitted
+    since this process last looked, read straight off the append-only
+    ``raw_sessions`` rowid frontier. A new raw can sort lexically before the
+    sweep cursor, so without the arrival lane it would wait for a whole
+    traversal to wrap; but restarting the sweep for it -- what this class used
+    to do -- meant that under a sustained arrival rate the cursor was reset
+    before it ever advanced past its first page, and every obligation behind
+    that page was never reached. Serving the new raws directly reaches them
+    without discarding the sweep's position, and the lanes alternate so an
+    unbroken stream of arrivals cannot stall the sweep either.
     """
 
     def __init__(self, archive_root: Path, *, max_payload_bytes: int) -> None:
@@ -522,24 +556,42 @@ class RawMaterializationDiscovery:
         self._max_payload_bytes = max_payload_bytes
         self._binding: _RawDiscoveryBinding | None = None
         self._cursor: str | None = None
+        #: The continuation start of the page currently being offered and the
+        #: keys it still owed when it was last inspected. A page at the same
+        #: cursor that now owes a key it did not owe before is new work, not a
+        #: stalled head.
+        self._held_page: tuple[str | None, tuple[str, ...]] | None = None
+        self._frontier: int = 0
+        self._arrivals_first = False
 
     def _raw_frontier(self) -> int:
-        """Return the durable high-water mark for admitted raw observations.
-
-        The cursor only says where this process last looked.  A new raw can
-        sort before that position, so an index-generation binding alone would
-        let it wait for the whole old sweep to wrap around.  ``raw_sessions``
-        is append-only for admitted observations; its rowid high-water mark is
-        therefore a bounded durable invalidation signal, not a second pending
-        queue or a validity cache.  Changes made while publishing an existing
-        raw do not advance it and consequently do not restart discovery.
-        """
+        """Return the durable high-water mark for admitted raw observations."""
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
         source_db = self._archive_root / "source.db"
         with open_readonly_connection(source_db, timeout=5.0) as conn:
             row = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions").fetchone()
         return int(row[0]) if row is not None else 0
+
+    def _arrived_since_frontier(self, limit: int) -> tuple[tuple[str, ...], int]:
+        """Raw ids admitted after the recorded frontier, oldest first.
+
+        ``raw_sessions`` is append-only for admitted observations, so a bounded
+        ``rowid >`` page is the whole arrival set and its last rowid is the new
+        frontier. Publishing changes to an existing raw does not advance the
+        rowid and therefore produces no arrival.
+        """
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        source_db = self._archive_root / "source.db"
+        with open_readonly_connection(source_db, timeout=5.0) as conn:
+            rows = conn.execute(
+                "SELECT rowid, raw_id FROM raw_sessions WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                (self._frontier, limit),
+            ).fetchall()
+        if not rows:
+            return (), self._frontier
+        return tuple(str(row[1]) for row in rows), int(rows[-1][0])
 
     def discover_pending_raw_ids(self, limit: int) -> tuple[tuple[str, int], ...]:
         """Inspect one bounded canonical page and retain its continuation.
@@ -555,7 +607,14 @@ class RawMaterializationDiscovery:
         """
         if limit <= 0:
             return ()
-        from polylogue.operations.operation_context import open_operation_read
+        if not (self._archive_root / "source.db").exists():
+            # polylogue-f7pdm: a fresh archive root simply has no raw tier
+            # yet. That is an empty page, not a failure: the tier appears as
+            # soon as the first acquisition commits and the next pass
+            # discovers it. Reporting it as an error here is what made the
+            # daemon latch raw materialization off for its whole lifetime and
+            # log a whale-schedule warning every 30 s on an empty root.
+            return ()
         from polylogue.operations.raw_observation_derivation import raw_observation_frame
         from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationDerivation
 
@@ -564,26 +623,81 @@ class RawMaterializationDiscovery:
             archive_root=frame.archive_root,
             source_revision=frame.source_revision,
             recipe_version=frame.recipe_version(RAW_OBSERVATION_DOMAIN),
-            raw_frontier=self._raw_frontier(),
         )
         if binding != self._binding:
+            # A replacement generation invalidates the traversal itself, not
+            # merely its position: start a fresh sweep and treat everything
+            # already durable as swept rather than as an arrival.
             self._binding = binding
             self._cursor = None
+            self._held_page = None
+            self._frontier = self._raw_frontier()
+            self._arrivals_first = False
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = RawObservationDerivation(self._archive_root, max_payload_bytes=self._max_payload_bytes)
-        page, next_cursor = adapter.required_page(frame, cursor=self._cursor, limit=inspected_limit)
-        # Store the continuation even when no candidate is returned. A valid
-        # page is still progress through the required-key space. ``None`` is
-        # the completed-traversal marker; the following pass starts a fresh
-        # sweep so new work before this cursor is eventually revisited.
-        self._cursor = next_cursor
+        self._arrivals_first = not self._arrivals_first
+        lanes: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
+            (self._arrival_selected, self._sweep_selected)
+            if self._arrivals_first
+            else (self._sweep_selected, self._arrival_selected)
+        )
+        for lane in lanes:
+            selected = lane(frame, adapter, inspected_limit)
+            if selected:
+                return self._with_costs(selected)
+        return ()
+
+    def _arrival_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
+        page, frontier = self._arrived_since_frontier(limit)
+        self._frontier = frontier
         if not page:
             return ()
         statuses = adapter.inspect(frame, page)
-        selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
-        if not selected:
-            return ()
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _sweep_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
+        # At most one released page is skipped per call, so a stalled head
+        # costs one extra bounded page read rather than the whole cycle.
+        for _attempt in range(2):
+            page_cursor = self._cursor
+            page, next_cursor = adapter.required_page(frame, cursor=page_cursor, limit=limit)
+            # An empty or fully valid page is progress through the required-key
+            # space. ``None`` is the completed-traversal marker; the following
+            # pass starts a fresh sweep so new work before this cursor is
+            # eventually revisited.
+            selected: tuple[str, ...] = ()
+            if page:
+                statuses = adapter.inspect(frame, page)
+                selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+            if not selected:
+                self._cursor = next_cursor
+                self._held_page = None
+                return ()
+            held = self._held_page
+            if held is not None and held[0] == page_cursor and set(held[1]) == set(selected):
+                # Re-inspected the same page and nothing moved: the blockage is
+                # not budget pressure, so stop pinning the traversal behind it
+                # and go on to the next page in this same call.
+                self._cursor = next_cursor
+                self._held_page = None
+                continue
+            # Hold the continuation over keys this page still owes. The
+            # dispatcher admits the offered items only until its class budget
+            # is spent, so advancing over the whole inspected page moves the
+            # cursor past obligations nobody took -- the same
+            # producer-advances-past-the-consumer shape
+            # ``DerivationRunner.run_domain`` avoids with its ``stopped_at``
+            # offset. The authority for "processed" is the output relation
+            # re-inspected on the next pass.
+            self._held_page = (page_cursor, selected)
+            self._cursor = page_cursor
+            return selected
+        return ()
+
+    def _with_costs(self, selected: tuple[str, ...]) -> tuple[tuple[str, int], ...]:
+        from polylogue.operations.operation_context import open_operation_read
+
         with open_operation_read(self._archive_root) as pinned:
             sizes = pinned.archive.raw_payload_sizes(selected)
         return tuple((raw_id, max(1, int(sizes.get(raw_id, 1)))) for raw_id in selected)

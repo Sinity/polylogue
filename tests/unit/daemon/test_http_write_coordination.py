@@ -52,8 +52,13 @@ class _RecordingBridge:
 
 
 def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
-    def allow_auth(required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
-        del required_scope, allow_web
+    def allow_auth(
+        required_scope: WebCredentialScope = "read",
+        *,
+        allow_web: bool = True,
+        refuse: object = None,
+    ) -> bool:
+        del required_scope, allow_web, refuse
         return True
 
     def allow_host(*, credential_request: bool = False) -> bool:
@@ -66,8 +71,8 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
     object.__setattr__(handler, "_parse_path", lambda: (path, {}))
     object.__setattr__(handler, "_check_host_admission", allow_host)
     object.__setattr__(handler, "_check_auth", allow_auth)
-    object.__setattr__(handler, "_check_cross_origin", lambda: True)
-    object.__setattr__(handler, "_send_error", lambda *_args: timeline.append("error"))
+    object.__setattr__(handler, "_check_cross_origin", lambda **_kwargs: True)
+    object.__setattr__(handler, "_send_error", lambda *_args, **_kwargs: timeline.append("error"))
     return handler
 
 
@@ -125,6 +130,23 @@ def _seed_delete_authority_archive(root: Path, count: int) -> tuple[str, ...]:
     return tuple(session_ids)
 
 
+def _prepared_work_budget_s(archive_root: Path) -> float:
+    """Client request budget scaled to the sessions this test actually staged.
+
+    Anti-vacuity: replacing this with a constant re-introduces the
+    load-sensitive failure the budget exists to avoid -- a 513-session prepare
+    under host contention exceeds any small constant and surfaces as
+    ``DaemonMutationIndeterminateError`` on the prepare route.
+    """
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        prepared = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+    # Floor covers daemon start-up and the single-session routes; the per-session
+    # term keeps the 513-session prepares inside the budget on a busy host while
+    # staying under the suite-wide 120s pytest guard.
+    return max(15.0, 0.2 * prepared)
+
+
 @contextlib.contextmanager
 def _delete_authority_daemon(
     monkeypatch: pytest.MonkeyPatch,
@@ -138,11 +160,14 @@ def _delete_authority_daemon(
         stack.client.auth_token = "delete-authority-token"
         client = cast(_DeleteDaemonClient, stack.client)
         object.__setattr__(client, "archive_root", archive_root)
-        # These routes delete hundreds of sessions through a real daemon. The
-        # client budget bounds one request, not the test: at two seconds it
-        # measured how loaded the host was. A genuine hang is still caught by
-        # the suite-wide pytest timeout.
-        client.timeout_s = 60.0
+        # These routes delete hundreds of sessions through a real daemon, and
+        # one request's cost is proportional to the prepared archive. A
+        # constant budget measures how loaded the host is, not the route
+        # (polylogue-ga8vn): 2.0s failed under load, and any raised constant
+        # is the same defect with a bigger number. Derive the budget from the
+        # work actually staged in this archive. A genuine hang is still caught
+        # by the suite-wide pytest timeout.
+        client.timeout_s = _prepared_work_budget_s(archive_root)
         yield client
 
 
@@ -601,6 +626,15 @@ def _assert_completed_delete(result: dict[str, object], *, affected: int, chunks
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """513 sessions delete through the real daemon route in three chunks.
+
+    Anti-vacuity: restoring the old single-chunk cap (or losing the chunked
+    preview/authorize/execute lifecycle) leaves rows in ``sessions`` and the
+    chunk-count assertions fail. The client budget comes from
+    ``_prepared_work_budget_s`` so the route's behavior, not the host's
+    current load, decides the outcome (polylogue-ga8vn).
+    """
+
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     session_ids = _seed_delete_authority_archive(archive_root, 513)
@@ -1113,3 +1147,118 @@ def test_inline_gated_write_presents_the_grant_on_the_request_thread() -> None:
     finally:
         handler.server.execution_kernel.shutdown(wait=True)
         stop()
+
+
+def test_tcp_pre_dispatch_refusal_is_marked_rejected_not_indeterminate() -> None:
+    """A TCP ``/api/operation`` refusal before dispatch carries the pre-dispatch marker.
+
+    polylogue-ji49p: the UDS transport marks its refusals and
+    ``DaemonClient.operation`` raises ``DaemonOperationRejectedError`` for ANY
+    envelope with ``protocol``/``outcome == "rejected"``/``pre_dispatch``. The
+    TCP route answered with the bare ``{"ok": false, "error": ...}`` shape, so
+    a write refused before it ever ran was reported to the caller as a
+    possibly-committed (indeterminate) mutation.
+
+    Anti-vacuity: restore ``self._send_error(...)`` at the route's
+    pre-dispatch refusals (or drop any one of the four marker fields from
+    ``_reject_operation``) and the client-side predicate asserted below is
+    false again, which is exactly the indeterminate-mutation fall-through.
+    The runtime assertion fails if a refusal is emitted after dispatch.
+    """
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
+
+    timeline: list[str] = []
+    body = _preview_operation_body(["codex-session:marked"])
+    handler = _operation_handler(timeline, body)
+    # ``Message.__setitem__`` APPENDS; the helper already set a JSON
+    # Content-Type, and ``.get()`` would keep returning that first value.
+    del handler.headers["Content-Type"]
+    handler.headers["Content-Type"] = "text/plain"
+    assert handler.headers.get("Content-Type") == "text/plain"
+    # Restore the production error envelope builder over the stub, so this
+    # asserts the real serialized refusal rather than a recording lambda.
+    object.__setattr__(handler, "_send_error", DaemonAPIHandler._send_error.__get__(handler))
+    sent: list[tuple[object, dict[str, object]]] = []
+    object.__setattr__(handler, "_send_json", lambda status, payload, **_kwargs: sent.append((status, payload)))
+
+    handler._do_post_impl()
+
+    assert not any(item.startswith("runtime:") for item in timeline)
+    assert len(sent) == 1
+    status, payload = sent[0]
+    assert status == HTTPStatus.UNSUPPORTED_MEDIA_TYPE
+    assert payload["ok"] is False
+    # The exact predicate DaemonClient.operation uses to refuse without
+    # calling the mutation indeterminate.
+    assert payload["protocol"] == DAEMON_OPERATION_PROTOCOL
+    assert payload["outcome"] == "rejected"
+    assert payload["pre_dispatch"] is True
+    assert payload["error"] == {"code": "unsupported_media_type", "detail": None, "retryable": False}
+
+
+def test_delete_preview_plan_is_reconstructed_by_its_audit_owner(tmp_path: Path) -> None:
+    """The stored plan payload, not the preview columns, defines the plan.
+
+    ``delete_authorization`` used to rebuild the plan from ``operation_previews``
+    columns with its own rules (notably a hardcoded ``reversible=False``), so
+    two readers of one durable row could disagree about what was authorized.
+    Reconstruction now goes through the audit tier's own payload reader, and
+    the loaded plan is bound by the same integrity check the authorize/begin
+    path applies.
+
+    Anti-vacuity: reinstate the column-based reconstruction and the first
+    assertion is red (the tampered ``reversible`` in ``plan_json`` would be
+    ignored); drop ``validate_mutation_plan_integrity`` from the load path and
+    the second assertion is red (a rewritten context would load happily).
+    """
+
+    from polylogue.operations.delete_authorization import (
+        DeleteAuthorizationError,
+        _audit_repository,
+        _load_preview,
+        prepare_cli_delete,
+    )
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (session_id,) = _seed_delete_authority_archive(archive_root, 1)
+    principal = MutationPrincipal(
+        "daemon:bearer:reconstruction",
+        frozenset({"archive.delete_session"}),
+        "cli",
+        "daemon-authenticated",
+    )
+    preview = prepare_cli_delete(archive_root, (session_id,), principal)
+    audit = _audit_repository(archive_root)
+
+    loaded = _load_preview(audit, preview.preview_ref, principal, require_prepared=True)
+    assert loaded.plan.target_refs == (f"session:{session_id}",)
+    assert loaded.plan.reversible is False
+
+    def _rewrite_plan_json(mutate: Callable[[dict[str, object]], None]) -> None:
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            stored = json.loads(
+                conn.execute(
+                    "SELECT plan_json FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
+                ).fetchone()[0]
+            )
+            mutate(stored)
+            conn.execute(
+                "UPDATE operation_previews SET plan_json = ? WHERE preview_id = ?",
+                (json.dumps(stored, sort_keys=True, separators=(",", ":")), preview.preview_ref),
+            )
+
+    def _set_reversible(document: dict[str, object]) -> None:
+        document["reversible"] = True
+
+    _rewrite_plan_json(_set_reversible)
+    assert _load_preview(audit, preview.preview_ref, principal, require_prepared=True).plan.reversible is True
+
+    def _rewrite_context(document: dict[str, object]) -> None:
+        document["reversible"] = False
+        document["context"] = {"session_ids": ["codex-session:not-authorized"]}
+
+    _rewrite_plan_json(_rewrite_context)
+    with pytest.raises(DeleteAuthorizationError, match="preview_plan_invalid"):
+        _load_preview(audit, preview.preview_ref, principal, require_prepared=True)

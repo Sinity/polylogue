@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import get_args
 
-from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin, SloSampleLabel
+from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin, SloSampleLabel, TelemetrySurface
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
@@ -348,7 +348,7 @@ ON mcp_call_session_refs(session_id, call_id);
 CREATE TABLE IF NOT EXISTS route_observations (
     observation_id   TEXT PRIMARY KEY,
     trace_id         TEXT NOT NULL,
-    surface          TEXT NOT NULL CHECK(surface IN ('cli', 'mcp', 'daemon-http', 'daemon-internal', 'web')),
+    surface          TEXT NOT NULL CHECK({literal_check("surface", *get_args(TelemetrySurface))}),
     route            TEXT NOT NULL,
     verb             TEXT,
     daemon_path      TEXT CHECK(daemon_path IN ('daemon', 'direct') OR daemon_path IS NULL),

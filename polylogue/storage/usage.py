@@ -29,6 +29,7 @@ from polylogue.archive.semantic.subscription_pricing import (
     SUBSCRIPTION_CATALOG_PROVENANCE,
     compute_credit_cost,
     credits_to_usd,
+    models_without_credit_rate,
 )
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.evidence_families import (
@@ -50,8 +51,8 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
-from polylogue.storage.introspection import table_exists as _table_exists
 
 UsageReportDetail = Literal["headline", "full"]
 
@@ -570,7 +571,13 @@ class ProviderUsageLanes:
             uncached_input_tokens=counters.input_tokens - cached if input_includes_cache else counters.input_tokens,
             cached_input_tokens=cached,
             cache_write_tokens=counters.cache_write_tokens,
-            completion_output_tokens=counters.output_tokens - reasoning,
+            # Only subtract where the provider's output lane *includes*
+            # reasoning. A separate-lane provider already reports the two
+            # disjointly, so subtracting again understates completion tokens
+            # and breaks ``has_disjoint_partitions``'s own invariant.
+            completion_output_tokens=(
+                counters.output_tokens - reasoning if output_includes_reasoning else counters.output_tokens
+            ),
             reasoning_output_tokens=reasoning,
             provider_input_tokens=counters.input_tokens,
             provider_output_tokens=counters.output_tokens,
@@ -2115,6 +2122,13 @@ def _pricing_lane_reports(
             )
             if credit_cost > 0:
                 bucket.subscription_credit_usd += credits_to_usd(credit_cost, tier=subscription_tier or "pro")
+            elif models_without_credit_rate((normalized_for_credit,)):
+                # polylogue-t83q: a Claude model with no declared credit rate
+                # contributes nothing to the subscription total, which is the
+                # right refusal but an invisible one -- the aggregate reads as
+                # a complete credit figure. Name the gap so the reported total
+                # is not mistaken for coverage of every Claude row.
+                caveats_by_provenance[provenance].add(f"missing_credit_rate:{normalized_for_credit}")
 
     result: list[PricingLaneReport] = []
     for provenance, bucket in sorted(
@@ -2348,8 +2362,13 @@ def _sample_event_sessions(
         return {}
     columns = _table_columns(conn, "session_provider_usage_events")
     predicates: list[str] = []
+    predicate_args: list[str] = []
     if missing_model:
-        predicates.append("(e.model_name IS NULL OR TRIM(e.model_name) = '')")
+        # The aggregate at ``_provider_event_stats`` classifies missing with
+        # the explicit strip set; bare TRIM strips only U+0020, so a
+        # whitespace-only model name would be counted yet never sampled.
+        predicates.append("(e.model_name IS NULL OR TRIM(e.model_name, ?) = '')")
+        predicate_args.append(_MODEL_NAME_STRIP_CHARS)
     if zero_token:
         last_cols = _counter_columns(columns, prefix="last")
         total_cols = _counter_columns(columns, prefix="total")
@@ -2369,7 +2388,7 @@ def _sample_event_sessions(
         ORDER BY origin, e.session_id
         {"LIMIT ?" if limit is not None else ""}
         """,
-        (*_event_origin_args(origin), *(() if limit is None else (limit,))),
+        (*_event_origin_args(origin), *predicate_args, *(() if limit is None else (limit,))),
     ).fetchall()
     by_origin: dict[str, list[str]] = defaultdict(list)
     for row in rows:

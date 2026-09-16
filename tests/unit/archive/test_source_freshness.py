@@ -121,7 +121,7 @@ def _create_schema(root: Path) -> None:
                 raw_id TEXT,
                 decision TEXT,
                 detail TEXT,
-                applied_at_ms INTEGER
+                decided_at_ms INTEGER NOT NULL
             );
             CREATE INDEX raw_revision_applications_raw_id_idx
                 ON raw_revision_applications(raw_id);
@@ -1116,3 +1116,40 @@ def test_named_source_byte_lag_aggregate_rejects_contradictory_duplicate_instead
     assert total.value is None
     assert len(total.conflicts) == 1
     assert {observation.value for observation in total.conflicts[0].observations} == {12, 32}
+
+
+def test_revision_applications_order_by_decided_at_ms_not_insertion_order(tmp_path: Path) -> None:
+    """Recency uses the real ``decided_at_ms`` column, not rowid.
+
+    Anti-vacuity: the two applications are inserted so that rowid order is the
+    reverse of decision recency.  If ``_load_revision_applications`` falls back
+    to ``rowid`` (as it did while its candidate list named only columns absent
+    from ``RAW_REVISION_APPLICATIONS_SPEC``), the older decision is returned
+    first and this assertion is red.
+    """
+
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=64)
+    _seed_cursor(root, source, observed_size=64, offset=64)
+    _seed_searchable(root, source)
+
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(
+            "DELETE FROM raw_revision_applications",
+        )
+        # Inserted newest-first, so rowid order contradicts decision recency.
+        conn.execute(
+            "INSERT INTO raw_revision_applications VALUES (?, ?, ?, ?)",
+            ("raw-current", "applied_append", "newer decision", 9_000),
+        )
+        conn.execute(
+            "INSERT INTO raw_revision_applications VALUES (?, ?, ?, ?)",
+            ("raw-current", "applied_append", "older decision", 1_000),
+        )
+
+    projection = project_named_source_freshness(root, source, now=_NOW)
+
+    details = [application.detail for application in projection.revision_applications]
+    assert details == ["newer decision", "older decision"]
+    assert projection.revision_applications[0].observed_at_ms == 9_000

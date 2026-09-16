@@ -11,11 +11,11 @@ from polylogue.api.archive import read_frame
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import has_structured_blocks, render_blocks_markdown
 from polylogue.rendering.core_markdown import format_message_text
 from polylogue.rendering.core_messages import normalize_render_timestamp
-from polylogue.storage.introspection import table_exists as _table_exists
 
 
 def stream_exact_session_markdown(

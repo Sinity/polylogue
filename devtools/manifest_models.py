@@ -110,6 +110,8 @@ class WriterModulePolicy(BaseModel):
     mutation_roots: list[str] = Field(min_length=1)
     modules: list[WriterModuleEntry] = Field(min_length=1)
     twin_write_contracts: list[TwinWriteContract] = Field(default_factory=list)
+    census_roots: list[str] = Field(default_factory=list)
+    census_baseline: str | None = None
 
 
 class LayeringManifest(BaseModel):

@@ -33,11 +33,20 @@ _SOURCE_ARCHIVE_DATABASE = ("source database", "source.db")
 
 # Rebuildable tiers: replayed from preserved source evidence by maintenance.
 # Deleting these is the supported "move aside and replay source.db" reset path.
+# ``embeddings.db`` is deliberately NOT here: bootstrap classifies it
+# ``expensive_rebuild`` (storage/sqlite/archive_tiers/bootstrap.py) because
+# nothing replays its vectors from source.db -- they are re-purchased from the
+# embedding provider. Its reuse key (``vector_derivation_hash``) survives an
+# index rebuild, so preserving the file is what makes the rebuild cheap.
 _REBUILDABLE_ARCHIVE_DATABASES = (
     ("index database", "index.db"),
-    ("embeddings database", "embeddings.db"),
     ("ops database", "ops.db"),
 )
+
+#: Expensive-to-rebuild tier preserved by ``reset --database``.  Deleting it is
+#: not a reset, it is a repurchase, so this file has no delete target at all and
+#: the command names the preservation route instead.
+_EMBEDDINGS_ARCHIVE_DATABASE = ("embeddings database", "embeddings.db")
 # Irreplaceable tier: marks, annotations, corrections, tags, saved views,
 # recall packs, workspaces, blackboard notes. Nothing re-creates it, so
 # ``reset --database`` preserves it unless the operator opts in explicitly.
@@ -148,6 +157,10 @@ def _user_db_present() -> bool:
 
 def _source_db_present() -> bool:
     return _source_db_path().exists()
+
+
+def _embeddings_db_present() -> bool:
+    return (_archive_root() / _EMBEDDINGS_ARCHIVE_DATABASE[1]).exists()
 
 
 def _unresolvable_raw_source_count() -> int:
@@ -482,6 +495,12 @@ def reset_command(
             env.ui.console.print(
                 "Preserving source.db (durable acquired evidence). Rebuild index.db from it with `polylogued run`; "
                 "ordinary convergence replays source.db into index.db. Pass --include-source-db to delete source.db too."
+            )
+        if _embeddings_db_present():
+            env.ui.console.print(
+                "Preserving embeddings.db (expensive to rebuild: vectors are re-purchased from the embedding "
+                "provider, never replayed from source.db). The reuse key survives an index rebuild; manage it "
+                "with `polylogue ops maintenance embedding-preservation {preserve,restore,verify,discard}`."
             )
         if not include_user_db and _user_db_present():
             env.ui.console.print(

@@ -31,7 +31,7 @@ from polylogue.archive.raw_payload.decode import (
 )
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
@@ -117,12 +117,6 @@ class IngestRecordResult:
     evidence_ref: str | None = None
     remediation: str | None = None
     diagnostic: str | None = None
-    # polylogue-azf7: set when on-demand sidecar-assembly enrichment raised
-    # and this record's sessions were materialized unenriched (native-id
-    # title etc.) as a result. Distinct from ``error`` -- the record still
-    # succeeds -- so the batch summary can count silent degradation instead
-    # of it only reaching a log line.
-    sessions_unenriched: bool = False
 
 
 ParsePlanMode = Literal["payload", "stream"]
@@ -237,7 +231,6 @@ def _record_result(
     include_source_name: bool = False,
     schema_drift: SchemaDriftObservation | None = None,
     disposition: IngestAttemptDisposition | None = None,
-    sessions_unenriched: bool = False,
 ) -> IngestRecordResult:
     if disposition is None:
         disposition = success_disposition() if error is None else None
@@ -257,7 +250,6 @@ def _record_result(
             evidence_ref=(disposition.evidence_ref if disposition is not None else None),
             remediation=(disposition.remediation if disposition is not None else None),
             diagnostic=(disposition.diagnostic if disposition is not None else None),
-            sessions_unenriched=sessions_unenriched,
         ),
         measure_serialized_size=context.measure_serialized_size,
     )
@@ -749,7 +741,7 @@ def _enrich_parsed_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
     parsed_sessions: list[ParsedSession],
-) -> tuple[list[ParsedSession], bool]:
+) -> list[ParsedSession]:
     """Apply the same provider assembly enrichment direct ingest uses.
 
     Canonical raw-record ingest historically bypassed provider assembly, so
@@ -766,18 +758,17 @@ def _enrich_parsed_sessions(
     absence, so assembly still runs against an empty snapshot and only the
     parsed-content fallbacks apply.
 
-    Returns ``(sessions, sessions_unenriched)`` -- the second element is
-    ``True`` only when on-demand discovery raised and the caller fell back
-    to the unenriched sessions (polylogue-azf7), so the batch summary can
-    surface a count of silently-degraded records instead of a log line
-    being the only trace.
+    Returns the enriched sessions.  Enrichment no longer has a degraded
+    fallback: on-demand sidecar discovery was removed, so a provider without
+    an assembly spec returns its parsed sessions unchanged and every other
+    path returns enriched ones.
     """
     from polylogue.sources.assembly import get_assembly_spec
     from polylogue.sources.retained_assembly import resolve_retained_assembly_evidence
 
     spec = get_assembly_spec(plan.provider)
     if spec is None:
-        return parsed_sessions, False
+        return parsed_sessions
     # Workers are forbidden from consulting the ambient source tree.  The
     # acquisition cut carries an optional, generation-bound snapshot.  A
     # missing snapshot is ordinary absence, not permission to rediscover it;
@@ -800,7 +791,7 @@ def _enrich_parsed_sessions(
         archive_root=context.archive_root,
         source_path=context.raw_record.source_path,
     )
-    return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
+    return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions]
 
 
 def _with_retained_codex_state_titles(
@@ -853,8 +844,18 @@ def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Pat
     except Exception:
         # Recovery is a best-effort third fallback over evidence the parse
         # itself does not depend on; the un-recovered session is still a
-        # correct parse of the transcript.
-        logger.debug("hook tool_response recovery failed", exc_info=True)
+        # correct parse of the transcript. It is not silent, though: the
+        # session content hash is taken from whichever session this returns,
+        # so a failure here durably stores a different hash than the
+        # recovered path would have, and only this line says why
+        # (polylogue-3r36h).
+        emit(
+            "pipeline.hook_tool_response.recovery_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="the un-recovered session is stored, so its durable content hash is the un-recovered one",
+            session_id=convo.provider_session_id,
+        )
         return convo
 
 
@@ -864,7 +865,6 @@ def _materialize_parsed_sessions(
     *,
     validation: _PlanValidation,
     parsed_sessions: list[ParsedSession],
-    sessions_unenriched: bool = False,
 ) -> IngestRecordResult:
     if not parsed_sessions:
         error = "parse: session artifact produced no materializable sessions"
@@ -917,7 +917,6 @@ def _materialize_parsed_sessions(
         sessions=session_payloads,
         include_source_name=True,
         schema_drift=validation.schema_drift,
-        sessions_unenriched=sessions_unenriched,
     )
 
 
@@ -1039,13 +1038,12 @@ def _run_parse_plan(
             disposition=classify_parse_exception(exc),
         )
 
-    enriched_sessions, sessions_unenriched = _enrich_parsed_sessions(context, accepted_plan, parsed_sessions)
+    enriched_sessions = _enrich_parsed_sessions(context, accepted_plan, parsed_sessions)
     return _materialize_parsed_sessions(
         context,
         accepted_plan,
         validation=validation,
         parsed_sessions=enriched_sessions,
-        sessions_unenriched=sessions_unenriched,
     )
 
 

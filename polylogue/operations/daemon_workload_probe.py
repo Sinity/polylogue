@@ -24,12 +24,13 @@ from typing import Any
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.core.errors import SchemaSkewError
 from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, measured_or_none, resolve
+from polylogue.core.sqlite_introspection import relation_exists, table_exists
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
-from polylogue.storage.introspection import relation_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import count_dangling_prefix_branch_points
@@ -145,24 +146,8 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
 }
 
 
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
-def _attached_table_exists(conn: sqlite3.Connection, schema: str, table: str) -> bool:
-    row = conn.execute(
-        f"SELECT 1 FROM {schema}.sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
-
-
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    if not _table_exists(conn, table):
+    if not table_exists(conn, table):
         return set()
     try:
         return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
@@ -195,7 +180,7 @@ def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> Evidence
     maintained rollup columns.
     """
 
-    if table == "messages" and _table_exists(conn, "sessions") and "message_count" in _columns(conn, "sessions"):
+    if table == "messages" and table_exists(conn, "sessions") and "message_count" in _columns(conn, "sessions"):
         return _scalar_int(conn, "SELECT COALESCE(SUM(message_count), 0) FROM sessions")
     if table in {
         "sessions",
@@ -277,7 +262,7 @@ def _wal_file_size(db: Path) -> int:
 
 
 def _sqlite_stat1_rows(conn: sqlite3.Connection) -> Evidence[int]:
-    if not _table_exists(conn, "sqlite_stat1"):
+    if not table_exists(conn, "sqlite_stat1"):
         return Measured(0)
     return _scalar_int(conn, "SELECT COUNT(*) FROM sqlite_stat1")
 
@@ -351,7 +336,7 @@ def _recent_attempts(conn: sqlite3.Connection, *, limit: int, ops_db: Path | Non
     ops_attempts = _ops_recent_attempts(ops_db, limit=limit)
     if ops_attempts:
         return ops_attempts
-    if not _table_exists(conn, "live_ingest_attempt"):
+    if not table_exists(conn, "live_ingest_attempt"):
         return ops_attempts
     columns = _columns(conn, "live_ingest_attempt")
     stale_expr = "stale_cursor_write_count" if "stale_cursor_write_count" in columns else "0"
@@ -418,7 +403,7 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
     try:
         conn = open_readonly_connection(ops_db)
         try:
-            if not _table_exists(conn, "ingest_attempts"):
+            if not table_exists(conn, "ingest_attempts"):
                 return []
             rows = conn.execute(
                 """
@@ -450,9 +435,9 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
         attempts.append(
             {
                 "attempt_id": attempt_id,
-                "started_at": _iso_from_epoch_ms(row[1]),
-                "updated_at": _iso_from_epoch_ms(row[2] or row[3] or row[1]),
-                "completed_at": _iso_from_epoch_ms(row[3]),
+                "started_at": iso_from_epoch_ms(row[1]),
+                "updated_at": iso_from_epoch_ms(row[2] or row[3] or row[1]),
+                "completed_at": iso_from_epoch_ms(row[3]),
                 "status": row[4],
                 "phase": row[5],
                 "queued_file_count": _payload_int(payload, "queued_file_count", default=len(source_paths)),
@@ -483,7 +468,7 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
 
 
 def _ops_stage_payloads(conn: sqlite3.Connection, attempt_ids: list[str]) -> dict[str, dict[str, Any]]:
-    if not attempt_ids or not _table_exists(conn, "daemon_stage_events"):
+    if not attempt_ids or not table_exists(conn, "daemon_stage_events"):
         return {}
     placeholders = ",".join("?" for _ in attempt_ids)
     rows = conn.execute(
@@ -558,7 +543,7 @@ def _storage_route_counts(conn: sqlite3.Connection, *, ops_db: Path | None = Non
 
     counts = dict.fromkeys(sorted(_KNOWN_STORAGE_ROUTES), 0)
     counts["other"] = 0
-    if not _table_exists(conn, "live_ingest_attempt"):
+    if not table_exists(conn, "live_ingest_attempt"):
         return counts
     columns = _columns(conn, "live_ingest_attempt")
     if "storage_route" not in columns:
@@ -577,7 +562,7 @@ def _ops_storage_route_counts(ops_db: Path | None) -> dict[str, int] | None:
     try:
         conn = open_readonly_connection(ops_db)
         try:
-            if not _table_exists(conn, "ingest_attempts"):
+            if not table_exists(conn, "ingest_attempts"):
                 return None
             rows = conn.execute("SELECT attempt_id FROM ingest_attempts").fetchall()
             attempt_ids = [str(row[0]) for row in rows]
@@ -598,9 +583,9 @@ def _ops_storage_route_counts(ops_db: Path | None) -> dict[str, int] | None:
 
 def _attempt_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> dict[str, Any]:
     ops_counts = _ops_attempt_counts(ops_db)
-    if ops_counts is not None and (ops_counts["total"] > 0 or not _table_exists(conn, "live_ingest_attempt")):
+    if ops_counts is not None and (ops_counts["total"] > 0 or not table_exists(conn, "live_ingest_attempt")):
         return ops_counts
-    if not _table_exists(conn, "live_ingest_attempt"):
+    if not table_exists(conn, "live_ingest_attempt"):
         return {
             "total": 0,
             "running": 0,
@@ -655,7 +640,7 @@ def _ops_attempt_counts(ops_db: Path | None) -> dict[str, Any] | None:
     try:
         conn = open_readonly_connection(ops_db)
         try:
-            if not _table_exists(conn, "ingest_attempts"):
+            if not table_exists(conn, "ingest_attempts"):
                 return None
             rows = conn.execute(
                 """
@@ -703,12 +688,12 @@ def _source_path_churn(
     archive_churn = _archive_source_path_churn(db.parent, attempts=attempts, limit=limit)
     if archive_churn:
         return archive_churn
-    if not _table_exists(conn, "raw_sessions"):
+    if not table_exists(conn, "raw_sessions"):
         return []
     source_paths = sorted({path for attempt in attempts for path in attempt.get("source_paths", []) if path})
     if not source_paths:
         return []
-    has_sessions = _table_exists(conn, "sessions")
+    has_sessions = table_exists(conn, "sessions")
     join = "LEFT JOIN sessions AS c ON c.raw_id = r.raw_id" if has_sessions else ""
     session_count = "COUNT(DISTINCT c.session_id)" if has_sessions else "0"
     raw_columns = _columns(conn, "raw_sessions")
@@ -748,7 +733,7 @@ def _source_path_churn(
                 "session_count": session_count_value,
                 "orphan_raw_count": max(0, raw_count - session_count_value),
                 "total_blob_bytes": int(row[5] or 0),
-                "latest_acquired_at": _iso_from_epoch_ms(row[6]) if acquired_is_ms else row[6],
+                "latest_acquired_at": iso_from_epoch_ms(row[6]) if acquired_is_ms else row[6],
             }
         )
     return items
@@ -773,7 +758,7 @@ def _archive_source_path_churn(
         conn = open_readonly_connection(index_db)
         try:
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
-            if not _table_exists(conn, "sessions") or not _attached_table_exists(conn, "source_tier", "raw_sessions"):
+            if not table_exists(conn, "sessions") or not table_exists(conn, "raw_sessions"):
                 return []
             rows = conn.execute(
                 f"""
@@ -816,7 +801,7 @@ def _archive_source_path_churn(
                 "materialized_raw_count": materialized_raw_count,
                 "orphan_raw_count": max(0, raw_count - materialized_raw_count),
                 "total_blob_bytes": int(row[6] or 0),
-                "latest_acquired_at": _iso_from_epoch_ms(row[7]),
+                "latest_acquired_at": iso_from_epoch_ms(row[7]),
             }
         )
     return items
@@ -841,7 +826,7 @@ def _cursor_lag_baselines(conn: sqlite3.Connection, *, ops_db: Path | None = Non
     ops_baselines = _ops_cursor_lag_baselines(ops_db)
     if ops_baselines is not None:
         return ops_baselines
-    if not _table_exists(conn, "live_cursor_lag_sample"):
+    if not table_exists(conn, "live_cursor_lag_sample"):
         return {"table_present": False, "family_count": 0, "total_sample_count": 0, "families": []}
     rows = conn.execute(
         """
@@ -899,7 +884,7 @@ def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
     try:
         conn = open_readonly_connection(ops_db)
         try:
-            if not _table_exists(conn, "cursor_lag_samples"):
+            if not table_exists(conn, "cursor_lag_samples"):
                 return None
             columns = _columns(conn, "cursor_lag_samples")
             if "family" not in columns:
@@ -933,8 +918,8 @@ def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
                     {
                         "family": family,
                         "sample_count": sample_count,
-                        "first_observed_at": _iso_from_epoch_ms(row[2]),
-                        "last_observed_at": _iso_from_epoch_ms(row[3]),
+                        "first_observed_at": iso_from_epoch_ms(row[2]),
+                        "last_observed_at": iso_from_epoch_ms(row[3]),
                         "max_lag_s_seen": round(float(row[4] or 0.0) / 1000.0, 3),
                         "mean_lag_s": round(float(row[5] or 0.0) / 1000.0, 3),
                         "stuck_file_total": int(row[6] or 0),
@@ -951,17 +936,6 @@ def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
         finally:
             conn.close()
     except _TIER_UNAVAILABLE_ERRORS:
-        return None
-
-
-def _iso_from_epoch_ms(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, int | float | str | bytes | bytearray):
-        return None
-    try:
-        return datetime.fromtimestamp(int(value) / 1000, tz=UTC).isoformat()
-    except (TypeError, ValueError, OSError):
         return None
 
 
@@ -1006,7 +980,7 @@ def _convergence_debt(
                 for item in summary.stage_summaries
             ],
         }
-    if not _table_exists(conn, "live_convergence_debt"):
+    if not table_exists(conn, "live_convergence_debt"):
         return {
             "available": True,
             "error": None,
@@ -1105,7 +1079,7 @@ def _location_entry(
             # runtime has moved past.
             conn = open_readonly_connection(db_path, validate_schema=False)
             try:
-                exists = _table_exists(conn, table)
+                exists = table_exists(conn, table)
             finally:
                 conn.close()
         except sqlite3.Error:
@@ -1443,7 +1417,7 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
         if source_db.exists():
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
             source_attached = True
-            source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
+            source_check_available = table_exists(conn, "raw_sessions")
         measured_counts = _archive_derived_counts(
             conn, source_check_available=source_check_available, exact_counts=exact_counts
         )
@@ -1939,8 +1913,8 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
                 unavailable=lambda case: _record_refusal(refusals, case),
                 degraded=lambda case: case.value,
             )
-            if (name.startswith("assertion_") and _table_exists(conn, "assertions"))
-            or (not name.startswith("assertion_") and _table_exists(conn, name))
+            if (name.startswith("assertion_") and table_exists(conn, "assertions"))
+            or (not name.startswith("assertion_") and table_exists(conn, name))
             else -1
             for name, sql in checks.items()
         }
@@ -1988,7 +1962,7 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
     fast-path graph was prevented from entering it.
     """
 
-    if not _table_exists(conn, "session_links"):
+    if not table_exists(conn, "session_links"):
         return {
             "table_present": False,
             "unresolved_count": 0,
@@ -2015,7 +1989,7 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
     oldest_row = conn.execute(
         "SELECT MIN(resolved_at_ms) FROM session_links WHERE status = ?", (TopologyEdgeStatus.QUARANTINED.value,)
     ).fetchone()
-    if _table_exists(conn, "messages"):
+    if table_exists(conn, "messages"):
         dangling_edges, dangling_sessions = count_dangling_prefix_branch_points(conn)
     else:
         dangling_edges, dangling_sessions = 0, 0
@@ -2080,7 +2054,7 @@ def _blob_reference_debt_state(db: Path, *, enabled: bool) -> dict[str, Any]:
 
 
 def _gc_state(conn: sqlite3.Connection) -> dict[str, Any]:
-    if not _table_exists(conn, "gc_generations"):
+    if not table_exists(conn, "gc_generations"):
         return {
             "table_present": False,
             "high_water_generation": 0,
@@ -2202,7 +2176,7 @@ def _per_stage_timings(
         return {}
     placeholders = ",".join("?" for _ in attempt_ids)
     latest_by_attempt: dict[str, dict[str, float]] = {}
-    if _table_exists(conn, "daemon_stage_events"):
+    if table_exists(conn, "daemon_stage_events"):
         rows = conn.execute(
             f"""
             SELECT attempt_id, payload_json
@@ -2225,7 +2199,7 @@ def _per_stage_timings(
             timings = _stage_timings_from_json(decoded.get("stage_timings_json"))
             if timings:
                 latest_by_attempt[attempt_id] = timings
-    elif _table_exists(conn, "live_ingest_stage_event"):
+    elif table_exists(conn, "live_ingest_stage_event"):
         rows = conn.execute(
             f"""
             SELECT attempt_id, stage_timings_json
@@ -2279,7 +2253,7 @@ def _daemon_resource_signal(
     ops_signal = _ops_daemon_resource_signal(ops_db)
     if ops_signal is not None:
         return ops_signal
-    if not _table_exists(conn, "live_ingest_attempt"):
+    if not table_exists(conn, "live_ingest_attempt"):
         return {"available": False}
     columns = _columns(conn, "live_ingest_attempt")
     optional = (
@@ -2319,7 +2293,7 @@ def _ops_daemon_resource_signal(ops_db: Path | None) -> dict[str, Any] | None:
     try:
         conn = open_readonly_connection(ops_db)
         try:
-            if not _table_exists(conn, "daemon_stage_events"):
+            if not table_exists(conn, "daemon_stage_events"):
                 return None
             row = conn.execute(
                 """
@@ -2371,7 +2345,7 @@ def _explain(conn: sqlite3.Connection, sql: str, params: tuple[object, ...]) -> 
 
 def _query_plans(conn: sqlite3.Connection, *, db: Path) -> dict[str, Any]:
     plans: dict[str, Any] = _archive_query_plans(db.parent)
-    if _table_exists(conn, "raw_sessions") and _table_exists(conn, "sessions"):
+    if table_exists(conn, "raw_sessions") and table_exists(conn, "sessions"):
         source_row = conn.execute(
             "SELECT source_path FROM raw_sessions WHERE source_path IS NOT NULL LIMIT 1"
         ).fetchone()
@@ -2392,7 +2366,7 @@ def _query_plans(conn: sqlite3.Connection, *, db: Path) -> dict[str, Any]:
                 "hazards": [item for item in plan if "SCAN c" in item],
                 "storage_route": "archive_file_set",
             }
-    if _table_exists(conn, "blocks") and _table_exists(conn, "messages_fts_docsize"):
+    if table_exists(conn, "blocks") and table_exists(conn, "messages_fts_docsize"):
         conv_row = conn.execute("SELECT session_id FROM blocks LIMIT 1").fetchone()
         if conv_row is not None:
             plan = _explain(
@@ -2424,7 +2398,7 @@ def _archive_query_plans(root: Path) -> dict[str, Any]:
         conn = open_readonly_connection(index_db)
         try:
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
-            if _table_exists(conn, "sessions") and _attached_table_exists(conn, "source_tier", "raw_sessions"):
+            if table_exists(conn, "sessions") and table_exists(conn, "raw_sessions"):
                 source_row = conn.execute(
                     "SELECT source_path FROM source_tier.raw_sessions WHERE source_path IS NOT NULL LIMIT 1"
                 ).fetchone()

@@ -12,13 +12,13 @@ from contextlib import closing
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.schemas.field_stats.distributions import DistributionSketch
 from polylogue.schemas.generation.workload_profiles import (
     WORKLOAD_PROFILE_VERSION,
     workload_profile_identity,
 )
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
-from polylogue.storage.introspection import table_exists as _table_exists
 
 ARCHIVE_WORKLOAD_PROFILE_FILE = "archive-workload-profile.json.gz"
 _INFERENCE_VERSION = "archive-composition-v1"

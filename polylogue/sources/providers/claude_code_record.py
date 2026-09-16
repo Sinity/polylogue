@@ -130,6 +130,15 @@ class ClaudeCodeRecord(BaseModel):
     @property
     def text_content(self) -> str:
         if not self.message:
+            # The two message-less families keep their text under different
+            # top-level keys. Census over ~/.claude/projects: every one of the
+            # 6,372 ``type:"summary"`` records has the key-set
+            # {leafUuid, summary, type} and carries no ``content`` key at all,
+            # while system/compact_boundary records carry a top-level string
+            # ``content``. Reading ``content`` for a summary returned "".
+            if self.type == "summary":
+                top_summary = getattr(self, "summary", None)
+                return top_summary if isinstance(top_summary, str) else ""
             top_content = getattr(self, "content", None)
             return top_content if isinstance(top_content, str) else ""
 

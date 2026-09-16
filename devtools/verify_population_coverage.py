@@ -31,10 +31,10 @@ from pathlib import Path
 from polylogue.archive.artifact_taxonomy.models import ArtifactKind
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule, OriginSpec
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.introspection import table_exists
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from tests.infra.origin_capability_matrix import CapabilityManifest, load_manifest
 

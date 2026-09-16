@@ -45,6 +45,8 @@ from polylogue.operations.mutation_actuators import (
     BlackboardPostArgs,
     BlockerResolveActuator,
     BlockerResolveArgs,
+    BulkMetadataSetActuator,
+    BulkMetadataSetArgs,
     BulkTagActuator,
     BulkTagArgs,
     CaptureAssertionCandidateActuator,
@@ -867,6 +869,63 @@ class TestBulkTagActuator:
                 "SELECT COUNT(*) FROM assertions WHERE kind = 'tag' AND status != 'deleted'"
             ).fetchone()[0]
         assert count == 2
+
+    def test_unresolved_session_id_is_a_degraded_outcome(self, tmp_path: Path) -> None:
+        """A caller-named id the archive cannot resolve is a named gap.
+
+        Anti-vacuity: restore the silent ``except KeyError: continue`` split
+        (dropping the id instead of returning it as unresolved) and the
+        receipt reports ``ok`` over the smaller set -- this test is then red
+        on the outcome state, the gap reason, and the named id.
+        """
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="bulk-degraded")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = BulkTagActuator()
+            executor = OperationExecutor()
+            args = BulkTagArgs(archive=archive, session_ids=(session_id, "excised-mid-flight"), tags=("a",))
+            plan = executor.prepare(actuator, args)
+            assert plan.target_refs == (f"session:{session_id}",)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        outcome = cast("dict[str, Any]", receipt.domain_receipt["outcome"])
+        assert outcome["state"] == "degraded"
+        assert outcome["reason"] == "unresolved_session_ids"
+        assert outcome["detail"]["unresolved_session_ids"] == ["excised-mid-flight"]
+        assert receipt.domain_receipt["unresolved_session_ids"] == ["excised-mid-flight"]
+        assert receipt.detail == "unresolved_session_ids"
+
+    def test_every_id_unresolved_is_degraded_not_empty(self, tmp_path: Path) -> None:
+        """Zero rows behind a named gap is never reported as an empty scope.
+
+        Anti-vacuity: decide the outcome from ``matched`` alone (dropping the
+        gap) and this returns ``empty``.
+        """
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="bulk-all-gone")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = BulkMetadataSetActuator()
+            executor = OperationExecutor()
+            args = BulkMetadataSetArgs(archive=archive, session_ids=("gone-a", "gone-b"), pairs=(("k", "v"),))
+            plan = executor.prepare(actuator, args)
+            assert plan.target_refs == ()
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+
+        outcome = cast("dict[str, Any]", receipt.domain_receipt["outcome"])
+        assert outcome["state"] == "degraded"
+        assert receipt.domain_receipt["unresolved_session_ids"] == ["gone-a", "gone-b"]
 
 
 class TestMetadataSetActuator:
@@ -2319,3 +2378,85 @@ class TestDerivedMaintenanceActuators:
                 match="only through a sealed accepted machine part owner",
             ):
                 executor.execute(actuator, plan, authorization, args)
+
+
+class TestFilesystemResetActuator:
+    """polylogue-4fbgw: the product's largest destructive surface must write
+    its audit rows before it deletes anything.
+
+    Anti-vacuity: revert ``maintenance_reset`` to unlinking inline (or point
+    the binding at a spec whose ``executor_status`` is ``declared-not-routed``)
+    and ``test_the_reset_writes_preview_and_run_rows_before_deleting`` goes red,
+    because audit.db carries no preview/run row for the deletion that happened.
+    """
+
+    def _actuator_args(self, tmp_path: Path) -> tuple[Path, Any]:
+        from polylogue.operations.mutation_actuators import FilesystemResetArgs
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        initialize_active_archive_root(archive_root)
+        doomed_file = archive_root / "embeddings.db"
+        doomed_file.write_bytes(b"vector bytes")
+        doomed_tree = archive_root / "blob"
+        doomed_tree.mkdir()
+        (doomed_tree / "aa").mkdir()
+        (doomed_tree / "aa" / "blob.bin").write_bytes(b"payload")
+        args = FilesystemResetArgs(
+            archive_root=archive_root,
+            targets=(("embeddings database", doomed_file), ("blob store", doomed_tree)),
+        )
+        return archive_root, args
+
+    def test_prepare_plans_every_target_and_mutates_nothing(self, tmp_path: Path) -> None:
+        from polylogue.operations.mutation_actuators import FilesystemResetActuator
+
+        archive_root, args = self._actuator_args(tmp_path)
+
+        plan = FilesystemResetActuator().prepare(args)
+
+        assert plan.target_refs == (
+            f"path:{archive_root / 'embeddings.db'}",
+            f"path:{archive_root / 'blob'}",
+        )
+        assert (archive_root / "embeddings.db").exists()
+        assert (archive_root / "blob" / "aa" / "blob.bin").exists()
+
+    def test_the_reset_writes_preview_and_run_rows_before_deleting(self, tmp_path: Path) -> None:
+        from polylogue.operations.mutation_actuators import FilesystemResetActuator
+
+        archive_root, args = self._actuator_args(tmp_path)
+        actuator = FilesystemResetActuator()
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal("test", frozenset({"archive.reset"}), "cli", "write")
+        executor = OperationExecutor.for_archive_root(archive_root)
+
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
+        receipt = executor.execute_bound(binding, preview, authorization, args)
+
+        assert receipt.status == "applied"
+        assert receipt.affected_count == 2
+        assert not (archive_root / "embeddings.db").exists()
+        assert not (archive_root / "blob").exists()
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
+            assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
+            kinds = {row[0] for row in conn.execute("SELECT target_kind FROM operation_targets").fetchall()}
+            assert kinds == {"path"}
+            assert conn.execute("SELECT COUNT(*) FROM operation_attempts").fetchone()[0] >= 1
+
+    def test_a_target_absent_at_apply_is_named_not_counted(self, tmp_path: Path) -> None:
+        from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
+
+        archive_root, args = self._actuator_args(tmp_path)
+        args = FilesystemResetArgs(
+            archive_root=archive_root,
+            targets=(*args.targets, ("ops database", archive_root / "never-existed.db")),
+        )
+        actuator = FilesystemResetActuator()
+
+        receipt = actuator.apply(actuator.prepare(args), args)
+
+        assert receipt.affected_count == 2
+        assert receipt.domain_receipt["absent_at_apply"] == ["ops database"]

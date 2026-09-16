@@ -347,6 +347,7 @@ def _watch_sources_from_roots(
     *,
     browser_capture_spool_path: Path | None = None,
     hermes_root: Path | None = None,
+    include_defaults: bool = True,
 ) -> tuple[WatchSource, ...]:
     """Build typed default sources plus configured additional roots.
 
@@ -355,6 +356,10 @@ def _watch_sources_from_roots(
     it keeps the same suffix contract as the default inbox source. Other
     additional roots use content detection over ordinary export formats.
 
+    ``include_defaults=False`` (``--no-default-sources``) drops the typed
+    defaults so ``--root`` names the complete watch set, for an operator
+    isolating a temporary or separately-served archive. The default stays
+    additive, which is the long-standing shape (polylogue-hprg0).
     """
     from polylogue.paths import archive_root, browser_capture_spool_root
 
@@ -365,8 +370,8 @@ def _watch_sources_from_roots(
         else browser_capture_spool_root()
     ).resolve(strict=False)
 
-    sources = list(default_sources(hermes_root=hermes_root))
-    if browser_capture_spool_path is not None:
+    sources = list(default_sources(hermes_root=hermes_root)) if include_defaults else []
+    if include_defaults and browser_capture_spool_path is not None:
         spool = browser_capture_spool_path.expanduser()
         sources = [source for source in sources if source.name != "browser-capture"]
         sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
@@ -1626,31 +1631,46 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
 
     cursor = CursorStore(db)
     now = datetime.now(UTC)
-    due_debt = [
+    candidate_debt = [
         debt
         for debt in cursor.list_convergence_debt(limit=limit)
         if debt.subject_type in {"source_path", "session_id"}
         and debt.stage not in {"derived", "fts", "fts_readiness", "raw_parse_recovery", "embed"}
         and _debt_retry_due(debt, now=now)
     ]
+    if not candidate_debt:
+        return 0
+
+    default_stages = make_default_convergence_stages(db)
+    stages_by_name = {stage.name: stage for stage in default_stages}
+    implemented_stages = set(stages_by_name) | {"convergence"}
+
+    # A debt row naming a stage no registered implementation can run was never
+    # retried, so the drain has measured nothing about it. Re-recording it here
+    # would overwrite the original error -- the text naming which evidence was
+    # lost and why -- with a note about the missing stage. Leave the row
+    # exactly as written and surface the gap as a log line instead
+    # (polylogue-ia88n).
+    unavailable_debt = [debt for debt in candidate_debt if debt.stage not in implemented_stages]
+    for stage_name in sorted({debt.stage for debt in unavailable_debt}):
+        emit(
+            "daemon.convergence_debt.stage_unimplemented",
+            level=WARNING,
+            outcome="degraded",
+            reason="retry_stage_unavailable",
+            stage=stage_name,
+            rows=sum(1 for debt in unavailable_debt if debt.stage == stage_name),
+        )
+
+    due_debt = [debt for debt in candidate_debt if debt.stage in implemented_stages]
     if not due_debt:
         return 0
 
     subject_states: dict[tuple[str, str, str], object] = {}
-    retryable_debt = tuple(debt for debt in due_debt if debt.subject_type in {"source_path", "session_id"})
+    retryable_debt = tuple(due_debt)
     if retryable_debt:
-        default_stages = make_default_convergence_stages(db)
-        stages_by_name = {stage.name: stage for stage in default_stages}
         for stage_name in dict.fromkeys(debt.stage for debt in retryable_debt):
-            selected_stages = (
-                default_stages
-                if stage_name == "convergence"
-                else (stages_by_name[stage_name],)
-                if stage_name in stages_by_name
-                else ()
-            )
-            if not selected_stages:
-                continue
+            selected_stages = default_stages if stage_name == "convergence" else (stages_by_name[stage_name],)
             stage_debt = tuple(debt for debt in retryable_debt if debt.stage == stage_name)
             paths = tuple(
                 dict.fromkeys(Path(debt.subject_id) for debt in stage_debt if debt.subject_type == "source_path")
@@ -1670,17 +1690,20 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
 
     retried = 0
     for debt in due_debt:
-        retried += 1
         state = subject_states.get((debt.stage, debt.subject_type, debt.subject_id))
         if state is None:
-            cursor.record_convergence_debt(
+            # The stage ran but returned no state for this subject: the row's
+            # outcome is unmeasured, so its recorded error stands untouched.
+            emit(
+                "daemon.convergence_debt.retry_unmeasured",
+                level=WARNING,
+                outcome="degraded",
+                reason="retry_state_missing",
                 stage=debt.stage,
                 subject_type=debt.subject_type,
-                subject_id=debt.subject_id,
-                error=f"convergence retry stage unavailable: {debt.stage}",
-                materializer_version=debt.materializer_version,
             )
             continue
+        retried += 1
         if bool(getattr(state, "converged", False)):
             cursor.clear_convergence_debt(
                 stage=debt.stage,
@@ -2885,7 +2908,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         from polylogue.config import get_config
 
                         drive_sources_configured = any(source.is_drive for source in get_config().sources)
-                    raw_materialization_available = not watcher_blocked and (archive_root_path / "source.db").exists()
+                    # polylogue-f7pdm: availability is re-evaluated per
+                    # discovery pass, not latched at startup. On a fresh root
+                    # ``source.db`` does not exist yet, and a one-shot
+                    # existence check left the raw class unregistered for the
+                    # whole daemon lifetime. ``RawMaterializationDiscovery``
+                    # returns an empty page while the tier is absent, so
+                    # registering here costs nothing and the class starts
+                    # admitting as soon as the first acquisition commits.
+                    raw_materialization_available = not watcher_blocked
                     adapter_pairs = build_intake_adapters(
                         DaemonIntakeContext(
                             archive_root=archive_root_path,
@@ -3510,6 +3541,12 @@ def health_command(
         "through it -- default OFF; an explicit opt-out for the auto-minted-token default."
     ),
 )
+@click.option(
+    "--no-default-sources",
+    is_flag=True,
+    default=False,
+    help="Watch only the given --root values; do not add the typed default sources.",
+)
 @click.pass_context
 def run_command(
     ctx: click.Context,
@@ -3530,6 +3567,7 @@ def run_command(
     api_port: int,
     api_auth_token: str | None,
     api_allow_no_auth: bool,
+    no_default_sources: bool,
 ) -> None:
     """Run configured daemon components.
 
@@ -3592,10 +3630,13 @@ def run_command(
 
     atexit.register(_cleanup_pidfile)
 
+    if no_default_sources and not roots:
+        raise click.UsageError("--no-default-sources requires at least one --root")
     sources = _watch_sources_from_roots(
         roots,
         browser_capture_spool_path=spool_path,
         hermes_root=runtime.source_paths.hermes,
+        include_defaults=not no_default_sources,
     )
     components = []
     if enable_watch:
@@ -3650,15 +3691,24 @@ def run_command(
     show_default=True,
     help="Quiet-period (seconds) before parsing a modified file.",
 )
-def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
+@click.option(
+    "--no-default-sources",
+    is_flag=True,
+    default=False,
+    help="Watch only the given --root values; do not add the typed default sources.",
+)
+def watch_command(roots: tuple[Path, ...], debounce_s: float, no_default_sources: bool) -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.durable_change_train import ArchiveOwnershipError
     from polylogue.paths import archive_root
 
+    if no_default_sources and not roots:
+        raise click.UsageError("--no-default-sources requires at least one --root")
     runtime_source_paths = resolve_runtime_config().source_paths
     sources = _watch_sources_from_roots(
         roots,
         hermes_root=runtime_source_paths.hermes,
+        include_defaults=not no_default_sources,
     )
 
     archive_root_path = Path(archive_root())

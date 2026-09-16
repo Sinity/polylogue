@@ -12,6 +12,7 @@ import click
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 from polylogue.cli.read_view_registry import READ_VIEW_GLOBAL_OPTION_NAMES, ReadViewSessionPolicy
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.projection_spec import RenderDestination
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session
@@ -214,7 +215,7 @@ def deliver_content(
 ) -> None:
     """Deliver captured content to the requested destination.
 
-    ``destination`` must be one of the values in ``_READ_DESTINATIONS``
+    ``destination`` must be one of the :class:`RenderDestination` values
     (``query_verbs.py``): ``terminal``/``stdout``, ``clipboard``, ``file``, or
     ``browser``. An unrecognized destination raises rather than silently
     falling back to terminal output -- a prior version of this dispatch let
@@ -222,21 +223,21 @@ def deliver_content(
     degrade to a plain ``click.echo`` (polylogue-bvnz).
     """
 
-    if destination == "file":
+    if destination == RenderDestination.FILE:
         if not out_path:
             raise click.UsageError("--to file requires --out <path>.")
         _warn_on_secret_candidates(env, content, label=out_path)
         Path(out_path).write_text(content, encoding="utf-8")
         env.ui.console.print(f"Wrote to {out_path}")
-    elif destination == "clipboard":
+    elif destination == RenderDestination.CLIPBOARD:
         from polylogue.cli.query_output import copy_to_clipboard
 
         copy_to_clipboard(env, content)
-    elif destination == "browser":
+    elif destination == RenderDestination.BROWSER:
         from polylogue.cli.query_output import open_in_browser
 
         open_in_browser(env, content, output_format, session)
-    elif destination in ("stdout", "terminal"):
+    elif destination in (RenderDestination.STDOUT, RenderDestination.TERMINAL):
         click.echo(content, nl=False)
     else:
         raise click.UsageError(f"Unrecognized read destination: {destination!r}.")

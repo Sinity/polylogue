@@ -12,10 +12,9 @@ from __future__ import annotations
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.models import Message
+from polylogue.archive.models import Message, Session
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
-    CostModelBreakdown,
     estimate_session_cost,
 )
 from tests.infra.builders import make_conv, make_msg
@@ -221,61 +220,99 @@ def test_basis_payload_plus_aggregates_each_axis_independently() -> None:
 
 
 def test_cost_rollup_aggregates_basis_and_per_model_breakdown() -> None:
-    """The ``CostRollupInsight`` rollup aggregates basis + per-model rows across sessions.
+    """The real rollup aggregator sums basis + per-model rows across sessions.
 
-    Cross-session aggregation walks ``SessionCostInsight.estimate.per_model_breakdown``
-    when present and falls back to the session's dominant model otherwise.
-    Mixed-model sessions contribute one row per model; same-model sessions
-    are merged with incremented ``session_count``.
+    Drives ``aggregate_cost_rollup_insights`` (the production function the
+    materializer and the archive read path both use) over
+    ``SessionCostInsight`` rows whose estimates come from real
+    ``estimate_session_cost`` calls on real ``Session`` objects.
+
+    Anti-vacuity: breaking the aggregation -- dropping the ``basis.plus``
+    accumulation, ignoring ``per_model_breakdown`` entries, merging the two
+    same-model sessions without incrementing ``session_count``, or failing to
+    group by ``(origin, normalized_model)`` -- makes this test red. Nothing
+    asserted here is a literal the test handed to the function under test:
+    every expected number is derived from the per-session estimates.
     """
 
-    from polylogue.analysis.archive import CostRollupInsight
+    from polylogue.analysis.archive import ArchiveInsightProvenance, SessionCostInsight
+    from polylogue.analysis.archive_rollups import aggregate_cost_rollup_insights
 
-    # Synthesize a rollup row directly to assert the typed contract.
-    rollup = CostRollupInsight(
-        origin="anthropic",
-        model_name="claude-sonnet-4-5",
-        normalized_model="claude-sonnet-4-5",
-        session_count=3,
-        priced_session_count=3,
-        unavailable_session_count=0,
-        status_counts={"priced": 3},
-        total_usd=10.0,
-        basis=CostBasisPayload(
-            provider_reported_usd=4.0,
-            api_equivalent_usd=10.0,
-            subscription_equivalent_usd=0.0,
-            catalog_priced_usd=10.0,
-        ),
-        unavailable_reason_counts={},
-        per_model_breakdown=(
-            CostModelBreakdown(
-                normalized_model="claude-opus-4-5",
-                total_usd=6.0,
-                session_count=1,
-                basis=CostBasisPayload(api_equivalent_usd=6.0, catalog_priced_usd=6.0),
+    def _insight(session_id: str, session: Session) -> SessionCostInsight:
+        estimate = estimate_session_cost(session)
+        return SessionCostInsight(
+            session_id=session_id,
+            origin="claude-code-session",
+            estimate=estimate,
+            provenance=ArchiveInsightProvenance(
+                materializer_version=1,
+                materialized_at="2026-05-17T00:00:00+00:00",
+                source_updated_at=None,
+                source_sort_key=None,
             ),
-            CostModelBreakdown(
-                normalized_model="claude-sonnet-4-5",
-                total_usd=4.0,
-                session_count=2,
-                basis=CostBasisPayload(api_equivalent_usd=4.0, catalog_priced_usd=4.0),
-            ),
+        )
+
+    sonnet_a = make_conv(
+        id="conv-sonnet-a",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[_msg_with_tokens(id="m1", model="claude-sonnet-4-5", input_tokens=1000, output_tokens=500)]
         ),
-        usage=estimate_session_cost(make_conv(id="c", messages=MessageCollection(messages=[]))).usage,
-        confidence=0.85,
-        provenance=__import__(
-            "polylogue.analysis.archive", fromlist=["ArchiveInsightProvenance"]
-        ).ArchiveInsightProvenance(
-            materializer_version=1,
-            materialized_at="2026-05-17T00:00:00+00:00",
-            source_updated_at=None,
-            source_sort_key=None,
+    )
+    sonnet_b = make_conv(
+        id="conv-sonnet-b",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[_msg_with_tokens(id="m1", model="claude-sonnet-4-5", input_tokens=2000, output_tokens=1000)]
+        ),
+    )
+    mixed = make_conv(
+        id="conv-mixed",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                _msg_with_tokens(id="m1", model="claude-opus-4-5", input_tokens=1000, output_tokens=500),
+                _msg_with_tokens(id="m2", model="claude-haiku-4-5", input_tokens=1000, output_tokens=500),
+            ]
         ),
     )
 
-    assert rollup.basis.api_equivalent_usd == 10.0
-    assert rollup.basis.provider_reported_usd == 4.0
-    assert len(rollup.per_model_breakdown) == 2
-    # Per-model rows are independent — opus's 6.0 + sonnet's 4.0 equals total.
-    assert sum(row.total_usd for row in rollup.per_model_breakdown) == 10.0
+    sonnet_insights = [_insight("s:a", sonnet_a), _insight("s:b", sonnet_b)]
+    mixed_insight = _insight("s:mixed", mixed)
+
+    rollups = aggregate_cost_rollup_insights(
+        [*sonnet_insights, mixed_insight],
+        materialized_at="2026-05-17T00:00:00+00:00",
+    )
+
+    by_model = {rollup.normalized_model: rollup for rollup in rollups}
+    sonnet = by_model["claude-sonnet-4-5"]
+
+    # Same-model sessions merge into one group with an incremented count.
+    assert sonnet.session_count == 2
+    assert sonnet.priced_session_count == 2
+    assert sonnet.status_counts == {"priced": 2}
+    assert sonnet.total_usd == pytest.approx(sum(i.estimate.total_usd or 0.0 for i in sonnet_insights))
+    for axis in (
+        "provider_reported_usd",
+        "api_equivalent_usd",
+        "subscription_equivalent_usd",
+        "catalog_priced_usd",
+        "tool_surcharge_usd",
+    ):
+        expected = sum(getattr(i.estimate.basis, axis) for i in sonnet_insights)
+        assert getattr(sonnet.basis, axis) == pytest.approx(expected), axis
+
+    # The mixed-model session groups under its own key and carries one
+    # per-model row per model its estimate reported.
+    mixed_rollup = by_model[mixed_insight.estimate.normalized_model]
+    assert mixed_rollup is not sonnet
+    assert mixed_rollup.session_count == 1
+    expected_models = {row.normalized_model for row in mixed_insight.estimate.per_model_breakdown}
+    assert {row.normalized_model for row in mixed_rollup.per_model_breakdown} == expected_models
+    assert sum(row.total_usd for row in mixed_rollup.per_model_breakdown) == pytest.approx(
+        mixed_insight.estimate.total_usd
+    )
+
+    # Rollups are ordered by total spend, descending.
+    assert [rollup.total_usd for rollup in rollups] == sorted((rollup.total_usd for rollup in rollups), reverse=True)

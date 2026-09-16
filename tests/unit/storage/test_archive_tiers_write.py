@@ -3697,8 +3697,11 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
         "application/pdf",
         "1234",
     ):
-        attachment_hash.update(part.encode("utf-8", errors="surrogatepass"))
-        attachment_hash.update(b"\0")
+        # Length-prefixed framing (bd polylogue-irtix): a NUL separator let
+        # two different field splits produce one hash.
+        encoded = part.encode("utf-8", errors="surrogatepass")
+        attachment_hash.update(len(encoded).to_bytes(8, "big"))
+        attachment_hash.update(encoded)
     attachment_id = attachment_hash.hexdigest()
     message_id = f"{session_id}:n:m1"
 
@@ -5855,3 +5858,211 @@ def test_fresh_archive_reads_back_attachment_provenance_through_the_envelope(tmp
         assert model_producer is not None
     finally:
         conn.close()
+
+
+# -----------------------------------------------------------------------------
+# HASH FRAMING, HOOK PARENT AMBIGUITY, HERMES PARENT REBIND
+# -----------------------------------------------------------------------------
+
+
+def test_hash_bytes_framing_separates_embedded_nul_field_splits() -> None:
+    """Two field splits that collided under NUL framing now hash differently.
+
+    Imported message and tool content legitimately contains U+0000, so a
+    single-byte separator made the encoding non-injective: ("a\\x00b", "c")
+    and ("a", "b\\x00c") serialize to the identical NUL-joined stream.
+
+    Anti-vacuity: restore ``digest.update(part); digest.update(b"\\0")`` and
+    these two calls return the same digest, which is the dedup collision.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import _hash_bytes
+
+    left = _hash_bytes("a\x00b", "c")
+    right = _hash_bytes("a", "b\x00c")
+    assert left != right
+    # The framing must still be deterministic for one input.
+    assert left == _hash_bytes("a\x00b", "c")
+
+
+def test_hermes_observer_parent_resolves_across_profile_roots(tmp_path: Path) -> None:
+    """An observer's parent key rebinds onto the conversational session by raw id.
+
+    Every ATIF/ATOF observer session composes its parent key from its OWN
+    artifact's profile root. On an install where the runtime spans and the
+    state db were acquired from different profile directories the key names a
+    session that does not exist, and the edge can never resolve (12 such
+    ``method=parser-parent`` branch edges measured in the live archive). The
+    raw Hermes session id is the join key; the profile qualifier is a
+    tie-break.
+
+    Anti-vacuity: remove the ``_resolved_hermes_parent_native_id`` rebind and
+    ``resolved_dst_session_id`` stays NULL, which is the unresolved edge this
+    fixes.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conversational = ParsedSession(
+            source_name=Provider.HERMES,
+            provider_session_id="20260714_190039_4abb53@profile-7ff44102c8e5",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="c1",
+                    role=Role.USER,
+                    text="conversation",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="conversation")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, conversational)
+
+        observer = ParsedSession(
+            source_name=Provider.HERMES,
+            provider_session_id="observer:atof:20260714_190039_4abb53@profile-9cc2ec93471f",
+            # The observer artifact was acquired from a DIFFERENT profile root.
+            parent_session_provider_id="20260714_190039_4abb53@profile-9cc2ec93471f",
+            branch_type=BranchType.FORK,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="o1",
+                    role=Role.SYSTEM,
+                    text="Hermes ATOF observer stream",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hermes ATOF observer stream")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, observer)
+
+        row = conn.execute(
+            "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id LIKE '%observer:atof%'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "hermes-session:20260714_190039_4abb53@profile-7ff44102c8e5"
+    finally:
+        conn.close()
+
+
+def test_hermes_observer_refuses_the_literal_events_artifact_name_as_a_parent(tmp_path: Path) -> None:
+    """``events`` is a file stem, never a session id, so no edge is asserted.
+
+    The shared ATOF ``events.jsonl`` stream's own stem reached
+    ``session_links`` as a parent raw id, asserting an edge to a session that
+    cannot exist.
+
+    Anti-vacuity: drop ``_HERMES_NON_SESSION_PARENT_RAW_IDS`` and a
+    permanently unresolvable row is written for this child again.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        observer = ParsedSession(
+            source_name=Provider.HERMES,
+            provider_session_id="observer:atof:events@profile-9cc2ec93471f",
+            parent_session_provider_id="events@profile-9cc2ec93471f",
+            branch_type=BranchType.FORK,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="o1",
+                    role=Role.SYSTEM,
+                    text="Hermes ATOF observer stream",
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hermes ATOF observer stream")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, observer)
+
+        rows = conn.execute("SELECT 1 FROM session_links WHERE src_session_id LIKE '%observer:atof:events%'").fetchall()
+        assert rows == []
+    finally:
+        conn.close()
+
+
+def test_message_usage_request_id_and_thinking_budget_survive_the_write(tmp_path: Path) -> None:
+    """``requestId`` and ``thinkingMetadata.maxThinkingTokens`` must both be readable back (polylogue-07rfc).
+
+    ``message_usage`` is in ``_SESSION_EVENTS_REDUNDANT_TYPES`` on the premise
+    that ``session_provider_usage_events`` carries its whole payload, so the
+    provider ``request_id`` needs a typed column there; the thinking budget
+    rides its own non-redundant ``claude_thinking_budget`` event and is
+    asserted from ``session_events`` rather than duplicated into the usage row
+    (write each fact once).
+
+    Anti-vacuity: drop the ``request_id`` column (or revert
+    ``_provider_usage_event_row_has_evidence`` to the numeric-only check, which
+    also deletes the row when usage is all zeros) and the first assert goes
+    red; add ``message_usage``'s sibling event to the redundant set and the
+    second does.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-usage-identity",
+                "requestId": "req_synthetic_0001",
+                "thinkingMetadata": {"maxThinkingTokens": 31999},
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "synthetic"}],
+                    "model": "claude-sonnet-4-20250514",
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                },
+            },
+        ],
+        "sess-usage-identity",
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    request_ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT request_id FROM session_provider_usage_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+    ]
+    assert request_ids == ["req_synthetic_0001"]
+
+    budgets = [
+        json.loads(row[0])["max_thinking_tokens"]
+        for row in conn.execute(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'claude_thinking_budget'",
+            (session_id,),
+        ).fetchall()
+    ]
+    assert budgets == [31999]
+
+
+def test_thread_source_high_water_mark_compares_instants_not_storage_types(test_conn: sqlite3.Connection) -> None:
+    """Anti-vacuity: without the unixepoch normalisation the threads view mixes
+    ISO TEXT and raw epoch-ms INTEGER in one MAX(). SQLite orders INTEGER before
+    TEXT, so the older ISO-text parent row wins over the later epoch-ms child and
+    source_updated_at reads back as the 2020 profile timestamp."""
+    parent_ms = 1_577_836_800_000  # 2020-01-01T00:00:00Z
+    child_ms = 1_767_225_600_000  # 2026-01-01T00:00:00Z
+    test_conn.execute(
+        "INSERT INTO sessions(native_id, origin, title, content_hash, created_at_ms, updated_at_ms) "
+        "VALUES ('hwm-root', 'unknown-export', 'root', ?, ?, ?)",
+        (b"r" * 32, parent_ms, parent_ms),
+    )
+    test_conn.execute(
+        "INSERT INTO sessions(native_id, origin, title, content_hash, created_at_ms, updated_at_ms, "
+        "parent_session_id, root_session_id) "
+        "VALUES ('hwm-child', 'unknown-export', 'child', ?, ?, ?, 'unknown-export:hwm-root', "
+        "'unknown-export:hwm-root')",
+        (b"c" * 32, child_ms, child_ms),
+    )
+    # Only the parent carries a profile, so its ISO TEXT source_updated_at meets
+    # the child's raw epoch-ms updated_at_ms inside the same MAX().
+    test_conn.execute(
+        "INSERT INTO session_profiles(session_id, source_name, source_updated_at) "
+        "VALUES ('unknown-export:hwm-root', 'unknown-export', '2020-01-01T00:00:00+00:00')"
+    )
+    test_conn.commit()
+
+    row = test_conn.execute(
+        "SELECT source_updated_at, input_high_water_mark FROM threads WHERE thread_id = ?",
+        ("unknown-export:hwm-root",),
+    ).fetchone()
+
+    assert row["source_updated_at"] == "2026-01-01T00:00:00Z"
+    assert row["input_high_water_mark"] == "2026-01-01T00:00:00Z"

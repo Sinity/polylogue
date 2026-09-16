@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, get_args
 
 from polylogue.core.provider_identity import canonical_runtime_provider
 
@@ -862,6 +862,61 @@ class RawAuthorityVerdict(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
+TerminalState = Literal[
+    "tool_left",
+    "error_left",
+    "question_left",
+    "refused",
+    "truncated",
+    "unknown",
+]
+"""How a session's process ended, as decided structurally by
+``archive/session/runtime.py::_terminal_state``.
+
+The closed sibling of ``TERMINAL_STATE_METHODS`` (which names *which* rule
+decided). Every consumer table keyed on this vocabulary is typed
+``dict[TerminalState, ...]`` and asserted total at import, so a new member
+cannot silently fall through to a default weight or posture
+(polylogue-hjvow). ``clean_finish`` and ``agent_hanging`` are NOT members:
+the prose-keyword scan that produced them was deleted, so no producer emits
+them.
+"""
+
+TERMINAL_STATE_VALUES: frozenset[TerminalState] = frozenset(get_args(TerminalState))
+
+
+PrincipalSurface = Literal["cli", "api", "mcp", "daemon", "maintenance", "internal"]
+"""Which surface a principal issued a *mutation* through.
+
+Written to ``audit.db operation_previews.principal_surface``. Distinct from
+:data:`TelemetrySurface` and deliberately NOT joinable with it: this names the
+authority that asked, so every daemon route is one undifferentiated ``daemon``
+principal, while telemetry needs the transport apart (polylogue-ir1wn).
+"""
+
+PRINCIPAL_SURFACE_VALUES: frozenset[PrincipalSurface] = frozenset(get_args(PrincipalSurface))
+
+TelemetrySurface = Literal["cli", "mcp", "daemon-http", "daemon-internal", "web"]
+"""Which transport served a read, for latency and call telemetry.
+
+Written to ``ops.db`` samples. The retired fourth declaration of this concept
+spelled the daemon HTTP route ``daemon-web``, a token no writer ever produced.
+"""
+
+TELEMETRY_SURFACE_VALUES: frozenset[TelemetrySurface] = frozenset(get_args(TelemetrySurface))
+
+
+SourceFidelityStatus = Literal["exact", "absent", "redacted", "degraded", "inferred"]
+"""How faithfully one source capability survived acquisition.
+
+Declared once (polylogue-jglh): ``sources/parsers/hermes_state`` and
+``surfaces/payloads`` each carried a byte-identical five-member Literal for
+this, under two names, with nothing keeping them in step.
+"""
+
+SOURCE_FIDELITY_STATUS_VALUES: frozenset[SourceFidelityStatus] = frozenset(get_args(SourceFidelityStatus))
+
+
 __all__ = [
     "ActionResultState",
     "AssertionKind",
@@ -882,12 +937,20 @@ __all__ = [
     "PasteBoundary",
     "PlanStage",
     "PolylogueStrEnum",
+    "PRINCIPAL_SURFACE_VALUES",
+    "PrincipalSurface",
+    "TELEMETRY_SURFACE_VALUES",
+    "TelemetrySurface",
     "Provider",
     "RawAuthorityVerdict",
     "Role",
     "SemanticBlockType",
+    "SOURCE_FIDELITY_STATUS_VALUES",
     "SessionRefKind",
+    "SourceFidelityStatus",
     "StopReason",
+    "TERMINAL_STATE_VALUES",
+    "TerminalState",
     "TitleSource",
     "ToolResultUnknownReason",
     "ToolOutcome",

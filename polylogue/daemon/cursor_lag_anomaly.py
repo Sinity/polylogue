@@ -164,9 +164,7 @@ def load_anomaly_thresholds_from_config(
     ``[health.cursor_lag.families.<name>]`` sub-table.
     """
     cfg = cfg if cfg is not None else load_polylogue_config()
-    raw = cfg.raw.get("health_cursor_lag")
-    if not isinstance(raw, dict):
-        return CursorLagAnomalyThresholds()
+    raw = cfg.health_cursor_lag
     enabled = _coerce_bool(raw.get("anomaly_enabled"), DEFAULT_ANOMALY_ENABLED)
     window_days = _coerce_int(raw.get("anomaly_baseline_window_days"), DEFAULT_BASELINE_WINDOW_DAYS)
     min_samples = _coerce_int(raw.get("anomaly_baseline_min_samples"), DEFAULT_BASELINE_MIN_SAMPLES)

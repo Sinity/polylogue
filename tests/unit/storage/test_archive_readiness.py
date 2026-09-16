@@ -11,6 +11,7 @@ from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.core.errors import SchemaSkew
 from polylogue.storage.archive_readiness import (
     CLAUDE_WORKFLOW_STAGE_NAME,
+    RAW_ALIAS_BLOB_MISSING_CATEGORY,
     archive_readiness_status,
     claude_workflow_materialization_status,
     probe_archive_tier,
@@ -34,6 +35,13 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], snapshot["category_counts"])
+
+
+def _write_blob(root: Path, hex_hash: str, payload: bytes = b"{}") -> None:
+    """Materialize the content-addressed blob a raw row points at."""
+    blob = root / "blob" / hex_hash[:2] / hex_hash[2:]
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(payload)
 
 
 def _stamp_index_as_current_schema(index_db: Path) -> None:
@@ -753,6 +761,7 @@ def test_raw_materialization_snapshot_classifies_native_aliases(tmp_path: Path) 
             """,
             ("older-raw", "chatgpt-export", "conv-1", "older.json", bytes.fromhex("12" * 32), "passed", None, 122),
         )
+    _write_blob(tmp_path, "11" * 32)
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
         conn.execute(
@@ -772,6 +781,61 @@ def test_raw_materialization_snapshot_classifies_native_aliases(tmp_path: Path) 
     counts = _category_counts(snapshot)
     assert counts["materialized-alias"] == 1
     assert counts["raw_id_join_gap"] == 0
+
+
+def test_raw_materialization_snapshot_reports_an_alias_whose_own_blob_is_gone(tmp_path: Path) -> None:
+    """An alias reconciles identity, not bytes: a missing blob stays owed work.
+
+    Anti-vacuity: drop the blob-existence check ahead of the alias test and the
+    row is classified ``materialized-alias``, so ``affected_actionable`` falls
+    back to 0 and a genuinely lost newer snapshot reads as a clean archive.
+    """
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                blob_hash BLOB,
+                validation_status TEXT,
+                parse_error TEXT,
+                parsed_at_ms INTEGER
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, validation_status, parse_error, parsed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                # The newer snapshot: same provider session, its own blob gone.
+                ("raw-newer", "chatgpt-export", "conv-1", "newer.json", bytes.fromhex("11" * 32), "passed", None, 123),
+                ("older-raw", "chatgpt-export", "conv-1", "older.json", bytes.fromhex("12" * 32), "passed", None, 122),
+            ],
+        )
+    _write_blob(tmp_path, "12" * 32)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
+        conn.execute(
+            "INSERT INTO sessions(session_id, origin, native_id, raw_id) VALUES (?, ?, ?, ?)",
+            ("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-raw"),
+        )
+
+    _stamp_index_as_current_schema(index_db)
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+
+    counts = _category_counts(snapshot)
+    assert counts[RAW_ALIAS_BLOB_MISSING_CATEGORY] == 1
+    assert counts.get("materialized-alias", 0) == 0
+    assert snapshot["classified"] == 0
+    assert snapshot["affected_actionable"] == 1
+    assert snapshot["unchecked"] == 0
 
 
 def test_raw_materialization_snapshot_classifies_stale_decode_aliases(tmp_path: Path) -> None:
@@ -821,6 +885,8 @@ def test_raw_materialization_snapshot_classifies_stale_decode_aliases(tmp_path: 
                 ),
             ],
         )
+    # The decode error is stale precisely because the blob is present again.
+    _write_blob(tmp_path, "11" * 32)
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
         conn.execute(
@@ -1003,6 +1069,7 @@ def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: P
                 122,
             ),
         )
+    _write_blob(tmp_path, "12" * 32)
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
         conn.execute(

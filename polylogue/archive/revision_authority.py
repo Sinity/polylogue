@@ -314,24 +314,64 @@ def _classify_deduped_nodes(
     ordered = sorted(node_ids, key=lambda raw_id: (sizes[raw_id], raw_id))
     parents: dict[str, list[str]] = {}
     children: dict[str, list[str]] = {raw_id: [] for raw_id in ordered}
+    # Prefix is transitive: if parent1 and parent2 are both prefixes of child
+    # and sizes[parent1] < sizes[parent2], then parent1 is necessarily a
+    # prefix of parent2 (parent1's bytes equal child's first N bytes, which
+    # equal parent2's first N bytes since parent2 is itself a prefix of child
+    # of length >= N). So a node's prefix ancestors form a totally ordered
+    # chain and its maximal parent is the deepest prefix ancestor -- the
+    # all-pairs scan that used to find it is never needed.
+    #
+    # Nodes are placed in ascending size order into a growing prefix forest,
+    # so every possible parent of the node being placed is already in it.
+    # Leaves of that forest are pairwise incomparable (if leaf X were a prefix
+    # of leaf Y then Y's maximal parent would be at or below X, giving X a
+    # child), so at most one leaf can match and a hit there is immediately the
+    # deepest ancestor. That is the whole cost for an incrementally-growing
+    # cohort: one comparison per node. Only when no leaf matches does the
+    # search walk down from the roots, paying the depth of the branch it
+    # descends -- and at most one child per level can match, for the same
+    # incomparability reason.
+    roots: list[str] = []
+    leaves: list[str] = []
     for child in ordered:
-        candidates = [
-            parent
-            for parent in ordered
-            if parent != child and sizes[parent] < sizes[child] and is_prefix(parent, child)
-        ]
-        # Prefix is transitive: if parent1 and parent2 are both prefixes of
-        # child and sizes[parent1] < sizes[parent2], then parent1 is
-        # necessarily a prefix of parent2 (parent1's bytes equal child's
-        # first N bytes, which equal parent2's first N bytes since parent2
-        # is itself a prefix of child of length >= N). Candidates therefore
-        # form a totally ordered chain and the unique maximal element is
-        # simply the largest one -- no further is_prefix comparisons (and
-        # their streamed blob re-reads) are needed here.
-        maximal = [max(candidates, key=lambda raw_id: (sizes[raw_id], raw_id))] if candidates else []
-        parents[child] = maximal
-        for parent in maximal:
-            children[parent].append(child)
+        child_size = sizes[child]
+        verdicts: dict[str, bool] = {}
+
+        def matches(
+            candidate: str, *, child: str = child, child_size: int = child_size, verdicts: dict[str, bool] = verdicts
+        ) -> bool:
+            if sizes[candidate] >= child_size:
+                return False
+            cached = verdicts.get(candidate)
+            if cached is None:
+                cached = is_prefix(candidate, child)
+                verdicts[candidate] = cached
+            return cached
+
+        deepest: str | None = None
+        # Largest leaf first: the tail of a growing chain is the likely parent.
+        for leaf in sorted(leaves, key=lambda raw_id: (-sizes[raw_id], raw_id)):
+            if matches(leaf):
+                deepest = leaf
+                break
+        if deepest is None:
+            frontier = roots
+            while True:
+                step = next((node for node in frontier if matches(node)), None)
+                if step is None:
+                    break
+                deepest = step
+                frontier = children[step]
+
+        parents[child] = [] if deepest is None else [deepest]
+        if deepest is None:
+            roots.append(child)
+        else:
+            if not children[deepest]:
+                leaves.remove(deepest)
+            children[deepest].append(child)
+        leaves.append(child)
 
     roots = [raw_id for raw_id in ordered if not parents[raw_id]]
     if len(roots) != 1:

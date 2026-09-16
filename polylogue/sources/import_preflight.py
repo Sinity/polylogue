@@ -30,6 +30,7 @@ from polylogue.sources.dispatch import detect_provider
 from polylogue.sources.parsers import antigravity
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
+_MAX_SQLITE_PROBE_SESSIONS = 8
 _MAX_DIRECTORY_CANDIDATES = 256
 _MAX_STREAM_RECORDS = 32
 
@@ -212,7 +213,22 @@ def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> 
     """Classify a SQLite import by its provider schema, never by its suffix."""
     try:
         if antigravity.looks_like_trajectory_db_path(path):
-            sessions = list(antigravity.parse_trajectory_db(path, fallback_id=path.stem))
+            # Preflight answers an admissibility question, so it pays for a
+            # bounded probe rather than for the whole file. ``parse_trajectory_db``
+            # is a generator that runs one steps query per ``trajectory_meta``
+            # row, so ``list()`` made the cost of asking scale with a crafted
+            # file. The unexamined remainder is a counted caveat -- never a
+            # silently partial "supported".
+            probe = list(
+                islice(antigravity.parse_trajectory_db(path, fallback_id=path.stem), _MAX_SQLITE_PROBE_SESSIONS + 1)
+            )
+            unexamined = len(probe) > _MAX_SQLITE_PROBE_SESSIONS
+            sessions = probe[:_MAX_SQLITE_PROBE_SESSIONS]
+            if unexamined:
+                acc._caveat(
+                    f"{label}: classified from the first {_MAX_SQLITE_PROBE_SESSIONS} trajectories; "
+                    "the remainder was not inspected"
+                )
             if sessions and any(session.messages for session in sessions):
                 acc.supported(label, Provider.ANTIGRAVITY)
                 if any(session.ingest_flags for session in sessions):

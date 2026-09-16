@@ -169,18 +169,42 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument, JSONValue, json_document, json_document_list
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .hermes_identity import split_qualified_session_id as _split_qualified_session_id
-from .hermes_state import HermesFidelityCapability, HermesFidelityStatus, HermesImportFidelity
+from .hermes_state import HermesFidelityCapability, HermesImportFidelity
 
 # Real, externally-published ATIF schema-version prefix (NVIDIA NeMo Relay's
 # Hermes plugin emits e.g. "ATIF-v1.7") -- see module docstring for sources.
 ATIF_SCHEMA_VERSION_PREFIX = "ATIF"
+
+#: The one ATIF schema version whose mapping is verified against a real,
+#: live-generated fixture (``tests/fixtures/hermes/atif/``). Detection admits
+#: any ``ATIF``-prefixed version so an evolved producer is retained rather than
+#: refused, but only this version's observations may be declared ``exact``
+#: (polylogue-l0cnu).
+VERIFIED_ATIF_SCHEMA_VERSION = "ATIF-v1.7"
+
+#: Ingest-flag prefix carrying the schema version the document actually
+#: declared, so ``import_fidelity_declaration`` can report against it.
+ATIF_SCHEMA_VERSION_FLAG_PREFIX = "hermes:atif-schema-version:"
+
+
+def atif_schema_version_flag(schema_version: str) -> str:
+    return f"{ATIF_SCHEMA_VERSION_FLAG_PREFIX}{schema_version}"
+
+
+def observed_atif_schema_version(session: ParsedSession) -> str | None:
+    """Return the ATIF schema version this session's document declared."""
+    for flag in session.ingest_flags:
+        if flag.startswith(ATIF_SCHEMA_VERSION_FLAG_PREFIX):
+            return flag.removeprefix(ATIF_SCHEMA_VERSION_FLAG_PREFIX)
+    return None
+
 
 HermesSpanEventType: TypeAlias = Literal[
     "hermes_llm_request_span",
@@ -879,6 +903,7 @@ def parse_atif_document(
                     subagent_session_id,
                     parent_provider_session_id=provider_session_id,
                     profile_key=profile_key_value,
+                    schema_version=_optional_str(payload.get("schema_version")),
                 )
             )
 
@@ -918,9 +943,14 @@ def parse_atif_document(
             *events,
         ],
         parent_session_provider_id=parent_session_provider_id,
-        ingest_flags=["hermes:atif-trajectory"],
+        ingest_flags=_atif_ingest_flags(payload, "hermes:atif-trajectory"),
     )
     return [parent_session, *child_sessions]
+
+
+def _atif_ingest_flags(payload: JSONDocument, *flags: str) -> list[str]:
+    schema_version = _optional_str(payload.get("schema_version"))
+    return [*flags, *([atif_schema_version_flag(schema_version)] if schema_version else [])]
 
 
 def _atif_subagent_child_session(
@@ -929,6 +959,7 @@ def _atif_subagent_child_session(
     *,
     parent_provider_session_id: str,
     profile_key: str | None,
+    schema_version: str | None = None,
 ) -> ParsedSession:
     """Materialize one ``subagent_trajectories`` entry as its own ATIF child session.
 
@@ -989,7 +1020,11 @@ def _atif_subagent_child_session(
         ],
         parent_session_provider_id=parent_provider_session_id,
         branch_type=BranchType.SUBAGENT,
-        ingest_flags=["hermes:atif-trajectory", "hermes:atif-subagent-child"],
+        ingest_flags=[
+            "hermes:atif-trajectory",
+            "hermes:atif-subagent-child",
+            *([atif_schema_version_flag(schema_version)] if schema_version else []),
+        ],
     )
 
 
@@ -1304,15 +1339,23 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
         1 for event in session.session_events if event.event_type == "hermes_tool_availability_span"
     )
 
+    # polylogue-l0cnu: detection admits any ``ATIF``-prefixed schema_version so
+    # an evolved producer is retained rather than refused, but only the version
+    # whose mapping a real fixture verified may be reported as measured-exact.
+    # Anything else degrades to ``inferred`` with a named caveat.
+    observed_schema_version = observed_atif_schema_version(session)
+    schema_version_verified = (
+        observed_schema_version is not None and observed_schema_version.upper() == VERIFIED_ATIF_SCHEMA_VERSION.upper()
+    )
+
     def capability(
         observed: int,
         detail: str,
         *,
         verified_by_real_fixture: bool = False,
     ) -> HermesFidelityCapability:
-        status: HermesFidelityStatus = (
-            "exact" if observed and verified_by_real_fixture else "inferred" if observed else "absent"
-        )
+        verified = verified_by_real_fixture and schema_version_verified
+        status: SourceFidelityStatus = "exact" if observed and verified else "inferred" if observed else "absent"
         return HermesFidelityCapability(
             status=status, observed=observed, expected=max(total, 1), counts={}, detail=detail
         )
@@ -1395,8 +1438,20 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
             "retained as generic evidence, never dropped.",
         )
     caveats = tuple(f"{name}: {cap.detail}" for name, cap in capabilities.items() if cap.status != "exact")
+    if not schema_version_verified:
+        caveats = (
+            "schema_version: this document declares "
+            f"{observed_schema_version or 'no ATIF schema version'}, not the fixture-verified "
+            f"{VERIFIED_ATIF_SCHEMA_VERSION}; every mapping is reported inferred, never exact.",
+            *caveats,
+        )
+    producer_suffix = (
+        f"live-generated {VERIFIED_ATIF_SCHEMA_VERSION} fixture verified"
+        if schema_version_verified
+        else f"observed schema_version {observed_schema_version or 'unknown'}, unverified"
+    )
     return HermesImportFidelity(
-        producer="Hermes NeMo Relay ATIF trajectory export (live-generated ATIF-v1.7 fixture verified)",
+        producer=f"Hermes NeMo Relay ATIF trajectory export ({producer_suffix})",
         schema_version=1,
         profile_namespace=None,
         acquisition_method="json_fallback",

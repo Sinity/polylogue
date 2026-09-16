@@ -811,20 +811,90 @@ def _archive_schema_id() -> str:
     return f"archive-schema:sha256:{digest.hexdigest()}"
 
 
+_BUILD_ID: str | None = None
+
+# ``git:<sha>`` is a clean build, shareable across worktrees.  ``git:<sha>
+# +dirty:<digest>`` names one checkout's uncommitted tracked state, and the
+# digest makes two dirty trees at the same commit distinguishable.
+_BUILD_ID_PATTERN = re.compile(r"git:[0-9a-f]{40}(\+dirty:[0-9a-f]{16})?")
+
+
+def _worktree_dirty_digest() -> str | None:
+    """Digest of this checkout's uncommitted tracked changes, or ``None`` if clean.
+
+    ``git:<commit>`` alone cannot distinguish an artifact built from a clean
+    tree from one built with uncommitted product edits, and the seeded-artifact
+    cache is shared across worktrees (polylogue-c4a1o).  Untracked files are
+    excluded deliberately: every worktree carries scratch output, and treating
+    that as a product change would make every build dirty.  A new untracked
+    module that an import actually reaches is the known residual.
+    """
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        toplevel = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=5, check=True
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        # Dirtiness is unknowable here; the caller degrades to "unavailable".
+        return ""
+    entries = status.stdout.strip()
+    if not entries:
+        return None
+    payload = f"{toplevel.stdout.strip()}\0{entries}".encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
 def _build_id() -> str:
-    """Provenance only: which checkout published an artifact, never part of the key."""
+    """Provenance only: which checkout published an artifact, never part of the key.
+
+    Computed once per process: a test run does not edit its own checkout, and
+    both the publish and the validate path ask for this.
+    """
+    global _BUILD_ID
+    if _BUILD_ID is not None:
+        return _BUILD_ID
     try:
         result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=5, check=True)
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return "git:unavailable"
+        _BUILD_ID = "git:unavailable"
+        return _BUILD_ID
     commit = result.stdout.strip()
-    return f"git:{commit}" if re.fullmatch(r"[0-9a-f]{40}", commit) else "git:unavailable"
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        _BUILD_ID = "git:unavailable"
+        return _BUILD_ID
+    dirty = _worktree_dirty_digest()
+    if dirty == "":
+        _BUILD_ID = "git:unavailable"
+    elif dirty is None:
+        _BUILD_ID = f"git:{commit}"
+    else:
+        _BUILD_ID = f"git:{commit}+dirty:{dirty}"
+    return _BUILD_ID
 
 
 def _valid_build_id(value: object) -> bool:
-    return value == "git:unavailable" or (
-        isinstance(value, str) and re.fullmatch(r"git:[0-9a-f]{40}", value) is not None
-    )
+    return value == "git:unavailable" or (isinstance(value, str) and _BUILD_ID_PATTERN.fullmatch(value) is not None)
+
+
+def _build_id_is_shareable(value: object) -> bool:
+    """A dirty build belongs to the checkout that made it, and to no other.
+
+    ``git:unavailable`` is equally unshareable: a build whose provenance could
+    not be read cannot be proven clean.
+    """
+    if not isinstance(value, str) or not _valid_build_id(value):
+        return False
+    if "+dirty:" not in value and value != "git:unavailable":
+        return True
+    # The producing checkout still reuses its own artifact, so a dirty tree
+    # does not rebuild on every call; every other consumer refuses it.
+    return value == _build_id()
 
 
 _PROVIDER_ORIGIN_WIRES = {
@@ -1920,6 +1990,11 @@ def _manifest_binds_to_key(manifest: CorpusArtifactManifest, root: Path, key: Se
     if manifest.build_id != manifest.receipt.get("build_id"):
         return False
     if not _valid_build_id(manifest.receipt.get("build_id")):
+        return False
+    # An artifact built from a dirty worktree (or one whose provenance could
+    # not be read) is consumable only by the checkout that produced it
+    # (polylogue-c4a1o); anyone else rebuilds rather than trusting it.
+    if not _build_id_is_shareable(manifest.build_id):
         return False
     expected_receipt = _canonical_receipt(
         key=key,

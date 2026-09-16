@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.core.timestamps import to_epoch_ms
 from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
-from polylogue.storage.sqlite.archive_tiers.write import _timestamp_ms
 
 
 def compile_raw_state_update(
@@ -18,7 +18,7 @@ def compile_raw_state_update(
     """Compile one typed mutation for either SQLite connection adapter."""
     set_clauses: list[str] = []
     params: list[object] = []
-    parsed_at_ms = _timestamp_ms(state.parsed_at) if isinstance(state.parsed_at, str) else None
+    parsed_at_ms = to_epoch_ms(state.parsed_at, numeric_unit="seconds") if isinstance(state.parsed_at, str) else None
     validation_transition = state.validation_status is not UNSET or state.validation_error is not UNSET
     if state.parsed_at is not UNSET:
         if parsed_at_ms is None:

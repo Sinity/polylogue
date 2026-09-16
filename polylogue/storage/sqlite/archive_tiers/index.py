@@ -531,8 +531,29 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_origin_sort
 ON sessions(origin, sort_key_ms DESC);
 
+-- polylogue-mon2f: ordered/range access on ``sort_key_ms`` alone, for the
+-- since/until date bounds that filter on the column without the recent-listing
+-- ordering expression.  The expression index below cannot serve those, because
+-- its leading column is the nullness expression rather than the timestamp.
 CREATE INDEX IF NOT EXISTS idx_sessions_sort_key
 ON sessions(sort_key_ms DESC);
+
+-- polylogue-lxdwy: the production recent-session readers do NOT order by
+-- ``sort_key_ms`` alone.  ``list_sessions``/``list_session_summaries``
+-- (queries/sessions_reads.py) and ``_summary_order_by``
+-- (archive_tiers/archive.py) all order by
+-- ``(sort_key_ms IS NULL) ASC, sort_key_ms DESC, session_id DESC``.  SQLite
+-- cannot satisfy that leading expression or its tie-breaker from
+-- ``idx_sessions_sort_key``, so the unfiltered global listing still planned as
+-- ``SCAN sessions | USE TEMP B-TREE FOR ORDER BY`` after that index landed.
+-- This index is declared over the actual ordering expressions, verified by
+-- ``test_global_recent_sessions_uses_production_ordering_index`` running
+-- EXPLAIN QUERY PLAN on the reader's own ORDER BY.  The ``--reverse`` (ASC)
+-- variant is deliberately not indexed: the leading nullness term stays ASC in
+-- both directions, so no single index serves both, and the descending recent
+-- listing is the hot path this addresses.
+CREATE INDEX IF NOT EXISTS idx_sessions_recent_order
+ON sessions((sort_key_ms IS NULL), sort_key_ms DESC, session_id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_parent
 ON sessions(parent_session_id)
@@ -973,8 +994,12 @@ WITH RECURSIVE members AS (
            SUM(COALESCE(u.provider_cost_usd, u.catalog_cost_usd, m.reported_cost_usd, 0.0)) AS total_cost_usd,
            MAX(CASE WHEN m.session_id = m.thread_id
                     THEN COALESCE(m.created_at_ms, m.updated_at_ms, 0) ELSE 0 END) AS created_at_ms,
-           MAX(COALESCE(m.source_updated_at, m.last_message_at, m.updated_at_ms,
-                        datetime(m.created_at_ms / 1000, 'unixepoch'))) AS source_updated_at,
+           -- Compared as a parsed instant, never as a raw mix of ISO text and
+           -- epoch-ms: SQLite orders INTEGER before TEXT and orders ISO text
+           -- lexicographically, so an unnormalised MAX() picks a row by its
+           -- storage type rather than by its time.
+           MAX(COALESCE(unixepoch(m.source_updated_at), unixepoch(m.last_message_at),
+                        m.updated_at_ms / 1000, m.created_at_ms / 1000)) AS source_updated_at_epoch,
            json_group_array(m.session_id) AS session_ids_json,
            MAX(COALESCE(m.materializer_version, 0)) AS materializer_version,
            MIN(COALESCE(m.materializer_version, 0)) AS min_materializer_version,
@@ -1018,9 +1043,9 @@ SELECT g.thread_id,
        CASE WHEN g.min_materializer_version = g.materializer_version THEN g.materializer_version ELSE NULL END
            AS materializer_version,
        NULLIF(g.materialized_at, '') AS materialized_at,
-       g.source_updated_at,
-       g.source_updated_at AS input_high_water_mark,
-       CASE WHEN g.source_updated_at IS NULL THEN NULL ELSE 'session/profile timestamps' END
+       strftime('%Y-%m-%dT%H:%M:%SZ', g.source_updated_at_epoch, 'unixepoch') AS source_updated_at,
+       strftime('%Y-%m-%dT%H:%M:%SZ', g.source_updated_at_epoch, 'unixepoch') AS input_high_water_mark,
+       CASE WHEN g.source_updated_at_epoch IS NULL THEN NULL ELSE 'session/profile timestamps' END
            AS input_high_water_mark_source,
        g.session_count AS input_row_count,
        g.start_time,

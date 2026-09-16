@@ -16,6 +16,7 @@ import click
 from polylogue.cli.read_views.base import ReadViewInvocation, deliver_content
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.surfaces.projection_spec import RenderDestination
 
 __all__ = ["run_read_web_content_constructs"]
 
@@ -28,7 +29,7 @@ def run_read_web_content_constructs(env: AppEnv, request: RootModeRequest, invoc
     assert invocation.session_id is not None
     output_format = invocation.output_format or "json"
 
-    if invocation.destination in ("file", "clipboard", "stdout"):
+    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.STDOUT):
         buf = io.StringIO()
 
         def _captured_echo(message: object = None, **_kwargs: object) -> None:

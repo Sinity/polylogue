@@ -11,12 +11,13 @@ import json
 import shlex
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import (
     archive_embeddable_message_where,
@@ -25,8 +26,6 @@ from polylogue.storage.embeddings.materialization import (
     archive_embedding_messages_table_ref,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.embeddings.progress import EmbeddingCatchupRunPayload
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
     VOYAGE_4_COST_PER_1M_TOKENS,
@@ -115,6 +114,29 @@ class EmbeddingFailureDetailPayload(TypedDict):
     resolution_action: str | None
     supported_actions: list[str]
     resolution_command: str
+
+
+class EmbeddingCatchupRunPayload(TypedDict):
+    run_id: str
+    started_at: str
+    updated_at: str
+    completed_at: str | None
+    status: str
+    stop_reason: str | None
+    rebuild: bool
+    max_sessions: int | None
+    max_messages: int | None
+    stop_after_seconds: int | None
+    max_errors: int | None
+    planned_sessions: int
+    planned_messages: int
+    processed_sessions: int
+    embedded_sessions: int
+    skipped_sessions: int
+    error_count: int
+    embedded_messages: int
+    estimated_cost_usd: float
+    last_session_id: str | None
 
 
 class EmbeddingStatusPayload(TypedDict):
@@ -240,7 +262,7 @@ def _embedding_refs_have_message_semantics(conn: sqlite3.Connection, refs_table:
 
     if not refs_table:
         return False
-    from polylogue.storage.introspection import column_exists
+    from polylogue.core.sqlite_introspection import column_exists
 
     schema, _, table = refs_table.rpartition(".")
     return column_exists(conn, table, "message_content_hash", schema=schema or "main")
@@ -362,8 +384,8 @@ def _active_failure_details(
                 "error_message": str(row[7]),
                 "retryable": bool(row[8]),
                 "lifecycle_state": str(row[9]),
-                "created_at": _iso_from_epoch_ms(row[10]),
-                "updated_at": _iso_from_epoch_ms(row[11]),
+                "created_at": iso_from_epoch_ms(row[10]),
+                "updated_at": iso_from_epoch_ms(row[11]),
                 "resolution_action": None if row[12] is None else str(row[12]),
                 "supported_actions": ["acknowledge", "requeue", "supersede"],
                 "resolution_command": (
@@ -466,23 +488,6 @@ def _candidate_prose_message_count(
     return exact_count, exact_count is not None
 
 
-def _iso_from_epoch_ms(value: object) -> str | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        epoch_ms = value
-    elif isinstance(value, float):
-        epoch_ms = int(value)
-    elif isinstance(value, str):
-        try:
-            epoch_ms = int(value)
-        except ValueError:
-            return None
-    else:
-        return None
-    return datetime.fromtimestamp(epoch_ms / 1000.0, UTC).isoformat()
-
-
 def _archive_index_path(db_path: Path) -> Path | None:
     from polylogue.storage.archive_identity import ArchiveLocation
 
@@ -490,9 +495,15 @@ def _archive_index_path(db_path: Path) -> Path | None:
     return index_db if index_db.exists() else None
 
 
-def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int, total_sessions: int) -> float:
+def _coverage_percent(*, embedded_sessions: int, eligible_sessions: int) -> float | None:
+    """Return session coverage, or ``None`` when nothing was eligible.
+
+    A zero denominator is a measurement gap, not full coverage: no session was
+    weighed, so neither 100.0 nor 0.0 is a fact about this archive.
+    """
+
     if eligible_sessions <= 0:
-        return 100.0 if total_sessions > 0 else 0.0
+        return None
     return embedded_sessions / eligible_sessions * 100
 
 
@@ -581,7 +592,7 @@ def _authoritative_archive_embedding_state(
             counts=None,
             reason=f"sqlite_vec_unavailable: {error}" if error is not None else "sqlite_vec_unavailable",
         )
-    relation = archive_embeddable_messages_relation(conn, alias="desired", model=recipe.model)
+    relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=recipe)
     sql = f"""
         WITH desired_messages AS (
             SELECT message_id, session_id, content_hash, vector_derivation_hash FROM {relation}
@@ -670,6 +681,11 @@ def _embedding_status(
     if total_sessions <= 0:
         return "empty"
     if pending_sessions <= 0 and blocked_sessions <= 0:
+        if embedded_sessions <= 0:
+            # Sessions exist but none is embedded, pending or blocked: nothing
+            # was eligible, so coverage was never measured.  "complete" would
+            # advertise a full archive that was never weighed.
+            return "unknown"
         return "complete"
     if embedded_sessions <= 0 and blocked_sessions <= 0:
         return "none"
@@ -853,6 +869,14 @@ def _payload_from_stats(
         # present and intact.
         status = "unknown"
         retrieval_ready = False
+    coverage_percent = (
+        _coverage_percent(
+            embedded_sessions=embedded_sessions or 0,
+            eligible_sessions=eligible_sessions or 0,
+        )
+        if measurable
+        else None
+    )
     message_coverage = _message_coverage_percent(
         embedded_messages=stats.embedded_messages,
         candidate_prose_messages=stats.candidate_prose_messages,
@@ -881,18 +905,7 @@ def _payload_from_stats(
         "pending_messages_exact": pending_messages_exact and measurable,
         "candidate_prose_messages": stats.candidate_prose_messages,
         "candidate_prose_messages_exact": stats.candidate_prose_messages_exact,
-        "embedding_coverage_percent": (
-            round(
-                _coverage_percent(
-                    embedded_sessions=embedded_sessions or 0,
-                    eligible_sessions=eligible_sessions or 0,
-                    total_sessions=total_sessions,
-                ),
-                1,
-            )
-            if measurable
-            else None
-        ),
+        "embedding_coverage_percent": (round(coverage_percent, 1) if coverage_percent is not None else None),
         "embedding_coverage_basis": "sessions",
         "message_coverage_percent": (
             round(message_coverage, 1) if (measurable and message_coverage is not None) else None
@@ -1157,15 +1170,18 @@ def _archive_embedding_status_payload(
                 timeout_ms=metadata_timeout_ms,
             )
             if bounds_rows:
-                oldest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][0])
-                newest_embedded_at = _iso_from_epoch_ms(bounds_rows[0][1])
+                oldest_embedded_at = iso_from_epoch_ms(bounds_rows[0][0])
+                newest_embedded_at = iso_from_epoch_ms(bounds_rows[0][1])
         if include_detail and has_messages:
             candidate_prose_messages, candidate_prose_messages_exact = _candidate_prose_message_count(
                 conn,
                 timeout_ms=candidate_prose_timeout_ms,
             )
-            configured_model = settings.configured_model or ""
-            messages_ref = archive_embeddable_messages_relation(conn, alias="m", model=configured_model)
+            configured_recipe = EmbeddingRecipe.current(
+                model=settings.configured_model or "",
+                dimensions=settings.configured_dimension or 0,
+            )
+            messages_ref = archive_embeddable_messages_relation(conn, alias="m", recipe=configured_recipe)
             meta_join = (
                 f"LEFT JOIN {meta_table} em ON em.vector_derivation_hash = r.vector_derivation_hash" if has_meta else ""
             )
@@ -1356,8 +1372,8 @@ def _run_has_material_signal(run: EmbeddingCatchupRunPayload) -> bool:
 def _archive_run_payload(run: _ArchiveEmbeddingRunRow) -> EmbeddingCatchupRunPayload:
     started_at_ms = run.started_at_ms
     finished_at_ms = run.finished_at_ms
-    started_at = _iso_from_epoch_ms(started_at_ms) or ""
-    finished_at = _iso_from_epoch_ms(finished_at_ms)
+    started_at = iso_from_epoch_ms(started_at_ms) or ""
+    finished_at = iso_from_epoch_ms(finished_at_ms)
     return {
         "run_id": run.run_id,
         "started_at": started_at,
@@ -1436,9 +1452,6 @@ def embedding_status_payload(
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.config import load_polylogue_config
     from polylogue.storage.archive_identity import archive_file_set_root
-    from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
-    from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
-    from polylogue.storage.embeddings.support import table_exists_sync_missing_safe
 
     cfg = load_polylogue_config()
     db_path = Path(env.config.db_path)
@@ -1462,41 +1475,14 @@ def embedding_status_payload(
     )
     if archive_payload is not None:
         return archive_payload
-    if not db_path.exists():
-        return _payload_from_stats(
-            settings=settings,
-            total_sessions=0,
-            stats=EmbeddingStatsSnapshot(),
-            latest_catchup_run=None,
-            latest_material_catchup_run=None,
-            pending_messages_exact=include_detail,
-        )
-
-    # A status projection describes whatever the tier holds, including a
-    # schema the runtime has moved past.
-    conn = open_readonly_connection(db_path, validate_schema=False)
-    try:
-        total_sessions = _total_sessions(conn)
-        embedding_stats = read_embedding_stats_sync(
-            conn,
-            include_retrieval_bands=include_retrieval_bands,
-            detail=include_detail,
-        )
-        latest_run = (
-            latest_embedding_catchup_run(conn)
-            if table_exists_sync_missing_safe(conn, "embedding_catchup_runs")
-            else None
-        )
-    finally:
-        conn.close()
-
+    # The split-file archive is the sole runtime. An index tier that yields no
+    # archive-shaped embedding state has nothing to measure; there is no
+    # pre-split single-file shape to fall back to.
     return _payload_from_stats(
         settings=settings,
-        total_sessions=total_sessions,
-        stats=embedding_stats,
-        latest_catchup_run=latest_run,
-        latest_material_catchup_run=latest_run
-        if latest_run is not None and _run_has_material_signal(latest_run)
-        else None,
+        total_sessions=0,
+        stats=EmbeddingStatsSnapshot(),
+        latest_catchup_run=None,
+        latest_material_catchup_run=None,
         pending_messages_exact=include_detail,
     )

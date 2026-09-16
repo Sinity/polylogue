@@ -37,6 +37,7 @@ from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw
 from .parsers.base import RawSessionData
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
+_ZIP_SNIFF_MEMBER_LIMIT = 64
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
 AcquisitionObservation: TypeAlias = JSONDocument
@@ -680,19 +681,26 @@ def sniff_zip_provider(
     zf: zipfile.ZipFile,
     entries: Iterable[zipfile.ZipInfo],
 ) -> Provider | None:
-    """Detect a ZIP's dominant provider from whichever member detects cleanly.
+    """Detect a ZIP's dominant provider by weight, never by entry order.
 
-    Reads only ``_DETECTION_PREFIX_SIZE`` of each JSON/JSONL member in order
-    until one yields a positive, non-unknown detection. Returns ``None`` when
-    no member detects (a genuinely mixed or non-conversation ZIP), leaving the
-    caller's ``Provider.UNKNOWN`` fallback in place.
+    Reads only ``_DETECTION_PREFIX_SIZE`` of each JSON/JSONL member, up to
+    ``_ZIP_SNIFF_MEMBER_LIMIT`` members, and tallies each positive detection by
+    that member's uncompressed size. The heaviest provider wins, and only when
+    it is strictly heavier than every other detected provider.
 
-    An account export ZIP still has a real dominant provider even when the
-    caller had no provider-bearing directory to take it from; establishing it
-    once from ``conversations.json`` (or a sibling) is what lets every other
-    member's declared artifact rule apply at all.
+    The returned provider becomes *every* member's hint, so establishing it
+    from whichever member happened to sort first in the central directory was
+    wrong: an export ZIP whose first ``aaa.json`` detects as a grouped provider
+    made the real ``conversations.json`` raw-preserved and never parsed into
+    sessions. Weight is what "dominant" meant; an archive with no strict winner
+    is the genuinely-mixed case this returns ``None`` for, leaving the caller's
+    ``Provider.UNKNOWN`` fallback and its declared per-entry rules in place.
     """
+    weights: dict[Provider, int] = {}
+    inspected = 0
     for info in entries:
+        if inspected >= _ZIP_SNIFF_MEMBER_LIMIT:
+            break
         if not info.filename.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
             continue
         try:
@@ -702,6 +710,7 @@ def sniff_zip_provider(
             continue
         if not prefix:
             continue
+        inspected += 1
         detected, _evidence = detect_provider_from_raw_bytes_evidence(
             prefix,
             info.filename,
@@ -709,8 +718,15 @@ def sniff_zip_provider(
             truncated_tail_ok=True,
         )
         if detected is not Provider.UNKNOWN:
-            return detected
-    return None
+            # ``max(1, ...)``: a member with an unrecorded size still counts as
+            # one observation rather than weighing nothing.
+            weights[detected] = weights.get(detected, 0) + max(1, int(info.file_size))
+    if not weights:
+        return None
+    ranked = sorted(weights.items(), key=lambda item: (-item[1], item[0].value))
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        return None
+    return ranked[0][0]
 
 
 def iter_zip_entry_raw_data(

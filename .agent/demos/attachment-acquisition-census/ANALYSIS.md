@@ -12,7 +12,7 @@ Read-only census over the active archive (polylogue-83u.6), grouped by (origin, 
 - Missing blob refs (actionable debt): 0
 - Acquired rows with a NULL blob_hash (schema anomaly, should be 0): 0
 - Cross-origin attachments (referenced from >1 origin): 0
-- Reconciles against `polylogue ops maintenance attachment-acquisition-debt`: True
+- Reconciles against `scan_attachment_coverage` (polylogue.storage.blob_integrity): True
 
 ## By origin / acquisition_status
 

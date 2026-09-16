@@ -351,6 +351,60 @@ def session_id(source_name: Provider | Origin | str, provider_session_id: str) -
     return SessionId(f"{origin.value}:{provider_session_id}")
 
 
+#: Declared hash vocabulary for a conversation whose export carries no native
+#: conversation id at all (Grok account-data exports: neither the
+#: ``conversation`` object nor any response entry has an id field in any
+#: confirmed wire shape). Without this, such a parser can only fall back to an
+#: acquisition coordinate -- the file stem plus the conversation's array index
+#: -- which is not identity: two files named ``grok.json`` in different
+#: directories mint the SAME ``grok:grok`` session (the second ingest
+#: full-replaces the first), and a re-export that reorders conversations
+#: re-identifies every one of them (polylogue-31zag).
+#:
+#: The vocabulary is exactly the opening turn plus the conversation's declared
+#: creation time: the earliest content the conversation has, and the one
+#: timestamp a provider does not re-derive per export request. Both are
+#: intrinsic to the conversation, so the identity survives reordering, a
+#: renamed export file, and later turns being appended. Deliberately excluded:
+#: the title (user- and provider-renameable after the fact), the response
+#: count and any later turn (an ongoing conversation gains turns between
+#: exports), and every acquisition coordinate (file stem, array index, member
+#: path).
+#:
+#: Known, accepted limit stated rather than engineered around: two genuinely
+#: distinct conversations that open with a byte-identical first turn at the
+#: same declared creation time are indistinguishable by any signal this
+#: vocabulary can offer.
+
+
+def idless_session_identity(
+    *,
+    first_message_provider_id: JSONValue,
+    first_message_text: JSONValue,
+    created_at: JSONValue,
+) -> str:
+    """The sole constructor of a content-derived id for an id-less conversation.
+
+    This is a fixed keyword-only signature, not a dict projected by a list of
+    field names: passing a title, a message count, a file stem or an array
+    index is a ``TypeError`` at the call boundary, not a value that has to be
+    remembered and stripped. Extending what an id-less conversation's identity
+    covers requires editing this signature and the vocabulary comment above
+    it -- an explicit, reviewable decision.
+
+    The result is a ``provider_session_id``, not a full session id; the caller
+    still passes it through :func:`session_id` with its own source.
+    """
+    payload = {
+        "created_at": _normalize_for_hash(created_at if isinstance(created_at, str) or created_at is None else None),
+        "first_message_provider_id": _normalize_for_hash(
+            first_message_provider_id if isinstance(first_message_provider_id, str) else None
+        ),
+        "first_message_text": _normalize_for_hash(first_message_text if isinstance(first_message_text, str) else None),
+    }
+    return f"conversation-{hash_payload(payload)[:24]}"
+
+
 def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
     return MessageId(f"{session_id}:{provider_message_id}")
 
@@ -382,6 +436,20 @@ def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
         and not block.tool_id
         and block.tool_input is None
         and not block.media_type
+        # Every remaining evidence-bearing field must also be absent. A block
+        # carrying citations (``web_constructs``), parser metadata, or a tool
+        # outcome is a second content axis, not the parser-shape artifact this
+        # predicate exists to absorb, so collapsing it to the empty sentinel
+        # would make a richer acquisition hash equal to a bare one.
+        # ``signature`` stays excluded on purpose (see ``base_models.py``): it
+        # is a provider attestation over content already hashed here.
+        and not block.metadata
+        and not block.web_constructs
+        and block.is_error is None
+        and block.exit_code is None
+        and block.tool_outcome is None
+        and not block.outcome_unknown_reason
+        and block.file_edit is None
     )
 
 

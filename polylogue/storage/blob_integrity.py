@@ -36,6 +36,8 @@ from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_identity_coordinate
+from polylogue.core.sqlite_introspection import column_exists as _column_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_liveness import (
@@ -45,8 +47,6 @@ from polylogue.storage.blob_liveness import (
     project_live_blob_hashes,
 )
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
-from polylogue.storage.introspection import column_exists as _column_exists
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 

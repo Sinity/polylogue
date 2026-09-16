@@ -637,7 +637,7 @@ def _recent_session_opportunities(
     cutoff_ms: int,
 ) -> tuple[_SessionOpportunity, ...] | None:
     from polylogue.core.errors import SchemaSkewError
-    from polylogue.storage.introspection import table_exists as _table_exists
+    from polylogue.core.sqlite_introspection import table_exists as _table_exists
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     if not index_db.exists():
@@ -678,7 +678,7 @@ def _recent_hook_events(
     cutoff_ms: int,
 ) -> dict[str, set[str]] | None:
     from polylogue.core.errors import SchemaSkewError
-    from polylogue.storage.introspection import table_exists as _table_exists
+    from polylogue.core.sqlite_introspection import table_exists as _table_exists
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     if not source_db.exists():

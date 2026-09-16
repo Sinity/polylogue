@@ -936,15 +936,12 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     # raw_hook_events_v7`, a bare SELECT * that long predates and is
     # untouched by this bead) would try to insert this fixture's 9-column
     # `raw_hook_events` row into 009's hardcoded 8-column rebuilt shape.
-    old_ddl = old_ddl.replace(
-        "\n"
-        "    -- v22 (polylogue-tfzw0): the SHA-256 of this hook event's own durable\n"
-        "    -- raw_payload blob (see blob_refs above). Populated at write time by\n"
-        "    -- write_source_hook_event; NULL for rows written before v22 until a\n"
-        "    -- one-shot reconciliation pass backfills them (see\n"
-        "    -- polylogue.storage.hook_payload_ref_reconciliation).\n"
-        "    ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)\n",
+    old_ddl = re.sub(
+        r"\n    -- v22 \(polylogue-tfzw0\).*?\n    ,blob_hash[^\n]*\n",
         "",
+        old_ddl,
+        count=1,
+        flags=re.S,
     )
     # The v7 fixture also predates the v22 source-hash index.  Removing the
     # column without removing its index makes SQLite reject the fixture before

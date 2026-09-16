@@ -23,7 +23,6 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
-from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
@@ -131,14 +130,6 @@ class RawAuthorityCensusResetCounts:
     blockers: int
     census_plans: int
     census_post_plans: int
-
-
-@dataclass(frozen=True, slots=True)
-class OrphanedIndexRevisionSeedCounts:
-    """Counts for rebuildable revision-seed rows absent from source authority."""
-
-    revision_heads: int
-    revision_applications: int
 
 
 class RawReplayPlanStatus(StrEnum):
@@ -2598,42 +2589,6 @@ def reset_raw_authority_census_ledger(
     )
 
 
-def prune_orphaned_index_revision_seeds(
-    archive_root: Path,
-    *,
-    dry_run: bool,
-) -> OrphanedIndexRevisionSeedCounts:
-    """Return orphan counts for diagnostics without mutating the index.
-
-    Apply is deliberately unavailable here.  The named maintenance route is
-    the only authority that may delete these rows.
-    """
-    source_db = archive_root / "source.db"
-    index_db = ArchiveLocation.resolve(archive_root).active_index_path
-    if not source_db.is_file() or not index_db.is_file():
-        raise FileNotFoundError(source_db if not source_db.is_file() else index_db)
-    with closing(_readonly(index_db)) as conn:
-        conn.execute("ATTACH DATABASE ? AS src", (str(source_db),))
-        heads = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM raw_revision_heads WHERE accepted_raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
-            ).fetchone()[0]
-        )
-        applications = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id NOT IN (SELECT raw_id FROM src.raw_sessions)"
-            ).fetchone()[0]
-        )
-        if not dry_run:
-            raise RuntimeError(
-                "direct orphaned-index-seed mutation is disabled; use the guarded maintenance recovery route"
-            )
-    return OrphanedIndexRevisionSeedCounts(
-        revision_heads=heads,
-        revision_applications=applications,
-    )
-
-
 __all__ = [
     "AUTO_CLEARABLE_BLOCKER_ORIGINS",
     "AUTO_STALE_PLAN_RESOLUTION",
@@ -2649,7 +2604,6 @@ __all__ = [
     "SUPERSEDED_MEMBERSHIP_FINGERPRINTS",
     "RawAuthorityCensusReceipt",
     "RawAuthorityCensusResetCounts",
-    "OrphanedIndexRevisionSeedCounts",
     "RawReplayPlan",
     "RawReplayPlanOutcome",
     "RawReplayPlanStatus",
@@ -2674,7 +2628,6 @@ __all__ = [
     "record_raw_authority_census",
     "record_raw_replay_outcome",
     "reset_raw_authority_census_ledger",
-    "prune_orphaned_index_revision_seeds",
     "reject_invalid_raw_replay_application",
     "reject_stale_raw_replay_plan",
     "resolve_raw_authority_blocker",

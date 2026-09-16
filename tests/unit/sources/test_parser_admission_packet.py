@@ -16,6 +16,7 @@ from polylogue.sources.parsers.base import (
     AdmissionLedger,
     AdmissionOutcome,
     AdmissionUnit,
+    AdmissionUnknownReason,
     ParseAccounting,
     ParsedMessage,
     ParsedSession,
@@ -163,7 +164,7 @@ def test_admission_ledger_has_closed_terminal_dispositions() -> None:
 
     accounting = ledger.close()
 
-    assert {outcome.disposition for outcome in accounting.outcomes} == {
+    assert {outcome.disposition for outcome in accounting.iter_outcomes()} == {
         AdmissionDisposition.MATERIALIZED,
         AdmissionDisposition.TYPED_UNKNOWN,
     }
@@ -197,3 +198,75 @@ def test_writer_refuses_nonconserving_parse_before_sqlite_mutation() -> None:
         assert conn.execute("SELECT 1").fetchone() == (1,)
     finally:
         conn.close()
+
+
+# polylogue-ro922. A session file is untrusted input, so the admission ledger's
+# cost per input record is a memory amplifier. At head the ledger retained one
+# Pydantic ``AdmissionOutcome`` per outer record for the whole parse and
+# ``close()`` copied the list: 200k records measured 52.8 MB of traced Python
+# allocations for a proof that is one ordinal interval. The bound below is the
+# ceiling that reverting the compact-range representation blows.
+_LEDGER_RECORD_COUNT = 200_000
+_LEDGER_PEAK_BYTES_MAX = 4 * 1024 * 1024
+
+
+def test_admission_ledger_cost_does_not_scale_with_materialized_records() -> None:
+    """Anti-vacuity: restoring one retained AdmissionOutcome per record blows the traced-peak bound.
+
+    A counter bug in the compact representation instead breaks
+    ``assert_conserved`` -- the denominator and the per-unit terms it checks
+    are reconstructed from the same ranges.
+    """
+    import tracemalloc
+
+    ledger = AdmissionLedger()
+    ledger.expect(AdmissionUnit.OUTER_RECORD, _LEDGER_RECORD_COUNT)
+
+    tracemalloc.start()
+    try:
+        for ordinal in range(_LEDGER_RECORD_COUNT - 1):
+            assert ledger.next_ordinal(AdmissionUnit.OUTER_RECORD) == ordinal
+            ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
+        ledger.unknown(AdmissionUnit.OUTER_RECORD, _LEDGER_RECORD_COUNT - 1, "future_record")
+        accounting = ledger.close()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert peak < _LEDGER_PEAK_BYTES_MAX, f"admission ledger traced peak {peak} exceeds {_LEDGER_PEAK_BYTES_MAX}"
+    # The conservation contract is unchanged: every denominator member still
+    # has exactly one terminal disposition, and the evidence-bearing one is
+    # still a real outcome.
+    accounting.assert_conserved()
+    assert accounting.expected[AdmissionUnit.OUTER_RECORD] == _LEDGER_RECORD_COUNT
+    assert len(accounting.outcomes) == 1
+    assert accounting.outcomes[0].disposition is AdmissionDisposition.TYPED_UNKNOWN
+    assert accounting.outcomes[0].ordinal == _LEDGER_RECORD_COUNT - 1
+    assert accounting.materialized_ordinals[AdmissionUnit.OUTER_RECORD] == [(0, _LEDGER_RECORD_COUNT - 1)]
+    assert sum(1 for _ in accounting.iter_outcomes()) == _LEDGER_RECORD_COUNT
+
+
+def test_admission_conservation_rejects_a_range_that_overcounts() -> None:
+    """Anti-vacuity: dropping the range arithmetic from assert_conserved makes this pass silently."""
+    overcounting = ParseAccounting(
+        expected={AdmissionUnit.OUTER_RECORD: 3},
+        materialized_ordinals={AdmissionUnit.OUTER_RECORD: [(0, 4)]},
+    )
+    with pytest.raises(ValueError, match="admission denominator mismatch"):
+        overcounting.assert_conserved()
+
+    overlapping = ParseAccounting(
+        expected={AdmissionUnit.OUTER_RECORD: 3},
+        outcomes=[
+            AdmissionOutcome(
+                unit=AdmissionUnit.OUTER_RECORD,
+                ordinal=1,
+                key="dup",
+                disposition=AdmissionDisposition.TYPED_UNKNOWN,
+                reason=AdmissionUnknownReason.UNRECOGNIZED_TYPE,
+            )
+        ],
+        materialized_ordinals={AdmissionUnit.OUTER_RECORD: [(0, 3)]},
+    )
+    with pytest.raises(ValueError, match=r"duplicate admission outcome for outer_record\[1\]"):
+        overlapping.assert_conserved()

@@ -80,7 +80,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument
 from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
 
@@ -90,13 +90,24 @@ from .hermes_identity import qualified_session_id as _qualified_session_id
 from .hermes_identity import split_qualified_session_id as _split_qualified_session_id
 from .hermes_state import (
     HermesFidelityCapability,
-    HermesFidelityStatus,
     HermesImportFidelity,
     require_declared_export,
 )
 
 HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
 _DEFAULT_SESSION_ID = "default"
+# Declared consumer-side bounds on an untrusted, structurally-routed SQLite
+# file. Far above any real Hermes install (the producer documents its own,
+# smaller limits); crossing them means the file is not the artifact it claims
+# to be, which is a refusal rather than a partial parse.
+_MAX_VERIFICATION_EVENT_ROWS = 500_000
+_MAX_VERIFICATION_STATE_ROWS = 100_000
+
+
+class HermesVerificationTooLargeError(ValueError):
+    """A verification_evidence.db exceeding the declared consumer row bounds."""
+
+
 _REQUIRED_EVENT_COLUMNS = frozenset(
     {
         "id",
@@ -282,22 +293,36 @@ def parse_verification_evidence_db(
     unresolved.
     """
     del fallback_id
+    grouped_events: dict[str, list[ParsedSessionEvent]] = {}
+    grouped_state: dict[str, list[ParsedSessionEvent]] = {}
     with _connect_readonly(path, immutable=immutable) as conn:
         if not _has_required_tables(conn):
             raise ValueError(f"{path} is not a Hermes verification_evidence.db file")
         schema_version = _schema_version(conn)
-        event_rows = list(conn.execute("SELECT * FROM verification_events ORDER BY session_id, id").fetchall())
-        state_rows = list(conn.execute("SELECT * FROM verification_state ORDER BY session_id, root").fetchall())
-
-    grouped_events: dict[str, list[ParsedSessionEvent]] = {}
-    for row in event_rows:
-        session_id = str(row["session_id"])
-        grouped_events.setdefault(session_id, []).append(_verification_event(row, schema_version=schema_version))
-
-    grouped_state: dict[str, list[ParsedSessionEvent]] = {}
-    for row in state_rows:
-        session_id = str(row["session_id"])
-        grouped_state.setdefault(session_id, []).append(_verification_state_event(row))
+        # Streamed, not ``fetchall()``: a structurally-conforming SQLite file
+        # reaches this parser from any import path, and the producer's own row
+        # limits are not enforceable on the consumer side. Grouping straight
+        # off the cursor keeps one row resident instead of the whole table,
+        # and the declared caps turn an oversized file into a counted refusal
+        # -- never a silent truncation of verification evidence.
+        for events, row in enumerate(
+            conn.execute("SELECT * FROM verification_events ORDER BY session_id, id"), start=1
+        ):
+            if events > _MAX_VERIFICATION_EVENT_ROWS:
+                raise HermesVerificationTooLargeError(
+                    f"{path} declares more than {_MAX_VERIFICATION_EVENT_ROWS} verification_events rows; refusing"
+                )
+            grouped_events.setdefault(str(row["session_id"]), []).append(
+                _verification_event(row, schema_version=schema_version)
+            )
+        for states, row in enumerate(
+            conn.execute("SELECT * FROM verification_state ORDER BY session_id, root"), start=1
+        ):
+            if states > _MAX_VERIFICATION_STATE_ROWS:
+                raise HermesVerificationTooLargeError(
+                    f"{path} declares more than {_MAX_VERIFICATION_STATE_ROWS} verification_state rows; refusing"
+                )
+            grouped_state.setdefault(str(row["session_id"]), []).append(_verification_state_event(row))
 
     session_ids = sorted(set(grouped_events) | set(grouped_state))
     profile_key_value = _profile_key(profile_root) if profile_root is not None else None
@@ -465,7 +490,7 @@ def _parent_session_link_capability(sessions: list[ParsedSession]) -> HermesFide
             counts={},
             detail="No sessions were produced, so no session_links parent edge could be asserted.",
         )
-    status: HermesFidelityStatus
+    status: SourceFidelityStatus
     if linked == len(sessions):
         status = "inferred"
     elif linked:
@@ -576,6 +601,7 @@ def import_fidelity_declaration(sessions: list[ParsedSession]) -> HermesImportFi
 
 __all__ = [
     "HERMES_VERIFICATION_DB_MARKER",
+    "HermesVerificationTooLargeError",
     "HermesVerificationEventType",
     "hermes_verification_session_id_for",
     "import_fidelity_declaration",

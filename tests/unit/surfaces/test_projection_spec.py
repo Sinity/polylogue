@@ -178,3 +178,32 @@ def test_executable_read_views_have_projection_mapping() -> None:
     assert set(READ_VIEW_HANDLER_METADATA) == set(READ_VIEW_PROJECTION_FAMILIES)
     assert "recovery" not in READ_VIEW_PROJECTION_FAMILIES
     assert "context-pack" not in READ_VIEW_PROJECTION_FAMILIES
+
+
+def test_cli_render_choices_derive_from_the_typed_owner() -> None:
+    """One render-destination vocabulary, not three (polylogue-j1vs).
+
+    Anti-vacuity: re-spelling ``_READ_DESTINATIONS`` or
+    ``_READ_TIMESTAMP_POLICIES`` as raw string tuples, or narrowing
+    ``QueryDeliveryTarget.kind`` back to its own three-member Literal, makes
+    this red.
+    """
+    from polylogue.cli.query_contracts import QueryDeliveryTarget
+    from polylogue.cli.query_verbs import _READ_DESTINATIONS, _READ_TIMESTAMP_POLICIES
+
+    assert tuple(destination.value for destination in RenderDestination) == _READ_DESTINATIONS
+    assert tuple(policy.value for policy in RenderTimestampPolicy) == _READ_TIMESTAMP_POLICIES
+
+    for destination in (
+        RenderDestination.TERMINAL,
+        RenderDestination.STDOUT,
+        RenderDestination.BROWSER,
+        RenderDestination.CLIPBOARD,
+    ):
+        target = QueryDeliveryTarget.parse(destination.value)
+        assert target.kind is destination
+        assert target.path is None
+
+    written = QueryDeliveryTarget.parse("/tmp/out.md")
+    assert written.kind is RenderDestination.FILE
+    assert written.path is not None

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 
 from polylogue.archive.viewport.enums import ToolCategory
 from polylogue.core.json import JSONValue
+from polylogue.core.tool_identity import tool_input_command
 
 PATH_PATTERN = re.compile(r'(?:^|[\s"\'])(/[^\s"\']+|[./][^\s"\']+)')
 NOISE_PATH_TOKENS = frozenset({"...", "//", "/dev/null", "|", "||", "&&", ";"})
@@ -28,6 +29,36 @@ _SED_SUBSTITUTION_RE = re.compile(r"(?:^|/)!?(s|y)/[^/]*?/[^/]*?/[a-z0-9]*$")
 # version strings (``.7`` in ``4.7``). Requiring a leading letter is
 # the cheap discriminator that handles both.
 _PATH_EXTENSION_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,5}$")
+
+
+FILE_OPERATION_CATEGORIES: frozenset[ToolCategory] = frozenset(
+    {ToolCategory.FILE_READ, ToolCategory.FILE_WRITE, ToolCategory.FILE_EDIT}
+)
+"""Categories that count as touching a file.
+
+polylogue-exxly: "is this tool call a file / git / search / subagent
+operation" used to be answered twice -- once from this origin-neutral
+taxonomy and once from a hardcoded Claude-Code tool-name allowlist in
+``pipeline/semantic_capture.py`` that recognised only ``Read``/``Write``/
+``Edit``/``NotebookEdit`` and only ``Bash`` for git. Every consumer now
+reduces :func:`classify_tool`'s category through the predicates below.
+"""
+
+
+def is_file_operation(category: ToolCategory) -> bool:
+    return category in FILE_OPERATION_CATEGORIES
+
+
+def is_git_operation(category: ToolCategory) -> bool:
+    return category is ToolCategory.GIT
+
+
+def is_search_operation(category: ToolCategory) -> bool:
+    return category is ToolCategory.SEARCH
+
+
+def is_subagent_operation(category: ToolCategory) -> bool:
+    return category is ToolCategory.SUBAGENT
 
 
 def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategory:
@@ -90,8 +121,8 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
         "functions.exec_command",
         "shell_command",
     ):
-        cmd = input_data.get("command", input_data.get("cmd", ""))
-        if isinstance(cmd, str) and cmd.strip().startswith("git "):
+        cmd = tool_input_command(input_data) or ""
+        if cmd.strip().startswith("git "):
             return ToolCategory.GIT
         return ToolCategory.SHELL
     if name_lower in ("killshell",):

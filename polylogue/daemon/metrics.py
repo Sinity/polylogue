@@ -94,6 +94,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol, TypedDict
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.process_start import uptime_seconds
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.storage import archive_layout
@@ -102,7 +103,6 @@ from polylogue.storage.archive_layout import (
     ARCHIVE_LAYOUT_BLOCKER_LABELS,
     ARCHIVE_STORAGE_LAYOUTS,
 )
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 # Derived from the canonical tier specs so the expected schema version per tier
@@ -724,66 +724,9 @@ def _embedding_message_count(conn: sqlite3.Connection, *, status_table: str = ""
     return 0
 
 
-def _embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
-    """Return bounded embedding backlog and latest catch-up state."""
-
-    if _table_exists(conn, "sessions"):
-        return _archive_embedding_state(conn, ops_db=ops_db)
-
-    total_sessions = 0
-    embedded_sessions = 0
-    pending_sessions = total_sessions
-    failed_sessions = 0
-    if _table_exists(conn, "embedding_status"):
-        columns = _columns(conn, "embedding_status")
-        embedded_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0")
-        pending_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1")
-        if "error_message" in columns:
-            failed_sessions = _scalar_int(
-                conn,
-                "SELECT COUNT(*) FROM embedding_status WHERE error_message IS NOT NULL",
-            )
-    embedded_messages = _embedding_message_count(conn)
-    coverage_percent = max(0, total_sessions - pending_sessions) / total_sessions * 100 if total_sessions > 0 else 0.0
-    if total_sessions <= 0 and pending_sessions <= 0 and embedded_messages <= 0:
-        status = "empty"
-    elif embedded_messages <= 0:
-        status = "none"
-    elif pending_sessions > 0:
-        status = "partial"
-    else:
-        status = "complete"
-
-    latest_run = None
-    if _table_exists(conn, "embedding_catchup_runs"):
-        from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
-
-        latest_run = latest_embedding_catchup_run(conn)
-
-    return {
-        "total_sessions": total_sessions,
-        "embedded_sessions": embedded_sessions,
-        "pending_sessions": pending_sessions,
-        "failed_sessions": failed_sessions,
-        "embedded_messages": embedded_messages,
-        "coverage_percent": coverage_percent,
-        "status": status,
-        "retrieval_ready": 1 if embedded_messages > 0 else 0,
-        "latest_status": latest_run["status"] if latest_run is not None else None,
-        "latest_rebuild": str(bool(latest_run["rebuild"])).lower() if latest_run is not None else "false",
-        "latest_planned_sessions": int(latest_run["planned_sessions"]) if latest_run is not None else 0,
-        "latest_processed_sessions": int(latest_run["processed_sessions"]) if latest_run is not None else 0,
-        "latest_embedded_sessions": int(latest_run["embedded_sessions"]) if latest_run is not None else 0,
-        "latest_skipped_sessions": int(latest_run["skipped_sessions"]) if latest_run is not None else 0,
-        "latest_error_count": int(latest_run["error_count"]) if latest_run is not None else 0,
-        "latest_planned_messages": int(latest_run["planned_messages"]) if latest_run is not None else 0,
-        "latest_embedded_messages": int(latest_run["embedded_messages"]) if latest_run is not None else 0,
-        "latest_estimated_cost_usd": float(latest_run["estimated_cost_usd"]) if latest_run is not None else 0.0,
-    }
-
-
 def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
-    total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
+    sessions_present = _table_exists(conn, "sessions")
+    total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions") if sessions_present else 0
     embedded_sessions = 0
     pending_sessions = 0
     failed_sessions = 0
@@ -808,7 +751,15 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
               AND error_message IS NULL
             """,
         )
-        pending_sessions = max(total_sessions - embedded_sessions, 0)
+        if sessions_present:
+            pending_sessions = max(total_sessions - embedded_sessions, 0)
+        else:
+            # A partial index without a sessions table can still name what the
+            # status table itself says is owed.
+            pending_sessions = _scalar_int(
+                conn,
+                f"SELECT COUNT(*) FROM {status_table} WHERE COALESCE(needs_reindex, 0) <> 0 AND error_message IS NULL",
+            )
         failed_sessions = _scalar_int(
             conn,
             f"SELECT COUNT(*) FROM {status_table} WHERE error_message IS NOT NULL",
@@ -1340,11 +1291,11 @@ def format_metrics(
             samples=[({"kind": kind}, value) for kind, value in memory],
         )
 
-        _emit_embedding_metrics(lines, _embedding_state(conn, ops_db=ops_db))
+        _emit_embedding_metrics(lines, _archive_embedding_state(conn, ops_db=ops_db))
 
         # ── Rich instrumentation (#1321 ambitious scope) ──────────
         _emit_archive_metrics(lines, conn)
-        _emit_throughput_metrics(lines, conn, ops_db=ops_db)
+        _emit_throughput_metrics(lines, ops_db=ops_db)
         _emit_db_space_metrics(lines, db)
         _emit_raw_record_metrics(lines, conn, db_path=configured_root / "index.db")
         _emit_archive_source_index_link_metrics(lines, conn, db_path=configured_root / "index.db")
@@ -1538,14 +1489,16 @@ def _emit_hook_flow_metrics(lines: list[str], configured_root: Path) -> None:
 
 
 def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
-    session_cols = _columns(conn, "sessions")
+    session_cols = _columns(conn, "sessions") if _table_exists(conn, "sessions") else set()
     if "origin" in session_cols:
         session_rows = conn.execute("SELECT origin, COUNT(*) FROM sessions GROUP BY origin ORDER BY origin").fetchall()
         session_samples: list[tuple[dict[str, str] | None, int | float]] = [
             ({"source": str(row[0])}, int(row[1])) for row in session_rows
         ]
     else:
-        session_samples = [(None, _scalar_int(conn, "SELECT COUNT(*) FROM sessions"))]
+        session_samples = [
+            (None, _scalar_int(conn, "SELECT COUNT(*) FROM sessions") if _table_exists(conn, "sessions") else 0)
+        ]
     _emit_metric(
         lines,
         name="polylogue_archive_sessions_total",
@@ -1586,51 +1539,32 @@ def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> N
     )
 
 
-def _emit_throughput_metrics(lines: list[str], conn: sqlite3.Connection, *, ops_db: Path | None = None) -> None:
-    """Recent ingest throughput derived from live_ingest_attempt rows."""
+# ``ingest_attempts`` records raw rows and materialized sessions, never a
+# message count, so there is no honest message-throughput series to publish.
+# The name is not emitted at all: ``_emit_metric`` renders a sample-less
+# metric as a literal ``0``, which would state a measured zero for something
+# nothing measured -- the same class of error as publishing the session
+# numerator under a messages name (polylogue-7z8do).
+_THROUGHPUT_METRIC_NAMES = (
+    "polylogue_ingest_throughput_raw_rows_per_second",
+    "polylogue_ingest_throughput_sessions_per_second",
+)
+
+
+def _emit_throughput_metrics(lines: list[str], *, ops_db: Path | None = None) -> None:
+    """Recent ingest throughput derived from the ops-tier ``ingest_attempts`` ledger.
+
+    ``ops.db`` is the sole producer. The former ``index.db``
+    ``live_ingest_attempt`` producer emitted the same two metric names from a
+    different numerator (``message_count``) over a different denominator (the
+    convergence phase alone rather than attempt wall time), so the reported
+    value jumped by orders of magnitude the moment ``ops.db`` first appeared --
+    a switch by file existence, not by configuration (polylogue-7z8do).
+    """
     if ops_db is not None and _emit_ops_throughput_metrics(lines, ops_db):
         return
-    if not _table_exists(conn, "live_ingest_attempt"):
-        for name in (
-            "polylogue_ingest_throughput_sessions_per_second",
-            "polylogue_ingest_throughput_messages_per_second",
-        ):
-            _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
-        return
-
-    cols = _columns(conn, "live_ingest_attempt")
-    if "session_count" not in cols or "convergence_time_s" not in cols:
-        return
-
-    row = conn.execute(
-        """
-        SELECT session_count, message_count, convergence_time_s
-        FROM live_ingest_attempt
-        WHERE status = 'completed' AND convergence_time_s > 0
-          AND session_count > 0
-        ORDER BY started_at DESC
-        LIMIT 1
-        """
-    ).fetchone()
-
-    if row is not None:
-        conv_count = int(row[0] or 0)
-        msg_count = int(row[1] or 0)
-        duration = max(float(row[2] or 0), 0.001)
-        _emit_metric(
-            lines,
-            name="polylogue_ingest_throughput_sessions_per_second",
-            help_text="Session throughput rate from the most recent completed ingest attempt.",
-            metric_type="gauge",
-            samples=[(None, conv_count / duration)],
-        )
-        _emit_metric(
-            lines,
-            name="polylogue_ingest_throughput_messages_per_second",
-            help_text="Message throughput rate from the most recent completed ingest attempt.",
-            metric_type="gauge",
-            samples=[(None, msg_count / duration)],
-        )
+    for name in _THROUGHPUT_METRIC_NAMES:
+        _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
 
 
 def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
@@ -1670,10 +1604,7 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
         return False
 
     if row is None:
-        for name in (
-            "polylogue_ingest_throughput_sessions_per_second",
-            "polylogue_ingest_throughput_messages_per_second",
-        ):
+        for name in _THROUGHPUT_METRIC_NAMES:
             _emit_metric(lines, name=name, help_text=name, metric_type="gauge", samples=[])
         return True
 
@@ -1682,14 +1613,14 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
     duration = max((int(row[3]) - int(row[2])) / 1000.0, 0.001)
     _emit_metric(
         lines,
-        name="polylogue_ingest_throughput_sessions_per_second",
+        name="polylogue_ingest_throughput_raw_rows_per_second",
         help_text="Source raw-row throughput rate from the most recent completed archive ingest attempt.",
         metric_type="gauge",
         samples=[(None, parsed_raw_count / duration)],
     )
     _emit_metric(
         lines,
-        name="polylogue_ingest_throughput_messages_per_second",
+        name="polylogue_ingest_throughput_sessions_per_second",
         help_text="Materialized session throughput rate from the most recent completed archive ingest attempt.",
         metric_type="gauge",
         samples=[(None, materialized_count / duration)],
@@ -1955,7 +1886,11 @@ def _emit_archive_source_index_link_metrics(
 
     source_db = db_path.with_name("source.db")
     if not source_db.exists():
-        raw_links = _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
+        raw_links = (
+            _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
+            if _table_exists(conn, "sessions")
+            else 0
+        )
         _emit_metric(
             lines,
             name="polylogue_archive_source_index_links_total",

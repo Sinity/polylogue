@@ -118,9 +118,11 @@ Consequences:
 - `bind` validates too — content bound once would otherwise ride along on every
   downstream event, the worst possible leak shape.
 - Exactly **one** free-text field exists, `error_detail`. It is truncated to 300
-  characters and it is the only field a redacting renderer must strip
-  (`POLYLOGUE_LOG_REDACT=1`, or `render_console(record, redact=True)`). A test
-  asserts the quarantine set stays at one entry, so this property cannot drift.
+  characters and it is the only field a redacting renderer must strip.
+  `POLYLOGUE_LOG_REDACT=1` strips it from **both** rendered forms -- the JSON
+  storage form and the console view -- and `render_json(record, redact=True)` /
+  `render_console(record, redact=True)` do the same directly. A test asserts the
+  quarantine set stays at one entry, so this property cannot drift.
 
 Filesystem paths *are* allowed — the rebuild reader needs "where did it stop" —
 but are marked `LOCAL_ONLY_FIELDS` for any future export path.
@@ -134,7 +136,7 @@ but are marked `LOCAL_ONLY_FIELDS` for any future export path.
 | `POLYLOGUE_LOG_FORMAT` | `json`, `console` | `console` |
 | `POLYLOGUE_LOG_LEVEL` | `trace`…`error` | `info` |
 | `POLYLOGUE_LOG_FILE` | path; appends | stderr |
-| `POLYLOGUE_LOG_REDACT` | `1`/`true` | off |
+| `POLYLOGUE_LOG_REDACT` | `1`/`true`/`yes`; strips quarantined fields from both the JSON and console forms | off |
 
 `json` is the storage form (one object per line, sorted keys — diffable and
 `jq`-able). `console` is the operator view. For an unattended rebuild, run with

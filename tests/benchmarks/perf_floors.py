@@ -67,6 +67,20 @@ _QUERY_TERMS: tuple[str, ...] = ("analysis", "error", "function", "test")
 _QUERY_LIST_REPEATS = 4
 
 
+class EmptySampleError(RuntimeError):
+    """A benchmark produced no samples.
+
+    Zero samples is a broken benchmark, not a measurement of zero. Emitting
+    ``0.0`` for a ``lower_is_better`` metric would record a perfect score that
+    ``--update-floors`` then ratchets in as the baseline, after which nothing
+    can ever regress against it.
+    """
+
+    def __init__(self, metric_name: str) -> None:
+        super().__init__(f"{metric_name}: refusing to emit a floor metric from zero samples")
+        self.metric_name = metric_name
+
+
 @dataclass(frozen=True, slots=True)
 class FloorMetric:
     """One measured, floor-checkable quantity."""
@@ -236,7 +250,7 @@ def measure_action_pairs_refresh(
         conn.close()
 
     if not durations_ms:
-        return [FloorMetric("action_pairs_refresh_mean_ms", 0.0, "ms", "lower_is_better", {"sample_size": 0})]
+        raise EmptySampleError("action_pairs_refresh_mean_ms")
     durations_ms.sort()
     p95_index = min(len(durations_ms) - 1, round(0.95 * (len(durations_ms) - 1)))
     return [
@@ -425,6 +439,10 @@ def save_floors(
 ) -> None:
     floors_metrics: dict[str, Any] = {}
     for name, entry in report["metrics"].items():
+        # A non-positive baseline is not a floor: nothing can regress against
+        # it, so writing one would silently retire the metric.
+        if float(entry["value"]) <= 0.0:
+            raise EmptySampleError(name)
         floors_metrics[name] = {
             "baseline": entry["value"],
             "unit": entry["unit"],
@@ -454,6 +472,8 @@ class FloorComparison:
     tolerance_pct: float
     regressed: bool
     is_new: bool = False
+    unmeasured_baseline: bool = False
+    missing_candidate: bool = False
 
 
 def _metric_regressed(direction: str, delta_pct: float, tolerance_pct: float) -> bool:
@@ -497,8 +517,25 @@ def compare_to_floors(
             continue
         baseline = float(floor["baseline"])
         tolerance_pct = float(floor.get("tolerance_pct", file_default))
-        delta_pct = ((candidate - baseline) / baseline * 100.0) if baseline > 0 else 0.0
-        regressed = baseline > 0 and _metric_regressed(direction, delta_pct, tolerance_pct)
+        if baseline <= 0.0:
+            # A zero baseline is an unmeasured metric, not a passing one: every
+            # candidate compares favourably against it forever.
+            results.append(
+                FloorComparison(
+                    name=name,
+                    baseline=baseline,
+                    candidate=candidate,
+                    unit=unit,
+                    direction=direction,
+                    delta_pct=0.0,
+                    tolerance_pct=tolerance_pct,
+                    regressed=False,
+                    unmeasured_baseline=True,
+                )
+            )
+            continue
+        delta_pct = (candidate - baseline) / baseline * 100.0
+        regressed = _metric_regressed(direction, delta_pct, tolerance_pct)
         results.append(
             FloorComparison(
                 name=name,
@@ -512,6 +549,24 @@ def compare_to_floors(
                 is_new=False,
             )
         )
+    for name in sorted(set(floor_metrics) - set(report["metrics"])):
+        # A recorded floor with no candidate means the metric disappeared --
+        # typically renamed, since several names are derived by munging a route
+        # string. Silence here retires a floor without anyone deciding to.
+        entry = floor_metrics[name]
+        results.append(
+            FloorComparison(
+                name=name,
+                baseline=float(entry["baseline"]),
+                candidate=0.0,
+                unit=str(entry.get("unit", "")),
+                direction=str(entry.get("direction", "lower_is_better")),
+                delta_pct=0.0,
+                tolerance_pct=float(entry.get("tolerance_pct", file_default)),
+                regressed=False,
+                missing_candidate=True,
+            )
+        )
     return results
 
 
@@ -523,6 +578,18 @@ def format_delta_table(comparisons: Sequence[FloorComparison]) -> str:
         if comparison.is_new:
             lines.append(
                 f"{comparison.name:<38} {'--':>12} {comparison.candidate:>12.2f} {'--':>9}  NEW (no floor recorded)"
+            )
+            continue
+        if comparison.missing_candidate:
+            lines.append(
+                f"{comparison.name:<38} {comparison.baseline:>12.2f} {'--':>12} {'--':>9}  "
+                "MISSING (floor recorded, metric not measured)"
+            )
+            continue
+        if comparison.unmeasured_baseline:
+            lines.append(
+                f"{comparison.name:<38} {comparison.baseline:>12.2f} {comparison.candidate:>12.2f} "
+                f"{'--':>9}  UNMEASURED (non-positive baseline; re-record this floor)"
             )
             continue
         status = "REGRESSED" if comparison.regressed else "ok"
@@ -593,6 +660,18 @@ def main(argv: list[str] | None = None) -> int:
     if regressions:
         if not args.json:
             print(f"\nFAIL: {len(regressions)} metric(s) regressed beyond tolerance.")
+        return 1
+    missing = [c for c in comparisons if c.missing_candidate]
+    if missing:
+        if not args.json:
+            names = ", ".join(c.name for c in missing)
+            print(f"\nFAIL: {len(missing)} recorded floor(s) had no measured metric (renamed or removed): {names}")
+        return 1
+    unmeasured = [c for c in comparisons if c.unmeasured_baseline]
+    if unmeasured:
+        if not args.json:
+            names = ", ".join(c.name for c in unmeasured)
+            print(f"\nFAIL: {len(unmeasured)} metric(s) carry a non-positive baseline and enforce nothing: {names}")
         return 1
     if not args.json:
         print("\nOK: no perf-floor regressions detected.")

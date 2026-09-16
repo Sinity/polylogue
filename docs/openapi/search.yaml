@@ -1758,6 +1758,12 @@ components:
           - $ref: '#/components/schemas/AuthorityEnvelope'
           - type: 'null'
           default: null
+        total_unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Total Unit
         outcome:
           $ref: '#/components/schemas/OutcomeEnvelope'
       required:

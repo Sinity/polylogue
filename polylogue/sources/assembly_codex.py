@@ -131,7 +131,7 @@ def parse_codex_history_bytes(payload: bytes) -> CodexHistoryTitles:
     return titles
 
 
-def _parse_codex_state_titles(sessions_root: Path) -> dict[str, str]:
+def _parse_codex_state_titles(sessions_root: Path) -> tuple[dict[str, str], int]:
     """Read ``threads.title`` from the live Codex ``state_5.sqlite`` store.
 
     On modern Codex installs ``state_5.sqlite`` (a live SQLite database in
@@ -144,12 +144,25 @@ def _parse_codex_state_titles(sessions_root: Path) -> dict[str, str]:
     """
     state_path = sessions_root.parent / "state_5.sqlite"
     if not state_path.exists():
-        return {}
+        return {}, 0
     return _parse_state_db_file(state_path)
 
 
-def _parse_state_db_file(state_path: Path) -> dict[str, str]:
+#: Row ceiling on the ``threads`` read. ``state_5.sqlite`` sits positionally
+#: beside discovered session content rather than under a trusted install root,
+#: so an imported directory can carry a crafted one. Title enrichment is an
+#: optional lane; it may not cost unbounded importer memory.
+STATE_DB_TITLE_ROW_LIMIT = 100_000
+
+#: Ceiling on one retained title. Longer titles are refused, not clipped: a
+#: silently truncated title reads as a real curation signal.
+STATE_DB_TITLE_MAX_CHARS = 4096
+
+
+def _parse_state_db_file(state_path: Path) -> tuple[dict[str, str], int]:
+    """Return the bounded title map and the count of titles it refused."""
     titles: dict[str, str] = {}
+    truncated = 0
     try:
         # mode=ro avoids ever taking a write lock; WAL mode lets us read
         # concurrently with a live Codex writer. A short timeout keeps a
@@ -157,19 +170,29 @@ def _parse_state_db_file(state_path: Path) -> dict[str, str]:
         conn = sqlite3.connect(f"file:{state_path}?mode=ro", uri=True, timeout=1.0)
     except sqlite3.Error as exc:
         logger.debug("Failed to open Codex state_5.sqlite: %s", exc)
-        return {}
+        return {}, 0
     try:
         try:
-            rows = conn.execute("SELECT id, title FROM threads").fetchall()
+            # Server-side LIMIT: the ceiling is applied by SQLite, so an
+            # oversized table never materializes in this process at all.
+            # One extra row is requested purely to detect the overflow.
+            rows = conn.execute("SELECT id, title FROM threads LIMIT ?", (STATE_DB_TITLE_ROW_LIMIT + 1,)).fetchall()
         except sqlite3.Error as exc:
             logger.debug("Failed to query Codex state_5.sqlite threads: %s", exc)
-            return {}
+            return {}, 0
+        if len(rows) > STATE_DB_TITLE_ROW_LIMIT:
+            truncated += len(rows) - STATE_DB_TITLE_ROW_LIMIT
+            rows = rows[:STATE_DB_TITLE_ROW_LIMIT]
         for thread_id, title in rows:
             if isinstance(thread_id, str) and thread_id and isinstance(title, str) and title.strip():
-                titles[thread_id] = title.strip()
+                stripped = title.strip()
+                if len(stripped) > STATE_DB_TITLE_MAX_CHARS:
+                    truncated += 1
+                    continue
+                titles[thread_id] = stripped
     finally:
         conn.close()
-    return titles
+    return titles, truncated
 
 
 def resolve_retained_codex_state_titles(
@@ -283,6 +306,7 @@ class CodexAssemblySpec:
         thread_names: dict[str, str] = {}
         history_titles: dict[str, str] = {}
         state_titles: dict[str, str] = {}
+        state_title_truncation_count = 0
         seen_roots: set[Path] = set()
         for path in source_paths:
             # Walk up to find the sessions root
@@ -291,12 +315,15 @@ class CodexAssemblySpec:
                     seen_roots.add(parent)
                     thread_names.update(_parse_codex_session_index(parent))
                     history_titles.update(_parse_codex_history(parent))
-                    state_titles.update(_parse_codex_state_titles(parent))
+                    root_state_titles, root_truncated = _parse_codex_state_titles(parent)
+                    state_titles.update(root_state_titles)
+                    state_title_truncation_count += root_truncated
                     break
         return {
             "thread_names": thread_names,
             "history_titles": history_titles,
             "state_titles": state_titles,
+            "state_title_truncation_count": state_title_truncation_count,
         }
 
     def enrich_session(
