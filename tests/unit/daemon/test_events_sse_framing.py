@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from io import BytesIO
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
@@ -39,7 +39,7 @@ def _stream_handler(path: str) -> DaemonAPIHandler:
     handler.client_address = ("127.0.0.1", 12345)
     handler.rfile = BytesIO(b"")
     handler.wfile = BytesIO()
-    handler.headers = cast("object", _Headers())
+    handler.headers = cast("Any", _Headers())
     handler.log_request = lambda *args, **kwargs: None  # type: ignore[method-assign]
     return handler
 
@@ -60,7 +60,7 @@ def test_events_handler_carries_exactly_one_safe_handler_decorator() -> None:
     fn = DaemonAPIHandler._handle_events
     while hasattr(fn, "__wrapped__"):
         depth += 1
-        fn = fn.__wrapped__  # type: ignore[attr-defined]
+        fn = fn.__wrapped__
     assert depth == 1, f"_handle_events is wrapped {depth} times"
 
 
@@ -89,7 +89,7 @@ def test_mid_stream_sqlite_error_keeps_the_body_valid_sse(monkeypatch: pytest.Mo
     handler = _stream_handler("/api/events?since=0&max_seconds=5")
     handler._handle_events({"since": ["0"], "max_seconds": ["5"]})
 
-    raw = handler.wfile.getvalue()
+    raw = cast("Any", handler.wfile).getvalue()
     assert calls["n"] == 1
     assert raw.count(b"HTTP/1.") == 1, raw
     head, _, body = raw.partition(b"\r\n\r\n")

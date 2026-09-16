@@ -12,7 +12,7 @@ import time
 from collections.abc import Mapping
 from http import HTTPStatus
 from io import BytesIO
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -25,7 +25,7 @@ class _Headers:
         return self._values.get(key, default)
 
 
-def _mutating_handler(kernel: object, *, deadline_ms: str = "300") -> tuple[object, list[tuple[HTTPStatus, object]]]:
+def _mutating_handler(kernel: object, *, deadline_ms: str = "300") -> tuple[Any, list[tuple[HTTPStatus, object]]]:
     """A handler wired to a real compute kernel, inside the write gate."""
     from polylogue.daemon.http import DaemonAPIHandler
 
@@ -36,14 +36,14 @@ def _mutating_handler(kernel: object, *, deadline_ms: str = "300") -> tuple[obje
 
     class _RecordingHandler(DaemonAPIHandler):
         def __init__(self) -> None:
-            self.server = cast("object", _Server())
+            self.server = cast("Any", _Server())
             self.path = "/api/test-mutation"
             self.command = "POST"
             self.requestline = "POST /api/test-mutation HTTP/1.1"
             self.client_address = ("127.0.0.1", 12345)
             self.rfile = BytesIO(b"")
             self.wfile = BytesIO()
-            self.headers = cast("object", _Headers({"X-Polylogue-Deadline-Ms": deadline_ms}))
+            self.headers = cast("Any", _Headers({"X-Polylogue-Deadline-Ms": deadline_ms}))
             # The write gate is what marks a route mutating.
             self._write_gate_depth = 1
 
@@ -81,7 +81,7 @@ def test_mutating_route_wait_is_bounded_by_the_request_deadline() -> None:
         release.wait(30)
         return {"ok": True}
 
-    def _route(self: object) -> None:
+    def _route(self: Any) -> None:
         self._send_json(HTTPStatus.OK, self._sync_run(_blocked))
 
     guarded = daemon_safe_handler(_route)
@@ -196,7 +196,7 @@ async def test_paste_browser_walk_reports_unknown_total_when_the_page_fills() ->
             return SimpleNamespace(messages=[_message(0), _message(1), _message(2)])
 
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    payload = await handler._do_paste_browser(cast("object", _Poly()), limit=1, offset=0)
+    payload = await handler._do_paste_browser(cast("Any", _Poly()), limit=1, offset=0)
 
     assert isinstance(payload, dict)
     assert len(payload["items"]) == 1

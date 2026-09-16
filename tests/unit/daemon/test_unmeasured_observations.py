@@ -14,6 +14,7 @@ from __future__ import annotations
 import sqlite3
 from http import HTTPStatus
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -43,7 +44,7 @@ def test_failed_statvfs_reports_unknown_free_space_not_zero(monkeypatch: pytest.
     def _boom(_path: str) -> object:
         raise OSError("statvfs refused")
 
-    monkeypatch.setattr(status_snapshot.os, "statvfs", _boom)
+    monkeypatch.setattr("polylogue.daemon.status_snapshot.os.statvfs", _boom)
     assert status_snapshot._disk_free_bytes(tmp_path) is None
 
 
@@ -94,7 +95,7 @@ def test_unreadable_live_cursor_is_typed_unavailable_not_all_zero(
 
     monkeypatch.setattr(status_module, "_active_status_db_path", lambda: db)
     monkeypatch.setattr(status_module, "_archive_live_cursor_summary_info", lambda _path: None)
-    monkeypatch.setattr(status_module.sqlite3, "connect", _boom)
+    monkeypatch.setattr("polylogue.daemon.status.sqlite3.connect", _boom)
 
     summary = status_module._live_cursor_summary_info()
 
@@ -158,7 +159,7 @@ def test_status_route_etag_changes_when_the_liveness_probe_fails(monkeypatch: py
         handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
         handler.path = "/api/status"
         handler.command = "GET"
-        handler.headers = _Headers()
+        handler.headers = cast("Any", _Headers())
         handler.wfile = BytesIO()
         handler.rfile = BytesIO()
         handler.server = type("S", (), {})()
@@ -185,4 +186,6 @@ def test_status_route_etag_changes_when_the_liveness_probe_fails(monkeypatch: py
 
     assert healthy_etag is not None and failed_etag is not None
     assert healthy_etag != failed_etag
-    assert captured[-1][1]["daemon_liveness_state"] == "unmeasured"
+    final_payload = captured[-1][1]
+    assert isinstance(final_payload, dict)
+    assert final_payload["daemon_liveness_state"] == "unmeasured"
