@@ -14,23 +14,20 @@ archive needs to answer quality questions the exact-count mechanisms in
   verdict (mechanism F, rxdo.9.6).
 - :mod:`polylogue.analysis.judgment.calibration` -- judges as actors, measured
   agreement with gold (mechanism L, rxdo.9.12).
-- :mod:`polylogue.analysis.judgment.rankers` -- ``ranker:<hash>`` aggregation
-  models over judgment sets (mechanism M, rxdo.9.13).
 - :mod:`polylogue.analysis.judgment.controls` -- paired negative controls on
   findings (mechanism G, rxdo.9.7).
-- :mod:`polylogue.analysis.judgment.elicitation` -- active elicitation
-  sessions, the resorter loop (mechanism N, rxdo.9.14).
-- :mod:`polylogue.analysis.judgment.cascades` -- agent-screen-to-operator-gold
-  routing (mechanism O, rxdo.9.15).
-- :mod:`polylogue.analysis.judgment.experiments` -- experiment analysis
-  projection over stc definitions (mechanism J, rxdo.9.10).
+
+Only the mechanisms a declared route reaches live here. Aggregation models
+(M), elicitation sessions (N), judge cascades (O) and experiment-analysis
+projections (J) were specified in docs/design/analysis-rigor.md but never
+wired to an operation, CLI verb or MCP tool, and were deleted rather than
+kept as unreachable code; re-introduce each one with its route.
 
 No new lifecycle store: comparative judgments are stored as
 ``AssertionKind.COMPARATIVE_JUDGMENT`` rows through the existing assertion
-substrate (``polylogue.storage.sqlite.archive_tiers.user_write``), and every
-other object in this package (calibration reports, ranker fits, cascade
-decisions) is a derived, re-runnable computation over that substrate -- never
-a second store to keep in sync.
+substrate (``polylogue.storage.sqlite.archive_tiers.user_write``), and
+calibration reports are a derived, re-runnable computation over that
+substrate -- never a second store to keep in sync.
 """
 
 from __future__ import annotations

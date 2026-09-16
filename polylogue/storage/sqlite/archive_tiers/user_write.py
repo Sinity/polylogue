@@ -2484,8 +2484,8 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
     # of quoted-evidence guidance the preamble compiler already renders for
     # LESSON/DECISION rows (see context/preamble.py's
     # `_assertion_guidance_from_claim`). PROMPT_EVAL is deliberately absent
-    # here -- it is stc-lifecycle experiment-definition data
-    # (insights/judgment/experiments.py), not context guidance prose.
+    # here -- it is stc-lifecycle experiment-definition data, not context
+    # guidance prose.
     AssertionKind.HIGHLIGHT,
 )
 
