@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from time import monotonic, time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.query.transaction import (
@@ -1102,6 +1102,16 @@ def _material_origin_value(message: object) -> str:
     return str(material_origin)
 
 
+class DaemonMutationIndeterminate(RuntimeError):  # noqa: N818 - public typed outcome name
+    """A mutating route's wait hit its deadline with the write still in flight.
+
+    Distinct from a cancellation: nothing was withdrawn, so the caller must
+    re-read the archive rather than assume the mutation did not happen.
+    """
+
+    code = "mutation_indeterminate"
+
+
 def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator that discriminates PolylogueError types to HTTP status codes.
 
@@ -1178,6 +1188,22 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                 HTTPStatus.SERVICE_UNAVAILABLE,
                 QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
                 extra_headers={"Retry-After": "1"},
+            )
+        except DaemonMutationIndeterminate as exc:
+            emit(
+                "daemon.http.mutation_indeterminate",
+                level=WARNING,
+                outcome="unmeasured",
+                reason="mutation_indeterminate",
+                route=fn.__name__,
+                status_code=int(HTTPStatus.SERVICE_UNAVAILABLE),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                QueryErrorPayload(error=exc.code, detail=str(exc)).model_dump(mode="json"),
+                extra_headers={"Retry-After": "5"},
             )
         except DaemonOperationCancelled as exc:
             self._send_json(
@@ -1795,6 +1821,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return cast("Coroutine[object, object, object]", self._run_archive_query(handler))
         return self._run_leased_archive_query(handler, delegation)
 
+    def _mutation_wait_budget_s(self) -> float:
+        """The bound this request's mutating wait carries.
+
+        A client may declare a shorter deadline with ``X-Polylogue-Deadline-Ms``;
+        anything absent, unparseable, or outside the accepted band falls back to
+        the route default so a header can never remove the bound.
+        """
+
+        headers = getattr(self, "headers", None)
+        raw = headers.get("X-Polylogue-Deadline-Ms", "") if headers is not None else ""
+        try:
+            declared_s = float(raw) / 1000.0
+        except (TypeError, ValueError):
+            return _MUTATION_WAIT_TIMEOUT_S
+        if declared_s <= 0 or declared_s > _MUTATION_WAIT_TIMEOUT_MAX_S:
+            return _MUTATION_WAIT_TIMEOUT_S
+        return declared_s
+
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
         """Run one route body through the daemon's single bounded scheduler.
 
@@ -1828,9 +1872,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
                 try:
                     if mutating:
-                        # The control class reserves capacity, so this wait is
-                        # bounded by the mutation itself, not by read pressure.
-                        result = submitted.future.result()
+                        # The control class reserves capacity, so queueing is
+                        # bounded by the mutation itself rather than by read
+                        # pressure -- but the mutation can still block behind a
+                        # writer lease held by a convergence pass, and an
+                        # unbounded ``result()`` gave the client no
+                        # observable bound at all (polylogue-8r4zq). The wait
+                        # carries the request deadline; exceeding it is a
+                        # typed *indeterminate* outcome, never a cancellation:
+                        # the submitted write may still land, so claiming it
+                        # did not would be the same lie in the other
+                        # direction.
+                        budget_s = self._mutation_wait_budget_s()
+                        try:
+                            result = submitted.future.result(timeout=budget_s)
+                        except FutureTimeoutError as exc:
+                            route_span.set(
+                                reason="mutation_indeterminate",
+                                timeout_ms=round(budget_s * 1000, 3),
+                            )
+                            raise DaemonMutationIndeterminate(
+                                f"mutation did not complete within {budget_s:.0f}s; "
+                                "it may still be in flight -- re-read before retrying"
+                            ) from exc
                         route_span.ok()
                         return result
                     try:
@@ -2911,6 +2975,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         convs = await poly.filter().list_summaries()
         entries: list[PasteBrowserEntry] = []
         total_messages_seen = 0
+        # polylogue-q54dt: the walk stops as soon as the page is full, so the
+        # running counter is a lower bound on the match count from that point
+        # on -- never the archive total. Report it as a bound, not a total.
+        page_truncated = False
         for summary in convs:
             conv = await poly.get_session(str(summary.id))
             if conv is None:
@@ -2922,6 +2990,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 if total_messages_seen <= offset:
                     continue
                 if len(entries) >= limit:
+                    page_truncated = True
                     break
                 text = msg.text or ""
                 spans = envelope_paste_spans(text, has_paste=True)
@@ -2943,8 +3012,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     )
                 )
             if len(entries) >= limit:
+                page_truncated = True
                 break
-        return build_paste_browser_payload(entries, total=total_messages_seen)
+        return build_paste_browser_payload(
+            entries,
+            total=None if page_truncated else total_messages_seen,
+            total_is_exact=not page_truncated,
+            matched_so_far=total_messages_seen,
+        )
 
     # ------------------------------------------------------------------
     # Handlers: attachment library + per-session attachments (#1199)
@@ -2988,6 +3063,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         summaries = await poly.filter().list_summaries()
         entries: list[LibraryEntry] = []
         total_seen = 0
+        # polylogue-q54dt: same bound as the paste browser -- the walk breaks
+        # out once the page is full, so ``total_seen`` stops being a total.
+        page_truncated = False
         for summary in summaries:
             sid = str(summary.id)
             if session_filter and session_filter != sid:
@@ -3009,6 +3087,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     if total_seen <= offset:
                         continue
                     if len(entries) >= limit:
+                        page_truncated = True
                         break
                     entries.append(
                         LibraryEntry(
@@ -3019,10 +3098,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         )
                     )
                 if len(entries) >= limit:
+                    page_truncated = True
                     break
             if len(entries) >= limit:
+                page_truncated = True
                 break
-        return build_library_payload(entries, total=total_seen)
+        return build_library_payload(
+            entries,
+            total=None if page_truncated else total_seen,
+            total_is_exact=not page_truncated,
+            matched_so_far=total_seen,
+        )
 
     @daemon_safe_handler
     def _handle_get_session_attachments(self, conv_id: str) -> None:
@@ -3097,9 +3183,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO
 
         dbp = resolve_active_index_path(archive_root())
-        db_size = dbp.stat().st_size if dbp.exists() else 0
+        db_size = dbp.stat().st_size if dbp.exists() else None
         wal_size = wal_size_bytes(dbp)
-        disk_free = 0
+        # polylogue-xvwpi: a failed statvfs is not "zero bytes free" -- that
+        # reading is an emergency, and publishing it for an unperformed
+        # measurement is the failure-as-zero pattern this bead names. An
+        # unmeasured figure is published as null.
+        disk_free: int | None = None
         with contextlib.suppress(OSError):
             disk_free = disk_free_bytes(dbp.parent)
 
@@ -3133,7 +3223,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "db_size_bytes": db_size,
             "wal_size_bytes": wal_size,
             "disk_free_bytes": disk_free,
-            "blob_dir_size_bytes": 0,
+            # Never measured by this route. A literal 0 rendered as a figure
+            # in the operator surface; null says "not measured here".
+            "blob_dir_size_bytes": None,
             "quick_check": "pass" if quick_check_ok else "error",
             "quick_check_age_s": None,
             "raw_failure_lifecycle_available": raw_lifecycle.available,
@@ -3157,10 +3249,30 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         latest_event_id = get_latest_event_id()
         status = get_status_snapshot_payload()
         status["last_event_id"] = latest_event_id
-        with contextlib.suppress(Exception):
+        # polylogue-xvwpi: suppressing the liveness probe dropped the key
+        # entirely and folded the resulting ``None`` into the ETag, so a
+        # client that had seen a live value got a 304 over an unmeasured one.
+        # The probe's failure is now a published state and part of the ETag.
+        liveness_measured = True
+        try:
             from polylogue.daemon.status import _check_daemon_liveness
 
             status["daemon_liveness"] = _check_daemon_liveness()
+        except Exception as exc:
+            liveness_measured = False
+            status["daemon_liveness"] = None
+            status["daemon_liveness_state"] = "unmeasured"
+            emit(
+                "daemon.http.status_probe_failed",
+                level=WARNING,
+                outcome="unmeasured",
+                reason="daemon_liveness_unreadable",
+                route="status",
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+        else:
+            status["daemon_liveness_state"] = "measured"
         snapshot = status.get("status_snapshot")
         snapshot_state = str(snapshot.get("state") or "missing") if isinstance(snapshot, Mapping) else "missing"
         snapshot_captured_at = (
@@ -3173,6 +3285,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 snapshot_captured_at,
                 status.get("ok"),
                 status.get("daemon_liveness"),
+                # A suppressed probe must change the ETag, not hide behind the
+                # same ``null`` a genuinely absent value would produce.
+                "measured" if liveness_measured else "unmeasured",
                 status.get("daemon_write_coordinator"),
             ],
             separators=(",", ":"),
@@ -3297,7 +3412,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             _web_privacy_safe_projection(overview, archive_root, configured_archive_root()),
         )
 
-    @daemon_safe_handler
+    # ------------------------------------------------------------------
     # Handlers: events (SSE + JSON poll) — implementation in events_http
     # ------------------------------------------------------------------
 
@@ -4233,6 +4348,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                    )""",
                 (message_ids_json,),
             ).fetchone()
+            # polylogue-31h8l: an unreadable session_links is a named gap,
+            # never an empty lineage. Zero rows behind a gap is exactly the
+            # confusion the terminal-outcome envelope exists to prevent, so
+            # the failure is carried out of this block rather than flattened
+            # into [].
+            gaps: list[str] = []
             try:
                 lineage_rows = archive._conn.execute(
                     "SELECT dst_origin || ':' || dst_native_id, link_type, status FROM session_links WHERE src_session_id = ? ORDER BY link_type, dst_origin, dst_native_id LIMIT 20",
@@ -4249,6 +4370,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     error_detail=str(exc),
                 )
                 lineage_rows = []
+                gaps.append("lineage_refs_unreadable")
 
         async def _cost(poly: Polylogue) -> object:
             return await self._do_get_session_cost(poly, conv_id)
@@ -4267,7 +4389,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "lineage_refs": [
                     {"session_id": str(row[0]), "kind": str(row[1]), "status": str(row[2])} for row in lineage_rows
                 ],
+                "lineage_refs_authoritative": not gaps,
                 "lineage_limit": 20,
+                "outcome": decide_outcome(
+                    matched=tool_calls + len(lineage_rows),
+                    degraded=tuple(gaps),
+                ).to_dict(),
             },
         )
 
@@ -5756,36 +5883,65 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return None
 
+    #: The only reset scope this route implements. Every other scope is
+    #: refused rather than silently accepted: polylogue-peo7o found the
+    #: default scope ("all") answering 200 {"ok": true} and emitting a
+    #: reset event with operation_id ``reset-all-all`` having touched
+    #: nothing at all. A destructive control route that reports success
+    #: for an unperformed mutation is worse than one that refuses.
+    RESET_SUPPORTED_SCOPES: ClassVar[frozenset[str]] = frozenset({"session"})
+
     @daemon_safe_handler
     def _handle_reset(self) -> None:
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        body_text = body_raw.decode("utf-8")
+        raw_content_length = self.headers.get("Content-Length", "0")
         try:
-            body = json.loads(body_text)
-        except json.JSONDecodeError:
+            content_length = int(raw_content_length)
+        except (TypeError, ValueError):
+            # A malformed Content-Length is a client framing error, not a
+            # daemon fault; without this it raised through into a 500.
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "malformed Content-Length")
+            return
+        if content_length < 0:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "negative Content-Length")
+            return
+        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            body = json.loads(body_raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
+        if not isinstance(body, dict):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "request body must be an object")
+            return
 
+        # The wire default stays "all" -- what clients actually send -- so an
+        # unchanged caller now gets the refusal it always deserved instead of
+        # a 200 that reports success for an unperformed mutation.
         scope = body.get("scope", "all")
         conv_id = body.get("session_id")
 
-        if scope == "session" and not conv_id:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        if not isinstance(scope, str) or scope not in self.RESET_SUPPORTED_SCOPES:
+            self._send_error(
+                HTTPStatus.BAD_REQUEST,
+                "unsupported_scope",
+                f"reset scope {scope!r} is not implemented by this route",
+                extra_payload={"supported_scopes": sorted(self.RESET_SUPPORTED_SCOPES)},
+            )
+            return
+        if not conv_id or not isinstance(conv_id, str):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "session_id is required")
             return
 
-        op_id = f"reset-{scope}-{conv_id[:16] if conv_id else 'all'}"
+        op_id = f"reset-{scope}-{conv_id[:16]}"
 
         async def _do_reset(poly: Polylogue) -> dict[str, object]:
-            if scope == "session" and conv_id:
-                # Route through the typed delete contract so resolution and
-                # idempotency live in ArchiveMutationsMixin (#862). The prior
-                # implementation invoked the async ``delete_session`` from
-                # a sync callback, sending the resulting coroutine into the
-                # JSON encoder unchanged.
-                result = await poly.delete_session_safe(conv_id)
-                return {"deleted": result.outcome == "deleted", "session_id": conv_id}
-            return {"ok": True}
+            # Route through the typed delete contract so resolution and
+            # idempotency live in ArchiveMutationsMixin (#862). The prior
+            # implementation invoked the async ``delete_session`` from
+            # a sync callback, sending the resulting coroutine into the
+            # JSON encoder unchanged.
+            result = await poly.delete_session_safe(conv_id)
+            return {"deleted": result.outcome == "deleted", "session_id": conv_id}
 
         result = self._sync_run(_do_reset)
 
@@ -6002,6 +6158,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 # occupying a connection thread forever.
 _ARCHIVE_QUERY_MAX_WORKERS = 8
 _ARCHIVE_QUERY_TIMEOUT_S = 30.0
+#: Default bound on a mutating route's wait for its submitted writer future
+#: (polylogue-8r4zq). Longer than the read timeout because a control mutation
+#: legitimately queues behind a convergence-pass lease hold, but finite: an
+#: unbounded wait is indistinguishable from a wedged daemon.
+_MUTATION_WAIT_TIMEOUT_S = 60.0
+#: The longest deadline a client-declared header may ask for.
+_MUTATION_WAIT_TIMEOUT_MAX_S = 300.0
 # Queue depth beyond the worker count. The adapter's admission is finite in
 # both work units and estimated bytes, so an exhausted queue rejects with typed
 # backpressure instead of accumulating behind an unbounded executor queue.

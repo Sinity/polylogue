@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -284,8 +285,24 @@ def _daemon_status_fingerprint(active_db: Path) -> str:
         try:
             parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
         except OSError:
-            parts.append(f"{candidate.name}:?")
+            # polylogue-xvwpi: a constant "?" made the fingerprint *stable*
+            # across every stat failure, so fingerprint-keyed caches kept
+            # serving a value collected before the file became unreadable.
+            # Absence is a real, stable observation and keeps a stable token;
+            # a file that exists but cannot be stat'd is an unknown input, and
+            # an unknown input invalidates -- the cache may not claim a
+            # currency it cannot establish.
+            if not candidate.exists():
+                parts.append(f"{candidate.name}:absent")
+            else:
+                parts.append(f"{candidate.name}:unreadable-{next(_UNREADABLE_FINGERPRINT_COUNTER)}")
     return "|".join(parts)
+
+
+#: Monotonic discriminator for a fingerprint input that could not be read.
+#: Each unreadable stat yields a distinct token so no cache keyed on the
+#: fingerprint can treat a pre-failure value as current (polylogue-xvwpi).
+_UNREADABLE_FINGERPRINT_COUNTER = itertools.count()
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +527,12 @@ class LiveCursorFileState(BaseModel):
 
 
 class LiveCursorSummary(BaseModel):
+    #: False when the live_cursor table could not be read at all. Every count
+    #: below is then a model default, not an observation: rendering them as
+    #: "0 failed, 0 excluded" reports a clean cursor for an unreadable one
+    #: (polylogue-xvwpi).
+    available: bool = True
+    unavailable_reason: str | None = None
     tracked_file_count: int = 0
     failed_file_count: int = 0
     excluded_file_count: int = 0
@@ -621,7 +644,9 @@ class DaemonStatus(BaseModel):
     ingest_slo: IngestSloStatus = Field(default_factory=IngestSloStatus)
     db_size_bytes: int = 0
     wal_size_bytes: int = 0
-    blob_dir_size_bytes: int = 0
+    #: ``None`` when the blob-store walk was not performed (the compact path
+    #: never performs it) -- never a fabricated zero.
+    blob_dir_size_bytes: int | None = None
     disk_free_bytes: int = 0
     fts_readiness: FTSReadiness = Field(default_factory=FTSReadiness)
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
@@ -735,11 +760,15 @@ def _db_size_info() -> dict[str, object]:
     return info
 
 
-def _blob_size_info() -> int:
+def _blob_size_info() -> int | None:
     # Status must remain responsive while convergence is reading or writing the
     # archive. A recursive blob-store walk is proportional to archive size and
     # can make `polylogued status` look hung on production archives.
-    return 0
+    #
+    # polylogue-xvwpi: declining to walk yields *no measurement*, not a
+    # measurement of zero. The literal 0 reached the operator surface as a
+    # rendered figure ("blob dir 0 B"), which is a fabricated observation.
+    return None
 
 
 def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
@@ -1298,7 +1327,7 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return LiveCursorSummary()
+        return LiveCursorSummary(available=False, unavailable_reason="live_cursor_summary_unreadable")
 
     now = datetime.now(UTC)
     failing_files: list[LiveCursorFileState] = []
@@ -3125,7 +3154,7 @@ def build_daemon_status(
         ingest_slo=ingest_slo,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
-        blob_dir_size_bytes=_v("blob_size", 0),
+        blob_dir_size_bytes=_v("blob_size", None, unmeasured=None),
         disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
         fts_readiness=fts_readiness,
         insight_freshness=insight_freshness,
@@ -3599,7 +3628,10 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         lines.append(f"Browser capture origins: {origin_text}")
     failing_files = payload.get("failing_files")
     live_cursor = payload.get("live_cursor")
-    if isinstance(live_cursor, dict):
+    if isinstance(live_cursor, dict) and live_cursor.get("available") is False:
+        reason = live_cursor.get("unavailable_reason") or "unreadable"
+        lines.append(f"Live cursor: UNREADABLE ({reason})")
+    elif isinstance(live_cursor, dict):
         excluded_count = _row_int(live_cursor.get("excluded_file_count"))
         excluded_suffix = ""
         if excluded_count:
@@ -3675,13 +3707,19 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         if isinstance(recent, list) and recent:
             latest = recent[0]
             if isinstance(latest, dict):
-                classification = str(latest.get("progress_classification", "healthy"))
+                # polylogue-xvwpi: the absent key used to default to
+                # "healthy", so a row whose progress was never classified
+                # rendered as a healthy attempt.
+                raw_classification = latest.get("progress_classification")
+                classification = str(raw_classification) if raw_classification is not None else "unknown"
                 if classification == "stuck":
                     progress_marker = " stuck"
                 elif classification == "slow":
                     progress_marker = " slow"
                 elif latest.get("stale"):
                     progress_marker = " stale"
+                elif classification == "unknown":
+                    progress_marker = " progress-unknown"
                 else:
                     progress_marker = ""
                 lines.append(

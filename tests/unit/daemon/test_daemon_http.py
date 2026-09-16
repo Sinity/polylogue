@@ -298,3 +298,217 @@ def test_reset_session_scope_requires_a_session_id() -> None:
     assert status is HTTPStatus.BAD_REQUEST
     assert isinstance(payload, dict)
     assert payload["error"] == "invalid_request"
+
+
+def test_evidence_summary_reports_degraded_when_lineage_is_unreadable(tmp_path: Path) -> None:
+    """polylogue-31h8l: an unreadable session_links is a gap, not "no lineage".
+
+    Input: ``session_links`` is dropped out from under an open archive, so the
+    route's lineage query raises ``sqlite3.OperationalError``. At the reported
+    head the ``except`` set ``lineage_rows = []`` and the 200 response carried
+    ``lineage_refs: []`` with no outcome envelope, so the reader showed "no
+    lineage" where the truth was "lineage unknown".
+
+    Anti-vacuity: deleting the ``gaps.append(...)`` (restoring the bare ``[]``
+    fallback) makes the envelope decide ``ok``/``empty`` instead of
+    ``degraded``, and both assertions below turn red.
+    """
+    import sqlite3
+    from unittest.mock import patch
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    with ArchiveStore(archive_root) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="lineage-degraded",
+                title="Lineage degraded",
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:01:00+00:00",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        text="calls",
+                        timestamp="2026-01-01T00:00:00+00:00",
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="t-ok",
+                                tool_input={"command": "run"},
+                            ),
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="t-ok",
+                                text="output",
+                                is_error=False,
+                                exit_code=0,
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        )
+
+    # Fail exactly the lineage read, the way a locked or replaced index.db
+    # fails it mid-request. Dropping the table instead would trip the archive's
+    # own schema-identity refusal on open, which is a different contract.
+    import contextlib
+
+    from polylogue.daemon import http as http_module
+
+    real_read_context = http_module.archive_read_context
+
+    class _FailingLineageConn:
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+
+        def execute(self, sql: str, *args: object) -> object:
+            if "session_links" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return self._inner.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+    class _FailingLineageArchive:
+        def __init__(self, inner: object) -> None:
+            self._inner = inner
+            self._conn = _FailingLineageConn(inner._conn)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._inner, name)
+
+    @contextlib.contextmanager
+    def _wrapped(*args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+        with real_read_context(*args, **kwargs) as archive:
+            yield _FailingLineageArchive(archive)
+
+    sent: list[tuple[HTTPStatus, object]] = []
+
+    class _RecordingHandler(DaemonAPIHandler):
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def _send_json(
+            self, status: HTTPStatus, payload: object, *, extra_headers: Mapping[str, str] | None = None
+        ) -> None:
+            sent.append((status, payload))
+
+        def _send_error(
+            self,
+            status: HTTPStatus,
+            code: str,
+            detail: str | None = None,
+            *,
+            extra_headers: Mapping[str, str] | None = None,
+            extra_payload: Mapping[str, object] | None = None,
+        ) -> None:
+            sent.append((status, code))
+
+        def _sync_run(self, handler: Callable[..., object]) -> object:
+            return {"total_usd": None, "confidence_tag": "q-missing"}
+
+    handler = _RecordingHandler(f"/api/sessions/{session_id}/evidence-summary")
+    with (
+        patch("polylogue.paths.archive_root", return_value=archive_root),
+        patch.object(http_module, "archive_read_context", _wrapped),
+    ):
+        handler._handle_get_session_evidence_summary(session_id)
+
+    assert len(sent) == 1
+    status, payload = sent[0]
+    assert status is HTTPStatus.OK, payload
+    assert isinstance(payload, dict)
+    assert payload["lineage_refs"] == []
+    assert payload["lineage_refs_authoritative"] is False
+    outcome = payload["outcome"]
+    assert isinstance(outcome, dict)
+    assert outcome["state"] == "degraded", outcome
+    assert outcome["reason"] == "lineage_refs_unreadable", outcome
+
+
+def test_evidence_summary_reports_a_readable_empty_lineage_as_authoritative(tmp_path: Path) -> None:
+    """A session that genuinely has no lineage is not reported as degraded.
+
+    This is the other half of the distinction: without it, a fix could pass
+    the degraded test by marking every response degraded.
+
+    Anti-vacuity: seeding the gap unconditionally turns this red.
+    """
+    from unittest.mock import patch
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    with ArchiveStore(archive_root) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="lineage-empty",
+                title="Lineage empty",
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:01:00+00:00",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="hello",
+                        timestamp="2026-01-01T00:00:00+00:00",
+                    )
+                ],
+            ),
+        )
+
+    sent: list[tuple[HTTPStatus, object]] = []
+
+    class _RecordingHandler(DaemonAPIHandler):
+        def __init__(self, path: str) -> None:
+            self.path = path
+
+        def _send_json(
+            self, status: HTTPStatus, payload: object, *, extra_headers: Mapping[str, str] | None = None
+        ) -> None:
+            sent.append((status, payload))
+
+        def _send_error(
+            self,
+            status: HTTPStatus,
+            code: str,
+            detail: str | None = None,
+            *,
+            extra_headers: Mapping[str, str] | None = None,
+            extra_payload: Mapping[str, object] | None = None,
+        ) -> None:
+            sent.append((status, code))
+
+        def _sync_run(self, handler: Callable[..., object]) -> object:
+            return {"total_usd": None, "confidence_tag": "q-missing"}
+
+    handler = _RecordingHandler(f"/api/sessions/{session_id}/evidence-summary")
+    with patch("polylogue.paths.archive_root", return_value=archive_root):
+        handler._handle_get_session_evidence_summary(session_id)
+
+    status, payload = sent[0]
+    assert status is HTTPStatus.OK
+    assert isinstance(payload, dict)
+    assert payload["lineage_refs"] == []
+    assert payload["lineage_refs_authoritative"] is True
+    assert payload["outcome"]["state"] != "degraded", payload["outcome"]
