@@ -19,6 +19,7 @@ import ast
 import gzip
 import hashlib
 import json
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -282,31 +283,135 @@ def _module_path(base: Path) -> Path | None:
     return package_init.resolve() if package_init.is_file() else None
 
 
+#: Bump when edge resolution below changes shape; it is part of the disk key.
+_IMPORT_EDGE_MEMO_VERSION = 1
+#: Import edges memoized across processes, keyed by ``label\0content digest``.
+#: ``None`` until the memo file has been consulted once.
+_IMPORT_EDGES: dict[str, list[str]] | None = None
+_IMPORT_EDGES_ADDED = False
+
+
+def _import_edge_memo_path() -> Path | None:
+    """Where the cross-process import-edge memo lives, or None where none can."""
+    root = _SOURCE_ROOT / ".cache" / "source-fingerprints"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return root / f"import-edges-v{_IMPORT_EDGE_MEMO_VERSION}.json"
+
+
+def _load_import_edges() -> dict[str, list[str]]:
+    """The memo as it stands on disk, read at most once per process."""
+    global _IMPORT_EDGES
+    if _IMPORT_EDGES is not None:
+        return _IMPORT_EDGES
+    edges: dict[str, list[str]] = {}
+    memo = _import_edge_memo_path()
+    if memo is not None:
+        try:
+            loaded = json.loads(memo.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            loaded = None
+        if isinstance(loaded, dict):
+            edges = {
+                key: [str(item) for item in value]
+                for key, value in loaded.items()
+                if isinstance(key, str) and isinstance(value, list)
+            }
+    _IMPORT_EDGES = edges
+    return edges
+
+
+def _flush_import_edges() -> None:
+    """Publish edges this process learned, merged over whatever is on disk now.
+
+    A concurrent writer's entries are kept: every key names a file's exact
+    contents, so two processes that both parsed a file agree on its value and
+    the merge can only lose an addition, never record a wrong edge.
+    """
+    global _IMPORT_EDGES_ADDED
+    if not _IMPORT_EDGES_ADDED or _IMPORT_EDGES is None:
+        return
+    memo = _import_edge_memo_path()
+    if memo is None:
+        _IMPORT_EDGES_ADDED = False
+        return
+    merged = dict(_IMPORT_EDGES)
+    try:
+        existing = json.loads(memo.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        existing = None
+    if isinstance(existing, dict):
+        for key, value in existing.items():
+            if isinstance(key, str) and isinstance(value, list):
+                merged.setdefault(key, [str(item) for item in value])
+    try:
+        scratch = memo.with_name(f"{memo.name}.{os.getpid()}.tmp")
+        scratch.write_text(json.dumps(merged, sort_keys=True), encoding="utf-8")
+        scratch.replace(memo)
+    except OSError:
+        pass
+    _IMPORT_EDGES_ADDED = False
+
+
+def _import_edge_key(signature: tuple[str, str, int]) -> str:
+    """Identify one file's edges by where it sits and what it contains.
+
+    The content digest alone would not do: two byte-identical modules in
+    different packages resolve their relative imports to different files.
+    """
+    return f"{_fingerprint_path_label(Path(signature[0]))}\0{signature[1]}"
+
+
 @lru_cache(maxsize=2048)
 def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
-    """Return local Python dependencies of one parser-semantic source file."""
+    """Return local Python dependencies of one parser-semantic source file.
+
+    Parsing the closure is the dominant cost of importing the archive tiers --
+    about 9.6 s of a 14 s single-file pytest collection, paid again by every
+    xdist worker and every CLI start -- so the edges outlive the process in a
+    memo keyed by each file's contents. An edited file has a new key and is
+    re-parsed; nothing invalidates by time.
+    """
+    global _IMPORT_EDGES_ADDED
+    edges = _load_import_edges()
+    key = _import_edge_key(signature)
+    bases = edges.get(key)
+    if bases is None:
+        bases = list(_import_bases(signature))
+        edges[key] = bases
+        _IMPORT_EDGES_ADDED = True
+    found = {resolved for label in bases if (resolved := _module_path(_source_path(label, _SOURCE_ROOT))) is not None}
+    return tuple(sorted(str(item) for item in found))
+
+
+def _import_bases(signature: tuple[str, str, int]) -> tuple[str, ...]:
+    """The extensionless module bases one source file imports from this tree.
+
+    Deliberately lexical: what is memoized is what the file's own text says,
+    never which of those modules happened to exist when it was parsed. A
+    module added or deleted elsewhere changes the closure of an unedited
+    importer, and resolving the bases on every call is what keeps that true
+    while the parse stays memoized.
+    """
     path = Path(signature[0])
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    found: set[Path] = set()
+    bases: set[Path] = set()
     for node in ast.walk(tree):
-        candidate: Path | None = None
         if isinstance(node, ast.ImportFrom):
             if node.level:
                 base = path.parent
                 for _ in range(node.level - 1):
                     base = base.parent
-                candidate = _module_path(base / Path(*(node.module or "").split(".")))
+                bases.add(base / Path(*(node.module or "").split(".")))
             elif node.module and node.module.startswith("polylogue."):
-                candidate = _module_path(_SOURCE_ROOT / Path(*node.module.split(".")))
+                bases.add(_SOURCE_ROOT / Path(*node.module.split(".")))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith("polylogue."):
-                    resolved = _module_path(_SOURCE_ROOT / Path(*alias.name.split(".")))
-                    if resolved is not None:
-                        found.add(resolved)
-        if candidate is not None:
-            found.add(candidate)
-    return tuple(sorted(str(item) for item in found))
+                    bases.add(_SOURCE_ROOT / Path(*alias.name.split(".")))
+    return tuple(sorted(_fingerprint_path_label(item) for item in bases))
 
 
 @lru_cache(maxsize=64)
@@ -322,6 +427,7 @@ def _semantic_source_closure(root: Path, paths: tuple[str, ...], excluded_labels
         found.add(path)
         for dependency in _local_import_paths(_source_signature(path)):
             pending.append(Path(dependency))
+    _flush_import_edges()
     return tuple(sorted(found))
 
 
