@@ -55,6 +55,7 @@ from polylogue.archive.topology.edge import (
     TopologyEdgeStatus,
 )
 from polylogue.core.enums import BlockType, LinkType, Origin, Provider
+from polylogue.logging import capture
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -426,8 +427,12 @@ def test_unreadable_spawn_edge_projection_is_reported_not_silently_rootless(
     conn = _index_conn(tmp_path / "index.db")
     monkeypatch.setitem(sys.modules, "polylogue.sources.codex_state_projection", None)
 
-    with caplog.at_level("WARNING"):
+    with capture() as events:
         claim = _codex_spawn_edge_parent_claim(conn, None, child_native_id="child-thread")
 
     assert claim is None
-    assert "parent projection unavailable for child child-thread" in caplog.text
+    assert any(
+        event["event"] == "storage.codex_spawn_edge.parent_projection_unavailable"
+        and event.get("session_id") == "child-thread"
+        for event in events
+    )

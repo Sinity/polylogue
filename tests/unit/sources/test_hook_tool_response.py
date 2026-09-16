@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider, Role
+from polylogue.logging import capture
 from polylogue.sources.live.hook_tool_response import (
     BASH_STDOUT_CAP_CHARS,
     HOOK_TOOL_RESPONSE_EVENT_TYPE,
@@ -321,8 +322,8 @@ def test_failed_hook_recovery_is_reported_not_swallowed_at_debug(
     monkeypatch.setattr(hook_tool_response, "recover_persisted_tool_results", refuse)
     convo = _session(_tool_result("tool-1", _truncated_inline("/tmp/whatever")))
 
-    with caplog.at_level("WARNING"):
+    with capture() as events:
         recovered = ingest_worker._with_hook_recovered_tool_results(convo, archive_root=tmp_path)
 
     assert recovered is convo
-    assert "hook tool_response recovery failed" in caplog.text
+    assert any(event["event"] == "pipeline.hook_tool_response.recovery_failed" for event in events)

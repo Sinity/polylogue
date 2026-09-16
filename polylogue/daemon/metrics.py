@@ -725,7 +725,7 @@ def _embedding_message_count(conn: sqlite3.Connection, *, status_table: str = ""
 
 
 def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
-    total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions")
+    total_sessions = _scalar_int(conn, "SELECT COUNT(*) FROM sessions") if _table_exists(conn, "sessions") else 0
     embedded_sessions = 0
     pending_sessions = 0
     failed_sessions = 0
@@ -1480,14 +1480,16 @@ def _emit_hook_flow_metrics(lines: list[str], configured_root: Path) -> None:
 
 
 def _emit_archive_index_metrics(lines: list[str], conn: sqlite3.Connection) -> None:
-    session_cols = _columns(conn, "sessions")
+    session_cols = _columns(conn, "sessions") if _table_exists(conn, "sessions") else set()
     if "origin" in session_cols:
         session_rows = conn.execute("SELECT origin, COUNT(*) FROM sessions GROUP BY origin ORDER BY origin").fetchall()
         session_samples: list[tuple[dict[str, str] | None, int | float]] = [
             ({"source": str(row[0])}, int(row[1])) for row in session_rows
         ]
     else:
-        session_samples = [(None, _scalar_int(conn, "SELECT COUNT(*) FROM sessions"))]
+        session_samples = [
+            (None, _scalar_int(conn, "SELECT COUNT(*) FROM sessions") if _table_exists(conn, "sessions") else 0)
+        ]
     _emit_metric(
         lines,
         name="polylogue_archive_sessions_total",
@@ -1875,7 +1877,11 @@ def _emit_archive_source_index_link_metrics(
 
     source_db = db_path.with_name("source.db")
     if not source_db.exists():
-        raw_links = _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
+        raw_links = (
+            _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
+            if _table_exists(conn, "sessions")
+            else 0
+        )
         _emit_metric(
             lines,
             name="polylogue_archive_source_index_links_total",

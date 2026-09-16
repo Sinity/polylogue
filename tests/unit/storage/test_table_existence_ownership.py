@@ -66,7 +66,7 @@ def test_the_temp_schema_is_reachable_through_the_same_primitive() -> None:
 
 def test_no_module_declares_its_own_relation_existence_probe() -> None:
     package_root = Path(polylogue.__file__).resolve().parent
-    introspection = package_root / "storage" / "introspection.py"
+    introspection = package_root / "core" / "sqlite_introspection.py"
     offenders: list[str] = []
     for path in sorted(package_root.rglob("*.py")):
         if path == introspection:

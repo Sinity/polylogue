@@ -3264,12 +3264,10 @@ def census_parse_worker(
 #: ``profile_root``/artifact path from ``source_path``
 #: (the retired Antigravity brain-metadata session route);
 #: ``Provider.HERMES``'s ATOF/ATIF/verification-evidence modes likewise
-#: derive ``profile_root`` from ``source_path``; ``Provider.GROK`` exports
-#: carry no native conversation id, so the parser's
-#: ``provider_session_id`` IS ``Path(source_path).stem``
-#: (polylogue-8t9bj) -- deduping two same-bytes Grok raws across paths
-#: would collapse two distinct sessions into one identity. Those keep the
-#: conservative same-path-only dedup below. ``Provider.UNKNOWN`` (browser
+#: derive ``profile_root`` from ``source_path``. Those keep the
+#: conservative same-path-only dedup below. ``Provider.GROK`` is
+#: path-independent: its identity is content-derived (polylogue-31zag), so
+#: two same-bytes exports at different paths are one conversation. ``Provider.UNKNOWN`` (browser
 #: capture / unclassified) is also excluded out of caution -- its identity
 #: derivation is not centrally audited here.
 _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
@@ -3281,6 +3279,7 @@ _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
         Provider.CODEX,
         Provider.GEMINI,
         Provider.GEMINI_CLI,
+        Provider.GROK,
         Provider.DRIVE,
     }
 )

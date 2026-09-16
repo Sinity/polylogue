@@ -167,8 +167,9 @@ def test_unreadable_ingest_ledger_cannot_certify_performance_is_measurable(
     status = _build()
 
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
-    assert claim_guard["perf_measurable"]["value"] is False
-    assert "cannot rule out a concurrent archive writer" in str(claim_guard["perf_measurable"]["reason"])
+    # Withheld, not refuted: the ledger was never read (polylogue-g88v4).
+    assert claim_guard["perf_measurable"]["value"] is None
+    assert claim_guard["perf_measurable"]["determinate"] is False
     readiness = cast(dict[str, dict[str, object]], status.component_readiness)
     assert readiness["daemon_ingest"]["state"] == "unknown"
 

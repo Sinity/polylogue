@@ -2332,7 +2332,7 @@ class TestWebUIV2:
         from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        message_count = 45  # > SESSION_READ_MESSAGE_LIMIT (30)
+        message_count = 65  # > DEFAULT_MESSAGE_PAGE_LIMIT (50)
         with ArchiveStore(workspace_env["archive_root"]) as archive:
             session_id = write_index_session(
                 archive,
@@ -2357,27 +2357,27 @@ class TestWebUIV2:
             status, _, html_body = _get_text(base_url, f"/sessions/{quote(session_id, safe='')}")
             assert status == HTTPStatus.OK
             # First paint composed only the first page: the true total is
-            # reported, but a message beyond SESSION_READ_MESSAGE_LIMIT is
+            # reported, but a message beyond DEFAULT_MESSAGE_PAGE_LIMIT is
             # not present in the SSR body.
-            assert "Showing 30 of 45 messages" in html_body
+            assert "Showing 50 of 65 messages" in html_body
             assert "message body 0" in html_body
-            assert "message body 29" in html_body
-            assert "message body 30" not in html_body
-            assert "message body 44" not in html_body
+            assert "message body 49" in html_body
+            assert "message body 50" not in html_body
+            assert "message body 64" not in html_body
 
             # The "load more" API reaches the remaining messages, and its
             # own total also reflects the true count, not the page size.
             r_status, remainder = _get_json_ex(
                 base_url,
-                f"/api/sessions/{quote(session_id, safe='')}/read?view=messages&limit=30&offset=30",
+                f"/api/sessions/{quote(session_id, safe='')}/read?view=messages&limit=50&offset=50",
             )
         assert r_status == 200, remainder
         remainder_payload = cast(dict[str, object], remainder["payload"])
         remainder_messages = cast(list[dict[str, object]], remainder_payload["messages"])
-        assert remainder_payload["total"] == 45
+        assert remainder_payload["total"] == 65
         assert len(remainder_messages) == 15
-        assert remainder_messages[0]["text"] == "message body 30"
-        assert remainder_messages[-1]["text"] == "message body 44"
+        assert remainder_messages[0]["text"] == "message body 50"
+        assert remainder_messages[-1]["text"] == "message body 64"
 
     def test_cost_page_serves_lane_legend_and_honest_absence_with_no_priced_sessions(
         self,

@@ -556,9 +556,11 @@ class RawMaterializationDiscovery:
         self._max_payload_bytes = max_payload_bytes
         self._binding: _RawDiscoveryBinding | None = None
         self._cursor: str | None = None
-        #: The continuation start of the page currently being offered, and how
-        #: many of its keys were still unprocessed when it was last inspected.
-        self._held_page: tuple[str | None, int] | None = None
+        #: The continuation start of the page currently being offered and the
+        #: keys it still owed when it was last inspected. A page at the same
+        #: cursor that now owes a key it did not owe before is new work, not a
+        #: stalled head.
+        self._held_page: tuple[str | None, tuple[str, ...]] | None = None
         self._frontier: int = 0
         self._arrivals_first = False
 
@@ -673,7 +675,7 @@ class RawMaterializationDiscovery:
                 self._held_page = None
                 return ()
             held = self._held_page
-            if held is not None and held[0] == page_cursor and len(selected) >= held[1]:
+            if held is not None and held[0] == page_cursor and set(held[1]) >= set(selected):
                 # Re-inspected the same page and nothing moved: the blockage is
                 # not budget pressure, so stop pinning the traversal behind it
                 # and go on to the next page in this same call.
@@ -688,7 +690,7 @@ class RawMaterializationDiscovery:
             # ``DerivationRunner.run_domain`` avoids with its ``stopped_at``
             # offset. The authority for "processed" is the output relation
             # re-inspected on the next pass.
-            self._held_page = (page_cursor, len(selected))
+            self._held_page = (page_cursor, selected)
             self._cursor = page_cursor
             return selected
         return ()

@@ -225,8 +225,13 @@ class TestSharedLimitCeiling:
         # to the ceiling.
         assert _limit({"limit": 25}) == 25
         assert _limit({"limit": MAX_QUERY_LIMIT}) == MAX_QUERY_LIMIT
-        assert _limit({"limit": 0}) == DEFAULT_SESSION_LIST_LIMIT
-        assert _limit({"limit": -5}) == DEFAULT_SESSION_LIST_LIMIT
+        # A non-positive explicit limit is a usage fault (polylogue-45pkf);
+        # only an absent limit falls back to the list default.
+        import click
+
+        for bad in (0, -5):
+            with pytest.raises(click.UsageError):
+                _limit({"limit": bad})
         assert _limit({}) == DEFAULT_SESSION_LIST_LIMIT
 
 

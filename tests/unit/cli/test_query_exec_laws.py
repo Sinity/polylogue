@@ -3087,7 +3087,7 @@ def test_async_execute_query_archive_reads_session_by_id(
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "session"
     assert payload["session_id"] == "codex-session:native-1"
-    assert payload["source"] == "codex-session"
+    assert "source" not in payload
     assert payload["origin"] == "codex-session"
     assert payload["messages"][0]["blocks"][0]["text"] == "hello from v1"
 
