@@ -1272,11 +1272,21 @@ def test_two_authoritative_parents_for_one_child_trips_the_check(tmp_path: Path)
 
 
 def test_resolved_contradiction_is_reported_without_erroring(tmp_path: Path) -> None:
-    """The resolved shape -- loser plus authoritative winner -- is OK."""
+    """The resolved shape -- loser plus authoritative winner -- is OK.
+
+    The fixture also carries the ``codex_thread_spawn_edges`` row the verdict
+    was decided from: a hook-derived mark whose evidence is gone is its own
+    warning class (polylogue-p1naz), so a coherent archive must show the
+    evidence still standing.
+    """
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "INSERT INTO codex_thread_spawn_edges(source_scope, parent_thread_id, child_thread_id, "
+            "status, observed_at_ms) VALUES ('', 'hook-parent', 'session', 'active', 100)"
+        )
         conn.executemany(
             """
             INSERT INTO session_links(
@@ -1299,6 +1309,50 @@ def test_resolved_contradiction_is_reported_without_erroring(tmp_path: Path) -> 
     assert check.evidence["contradicted_count"] == 1
     assert check.evidence["authoritative_count"] == 1
     assert check.evidence["unresolved_contradiction_count"] == 0
+    assert check.evidence["evidence_destroyed_verdict_count"] == 0
+
+
+def test_hook_verdict_is_flagged_when_its_durable_evidence_is_destroyed(tmp_path: Path) -> None:
+    """Deleting the evidence freezes the verdict; the check must say so.
+
+    Excision (and any hook-spool prune) can destroy the
+    ``codex_thread_spawn_edge`` claim that demoted one edge and promoted
+    another. Nothing re-derives those marks, and retaining the last recorded
+    verdict is the intended policy for a durable tier -- so the marks stay and
+    the archive reports a distinct warning class naming them
+    (polylogue-p1naz).
+
+    Anti-vacuity: seed the spawn edge back (as the coherent-archive test does)
+    and the status returns to OK; drop the source-spool consultation from
+    ``_hook_verdicts_without_evidence`` and a live hook spool that still
+    carries the claim would be reported as destroyed.
+    """
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executemany(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                status, method, observed_at_ms
+            ) VALUES ('codex-session:session', 'codex-session', ?, 'subagent', ?, ?, 100)
+            """,
+            [
+                ("inferred-parent", "authority-contradicted", HOOK_CONTRADICTED_LINK_METHOD),
+                ("hook-parent", None, HOOK_AUTHORITATIVE_LINK_METHOD),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("hook-authority-topology-conflict",))
+    check = _check(report, "hook-authority-topology-conflict")
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["evidence_destroyed_verdict_count"] == 2
+    assert check.evidence["unresolved_contradiction_count"] == 0
+    assert "destroyed" in check.summary
 
 
 def test_dangling_branch_point_message_trips_lineage_sanity(tmp_path: Path) -> None:

@@ -285,6 +285,34 @@ reported as `ExcisionReceipt.retained_hook_events`, which makes
 CLI's success line — a privacy operation never reports unqualified success
 over content that survived it.
 
+**Declared reach.** Which source-tier relations an excision must reach is
+derived from the live schema rather than from a hand-kept list
+(`polylogue/security/excision_carriers.py`). Every table carrying a session
+key — a `raw_id` column, or an `(origin, session_native_id)` pair — must have
+a declared reach: `raw-cascade` (removed by the database when the
+`raw_sessions` row goes, re-checked against the live
+`PRAGMA foreign_key_list`), `excised` (deleted by the apply by name),
+`container` (per-member disposition below), or `retired`. A session-keyed
+table with no declared reach makes `resolve_session_excision_target` raise
+`UnclassifiedSessionCarrierError` naming it, so a newly added evidence class
+is either covered or loudly refused — never silently exempt.
+
+**Telemetry spans.** `otlp_spans` carries the same `(origin,
+session_native_id)` key as hook evidence and no raw row; its
+attributes/events are deleted with the session.
+
+**Container payloads.** One `source_items` row can be a container export
+covering many sessions, and it is a blob-liveness owner, so deleting the
+session's raw acquisition alone left the bytes GC-rooted. Disposition is per
+member: the session's `source_item_raw_members` rows are deleted (each
+member's blob hash marked excised), and the container row itself is deleted
+only when no member with a live `raw_id` remains. A container kept alive by
+another session's member still holds the excised bytes, so it is reported as
+`ExcisionReceipt.retained_source_containers`, makes `complete` false, and
+appends an `INCOMPLETE:` clause to the CLI's success line. Any
+`blob_publication_reservations` row reserving a now-excised hash is dropped
+with it.
+
 **Fact-tier evidence.** Artifacts admitted `parse_policy='fact'` mint no
 `sessions` row. Claude Code TODO plan snapshots
 (`todos/<session-uuid>[-agent-<uuid>].json`) are linked to their session
