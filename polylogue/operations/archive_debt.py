@@ -301,11 +301,11 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
 def _revision_quarantine_sql(conn: sqlite3.Connection) -> tuple[str, tuple[object, ...]]:
     """Return the SQL the materialization pass itself uses to decline a raw.
 
-    Mirrors the ``membership_authority_quarantined`` and
-    ``byte_authority_quarantined`` branches of
-    ``polylogue.storage.raw_convergence._raw_materialization_candidate_ids``.
-    A raw matching either one is refused by every convergence pass, so it is
-    not pending parse work and must not be reported as such.
+    Mirrors the membership-authority and byte-authority quarantine evidence
+    that raw materialization consults when it selects candidates: a raw whose
+    membership census recorded an ambiguous decision, or whose byte-authority
+    census failed, is refused by every convergence pass, so it is not pending
+    parse work and must not be reported as such.
 
     ``raw_sessions.revision_authority`` defaults to ``quarantined`` at
     acquisition, so that column alone cannot distinguish a governed refusal
