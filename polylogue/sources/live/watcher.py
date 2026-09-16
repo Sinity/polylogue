@@ -334,7 +334,10 @@ def hook_carrier_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[Wa
 
     return tuple(
         WatchSource(
-            name=provider,
+            # Distinct from the provider's own session source of the same
+            # harness name: two sources may not share a name, or every
+            # by-name lookup silently sees only the last one.
+            name=f"{provider}-hooks",
             root=hook_carrier_provider_dir(provider, spec.root),
             suffixes=(".ndjson",),
             source_id=f"{spec.source_id}:{provider}",

@@ -873,7 +873,9 @@ def test_polylogued_run_can_skip_configured_source_catchup() -> None:
         "antigravity",
         "browser-capture",
         "inbox",
-        "hooks",
+        "claude-code-hooks",
+        "codex-hooks",
+        "hermes-hooks",
     }
 
 
