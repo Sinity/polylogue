@@ -421,17 +421,7 @@ def read_spawn_edges(conn: sqlite3.Connection, *, source_scope: str | None = Non
 
 def read_spawn_edge_children(conn: sqlite3.Connection) -> set[str]:
     """Return every child thread id the graph carries a spawn edge for."""
-    try:
-        rows = conn.execute(
-            "SELECT DISTINCT target_ref FROM work_evidence_edges WHERE graph_id LIKE ? AND edge_kind = 'invoked'",
-            (f"{GRAPH_PREFIX}%",),
-        ).fetchall()
-    except sqlite3.Error as exc:
-        logger.debug("Failed to read projected spawn-edge children: %s", exc)
-        return set()
-    children = {thread_id_from_context_ref(str(row[0])) for row in rows}
-    children.discard("")
-    return children
+    return {child for _parent, child in read_spawn_edges(conn)}
 
 
 def read_parent_thread_id(

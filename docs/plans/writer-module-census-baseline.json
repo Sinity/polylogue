@@ -146,12 +146,6 @@
     ]
   },
   {
-    "file": "polylogue/sources/codex_state_projection.py",
-    "tiers": [
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/sources/live/cursor.py",
     "tiers": [
       "ops"
@@ -336,6 +330,12 @@
   },
   {
     "file": "polylogue/storage/sqlite/action_pairs.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/agent_thread_state.py",
     "tiers": [
       "index"
     ]
