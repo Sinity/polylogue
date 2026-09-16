@@ -135,6 +135,205 @@ def _query_date_ms(field: str, value: object) -> int | None:
     return int(parsed.timestamp() * 1000)
 
 
+TerminalFilterKind = Literal["string", "integer", "boolean"]
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalFilterParameter:
+    """One surface-facing session filter accepted by terminal query-unit reads.
+
+    ``query_unit_session_filters`` takes ``**params``, so before this table the
+    only enumeration of the accepted names lived in hand-typed OpenAPI
+    parameter objects, which had already drifted (``origins`` and
+    ``exclude_origin`` reach the handler but were undocumented).  This is the
+    single declaration of that surface: ``devtools render openapi`` projects it
+    into the ``/api/query-units`` parameter list, and
+    ``tests/unit/daemon/test_query_unit_filter_declarations.py`` resolves every
+    row against the live handler call and the live filter lowering, so a
+    declared-but-dead row and a live-but-undeclared parameter both fail.
+    """
+
+    #: Public query-parameter name on ``GET /api/query-units``.
+    name: str
+    #: The ``query_unit_request`` keyword the handler passes it as.
+    request_kwarg: str
+    #: The ``session_filters`` key it lowers to.
+    filter_key: str
+    kind: TerminalFilterKind
+    description: str
+
+
+TERMINAL_FILTER_PARAMETERS: tuple[TerminalFilterParameter, ...] = (
+    TerminalFilterParameter(
+        "origin", "origin", "origin", "string", "Optional session-origin scope for terminal row results."
+    ),
+    TerminalFilterParameter(
+        "origins",
+        "origins",
+        "origins",
+        "string",
+        "Optional comma-separated session-origin scope for terminal row results.",
+    ),
+    TerminalFilterParameter(
+        "exclude_origin",
+        "exclude_origin",
+        "excluded_origins",
+        "string",
+        "Optional comma-separated session origins excluded from terminal row results.",
+    ),
+    TerminalFilterParameter("tag", "tag", "tags", "string", "Optional session tag scope for terminal row results."),
+    TerminalFilterParameter(
+        "exclude_tag",
+        "exclude_tag",
+        "excluded_tags",
+        "string",
+        "Optional comma-separated session tags to exclude from terminal row results.",
+    ),
+    TerminalFilterParameter(
+        "repo", "repo", "repo_names", "string", "Optional comma-separated repo-name scope for terminal row results."
+    ),
+    TerminalFilterParameter(
+        "has_type",
+        "has_type",
+        "has_types",
+        "string",
+        "Optional comma-separated block types required on the containing session.",
+    ),
+    TerminalFilterParameter(
+        "referenced_path",
+        "referenced_path",
+        "referenced_paths",
+        "string",
+        "Optional comma-separated referenced paths required on the containing session.",
+    ),
+    TerminalFilterParameter(
+        "cwd_prefix",
+        "cwd_prefix",
+        "cwd_prefix",
+        "string",
+        "Optional working-directory prefix required on the containing session.",
+    ),
+    TerminalFilterParameter(
+        "tool",
+        "tool",
+        "tool_terms",
+        "string",
+        "Optional comma-separated tool names required on the containing session.",
+    ),
+    TerminalFilterParameter(
+        "exclude_tool",
+        "exclude_tool",
+        "excluded_tool_terms",
+        "string",
+        "Optional comma-separated tool names excluded from the containing session.",
+    ),
+    TerminalFilterParameter(
+        "action",
+        "action",
+        "action_terms",
+        "string",
+        "Optional comma-separated action kinds required on the containing session.",
+    ),
+    TerminalFilterParameter(
+        "exclude_action",
+        "exclude_action",
+        "excluded_action_terms",
+        "string",
+        "Optional comma-separated action kinds excluded from the containing session.",
+    ),
+    TerminalFilterParameter(
+        "action_sequence",
+        "action_sequence",
+        "action_sequence",
+        "string",
+        "Optional action sequence required on the containing session.",
+    ),
+    TerminalFilterParameter(
+        "action_text",
+        "action_text",
+        "action_text_terms",
+        "string",
+        "Optional action text required on the containing session.",
+    ),
+    TerminalFilterParameter(
+        "title", "title", "title", "string", "Optional session-title substring scope for terminal row results."
+    ),
+    TerminalFilterParameter(
+        "since", "since", "since_ms", "string", "Optional session lower time bound, using the shared query date parser."
+    ),
+    TerminalFilterParameter(
+        "until", "until", "until_ms", "string", "Optional session upper time bound, using the shared query date parser."
+    ),
+    TerminalFilterParameter(
+        "has_tool_use",
+        "has_tool_use",
+        "has_tool_use",
+        "boolean",
+        "Restrict terminal rows to sessions with tool-use evidence.",
+    ),
+    TerminalFilterParameter(
+        "has_paste_evidence",
+        "has_paste",
+        "has_paste",
+        "boolean",
+        "Restrict terminal rows to sessions with paste evidence.",
+    ),
+    TerminalFilterParameter(
+        "has_thinking",
+        "has_thinking",
+        "has_thinking",
+        "boolean",
+        "Restrict terminal rows to sessions with thinking blocks.",
+    ),
+    TerminalFilterParameter(
+        "typed_only",
+        "typed_only",
+        "typed_only",
+        "boolean",
+        "Restrict terminal rows to typed sessions without paste evidence.",
+    ),
+    TerminalFilterParameter(
+        "min_messages",
+        "min_messages",
+        "min_messages",
+        "integer",
+        "Restrict terminal rows to sessions with at least this many messages.",
+    ),
+    TerminalFilterParameter(
+        "max_messages",
+        "max_messages",
+        "max_messages",
+        "integer",
+        "Restrict terminal rows to sessions with at most this many messages.",
+    ),
+    TerminalFilterParameter(
+        "min_words",
+        "min_words",
+        "min_words",
+        "integer",
+        "Restrict terminal rows to sessions with at least this many words.",
+    ),
+    TerminalFilterParameter(
+        "max_words",
+        "max_words",
+        "max_words",
+        "integer",
+        "Restrict terminal rows to sessions with at most this many words.",
+    ),
+    TerminalFilterParameter(
+        "message_type",
+        "message_type",
+        "message_type",
+        "string",
+        "Restrict terminal rows by session message-type evidence.",
+    ),
+)
+
+TERMINAL_FILTER_PARAMETER_BY_NAME: dict[str, TerminalFilterParameter] = {
+    parameter.name: parameter for parameter in TERMINAL_FILTER_PARAMETERS
+}
+
+
 def query_unit_session_filters(**params: object) -> dict[str, object]:
     """Normalize shared session filters for terminal query-unit rows.
 
@@ -755,6 +954,9 @@ def query_unit_envelope(
 
 
 __all__ = [
+    "TERMINAL_FILTER_PARAMETERS",
+    "TERMINAL_FILTER_PARAMETER_BY_NAME",
+    "TerminalFilterParameter",
     "QueryUnitRequest",
     "TERMINAL_ACTION_EXECUTORS",
     "TerminalExecutionContext",
