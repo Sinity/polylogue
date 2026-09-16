@@ -685,17 +685,17 @@ def test_transient_sqlite_failure_reading_the_manifest_is_retryable_not_a_rebuil
     reads ``rebuild_index`` instead of ``retry``.
     """
     db_path = _planted_db(tmp_path, planted_version=SCHEMA_VERSION)
-    conn = sqlite3.connect(db_path)
 
-    real_execute = conn.execute
+    class _ShapeReadLocked(sqlite3.Connection):
+        """Reads ``user_version`` normally; the shape inspection is locked out."""
 
-    def failing_execute(sql: str, *args: Any) -> sqlite3.Cursor:
-        if "sqlite_master" in sql or "table_info" in sql:
-            raise sqlite3.OperationalError("database is locked")
-        return real_execute(sql, *args)
+        def execute(self, sql: str, *args: Any) -> sqlite3.Cursor:
+            if "sqlite_master" in sql or "table_info" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return super().execute(sql, *args)
 
+    conn = sqlite3.connect(db_path, factory=_ShapeReadLocked)
     try:
-        conn.execute = failing_execute  # type: ignore[method-assign]
         with pytest.raises(SchemaVersionMismatchError) as caught:
             assert_readable_archive_layout(conn)
     finally:
