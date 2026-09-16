@@ -40,7 +40,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD
+from polylogue.archive.topology.edge import (
+    HOOK_AUTHORITATIVE_LINK_METHOD,
+    HOOK_CONTRADICTED_LINK_METHOD,
+    HOOK_DERIVED_LINK_METHODS,
+)
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import (
     BoundOutcomeOwner,
@@ -1662,6 +1666,15 @@ def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: in
                 (HOOK_AUTHORITATIVE_LINK_METHOD,),
             ).fetchone()[0]
         )
+        # A hook-derived mark is a verdict about durable evidence. Deleting
+        # that evidence -- an excision, a hook-spool prune -- leaves the loser
+        # quarantined and the winner authoritative on evidence that no longer
+        # exists, and nothing re-derives it (polylogue-p1naz). Retaining the
+        # last recorded verdict is the intended policy for a durable tier, so
+        # this is reported as its own warning class rather than an error: the
+        # mark stays, and an operator can see exactly which verdicts now rest
+        # on destroyed evidence.
+        orphaned_verdicts = _hook_verdicts_without_evidence(conn, archive_root)
     except sqlite3.Error as exc:
         return _error_check("hook-authority-topology-conflict", f"could not read index.db: {exc}", exc=exc)
     finally:
@@ -1672,15 +1685,24 @@ def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: in
         problems.append(f"contradicted edge without an authoritative winner x{unresolved_count}")
     if multi_authoritative_count:
         problems.append(f"child with more than one authoritative parent x{multi_authoritative_count}")
-    status = OutcomeStatus.ERROR if problems else OutcomeStatus.OK
-    summary = (
-        "; ".join(problems)
-        if problems
-        else (
+    if problems:
+        status = OutcomeStatus.ERROR
+    elif orphaned_verdicts:
+        status = OutcomeStatus.WARNING
+    else:
+        status = OutcomeStatus.OK
+    if problems:
+        summary = "; ".join(problems)
+    else:
+        summary = (
             f"{contradicted_count} hook/inference contradiction(s), each resolved to authoritative evidence; "
             f"{authoritative_count} authoritative edge(s)"
         )
-    )
+        if orphaned_verdicts:
+            summary += (
+                f"; {len(orphaned_verdicts)} hook-derived verdict(s) retained after their durable "
+                "evidence was destroyed"
+            )
     return ArchiveVerificationCheck(
         name="hook-authority-topology-conflict",
         status=status,
@@ -1693,8 +1715,81 @@ def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: in
             "unresolved_contradiction_sample": [str(row[0]) for row in unresolved_rows],
             "multi_authoritative_count": multi_authoritative_count,
             "multi_authoritative_sample": [f"{row[0]}:{row[1]}={row[2]}" for row in multi_authoritative_rows],
+            "evidence_destroyed_verdict_count": len(orphaned_verdicts),
+            "evidence_destroyed_verdict_sample": list(orphaned_verdicts[:sample_limit]),
         },
     )
+
+
+def _hook_verdicts_without_evidence(
+    index_conn: sqlite3.Connection,
+    archive_root: Path,
+) -> tuple[str, ...]:
+    """Hook-derived topology marks whose durable evidence no longer exists.
+
+    A ``session_links`` row only ever carries one of
+    :data:`HOOK_DERIVED_LINK_METHODS` because a ``codex_thread_spawn_edge``
+    claim decided it, so the absence of that claim today means the evidence
+    was destroyed, not that it never existed. Both places a claim can live
+    are consulted before calling one destroyed: the index-tier projection
+    (``codex_thread_spawn_edges``) and the durable hook spool
+    (``raw_hook_events``) the projection is rebuilt from.
+
+    The verdict itself is deliberately left standing --- retain-on-deletion is
+    the policy for a durable tier whose hook evidence is not routinely
+    deleted --- so this reports, and never repairs (polylogue-p1naz).
+    """
+    method_placeholders = ", ".join("?" for _ in HOOK_DERIVED_LINK_METHODS)
+    candidates = [
+        (str(row[0]), str(row[1]))
+        for row in index_conn.execute(
+            f"SELECT src_session_id, method FROM session_links WHERE method IN ({method_placeholders}) "
+            f"ORDER BY src_session_id",
+            HOOK_DERIVED_LINK_METHODS,
+        ).fetchall()
+    ]
+    if not candidates:
+        return ()
+
+    def _native_id(session_id: str) -> str:
+        _origin, _, native = session_id.partition(":")
+        return native
+
+    projected: set[str] = set()
+    if table_exists(index_conn, "codex_thread_spawn_edges"):
+        projected = {
+            str(row[0]) for row in index_conn.execute("SELECT DISTINCT child_thread_id FROM codex_thread_spawn_edges")
+        }
+
+    unresolved = [(session_id, method) for session_id, method in candidates if _native_id(session_id) not in projected]
+    if not unresolved:
+        return ()
+
+    source_path = archive_root / "source.db"
+    spooled: set[str] = set()
+    if source_path.exists():
+        try:
+            source_conn = _open_ro(source_path)
+        except sqlite3.Error:
+            source_conn = None
+        if source_conn is not None:
+            try:
+                if table_exists(source_conn, "raw_hook_events"):
+                    spooled = {
+                        str(row[0])
+                        for row in source_conn.execute(
+                            "SELECT DISTINCT json_extract(payload_json, '$.child_thread_id') "
+                            "FROM raw_hook_events WHERE event_type = 'codex_thread_spawn_edge'"
+                        ).fetchall()
+                        if row[0]
+                    }
+            except sqlite3.Error:
+                spooled = set()
+            finally:
+                source_conn.close()
+
+    orphaned = [f"{session_id}({method})" for session_id, method in unresolved if _native_id(session_id) not in spooled]
+    return tuple(orphaned)
 
 
 # ---------------------------------------------------------------------------
