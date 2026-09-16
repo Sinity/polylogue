@@ -445,6 +445,93 @@ class IdentityResetActuator(_FailClosedRecovery):
 
 
 # ---------------------------------------------------------------------------
+# Filesystem reset (polylogue-4fbgw)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemResetArgs:
+    """Exact set of already-resolved filesystem targets one reset will delete."""
+
+    archive_root: Path
+    #: ``(display name, absolute path)`` pairs, resolved by the daemon from
+    #: the request flags before PREPARE. Carrying the resolved set (rather
+    #: than the flags) keeps PREPARE and APPLY over the identical targets.
+    targets: tuple[tuple[str, Path], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemResetActuator(_FailClosedRecovery):
+    """Actuator for ``mutate-filesystem-reset``: delete archive files and trees.
+
+    This is the largest destructive surface in the product -- it unlinks
+    archive databases and ``shutil.rmtree``s the blob/assets/cache trees.
+    Before polylogue-4fbgw it ran straight out of the daemon handler with the
+    ``audit``/``snapshot`` arguments unused, so an operator who lost their
+    archive to it had no durable record that the operation was attempted, by
+    whom, against which targets, or how far it got -- and an interruption left
+    no attempt row for ``recover_abandoned_attempts`` to sweep. Routing it
+    through :class:`OperationExecutor` writes the preview, authorization and
+    attempt rows *before* the first ``unlink``.
+
+    ``prepare`` re-stats every target so a path that disappeared between
+    resolution and APPLY is reported rather than counted, and never mutates.
+    """
+
+    operation: str = "mutate-filesystem-reset"
+    destructive_class: DestructiveClass = "reset"
+    required_confirmation: ConfirmationStrength = "bound_token"
+
+    def prepare(self, args: FilesystemResetArgs) -> MutationPlan:
+        present = tuple((name, path) for name, path in args.targets if path.exists())
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reset",
+            target_refs=tuple(make_target_ref("path", str(path)) for _name, path in args.targets),
+            affected_tiers=("filesystem",),
+            reversible=False,
+            context={
+                "targets": [[name, str(path)] for name, path in args.targets],
+                "present": [str(path) for _name, path in present],
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: FilesystemResetArgs) -> MutationReceipt:
+        import shutil
+
+        deleted: list[str] = []
+        missing: list[str] = []
+        for name, path in args.targets:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+                deleted.append(name)
+            elif path.is_dir():
+                shutil.rmtree(path)
+                deleted.append(name)
+            else:
+                missing.append(name)
+
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied" if deleted else "already_satisfied",
+            target_refs=plan.target_refs,
+            affected_count=len(deleted),
+            detail=None if deleted else "no_existing_targets",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={
+                "deleted": len(deleted),
+                "targets": deleted,
+                # Named rather than silently folded into the count: a target
+                # that vanished between PREPARE and APPLY is evidence about
+                # the archive, not a successful deletion.
+                "absent_at_apply": missing,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
 # Pending blob-GC generation abandonment
 # ---------------------------------------------------------------------------
 

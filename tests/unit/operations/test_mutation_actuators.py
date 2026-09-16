@@ -2319,3 +2319,85 @@ class TestDerivedMaintenanceActuators:
                 match="only through a sealed accepted machine part owner",
             ):
                 executor.execute(actuator, plan, authorization, args)
+
+
+class TestFilesystemResetActuator:
+    """polylogue-4fbgw: the product's largest destructive surface must write
+    its audit rows before it deletes anything.
+
+    Anti-vacuity: revert ``maintenance_reset`` to unlinking inline (or point
+    the binding at a spec whose ``executor_status`` is ``declared-not-routed``)
+    and ``test_the_reset_writes_preview_and_run_rows_before_deleting`` goes red,
+    because audit.db carries no preview/run row for the deletion that happened.
+    """
+
+    def _actuator_args(self, tmp_path: Path) -> tuple[Path, Any]:
+        from polylogue.operations.mutation_actuators import FilesystemResetArgs
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        initialize_active_archive_root(archive_root)
+        doomed_file = archive_root / "embeddings.db"
+        doomed_file.write_bytes(b"vector bytes")
+        doomed_tree = archive_root / "blob"
+        doomed_tree.mkdir()
+        (doomed_tree / "aa").mkdir()
+        (doomed_tree / "aa" / "blob.bin").write_bytes(b"payload")
+        args = FilesystemResetArgs(
+            archive_root=archive_root,
+            targets=(("embeddings database", doomed_file), ("blob store", doomed_tree)),
+        )
+        return archive_root, args
+
+    def test_prepare_plans_every_target_and_mutates_nothing(self, tmp_path: Path) -> None:
+        from polylogue.operations.mutation_actuators import FilesystemResetActuator
+
+        archive_root, args = self._actuator_args(tmp_path)
+
+        plan = FilesystemResetActuator().prepare(args)
+
+        assert plan.target_refs == (
+            f"path:{archive_root / 'embeddings.db'}",
+            f"path:{archive_root / 'blob'}",
+        )
+        assert (archive_root / "embeddings.db").exists()
+        assert (archive_root / "blob" / "aa" / "blob.bin").exists()
+
+    def test_the_reset_writes_preview_and_run_rows_before_deleting(self, tmp_path: Path) -> None:
+        from polylogue.operations.mutation_actuators import FilesystemResetActuator
+
+        archive_root, args = self._actuator_args(tmp_path)
+        actuator = FilesystemResetActuator()
+        binding = runtime_operation_binding(actuator)
+        principal = MutationPrincipal("test", frozenset({"archive.reset"}), "cli", "write")
+        executor = OperationExecutor.for_archive_root(archive_root)
+
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
+        receipt = executor.execute_bound(binding, preview, authorization, args)
+
+        assert receipt.status == "applied"
+        assert receipt.affected_count == 2
+        assert not (archive_root / "embeddings.db").exists()
+        assert not (archive_root / "blob").exists()
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
+            assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
+            kinds = {row[0] for row in conn.execute("SELECT target_kind FROM operation_targets").fetchall()}
+            assert kinds == {"path"}
+            assert conn.execute("SELECT COUNT(*) FROM operation_attempts").fetchone()[0] >= 1
+
+    def test_a_target_absent_at_apply_is_named_not_counted(self, tmp_path: Path) -> None:
+        from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
+
+        archive_root, args = self._actuator_args(tmp_path)
+        args = FilesystemResetArgs(
+            archive_root=archive_root,
+            targets=(*args.targets, ("ops database", archive_root / "never-existed.db")),
+        )
+        actuator = FilesystemResetActuator()
+
+        receipt = actuator.apply(actuator.prepare(args), args)
+
+        assert receipt.affected_count == 2
+        assert receipt.domain_receipt["absent_at_apply"] == ["ops database"]

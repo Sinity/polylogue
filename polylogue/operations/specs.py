@@ -982,7 +982,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         kind=OperationKind.MAINTENANCE,
         description=(
             "Delete selected archive databases, blob/assets/cache trees, or authentication state after an exact "
-            "target preview and explicit confirmation. Session/source identity reset is a separate executor-routed operation."
+            "target preview and explicit confirmation. Routed through OperationExecutor/FilesystemResetActuator, so "
+            "the preview, authorization and attempt rows land before the first unlink and an interrupted reset leaves "
+            "a sweepable attempt (polylogue-4fbgw). Session/source identity reset is a separate operation."
         ),
         surfaces=("cli",),
         mutates_state=True,
@@ -990,7 +992,19 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         idempotent=True,
         effects=("FileWrite", "Destructive"),
         safety_guards=("confirmed_before_execute", "explicit_dry_run_evidence"),
-        executor_status="declared-not-routed",
+        executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="filesystem-reset",
+                target_kinds=("path",),
+                required_capabilities=("archive.reset",),
+                destructive_class="reset",
+                required_confirmation="bound_token",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("reconcile_required",),
+            ),
+        ),
     ),
     OperationSpec(
         name="project-archive-readiness",
