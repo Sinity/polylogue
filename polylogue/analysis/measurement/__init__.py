@@ -5,29 +5,24 @@ substrate" half of the rigor program (docs/design/analysis-rigor.md):
 
 - :mod:`canon` -- shared content-address canonicalizer (`<kind>:<hash>`).
 - :mod:`metric` -- ``metric:<hash>`` canonical metric definitions (rxdo.9.1).
-- :mod:`ratio` -- ratios as derived ``metric:<hash>`` objects over a
-  numerator/denominator component-ref pair (rxdo.9.2).
-- :mod:`registration` -- pre-registration ordering proof (rxdo.9.3).
-- :mod:`uncertainty` -- exactness-gated interval rendering; bootstrap CIs
-  apply only to sampled/estimated results, never to exact enumeration
-  (rxdo.9.8).
+- :mod:`registry` -- measure specs and composition.
+- :mod:`registered_metrics` / :mod:`registered_measures` -- the process-wide
+  default registries, reachable through the MCP ``get`` tool.
 - :mod:`outcome_coverage` -- coverage-gated tool-outcome aggregates; a bare
   success-rate scalar is refused below a declared coverage floor and the
   aggregate reports ``degraded`` with the gap named (polylogue-cuxz.4 AC4).
-- :mod:`alert_budget` -- standing-query alert cooldown/magnitude-floor/
-  budget policy, the multiple-looks guard for rxdo.5 (rxdo.9.5).
-- :mod:`evidence_ancestry` -- read-side evidence-graph ancestry walker:
-  circularity, epoch skew, definition incompatibility, and expired/stale/
-  missing/ambiguous/quarantined/private ref detection (rxdo.9.9).
+  This is the one route a tool-outcome rate may be produced through, and
+  ``tests/unit/architecture/test_tool_outcome_rate_ratchet.py`` makes that
+  floor binding across every read path.
+- :mod:`public_claims` -- claim/finding provenance.
 
-These modules deliberately do not each invent their own persistence layer.
-Where a real durable substrate already exists (``queries``/``result_sets``
-in :mod:`polylogue.storage.sqlite.query_objects`, rxdo.2), later mechanisms
-build directly on it (see holdout policy in that module, rxdo.9.4). Where no
-consuming storage exists yet (finding.v1, ``ExperimentDefinition``/``stc``,
-the statistics registry in 9l5.7), the mechanism here is the pure,
-storage-agnostic identity/ordering/decision function a future storage lane
-wires up -- each such module says so explicitly in its docstring.
+Only mechanisms a declared route reaches live here. The pre-registration
+ordering proof (rxdo.9.3), derived ratio metrics (rxdo.9.2), exactness-gated
+interval rendering (rxdo.9.8), the standing-query alert budget (rxdo.9.5) and
+the evidence-graph ancestry walker (rxdo.9.9) were specified in
+docs/design/analysis-rigor.md and written here, but no operation, CLI verb or
+MCP tool ever called them; they were deleted rather than kept as unreachable
+code. Re-introduce each one together with its route.
 """
 
 from __future__ import annotations

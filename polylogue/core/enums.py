@@ -767,8 +767,7 @@ class ComparativeVerdict(PolylogueStrEnum):
     means both items were judged equal on the dimension; incomparable means
     the dimension does not meaningfully apply to this pair. ``ABSTAIN`` and
     ``INSUFFICIENT_EVIDENCE`` must never be treated as weak preferences by
-    downstream aggregation (:mod:`polylogue.analysis.judgment.rankers`) --
-    they contribute zero directed preference edges.
+    downstream aggregation -- they contribute zero directed preference edges.
     """
 
     PREFER_LEFT = "prefer_left"

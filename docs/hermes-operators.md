@@ -314,14 +314,11 @@ observer/verification session id, *preserving* whatever `@profile-<key>`
 qualifier it carries — a reader holding the qualified conversational id
 resolves that artifact's evidence for the same install, not merely the same
 raw session id.
-`polylogue/analysis/hermes_topology_projection.py` composes all four artifact
-classes for one raw Hermes session id into one typed, read-only projection
-(availability, per-artifact fidelity, unpaired-trace debt, and explicit
-producer-conflict detection for disagreeing subagent-session evidence) — but
-like `hermes_verification_coverage`, it is not yet wired into any CLI/MCP
-surface (see item 3 below). This artifact-class correlation (conversational ↔
-ATIF ↔ ATOF ↔ verification, all for the same raw Hermes session id) remains a
-read-time lookup, not a stored graph edge.
+No read model composes the four artifact classes for one raw Hermes session
+id. This artifact-class correlation (conversational ↔ ATIF ↔ ATOF ↔
+verification, all for the same raw Hermes session id) remains a read-time
+lookup a caller performs with the helpers above, not a stored graph edge and
+not a projection the archive ships.
 
 **Subagent delegation is the one exception (`fs1.14`):** when an ATIF
 `subagent_trajectories` entry or an ATOF `hermes.subagent.*` mark reports a
@@ -334,9 +331,7 @@ Each observing session's own `hermes_subagent_span` event records whether
 that materialization actually happened via a `delegation_edge_asserted`
 flag (`false` is real acquisition debt — unknown profile, missing/self-
 referential/contested child id — never silently indistinguishable from "no
-evidence"), and `hermes_topology_projection.HermesSubagentEvidenceRef.
-delegation_edge_materialized` surfaces the same fact read-side without
-re-deriving it. This narrow edge is the only case where the archive stores a
+evidence"). This narrow edge is the only case where the archive stores a
 subagent-delegation graph relationship; everything else in this section (the
 four artifact classes above) is still correlate-on-read only.
 
@@ -365,9 +360,7 @@ This is the section to read before you trust anything above it.
    both artifacts for the same Hermes session, from the same or different
    installs, now retains fully independent archive rows — nothing replaces
    anything else. This still does **not** mean they are unioned into one
-   queryable session: read the relevant ids (or use
-   `hermes_topology_projection.project_hermes_topology`) to see the combined
-   evidence. The verification ledger (`hermes_verification.py`) had the
+   queryable session: read the relevant ids to see the combined evidence. The verification ledger (`hermes_verification.py`) had the
    identical unqualified-id collapse risk on the profile axis (it was never
    part of the ATIF/ATOF artifact-family collision, since it already used
    its own `verification:` prefix) — fixed separately as `polylogue-y9zx`,
@@ -378,18 +371,13 @@ This is the section to read before you trust anything above it.
    one real Hermes session (conversational, observer, verification). Reading
    the conversational session id does not automatically surface runtime
    spans or verification outcomes — you must look up the paired id via the
-   helpers above, or use the `hermes_verification_coverage` primitive
-   (next point).
-3. **Verification-coverage correlation has no CLI or MCP surface yet.**
-   `polylogue/analysis/hermes_verification_coverage.py` (`fs1.4`) is a real,
-   tested, pure-aggregation function that summarizes one Hermes session's
-   `verification_evidence.db` coverage — but it is not registered in the
-   insight registry, has no `polylogue read --view` entry, and is not
-   exposed through MCP. It is reachable only from Python by calling
-   `correlate_verification_coverage()` yourself. The bead tracking this
-   (`polylogue-fs1.4`) records this as a deliberate scoping decision, not an
-   oversight: composing the primitive into a named CLI/MCP surface is
-   separate, tracked follow-up work.
+   helpers above and correlating the rows yourself.
+3. **Verification-coverage correlation has no surface and no primitive.**
+   Nothing summarizes one Hermes session's `verification_evidence.db`
+   coverage. The unwired `hermes_verification_coverage` helper that used to
+   sit in `polylogue/analysis/` was deleted rather than left as a
+   Python-only affordance no declared operation reached; composing such a
+   summary into a named CLI/MCP surface is separate work.
 4. **The named Hermes forensics report does not exist yet.** There is no
    dedicated Hermes forensics command or `read --view forensics`. What
    exists today composes from generic, origin-agnostic primitives already
@@ -411,12 +399,9 @@ This is the section to read before you trust anything above it.
    stays observer-only evidence with no edge, visible as
    `delegation_edge_asserted: false` on the reporting session's own
    `hermes_subagent_span` event rather than silently indistinguishable from
-   "no evidence at all". `hermes_topology_projection.project_hermes_topology`
-   still surfaces every piece of subagent evidence read-side as
-   `subagent_evidence` (tagged by which artifact reported it, plus whether it
-   was materialized via `delegation_edge_materialized`) and flags a
-   self-referential or ATIF/ATOF-disagreeing subagent-session id as an
-   explicit `HermesTopologyConflict` rather than silently trusting one side.
+   "no evidence at all". No read model re-surfaces that evidence or
+   adjudicates a self-referential or ATIF/ATOF-disagreeing subagent-session
+   id; the per-session `hermes_subagent_span` event is the record.
 6. **The verification ledger is a bounded retention window, not history.**
    `retention_completeness` is structurally `degraded` on every import —
    events older than 30 days, or beyond the producer's 100-per-scope/10,000-

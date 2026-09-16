@@ -90,9 +90,9 @@ logical Hermes session is a session-identity/lineage design decision
 (topology_edges / session_links) that is explicitly deferred, not silently
 assumed. Read-side correlation by the shared Hermes session id remains
 possible today via :func:`hermes_atif_session_id_for` /
-:func:`hermes_atof_session_id_for`, and is composed across every Hermes
-artifact class (conversational, ATIF, ATOF, verification ledger) by
-``polylogue.analysis.hermes_topology_projection.project_hermes_topology``.
+:func:`hermes_atof_session_id_for`; the archive ships no composed read model
+over the four Hermes artifact classes, so a caller that wants one correlates
+the resolved ids itself.
 
 TOPOLOGY PROJECTION FIX (polylogue-fs1.14): the raw Hermes session id alone
 is not a safe archive join key -- two separate Hermes installs (profiles)
@@ -155,11 +155,9 @@ artifact-qualified identity (:func:`atif_session_provider_id` ->
 Hermes session retains two independent, non-colliding archive rows. Read-side
 correlation across every Hermes artifact class for one raw session id
 (conversational state.db session, ATIF, ATOF, verification ledger) is
-composed without any physical merge by
-``polylogue.analysis.hermes_topology_projection.project_hermes_topology``,
-which also renders an unpaired ATIF/ATOF trace and a conflicting
-producer-reported subagent identity as explicit, visible evidence rather than
-silently picking one side.
+left to the caller: no composed projection is shipped, so an unpaired
+ATIF/ATOF trace and a conflicting producer-reported subagent identity are
+read from the per-session evidence rows rather than adjudicated for you.
 """
 
 from __future__ import annotations
@@ -228,8 +226,7 @@ def atif_session_provider_id(hermes_session_id: str, profile_key: str | None = N
     ATOF observer-evidence session id (:func:`atof_session_provider_id`):
     this parser never claims to physically merge into either (see module
     docstring). Consumers correlate the three via
-    :func:`hermes_atif_session_id_for` / :func:`hermes_atof_session_id_for`,
-    or the composed read model in ``insights.hermes_topology_projection``.
+    :func:`hermes_atif_session_id_for` / :func:`hermes_atof_session_id_for`.
 
     ``profile_key`` -- when known -- is folded into the identity using the
     exact same qualifier scheme the state.db parser uses
@@ -1378,8 +1375,7 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
             "subagent_trajectories entries recorded as delegation evidence and, when a "
             "producer-positive child session_id and a known profile root are both present, "
             "materialized as a real child ATIF session with a session_links parent edge "
-            "(branch_type=subagent, see topology_edges) -- also surfaced read-side by "
-            "insights.hermes_topology_projection.",
+            "(branch_type=subagent, see topology_edges).",
         ),
         "decision_points": HermesFidelityCapability(
             status="absent",

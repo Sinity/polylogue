@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.analysis.claude_todo_projection import load_claude_todo_plan_states
 from polylogue.security.excision import (
     apply_session_excision,
     plan_session_excision,
@@ -95,6 +94,25 @@ def _seed(tmp_path: Path) -> str:
     return session_id
 
 
+def _readable_todo_session_ids(tmp_path: Path) -> set[str]:
+    """Session ids whose TODO plan text is still readable from retained bytes.
+
+    Reads the retained ``raw_sessions`` rows and their blobs directly, which
+    is what "the plan is still readable under this session id" means; no
+    read-model module stands between the assertion and the bytes.
+    """
+    blob_store = BlobStore(tmp_path / "blob")
+    readable: set[str] = set()
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        rows = conn.execute("SELECT source_path, lower(hex(blob_hash)) FROM raw_sessions").fetchall()
+    for source_path, blob_hash in rows:
+        name = Path(str(source_path)).stem
+        if not blob_store.read_all(str(blob_hash)):
+            continue
+        readable.add(name)
+    return readable
+
+
 def _raw_ids(tmp_path: Path) -> set[str]:
     with sqlite3.connect(tmp_path / "source.db") as conn:
         return {str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions")}
@@ -111,14 +129,14 @@ def test_excision_removes_the_session_todo_plan_evidence(tmp_path: Path) -> None
     Anti-vacuity: removing the ``_session_fact_raw_ids`` call from
     ``resolve_session_excision_target`` leaves ``raw-todo`` in
     ``raw_sessions``, its hash absent from ``excised_content``, and
-    ``load_claude_todo_plan_states`` still returning the plan text under the
+    ``_readable_todo_session_ids`` still returning the plan text under the
     excised session id. The unrelated session's snapshot is asserted
     untouched, so a resolver that simply deleted every todo row fails too.
     """
     session_id = _seed(tmp_path)
 
     # Precondition: the plan really is readable before the excision.
-    before = {state.session_id for state in load_claude_todo_plan_states(tmp_path)}
+    before = _readable_todo_session_ids(tmp_path)
     assert before == {_SESSION_UUID, _OTHER_UUID}
 
     target = resolve_session_excision_target(tmp_path, session_id)
@@ -136,7 +154,7 @@ def test_excision_removes_the_session_todo_plan_evidence(tmp_path: Path) -> None
     assert _raw_ids(tmp_path) == {"raw-todo-other"}, "the session's plan snapshot survived its excision"
     assert hashlib.sha256(_TODO_PAYLOAD).digest() in _excised_hashes(tmp_path)
 
-    after = {state.session_id for state in load_claude_todo_plan_states(tmp_path)}
+    after = _readable_todo_session_ids(tmp_path)
     assert after == {_OTHER_UUID}, "the excised session's plan is still readable"
 
     # Non-resurrection: re-acquiring the same snapshot file is refused.

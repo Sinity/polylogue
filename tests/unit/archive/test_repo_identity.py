@@ -7,8 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.analysis.archive_models import DaySessionSummaryPayload
-from polylogue.analysis.archive_summaries import aggregate_day_session_summary_insights
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
@@ -26,7 +24,6 @@ from polylogue.archive.session.session_summaries import summarize_day
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
-from polylogue.storage.runtime import DaySessionSummaryRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 README_PATH = REPO_ROOT / "README.md"
@@ -500,7 +497,7 @@ def test_extract_attribution_does_not_infer_r_from_dialogue_text() -> None:
     assert attribution.languages_detected == ()
 
 
-def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:
+def test_day_summary_preserves_repo_names() -> None:
     profile = SessionProfile.from_dict(
         {
             "session_id": "conv-day-normalize",
@@ -520,19 +517,4 @@ def test_day_summary_and_aggregate_products_preserve_repo_names() -> None:
 
     summary = summarize_day([profile], date(2026, 3, 24))
     assert summary.repos_active == ("polylogue",)
-
-    product = aggregate_day_session_summary_insights(
-        [
-            DaySessionSummaryRecord(
-                day="2026-03-24",
-                source_name="claude-code",
-                materialized_at="2026-03-24T10:10:00+00:00",
-                work_event_breakdown={},
-                repos_active=("polylogue",),
-                payload=DaySessionSummaryPayload.model_validate(summary.to_dict()),
-                search_text="claude-code",
-            )
-        ]
-    )[0]
-
-    assert product.summary.repos_active == ("polylogue",)
+    assert summary.to_dict()["repos_active"] == ["polylogue"]
