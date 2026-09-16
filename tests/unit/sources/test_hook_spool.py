@@ -712,7 +712,10 @@ def test_transcript_duplication_policy_stays_in_sync_across_hook_producers() -> 
 
     contrib_source = Path("contrib/polylogue-hook").resolve().read_text(encoding="utf-8")
     keys_match = re.search(r"for _key in \(([^)]*)\):", contrib_source)
-    threshold_match = re.search(r"len\(_value\) > (\d+)", contrib_source)
+    # The comparison moved from ``len(_value)`` to a ``_transcript_like_chars``
+    # helper bound to ``_size``; the guard is the threshold literal inside the
+    # transcript loop, not the expression that produced the size.
+    threshold_match = re.search(r"if _size > (\d+):", contrib_source)
     assert keys_match is not None, "contrib/polylogue-hook: transcript-key loop not found"
     assert threshold_match is not None, "contrib/polylogue-hook: transcript threshold not found"
     contrib_keys = [item.strip().strip('"') for item in keys_match.group(1).split(",") if item.strip()]
