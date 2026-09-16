@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import inspect
 import time
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, TypeVar, cast, overload, runtime_checkable
@@ -73,6 +73,16 @@ class AdmissionOutcome(str, Enum):
     released and the item is not retried, but it does not count toward
     :attr:`IntakePass.progressed`."""
 
+    DEFERRED = "deferred"
+    """The domain deliberately admitted nothing for this item this pass.
+
+    Bounded backpressure, not a failure and not a refusal: the file carried no
+    new authority-relevant content, so its queue entry is released and the
+    domain's own retry evidence owns the follow-up. Counting it as
+    :attr:`DUPLICATE` claimed the item had already been admitted under this
+    identity, which is exactly the false-progress shape polylogue-onbz3
+    removed for :attr:`EXCLUDED`."""
+
     RETRYABLE = "retryable"
     """This attempt failed; the item may succeed later."""
 
@@ -96,6 +106,7 @@ class AdmissionResult:
             AdmissionOutcome.ADMITTED,
             AdmissionOutcome.DUPLICATE,
             AdmissionOutcome.EXCLUDED,
+            AdmissionOutcome.DEFERRED,
         )
 
 
@@ -110,6 +121,13 @@ class IntakeAdapter(Protocol):
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]: ...
 
     async def admit(self, item: IntakeItem) -> AdmissionResult: ...
+
+    # Optional: ``admit_page(items) -> Mapping[item_id, AdmissionResult]``.
+    # An adapter that defines it is handed the whole budget-bounded page at
+    # once and pays its fixed per-batch cost once instead of once per item.
+    # It must still report one outcome per item so deficit, retry and
+    # isolation accounting stay per item; the dispatcher falls back to
+    # ``admit`` per item when it is absent.
 
     async def acknowledge(self, item: IntakeItem) -> None:
         """Release the item's queue entry. Atomic and idempotent."""
@@ -164,6 +182,9 @@ class IntakeClassReport:
     duplicates: int = 0
     excluded: int = 0
     """Items the domain durably refused. Acknowledged, never counted as progress."""
+
+    deferred: int = 0
+    """Items the domain deliberately admitted nothing for. Not progress."""
 
     retried: int = 0
     isolated: int = 0
@@ -319,10 +340,7 @@ class FairIntakeDispatcher:
 
         # ``page_size`` bounds the discovery call in rows; ``deficit`` is
         # denominated in payload bytes, so it cannot bound a row count. The
-        # admission loop below is what spends the deficit.
-        # ``page_size`` bounds the discovery call in rows; ``deficit`` is
-        # denominated in payload bytes, so it cannot bound a row count. The
-        # admission loop below is what spends the deficit.
+        # page plan below is what spends the deficit.
         limit = spec.page_size
         try:
             page: list[IntakeItem] = list(await _maybe_await(spec.adapter.discover(limit=limit)))
@@ -338,8 +356,16 @@ class FairIntakeDispatcher:
             )
             return IntakeClassReport(name=spec.name, discovery_failed=True, reason=f"discovery failed: {exc}")
 
-        admitted = duplicates = excluded = retried = isolated = 0
+        admitted = duplicates = excluded = deferred = retried = isolated = 0
         estimated_cost = actual_cost = 0
+        # Plan the page against the class deficit first, then admit the whole
+        # plan in one adapter call. The deficit is denominated in payload
+        # bytes, so the plan is bytes-aware by construction: it fills up to
+        # the class share and stops. Every per-batch fixed cost the domain
+        # pays -- the writer hold, the tier bootstrap, one convergence pass --
+        # is then paid once per page rather than once per file, while the
+        # per-item accounting below is unchanged.
+        planned: list[IntakeItem] = []
         for item in page:
             if runtime.deficit <= 0:
                 break
@@ -354,14 +380,18 @@ class FairIntakeDispatcher:
             # A single item may be larger than the per-class byte budget. It
             # still gets one bounded admission attempt; otherwise a large
             # but valid source would wait forever while its siblings consume
-            # the deficit in later passes.
-            if runtime.deficit < item_cost and (admitted or duplicates or excluded or retried or isolated):
+            # the deficit in later passes. This is also why a page is never
+            # split below one item.
+            if runtime.deficit < item_cost and planned:
                 break
             # Charge the estimate before admission. An adapter cannot hide a
             # large item behind a cheap synthetic page identity.
             runtime.deficit -= item_cost
             estimated_cost += item_cost
-            result = await self._admit(spec, item)
+            planned.append(item)
+
+        for item, result in zip(planned, await self._admit_page(spec, planned), strict=True):
+            item_cost = max(1, int(item.estimated_cost))
             if result.outcome is AdmissionOutcome.CLASS_TERMINAL:
                 self._halt_class(spec.name, result.reason or "class reported terminal failure")
                 return IntakeClassReport(
@@ -369,6 +399,7 @@ class FairIntakeDispatcher:
                     admitted=admitted,
                     duplicates=duplicates,
                     excluded=excluded,
+                    deferred=deferred,
                     retried=retried,
                     isolated=isolated,
                     discovered=len(page),
@@ -391,6 +422,8 @@ class FairIntakeDispatcher:
                     admitted += 1
                 elif result.outcome is AdmissionOutcome.EXCLUDED:
                     excluded += 1
+                elif result.outcome is AdmissionOutcome.DEFERRED:
+                    deferred += 1
                 else:
                     duplicates += 1
                 continue
@@ -431,6 +464,7 @@ class FairIntakeDispatcher:
             admitted=admitted,
             duplicates=duplicates,
             excluded=excluded,
+            deferred=deferred,
             retried=retried,
             isolated=isolated,
             discovered=len(page),
@@ -444,6 +478,35 @@ class FairIntakeDispatcher:
             return await _maybe_await(spec.adapter.admit(item))
         except Exception as exc:
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{type(exc).__name__}: {exc}")
+
+    async def _admit_page(self, spec: IntakeClassSpec, items: Sequence[IntakeItem]) -> list[AdmissionResult]:
+        """Admit a planned page, preferring the adapter's page-shaped entry.
+
+        The returned list is positional over *items*: every planned item gets
+        exactly one outcome, so an adapter that batches its writes still
+        cannot collapse the scheduler's per-item deficit, retry and isolation
+        accounting into one batch-level verdict. An adapter that omits an item
+        from its mapping has not reported it, which is retryable -- never a
+        silent acknowledgement.
+        """
+        if not items:
+            return []
+        admit_page = getattr(spec.adapter, "admit_page", None)
+        if admit_page is None:
+            return [await self._admit(spec, item) for item in items]
+        try:
+            results = cast(
+                Mapping[str, AdmissionResult],
+                await _maybe_await(admit_page(tuple(items))),
+            )
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            return [AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason) for _ in items]
+        return [
+            results.get(item.item_id)
+            or AdmissionResult(AdmissionOutcome.RETRYABLE, reason="adapter reported no outcome for this item")
+            for item in items
+        ]
 
     def _is_halted(self, class_name: str) -> bool:
         if self._halts is None:
@@ -490,6 +553,7 @@ class FairIntakeDispatcher:
                         "admitted": report.admitted,
                         "duplicates": report.duplicates,
                         "excluded": report.excluded,
+                        "deferred": report.deferred,
                         "retried": report.retried,
                         "isolated": report.isolated,
                         "discovered": report.discovered,

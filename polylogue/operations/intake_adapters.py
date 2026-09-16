@@ -24,6 +24,7 @@ from polylogue.daemon.intake import (
     IntakeAdapter,
     IntakeItem,
 )
+from polylogue.sources.live.metrics import REFUSED_DAEMON_DEGRADED
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
@@ -242,56 +243,144 @@ class FileIntakeAdapter(IntakeAdapter):
         return tuple(items)
 
     async def admit(self, item: IntakeItem) -> AdmissionResult:
-        path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
-        if path is None:
-            return AdmissionResult(AdmissionOutcome.TERMINAL, reason="file intake item has no path")
-        if not path.is_file():
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source carrier vanished: {path}")
+        outcomes = await self.admit_page((item,))
+        return outcomes[item.item_id]
+
+    async def admit_page(self, items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
+        """Admit a whole discovery page as one ingest batch, one hold.
+
+        Every fixed cost of a live batch -- the writer hold, the six-tier
+        bootstrap, the retention scan, the archive-wide convergence pass and
+        the parse stage's own warm -- is paid once per call. Admitting one
+        file per call made each of those a per-file cost over a corpus of
+        tens of thousands of files, and handed ``LiveParseStage`` a single
+        path per batch, which is no parallelism at all.
+
+        The batch is one call; the *outcomes* stay per item, read back from
+        ``LiveBatchMetrics`` by path, so the dispatcher's deficit,
+        ``retry_after`` and isolation accounting are exactly what they were
+        under per-file admission.
+        """
+        outcomes: dict[str, AdmissionResult] = {}
+        batch: list[IntakeItem] = []
+        for item in items:
+            path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
+            if path is None:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.TERMINAL, reason="file intake item has no path"
+                )
+                continue
+            if not path.is_file():
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason=f"source carrier vanished: {path}"
+                )
+                continue
+            batch.append(item)
+        if not batch:
+            return outcomes
+
+        paths = [Path(cast(Any, item.payload)) for item in batch]
         try:
             cursor = getattr(self.context.watcher, "_cursor", None)
             run_writer_sync = getattr(self.context.watcher, "_run_writer_sync", None)
             if cursor is not None and callable(run_writer_sync):
                 await run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
             metrics = await self.context.watcher._ingest_files(
-                [path], queued_file_count=1, whole_archive_convergence=False
+                paths, queued_file_count=len(paths), whole_archive_convergence=False
             )
-            stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
-            if stale_cursor_writes:
-                return AdmissionResult(
-                    AdmissionOutcome.RETRYABLE,
-                    reason=f"source cursor write was stale: {path}",
+        except (OSError, ValueError, RuntimeError) as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            for item in batch:
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason)
+            return outcomes
+
+        stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
+        if stale_cursor_writes:
+            # A stale cursor write means this batch raced another authority
+            # for the same source rows; the whole page is retried rather than
+            # acknowledged, even where some files reported success, because a
+            # cursor advanced under a losing write is not evidence about any
+            # item in the page.
+            for item in batch:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason="source cursor write was stale"
                 )
-            failed = int(getattr(metrics, "failed_file_count", 0) or 0)
-            if failed:
-                return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {path}")
-            succeeded = int(getattr(metrics, "succeeded_file_count", 0) or 0)
-            if not succeeded:
-                # This route calls ``_ingest_files`` directly, so the watcher's
-                # own ``_log_ingest_metrics`` never runs for it and the
-                # "admitted nothing" line was invisible on the intake path.
-                _log_ingest_metrics(f"live.intake: {self.class_name}", metrics)
-                excluded = int(getattr(metrics, "excluded_file_count", 0) or 0)
-                if excluded:
-                    # polylogue-onbz3: a durable refusal is not "already
-                    # admitted under this identity". Reporting DUPLICATE here
-                    # advanced the cursor and counted the pass as progress.
-                    reasons = getattr(metrics, "excluded_reasons", {}) or {}
-                    return AdmissionResult(
-                        AdmissionOutcome.EXCLUDED,
-                        reason=f"source admission excluded {path}: {sorted(reasons)}",
-                        actual_cost=item.estimated_cost,
-                    )
-                return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item.estimated_cost)
+            return outcomes
+
+        succeeded = {str(path) for path in (getattr(metrics, "succeeded_paths", ()) or ())}
+        failed = set(getattr(metrics, "failed_paths", ()) or ())
+        deferred = set(getattr(metrics, "deferred_paths", ()) or ())
+        # ``failed_paths`` carries the retry projection, deferrals included.
+        # A deferral is its own outcome, so it must not be reported as a
+        # failure here.
+        failed -= deferred
+        excluded_by_path = dict(getattr(metrics, "excluded_paths", {}) or {})
+        if not succeeded:
+            # This route calls ``_ingest_files`` directly, so the watcher's
+            # own ``_log_ingest_metrics`` never runs for it and the
+            # "admitted nothing" line was invisible on the intake path.
+            _log_ingest_metrics(f"live.intake: {self.class_name}", metrics)
+
+        # Reconcile the batch's measured read against the items that actually
+        # produced it. An append-mode file reads far less than its size, so
+        # charging every item its full estimate would overstate the class's
+        # spend; distributing the measured total over the admitted items in
+        # proportion to their estimates keeps the class budget denominated in
+        # bytes actually read.
+        refused_reasons = dict(getattr(metrics, "refused_bytes_by_reason", {}) or {})
+        unattempted_is_retryable = bool(getattr(metrics, "time_budget_exceeded", False)) or (
+            REFUSED_DAEMON_DEGRADED in refused_reasons
+        )
+        read_bytes = int(getattr(metrics, "source_payload_read_bytes", 0) or 0)
+        estimated_total = sum(max(1, int(item.estimated_cost)) for item in batch)
+        for item in batch:
+            key = str(Path(cast(Any, item.payload)))
+            item_estimate = max(1, int(item.estimated_cost))
+            actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
+            if key in succeeded:
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
+            elif key in excluded_by_path:
+                # polylogue-onbz3: a durable refusal is not "already admitted
+                # under this identity". Reporting DUPLICATE here advanced the
+                # cursor and counted the pass as progress.
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.EXCLUDED,
+                    reason=f"source admission excluded {key}: {excluded_by_path[key]}",
+                    actual_cost=item_estimate,
+                )
+            elif key in deferred:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.DEFERRED,
+                    reason=f"source admission deferred {key}",
+                    actual_cost=item_estimate,
+                )
+            elif key in failed:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {key}"
+                )
+            elif unattempted_is_retryable:
+                # The pass ran out of its declared time budget, or refused
+                # the whole batch while degraded: this item was never
+                # attempted, so it is ordinary backlog, not a re-seen one.
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE,
+                    reason=f"source admission left {key} unattempted",
+                )
+            else:
+                # Offered and attempted, with nothing new to admit under this
+                # identity: the ordinary re-discovery of an already-ingested
+                # file. Acknowledgeable, never progress.
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item_estimate)
+
+        admitted_paths = [path for path in paths if str(path) in succeeded]
+        if admitted_paths:
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):
-                await converge_embeddings([path])
+                await converge_embeddings(admitted_paths)
             converge_profiles = getattr(self.context.watcher, "_converge_session_profiles_off_writer", None)
             if callable(converge_profiles):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
-        except (OSError, ValueError, RuntimeError) as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{type(exc).__name__}: {exc}")
-        actual = int(getattr(metrics, "source_payload_read_bytes", 0) or item.estimated_cost)
-        return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=max(1, actual))
+        return outcomes
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable
@@ -344,6 +433,33 @@ class MultiplexIntakeAdapter(IntakeAdapter):
         if adapter is None:
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="configured source item lost its adapter")
         return await adapter.admit(item)
+
+    async def admit_page(self, items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
+        """Split one page along source ownership and admit each part as a page.
+
+        One root's files are one ingest batch. Splitting here rather than
+        admitting item by item is what keeps the per-batch fixed cost paid
+        once per root per pass, and the parts are disjoint, so the per-item
+        outcomes recombine without ambiguity.
+        """
+        outcomes: dict[str, AdmissionResult] = {}
+        groups: dict[int, tuple[IntakeAdapter, list[IntakeItem]]] = {}
+        for item in items:
+            adapter = self._by_item.get(item.item_id)
+            if adapter is None:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason="configured source item lost its adapter"
+                )
+                continue
+            groups.setdefault(id(adapter), (adapter, []))[1].append(item)
+        for adapter, group in groups.values():
+            admit_page = getattr(adapter, "admit_page", None)
+            if admit_page is None:
+                for item in group:
+                    outcomes[item.item_id] = await adapter.admit(item)
+                continue
+            outcomes.update(await admit_page(tuple(group)))
+        return outcomes
 
     async def acknowledge(self, item: IntakeItem) -> None:
         adapter = self._by_item.pop(item.item_id, None)
