@@ -22,7 +22,6 @@ __all__ = [
     "CGROUP_ROOT",
     "CONTROLLER_PEAK_MIB",
     "CORPUS_MAX_WORKERS",
-    "MEMORY_HEADROOM_FRACTION",
     "PYTEST_SLICE_MEMORY_HIGH_MIB",
     "WORKER_PEAK_MIB",
     "available_memory_mib",
@@ -49,9 +48,6 @@ __all__ = [
 #: trimming imports does not recover width.
 WORKER_PEAK_MIB = 2263
 CONTROLLER_PEAK_MIB = 1075
-#: Memory left unclaimed so the run stays clear of the out-of-memory daemon's
-#: pressure threshold rather than approaching it.
-MEMORY_HEADROOM_FRACTION = 0.2
 #: The pytest pool's soft ceiling: ``agentctl-pytest.slice`` MemoryHigh, with a
 #: MemoryMax above it and no swap. Above the soft ceiling the kernel does not
 #: kill the run, it throttles every allocation, and the slice asks systemd-oomd
@@ -66,16 +62,28 @@ MEMORY_HEADROOM_FRACTION = 0.2
 #: pool charges pressure to the same parent a corpus run is accounted against.
 #: ``pytest_slot_available_mib()`` reads the live cgroup and is the authority at
 #: runtime; this constant only sizes the default before a slot is held.
+#:
+#: HEADROOM OWNER: the Sinnix value, not this module. Sinnix picked 12G by
+#: taking the intended width's peak (4 * 2263 + ~1 GiB = 10.05 GiB) and
+#: applying 1.2x -- "the corpus is sized for four workers". The ceiling this
+#: module reads therefore already carries its safety margin, and
+#: ``width_within`` must not discount it a second time; doing so cost a worker
+#: (a 12 GiB slice provisioned for 4 derived 3). Raising or lowering the margin
+#: is a Sinnix change to ``flake/data/runtime-defaults.nix``, not an arithmetic
+#: change here.
 PYTEST_SLICE_MEMORY_HIGH_MIB: Final = 12 * 1024
 
 
 def width_within(budget_mib: float) -> int:
-    """The widest run whose peak fits ``budget_mib`` with the headroom kept back.
+    """The widest run whose peak fits ``budget_mib``.
+
+    ``budget_mib`` is a ceiling that already carries its own headroom -- the
+    slice's ``memory.high`` as its owner sized it, or what remains of it -- so
+    nothing is held back here beyond the controller's own peak.
 
     Never zero: a slow run beats a run that does not start.
     """
-    budget = budget_mib * (1.0 - MEMORY_HEADROOM_FRACTION) - CONTROLLER_PEAK_MIB
-    return max(1, int(budget // WORKER_PEAK_MIB))
+    return max(1, int((budget_mib - CONTROLLER_PEAK_MIB) // WORKER_PEAK_MIB))
 
 
 #: The corpus width, and the ceiling any configured width is reduced to. It is
@@ -248,7 +256,7 @@ def memory_bounded_worker_cap(
             "available_mib": PYTEST_SLICE_MEMORY_HIGH_MIB,
             "host_available_mib": host,
             "cgroup_available_mib": None,
-            "headroom_fraction": MEMORY_HEADROOM_FRACTION,
+            "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
             "controller_peak_mib": CONTROLLER_PEAK_MIB,
             "worker_peak_mib": WORKER_PEAK_MIB,
             "workers": workers,
@@ -261,7 +269,7 @@ def memory_bounded_worker_cap(
         "available_mib": cgroup,
         "host_available_mib": host,
         "cgroup_available_mib": cgroup,
-        "headroom_fraction": MEMORY_HEADROOM_FRACTION,
+        "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
         "controller_peak_mib": CONTROLLER_PEAK_MIB,
         "worker_peak_mib": WORKER_PEAK_MIB,
         "workers": workers,

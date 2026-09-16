@@ -1231,3 +1231,75 @@ def test_hermes_jsonl_probe_skips_an_oversized_record(tmp_path: Path) -> None:
     records = _bounded_jsonl_records(candidate, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
 
     assert records == [{"kept": True}]
+
+
+def _reset_closure_caches(module: object) -> None:
+    """Drop every in-process closure cache, leaving only what the disk memo holds."""
+    module._semantic_source_closure.cache_clear()  # type: ignore[attr-defined]
+    module._local_import_paths.cache_clear()  # type: ignore[attr-defined]
+    module._SOURCE_DIGESTS.clear()  # type: ignore[attr-defined]
+    module._IMPORT_EDGES = None  # type: ignore[attr-defined]
+    module._IMPORT_EDGES_ADDED = False  # type: ignore[attr-defined]
+
+
+def test_the_import_closure_memo_outlives_the_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parsing the closure is paid once per file version, not once per process.
+
+    Re-deriving the import graph cost about 9.6 s of a 14 s single-file pytest
+    collection and was paid again by every xdist worker and every CLI start.
+
+    Anti-vacuity: delete the memo lookup in ``_local_import_paths`` and this
+    goes red -- the second walk re-parses, which the sabotaged ``_import_bases``
+    turns into a failure.
+    """
+    from polylogue.sources import origin_specs as module
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "a.py").write_text("from .b import B\n", encoding="utf-8")
+    (package / "b.py").write_text("B = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "_SOURCE_ROOT", tmp_path)
+    _reset_closure_caches(module)
+    first = module._semantic_source_paths(("pkg/a.py",))
+    assert {path.name for path in first} == {"a.py", "b.py"}
+    assert (tmp_path / ".cache" / "source-fingerprints" / "import-edges-v1.json").is_file()
+
+    _reset_closure_caches(module)
+
+    def _refuse(signature: tuple[str, str, int]) -> tuple[str, ...]:
+        raise AssertionError(f"re-parsed {signature[0]} despite an unchanged file")
+
+    monkeypatch.setattr(module, "_import_bases", _refuse)
+    assert module._semantic_source_paths(("pkg/a.py",)) == first
+
+
+def test_a_memoized_closure_still_sees_a_module_that_appeared_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The memo holds what a file's text says, never which imports resolved then.
+
+    ``from .c import C`` against an absent ``c.py`` contributes nothing to the
+    closure; the day ``c.py`` lands, the unedited importer's closure must grow,
+    or a semantic file joins the fingerprint without moving it.
+
+    Anti-vacuity: memoize resolved paths instead of lexical bases -- the shape
+    this replaced -- and the second assertion still reports two members.
+    """
+    from polylogue.sources import origin_specs as module
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "a.py").write_text("from .b import B\nfrom .c import C\n", encoding="utf-8")
+    (package / "b.py").write_text("B = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(module, "_SOURCE_ROOT", tmp_path)
+    _reset_closure_caches(module)
+    assert {path.name for path in module._semantic_source_paths(("pkg/a.py",))} == {"a.py", "b.py"}
+
+    (package / "c.py").write_text("C = 1\n", encoding="utf-8")
+    _reset_closure_caches(module)
+
+    assert {path.name for path in module._semantic_source_paths(("pkg/a.py",))} == {"a.py", "b.py", "c.py"}
