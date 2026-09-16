@@ -35,7 +35,6 @@ from polylogue.storage.embeddings.identity import (
     EmbeddingSourceDigest,
     message_embedding_derivation_key,
     register_embedding_identity_sql,
-    sql_string_literal,
 )
 from polylogue.storage.embeddings.tuple_generation import (
     EmbeddingTupleGeneration,
@@ -517,7 +516,7 @@ def _archive_embedding_freshness_predicate(
             return None
 
     register_embedding_identity_sql(conn)
-    relation = archive_embeddable_messages_relation(conn, alias="desired_source", model=recipe.model)
+    relation = archive_embeddable_messages_relation(conn, alias="desired_source", recipe=recipe)
     cte_sql = f"""
         WITH desired_messages AS (
             SELECT desired_source.message_id, desired_source.session_id, desired_source.vector_derivation_hash
@@ -1250,27 +1249,34 @@ def archive_embedding_messages_table_ref(conn: sqlite3.Connection, *, alias: str
     return archive_messages_table_ref(conn, alias=alias)
 
 
-def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str, model: str | None = None) -> str:
+def archive_embeddable_messages_relation(
+    conn: sqlite3.Connection, *, alias: str, recipe: EmbeddingRecipe | None = None
+) -> str:
     """Return a relation containing messages the archive embedder will send.
 
-    ``model`` is optional: legacy/pre-v4 callers (the content-hash-based
+    ``recipe`` is optional: legacy/pre-v4 callers (the content-hash-based
     compat fallback, which targets an embeddings.db that has not yet been
     rebuilt onto the v4 schema) only need ``message_id``/``session_id``/
-    ``content_hash`` and omit it. Passing ``model`` additionally projects
+    ``content_hash`` and omit it. Passing ``recipe`` additionally projects
     ``vector_derivation_hash`` -- computed via the registered SQL function from
     exactly the same prose expression that will be sent to the embedder --
     for callers that need the identity-free vector key (the freshness
     predicate, embedding materialization, rescue).
+
+    The *whole* recipe is carried, not just its model: addresses built from the
+    model alone had to assume ``dimensions=1024``, so at any other configured
+    dimension the SQL-side address disagreed with the embed-time one and every
+    message stayed pending forever (polylogue-crcst).
     """
 
     message_columns = _table_columns(conn, "messages")
     base_alias = f"{alias}_base"
     messages_ref = archive_embedding_messages_table_ref(conn, alias=base_alias)
     content_hash_expr = f"{base_alias}.content_hash" if "content_hash" in message_columns else "NULL"
-    model_literal = ""
-    if model is not None:
-        register_embedding_identity_sql(conn)
-        model_literal = sql_string_literal(model)
+    recipe_literal = ""
+    if recipe is not None:
+        register_embedding_identity_sql(conn, recipe=recipe)
+        recipe_literal = f"X'{recipe.recipe_hash.hex()}'"
 
     base_where = archive_embeddable_message_where(base_alias)
     if _archive_message_blocks_available(conn):
@@ -1281,7 +1287,7 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
         )
         prose_expr = message_prose_sql(base_alias, separator="char(10)||char(10)", block_types=("text",))
         hash_expr = (
-            f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({model_literal}, {prose_expr})" if model is not None else "NULL"
+            f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({recipe_literal}, {prose_expr})" if recipe is not None else "NULL"
         )
         selected_columns = (
             f"{base_alias}.message_id AS message_id, "
@@ -1305,8 +1311,8 @@ def archive_embeddable_messages_relation(conn: sqlite3.Connection, *, alias: str
         """
     if "text" in message_columns:
         hash_expr = (
-            f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({model_literal}, {base_alias}.text)"
-            if model is not None
+            f"{VECTOR_DERIVATION_HASH_SQL_FUNCTION}({recipe_literal}, {base_alias}.text)"
+            if recipe is not None
             else "NULL"
         )
         selected_columns = (
@@ -1576,7 +1582,7 @@ def _read_archive_embedding_source_snapshot(
     conn: sqlite3.Connection,
     session_id: str,
     *,
-    model: str,
+    recipe: EmbeddingRecipe,
 ) -> tuple[bytes, int]:
     """Re-read live source identity to detect drift during materialization.
 
@@ -1585,7 +1591,7 @@ def _read_archive_embedding_source_snapshot(
     caught: the relation recomputes ``vector_derivation_hash`` from whatever
     text is in ``index.db`` right now.
     """
-    relation = archive_embeddable_messages_relation(conn, alias="current_source", model=model)
+    relation = archive_embeddable_messages_relation(conn, alias="current_source", recipe=recipe)
     rows = conn.execute(
         f"""
         SELECT current_source.message_id, current_source.vector_derivation_hash
@@ -2105,10 +2111,10 @@ def _finalize_archive_embedding_attempt(plan: _ArchiveEmbeddingPlan) -> EmbedSes
                 index_conn.close()
             raise
         try:
-            current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(
-                index_conn, plan.session_id, model=plan.model
-            )
             current_recipe = _configured_embedding_recipe()
+            current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(
+                index_conn, plan.session_id, recipe=current_recipe
+            )
             if (
                 current_source_hash != plan.attempt.source_hash
                 or current_message_count != len(plan.embeddable_message_ids)

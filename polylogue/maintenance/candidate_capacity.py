@@ -448,11 +448,31 @@ def _generations_root(archive_root: Path) -> Path:
     return root
 
 
+def _generations_available_bytes(archive_root: Path, generations_root: Path) -> int:
+    """Free space where the generations will actually be written.
+
+    ``IndexGenerationStore.generations_root`` is ``active_pointer.parent /
+    GENERATIONS_DIRNAME``, which a symlink-farm layout can resolve onto a
+    different filesystem from the archive root.  Measuring the root's
+    filesystem admitted or refused a candidate on free space that the build
+    would never consume.  Before the first generation exists the directory is
+    absent, so the nearest existing ancestor is the honest stand-in.
+    """
+    probe = generations_root.resolve(strict=False)
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            probe = archive_root
+            break
+        probe = parent
+    return _available_bytes(probe)
+
+
 def _available_bytes(path: Path) -> int:
     try:
         statistics = os.statvfs(path)
     except OSError as exc:
-        raise ArchiveCapacityError(f"cannot read free space for archive root: {path}") from exc
+        raise ArchiveCapacityError(f"cannot read free space for: {path}") from exc
     # ``f_bavail`` is what an unprivileged writer may actually use; ``f_bfree``
     # includes the filesystem's own root reserve and would over-promise.
     return int(statistics.f_frsize) * int(statistics.f_bavail)
@@ -475,6 +495,13 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
         location = ArchiveLocation.resolve(root)
     except ArchiveLocationError as exc:
         raise ArchiveCapacityError(f"cannot resolve archive identity: {root}") from exc
+    # The store writes generations under ``canonical_active_index_path(...)``'s
+    # directory (IndexGenerationStore.generations_root), which in a
+    # symlink-farm layout is not the archive root and can sit on another
+    # filesystem.
+    from polylogue.storage.index_generation import canonical_active_index_path
+
+    store_generations_root = canonical_active_index_path(location).parent / GENERATIONS_DIRNAME
 
     seen: set[tuple[int, int]] = set()
     accumulators = {name: _Accumulator(name, seen) for name in POPULATION_NAMES}
@@ -530,7 +557,7 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
         active_generation_id=_active_generation_id(location),
         populations=tuple(accumulators[name].measurement() for name in POPULATION_NAMES),
         generations=generations,
-        available_bytes=_available_bytes(root),
+        available_bytes=_generations_available_bytes(root, store_generations_root),
     )
 
 

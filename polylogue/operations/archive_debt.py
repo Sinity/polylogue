@@ -17,6 +17,7 @@ from polylogue.archive.raw_materialization import (
 )
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, RawRevisionAuthority
 from polylogue.core.enums import Origin
+from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
@@ -204,9 +205,13 @@ def _assertion_candidate_rows(user_db: Path) -> list[ArchiveDebtRowPayload]:
 
 
 def _read_user_version(path: Path) -> int | None:
+    # This reader exists to *diagnose* a skewed tier, so schema validation is
+    # the one thing it must not perform: SchemaSkew is a Polylogue
+    # DatabaseError rather than a sqlite3.Error, so validating here made the
+    # skew case raise out of the debt projection instead of reporting it.
     try:
-        conn = open_readonly_connection(path, timeout_class="background-read")
-    except sqlite3.Error:
+        conn = open_readonly_connection(path, timeout_class="background-read", validate_schema=False)
+    except (sqlite3.Error, SchemaSkew):
         return None
     try:
         row = conn.execute("PRAGMA user_version").fetchone()

@@ -580,8 +580,11 @@
     },
     {
       "file": "polylogue/operations/archive_debt.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
-      "count": 2
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
+    },
+    {
+      "file": "polylogue/operations/archive_debt.py",
+      "digest": "ec67ae0711ca38f9682e64204aa90e84acd3efe1"
     },
     {
       "file": "polylogue/operations/archive_space_report.py",
@@ -641,7 +644,7 @@
     },
     {
       "file": "polylogue/readiness/__init__.py",
-      "digest": "ca25459cb15b48fd5bd259228614173e1910842a"
+      "digest": "9b079bdc32edf6795dd83a136c46aab9c7c6b131"
     },
     {
       "file": "polylogue/schemas/drift_sentinel_sampling.py",

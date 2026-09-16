@@ -353,3 +353,40 @@ def test_operation_id_may_not_escape_the_receipt_directory(tmp_path: Path) -> No
 
     with pytest.raises(ArchiveCapacityError, match="single path component"):
         record_capacity_observation(root, operation_id="../escape", candidate_root=candidate)
+
+
+def test_available_bytes_is_measured_where_generations_are_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Free space comes from the store's generations root, not the archive root.
+
+    Anti-vacuity: the archive root here is a symlink farm whose ``index.db``
+    points into a sibling tree, exactly the layout in which
+    ``IndexGenerationStore.generations_root`` resolves away from the archive
+    root.  Measuring ``statvfs`` on the root -- what the gate did before --
+    records the root path and makes this assertion red.
+    """
+
+    import polylogue.maintenance.candidate_capacity as capacity_module
+
+    real_location = tmp_path / "real"
+    real_location.mkdir()
+    _dense(real_location / "index.db", 4096)
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / "index.db").symlink_to(real_location / "index.db")
+    (root / GENERATIONS_DIRNAME).mkdir()
+    (real_location / GENERATIONS_DIRNAME).mkdir()
+
+    probed: list[Path] = []
+    real_available = capacity_module._available_bytes
+
+    def _recording_available(path: Path) -> int:
+        probed.append(Path(path))
+        return real_available(path)
+
+    monkeypatch.setattr(capacity_module, "_available_bytes", _recording_available)
+    measure_archive_capacity(root)
+
+    assert probed == [(real_location / GENERATIONS_DIRNAME).resolve()]

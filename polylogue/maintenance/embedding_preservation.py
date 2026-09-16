@@ -12,11 +12,15 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.core.durable_fs import atomic_replace, sync_directory, write_once
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+if TYPE_CHECKING:
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
 
 _VECTOR_TABLES = (
     "message_embeddings",
@@ -430,7 +434,24 @@ def archive_tier_paths(root: str | Path) -> tuple[Path, Path]:
     return location.configured_root / "embeddings.db", location.active_index_path
 
 
-def recomputed_vector_hashes(index_db: str | Path, *, model: str) -> dict[str, bytes]:
+def configured_vector_recipe(model: str | None = None) -> EmbeddingRecipe:
+    """The configured embedding recipe, with only its model optionally overridden.
+
+    Vector addresses depend on the whole recipe (model, dimensions, request
+    shape), so the configured dimension travels with the model rather than
+    being assumed by whoever builds the address.
+    """
+    from polylogue.config import load_polylogue_config
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
+    cfg = load_polylogue_config()
+    return EmbeddingRecipe.current(
+        model=str(cfg.embedding_model) if model is None else model,
+        dimensions=int(cfg.embedding_dimension),
+    )
+
+
+def recomputed_vector_hashes(index_db: str | Path, *, recipe: EmbeddingRecipe) -> dict[str, bytes]:
     """Vector addresses the rebuilt archive will ask the embedder for.
 
     The relation is the production embedder's own message selection and hash
@@ -442,7 +463,7 @@ def recomputed_vector_hashes(index_db: str | Path, *, model: str) -> dict[str, b
     # A plain read-only open, never immutable: this index is the rebuilt
     # archive's, which convergence may still be writing.
     with closing(_connect(Path(index_db).absolute(), readonly=True)) as conn:
-        relation = archive_embeddable_messages_relation(conn, alias="embeddable", model=model)
+        relation = archive_embeddable_messages_relation(conn, alias="embeddable", recipe=recipe)
         rows = conn.execute(
             f"SELECT embeddable.message_id, embeddable.vector_derivation_hash FROM {relation} "
             "WHERE embeddable.vector_derivation_hash IS NOT NULL"
@@ -580,6 +601,7 @@ __all__ = [
     "archive_tier_paths",
     "delete_preserved_copy",
     "preserve_embedding_vectors",
+    "configured_vector_recipe",
     "recomputed_vector_hashes",
     "restore_embedding_vectors",
     "verify_embedding_reuse",

@@ -314,6 +314,14 @@ def converge_same_version_tier(
         apply_index_benign_ddl_convergence(conn)
         _apply_derived_identity_policy(conn, tier, derived_identity)
         assert_schema_manifest(conn, tier)
+    elif tier is ArchiveTier.EMBEDDINGS:
+        # Every embeddings connection needs the extension loaded, not just the
+        # freshly initialized one: sqlite-vec state is connection-local, so a
+        # same-version open that skipped this returned a connection on which
+        # every vec0 query fails as "no such module".
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
+            raise RuntimeError("archive embeddings initialization requires sqlite-vec") from error
     conn.commit()
 
 

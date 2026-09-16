@@ -455,11 +455,18 @@ def _index_db(path: Path) -> None:
 def _outgoing_archive(tmp_path: Path) -> Path:
     """An archive root whose embeddings tier holds the vectors its index will ask for."""
     from polylogue.maintenance.embedding_preservation import recomputed_vector_hashes
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
 
     root = tmp_path / "archive"
     root.mkdir()
     _index_db(root / "index.db")
-    wanted = tuple(sorted(recomputed_vector_hashes(root / "index.db", model=_MODEL).values()))
+    wanted = tuple(
+        sorted(
+            recomputed_vector_hashes(
+                root / "index.db", recipe=EmbeddingRecipe.current(model=_MODEL, dimensions=1024)
+            ).values()
+        )
+    )
     assert len(wanted) == len(_PROSE)
     _db(root / "embeddings.db", vectors=wanted)
     return root
