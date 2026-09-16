@@ -36,6 +36,7 @@ from .parsers import (
     codex,
     drive,
     grok,
+    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
@@ -1691,7 +1692,9 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
             hermes_spans.parse_atof_stream(
                 payloads,
                 spec.fallback_id,
-                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+                profile_root=(
+                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
+                ),
             )
             if payloads is not None
             else []
@@ -1724,14 +1727,18 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
             return hermes_verification.parse_verification_evidence_db_payload(
                 record,
                 spec.fallback_id,
-                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+                profile_root=(
+                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
+                ),
                 source_path=spec.source_path,
             )
         if spec.provider is Provider.HERMES and hermes_spans.looks_like_atif_payload(record):
             return hermes_spans.parse_atif_document(
                 record,
                 spec.fallback_id,
-                profile_root=Path(spec.source_path).parent if spec.source_path else None,
+                profile_root=(
+                    hermes_identity.profile_root_for_artifact(Path(spec.source_path)) if spec.source_path else None
+                ),
             )
         if spec.provider is Provider.ANTIGRAVITY and antigravity.looks_like_markdown_export(record):
             return [antigravity.parse_markdown_export_payload(record, spec.fallback_id)]
@@ -2005,7 +2012,7 @@ def parse_stream_payload(
         return hermes_spans.parse_atof_stream(
             payloads,
             fallback_id,
-            profile_root=Path(source_path).parent if source_path else None,
+            profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 

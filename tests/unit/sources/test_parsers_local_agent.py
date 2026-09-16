@@ -14,7 +14,7 @@ from polylogue.archive.artifact_taxonomy.models import ArtifactKind
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.live import WatchSource
@@ -1653,3 +1653,39 @@ def test_hermes_snapshot_without_source_path_stays_unqualified() -> None:
     [session] = parse_payload("hermes", _hermes_snapshot_payload(), "fallback")
 
     assert session.provider_session_id == "hermes-root"
+
+
+def test_gemini_cli_subagent_user_turn_is_not_stamped_human_authored() -> None:
+    """polylogue-670mf: ``human_authored_override`` is declared for parsers
+    whose genuine user-turn shape has no agent/subagent complexity to
+    exclude. A Gemini CLI session with ``kind == "subagent"`` is exactly that
+    complexity -- its user turns are relayed context, not the operator's own
+    words -- so the override is withheld and the classification stands.
+
+    Anti-vacuity: applying ``human_authored_override`` unconditionally in
+    ``_parse_gemini_message`` again stamps the subagent turn
+    ``HUMAN_AUTHORED`` and the first assertion goes red; dropping the
+    override entirely makes the ordinary-session assertion go red.
+    """
+    messages: list[JSONValue] = [
+        {"id": "u1", "timestamp": "2026-04-08T20:45:01.000Z", "type": "user", "content": ["hello"]}
+    ]
+    subagent: JSONDocument = {
+        "sessionId": "gemini-subagent-1",
+        "startTime": "2026-04-08T20:45:00.000Z",
+        "lastUpdated": "2026-04-08T20:47:00.000Z",
+        "kind": "subagent",
+        "messages": messages,
+    }
+    ordinary: JSONDocument = {
+        "sessionId": "gemini-chat-1",
+        "startTime": "2026-04-08T20:45:00.000Z",
+        "lastUpdated": "2026-04-08T20:47:00.000Z",
+        "messages": messages,
+    }
+
+    [subagent_session] = parse_payload("gemini-cli", subagent, "fallback")
+    [ordinary_session] = parse_payload("gemini-cli", ordinary, "fallback")
+
+    assert subagent_session.messages[0].material_origin is MaterialOrigin.UNKNOWN
+    assert ordinary_session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED

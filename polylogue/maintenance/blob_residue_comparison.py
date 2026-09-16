@@ -40,7 +40,7 @@ from polylogue.sources.live.batch_support import (
     _parse_path_as_session_artifact,
     _parse_payload_as_session_artifact,
 )
-from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
+from polylogue.sources.parsers import codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
 from polylogue.sources.sqlite_snapshot import is_sqlite_path
@@ -340,7 +340,14 @@ def _parse_sqlite(path: Path, *, provider: Provider, fallback_id: str) -> RouteR
             provider,
             "hermes_state.required_tables",
             "hermes_state.sqlite_snapshot",
-            tuple(hermes_state.parse_state_db(path, fallback_id=fallback_id, profile_root=path.parent, immutable=True)),
+            tuple(
+                hermes_state.parse_state_db(
+                    path,
+                    fallback_id=fallback_id,
+                    profile_root=hermes_identity.profile_root_for_artifact(path),
+                    immutable=True,
+                )
+            ),
         )
     if provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_path(
         path, immutable=True
@@ -351,7 +358,10 @@ def _parse_sqlite(path: Path, *, provider: Provider, fallback_id: str) -> RouteR
             "hermes_verification.sqlite_snapshot",
             tuple(
                 hermes_verification.parse_verification_evidence_db(
-                    path, fallback_id=fallback_id, profile_root=path.parent, immutable=True
+                    path,
+                    fallback_id=fallback_id,
+                    profile_root=hermes_identity.profile_root_for_artifact(path),
+                    immutable=True,
                 )
             ),
         )

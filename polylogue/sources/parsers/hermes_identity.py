@@ -29,7 +29,7 @@ from pathlib import Path
 
 __all__ = [
     "profile_key",
-    "profile_root_for_session_snapshot",
+    "profile_root_for_artifact",
     "qualified_session_id",
     "split_qualified_session_id",
 ]
@@ -45,19 +45,33 @@ def profile_key(profile_root: Path) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
 
-def profile_root_for_session_snapshot(snapshot_path: Path) -> Path:
-    """Return the Hermes install root that owns a session-snapshot JSON file.
+#: Directory names Hermes interposes between its install root and a raw
+#: artifact file. ``state.db`` and ``verification_evidence.db`` sit at the
+#: root itself; session snapshots live under ``sessions/`` (``sessions/saved/``
+#: when retained); NeMo Relay ATIF/ATOF documents live under
+#: ``observability/nemo-relay/<family>/``.
+_PROFILE_SUBTREE_DIRECTORIES: frozenset[str] = frozenset(
+    {"sessions", "saved", "observability", "nemo-relay", "atif", "atof"}
+)
 
-    Hermes writes ``state.db`` at its install root and session snapshots one
-    level down under ``<root>/sessions/`` (``sessions/saved/`` for retained
-    ones), so a snapshot's own parent directory is not the root. Both
-    families must hash the *same* root or one logical session gets two
-    profile keys and lands as two archive sessions.
+
+def profile_root_for_artifact(artifact_path: Path) -> Path:
+    """Return the Hermes install root that owns any raw Hermes artifact.
+
+    Every Hermes artifact family must hash the *same* root or one logical
+    session gets two profile keys and lands as two archive sessions
+    (polylogue-q5j3o): handing a family its file's immediate parent makes
+    ``<root>/observability/nemo-relay/atof/events.jsonl`` resolve to
+    ``.../atof`` while ``<root>/state.db`` resolves to ``<root>``.
+
+    The root is found by climbing the contiguous chain of Hermes' own
+    interposed subtree directories above the file, so this is pure path
+    arithmetic and works during replay, where the source tree is gone.
     """
-    for ancestor in snapshot_path.parents:
-        if ancestor.name == "sessions":
-            return ancestor.parent
-    return snapshot_path.parent
+    root = artifact_path.parent
+    while root.name in _PROFILE_SUBTREE_DIRECTORIES and root != root.parent:
+        root = root.parent
+    return root
 
 
 def qualified_session_id(raw_session_id: str, key: str) -> str:

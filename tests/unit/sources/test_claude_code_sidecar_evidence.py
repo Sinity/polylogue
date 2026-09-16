@@ -1319,6 +1319,44 @@ def test_forked_from_resolves_the_session_parent_edge() -> None:
     ]
 
 
+def test_conflicting_forked_from_claims_adopt_no_lineage_parent() -> None:
+    """polylogue-utv49: Claude Code JSONL is untrusted import evidence. An
+    export whose records assert two DIFFERENT ``forkedFrom`` sessionIds states
+    no coherent lineage, so no parent is adopted and the resolved parent drives
+    no prefix replay. Every claim is still preserved as a
+    ``claude_forked_from`` event, so this refuses a choice without losing
+    evidence.
+
+    Anti-vacuity: restoring the "sort the distinct claims and take the first
+    non-self one" rule adopts ``parent-a`` as the archive lineage parent and
+    stamps ``BranchType.FORK`` -- the first two assertions go red.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "child-sess",
+                "forkedFrom": {"sessionId": "parent-a", "messageUuid": "a-msg-1"},
+                "message": {"role": "user", "content": "one claim"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "child-sess",
+                "forkedFrom": {"sessionId": "parent-b", "messageUuid": "b-msg-1"},
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "another claim"}]},
+            },
+        ],
+        "child-sess",
+    )
+
+    assert parsed.parent_session_provider_id is None
+    assert parsed.branch_type is not BranchType.FORK
+    fork_events = [e for e in parsed.session_events if e.event_type == "claude_forked_from"]
+    assert sorted(str(e.payload["parent_session_provider_id"]) for e in fork_events) == ["parent-a", "parent-b"]
+
+
 def test_forked_from_absent_leaves_the_session_parentless() -> None:
     """Anti-vacuity: no ``forkedFrom`` must not fabricate a parent edge."""
     parsed = parse_code(

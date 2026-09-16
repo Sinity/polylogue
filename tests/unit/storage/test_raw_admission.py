@@ -859,3 +859,54 @@ def test_insert_reconstructed_raw_row_checks_excision_in_selected_attached_schem
         insert_reconstructed_raw_row(conn, row, schema="source")
 
     assert int(conn.execute("SELECT COUNT(*) FROM source.raw_sessions").fetchone()[0]) == 0
+
+
+def test_raw_source_root_scope_is_a_literal_path_prefix(tmp_path: Path) -> None:
+    """polylogue-gzxhi: a replay scoped to one source root must select that
+    root and its descendants and nothing else. ``LIKE`` cannot express that:
+    its ``%``/``_`` metacharacters let ``/archive/100%`` claim
+    ``/archive/1000``, and its ASCII case folding lets ``/archive/Foo`` claim
+    the distinct sibling ``/archive/foo``.
+
+    Anti-vacuity: restoring the ``source_path LIKE ? ESCAPE '\\'`` descendant
+    clause re-admits ``/archive/Foo/child.json`` under the ``/archive/foo``
+    root and the second assertion goes red.
+    """
+    from polylogue.storage.sqlite.queries.raw_reads import raw_id_query
+
+    conn = _connect(tmp_path / "source.db")
+    paths = [
+        "/archive/100%",
+        "/archive/100%/child.json",
+        "/archive/1000",
+        "/archive/1000/child.json",
+        "/archive/foo/child.json",
+        "/archive/Foo/child.json",
+    ]
+    for index, path in enumerate(paths):
+        payload = f'{{"row": {index}}}\n'.encode()
+        blob_hash = hashlib.sha256(payload).digest()
+        insert_reconstructed_raw_row(
+            conn,
+            ReconstructedRawRow(
+                raw_id=f"raw-{index}",
+                origin=Origin.CLAUDE_AI_EXPORT.value,
+                capture_mode=Provider.CLAUDE_AI.value,
+                native_id=f"native-{index}",
+                source_path=path,
+                source_index=0,
+                blob_hash=blob_hash,
+                blob_size=len(payload),
+                acquired_at_ms=1_767_000_000_000 + index,
+                logical_source_key=f"claude-ai-export:native-{index}",
+                source_revision=blob_hash.hex(),
+                baseline_raw_id=f"raw-{index}",
+            ),
+        )
+
+    def selected(root: str) -> set[str]:
+        sql, params = raw_id_query(source_paths=[root])
+        return {row[0] for row in conn.execute(sql, params).fetchall()}
+
+    assert selected("/archive/100%") == {"raw-0", "raw-1"}
+    assert selected("/archive/foo") == {"raw-4"}

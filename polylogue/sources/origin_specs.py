@@ -2443,6 +2443,32 @@ def _hermes_spec() -> OriginSpec:
             "argument to the same function.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="skill_asset",
+                # polylogue-6d7fx: the hermes-agent checkout bundled under the
+                # watched Hermes root ships prompt templates whose bytes are a
+                # bare role/content message list -- message-shaped by
+                # construction and therefore indistinguishable by content
+                # shape from a transcript. They are static skill assets, never
+                # a conversation the operator had, so the path rule is the
+                # only reliable gate.
+                path_pattern=r"(?:^|/)hermes-agent/optional-skills/(?:[^/]+/)*templates/[^/]+$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="skill_asset",
+                fidelity_note=(
+                    "Skill-shipped prompt templates are retained as raw artifact evidence and never create a session."
+                ),
+                path_suffixes=(".json", ".jsonl", ".md", ".txt", ""),
+                watch_suffixes=(),
+                schema_observation_strategy="opaque-non-applicable",
+                schema_non_applicability_reason=(
+                    "A shipped prompt template is skill content, not a provider record contract; retain the "
+                    "bytes and report non-applicability."
+                ),
+            ),
+        ),
         tool_outcome_unknown_reasons=frozenset(
             {
                 ToolResultUnknownReason.NOT_REPORTED,

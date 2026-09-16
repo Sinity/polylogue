@@ -171,12 +171,13 @@ def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stre
     assert raw is not None
     assert raw.source_path == str(HERMES_ATOF_FIXTURE)
     assert raw.source_index is None
-    # fs1.14: a resolvable profile root (the fixture's own containing
-    # directory, threaded through as source_path's parent) now
-    # artifact- AND profile-qualifies the observer session identity.
-    from polylogue.sources.parsers.hermes_identity import profile_key
+    # fs1.14: a resolvable profile root (derived from source_path through the
+    # one shared ``profile_root_for_artifact`` helper every Hermes family uses,
+    # polylogue-q5j3o) now artifact- AND profile-qualifies the observer session
+    # identity.
+    from polylogue.sources.parsers.hermes_identity import profile_key, profile_root_for_artifact
 
-    expected_key = profile_key(HERMES_ATOF_FIXTURE.parent)
+    expected_key = profile_key(profile_root_for_artifact(HERMES_ATOF_FIXTURE))
     assert session.provider_session_id == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"
     assert "hermes:atof-observer" in session.ingest_flags
 

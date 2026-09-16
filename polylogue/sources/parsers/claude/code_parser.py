@@ -1417,12 +1417,29 @@ def _background_task_id(item: dict[str, object]) -> str | None:
 def _task_notification_from_record(
     item: dict[str, object], message: object
 ) -> ClaudeCodeBackgroundTaskNotification | None:
-    """Read task protocol from message, queue-operation, or queued-command attachment."""
+    """Read task protocol from message, queue-operation, or queued-command attachment.
+
+    polylogue-sfu70: extraction is gated on the record's own provider-native
+    evidence that it IS a notification -- ``origin.kind ==
+    "task-notification"``, a ``queue-operation`` record, or a
+    ``queued_command`` attachment. Claude Code JSONL is untrusted import
+    evidence: without the gate, any human prompt or model output that merely
+    quotes the ``<task-notification>`` protocol text forges a background-command
+    outcome, which then feeds material_origin and outcome accounting. The
+    sibling ``_task_output_outcome`` holds the same discipline.
+    """
+    attachment = item.get("attachment")
+    attachment_type = attachment.get("type") if isinstance(attachment, dict) else None
+    if (
+        _record_origin_kind(item) != "task-notification"
+        and item.get("type") != "queue-operation"
+        and attachment_type != "queued_command"
+    ):
+        return None
     candidates: list[object] = []
     if isinstance(message, dict):
         candidates.append(message.get("content"))
     candidates.append(item.get("content"))
-    attachment = item.get("attachment")
     if isinstance(attachment, dict):
         candidates.append(attachment.get("prompt"))
     for candidate in candidates:
@@ -2482,11 +2499,21 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     # in the content. The branch point rides the event payload; the writer
     # derives ``session_links.branch_point_message_id`` from the resolved
     # parent's own content.
+    #
+    # polylogue-utv49: Claude Code JSONL is untrusted import evidence, so a
+    # parent is adopted only when every distinct non-self claim agrees. An
+    # export asserting several different parents states no coherent lineage;
+    # picking the lexicographically smallest of them would drive prefix replay
+    # and recomposition off an arbitrary choice. The disagreement itself is not
+    # lost: every claim stays a ``claude_forked_from`` session event.
     fork_parent_provider_id: str | None = None
-    for candidate_parent, _branch_point in sorted(acc.forked_from, key=lambda edge: (edge[0], edge[1] or "")):
-        if candidate_parent != str(composed_session_id):
-            fork_parent_provider_id = candidate_parent
-            break
+    distinct_fork_parents = {
+        candidate_parent
+        for candidate_parent, _branch_point in acc.forked_from
+        if candidate_parent != str(composed_session_id)
+    }
+    if len(distinct_fork_parents) == 1:
+        fork_parent_provider_id = next(iter(distinct_fork_parents))
     if parent_session_id is None and fork_parent_provider_id is not None:
         parent_session_id = fork_parent_provider_id
 
