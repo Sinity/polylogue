@@ -339,6 +339,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> object:
         calls.append((paths, queued_file_count, skipped_file_count))
         deferred_flags.append(watcher._catch_up_convergence_deferred)
@@ -466,6 +467,7 @@ def test_catch_up_does_not_immediately_requeue_failed_paths(tmp_path: Path) -> N
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> SimpleNamespace:
         return SimpleNamespace(failed_paths=[str(paths[1])])
 
@@ -495,6 +497,7 @@ def test_catch_up_noop_failed_retry_batch_advances_backoff(tmp_path: Path, froze
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> SimpleNamespace:
         del paths, queued_file_count, skipped_file_count
         return SimpleNamespace(succeeded_file_count=0, failed_file_count=0)
@@ -524,6 +527,7 @@ def test_flush_pending_does_not_hot_requeue_backed_off_failure(tmp_path: Path) -
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> SimpleNamespace:
         del queued_file_count, skipped_file_count
         watcher._cursor.mark_failed(paths[0])
@@ -615,6 +619,7 @@ def test_noop_failed_retry_batch_advances_backoff(tmp_path: Path, frozen_clock: 
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> SimpleNamespace:
         del paths, queued_file_count, skipped_file_count
         return SimpleNamespace(succeeded_file_count=0, failed_file_count=0)
@@ -654,6 +659,7 @@ def test_pending_failed_retry_without_needed_work_advances_backoff(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> SimpleNamespace:
         del paths, queued_file_count, skipped_file_count
         raise AssertionError("no-needed-work retry should not ingest")

@@ -67,6 +67,7 @@ from polylogue.core.raw_failure_evidence import (
     RawFailureEvidenceKind,
 )
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
 from polylogue.logging import WARNING, emit, get_logger
@@ -1965,7 +1966,13 @@ class LiveBatchProcessor:
                 try:
                     from polylogue.sources.live.hook_paste_enrichment import enrich_paste_from_hooks
 
-                    enrich_paste_from_hooks(self._cursor._db_path, session_ids=paste_session_ids)
+                    # This pass may run with the writer released (the stage
+                    # engine no longer holds it across compute), so its write
+                    # takes the writer for itself rather than assuming one.
+                    admit_stage_write(
+                        "convergence.hook_paste_enrichment",
+                        lambda: enrich_paste_from_hooks(self._cursor._db_path, session_ids=paste_session_ids),
+                    )
                 except Exception as exc:
                     # A debug line made this indistinguishable from success:
                     # the stage still recorded its elapsed time and nothing
@@ -1982,13 +1989,20 @@ class LiveBatchProcessor:
                         error_type=type(exc).__name__,
                         error_detail=str(exc),
                     )
-                    for paste_session_id in paste_session_ids:
-                        self._cursor.record_convergence_debt(
-                            stage="hook_paste_enrichment",
-                            subject_type="session",
-                            subject_id=str(paste_session_id),
-                            error=str(exc),
-                        )
+                    # ``exc`` is unbound at the end of this except clause, so
+                    # the debt writer closes over a plain local instead.
+                    paste_error = str(exc)
+
+                    def record_paste_debt() -> None:
+                        for paste_session_id in paste_session_ids:
+                            self._cursor.record_convergence_debt(
+                                stage="hook_paste_enrichment",
+                                subject_type="session",
+                                subject_id=str(paste_session_id),
+                                error=paste_error,
+                            )
+
+                    admit_stage_write("convergence.hook_paste_enrichment.debt", record_paste_debt)
                 batch_stage_timings["hook_paste_enrichment"] = time.perf_counter() - t_paste
                 return (
                     batch_completed,

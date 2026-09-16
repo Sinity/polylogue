@@ -33,6 +33,7 @@ from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.source_halts import halted_sources, source_halt
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.core.stage_admission import stage_write_admission
 from polylogue.core.write_hold import WriteHoldBudgetError
 from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.sources.hooks import (
@@ -59,7 +60,7 @@ from polylogue.sources.live.batch_support import (
     tail_hash_and_last_complete_newline_from_path,
     tail_hash_from_path,
 )
-from polylogue.sources.live.convergence_debt import debt_by_path
+from polylogue.sources.live.convergence_debt import ConvergenceDebt, debt_by_path
 from polylogue.sources.live.cursor import (
     CursorObservationRebase,
     CursorRecord,
@@ -1086,21 +1087,13 @@ class LiveWatcher:
             return False
         unique_session_ids = tuple(dict.fromkeys(session_ids))
 
-        async def converge() -> None:
-            _completed, _elapsed, timings, debts = await self._batch_processor._run_sync(
-                "watcher.catch_up.convergence",
-                self._batch_processor._converge_paths,
-                unique_paths,
-                whole_archive=whole_archive,
-                session_ids=unique_session_ids,
-            )
-            debt_by_source_path = debt_by_path(debts)
-            for path in unique_paths:
-                self._batch_processor._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
-            for stage, elapsed_s in timings.items():
-                stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
-
-        await self._run_coordinated("watcher.catch_up.convergence", converge)
+        await self._flush_convergence_off_writer(
+            "watcher.catch_up.convergence",
+            unique_paths,
+            unique_session_ids,
+            stage_timings_s,
+            whole_archive=whole_archive,
+        )
         # These owners can perform network/CPU work. They must stay outside
         # the writer admission that made the generic FTS pass and debt writes.
         await self._converge_embeddings_off_writer(unique_paths)
@@ -1469,7 +1462,9 @@ class LiveWatcher:
             self._forced_reparse_paths.difference_update(paths)
 
         ingested_paths: list[Path] = []
+        converged_paths: tuple[Path, ...] = ()
         changed_session_ids: tuple[str, ...] = ()
+        convergence_stage_timings: dict[str, float] = {}
 
         async def requeue(
             retry_paths: Iterable[Path],
@@ -1485,7 +1480,7 @@ class LiveWatcher:
                 self._forced_reparse_paths.update(path for path in retry_forced_paths if path in paths_to_requeue_set)
 
         async def flush_batch() -> None:
-            nonlocal paths, changed_session_ids
+            nonlocal paths, changed_session_ids, converged_paths
             # Filtering a changed-file batch invokes cursor reconciliation and
             # lifecycle actuators, so the source-selection proof must be
             # consumed before initialization or any stateful decision.
@@ -1516,6 +1511,11 @@ class LiveWatcher:
                     needed,
                     queued_file_count=len(paths),
                     skipped_file_count=len(paths) - len(needed),
+                    # The generic stage pass runs after this coordinated
+                    # region releases the writer. Holding the lease across
+                    # Drive downloads, archive-wide materialization and the
+                    # Sinex drain is what polylogue-ssplv removes.
+                    defer_convergence=True,
                 )
             except sqlite3.OperationalError as exc:
                 if not _is_retryable_lock_error(exc):
@@ -1531,6 +1531,7 @@ class LiveWatcher:
                 return
             if metrics is not None:
                 changed_session_ids = tuple(getattr(metrics, "changed_session_ids", ()) or ())
+                converged_paths = tuple(getattr(metrics, "succeeded_paths", ()) or ())
                 _log_ingest_metrics("live.watcher: changed-file batch", metrics)
                 if (
                     getattr(metrics, "succeeded_file_count", 0) == 0
@@ -1547,6 +1548,13 @@ class LiveWatcher:
             # provider under it; the owner runs that work now, holding neither
             # the gate nor the embedding generation lock, so an unrelated
             # archive writer proceeds while the provider works (polylogue-c0l7n).
+            await self._flush_convergence_off_writer(
+                "watcher.live_batch.convergence",
+                converged_paths,
+                changed_session_ids,
+                convergence_stage_timings,
+                whole_archive=True,
+            )
             await self._converge_embeddings_off_writer(ingested_paths)
             await self._converge_session_profiles_off_writer(changed_session_ids)
         except WriteHoldBudgetError as exc:
@@ -2208,6 +2216,7 @@ class LiveWatcher:
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
         whole_archive_convergence: bool = True,
+        defer_convergence: bool = False,
     ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
         self._batch_processor.require_cursor_authority(paths)
@@ -2220,7 +2229,7 @@ class LiveWatcher:
                     "max_pass_seconds": _LIVE_INGEST_MAX_PASS_SECONDS,
                     "whole_archive_convergence": whole_archive_convergence,
                 }
-                if self._catch_up_convergence_deferred:
+                if defer_convergence or self._catch_up_convergence_deferred:
                     ingest_kwargs["defer_convergence"] = True
                 return await self._batch_processor.ingest_files(
                     paths,
@@ -2232,6 +2241,70 @@ class LiveWatcher:
             else:
                 metrics = await self._write_coordinator.run("watcher.live_ingest", ingest)
         return metrics
+
+    def _stage_write_admission(self) -> Callable[[str, Callable[[], Any]], Any] | None:
+        """Admission that hands one stage's write section to the daemon writer.
+
+        Built from the injected coordinator rather than a daemon import: this
+        package must not depend on the daemon surface. The ``None`` timeout is
+        deliberate -- the coordinator owns the worker until the transaction
+        really returns, so a caller-side timeout can never admit a second
+        archive writer for the same partition.
+        """
+        coordinator = self._write_coordinator
+        if coordinator is None:
+            return None
+        loop = asyncio.get_running_loop()
+
+        def admission(actor: str, work: Callable[[], Any]) -> Any:
+            return asyncio.run_coroutine_threadsafe(coordinator.run_sync(actor, work), loop).result()
+
+        return admission
+
+    async def _flush_convergence_off_writer(
+        self,
+        actor: str,
+        paths: Sequence[Path],
+        session_ids: Sequence[str],
+        stage_timings_s: dict[str, float],
+        *,
+        whole_archive: bool,
+    ) -> None:
+        """Run the generic stage pass with the writer lease released.
+
+        The pass used to run inside ``run_sync``, so a Drive download, an
+        archive-wide graph materialization and a Sinex transport drain all
+        executed while every other archive writer queued behind them
+        (polylogue-ssplv). Each stage now brackets its own short publication
+        with ``admit_stage_write``; a stage that has not split compute from
+        publication yet says so in its ``writer_admission`` field and the
+        engine brackets that stage alone.
+        """
+        unique_paths = tuple(dict.fromkeys(paths))
+        if not unique_paths:
+            return
+        unique_session_ids = tuple(dict.fromkeys(session_ids))
+        admission = self._stage_write_admission()
+
+        def run_pass() -> tuple[dict[str, float], list[ConvergenceDebt]]:
+            with stage_write_admission(admission):
+                _completed, _elapsed, timings, debts = self._batch_processor._converge_paths(
+                    unique_paths,
+                    whole_archive=whole_archive,
+                    session_ids=unique_session_ids,
+                )
+            return timings, debts
+
+        timings, debts = await asyncio.to_thread(run_pass)
+        debt_by_source_path = debt_by_path(debts)
+
+        def record_outcomes() -> None:
+            for path in unique_paths:
+                self._batch_processor._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
+
+        await self._run_writer_sync(f"{actor}.outcome", record_outcomes)
+        for stage, elapsed_s in timings.items():
+            stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""

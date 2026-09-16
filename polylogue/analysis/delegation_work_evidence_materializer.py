@@ -9,6 +9,7 @@ from pathlib import Path
 from polylogue.analysis.delegation_work_evidence import materialize_delegation_work_evidence_graph
 from polylogue.archive.query.predicate import QueryBoolPredicate
 from polylogue.core.refs import ObjectRef
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
@@ -83,7 +84,11 @@ def materialize_delegation_work_evidence_archive(archive_root: Path) -> int:
         corpus_snapshot_ref=snapshot,
         rows=rows,
     )
-    _replace_graph(archive_root / "index.db", graph)
+    # The projection above is archive-wide compute; only this replacement is
+    # a write, so it is the only part that enters the daemon writer.
+    admit_stage_write(
+        "convergence.stage.delegation_work_evidence.publish", lambda: _replace_graph(archive_root / "index.db", graph)
+    )
     return len(rows)
 
 

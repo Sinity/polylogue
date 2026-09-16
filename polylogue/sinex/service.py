@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.sinex import obligations as obligations_store
 from polylogue.sinex.models import (
     ObligationStatus,
@@ -229,6 +230,11 @@ class PublicationService:
         return await self._attempt_async(obligation, payload, on_confirmed=on_confirmed)
 
     def _lease(self, obligation: PublicationObligation) -> PublicationObligation:
+        # Leasing and persisting the outcome are the two short writes of a
+        # drain; the transport call between them must not sit inside either.
+        return admit_stage_write("convergence.stage.sinex_publication.lease", lambda: self._lease_write(obligation))
+
+    def _lease_write(self, obligation: PublicationObligation) -> PublicationObligation:
         now_ms = self.clock()
         conn = self._connect()
         try:
@@ -248,6 +254,18 @@ class PublicationService:
             conn.close()
 
     def _persist_outcome(
+        self,
+        obligation: PublicationObligation,
+        *,
+        receipt: PublicationReceipt | None,
+        error_code: str | None,
+    ) -> PublicationObligation:
+        return admit_stage_write(
+            "convergence.stage.sinex_publication.persist",
+            lambda: self._persist_outcome_write(obligation, receipt=receipt, error_code=error_code),
+        )
+
+    def _persist_outcome_write(
         self,
         obligation: PublicationObligation,
         *,

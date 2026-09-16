@@ -111,6 +111,7 @@ def test_debounce_drains_live_events_serially_while_ingest_is_active(tmp_path: P
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> None:
         del queued_file_count, skipped_file_count
         nonlocal active, max_active

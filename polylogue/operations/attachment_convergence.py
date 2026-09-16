@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -144,6 +145,7 @@ def converge_drive_attachments(
     limit: int = DEFAULT_ATTACHMENT_CONVERGENCE_LIMIT,
     max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES,
     now_ms: Callable[[], int] | None = None,
+    open_write_connections: Callable[[], tuple[sqlite3.Connection, sqlite3.Connection]] | None = None,
 ) -> AttachmentConvergenceResult:
     """Fetch one bounded window and publish durable attachment state.
 
@@ -152,6 +154,13 @@ def converge_drive_attachments(
     bytes are hashed from the bytes actually read and published before the
     index row is marked acquired.  Oversize and explicit not-found results are
     terminal ``unavailable`` rows; all other failures remain retryable.
+
+    ``open_write_connections`` separates the scan from the publication: the
+    passed connections then serve the candidate scan and survival probe, and
+    the writable pair is opened inside the admitted write section. Opening a
+    daemon write connection itself requires the lease, so a caller that runs
+    this pass off the writer -- the daemon stage engine does -- must supply the
+    opener rather than hand in connections it could not have opened yet.
     """
     rows = _candidate_rows(index_conn, limit=limit)
     if not rows:
@@ -274,40 +283,55 @@ def converge_drive_attachments(
                 )
             )
 
-        publisher.flush()
-        if acquired_refs:
-            by_raw_id: dict[str, list[ArchiveSourceBlobRef]] = {}
-            for ref in acquired_refs:
-                by_raw_id.setdefault(str(ref.raw_id), []).append(ref)
-            for raw_id, refs in by_raw_id.items():
-                write_source_blob_refs(source_conn, raw_id, tuple(refs))
-        if acquired_rows or rebound_rows:
-            with index_conn:
-                for attachment_id, blob_hash, byte_count in (*acquired_rows, *rebound_rows):
-                    index_conn.execute(
-                        """
-                        UPDATE attachments
-                        SET blob_hash = ?, byte_count = ?, acquisition_status = 'acquired'
-                        WHERE attachment_id = ? AND acquisition_status = 'unfetched'
-                        """,
-                        (blob_hash, byte_count, attachment_id),
+        def publish_attachment_outcomes() -> None:
+            """The one section of this pass that writes; every download is behind us."""
+            if open_write_connections is None:
+                _publish(index_conn, source_conn)
+                return
+            write_index, write_source = open_write_connections()
+            try:
+                _publish(write_index, write_source)
+            finally:
+                write_source.close()
+                write_index.close()
+
+        def _publish(index_conn: sqlite3.Connection, source_conn: sqlite3.Connection) -> None:
+            publisher.flush()
+            if acquired_refs:
+                by_raw_id: dict[str, list[ArchiveSourceBlobRef]] = {}
+                for ref in acquired_refs:
+                    by_raw_id.setdefault(str(ref.raw_id), []).append(ref)
+                for raw_id, refs in by_raw_id.items():
+                    write_source_blob_refs(source_conn, raw_id, tuple(refs))
+            if acquired_rows or rebound_rows:
+                with index_conn:
+                    for attachment_id, blob_hash, byte_count in (*acquired_rows, *rebound_rows):
+                        index_conn.execute(
+                            """
+                            UPDATE attachments
+                            SET blob_hash = ?, byte_count = ?, acquisition_status = 'acquired'
+                            WHERE attachment_id = ? AND acquisition_status = 'unfetched'
+                            """,
+                            (blob_hash, byte_count, attachment_id),
+                        )
+            if excised_ids:
+                # Same terminal index state as an unavailable payload -- the
+                # bytes will never be acquired -- but reached by refusal, which
+                # the result counts and the log names.
+                with index_conn:
+                    index_conn.executemany(
+                        "UPDATE attachments SET acquisition_status = 'unavailable' "
+                        "WHERE attachment_id = ? AND acquisition_status = 'unfetched'",
+                        ((attachment_id,) for attachment_id in excised_ids),
                     )
-        if excised_ids:
-            # Same terminal index state as an unavailable payload -- the
-            # bytes will never be acquired -- but reached by refusal, which
-            # the result counts and the log names.
-            with index_conn:
-                index_conn.executemany(
-                    "UPDATE attachments SET acquisition_status = 'unavailable' "
-                    "WHERE attachment_id = ? AND acquisition_status = 'unfetched'",
-                    ((attachment_id,) for attachment_id in excised_ids),
-                )
-        if terminal_ids:
-            with index_conn:
-                index_conn.executemany(
-                    "UPDATE attachments SET acquisition_status = 'unavailable' WHERE attachment_id = ? AND acquisition_status = 'unfetched'",
-                    ((attachment_id,) for attachment_id in terminal_ids),
-                )
+            if terminal_ids:
+                with index_conn:
+                    index_conn.executemany(
+                        "UPDATE attachments SET acquisition_status = 'unavailable' WHERE attachment_id = ? AND acquisition_status = 'unfetched'",
+                        ((attachment_id,) for attachment_id in terminal_ids),
+                    )
+
+        admit_stage_write("convergence.stage.attachment_bytes.publish", publish_attachment_outcomes)
         if _candidate_rows(index_conn, limit=1):
             # The scheduler records a false result as convergence debt.  Count
             # the remaining canonical rows as deferred even when this window
@@ -334,12 +358,19 @@ def make_attachment_convergence_stage(
 ) -> ConvergenceStage:
     """Build the bounded whole-archive stage used by daemon convergence."""
 
-    def _open() -> tuple[sqlite3.Connection, sqlite3.Connection]:
+    def _open_write() -> tuple[sqlite3.Connection, sqlite3.Connection]:
+        """Open the writable pair. Only legal inside the admitted write section."""
         from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
         index = open_daemon_connection(db_path, archive_root=archive_root)
         source = open_daemon_connection(archive_root / "source.db", archive_root=archive_root)
         return index, source
+
+    def _open_read() -> tuple[sqlite3.Connection, sqlite3.Connection]:
+        return (
+            open_readonly_connection(db_path),
+            open_readonly_connection(archive_root / "source.db"),
+        )
 
     def _has_work() -> bool:
         if not db_path.exists():
@@ -361,7 +392,10 @@ def make_attachment_convergence_stage(
         return _has_work()
 
     def execute(_path: Path) -> StageExecuteReturn:
-        index, source = _open()
+        # Construction of the Drive client and every download it performs
+        # happen here, outside the writer: only ``open_write_connections`` and
+        # the publication it feeds run under the admitted lease.
+        index, source = _open_read()
         try:
             client = client_factory()
             result = converge_drive_attachments(
@@ -370,6 +404,7 @@ def make_attachment_convergence_stage(
                 archive_root=archive_root,
                 download_bytes=client.download_bytes,  # type: ignore[attr-defined]
                 limit=limit,
+                open_write_connections=_open_write,
             )
             return result.complete
         finally:
@@ -383,6 +418,7 @@ def make_attachment_convergence_stage(
         execute=execute,
         false_means_pending=True,
         whole_archive=True,
+        writer_admission="bridged",
     )
 
 

@@ -702,6 +702,15 @@ def _converge_selected_session_parts_sync(
     return tuple(outcomes)
 
 
+def _run_stage_execute(stage: ConvergenceStage, call: Callable[[], StageExecuteReturn]) -> StageExecuteReturn:
+    """Invoke one stage body with the writer admission its contract declares."""
+    from polylogue.core.stage_admission import admit_stage_write
+
+    if stage.writer_admission == "whole_execute":
+        return admit_stage_write(f"convergence.stage.{stage.name}", call)
+    return call()
+
+
 def _stage_false_error(stage_name: str, *, scope: str) -> str:
     if scope == "stage":
         return f"stage {stage_name} returned False"
@@ -766,6 +775,14 @@ class ConvergenceStage:
     # stages so a catch-up chunk's cost stays bounded by its own input; the
     # catch-up's final chunk runs them once for the whole backlog.
     whole_archive: bool = False
+    # How this stage reaches the daemon's sole writer. The engine itself runs
+    # off the writer lease, so ``bridged`` -- the stage brackets its own short
+    # publication with ``admit_stage_write`` and computes, downloads and drains
+    # outside it -- is the contract every stage should hold. ``whole_execute``
+    # is the named residual: the engine holds the writer across the entire
+    # ``execute`` because that stage has not split compute from publication
+    # yet. It is not a policy choice, it is a debt that is visible here.
+    writer_admission: Literal["bridged", "whole_execute"] = "whole_execute"
 
 
 @dataclass(slots=True)
@@ -1093,7 +1110,7 @@ class DaemonConverger:
                         state.stages[stage_name] = StageState.IN_PROGRESS
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = stage.execute(path)
+                            execute_result = _run_stage_execute(stage, partial(stage.execute, path))
                         except Exception as exc:
                             emit(
                                 "daemon.stage.execute_failed",
@@ -1229,7 +1246,7 @@ class DaemonConverger:
                     state.stages[stage_name] = StageState.IN_PROGRESS
                     t_stage = time.perf_counter()
                     try:
-                        execute_result = stage.execute(path)
+                        execute_result = _run_stage_execute(stage, partial(stage.execute, path))
                     except Exception as exc:
                         emit(
                             "daemon.stage.execute_failed",
@@ -1293,7 +1310,7 @@ class DaemonConverger:
                         ordered_needs_work = tuple(path for path in active_paths if path in batch_needs_work)
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = stage.execute_many(ordered_needs_work)
+                            execute_result = _run_stage_execute(stage, partial(stage.execute_many, ordered_needs_work))
                         except Exception as exc:
                             emit(
                                 "daemon.stage.execute_failed",
@@ -1412,7 +1429,9 @@ class DaemonConverger:
 
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = stage.execute_sessions(tuple(batch_needs_work))
+                            execute_result = _run_stage_execute(
+                                stage, partial(stage.execute_sessions, tuple(batch_needs_work))
+                            )
                         except Exception as exc:
                             emit(
                                 "daemon.stage.execute_failed",

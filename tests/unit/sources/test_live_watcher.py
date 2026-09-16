@@ -1232,6 +1232,7 @@ def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.M
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> None:
         captured["paths"] = paths
         captured["queued_file_count"] = queued_file_count
@@ -1320,6 +1321,7 @@ def test_real_catch_up_route_emits_terminal_receipt_after_ingest_abort(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> LiveBatchMetrics:
         del queued_file_count, skipped_file_count
         raise exception("abort")
@@ -1358,12 +1360,14 @@ def test_real_catch_up_route_emits_terminal_receipt_when_stopped(
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
         whole_archive_convergence: bool = True,
+        **kwargs: object,
     ) -> LiveBatchMetrics:
         metrics = await original_ingest(
             paths,
             queued_file_count=queued_file_count,
             skipped_file_count=skipped_file_count,
             whole_archive_convergence=whole_archive_convergence,
+            **kwargs,  # type: ignore[arg-type]
         )
         watcher.stop()
         return metrics
@@ -3746,6 +3750,7 @@ def test_debounce_waits_for_same_path_quiet_window(tmp_path: Path) -> None:
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        **_kwargs: object,
     ) -> None:
         del paths, queued_file_count, skipped_file_count
         batches.append(producer_done.is_set())
