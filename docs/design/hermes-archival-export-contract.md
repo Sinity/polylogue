@@ -138,6 +138,5 @@ and `::test_published_hook_adapters_refuse_duplicated_transcript_payloads`.
   each land as their own artifact-qualified observer-evidence session
   (`observer:atif:<id>` / `observer:atof:<id>`, fs1.14 fixed a prior
   collision where both shared one `observer:<id>` identity), correlated by
-  shared Hermes session id via
-  `polylogue/analysis/hermes_topology_projection.py`, not physically merged
+  shared Hermes session id at read time by the caller, not physically merged
   into the state-db-ingested message tree.
