@@ -106,6 +106,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, Origin, Provider
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.security.excision_carriers import (
     UnclassifiedSessionCarrierError,
     audit_session_carriers,
@@ -117,7 +118,6 @@ from polylogue.security.excision_policy import (
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.todos import session_and_agent_id_from_filename
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     delete_source_hook_event,

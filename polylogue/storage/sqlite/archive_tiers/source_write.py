@@ -20,8 +20,8 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     terminal_carrier_overwrite_predicate,
 )
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.security.excision_policy import ExcisionPolicyError, ExcisionPolicySnapshot
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update

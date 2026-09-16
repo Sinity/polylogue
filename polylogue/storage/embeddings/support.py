@@ -7,9 +7,9 @@ from collections.abc import Iterable
 
 import aiosqlite
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.sqlite_introspection import table_exists_async as _table_exists_async
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.introspection import table_exists_async as _table_exists_async
 
 StatsRow = sqlite3.Row | tuple[object, ...]
 

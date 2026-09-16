@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import Literal
 
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.sqlite_introspection import column_exists as _column_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore, get_blob_store
-from polylogue.storage.introspection import column_exists as _column_exists
-from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 

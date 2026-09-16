@@ -21,11 +21,11 @@ from polylogue.archive.revision_authority import (
     parser_census_is_complete,
 )
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.sqlite_introspection import column_exists as _column_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
 from polylogue.storage.derived.session.status import session_insight_status_sync
-from polylogue.storage.introspection import column_exists as _column_exists
-from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.introspection import view_exists
 from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_detail_query_handle
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

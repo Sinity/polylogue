@@ -51,8 +51,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.logging import get_logger
-from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import (
     READ_PROFILES,
     open_isolated_write_connection,

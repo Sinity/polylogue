@@ -57,6 +57,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from polylogue.core.errors import SchemaSkewError
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import ERROR, emit
 from polylogue.storage.blob_gc_index_watermark import index_liveness_authority_blocker
 from polylogue.storage.blob_liveness import (
@@ -65,7 +66,6 @@ from polylogue.storage.blob_liveness import (
     inspect_blob_liveness,
     inspect_blob_reservation,
 )
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import (
     open_connection,
     open_isolated_write_connection,

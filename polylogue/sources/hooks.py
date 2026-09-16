@@ -55,6 +55,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.hook_producer import (
     PENDING_DIRNAME as _PENDING_DIRNAME,
@@ -556,24 +557,21 @@ def _drained_carrier_cursor(archive_root: Path, source_id: str) -> tuple[int, st
     source_db = archive_root / "source.db"
     if not source_db.exists():
         return None
-    try:
-        with open_readonly_connection(source_db, timeout=5.0) as conn:
-            sharded = conn.execute(
-                "SELECT MAX(relative_path) FROM hook_event_carriers "
-                "WHERE source_id = ? AND instr(relative_path, '/') > 0",
-                (source_id,),
-            ).fetchone()
-            if sharded is not None and sharded[0] is not None:
-                return _collection_order_key(str(sharded[0]))
-            flat = conn.execute(
-                "SELECT MAX(relative_path) FROM hook_event_carriers "
-                "WHERE source_id = ? AND instr(relative_path, '/') = 0",
-                (source_id,),
-            ).fetchone()
-    except sqlite3.Error:
-        # An archive without the carriers table yet simply has no drained
-        # prefix; refusing here would stop a first drain from ever running.
-        return None
+    with open_readonly_connection(source_db, timeout=5.0) as conn:
+        if not table_exists(conn, "hook_event_carriers"):
+            # An archive without the carriers table yet has no drained prefix;
+            # a first drain must still run.
+            return None
+        sharded = conn.execute(
+            "SELECT MAX(relative_path) FROM hook_event_carriers WHERE source_id = ? AND instr(relative_path, '/') > 0",
+            (source_id,),
+        ).fetchone()
+        if sharded is not None and sharded[0] is not None:
+            return _collection_order_key(str(sharded[0]))
+        flat = conn.execute(
+            "SELECT MAX(relative_path) FROM hook_event_carriers WHERE source_id = ? AND instr(relative_path, '/') = 0",
+            (source_id,),
+        ).fetchone()
     if flat is None or flat[0] is None:
         return None
     return _collection_order_key(str(flat[0]))

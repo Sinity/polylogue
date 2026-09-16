@@ -11,8 +11,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
-from polylogue.storage.introspection import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from enum import StrEnum
 
-from polylogue.storage.introspection import table_exists
+from polylogue.core.sqlite_introspection import table_exists
 
 
 def _normalize_schema_sql(value: str | None) -> str:

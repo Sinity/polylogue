@@ -38,9 +38,9 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
+from polylogue.core.sqlite_introspection import relation_exists
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.storage.fts.derivation import FtsDerivationAdapter
-from polylogue.storage.introspection import relation_exists
 from polylogue.storage.sqlite.connection_profile import READ_PROFILES, open_readonly_connection
 
 _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"

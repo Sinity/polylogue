@@ -2380,8 +2380,8 @@ def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
     it is legitimately behind ``blocks``.
     """
     from polylogue.core.errors import DatabaseError
+    from polylogue.core.sqlite_introspection import table_exists
     from polylogue.storage.fts.fts_lifecycle import MESSAGE_SEARCH_REPAIR_HINT
-    from polylogue.storage.introspection import table_exists
 
     match_query = normalize_fts5_query(query)
     if match_query is None:

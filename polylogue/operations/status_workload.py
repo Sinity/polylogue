@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 
 from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
-from polylogue.storage.introspection import relation_exists
+from polylogue.core.sqlite_introspection import relation_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle_from_connection
 from polylogue.storage.tier_access import capture_sqlite_read
 

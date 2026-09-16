@@ -954,7 +954,7 @@
     },
     {
       "file": "polylogue/storage/sqlite/archive_tiers/schema_identity.py",
-      "digest": "c39856109e5669db9d2ba9f910d4d9cb453c1838"
+      "digest": "30ab552bdc8d752eeca29f832163f1c02c74c5e2"
     },
     {
       "file": "polylogue/storage/sqlite/audit_continuity.py",

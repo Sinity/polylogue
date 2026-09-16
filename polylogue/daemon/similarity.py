@@ -46,11 +46,11 @@ from typing import Final, cast
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.errors import DatabaseError
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.introspection import table_exists
 
 # Hard server-side cap on requested result count. A pathological client
 # asking for ``limit=10**6`` still receives at most this many rows.

@@ -54,6 +54,7 @@ from polylogue.core.outcomes import (
     OutcomeStatus,
     compose_outcome_checks,
 )
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.logging import get_logger
 from polylogue.maintenance.corpus_fidelity import (
     audit_absences,
@@ -82,7 +83,6 @@ from polylogue.storage.blob_liveness import (
     validated_blob_ref_liveness_joins,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.introspection import table_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

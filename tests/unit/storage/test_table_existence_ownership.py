@@ -3,7 +3,7 @@
 Sixteen named helpers each issued their own ``sqlite_master`` probe with five
 different type-sets, so the same database answered differently depending on
 which copy a caller reached: a view (``actions``, ``threads``) was present to
-one and absent to another. ``storage/introspection`` now owns all three
+one and absent to another. ``core/sqlite_introspection`` now owns all three
 questions -- table, table-or-view, view -- with one schema-attachment and
 quoting policy behind them.
 
@@ -20,7 +20,7 @@ import sqlite3
 from pathlib import Path
 
 import polylogue
-from polylogue.storage.introspection import relation_exists, table_exists, trigger_exists, view_exists
+from polylogue.core.sqlite_introspection import relation_exists, table_exists, trigger_exists, view_exists
 
 _PROBE_MARKERS = ("sqlite_master WHERE type", "sqlite_schema WHERE type", "sqlite_temp_master")
 
@@ -87,6 +87,6 @@ def test_no_module_declares_its_own_relation_existence_probe() -> None:
             )
             if runs_query and any(marker in body for marker in _PROBE_MARKERS):
                 offenders.append(f"{path.relative_to(package_root)}:{node.lineno} {node.name}")
-    assert offenders == [], "relation-existence probe re-declared; use polylogue.storage.introspection: " + ", ".join(
-        offenders
+    assert offenders == [], (
+        "relation-existence probe re-declared; use polylogue.core.sqlite_introspection: " + ", ".join(offenders)
     )

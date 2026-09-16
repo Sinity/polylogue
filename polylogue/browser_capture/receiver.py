@@ -37,6 +37,7 @@ from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import JSONDecodeError, dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_state import raw_state_authority
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.timestamps import to_epoch_ms
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root as default_archive_root
@@ -46,7 +47,6 @@ from polylogue.paths import (
     browser_capture_spool_root,
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
-from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 

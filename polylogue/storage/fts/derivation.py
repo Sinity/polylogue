@@ -20,9 +20,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID
-from polylogue.storage.introspection import table_exists
 
 
 class FtsKeyStatus(StrEnum):

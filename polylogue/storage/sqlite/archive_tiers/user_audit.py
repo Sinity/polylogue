@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind
 
 _ASSERTION_BACKED_SURFACES: dict[str, AssertionKind] = {

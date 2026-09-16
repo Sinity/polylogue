@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Origin
+from polylogue.core.sqlite_introspection import index_exists as _index_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.archive_tuple_location import InactiveTierDestination
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding
 from polylogue.storage.embeddings.identity import (
@@ -42,8 +44,6 @@ from polylogue.storage.embeddings.tuple_generation import (
 from polylogue.storage.embeddings.tuple_generation import (
     prepare_inactive_embedding_generation as _prepare_inactive_embedding_generation,
 )
-from polylogue.storage.introspection import index_exists as _index_exists
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import (
     open_isolated_write_connection,
     open_readonly_connection,

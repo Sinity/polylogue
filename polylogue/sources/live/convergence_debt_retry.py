@@ -6,8 +6,8 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.introspection import table_exists as _table_exists
 
 
 def convergence_debt_retry_delay_s(failure_count: int, *, error: str | None) -> int:

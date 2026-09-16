@@ -31,8 +31,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sqlite_introspection import column_exists, table_exists
 from polylogue.maintenance.source_conservation import ConservationTerm
-from polylogue.storage.introspection import column_exists, table_exists
 
 DEFAULT_SAMPLE_LIMIT = 10
 

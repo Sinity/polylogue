@@ -64,12 +64,6 @@
     ]
   },
   {
-    "file": "polylogue/maintenance/blob_ref_liveness_reconciliation.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/maintenance/embedding_preservation.py",
     "tiers": [
       "embeddings"
@@ -204,10 +198,6 @@
     ]
   },
   {
-    "file": "polylogue/storage/blob_ref_liveness.py",
-    "tiers": []
-  },
-  {
     "file": "polylogue/storage/derived/feedback/__init__.py",
     "tiers": []
   },
@@ -284,19 +274,9 @@
     ]
   },
   {
-    "file": "polylogue/storage/hook_payload_ref_reconciliation.py",
-    "tiers": []
-  },
-  {
     "file": "polylogue/storage/index_generation.py",
     "tiers": [
       "index"
-    ]
-  },
-  {
-    "file": "polylogue/storage/ingest_byte_governance.py",
-    "tiers": [
-      "source"
     ]
   },
   {

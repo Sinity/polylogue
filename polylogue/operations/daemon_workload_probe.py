@@ -24,13 +24,13 @@ from typing import Any
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.core.errors import SchemaSkewError
 from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, measured_or_none, resolve
+from polylogue.core.sqlite_introspection import relation_exists, table_exists
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
-from polylogue.storage.introspection import relation_exists, table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import count_dangling_prefix_branch_points

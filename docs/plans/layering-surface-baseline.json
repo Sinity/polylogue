@@ -417,7 +417,7 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/status.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/cli",
@@ -452,7 +452,7 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/tutorial.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/cli",
@@ -487,7 +487,7 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/read_views/streaming_markdown.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/cli",
@@ -742,7 +742,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/daemon",
@@ -877,7 +877,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/embedding_backlog.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/daemon",
@@ -937,7 +937,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/fts_automerge.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/daemon",
@@ -987,7 +987,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/fts_status.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/daemon",
@@ -1172,7 +1172,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.introspection"
+    "import": "polylogue.core.sqlite_introspection"
   },
   {
     "target": "polylogue/daemon",

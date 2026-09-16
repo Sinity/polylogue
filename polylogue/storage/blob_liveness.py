@@ -12,8 +12,8 @@ import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 
-from polylogue.storage.introspection import column_exists as _column_exists
-from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.core.sqlite_introspection import column_exists as _column_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 
 
 #: An attachment the writer retained with an ambiguous owner is unreferenced by

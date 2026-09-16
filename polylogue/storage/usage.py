@@ -51,8 +51,8 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
-from polylogue.storage.introspection import table_exists as _table_exists
 
 UsageReportDetail = Literal["headline", "full"]
 

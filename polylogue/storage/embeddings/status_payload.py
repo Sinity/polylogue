@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from typing_extensions import TypedDict
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import (
@@ -25,7 +26,6 @@ from polylogue.storage.embeddings.materialization import (
     archive_embedding_messages_table_ref,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
     VOYAGE_4_COST_PER_1M_TOKENS,
@@ -262,7 +262,7 @@ def _embedding_refs_have_message_semantics(conn: sqlite3.Connection, refs_table:
 
     if not refs_table:
         return False
-    from polylogue.storage.introspection import column_exists
+    from polylogue.core.sqlite_introspection import column_exists
 
     schema, _, table = refs_table.rpartition(".")
     return column_exists(conn, table, "message_content_hash", schema=schema or "main")

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.storage.introspection import table_exists
+from polylogue.core.sqlite_introspection import table_exists
 
 PARENT_ORIGINS: tuple[str, ...] = ("claude-code-session", "codex-session")
 

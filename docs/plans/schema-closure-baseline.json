@@ -436,7 +436,7 @@
     "polylogue/storage/hook_event_authority.py",
     "polylogue/storage/hydrators.py",
     "polylogue/storage/index_generation.py",
-    "polylogue/storage/introspection.py",
+    "polylogue/core/sqlite_introspection.py",
     "polylogue/storage/materials.py",
     "polylogue/storage/query_models.py",
     "polylogue/storage/raw/models.py",

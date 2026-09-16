@@ -6,8 +6,8 @@ import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
-from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 

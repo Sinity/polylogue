@@ -6,9 +6,9 @@ import sqlite3
 
 import aiosqlite
 
-from polylogue.storage.introspection import table_exists as _table_exists_sync
-from polylogue.storage.introspection import table_exists_async as _table_exists_async
-from polylogue.storage.introspection import trigger_exists, trigger_exists_async
+from polylogue.core.sqlite_introspection import table_exists as _table_exists_sync
+from polylogue.core.sqlite_introspection import table_exists_async as _table_exists_async
+from polylogue.core.sqlite_introspection import trigger_exists, trigger_exists_async
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
 
 

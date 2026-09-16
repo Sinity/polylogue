@@ -19,13 +19,13 @@ from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, R
 from polylogue.core.enums import Origin
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
 from polylogue.storage.archive_readiness import RAW_ALIAS_BLOB_MISSING_CATEGORY
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw_convergence import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates

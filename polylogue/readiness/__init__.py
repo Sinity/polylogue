@@ -17,6 +17,7 @@ from typing import Any
 from polylogue.config import Config, load_polylogue_config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
+from polylogue.core.sqlite_introspection import relation_exists
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.readiness.capability import (
     LEGACY_READINESS_SOURCE_TYPES,
@@ -36,7 +37,6 @@ from polylogue.readiness.capability import (
 )
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import claude_workflow_materialization_status, raw_materialization_ready
-from polylogue.storage.introspection import relation_exists
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 

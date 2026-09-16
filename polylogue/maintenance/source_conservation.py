@@ -33,9 +33,9 @@ from typing import Any
 
 from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
-from polylogue.storage.introspection import table_exists
 
 #: Identity prefixes that name provider fragments, never conversations:
 #: ``toolu_`` is a tool_use block id (tool-result fragment) and ``wf_`` is a

@@ -19,7 +19,7 @@ from typing import Any
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)

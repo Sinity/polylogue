@@ -131,6 +131,8 @@ from polylogue.core.json import require_json_value
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sqlite_introspection import relation_exists as _relation_exists
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.types import SessionId
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import SessionRevisionProjection
@@ -152,8 +154,6 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
-from polylogue.storage.introspection import relation_exists as _relation_exists
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query

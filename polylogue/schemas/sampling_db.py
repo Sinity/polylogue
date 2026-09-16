@@ -24,6 +24,7 @@ from polylogue.core.provider_identity import (
 )
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.logging import get_logger
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import (
@@ -39,7 +40,6 @@ from polylogue.schemas.observation_models import (
 )
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import connection_context
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 

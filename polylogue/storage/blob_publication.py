@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import IO, BinaryIO
 from uuid import uuid4
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 

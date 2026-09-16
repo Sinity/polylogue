@@ -14,9 +14,9 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
-from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 

@@ -27,8 +27,8 @@ from pathlib import Path
 from polylogue.archive.message.paste_detection import has_paste_indicator
 from polylogue.core.enums import PasteBoundary
 from polylogue.core.hook_payload import hook_record_field, matched_reader_keys
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 logger = get_logger(__name__)

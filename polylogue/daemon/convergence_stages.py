@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Provider
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
@@ -29,7 +30,6 @@ from polylogue.operations.raw_authority_verdict_cache import (
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import (
     open_daemon_connection,
     open_readonly_connection,

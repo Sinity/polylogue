@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from polylogue.core.sqlite_introspection import table_exists
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.generations import (
     EmbeddingGenerationBinding,
@@ -45,7 +46,6 @@ from polylogue.storage.embeddings.materialization import (
     inline_embedding_admission,
     message_prose_sql,
 )
-from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingWrite,
     replace_message_embedding_derivation,

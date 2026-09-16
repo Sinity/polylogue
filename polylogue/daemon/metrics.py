@@ -94,6 +94,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol, TypedDict
 
+from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.process_start import uptime_seconds
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.storage import archive_layout
@@ -102,7 +103,6 @@ from polylogue.storage.archive_layout import (
     ARCHIVE_LAYOUT_BLOCKER_LABELS,
     ARCHIVE_STORAGE_LAYOUTS,
 )
-from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 # Derived from the canonical tier specs so the expected schema version per tier
