@@ -1240,7 +1240,7 @@ def test_hook_carrier_sources_are_named_apart_but_owned_by_their_provider(worksp
     first assertion sees the carriers root; drop the alias and the second one
     resolves the carrier source to no provider.
     """
-    from polylogue.core.provider_identity import normalize_provider_token
+    from polylogue.core.provider_identity import canonical_runtime_provider
     from polylogue.daemon import cli as daemon_cli
     from polylogue.sources.live.watcher import HOOK_CARRIER_PROVIDERS
 
@@ -1248,7 +1248,7 @@ def test_hook_carrier_sources_are_named_apart_but_owned_by_their_provider(worksp
     assert len(names) == len(set(names)), names
     for provider in HOOK_CARRIER_PROVIDERS:
         assert f"{provider}-hooks" in names
-        assert normalize_provider_token(f"{provider}-hooks") == provider
+        assert canonical_runtime_provider(f"{provider}-hooks") == provider
 
 
 def test_additional_root_excludes_provider_state_suffixes(workspace_env: dict[str, Path]) -> None:
