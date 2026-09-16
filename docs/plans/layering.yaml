@@ -32,7 +32,15 @@ writer_modules:
   marker: "Writer module:"
   # This boundary inventories tier-owning archive facade modules. Lower-level
   # query helpers execute on caller-supplied connections and do not own tiers.
+  # SCOPE: the inventory below is audited only inside mutation_roots. It proves
+  # that every facade module declares the tiers it writes; it does NOT prove
+  # that only these modules write. Modules elsewhere in the package that execute
+  # DML are held by census_roots + census_baseline instead: an exact checked-in
+  # census that can shrink but never grow without an explicit edit, so a new
+  # unpoliced write path cannot appear without review.
   mutation_roots: [polylogue/storage/sqlite/archive_tiers]
+  census_roots: [polylogue]
+  census_baseline: docs/plans/writer-module-census-baseline.json
   modules:
     - path: polylogue/storage/sqlite/archive_tiers/archive.py
       surfaces:

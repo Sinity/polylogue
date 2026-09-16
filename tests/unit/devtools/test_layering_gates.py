@@ -8,6 +8,7 @@ These tests verify that:
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import shutil
 from pathlib import Path
@@ -398,3 +399,57 @@ def write_row(conn):
 
     assert len(calls) == 1
     assert verify_layering._mutation_table(verify_layering._mutation_sql(calls[0], values={}) or "") == "files"
+
+
+def _census_policy(tmp_path: Path, baseline: list[dict[str, object]]) -> verify_layering.WriterModulePolicy:
+    (tmp_path / "docs" / "plans").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "docs" / "plans" / "census.json").write_text(json.dumps(baseline), encoding="utf-8")
+    return dataclasses.replace(
+        _production_writer_policy(),
+        census_roots=("polylogue",),
+        census_baseline="docs/plans/census.json",
+    )
+
+
+def _write_census_module(tmp_path: Path, rel: str, sql: str) -> None:
+    path = tmp_path / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f'import sqlite3\n\n\ndef write(conn: sqlite3.Connection) -> None:\n    conn.execute("{sql}")\n',
+        encoding="utf-8",
+    )
+
+
+def test_layering_census_flags_a_new_out_of_inventory_write_path(tmp_path: Path) -> None:
+    """A DML module outside the writer inventory must be censused or fail.
+
+    Anti-vacuity: delete the census wiring (or add this file to the baseline)
+    and the assertion goes green while the write path stays unpoliced.
+    """
+    _write_census_module(tmp_path, "polylogue/ops/rogue_writer.py", "INSERT INTO sessions (native_id) VALUES (?)")
+
+    violations = verify_layering._collect_writer_module_census_violations(tmp_path, _census_policy(tmp_path, []))
+
+    assert [
+        violation["file"] for violation in violations if violation["rule"] == "writer_module_uncensused_mutation"
+    ] == ["polylogue/ops/rogue_writer.py"]
+
+
+def test_layering_census_baseline_entry_that_stopped_mutating_is_stale(tmp_path: Path) -> None:
+    """The ratchet can only shrink: a retired entry must be removed from the file.
+
+    Anti-vacuity: drop the stale-entry arm and a baseline keeps exempting a
+    path forever, including one a later refactor re-adds DML to.
+    """
+    policy = _census_policy(tmp_path, [{"file": "polylogue/ops/retired_writer.py", "tiers": ["index"]}])
+
+    violations = verify_layering._collect_writer_module_census_violations(tmp_path, policy)
+
+    assert [
+        violation["file"] for violation in violations if violation["rule"] == "writer_module_census_baseline_stale"
+    ] == ["polylogue/ops/retired_writer.py"]
+
+
+def test_layering_production_census_baseline_is_exact() -> None:
+    """The checked-in census matches the tree, so the ratchet is real today."""
+    assert verify_layering._collect_writer_module_census_violations(_REPO_ROOT, _production_writer_policy()) == []
