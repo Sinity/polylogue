@@ -1304,12 +1304,14 @@ def test_two_verify_runs_in_one_checkout_do_not_share_a_report_spool(
     for step in (first_step, second_step):
         step.mkdir(parents=True)
 
+    from devtools.pytest_stream_report import report_file_argument
+
     command = [
         "python",
         "-m",
         "pytest",
         f"--junitxml={verify.PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
-        verify.report_file_argument(verify.PYTEST_REPORT_PATH),
+        report_file_argument(verify.PYTEST_REPORT_PATH),
     ]
     first = verify._bind_pytest_reports_to_step(command, SimpleNamespace(step_dir=first_step))
     second = verify._bind_pytest_reports_to_step(command, SimpleNamespace(step_dir=second_step))

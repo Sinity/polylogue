@@ -17,6 +17,7 @@ import inspect
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import cast
 
 from polylogue.core import enums as enums_module
 from polylogue.core.enums import PolylogueStrEnum, sql_check_in
@@ -34,7 +35,7 @@ def _persisted_vocabularies() -> dict[tuple[str, str], type[PolylogueStrEnum]]:
     """Every loaded ``PolylogueStrEnum`` subclass, keyed by defining module and name."""
     found: dict[tuple[str, str], type[PolylogueStrEnum]] = {}
     for module_name, module in list(sys.modules.items()):
-        if module is None or not module_name.startswith("polylogue"):
+        if not module_name.startswith("polylogue") or module is None:
             continue
         for attribute, value in list(vars(module).items()):
             if (
@@ -50,7 +51,8 @@ def _persisted_vocabularies() -> dict[tuple[str, str], type[PolylogueStrEnum]]:
 def _extended(enum_type: type[PolylogueStrEnum]) -> type[PolylogueStrEnum]:
     members = {member.name: member.value for member in enum_type}
     members[_SYNTHETIC_MEMBER[0]] = _SYNTHETIC_MEMBER[1]
-    return PolylogueStrEnum(enum_type.__name__, members)
+    extended = PolylogueStrEnum(enum_type.__name__, members)  # type: ignore[call-arg]
+    return cast(type[PolylogueStrEnum], extended)
 
 
 @contextmanager
