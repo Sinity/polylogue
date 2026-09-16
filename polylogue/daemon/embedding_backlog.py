@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.core.enums import OperationStatus
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.daemon.periodic import catch_up_gate, daemon_periodic_runner
 from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -74,41 +75,42 @@ async def periodic_embedding_backlog_check(
     *,
     catch_up_complete: asyncio.Event | None = None,
     converge: Callable[[Sequence[str] | None], Awaitable[EmbeddingConvergenceResult]] | None = None,
+    wakeup: asyncio.Event | None = None,
 ) -> None:
     """Periodically run the same authoritative embedding derivation as ingest."""
-    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.paths import archive_root
 
     db = archive_root() / "index.db"
-    await _await_catch_up_gate(catch_up_complete, loop_name="embedding backlog catch-up")
-    callback = converge
-    if callback is None:
-        # Direct daemon startup remains safe while callers migrate to retained
-        # composition: it still drives the common adapter, never the former
-        # backlog runner.
-        from polylogue.daemon.embedding_owner import compose_embedding_convergence
-        from polylogue.daemon.execution import daemon_compute_adapter
-        from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, daemon_write_coordinator
+    resolved_callback = converge
 
-        callback = compose_embedding_convergence(
-            db,
-            compute_adapter=daemon_compute_adapter(),
-            write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), asyncio.get_running_loop()),
-        ).callback
-    while True:
-        await asyncio.sleep(EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS)
+    async def once() -> None:
+        nonlocal resolved_callback
+        if resolved_callback is None:
+            # Composed lazily on the first tick, i.e. right after the gate
+            # this loop waits on releases -- matching the prior ordering
+            # where composition ran once, immediately after the catch-up
+            # wait, never before it and never once per tick.
+            from polylogue.daemon.embedding_owner import compose_embedding_convergence
+            from polylogue.daemon.execution import daemon_compute_adapter
+            from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, daemon_write_coordinator
+
+            resolved_callback = compose_embedding_convergence(
+                db,
+                compute_adapter=daemon_compute_adapter(),
+                write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), asyncio.get_running_loop()),
+            ).callback
         with span("daemon.embed.backlog_pass") as pass_span:
             try:
-                result = await callback(None)
+                result = await resolved_callback(None)
             except sqlite3.OperationalError as exc:
                 if is_transient_sqlite_lock(exc):
                     pass_span.skipped(reason="archive_busy", error_detail=str(exc))
-                    continue
-                pass_span.degraded(
-                    "backlog_check_failed",
-                    error_type=type(exc).__name__,
-                    error_detail=str(exc),
-                )
+                else:
+                    pass_span.degraded(
+                        "backlog_check_failed",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
             except Exception as exc:
                 pass_span.degraded(
                     "backlog_check_failed",
@@ -125,6 +127,17 @@ async def periodic_embedding_backlog_check(
                 else:
                     pass_span.empty(messages=0)
 
+    await daemon_periodic_runner().run(
+        "embedding_backlog",
+        once,
+        interval_s=EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS,
+        gate=catch_up_gate(catch_up_complete),
+        wakeup=wakeup,
+        run_first=False,
+        on_error="record",
+        error_event=None,
+    )
+
 
 async def periodic_embedding_orphan_reconcile_check(
     *,
@@ -140,13 +153,11 @@ async def periodic_embedding_orphan_reconcile_check(
     embed work; manual CLI (``polylogue maintenance embedding-orphan-reconcile``)
     remains a read-only diagnostic preview.
     """
-    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.paths import archive_root
 
     db = archive_root() / "index.db"
-    await _await_catch_up_gate(catch_up_complete, loop_name="embedding orphan reconcile")
-    while True:
-        await asyncio.sleep(EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS)
+
+    async def once() -> None:
         with span("daemon.embed.orphan_reconcile") as pass_span:
             try:
                 from polylogue.daemon.write_coordinator import daemon_write_coordinator
@@ -159,12 +170,12 @@ async def periodic_embedding_orphan_reconcile_check(
             except sqlite3.OperationalError as exc:
                 if is_transient_sqlite_lock(exc):
                     pass_span.skipped(reason="archive_busy", error_detail=str(exc))
-                    continue
-                pass_span.degraded(
-                    "orphan_reconcile_failed",
-                    error_type=type(exc).__name__,
-                    error_detail=str(exc),
-                )
+                else:
+                    pass_span.degraded(
+                        "orphan_reconcile_failed",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
+                    )
             except Exception as exc:
                 pass_span.degraded(
                     "orphan_reconcile_failed",
@@ -174,7 +185,7 @@ async def periodic_embedding_orphan_reconcile_check(
             else:
                 if report is None:
                     pass_span.skipped(reason="reconcile_not_applicable")
-                    continue
+                    return
                 removed = int(report.removed_message_rows) + int(report.removed_status_rows)
                 if removed:
                     pass_span.ok(
@@ -185,6 +196,16 @@ async def periodic_embedding_orphan_reconcile_check(
                     )
                 else:
                     pass_span.empty(removed=0, more_pending=bool(report.more_pending))
+
+    await daemon_periodic_runner().run(
+        "embedding_orphan_reconcile",
+        once,
+        interval_s=EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS,
+        gate=catch_up_gate(catch_up_complete),
+        run_first=False,
+        on_error="record",
+        error_event=None,
+    )
 
 
 def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileReport | None:

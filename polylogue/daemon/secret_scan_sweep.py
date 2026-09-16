@@ -29,6 +29,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.daemon.periodic import catch_up_gate, daemon_periodic_runner
 from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
@@ -92,13 +93,10 @@ async def periodic_secret_scan_sweep(
     races initial source catch-up -- same gating shape as every other
     ``catch_up_complete``-gated periodic loop in ``daemon/cli.py``.
     """
-    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.paths import archive_root
 
-    await _await_catch_up_gate(catch_up_complete, loop_name="secret scan sweep")
-    while True:
-        await asyncio.sleep(SECRET_SCAN_SWEEP_INTERVAL_SECONDS)
+    async def once() -> None:
         root = archive_root()
         with span("daemon.secret_scan.sweep", stage=SECRET_SCAN_SWEEP_STAGE) as sweep:
             try:
@@ -111,8 +109,8 @@ async def periodic_secret_scan_sweep(
                 await _record_secret_scan_sweep_event_coordinated(root, status="failed", error=exc)
                 if is_transient_sqlite_lock(exc):
                     sweep.skipped(reason="archive_busy", error_detail=str(exc))
-                    continue
-                sweep.degraded("sweep_failed", error_type=type(exc).__name__, error_detail=str(exc))
+                else:
+                    sweep.degraded("sweep_failed", error_type=type(exc).__name__, error_detail=str(exc))
             except Exception as exc:
                 await _record_secret_scan_sweep_event_coordinated(root, status="failed", error=exc)
                 sweep.degraded("sweep_failed", error_type=type(exc).__name__, error_detail=str(exc))
@@ -138,6 +136,16 @@ async def periodic_secret_scan_sweep(
                     sweep.ok(**fields)
                 else:
                     sweep.empty(**fields)
+
+    await daemon_periodic_runner().run(
+        "secret_scan_sweep",
+        once,
+        interval_s=SECRET_SCAN_SWEEP_INTERVAL_SECONDS,
+        gate=catch_up_gate(catch_up_complete),
+        run_first=False,
+        on_error="record",
+        error_event=None,
+    )
 
 
 async def _record_secret_scan_sweep_event_coordinated(

@@ -6,6 +6,10 @@ here, so the set of things running inside a daemon process is a value that
 can be read, filtered, and asserted on rather than a shape recovered from
 reading startup code.
 
+``cadence_s`` on a PERIODIC spec is the loop's real interval, cross-checked
+against the value the runner is registered with: eight specs had drifted away
+from their loop bodies while each loop owned its own literal (polylogue-74wvj).
+
 A spec declares what the supervisor needs in order to own the task: who
 owns it, which runtime capabilities it presupposes, which siblings must
 already be started, how it is triggered, what its failure means for the
@@ -243,7 +247,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         trigger=ServiceTrigger.PERIODIC,
         profiles=_RESIDENT,
         status_component="daemon_process",
-        cadence_s=30.0,
+        cadence_s=900.0,
     ),
     _spec(
         "health_check",
@@ -343,7 +347,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
         status_component="fts",
-        cadence_s=300.0,
+        cadence_s=60.0,
     ),
     _spec(
         "heartbeat",
@@ -351,7 +355,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         trigger=ServiceTrigger.PERIODIC,
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
-        cadence_s=60.0,
+        cadence_s=900.0,
     ),
     _spec(
         "embedding_backlog",
@@ -369,7 +373,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         trigger=ServiceTrigger.PERIODIC,
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
-        cadence_s=600.0,
+        cadence_s=900.0,
     ),
     _spec(
         "db_optimize",
@@ -377,7 +381,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         trigger=ServiceTrigger.PERIODIC,
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
-        cadence_s=3600.0,
+        cadence_s=86_400.0,
     ),
     _spec(
         "status_snapshot_refresh",
@@ -406,7 +410,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         trigger=ServiceTrigger.PERIODIC,
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
-        cadence_s=3600.0,
+        cadence_s=900.0,
     ),
     _spec(
         "blob_publication_reconciliation",
@@ -414,7 +418,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         trigger=ServiceTrigger.PERIODIC,
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
-        cadence_s=3600.0,
+        cadence_s=900.0,
     ),
     _spec(
         "secret_scan_sweep",
@@ -422,7 +426,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         trigger=ServiceTrigger.PERIODIC,
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
-        cadence_s=3600.0,
+        cadence_s=900.0,
     ),
     # --- acquisition
     _spec(

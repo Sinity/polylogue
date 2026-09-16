@@ -66,6 +66,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     latest_stage_events,
     workload_fields,
 )
+from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.daemon.slo import IngestSloStatus, slo_status_info
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
@@ -3323,6 +3324,10 @@ def daemon_status_payload(
             ),
             "halted_units": halted_units,
             "services": supervised_service_states(),
+            # Per-loop cadence evidence: last run, next due, last error and
+            # which startup gate (if any) a loop is waiting on. Without it an
+            # idle loop and a frozen one look identical (polylogue-74wvj).
+            "periodic_loops": periodic_loop_payload()["loops"],
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
             "daemon_lifecycle": status.daemon_lifecycle,
