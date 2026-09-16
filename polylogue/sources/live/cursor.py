@@ -250,6 +250,14 @@ def _origin_value_for_source_name(source_name: str | None) -> str | None:
     return origin_from_provider(Provider.from_string(source_name)).value
 
 
+def _required_iso_text(value: object) -> str:
+    """Totality adapter over the shared kernel for non-optional cursor columns."""
+    text = iso_from_epoch_ms(_required_int(value))
+    if text is None:
+        raise ValueError(f"cursor timestamp is out of representable range: {value!r}")
+    return text
+
+
 def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> CursorRecord:
     origin = _optional_str(row[14])
     return CursorRecord(
@@ -258,7 +266,7 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         byte_offset=_required_int(row[2] or 0),
         last_complete_newline=_required_int(row[3] or 0),
         record_count=_required_int(row[4] or 0),
-        updated_at=iso_from_epoch_ms(row[15]),
+        updated_at=_required_iso_text(row[15]),
         last_record_ts=iso_from_epoch_ms(row[5]) if row[5] is not None else None,
         parser_fingerprint=_optional_str(row[6]),
         content_fingerprint=_optional_str(row[7]),
@@ -1257,8 +1265,8 @@ class CursorStore:
         return [
             LiveIngestAttempt(
                 attempt_id=str(row[0]),
-                started_at=iso_from_epoch_ms(row[1]),
-                updated_at=iso_from_epoch_ms(row[2] if row[2] is not None else row[1]),
+                started_at=_required_iso_text(row[1]),
+                updated_at=_required_iso_text(row[2] if row[2] is not None else row[1]),
                 completed_at=iso_from_epoch_ms(row[3]) if row[3] is not None else None,
                 status=str(row[4]),
                 phase=str(row[5]),
@@ -1781,8 +1789,8 @@ class CursorStore:
                 subject_id=str(row[2]),
                 status=str(row[3]),
                 failure_count=int(row[4] or 0),
-                first_failed_at=iso_from_epoch_ms(row[5]),
-                last_failed_at=iso_from_epoch_ms(row[6]),
+                first_failed_at=_required_iso_text(row[5]),
+                last_failed_at=_required_iso_text(row[6]),
                 next_retry_at=_optional_str(row[8]),
                 materializer_version=_optional_str(row[9]),
                 last_error=_optional_str(row[7]),
@@ -1828,7 +1836,7 @@ class CursorStore:
             WholeArchiveConvergencePledge(
                 pledge_id=str(row[0]),
                 anchor_path=Path(str(row[1])),
-                created_at=iso_from_epoch_ms(row[2]),
+                created_at=_required_iso_text(row[2]),
             )
             for row in rows
         )

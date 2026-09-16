@@ -38,6 +38,7 @@ def test_milliseconds_unit_passes_numbers_and_digit_strings_through(value: objec
 def test_the_two_units_differ_by_exactly_one_thousand() -> None:
     seconds = to_epoch_ms(str(_EPOCH_SECONDS), numeric_unit="seconds")
     milliseconds = to_epoch_ms(str(_EPOCH_SECONDS), numeric_unit="milliseconds")
+    assert seconds is not None and milliseconds is not None
     assert seconds == milliseconds * 1000 != 0
 
 

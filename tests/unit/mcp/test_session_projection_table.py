@@ -22,7 +22,7 @@ def test_every_mcp_projection_is_a_declared_read_view() -> None:
 
 
 def test_every_declared_method_exists_on_the_archive_facade() -> None:
-    from polylogue.api.archive import Polylogue
+    from polylogue import Polylogue
 
     for projection in SESSION_LIST_PROJECTIONS.values():
         assert hasattr(Polylogue, projection.method), projection

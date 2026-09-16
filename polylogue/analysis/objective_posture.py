@@ -54,7 +54,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from polylogue.analysis.archive_models import ObjectivePosturePayload
 from polylogue.core.enums import TERMINAL_STATE_VALUES, AssertionKind, AssertionStatus, TerminalState
@@ -148,7 +148,7 @@ def structural_objective_posture(
     index-materialization time (unlike the assertion tier).
     """
 
-    posture = _STRUCTURAL_POSTURE_BY_TERMINAL_STATE.get(terminal_state)
+    posture = _STRUCTURAL_POSTURE_BY_TERMINAL_STATE.get(cast("TerminalState", terminal_state))
     if posture is None:
         return ObjectivePosturePayload(posture="unknown", authority="none", as_of=as_of)
     evidence = terminal_state_evidence or {}
