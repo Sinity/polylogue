@@ -2114,12 +2114,18 @@ async def run_daemon_services(
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
     from polylogue.storage.sqlite.connection_profile import arm_recurring_checkpoint_owner
+    from polylogue.storage.sqlite.write_guard import install_archive_write_guard
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (
         archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion,
         arm_write_lease_enforcement(process_wide=True),
+        # Arming alone only covers the declared write-mode factories. The guard
+        # makes the boundary total at ``sqlite3.connect`` itself, so a writer
+        # that reaches an archive tier without a factory is refused rather than
+        # contending through the busy timeout (polylogue-8qm4k).
+        install_archive_write_guard(),
         arm_recurring_checkpoint_owner(),
     ):
         await _run_daemon_services_under_active_writer_lease(
