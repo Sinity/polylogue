@@ -112,6 +112,7 @@ EXPECTED_READINESS_REASONS: frozenset[str] = frozenset(
     {
         "schema_version_mismatch",
         "critical_check_failed",
+        "index_tier_missing",
         "fts_not_fresh",
         "probe_error",
     }
@@ -561,6 +562,38 @@ class TestReadinessProbeContract:
         assert payload["status"] == "not_ready"
         assert payload["reason"] == "fts_not_fresh"
         assert payload["reason"] in EXPECTED_READINESS_REASONS
+
+    def test_readiness_refuses_when_index_tier_is_absent(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """polylogue-gqdfx: no index tier is not-ready with a named reason.
+
+        Anti-vacuity: restoring ``fts_ready = True`` as the default in
+        ``handle_healthz_ready`` (so an absent index.db leaves readiness
+        unmeasured-but-true) turns this red — the probe would answer 200
+        ``{"status": "ready", "fts": null}`` for an archive root that holds
+        no derived tier at all.
+        """
+
+        self._patch_healthy_fast(monkeypatch)
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        index_db = resolve_active_index_path(workspace_env["archive_root"])
+        index_db.unlink(missing_ok=True)
+        assert not index_db.exists()
+
+        handler = _make_handler("GET", "/healthz/ready")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+        assert payload["status"] == "not_ready"
+        assert payload["reason"] == "index_tier_missing"
+        assert payload["reason"] in EXPECTED_READINESS_REASONS
+        # The absent measurement is reported as absent, not as a healthy zero.
+        assert payload["fts"] is None
 
     def test_readiness_returns_503_on_schema_mismatch(
         self,
