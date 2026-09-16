@@ -232,6 +232,7 @@ def _emit_periodic_loop_metrics(lines: list[str]) -> None:
             for state in states
             if state.last_run_completed_at is not None
         ],
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
@@ -239,6 +240,7 @@ def _emit_periodic_loop_metrics(lines: list[str]) -> None:
         help_text="Seconds until each daemon periodic loop's next scheduled pass.",
         metric_type="gauge",
         samples=[({"loop": state.name}, state.next_run_at - now) for state in states if state.next_run_at is not None],
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
@@ -261,6 +263,7 @@ def _emit_periodic_loop_metrics(lines: list[str]) -> None:
         metric_type="gauge",
         samples=[({"loop": state.name}, 1 if state.blocked_on else 0) for state in states],
     )
+
 
 _UNMEASURED_PROBE_METRIC = "polylogue_probe_unmeasured"
 
@@ -300,10 +303,18 @@ def _emit_metric(
     help_text: str,
     metric_type: str,
     samples: list[tuple[dict[str, str] | None, float | int]],
+    omit_when_empty: bool = False,
 ) -> None:
     lines.append(f"# HELP {name} {help_text}")
     lines.append(f"# TYPE {name} {metric_type}")
     if not samples:
+        if omit_when_empty:
+            # The zero below is a *count* reading. For a gauge whose samples are
+            # filtered by "has this been measured yet", that zero asserts the
+            # measurement (an age of 0s reads as "just ran"), which is the
+            # fabrication polylogue-xvwpi removes elsewhere. Absence is the only
+            # honest Prometheus reading for an unmeasured gauge.
+            return
         # Emit a zero sample so the series is discoverable even when no
         # backing rows exist yet.
         lines.append(f"{name} 0")
