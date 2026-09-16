@@ -592,28 +592,52 @@ class AuditRepository:
             self._machine_deadline_unix_ms = None
 
     def machine_request(self, binding: MachineRequestBinding) -> dict[str, object] | None:
-        """Recover the immutable domain reference and reject conflicting reuse."""
+        """Recover the immutable domain reference and reject conflicting reuse.
+
+        polylogue-cois9: ``machine_requests.archive_identity`` carries a live
+        archive identity digest that folds in the *rebuildable* index tier's
+        inode, so an ordinary index-generation promotion moves it.  Keying the
+        recovery lookup on that column made a promotion silently lose request
+        dedup: the row was simply unfindable and the retried request re-executed
+        as new.  This audit database *is* the durable archive scope -- it lives
+        inside the archive file set, and ``request_id`` is unique within it --
+        so the durable key is ``request_id`` alone.  The stored identity is
+        returned in the record so the caller can rebind its durable key to the
+        one the surviving rows (and their ``machine_request_parts``) use.
+        """
 
         with self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM machine_requests WHERE archive_identity = ? AND request_id = ?",
-                (binding.archive_identity, binding.request_id),
+                "SELECT * FROM machine_requests WHERE request_id = ?",
+                (binding.request_id,),
             ).fetchone()
         if row is None:
             return None
         record = dict(row)
-        if any(record[key] != value for key, value in binding.to_dict().items()):
+        expected = binding.to_dict()
+        # ``archive_identity`` is deliberately excluded: a moved index
+        # generation is not conflicting intent.  Principal, fingerprint and
+        # operation still have to match exactly.
+        del expected["archive_identity"]
+        if any(record[key] != value for key, value in expected.items()):
             raise MachineRequestConflictError("request id is bound to another principal or intent")
         return record
 
     def machine_request_for_principal(
         self, archive_identity: str, request_id: str, principal_ref: str
     ) -> dict[str, object] | None:
-        """Resolve a control reference only in the authenticated current archive."""
+        """Resolve a control reference only in the authenticated current archive.
+
+        The archive scope is this audit database, not the caller's live archive
+        identity digest -- see :meth:`machine_request`.  ``archive_identity``
+        remains in the signature because callers authenticate it upstream, but
+        it must not narrow the lookup, or a control reference disappears the
+        moment a new index generation is promoted.
+        """
         with self._connection() as conn:
             row = conn.execute(
-                "SELECT * FROM machine_requests WHERE archive_identity = ? AND request_id = ? AND principal_ref = ?",
-                (archive_identity, request_id, principal_ref),
+                "SELECT * FROM machine_requests WHERE request_id = ? AND principal_ref = ?",
+                (request_id, principal_ref),
             ).fetchone()
         return None if row is None else dict(row)
 
@@ -2690,14 +2714,29 @@ class AuditRepository:
             )
 
     def has_recovered_effect(self, plan: MutationPlan) -> str | None:
-        """Return the durable recovery barrier for this exact semantic effect."""
+        """Return the durable recovery barrier for this exact semantic effect.
+
+        polylogue-cois9: the barrier is scoped by ``archive_instance_id``, the
+        immutable lineage id of this audit database's ``archive_authority``
+        row.  It is deliberately *not* scoped by
+        ``operation_runs.archive_identity_digest``: that digest folds in the
+        rebuildable index tier's inode, so an ordinary index-generation
+        promotion moved it and made an already-applied barrier row unfindable.
+        Because the caller treats "no row" as "never happened", that miss
+        silently re-executed a durably applied destructive effect.  A barrier
+        must not be weakened by rebuilding a derived tier.
+
+        Nothing here can assert that a miss is truthful -- a first-ever effect
+        legitimately has no row -- so the barrier's honesty depends entirely on
+        its key never drifting under an ordinary rebuild.
+        """
 
         with self._connection() as conn:
             row = conn.execute(
                 """
                 SELECT operation_id FROM operation_runs
                 WHERE operation_name = ? AND operation_version = ?
-                  AND archive_instance_id = ? AND archive_identity_digest = ?
+                  AND archive_instance_id = ?
                   AND parameter_digest = ? AND target_digest = ?
                   AND target_count > 0
                   AND terminal_reason = 'recovered_applied'
@@ -2707,7 +2746,6 @@ class AuditRepository:
                     plan.operation,
                     plan.operation_version,
                     plan.archive_instance_id,
-                    plan.archive_identity_digest,
                     plan.parameter_digest,
                     plan.target_digest,
                 ),
