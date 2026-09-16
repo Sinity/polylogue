@@ -194,6 +194,29 @@ def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
         conn.commit()
 
 
+def _announce_ingest_should_run(ctx: WriteEffectContext) -> bool:
+    return bool(ctx.changed_session_ids)
+
+
+def _announce_ingest_effect(ctx: WriteEffectContext) -> None:
+    """Announce a committed archive write on the daemon's in-process bus.
+
+    Post-commit, never before: a subscriber that woke on an announcement of an
+    uncommitted write would read rows that may still roll back. Delivery is
+    best-effort by the bus' own contract and its consumers keep a slow
+    reconciliation tick, so a missed announcement costs latency, not work
+    (polylogue-14t7).
+    """
+    from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
+
+    daemon_event_bus().publish(
+        IngestCommitted(
+            cursor=ctx.staleness_key or None,
+            session_refs=tuple(ctx.changed_session_ids),
+        )
+    )
+
+
 WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
     WriteEffect(
         name="ensure_fts_triggers",
@@ -211,6 +234,14 @@ WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
         phase="post-commit",
         run=_invalidate_search_cache_effect,
         should_run=_invalidate_search_cache_should_run,
+    ),
+    WriteEffect(
+        name="announce_ingest_committed",
+        phase="post-commit",
+        run=_announce_ingest_effect,
+        should_run=_announce_ingest_should_run,
+        # An announcement that fails must never fail a committed archive write.
+        failure_policy="log-and-continue",
     ),
     WriteEffect(
         name="invalidate_session_insights",
