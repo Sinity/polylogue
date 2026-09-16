@@ -420,7 +420,15 @@ def _orphaned_messages_check(conn: sqlite3.Connection) -> ReadinessCheck:
 
 
 def _empty_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
-    """Sessions with no messages — surfaced as a warning."""
+    """Sessions with no messages -- surfaced as a warning.
+
+    The current ingest route cannot produce this row: the batch writer skips a
+    new session with no messages, and the worker refuses a session with no
+    positive conversational evidence. So a hit here is a historical archive
+    shape or an externally modified database, not an ingest defect -- which is
+    exactly why this deep readiness probe still runs over an arbitrary archive
+    file, and why its test constructs the row with raw SQL.
+    """
     empty_count = int(
         conn.execute(
             """
@@ -436,7 +444,11 @@ def _empty_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
         "empty_sessions",
         VerifyStatus.OK if empty_count == 0 else VerifyStatus.WARNING,
         count=empty_count,
-        summary="No empty sessions" if empty_count == 0 else f"{empty_count} session(s) with no messages",
+        summary=(
+            "No empty sessions"
+            if empty_count == 0
+            else f"{empty_count} session(s) with no messages (historical or externally written shape)"
+        ),
     )
 
 

@@ -9,6 +9,7 @@ import socket
 import socketserver
 import struct
 import threading
+import time
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -228,6 +229,9 @@ def _unlink_stale_socket(socket_path: Path) -> None:
 class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     request_queue_size = 24
+    #: Bounded window for draining a refused caller's in-flight request so it
+    #: reads the 503 instead of a reset. Never a retry or a wait for work.
+    refusal_drain_seconds = 1.0
 
     def __init__(
         self,
@@ -284,6 +288,17 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
                     f"Content-Length: {len(body)}\r\nConnection: close\r\n\r\n"
                 ).encode()
                 request.sendall(headers + body)
+                # Closing here while the caller is still writing its request
+                # resets the connection, and the caller sees a broken pipe
+                # instead of the refusal just sent -- losing exactly the
+                # explicit no-execution guarantee this branch exists to give.
+                # Half-close and drain what the caller is still sending so its
+                # write completes and it can read the 503.
+                request.shutdown(socket.SHUT_WR)
+                deadline = time.monotonic() + self.refusal_drain_seconds
+                while time.monotonic() < deadline:
+                    if not request.recv(65536):
+                        break
             except OSError:
                 # An already-disconnected caller must not stop the accept loop.
                 pass
