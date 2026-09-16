@@ -479,9 +479,19 @@ def _search_payload(
         server_identity="daemon" if serving_identity == "daemon" else "direct",
         started_at=monotonic(),
     ).model_copy(update={"matched": len(hit_payloads), "analyzed": total})
+    # The ranked envelope must name what it counted.  Without this a
+    # ``--no-root`` search reports subagent/branch rows under the "top-level
+    # sessions" label, because the renderer has nothing to read but a default.
+    # Resolve the unit exactly as the list path does, from the *resolved* root
+    # filter rather than the unset spec field.
+    from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
+
     envelope = build_search_envelope(
         hit_payloads,
         total=total,
+        total_unit=session_count_unit_label(
+            resolve_default_root_filter(fetch_spec.root, boolean_predicate=fetch_spec.boolean_predicate)
+        ),
         limit=display_limit,
         offset=spec.offset,
         query=query_text,
@@ -497,16 +507,6 @@ def _search_payload(
     # The envelope keeps its own explicit nulls -- a vector page's ``total`` is
     # an honest ``None`` and dropping the key would read as "not reported".
     envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in hit_payloads]
-    # The ranked envelope does not name what it counted.  Without this a
-    # ``--no-root`` search reports subagent/branch rows under the "top-level
-    # sessions" label, because the renderer has nothing to read but a default.
-    # Resolve the unit exactly as the list path does, from the *resolved* root
-    # filter rather than the unset spec field.
-    from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
-
-    envelope["total_unit"] = session_count_unit_label(
-        resolve_default_root_filter(fetch_spec.root, boolean_predicate=fetch_spec.boolean_predicate)
-    )
     return envelope
 
 

@@ -130,12 +130,19 @@ SCHEMAS: tuple[CliOutputSchema, ...] = (
             "MCP, Python API, and daemon HTTP. Wraps the per-hit "
             "`SessionSearchHit` array with `total`, `limit`, "
             "`offset`, `next_cursor`, `query`, `retrieval_lane`, and the "
-            "`ranking_policy`/`ranking_policy_version` declaration."
+            "`ranking_policy`/`ranking_policy_version` declaration. "
+            "polylogue-1c6j: the `polylogue --format json find <query>` root "
+            "verb does NOT emit this envelope -- it renders the unified CLI "
+            "query page (`mode`/`items`/`origin`), whose rows are "
+            "`session-search-hit`. This schema is the ranked envelope the "
+            "MCP, Python API and daemon HTTP surfaces emit; claiming the CLI "
+            "root verb here was a documentation error, not a CLI defect."
         ),
         model=SearchEnvelope,
         surfaces=(
-            "polylogue --format json find <query>",
             "GET /api/sessions?query=...",
+            "MCP query(projection='sessions')",
+            "Polylogue.search(...)",
         ),
     ),
     CliOutputSchema(

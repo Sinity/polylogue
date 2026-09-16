@@ -427,3 +427,39 @@ def test_live_search_ndjson_rows_validate_against_schema(
     assert row["session"]["message_count"] == 2
     assert row["match"]["retrieval_lane"] == "dialogue"
     assert row["match"]["snippet"]
+
+
+def test_live_ranked_search_envelope_validates_against_published_schema(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-1c6j: the ranked envelope every non-CLI read surface emits must
+    validate against the published ``search-envelope`` schema.
+
+    The schema is generated from :class:`SearchEnvelope` with
+    ``additionalProperties: false``, so any key a surface bolts onto the dumped
+    document after construction -- ``total_unit`` was one -- makes real output
+    fail validation while the model-level sync check stays green.  This runs the
+    declared ``cli.query`` search read (the operation the daemon and MCP both
+    serve) and validates the emitted document, not a hand-built model.
+
+    Anti-vacuity: re-adding ``envelope["total_unit"] = ...`` after
+    ``build_search_envelope`` (or any other undeclared key) turns this red, and
+    the ``hits`` assertion below fails if the fixture stops matching.
+    """
+    import jsonschema
+
+    from polylogue.operations.daemon_reads import execute_read_operation
+    from polylogue.operations.operation_context import open_operation_read
+
+    _seed_live_cli_schema_fixture(cli_workspace, monkeypatch)
+    schema = _load_published_schema("search-envelope")
+
+    with open_operation_read(cli_workspace["archive_root"]) as pinned:
+        envelope = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 5}},
+            archive=pinned.archive,
+            serving_identity="direct",
+        )
+    assert envelope.get("hits"), "fixture query must match rows, or schema conformance is vacuous"
+    jsonschema.validate(instance=envelope, schema=schema)
