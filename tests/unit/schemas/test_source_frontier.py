@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.schema_subjects import INFERENCE_EXCLUDED_SUBJECTS
 from polylogue.schemas.source_frontier import (
+    FRONTIER_SCHEMA,
     FrontierExclusion,
     FrontierRoot,
     FrontierSubject,
@@ -191,3 +193,43 @@ def test_a_restricted_root_hands_generation_its_recorded_members_not_the_directo
     inputs = frontier_source_inputs(frontier, "codex")
 
     assert [item.root for item in inputs] == [root / "rollout-a.jsonl"]
+
+
+def test_declaration_refuses_a_subject_outside_the_inference_denominator(tmp_path: Path) -> None:
+    """A subject whose wire format this repository authors has a zero
+    denominator by declaration. A declared root or a recorded baseline for it
+    would be exactly the "eligible material we then refused" the exclusion
+    denies exists, so the document is refused rather than quietly carrying a
+    member list nothing may infer from.
+
+    Anti-vacuity: drop the guard in ``frontier_from_payload`` and a frontier
+    can once again record 1,243 browser-capture members as a denominator.
+    """
+    excluded = next(iter(INFERENCE_EXCLUDED_SUBJECTS))
+    source_root = tmp_path / "spool"
+    write_member(source_root, "capture.json")
+
+    with pytest.raises(SchemaFrontierError) as declared:
+        frontier_from_payload(
+            {
+                "schema": FRONTIER_SCHEMA,
+                "subjects": [{"subject": excluded, "roots": [{"path": str(source_root), "scope": "spool"}]}],
+            }
+        )
+    assert "outside the schema-inference denominator" in str(declared.value)
+
+    with pytest.raises(SchemaFrontierError) as baseline:
+        frontier_from_payload(
+            {
+                "schema": FRONTIER_SCHEMA,
+                "subjects": [{"subject": "codex", "roots": [{"path": str(source_root), "scope": "spool"}]}],
+                "baselines": [
+                    {
+                        "subject": excluded,
+                        "root": str(source_root),
+                        "members": [{"relative": "capture.json", "byte_count": 1, "sha256": ""}],
+                    }
+                ],
+            }
+        )
+    assert "must not carry a recorded baseline" in str(baseline.value)

@@ -251,6 +251,36 @@ uses native payloads when the response is the current
 remains a fallback for pages where the provider response is not available to
 the content script.
 
+## Not a schema-inference subject
+
+The browser-capture envelope is authored here: `browser-extension/` writes it
+and `polylogue-browser-capture-native-host` reads it. Its structural contract
+is therefore a decision, recorded in
+`polylogue/browser_capture/models.py` and changed together with its writer --
+not evidence to be discovered from a corpus the way a provider's wire format
+is. Inferring a schema for it would publish a snapshot of our own model as if
+it were an observation.
+
+`polylogue/core/schema_subjects.py` records that as
+`inference_excluded_reason` on the `browser-capture` subject, and the
+declaration is the authority everywhere it matters:
+
+- `parse_schema_source_input`, `inventory_schema_sources` and `infer_sources`
+  refuse the token, so no capture artifact is ever inventoried, counted,
+  sampled or reported as eligible-then-unsupported;
+- the schema-source frontier refuses a declaration that gives the subject a
+  root or a recorded baseline, so the recorded denominator is zero;
+- `devtools schema commit --provider browser-capture` refuses instead of
+  writing a package;
+- `devtools schema frontier --list` prints the subject as declared
+  non-applicable with this reason.
+
+The denominator is therefore zero *by declaration*, which is a different and
+stronger claim than "every candidate was refused at preflight". There is no
+adapter to write; the earlier `browser_capture_adapter_unavailable` refusal
+read as missing work and has been retired along with the inferred
+`browser-capture` package it justified.
+
 ## Local auth and origin policy
 
 Default CORS is extension-only: `chrome-extension://*`. Remote web origins such

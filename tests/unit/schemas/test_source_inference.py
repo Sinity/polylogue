@@ -13,11 +13,13 @@ from typing import Any, cast
 import pytest
 
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.core.schema_subjects import inference_exclusion_reason
 from polylogue.schemas import source_inference as source_inference_module
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
 from polylogue.schemas.source_inference import (
     SchemaSourceInput,
+    SchemaSubjectExcludedError,
     SourceObservation,
     SourceRevision,
     _collect_candidate,
@@ -26,6 +28,8 @@ from polylogue.schemas.source_inference import (
     _SourceCandidate,
     _spooled_contributions,
     infer_sources,
+    inventory_schema_sources,
+    parse_schema_source_input,
 )
 
 
@@ -593,25 +597,38 @@ def test_malformed_members_become_terminal_outcomes_without_aborting_inventory(t
     assert str(root) not in json.dumps(result.provenance())
 
 
-def test_browser_capture_source_is_explicitly_excluded_with_aggregate_reason(tmp_path: Path) -> None:
-    """Anti-vacuity: without the guard, a capture envelope becomes generic schema evidence."""
+def test_declared_non_applicable_subject_is_refused_before_any_material_is_counted(tmp_path: Path) -> None:
+    """Anti-vacuity: drop the declaration guard and the envelope becomes generic
+    schema evidence again -- an eligible member that inference then refuses.
+    The exclusion claim is "zero eligible material", so every door into this
+    module must refuse the token instead of admitting and counting it."""
     source = tmp_path / "capture.json"
     source.write_text(json.dumps({"polylogue_capture_kind": "browser_llm_session"}), encoding="utf-8")
-    progress: list[JSONDocument] = []
 
-    result = infer_sources(
-        (SchemaSourceInput("browser-capture", source),),
-        cache_path=tmp_path / "source-cache.sqlite3",
-        max_workers=1,
-        progress=lambda _phase, payload: progress.append(payload),
-    )
+    with pytest.raises(SchemaSubjectExcludedError) as parsed:
+        parse_schema_source_input(f"browser-capture={source}")
+    assert "outside the schema-inference denominator" in str(parsed.value)
+    # Also a ValueError, so an argument parser refuses it like any bad input.
+    assert isinstance(parsed.value, ValueError)
 
-    assert result.evidence_by_element == {}
-    assert result.terminal_counts == {"unsupported": 1}
-    assert result.terminal_reason_counts == {"browser_capture_adapter_unavailable": 1}
-    assert result.input_bytes == source.stat().st_size
-    assert result.provenance()["source_terminal_reasons"] == {"browser_capture_adapter_unavailable": 1}
-    assert progress[-1]["completed_candidates"] == progress[-1]["total_candidates"] == 1
+    with pytest.raises(SchemaSubjectExcludedError):
+        inventory_schema_sources((SchemaSourceInput("browser-capture", source),))
+
+    with pytest.raises(SchemaSubjectExcludedError):
+        infer_sources(
+            (SchemaSourceInput("browser-capture", source),),
+            cache_path=tmp_path / "source-cache.sqlite3",
+            max_workers=1,
+        )
+
+
+def test_no_terminal_reason_offers_to_write_an_adapter_for_an_authored_format() -> None:
+    """The retired ``browser_capture_adapter_unavailable`` reason read as
+    unfinished work. Nothing may reintroduce a refusal that invites someone to
+    close the exclusion by writing an adapter for a format we author."""
+    module_source = Path(source_inference_module.__file__).read_text(encoding="utf-8")
+    assert "browser_capture_adapter_unavailable" not in module_source
+    assert inference_exclusion_reason("browser-capture") is not None
 
 
 def test_antigravity_non_json_inputs_are_counted_with_declared_terminal_reasons(tmp_path: Path) -> None:
