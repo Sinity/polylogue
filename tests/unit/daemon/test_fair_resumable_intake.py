@@ -952,3 +952,49 @@ def test_discovery_refusal_is_counted_on_the_class_report() -> None:
     assert report.discovered == 0
     assert report.reason is not None
     assert "/srv/locked" in report.reason
+
+
+def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A steady stream of new raws must not pin the sweep on its first page.
+
+    Anti-vacuity: put the durable raw frontier back into the discovery binding
+    so an arrival resets ``self._cursor`` to ``None``, and every recorded sweep
+    cursor below becomes ``None`` -- the obligations behind page one are then
+    never reached however long the daemon runs.
+    """
+    bootstrap_archive_root(tmp_path)
+    cursors: list[str | None] = []
+
+    class FakeRawObservationDerivation:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def required_page(
+            self, _frame: object, *, cursor: str | None, limit: int
+        ) -> tuple[tuple[str, ...], str | None]:
+            cursors.append(cursor)
+            nxt = "page1" if cursor is None else f"page{int(str(cursor)[4:]) + 1}"
+            return (nxt,), nxt
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
+            # The whole swept space is already materialized; only the arrivals
+            # are outstanding, which is exactly the starvation condition.
+            return {key: "valid" if key.startswith("page") else "missing" for key in keys}
+
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationDerivation", FakeRawObservationDerivation)
+    discovery = RawMaterializationDiscovery(tmp_path, max_payload_bytes=1024)
+
+    assert discovery.discover_pending_raw_ids(4) == ()
+    for index in range(5):
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=f"arrival-{index}".encode(),
+                source_path=f"arrival-{index}.json",
+                acquired_at_ms=index + 1,
+            )
+        discovery.discover_pending_raw_ids(4)
+
+    assert cursors == [None, "page1", "page2", "page3"]

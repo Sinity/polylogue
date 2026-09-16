@@ -3173,3 +3173,63 @@ def test_claude_code_helper_conversion_contracts() -> None:
     assert token_usage.output_tokens == 34
     assert token_usage.cache_write_tokens == 5
     assert token_usage.cache_read_tokens == 6
+
+
+def test_sniff_zip_provider_picks_the_dominant_member_not_the_first(tmp_path: Path) -> None:
+    """polylogue-payqy: the sniff returned on the first non-unknown detection.
+
+    An export ZIP whose central directory happens to start with a small
+    Claude Code JSONL fragment made that provider the hint for *every* member,
+    so the real ``conversations.json`` was routed as a grouped-provider member:
+    raw-preserved and never parsed into sessions.
+
+    Anti-vacuity: restore ``return detected`` inside the member loop and this
+    returns ``Provider.CLAUDE_CODE`` -- the first entry in central-directory
+    order -- instead of the provider holding almost all of the archive's bytes.
+    """
+    from polylogue.sources.source_acquisition_components import sniff_zip_provider
+
+    claude_code_line = (
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "s1",
+                "cwd": "/tmp",
+                "message": {"role": "user", "content": "hi"},
+            }
+        )
+        + "\n"
+    )
+    conversations = json.dumps(
+        [
+            {
+                "uuid": f"conv-{index}",
+                "name": "Export conversation",
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "chat_messages": [
+                    {
+                        "uuid": f"m-{index}",
+                        "sender": "human",
+                        "text": "hello",
+                        "created_at": "2026-01-01T00:00:00Z",
+                    }
+                ],
+            }
+            for index in range(40)
+        ]
+    )
+    archive_path = tmp_path / "export.zip"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        # Written first, so it is first in central-directory order.
+        zf.writestr("aaa-fragment.jsonl", claude_code_line)
+        zf.writestr("conversations.json", conversations)
+
+    with zipfile.ZipFile(archive_path) as zf:
+        entries = list(zf.infolist())
+        first_detection = sniff_zip_provider(zf, [entries[0]])
+        dominant = sniff_zip_provider(zf, entries)
+
+    assert first_detection is Provider.CLAUDE_CODE
+    assert dominant is Provider.CLAUDE_AI

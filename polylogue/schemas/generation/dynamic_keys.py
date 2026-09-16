@@ -188,11 +188,21 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
         left.get("x-polylogue-high-cardinality-keys") is True or right.get("x-polylogue-high-cardinality-keys") is True
     )
     if properties and (already_high_cardinality or should_collapse_observed_keys(properties.keys())):
-        additional = merge_observed_structure_schemas([additional, *map(_schema_object, properties.values())])
-        properties = {}
-        required = []
         merged["x-polylogue-high-cardinality-keys"] = True
-        merged["x-polylogue-dynamic-keys"] = True
+        if not additional:
+            # Only fold the surviving named properties away when neither side
+            # already carried an ``additionalProperties`` model. A non-empty
+            # ``additional`` means the dynamic keys of this node were already
+            # rehomed, so the properties standing beside it are the static
+            # structure that survived that collapse; sweeping them in too
+            # discards real structure for the same reason
+            # ``collapse_dynamic_keys`` stops at this point. This is the
+            # aggregate-shape case (a wide uniformly-shaped map where no single
+            # key looks dynamic), which still needs the fold.
+            additional = merge_observed_structure_schemas(map(_schema_object, properties.values()))
+            properties = {}
+            required = []
+            merged["x-polylogue-dynamic-keys"] = True
 
     if properties:
         merged["properties"] = properties

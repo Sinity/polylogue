@@ -275,6 +275,27 @@ class ParsedPasteEvidence(BaseModel):
         return value.hex() if value is not None else None
 
 
+# 2100-01-01T00:00:00Z. A declared absolute ceiling, not a window around the
+# current clock: parser validation must stay deterministic and clock-free, and
+# every realistic corruption of a millisecond timestamp (a microsecond or
+# nanosecond value read as milliseconds, a sentinel like 2**53) lands tens of
+# thousands of years past it. ``occurred_at_ms`` becomes ``sessions.updated_at_ms``
+# when an export carries no session-level timestamp, so one far-future record
+# would otherwise pin that session at the top of freshness ordering forever and
+# defeat staleness-driven reconvergence. Refuse the record rather than clamp it:
+# a clamp is a silent rewrite of provider evidence.
+IMPLAUSIBLE_OCCURRED_AT_MS_CEILING = 4102444800000
+
+
+def _require_plausible_occurred_at_ms(value: int | None) -> int | None:
+    if value is not None and value > IMPLAUSIBLE_OCCURRED_AT_MS_CEILING:
+        raise ValueError(
+            f"occurred_at_ms {value} is past the declared plausibility ceiling "
+            f"{IMPLAUSIBLE_OCCURRED_AT_MS_CEILING} (2100-01-01T00:00:00Z)"
+        )
+    return value
+
+
 class ParsedMessage(BaseModel):
     provider_message_id: str
     role: Role
@@ -351,12 +372,17 @@ class ParsedMessage(BaseModel):
             raise ValueError("parser contract integer fields cannot be negative")
         return value
 
+    @field_validator("occurred_at_ms")
+    @classmethod
+    def plausible_occurred_at_ms(cls, value: int | None) -> int | None:
+        return _require_plausible_occurred_at_ms(value)
+
     @model_validator(mode="after")
     def derive_occurred_at_ms(self) -> ParsedMessage:
         if self.occurred_at_ms is None and self.timestamp:
             parsed = parse_timestamp(self.timestamp)
             if parsed is not None:
-                self.occurred_at_ms = int(parsed.timestamp() * 1000)
+                self.occurred_at_ms = _require_plausible_occurred_at_ms(int(parsed.timestamp() * 1000))
         if self.message_type is MessageType.MESSAGE:
             from polylogue.archive.message.artifacts import classify_message_type
 
