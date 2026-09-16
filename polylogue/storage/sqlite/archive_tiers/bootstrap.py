@@ -139,9 +139,45 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 _TIER_INIT_COUNTS: dict[tuple[str, str], int] = {}
 _TIER_INIT_COUNTS_LOCK = threading.Lock()
 
-_TIER_PROTOTYPES: dict[tuple[str, int, str], Path] = {}
+_TIER_PROTOTYPES: dict[tuple[str, int, str, int], Path] = {}
 _TIER_PROTOTYPE_DIR: Path | None = None
 _PROTOTYPE_CACHEABLE_TIERS = frozenset(ArchiveTier)
+
+#: polylogue-kc8eq: the page size a fresh derived index database is created
+#: with. SQLite fixes ``page_size`` permanently when the first page is
+#: allocated, so this is a creation-time decision that no later connection
+#: profile can revise -- before this constant existed the only choice was
+#: SQLite's compiled-in 4096, taken silently.
+#:
+#: 8192 is the recorded default. It is chosen rather than measured-per-build:
+#: the sweep over a seeded benchmark index (2026-09-16, receipts in the
+#: campaign's scratch directory) put 4096, 8192 and 16384 within noise of each
+#: other on read p95, while the larger page reduces page count and therefore
+#: per-page overhead on a 5M-block generation. Re-measure before changing it;
+#: a change re-creates generations, it does not migrate existing ones.
+DEFAULT_ARCHIVE_PAGE_SIZE = 8192
+
+#: SQLite accepts only these; anything else is silently ignored by the pragma,
+#: which would make a wrong value look like it took effect.
+_VALID_PAGE_SIZES = frozenset({512, 1024, 2048, 4096, 8192, 16384, 32768, 65536})
+
+
+def apply_creation_page_size(conn: sqlite3.Connection, page_size: int) -> None:
+    """Fix ``page_size`` on a database that has not allocated its first page.
+
+    Refuses rather than silently no-opping: ``PRAGMA page_size`` on a database
+    that already has pages is accepted by SQLite and then ignored (outside a
+    VACUUM), so a caller that believed it chose 8192 would be handed 4096 with
+    no error anywhere.
+    """
+    if page_size not in _VALID_PAGE_SIZES:
+        raise ValueError(f"page_size must be a SQLite power of two between 512 and 65536, not {page_size}")
+    if int(conn.execute("PRAGMA page_count").fetchone()[0]) != 0:
+        raise RuntimeError("page_size can only be chosen before the database allocates its first page")
+    conn.execute(f"PRAGMA page_size = {page_size}")
+    applied = int(conn.execute("PRAGMA page_size").fetchone()[0])
+    if applied != page_size:
+        raise RuntimeError(f"requested page_size {page_size} but SQLite reports {applied}")
 
 
 def _record_tier_init(tier: ArchiveTier, outcome: str) -> None:
@@ -171,15 +207,28 @@ def _tier_prototype_dir() -> Path:
     return _TIER_PROTOTYPE_DIR
 
 
-def _tier_prototype_key(tier: ArchiveTier, required_version: int) -> tuple[str, int, str]:
-    """Identify a prototype by every input that shapes its SQLite pages."""
+def connection_page_size(conn: sqlite3.Connection) -> int:
+    """The page size this connection's database has, or will have on first page."""
+    return int(conn.execute("PRAGMA page_size").fetchone()[0])
+
+
+def _tier_prototype_key(
+    conn: sqlite3.Connection, tier: ArchiveTier, required_version: int
+) -> tuple[str, int, str, int]:
+    """Identify a prototype by every input that shapes its SQLite pages.
+
+    Page size belongs in the key because a prototype is restored with the
+    SQLite backup API, which makes an empty destination adopt the source's
+    page size outright. Without it a caller that asked for 8192 would get a
+    4096-page database back from the cache and never be told.
+    """
     ddl_digest = hashlib.sha256(archive_tier_spec(tier).ddl.encode()).hexdigest()
-    return tier.value, required_version, ddl_digest
+    return tier.value, required_version, ddl_digest, connection_page_size(conn)
 
 
 def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> bool:
     """Page-copy a cached empty tier onto ``conn``; False when unavailable or unfaithful."""
-    key = _tier_prototype_key(tier, required_version)
+    key = _tier_prototype_key(conn, tier, required_version)
     with _TIER_PROTOTYPE_LOCK:
         prototype = _TIER_PROTOTYPES.get(key)
     if prototype is None or not prototype.is_file():
@@ -207,13 +256,13 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
 
 def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required_version: int) -> None:
     """Snapshot a freshly materialised empty tier for reuse in this process."""
-    key = _tier_prototype_key(tier, required_version)
+    key = _tier_prototype_key(conn, tier, required_version)
     with _TIER_PROTOTYPE_LOCK:
         if key in _TIER_PROTOTYPES:
             return
     staging: Path | None = None
     try:
-        destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}-{key[2]}.db"
+        destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}-{key[2]}-p{key[3]}.db"
         staging_fd, staging_name = tempfile.mkstemp(
             prefix=f".{destination.name}.",
             suffix=".tmp",
@@ -360,7 +409,7 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     """
     spec = archive_tier_spec(tier)
     if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
-        digest = _tier_prototype_key(tier, spec.version)[2]
+        digest = _tier_prototype_key(conn, tier, spec.version)[2]
         state = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'polylogue_ops_schema_state'"
         ).fetchone()
@@ -465,7 +514,7 @@ def _apply_archive_tier_convergence(
         # or share state between archive roots.
         from polylogue.storage.sqlite.archive_tiers.ops_write import _record_ops_schema_state
 
-        _record_ops_schema_state(conn, _tier_prototype_key(tier, spec.version)[2])
+        _record_ops_schema_state(conn, _tier_prototype_key(conn, tier, spec.version)[2])
     # Write the version ONLY when it actually changes. ``PRAGMA user_version = N``
     # rewrites the database header even when N is already the stored value, so an
     # unconditional write dirties a page on every same-version reapply and turns a
@@ -607,6 +656,7 @@ def initialize_archive_database(
     allow_create: bool = True,
     expected_version: int | None = None,
     inactive_destination: InactiveTierDestination | None = None,
+    page_size: int | None = None,
 ) -> None:
     """Create or initialize one archive tier database file.
 
@@ -637,7 +687,13 @@ def initialize_archive_database(
     if allow_create:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path)
+        if page_size is not None:
+            # Before any DDL: the first CREATE allocates page one and freezes
+            # the page size for the life of the file.
+            apply_creation_page_size(conn, page_size)
     else:
+        if page_size is not None:
+            raise ValueError("page_size is a creation-time choice; it cannot be applied to an existing tier")
         try:
             metadata = path.lstat()
         except FileNotFoundError as exc:

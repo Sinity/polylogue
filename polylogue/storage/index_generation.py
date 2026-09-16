@@ -30,7 +30,7 @@ from polylogue.storage.archive_identity import (
     REBUILD_TRANSACTIONS_DIRNAME,
     ArchiveLocation,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import DEFAULT_ARCHIVE_PAGE_SIZE, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import descriptor_alias_path
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
@@ -264,6 +264,12 @@ class IndexGeneration:
     retention_state: str | None = None
     sealed_membership_count: int = 0
     sealed_membership_digest: str = ""
+    # polylogue-kc8eq: the SQLite page size this generation's index.db was
+    # created with. Recorded because it is unrecoverable from anything else
+    # once the file exists and cannot be changed without recreating it, so a
+    # generation built before the choice existed has to read as 0 ("whatever
+    # SQLite defaulted to") rather than as a claim about 8192.
+    page_size: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -1081,7 +1087,19 @@ class IndexGenerationStore:
                 raise RuntimeError("candidate source membership does not match its sealed generation")
         return {"sealed": sealed, "committed": committed, "pending": pending, "failed": 0}
 
-    def create(self, *, owner_id: str | None = None, source_snapshot: str) -> IndexGeneration:
+    def create(
+        self,
+        *,
+        owner_id: str | None = None,
+        source_snapshot: str,
+        page_size: int = DEFAULT_ARCHIVE_PAGE_SIZE,
+    ) -> IndexGeneration:
+        """Materialise one inactive generation.
+
+        ``page_size`` is fixed here and recorded on the generation: SQLite
+        freezes it when the first page is allocated, so the only moment this
+        archive can choose it is before the index DDL runs.
+        """
         created_at_ns = self._next_lifecycle_timestamp_ns()
         generation_id = f"gen-{created_at_ns // 1_000_000}-{uuid.uuid4().hex[:8]}"
         owner = owner_id or str(uuid.uuid4())
@@ -1111,7 +1129,7 @@ class IndexGenerationStore:
                     # capture and post-link verification.
                     _require_path_identity(source, identity, label=f"durable tier {filename}")
             index_path = root / "index.db"
-            initialize_archive_database(index_path, ArchiveTier.INDEX)
+            initialize_archive_database(index_path, ArchiveTier.INDEX, page_size=page_size)
             generation = IndexGeneration(
                 generation_id=generation_id,
                 owner_id=owner,
@@ -1121,6 +1139,7 @@ class IndexGenerationStore:
                 created_at_ms=created_at_ns // 1_000_000,
                 source_snapshot=source_snapshot,
                 created_at_ns=created_at_ns,
+                page_size=page_size,
             )
             self._write(generation)
             return generation
