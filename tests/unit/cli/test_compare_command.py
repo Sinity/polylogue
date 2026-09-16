@@ -2,11 +2,10 @@
 
 Before this, ``blind_items``/``BlindingReceipt``, ``ClaimWithControls``,
 ``compute_calibration``, and the storage chokepoint
-``upsert_comparative_judgment_assertion`` had zero production callers -- only
-their own unit tests and, for ``blind_items``, an internal caller
-(``ElicitationSession``) that itself had no production caller either. This
-test exercises the real CLI command against a real archive: no mocked
-facade, no test double for the storage layer.
+``upsert_comparative_judgment_assertion`` had zero production callers --
+only their own unit tests. This test exercises the real CLI command against
+a real archive: no mocked facade, no test double for the storage layer, and
+it is the declared route that keeps these constructs in the tree.
 """
 
 from __future__ import annotations
