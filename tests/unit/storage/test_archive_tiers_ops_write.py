@@ -783,3 +783,53 @@ def test_reopening_a_current_ops_db_writes_nothing(tmp_path: Path) -> None:
         observer.close()
 
     assert after == before
+
+
+def test_route_observation_writer_does_not_fsync_per_observation(tmp_path: Path) -> None:
+    """polylogue-5lfcr: best-effort telemetry must not pay a durability fsync.
+
+    ``ops.db`` is the disposable tier and ``record_route_observation``'s own
+    docstring contrasts it with the durable, outbox-delivered
+    ``record_mcp_call``. A synchronous commit per observation (12.88 ms
+    measured) sits on the hot path of every route it measures.
+
+    Anti-vacuity: drop the ``PRAGMA synchronous = OFF`` from
+    ``open_observation_connection`` and the pragma read returns 2 (FULL).
+    """
+    from polylogue.operations.route_observation import open_observation_connection
+
+    ops_db = tmp_path / "ops.db"
+    ops_db.touch()
+    conn = open_observation_connection(ops_db)
+    try:
+        assert int(conn.execute("PRAGMA synchronous").fetchone()[0]) == 0
+    finally:
+        conn.close()
+
+
+def test_route_observation_row_is_visible_to_another_reader_after_the_call(tmp_path: Path) -> None:
+    """Dropping the fsync must not drop the commit: the row is readable at once."""
+    from polylogue.operations.route_observation import open_observation_connection
+
+    ops_db = tmp_path / "ops.db"
+    _connect(ops_db).close()
+
+    writer = open_observation_connection(ops_db)
+    try:
+        record_route_observation(
+            writer,
+            trace_id="t-visible",
+            surface="cli",
+            route="find",
+            started_at_ms=1_000,
+            duration_ms=5,
+            status="ok",
+        )
+    finally:
+        writer.close()
+
+    reader = sqlite3.connect(ops_db)
+    try:
+        assert reader.execute("SELECT COUNT(*) FROM route_observations WHERE trace_id = 't-visible'").fetchone()[0] == 1
+    finally:
+        reader.close()
