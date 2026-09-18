@@ -1316,3 +1316,126 @@ def test_identical_headerless_codex_captures_count_once(tmp_path: Path) -> None:
     assert result.included_native_source_revision_count == 1
     assert evidence.current_source_count == 1
     assert evidence.current_record_count == 1
+
+
+def _claude_export_zip(path: Path, *, conversation_uuid: str, design_uuid: str, design_title: str) -> None:
+    """Write one synthetic Claude account export holding both subjects' members."""
+    import zipfile
+
+    conversation = {
+        "uuid": conversation_uuid,
+        "name": "synthetic conversation",
+        "summary": "",
+        "account": {"uuid": "00000000-0000-4000-8000-000000000001"},
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-02T00:00:00Z",
+        "chat_messages": [
+            {
+                "uuid": "00000000-0000-4000-8000-000000000002",
+                "sender": "human",
+                "text": "hello",
+                "created_at": "2026-01-01T00:00:00Z",
+                "content": [{"type": "text", "text": "hello"}],
+            }
+        ],
+    }
+    design_chat = {
+        "uuid": design_uuid,
+        "title": design_title,
+        "project": {"uuid": "00000000-0000-4000-8000-000000000003"},
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-03T00:00:00Z",
+        "messages": [
+            {
+                "uuid": "00000000-0000-4000-8000-000000000004",
+                "role": "assistant",
+                "created_at": "2026-01-01T00:00:00Z",
+                "content": {
+                    "id": "00000000-0000-4000-8000-000000000005",
+                    "role": "assistant",
+                    "contentBlocks": [{"type": "text", "text": "hi"}],
+                    "turnChanges": [],
+                },
+            }
+        ],
+    }
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("conversations.json", json.dumps([conversation]))
+        archive.writestr(f"design_chats/{design_uuid}.json", json.dumps(design_chat))
+
+
+def _session_document_fields(result: Any) -> Collection[str]:
+    rows = result.evidence_by_element.get("session_document", ())
+    return merge_evidence(SchemaEvidence.from_json(item) for item in rows).fields
+
+
+def test_shared_claude_export_root_partitions_members_between_subjects(tmp_path: Path) -> None:
+    """Anti-vacuity: without the member rule each subject folds the other's shape.
+
+    Dropping ``member_prefixes``/``excluded_member_prefixes`` from the Claude
+    subjects puts ``chat_messages`` in the claude-design evidence and
+    ``contentBlocks`` in the claude-ai evidence -- exactly the defect this
+    partition exists to prevent.
+    """
+    root = tmp_path / "claude"
+    root.mkdir()
+    _claude_export_zip(
+        root / "claude-ai-data-2026-01-01-batch-0000.zip",
+        conversation_uuid="00000000-0000-4000-8000-00000000000a",
+        design_uuid="00000000-0000-4000-8000-00000000000b",
+        design_title="first",
+    )
+
+    design = infer_sources(
+        (SchemaSourceInput("claude-design", root),),
+        cache_path=tmp_path / "design-cache.sqlite3",
+        max_workers=1,
+    )
+    conversations = infer_sources(
+        (SchemaSourceInput("claude-ai", root),),
+        cache_path=tmp_path / "ai-cache.sqlite3",
+        max_workers=1,
+    )
+
+    design_fields = _session_document_fields(design)
+    ai_fields = _session_document_fields(conversations)
+    assert any(field.endswith("contentBlocks") for field in design_fields)
+    assert not any("chat_messages" in field for field in design_fields)
+    assert any("chat_messages" in field for field in ai_fields)
+    assert not any(field.endswith("contentBlocks") for field in ai_fields)
+
+
+def test_claude_design_documents_collapse_across_export_snapshots(tmp_path: Path) -> None:
+    """Anti-vacuity: without a per-document identity every snapshot is counted again.
+
+    Removing the ``Provider.CLAUDE_DESIGN`` branch from
+    ``native_document_identity`` restores the per-candidate revision id, and
+    the same design chat in two snapshots then reports two current sources.
+    """
+    root = tmp_path / "claude"
+    root.mkdir()
+    design_uuid = "00000000-0000-4000-8000-00000000000b"
+    _claude_export_zip(
+        root / "claude-ai-data-2026-01-01-batch-0000.zip",
+        conversation_uuid="00000000-0000-4000-8000-00000000000a",
+        design_uuid=design_uuid,
+        design_title="first",
+    )
+    _claude_export_zip(
+        root / "claude-ai-data-2026-02-01-batch-0000.zip",
+        conversation_uuid="00000000-0000-4000-8000-00000000000a",
+        design_uuid=design_uuid,
+        design_title="second",
+    )
+
+    result = infer_sources(
+        (SchemaSourceInput("claude-design", root),),
+        cache_path=tmp_path / "design-cache.sqlite3",
+        max_workers=1,
+    )
+    evidence = merge_evidence(SchemaEvidence.from_json(item) for item in result.evidence_by_element["session_document"])
+    # Two snapshots hold two revisions of one design chat: both revisions are
+    # read, and exactly one of them is the current source.
+    assert result.included_native_source_revision_count == 2
+    assert evidence.current_source_count == 1
+    assert evidence.historical_source_count == 1

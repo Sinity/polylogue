@@ -1,10 +1,10 @@
 {
   "artifact_counts": {
-    "session_document": 3877
+    "session_document": 11
   },
   "cluster_count": 0,
   "clusters": [],
-  "default_version": "v3",
-  "generated_at": "2026-09-15T20:31:04.962787+00:00",
+  "default_version": "v4",
+  "generated_at": "2026-09-16T00:38:02.156414+00:00",
   "provider": "claude-design"
 }

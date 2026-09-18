@@ -15,6 +15,7 @@ from polylogue.sources.parsers.hermes_spans import atif_session_provider_id, loo
 from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
 
 DOCUMENT_UPDATE_FIELDS: dict[Provider, tuple[str, ...]] = {
+    Provider.CLAUDE_DESIGN: ("updated_at",),
     Provider.GEMINI: ("updateTime",),
     Provider.DRIVE: ("updateTime",),
     Provider.GEMINI_CLI: ("lastUpdated",),
@@ -41,6 +42,15 @@ def native_document_identity(provider: Provider, payload: JSONDocument, source_p
         session_id = payload.get("id")
         if isinstance(session_id, str) and session_id:
             return f"gemini:{session_id}"
+    elif provider is Provider.CLAUDE_DESIGN:
+        # A design chat is one document per conversation, shipped inside every
+        # export snapshot that still holds it.  Without this declared identity
+        # the collector falls back to a per-candidate revision id, so the
+        # current-revision collapse never fires and every snapshot of the same
+        # chat is counted again.
+        session_id = payload.get("uuid") or payload.get("id")
+        if isinstance(session_id, str) and session_id:
+            return f"claude-design:{session_id}"
     elif provider is Provider.ANTIGRAVITY:
         session_id = payload.get("cascadeId")
         if isinstance(session_id, str) and session_id:

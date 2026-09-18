@@ -1,10 +1,10 @@
 {
   "artifact_counts": {
-    "session_document": 1016
+    "session_document": 1005
   },
   "cluster_count": 0,
   "clusters": [],
-  "default_version": "v3",
-  "generated_at": "2026-09-15T20:26:40.428554+00:00",
+  "default_version": "v4",
+  "generated_at": "2026-09-16T00:40:30.351555+00:00",
   "provider": "claude-ai"
 }

@@ -33,7 +33,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
-from polylogue.core.schema_subjects import inference_exclusion_reason
+from polylogue.core.schema_subjects import inference_exclusion_reason, subject_admits_member
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
@@ -610,9 +610,28 @@ def _candidate_byte_count(path: Path) -> int:
         return 0
 
 
+def _candidate_member_path(candidate: _SourceCandidate) -> str:
+    """Return the candidate's path relative to its declared root."""
+    try:
+        return candidate.path.relative_to(candidate.root).as_posix()
+    except ValueError:
+        return candidate.path.name
+
+
 def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
     """Refuse source classes that lack a source-evidence adapter before reading bytes."""
     byte_count = _candidate_byte_count(candidate.path)
+    # Two subjects may declare the same physical root (the Claude account
+    # export ships GDPR conversations and design chats side by side).  A
+    # member owned by a sibling subject stays in this subject's physical
+    # census with a typed non-applicability outcome instead of disappearing
+    # from it, and is never folded into this subject's evidence.  An archive
+    # is a container, not a leaf: its members are admitted individually when
+    # it is opened.
+    if candidate.path.suffix.lower() != ".zip" and not subject_admits_member(
+        candidate.provider, _candidate_member_path(candidate)
+    ):
+        return SourceTerminal("intentionally_excluded", byte_count, reason="member_owned_by_sibling_subject")
     provider = Provider.from_string(candidate.provider)
     if provider is Provider.ANTIGRAVITY and candidate.path.suffix.lower() == ".pb":
         return SourceTerminal("unsupported", byte_count, reason="antigravity_protobuf_adapter_unavailable")
@@ -677,6 +696,7 @@ def _terminal_reason_code(terminal: SourceTerminal) -> str | None:
         "antigravity_markdown_sidecar",
         "antigravity_protobuf_adapter_unavailable",
         "sqlite_value_inference_not_supported",
+        "member_owned_by_sibling_subject",
         "source_class_non_session",
         "source_class_unsupported",
         "invalid_zip",
@@ -1475,7 +1495,13 @@ def _collect_zip_candidate(
     try:
         with zipfile.ZipFile(candidate.path) as archive:
             validator = ZipEntryValidator(candidate.provider, cursor_state=None, zip_path=candidate.path)
-            members = validator.filter_entries(archive.infolist(), allowed_suffixes=(".json", ".jsonl", ".ndjson"))
+            # Two subjects can declare the same export root, so each takes
+            # only its own members.  The rule is applied to the central
+            # directory before admission: a sibling subject's members are not
+            # this subject's material and must not consume its aggregate
+            # decompression budget either.
+            owned = [info for info in archive.infolist() if subject_admits_member(candidate.provider, info.filename)]
+            members = validator.filter_entries(owned, allowed_suffixes=(".json", ".jsonl", ".ndjson"))
             for member_index, member in enumerate(sorted(members, key=lambda item: item.filename)):
                 member_path = Path(member.filename)
                 with open_bounded_zip_entry(archive, member) as member_handle:
