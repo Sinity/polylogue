@@ -653,6 +653,8 @@ class ArchiveStore:
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
         defer_secondary_indexes: bool = False,
+        active_cold_build: bool = False,
+        durable_writer: bool = False,
     ) -> None:
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
@@ -666,15 +668,33 @@ class ArchiveStore:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
         if defer_secondary_indexes and (read_only or owned_inactive_generation is None):
             raise ValueError("secondary-index deferral requires an owned inactive writable generation")
+        if durable_writer and (read_only or owned_inactive_generation is None):
+            raise ValueError("durable_writer requires an owned inactive writable generation")
+        if active_cold_build and (read_only or owned_inactive_generation is not None or source_tier_acquisition):
+            raise ValueError("the active cold-build shape requires a plain writable active-generation open")
+        self._active_cold_build_requested = active_cold_build
+        self._active_cold_build_engaged = False
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
         self._frozen_index_path = frozen_index_path
         self._opened_index_fd = opened_index_fd
         self._pinned_read = frozen_index_path is not None
-        self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
+        # An offline rebuild candidate must never mutate the live archive it
+        # reads through: it holds no writer lease, so the daemon could be
+        # writing the same durable tiers right now. ``durable_writer``
+        # (polylogue-b7dkb) is the one case where that argument does not
+        # apply -- the daemon itself owns the candidate AND takes the active
+        # writer lease, so acquisition and index construction are the same
+        # single writer and the durable tiers are exactly as protected as on
+        # an ordinary live write.
+        self._durable_writer = durable_writer
+        self._inactive_candidate_durable_read_only = (
+            owned_inactive_generation is not None and not durable_writer
+        ) or frozen_source_validation
         self._active_writer_lease = None
         self._deferred_secondary_indexes: tuple[str, ...] = ()
+        self._generation_empty_at_open = False
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
             from polylogue.storage.archive_identity import assert_writable_archive_identity
@@ -695,7 +715,11 @@ class ArchiveStore:
                         self._active_writer_lease = None
                         raise
             else:
-                from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
+                from polylogue.storage.index_generation import (
+                    _GENERATION_READ_THROUGH_MEMBERS,
+                    IndexGeneration,
+                    IndexGenerationStore,
+                )
 
                 generation_id, owner_id = owned_inactive_generation
                 # An inactive generation is opened from its generation root,
@@ -721,7 +745,7 @@ class ArchiveStore:
                     or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
                 ):
                     raise RuntimeError("inactive index generation ownership validation failed")
-                for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+                for filename in _GENERATION_READ_THROUGH_MEMBERS:
                     expected = declared_archive_root / filename
                     candidate = archive_root / filename
                     if expected.exists() or expected.is_symlink():
@@ -733,6 +757,23 @@ class ArchiveStore:
                             )
                     elif candidate.exists() or candidate.is_symlink():
                         raise RuntimeError(f"inactive index generation invented a read-through target: {filename}")
+                if durable_writer:
+                    # The candidate directory only carries read-through
+                    # symlinks; the lease and the identity assertion belong to
+                    # the real archive root those symlinks point at.
+                    from polylogue.storage.index_generation import ActiveWriterLease
+
+                    self._active_writer_lease = ActiveWriterLease(declared_archive_root)
+                    self._active_writer_lease.acquire()
+                    try:
+                        assert_writable_archive_identity(
+                            configured_root=configured_archive_root(),
+                            active_root=declared_archive_root,
+                        )
+                    except Exception:
+                        self._active_writer_lease.close()
+                        self._active_writer_lease = None
+                        raise
         try:
             self._initialize_store(
                 archive_root,
@@ -752,14 +793,32 @@ class ArchiveStore:
                 # the live single-writer profile. See
                 # BULK_BUILD_WRITE_CONNECTION_PROFILE's docstring.
                 bulk_build_profile=owned_inactive_generation is not None,
+                active_cold_build=active_cold_build,
+                # Creating the deferred reader indexes here and dropping them
+                # two statements later is free on an empty generation and
+                # ruinous on a partially built one.
+                skip_runtime_index_ensure=defer_secondary_indexes,
             )
+            if not read_only and not source_tier_acquisition and not frozen_source_validation:
+                # Read once, before this store writes anything: it is the
+                # proof that licenses fresh-build writes, and every later
+                # read of it would be answering about this writer's own rows.
+                self._generation_empty_at_open = self._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is None
             if defer_secondary_indexes:
                 from polylogue.storage.sqlite.runtime_indexes import defer_secondary_indexes_sync
 
-                if self._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None:
-                    raise ValueError("secondary-index deferral is only valid for an empty archive generation")
+                # Deferral is licensed by *ownership*, not by emptiness: no
+                # reader can open an inactive generation, so the reader-visible
+                # schema change is invisible until promotion. A multi-pass cold
+                # build (polylogue-b7dkb) re-opens the same partially built
+                # generation on every dispatcher page and must re-assert the
+                # deferral rather than be refused for having rows. The
+                # emptiness proof that licenses ``fresh_build`` is a separate
+                # decision and lives in ``pipeline/batch_policy.py``.
                 self._deferred_secondary_indexes = defer_secondary_indexes_sync(self._conn)
                 self._conn.commit()
+            if active_cold_build:
+                self._engage_active_cold_build()
         except Exception:
             conn = getattr(self, "_conn", None)
             if conn is not None:
@@ -777,6 +836,8 @@ class ArchiveStore:
         read_only: bool,
         read_timeout: float,
         bulk_build_profile: bool = False,
+        active_cold_build: bool = False,
+        skip_runtime_index_ensure: bool = False,
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
     ) -> None:
@@ -892,9 +953,12 @@ class ArchiveStore:
                 # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
                 else sqlite3.connect(self.index_db_path, uri=True)
             )
-            pragma_statements = write_connection_pragma_statements(
-                BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
-            )
+            write_profile = BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
+            if active_cold_build and not bulk_build_profile:
+                from polylogue.storage.sqlite.connection_profile import COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
+
+                write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
+            pragma_statements = write_connection_pragma_statements(write_profile)
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
             self._conn.execute(statement)
@@ -908,7 +972,7 @@ class ArchiveStore:
             assert_readable_archive_layout(self._conn, generation_id=generation_id)
         if read_only:
             self._conn.execute(f"PRAGMA busy_timeout = {max(0, int(read_timeout * 1000))}")
-        elif not self._pinned_read:
+        elif not self._pinned_read and not skip_runtime_index_ensure:
             # Fresh-bootstrap and same-version reopen both skip runtime-index
             # ensure elsewhere (initialize_archive_tier only replays DDL once,
             # at current_version==0. Owned inactive generations (bulk
@@ -932,6 +996,66 @@ class ArchiveStore:
         """Reject mutations before they can open or use a writable tier."""
         if self._read_only:
             raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
+
+    @property
+    def active_cold_build_engaged(self) -> bool:
+        """Whether this writer actually took the active cold-build shape.
+
+        ``False`` on an open that asked for it but found the generation
+        non-empty: the shape is licensed by emptiness, so the store reverts to
+        the ordinary live write profile rather than refusing the open.
+        """
+        return self._active_cold_build_engaged
+
+    def _engage_active_cold_build(self) -> None:
+        """Take the cold-build shape only while the generation is provably empty."""
+        from polylogue.storage.sqlite.connection_profile import (
+            WRITE_CONNECTION_PROFILE,
+            write_connection_pragma_statements,
+        )
+
+        if not self._generation_empty_at_open:
+            # The emptiness proof is what licenses synchronous=OFF and
+            # foreign_keys=OFF; without it this is an ordinary live write.
+            for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
+                self._conn.execute(statement)
+            self._active_cold_build_engaged = False
+            return
+        self._active_cold_build_engaged = True
+
+    def finish_active_cold_build(self) -> None:
+        """Release the active cold-build shape at the end of a pass.
+
+        This boundary deliberately mutates **nothing**: it neither commits nor
+        restores pragmas.
+
+        Both were tried and both were wrong. ``synchronous`` cannot be set
+        inside a transaction -- SQLite answers ``Safety level may not be
+        changed inside a transaction`` -- and this boundary does not own the
+        connection's transaction state, so restoring durability pragmas here
+        raised ``OperationalError`` and failed the whole ingest pass whenever a
+        record left a transaction open. Committing first only hid that most of
+        the time, and committing is itself wrong: ``close()`` closes without
+        committing, so an open transaction is rolled back, and a commit here
+        would persist work the ordinary path discards.
+
+        Nothing needs restoring. ``synchronous``, ``foreign_keys`` and
+        ``wal_autocheckpoint`` are per-connection settings, and this connection
+        is closed when the pass ends; the next pass opens a fresh one and
+        re-selects the shape from generation state. ``journal_mode`` is the
+        only file-level setting and the cold profile never changes it -- it
+        stays WAL, so readers are unaffected throughout.
+
+        The one useful thing left is truncating the WAL the raised
+        autocheckpoint threshold let grow, which is not valid inside a
+        transaction and is therefore best-effort.
+        """
+        self._require_writable("finish an active cold build")
+        if not self._active_cold_build_engaged:
+            return
+        if not self._conn.in_transaction:
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self._active_cold_build_engaged = False
 
     def restore_deferred_secondary_indexes(self) -> None:
         """Recreate deferred reader indexes before publishing a generation."""
@@ -983,6 +1107,18 @@ class ArchiveStore:
         )
 
     @classmethod
+    def open_active_cold_build(cls, archive_root: Path) -> ArchiveStore:
+        """Open the active generation for a cold build (polylogue-6xcqj).
+
+        Identical to ``open_existing(read_only=False)`` -- same writer lease,
+        same identity assertion, same bootstrap -- except that a generation
+        proven empty at open takes the cold-build write profile. A non-empty
+        generation silently gets the ordinary live profile; check
+        ``active_cold_build_engaged`` to see which happened.
+        """
+        return cls(archive_root, initialize=True, read_only=False, active_cold_build=True)
+
+    @classmethod
     def open_source_tier_acquisition(cls, archive_root: Path) -> ArchiveStore:
         """Open a writer restricted to raw source-tier admission (polylogue-gbs02).
 
@@ -1028,6 +1164,83 @@ class ArchiveStore:
             owned_inactive_generation=(generation_id, owner_id),
             defer_secondary_indexes=defer_secondary_indexes,
         )
+
+    @classmethod
+    def open_cold_build_generation(
+        cls,
+        generation_root: Path,
+        *,
+        generation_id: str,
+        owner_id: str,
+        defer_secondary_indexes: bool = True,
+    ) -> ArchiveStore:
+        """Open an owned inactive generation that the live writer also acquires into.
+
+        This is the daemon's cold build (polylogue-b7dkb). It differs from
+        :meth:`open_owned_inactive_generation` in exactly one way: the caller
+        also takes the active writer lease, so the durable tiers reached
+        through the generation's read-through symlinks are writable. That is
+        what lets one ordinary ingest pass acquire into ``source.db`` and the
+        blob store while its index rows land in a generation no reader can
+        open until :meth:`~polylogue.storage.index_generation.IndexGenerationStore.promote`
+        swaps the pointer.
+
+        The index connection is the full bulk-build profile --
+        ``journal_mode=MEMORY``, ``synchronous=OFF``,
+        ``locking_mode=EXCLUSIVE`` -- which the active-generation cold-build
+        shape cannot take because live readers hold that file.
+        """
+        return cls(
+            generation_root,
+            initialize=True,
+            read_only=False,
+            owned_inactive_generation=(generation_id, owner_id),
+            defer_secondary_indexes=defer_secondary_indexes,
+            durable_writer=True,
+        )
+
+    @property
+    def index_generation_empty_at_open(self) -> bool:
+        """Whether this writable generation held no sessions when it was opened."""
+        return self._generation_empty_at_open
+
+    @property
+    def owns_inactive_generation(self) -> bool:
+        """Whether index writes land in an owned, never-yet-promoted generation."""
+        return self._owned_inactive_generation is not None
+
+    def run_generation_readiness_pass(self) -> None:
+        """Make an owned cold-built generation publishable.
+
+        One ``CREATE INDEX`` pass for the whole build instead of index
+        maintenance on every inserted row, one FTS/trigram repopulate instead
+        of per-session trigger work, then the constraint check the build ran
+        without. Everything here is idempotent, so an interrupted readiness
+        pass is simply re-run on the same never-promoted generation.
+        """
+        self._require_writable("run a generation readiness pass")
+        if self._owned_inactive_generation is None:
+            raise RuntimeError("a readiness pass is only meaningful for an owned inactive generation")
+        from polylogue.storage.fts.fts_lifecycle import (
+            rebuild_command_trigram_index_sync,
+            rebuild_fts_index_sync,
+            rebuild_session_insight_fts_sync,
+        )
+        from polylogue.storage.sqlite.runtime_indexes import restore_deferred_secondary_indexes_sync
+
+        restore_deferred_secondary_indexes_sync(self._conn)
+        self._deferred_secondary_indexes = ()
+        self._conn.commit()
+        rebuild_fts_index_sync(self._conn)
+        rebuild_command_trigram_index_sync(self._conn)
+        rebuild_session_insight_fts_sync(self._conn)
+        self._conn.commit()
+        violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
+        if violations:
+            raise RuntimeError(
+                "cold-build generation left dangling references; it is not publishable: "
+                f"{[tuple(row) for row in violations]}"
+            )
 
     @staticmethod
     def _needs_tier_bootstrap(archive_root: Path) -> bool:
@@ -1229,15 +1442,14 @@ class ArchiveStore:
             self.operation_vector_connection = None
         if self._blob_publisher is not None:
             self._blob_publisher.discard_pending()
-        if self._deferred_secondary_indexes and not self._read_only:
-            # A failed or cancelled cold build must not leave the active
-            # generation without its reader indexes.  Boundary code may call
-            # the public restore method earlier; this is the safety net for
-            # every other exit path.
-            try:
-                self.restore_deferred_secondary_indexes()
-            except Exception:
-                logger.exception("failed to restore deferred secondary indexes during close")
+        # Deferral is never restored at close. Index deferral is only ever
+        # granted to an OWNED INACTIVE generation, which no reader can open:
+        # there is nothing to protect, and a close-time restore made a
+        # multi-pass cold build (polylogue-b7dkb) pay one full CREATE INDEX
+        # pass per intake page -- the exact cost the deferral removes. The
+        # generation is either made ready (``run_generation_readiness_pass``,
+        # or ``restore_deferred_secondary_indexes`` at the offline replay's
+        # boundary) or discarded.
         if self._source_conn is not None:
             self._source_conn.close()
             self._source_conn = None

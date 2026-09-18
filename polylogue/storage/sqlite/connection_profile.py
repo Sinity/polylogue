@@ -251,6 +251,54 @@ BULK_BUILD_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     locking_mode="EXCLUSIVE",
 )
 
+
+# polylogue-6xcqj: the cold-build shape for the ACTIVE index generation, held
+# under the single-writer lease and proven empty before this profile is used.
+#
+# index.db is rebuildable, and an empty active generation has nothing a crash
+# could lose that a restart would not simply re-derive from source.db, so the
+# durability levers of the bulk-build profile apply by the same argument:
+#   - ``synchronous=OFF``: no fsync per commit (measured ~15% of a cold build).
+#   - a raised autocheckpoint threshold: a cold build commits constantly, and
+#     an autocheckpoint inside a 256 MiB catch-up page charges its whole WAL
+#     copy-back to whichever commit crossed the threshold.
+#
+# Foreign-key enforcement stays ON. Turning it off would need a verification
+# pass at a boundary, and this shape has no boundary that may mutate the
+# connection (see ``ArchiveStore.finish_active_cold_build``). Keeping it on
+# means the cold shape relaxes durability only, and cannot change what a pass
+# writes, defers or refuses -- which is the property that makes it safe to
+# select automatically on the live route.
+#
+# What is deliberately NOT taken from ``BULK_BUILD_WRITE_CONNECTION_PROFILE``:
+# ``journal_mode=MEMORY`` and ``locking_mode=EXCLUSIVE``. The active generation
+# is read concurrently by the CLI, MCP and the daemon's own readers, and both
+# of those would either lock them out or remove the WAL they read through.
+# Those two -- and dropping reader indexes, which a read-only open reports as a
+# schema manifest mismatch -- belong to an owned inactive generation.
+COLD_BUILD_ACTIVE_WAL_AUTOCHECKPOINT_PAGES = 200_000
+
+COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
+    role="write",
+    timeout_seconds=DB_TIMEOUT,
+    busy_timeout_ms=DB_TIMEOUT * 1000,
+    # The live writer's cache and mmap budget, NOT the bulk build's. The bulk
+    # profile's 512 MiB / 4 GiB window is sized for a throwaway single-purpose
+    # process that owns the machine; this connection is the daemon's own live
+    # writer, sharing a cgroup budget with its readers (see the mapped-bytes
+    # note below). Measured 2026-09-16 on a 500-file synthetic cold build
+    # through the dispatcher: the bulk sizes cost 433 MiB peak RSS against the
+    # live profile's 261 MiB, for a shape whose window on this route is a
+    # single intake page.
+    cache_size_kib=WRITE_CACHE_SIZE_KIB,
+    mmap_size_bytes=WRITE_MMAP_SIZE_BYTES,
+    foreign_keys=True,
+    journal_mode="WAL",
+    synchronous="OFF",
+    wal_autocheckpoint_pages=COLD_BUILD_ACTIVE_WAL_AUTOCHECKPOINT_PAGES,
+    journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
+)
+
 # A live-generation reader pins the WAL frames it opened against for as long as
 # it lives, so an unbounded reader is what turns a recurring PASSIVE checkpoint
 # into a no-op and the WAL into unbounded growth. Every live read profile
@@ -435,6 +483,7 @@ READ_PROFILES: Mapping[str, SQLiteConnectionProfile] = {
 WRITE_PROFILES: Mapping[str, SQLiteConnectionProfile] = {
     "publication": DAEMON_WRITE_CONNECTION_PROFILE,
     "offline-bulk": BULK_BUILD_WRITE_CONNECTION_PROFILE,
+    "active-cold-build": COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE,
 }
 
 # One tier, no sibling attach. An excision apply and a backup snapshot both
@@ -1488,6 +1537,8 @@ __all__ = [
     "BULK_BUILD_CACHE_SIZE_KIB",
     "BULK_BUILD_MMAP_SIZE_BYTES",
     "BULK_BUILD_WRITE_CONNECTION_PROFILE",
+    "COLD_BUILD_ACTIVE_WAL_AUTOCHECKPOINT_PAGES",
+    "COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_CACHE_SIZE_KIB",
     "DAEMON_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_MMAP_SIZE_BYTES",

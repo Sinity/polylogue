@@ -2053,6 +2053,7 @@ async def run_daemon_services(
     api_allow_no_auth: bool = False,
     startup_message: str | None = None,
     service_profile: ServiceProfile = PRODUCTION_PROFILE,
+    cold_build_index: bool = False,
 ) -> None:
     """Run the daemon while excluding every offline index rebuild.
 
@@ -2101,6 +2102,7 @@ async def run_daemon_services(
             api_allow_no_auth=api_allow_no_auth,
             startup_message=startup_message,
             service_profile=service_profile,
+            cold_build_index=cold_build_index,
         )
 
 
@@ -2126,6 +2128,7 @@ async def _run_daemon_services_under_active_writer_lease(
     api_allow_no_auth: bool = False,
     startup_message: str | None = None,
     service_profile: ServiceProfile = PRODUCTION_PROFILE,
+    cold_build_index: bool = False,
 ) -> None:
     """Run configured daemon components until interrupted.
 
@@ -2134,6 +2137,7 @@ async def _run_daemon_services_under_active_writer_lease(
     registry does not declare.
     """
     from polylogue.daemon import process_start as _process_start
+    from polylogue.daemon.intake_adapters import ColdBuildGeneration
     from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
 
@@ -2539,6 +2543,7 @@ async def _run_daemon_services_under_active_writer_lease(
     cleanup_cancel_requests = 0
     termination: BaseException | None = None
     writer_drained = False
+    cold_build: ColdBuildGeneration | None = None
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -2832,9 +2837,13 @@ async def _run_daemon_services_under_active_writer_lease(
             if not watcher_creation_blocked:
                 async with Polylogue() as polylogue:
                     from polylogue.daemon.intake_adapters import (
+                        ColdBuildGeneration,
                         DaemonIntakeContext,
                         DaemonIntakeService,
+                        active_index_generation_is_empty,
                         build_intake_adapters,
+                        clear_cold_build_generation,
+                        register_cold_build_generation,
                     )
 
                     watcher = LiveWatcher(
@@ -2987,7 +2996,41 @@ async def _run_daemon_services_under_active_writer_lease(
                         board=supervisor.board,
                         frame=f"daemon:{os.getpid()}",
                     )
-                    intake_service = DaemonIntakeService(dispatcher, wakeup=raw_intake_wakeup)
+                    # polylogue-b7dkb: a fresh root builds its index as an
+                    # owned inactive generation. The pass that fills it is
+                    # this same dispatcher route -- nothing here changes what
+                    # ingest does, only which index.db its rows land in --
+                    # and readers keep resolving the previous active
+                    # generation until the readiness pass promotes this one.
+                    cold_build_requested = cold_build_index or active_index_generation_is_empty(archive_root_path)
+                    if cold_build_requested:
+                        cold_build = ColdBuildGeneration.begin(
+                            archive_root_path,
+                            reason="explicit cold build" if cold_build_index else "empty active index generation",
+                        )
+                        register_cold_build_generation(cold_build)
+
+                    async def settle_cold_build() -> None:
+                        """Promote or discard the candidate once intake drains."""
+                        generation = cold_build
+                        if generation is None or generation.settled:
+                            return
+                        try:
+                            if await asyncio.to_thread(generation.session_count) > 0:
+                                await asyncio.to_thread(generation.promote)
+                            else:
+                                # Nothing was built. Promoting an empty
+                                # candidate over a working index would be a
+                                # data-losing no-op dressed as progress.
+                                await asyncio.to_thread(generation.discard)
+                        finally:
+                            clear_cold_build_generation()
+
+                    intake_service = DaemonIntakeService(
+                        dispatcher,
+                        wakeup=raw_intake_wakeup,
+                        on_backlog_drained=settle_cold_build if cold_build is not None else None,
+                    )
                     supervisor.start("fair_intake", intake_service.run)
                     if enable_watch:
                         watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
@@ -3148,6 +3191,15 @@ async def _run_daemon_services_under_active_writer_lease(
                 rebuild_exclusion,
                 writer_drained=writer_drained,
             )
+            # A cold build that never drained is never promoted: shutdown is
+            # the same outcome as a crash, and the previous active generation
+            # is exactly where the readers left it.
+            if cold_build is not None and not cold_build.settled:
+                from polylogue.daemon.intake_adapters import clear_cold_build_generation
+
+                with contextlib.suppress(Exception):
+                    cold_build.discard()
+                clear_cold_build_generation()
             if server is not None:
                 with contextlib.suppress(Exception):
                     server.server_close()
@@ -3521,6 +3573,15 @@ def health_command(
     help="Do not run configured non-watch source catch-up during this daemon run.",
 )
 @click.option(
+    "--cold-build-index",
+    is_flag=True,
+    help=(
+        "Build the index into a new inactive generation and promote it when intake drains. "
+        "Implied on a root whose active index generation is empty; readers keep the current "
+        "generation until promotion, and an interrupted build is discarded."
+    ),
+)
+@click.option(
     "--no-browser-capture",
     is_flag=True,
     help="Do not run the browser-capture receiver.",
@@ -3601,6 +3662,7 @@ def run_command(
     port: int,
     spool_path: Path | None,
     no_watch: bool,
+    cold_build_index: bool,
     no_source_catchup: bool,
     no_browser_capture: bool,
     insecure_allow_remote: bool,
@@ -3715,6 +3777,7 @@ def run_command(
                 api_port=api_port,
                 api_auth_token=api_auth_token,
                 api_allow_no_auth=api_allow_no_auth,
+                cold_build_index=cold_build_index,
             )
         )
     except KeyboardInterrupt:

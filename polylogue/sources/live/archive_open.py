@@ -26,7 +26,7 @@ def _source_tier_acquisition_required() -> bool:
     return reason is not None and reason.derived_only
 
 
-def _open_archive_for_live_write(archive_root: Path) -> ArchiveStore:
+def _open_archive_for_live_write(archive_root: Path, *, cold_build: bool = False) -> ArchiveStore:
     """Open the archive for a live ingest write pass.
 
     In acquire-only degraded mode (a degraded reason flagged
@@ -35,7 +35,29 @@ def _open_archive_for_live_write(archive_root: Path) -> ArchiveStore:
     the per-record acquire-then-skip-parse branches in the callers guarantee
     nothing beyond raw admission is reached. Otherwise returns the ordinary
     full writer, preserving its all-tier validation exactly.
+
+    ``cold_build`` (polylogue-6xcqj) asks for the cold-build write shape.
+    With a registered owned inactive generation (polylogue-b7dkb) it returns
+    that generation's writer; otherwise it asks for the shape on
+    the active index generation. It is a request, not an assertion: the store
+    engages it only while the generation is provably empty and silently keeps
+    the ordinary live profile otherwise, so the caller passes it on every pass
+    and reads ``ArchiveStore.active_cold_build_engaged`` to learn which shape
+    this pass actually got. That is what makes the shape a function of
+    generation state rather than a second code path.
     """
     if _source_tier_acquisition_required():
         return ArchiveStore.open_source_tier_acquisition(archive_root)
+    if cold_build:
+        from polylogue.sources.live.cold_build import active_cold_build_generation
+
+        # polylogue-b7dkb: when the daemon owns an inactive generation for
+        # this archive, the cold build IS that generation -- same pass, same
+        # writer lease, index rows into a candidate no reader can open. The
+        # active-generation shape below is what a cold build gets when no
+        # such generation is registered.
+        generation = active_cold_build_generation(archive_root)
+        if generation is not None:
+            return generation.open_writer()
+        return ArchiveStore.open_active_cold_build(archive_root)
     return ArchiveStore.open_existing(archive_root, read_only=False)

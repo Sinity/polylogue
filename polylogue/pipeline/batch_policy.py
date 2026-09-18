@@ -38,13 +38,41 @@ class IngestMode(Enum):
 
 @dataclass(frozen=True, slots=True)
 class WriteDestination:
-    """What a batch writes, and whether it owns a disposable generation."""
+    """What a batch writes, and whether it owns a disposable generation.
+
+    Two ownership shapes admit bulk write behaviour, and they admit
+    *different* amounts of it:
+
+    ``owned_rebuildable_generation``
+        An inactive generation this writer owns outright.  No reader can
+        open it until it is promoted, and a corrupt candidate is discarded
+        wholesale, so both the durability pragmas *and* reader-visible
+        schema changes (dropping secondary indexes for the write phase)
+        are safe.
+
+    ``active_rebuildable_generation``
+        The live active generation, held under the single-writer lease,
+        proven empty.  Its tier is still rebuildable, so the durability
+        pragmas are safe by the same argument.  Reader-visible schema
+        changes are NOT: ``schema_manifest`` projects ``sqlite_master``
+        including indexes, so a reader opening a generation with the
+        deferred reader indexes dropped raises ``SchemaVersionMismatch``
+        and is told to reset the index.  That lever belongs to the owned
+        inactive generation only.
+    """
 
     tier: Literal["source", "index", "embeddings", "user", "audit", "ops"]
     owned_rebuildable_generation: bool = False
+    active_rebuildable_generation: bool = False
 
     @property
     def admits_bulk_pragmas(self) -> bool:
+        rebuildable = self.owned_rebuildable_generation or self.active_rebuildable_generation
+        return rebuildable and self.tier in {"index", "embeddings"}
+
+    @property
+    def admits_reader_visible_schema_changes(self) -> bool:
+        """Only a generation no reader can open may drop reader indexes."""
         return self.owned_rebuildable_generation and self.tier in {"index", "embeddings"}
 
 
@@ -102,13 +130,13 @@ def select_cold_build_shape(
     at_admitted_input_boundary: bool = True,
 ) -> BatchShape:
     """Return the cold-build shape for an already-admitted offline rebuild."""
-    fresh_owned_generation = destination.admits_bulk_pragmas and archive_empty
+    fresh_generation = destination.admits_bulk_pragmas and archive_empty
     return BatchShape(
         mode=IngestMode.COLD_BACKLOG,
         max_files=COLD_BACKLOG_MAX_FILES,
         max_bytes=COLD_BACKLOG_MAX_BYTES,
         bulk_pragmas=destination.admits_bulk_pragmas,
         archive_wide_derivations=at_admitted_input_boundary,
-        defer_secondary_indexes=fresh_owned_generation,
-        fresh_build=fresh_owned_generation,
+        defer_secondary_indexes=fresh_generation and destination.admits_reader_visible_schema_changes,
+        fresh_build=fresh_generation,
     )
