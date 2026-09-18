@@ -276,7 +276,11 @@ Fetch raw (pre-parsed) artifact data by raw ID.
 
 ### POST /api/reset
 
-Trigger a daemon reset operation.
+Delete one session from the archive. The body must carry
+`{"scope": "session", "session_id": "<id>"}`: `session` is the only scope this
+route implements, and any other scope (including the historical `all` default)
+is refused with `400 unsupported_scope` rather than answered with a success
+envelope for a mutation that never ran.
 
 ### GET /
 

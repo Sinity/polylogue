@@ -172,15 +172,22 @@ def _component_state_from_flag(flag: bool | None, *, default_when_unknown: str =
     return default_when_unknown
 
 
-def _disk_free_bytes(path: Path) -> int:
-    """Return free bytes for the nearest existing parent of ``path``."""
+def _disk_free_bytes(path: Path) -> int | None:
+    """Return free bytes for the nearest existing parent of ``path``.
+
+    polylogue-xvwpi: ``None`` when the filesystem could not be interrogated.
+    Zero free bytes is a disk-full emergency; publishing it for a failed
+    ``statvfs`` invents that emergency, and publishing it as a figure the
+    operator surface renders hides the fact that nothing was measured.
+    """
+
     target = path if path.exists() else path.parent
     while not target.exists() and target != target.parent:
         target = target.parent
     try:
         st = os.statvfs(target)
     except OSError:
-        return 0
+        return None
     return int(st.f_frsize * st.f_bavail)
 
 
@@ -220,9 +227,10 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "live": False,
         "browser_capture": json_document(browser_capture),
         "db_path": str(dbf),
-        "db_size_bytes": dbf.stat().st_size if dbf.exists() else 0,
-        "wal_size_bytes": wal.stat().st_size if wal.exists() else 0,
-        "blob_dir_size_bytes": 0,
+        "db_size_bytes": dbf.stat().st_size if dbf.exists() else None,
+        "wal_size_bytes": wal.stat().st_size if wal.exists() else None,
+        # Never measured on the minimal path; null says so.
+        "blob_dir_size_bytes": None,
         "disk_free_bytes": _disk_free_bytes(dbf),
         "quick_check_result": None,
         "quick_check_age_s": None,

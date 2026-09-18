@@ -85,6 +85,8 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
 
     - ``schema_version_mismatch`` — schema_version check is CRITICAL
     - ``critical_check_failed`` — some other FAST check is CRITICAL
+    - ``index_tier_missing`` — the active index tier does not exist, so no
+      archive-backed read can be served (polylogue-gqdfx)
     - ``fts_not_fresh`` — archive FTS invariant is not ready
     - ``probe_error`` — internal failure executing the probe itself
     - any ``DegradedReason.code`` — process-local degraded flag is set
@@ -127,11 +129,18 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
         from polylogue.storage.archive_identity import resolve_active_index_path
 
         dbf = resolve_active_index_path(archive_root())
-        fts_ready = True
+        # polylogue-gqdfx: an absent index tier is not a readiness-neutral
+        # fact. A fresh start, a wrong archive root, or a mid-rebuild window
+        # all present as "no index.db", and answering ready there routes
+        # traffic to a daemon with no archive to read. Readiness is never
+        # asserted from an unperformed measurement.
+        index_tier_present = dbf.exists()
         fts_payload: dict[str, object] | None = None
-        if dbf.exists():
+        if index_tier_present:
             fts_payload = fts_readiness_info(dbf)
             fts_ready = bool(fts_payload.get("invariant_ready", False))
+        else:
+            fts_ready = False
 
         if schema_ok and not critical and fts_ready:
             responder._send_json(
@@ -149,18 +158,20 @@ def handle_healthz_ready(responder: ProbeResponder) -> None:
             reason_code = "schema_version_mismatch"
         elif critical:
             reason_code = "critical_check_failed"
+        elif not index_tier_present:
+            reason_code = "index_tier_missing"
         else:
             reason_code = "fts_not_fresh"
-        responder._send_json(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            {
-                "status": "not_ready",
-                "reason": reason_code,
-                "overall": health.overall_status.value,
-                "checks": checks,
-                "fts": fts_payload,
-            },
-        )
+        payload: dict[str, object] = {
+            "status": "not_ready",
+            "reason": reason_code,
+            "overall": health.overall_status.value,
+            "checks": checks,
+            "fts": fts_payload,
+        }
+        if reason_code == "index_tier_missing":
+            payload["message"] = f"index tier not present at {dbf}"
+        responder._send_json(HTTPStatus.SERVICE_UNAVAILABLE, payload)
     except Exception as exc:
         # Probe must always answer with a structured 503 rather than
         # leak as a 500 — we genuinely want broad Exception here.

@@ -152,6 +152,45 @@ def _stream_events(
             time.sleep(1.0)
     except (BrokenPipeError, ConnectionResetError):
         return
+    except Exception as exc:
+        # polylogue-gmskd: the status line and headers are already on the
+        # wire, so the JSON error path (``_send_json`` -> ``send_response``)
+        # would write a second HTTP status line and header block *into* the
+        # text/event-stream body. A mid-stream failure -- index.db locked or
+        # replaced while a client is connected -- terminates the stream with
+        # an SSE error frame, which is the only framing this connection can
+        # still express.
+        _terminate_stream_with_error(handler, exc)
+        return
+
+
+def _terminate_stream_with_error(handler: DaemonAPIHandler, exc: BaseException) -> None:
+    """End an open SSE stream with a typed ``error`` frame, never a status line."""
+    from polylogue.logging import ERROR, emit
+
+    emit(
+        "daemon.http.event_stream_failed",
+        level=ERROR,
+        outcome="error",
+        reason="stream_read_failed",
+        route="_stream_events",
+        error_type=type(exc).__name__,
+        error_detail=str(exc),
+    )
+    with contextlib.suppress(BrokenPipeError, ConnectionResetError, OSError, ValueError):
+        _write_sse_error(handler, "stream_read_failed", type(exc).__name__)
+
+
+def _write_sse_error(handler: DaemonAPIHandler, reason: str, error_type: str) -> None:
+    from polylogue.core.json import dumps_bytes
+
+    payload = dumps_bytes({"error": reason, "error_type": error_type})
+    chunks = [b"event: error\n"]
+    for line in payload.split(b"\n"):
+        chunks.append(b"data: " + line + b"\n")
+    chunks.append(b"\n")
+    handler.wfile.write(b"".join(chunks))
+    handler.wfile.flush()
 
 
 def _write_sse_comment(handler: DaemonAPIHandler, comment: bytes) -> None:

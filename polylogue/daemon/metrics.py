@@ -232,6 +232,7 @@ def _emit_periodic_loop_metrics(lines: list[str]) -> None:
             for state in states
             if state.last_run_completed_at is not None
         ],
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
@@ -239,6 +240,7 @@ def _emit_periodic_loop_metrics(lines: list[str]) -> None:
         help_text="Seconds until each daemon periodic loop's next scheduled pass.",
         metric_type="gauge",
         samples=[({"loop": state.name}, state.next_run_at - now) for state in states if state.next_run_at is not None],
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
@@ -263,6 +265,37 @@ def _emit_periodic_loop_metrics(lines: list[str]) -> None:
     )
 
 
+_UNMEASURED_PROBE_METRIC = "polylogue_probe_unmeasured"
+
+
+def _emit_unmeasured_probe(lines: list[str], probe: str) -> None:
+    """Record a probe that could not be measured at all.
+
+    polylogue-xvwpi: ``_emit_metric`` renders an empty sample list as
+    ``<name> 0``, so every failed probe published a healthy-looking zero
+    series indistinguishable from a true zero. An unmeasurable probe emits no
+    value series at all -- absence is the only honest Prometheus reading --
+    and raises this companion gauge so the gap is visible rather than silent.
+    """
+
+    header = f"# HELP {_UNMEASURED_PROBE_METRIC} "
+    if not any(line.startswith(header) for line in lines):
+        lines.append(f"{header}1 when a named status probe could not be measured on this scrape.")
+        lines.append(f"# TYPE {_UNMEASURED_PROBE_METRIC} gauge")
+    lines.append(f'{_UNMEASURED_PROBE_METRIC}{{probe="{probe}"}} 1')
+
+
+def _convergence_debt_measurable(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> bool:
+    """Whether a zero debt count would be a measurement rather than a guess."""
+
+    if ops_db is not None and ops_db.exists():
+        from polylogue.daemon.convergence_debt_status import convergence_debt_stage_counts_info
+
+        if convergence_debt_stage_counts_info(ops_db, ops_db=ops_db).available:
+            return True
+    return _table_exists(conn, "live_convergence_debt")
+
+
 def _emit_metric(
     lines: list[str],
     *,
@@ -270,10 +303,18 @@ def _emit_metric(
     help_text: str,
     metric_type: str,
     samples: list[tuple[dict[str, str] | None, float | int]],
+    omit_when_empty: bool = False,
 ) -> None:
     lines.append(f"# HELP {name} {help_text}")
     lines.append(f"# TYPE {name} {metric_type}")
     if not samples:
+        if omit_when_empty:
+            # The zero below is a *count* reading. For a gauge whose samples are
+            # filtered by "has this been measured yet", that zero asserts the
+            # measurement (an age of 0s reads as "just ran"), which is the
+            # fabrication polylogue-xvwpi removes elsewhere. Absence is the only
+            # honest Prometheus reading for an unmeasured gauge.
+            return
         # Emit a zero sample so the series is discoverable even when no
         # backing rows exist yet.
         lines.append(f"{name} 0")
@@ -1115,9 +1156,12 @@ def format_metrics(
         build_revision = VERSION_INFO.commit or "unknown"
         build_dirty = VERSION_INFO.dirty
     except Exception:
+        # polylogue-xvwpi: "dirty=false" is an attestation, and this branch
+        # never read the working tree. An unread build identity says so on
+        # every label rather than asserting a clean build.
         build_version = "unknown"
         build_revision = "unknown"
-        build_dirty = False
+        build_dirty = None
     _emit_metric(
         lines,
         name="polylogue_daemon_build_info",
@@ -1128,7 +1172,7 @@ def format_metrics(
                 {
                     "version": str(build_version),
                     "revision": str(build_revision),
-                    "dirty": "true" if build_dirty else "false",
+                    "dirty": "unknown" if build_dirty is None else ("true" if build_dirty else "false"),
                 },
                 1,
             )
@@ -1299,7 +1343,8 @@ def format_metrics(
                 metric_type="gauge",
                 samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt],
             )
-        else:
+        elif _convergence_debt_measurable(conn, ops_db=ops_db):
+            # A measured zero: the ledger is readable and holds no debt rows.
             _emit_metric(
                 lines,
                 name="polylogue_convergence_debt_count",
@@ -1307,6 +1352,8 @@ def format_metrics(
                 metric_type="gauge",
                 samples=[(None, 0)],
             )
+        else:
+            _emit_unmeasured_probe(lines, "convergence_debt_count")
 
         triggers = _fts_trigger_presence(conn)
         _emit_metric(
@@ -1316,13 +1363,19 @@ def format_metrics(
             metric_type="gauge",
             samples=[({"trigger": name}, 1 if present else 0) for name, present in triggers.items()],
         )
-        _emit_metric(
-            lines,
-            name="polylogue_fts_triggers_all_present",
-            help_text="1 when every expected FTS sync trigger is installed.",
-            metric_type="gauge",
-            samples=[(None, 1 if all(triggers.values()) else 0)],
-        )
+        if triggers:
+            _emit_metric(
+                lines,
+                name="polylogue_fts_triggers_all_present",
+                help_text="1 when every expected FTS sync trigger is installed.",
+                metric_type="gauge",
+                samples=[(None, 1 if all(triggers.values()) else 0)],
+            )
+        else:
+            # ``all({})`` is True: an empty presence map published "every
+            # expected trigger is installed" for a database whose triggers
+            # were never inspected (polylogue-xvwpi).
+            _emit_unmeasured_probe(lines, "fts_triggers_all_present")
 
         freshness, drift = _fts_surface_metrics(conn)
         _emit_metric(
@@ -1490,6 +1543,10 @@ def _emit_hook_flow_metrics(lines: list[str], configured_root: Path) -> None:
             error_detail=str(exc),
         )
         statuses = ()
+        # polylogue-xvwpi: an empty status tuple reads identically to "no
+        # hooks are configured" on the emitted gauges, and _emit_metric would
+        # then publish a 0 for each. Name the gap instead.
+        _emit_unmeasured_probe(lines, "hook_flow_healthy")
     healthy_samples: list[tuple[dict[str, str] | None, float | int]] = []
     state_samples: list[tuple[dict[str, str] | None, float | int]] = []
     session_samples: list[tuple[dict[str, str] | None, float | int]] = []
