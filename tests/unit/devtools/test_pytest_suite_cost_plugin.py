@@ -290,8 +290,10 @@ def test_rss_trajectory_localizes_growth_to_the_tests_that_caused_it(tmp_path: P
     assert [point["tests"] for point in trajectory] == [suite_cost._SAMPLE_EVERY * step for step in (1, 2, 3)]
     assert trajectory[0]["nodeid"].startswith("tests/unit/flat/")
     assert trajectory[-1]["nodeid"].startswith("tests/unit/grows/")
-    # The flat segment allocates nothing; the rest retains 500 x 512 kB = ~244 MiB.
-    assert trajectory[-1]["rss_kib"] - trajectory[0]["rss_kib"] > 200_000
+    # The flat segment allocates nothing; the rest retains 500 x 512 kB.
+    # RSS is the resident subset, not the allocated byte count, so the floor
+    # is a clearly-rising hundred-mebibyte delta rather than the full 244 MiB.
+    assert trajectory[-1]["rss_kib"] - trajectory[0]["rss_kib"] > 100_000
     assert payload["rss_growth_kib"] >= trajectory[-1]["rss_kib"] - payload["rss_start_kib"]
     assert not payload["rss_trajectory_truncated"]
     assert len(retained) == 2 * suite_cost._SAMPLE_EVERY
