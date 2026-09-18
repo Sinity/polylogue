@@ -253,11 +253,11 @@ def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewIn
     except (OperationFailedError, OperationUnavailableError) as exc:
         # A refusal names itself and exits non-zero; it must never render as an
         # empty summary that reads "this session recorded no hook events".
-        # Classed exactly as the transcript path classes its refusals.
-        detail = str(getattr(exc, "detail", None) or exc)
-        if isinstance(exc, OperationUnavailableError) or exc.code in {"daemon_required", "result_too_large"}:
-            raise click.ClickException(detail) from exc
-        raise click.UsageError(detail) from exc
+        # Classed exactly as the transcript path classes its refusals, through
+        # the one CLI read-failure terminal (polylogue-jtrtj).
+        from polylogue.cli.render.outcome import exit_for_read_failure
+
+        exit_for_read_failure(exc)
     if not isinstance(result.value, dict):
         raise OperationEnvelopeError("session.read returned a non-object result")
     evidence = result.value.get("evidence")

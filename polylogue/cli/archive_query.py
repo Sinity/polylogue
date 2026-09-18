@@ -203,17 +203,19 @@ def _read_failure_as_usage_error(exc: Exception) -> NoReturn:
     """Re-raise a declared read's typed refusal as the CLI's own refusal.
 
     The handler states *what* it refused; naming it in the operator's terms and
-    choosing the exit class is the adapter's job.  ``daemon_required`` is not a
-    usage mistake, so it stays a plain failure rather than printing usage.
-    """
-    from polylogue.cli.operation_kernel import OperationFailedError, OperationUnavailableError
+    choosing the exit class is the adapter's job.
 
-    detail = _read_failure_detail(exc)
-    if isinstance(exc, OperationUnavailableError) or (
-        isinstance(exc, OperationFailedError) and exc.code in {"daemon_required", "result_too_large"}
-    ):
-        raise click.ClickException(detail) from exc
-    raise click.UsageError(detail) from exc
+    Only a *request* the grammar cannot express is a usage mistake. Everything
+    else -- a dropped daemon connection, a read that hit its deadline, a
+    cancelled read, a typed operation failure -- exits through
+    ``render.outcome.read_failure_exit_code`` with no usage banner. Routing all
+    of them to ``click.UsageError`` exited 2, which is the *empty* status, so
+    "the daemon went away" and "matched nothing" were indistinguishable to a
+    caller branching on exit status (polylogue-jtrtj).
+    """
+    from polylogue.cli.render.outcome import exit_for_read_failure
+
+    exit_for_read_failure(exc)
 
 
 def _emit_reference_query(
@@ -1228,10 +1230,23 @@ def _missing_archive_refusal(
         fields=fields,
     ):
         return
-    message = f"archive index database not found at {index_db_path}"
+    # One first-run condition, one producer.  This branch used to ``click.echo``
+    # its own wording and ``SystemExit(1)``, which bypassed ``machine_errors``
+    # entirely: ``polylogue --format json find X`` on a fresh root emitted
+    # unparseable plain text while ``read``/``select``/the bare screen let the
+    # typed ``ArchiveTierUnavailableError`` reach ``machine_main`` and produce
+    # the structured envelope.  Two texts and two machine contracts for one
+    # condition (polylogue-ry6g5); raising the same typed refusal the storage
+    # layer raises collapses them.
+    guidance = "run `polylogue ingest` to create the archive, or point --archive-root at an existing one"
     if typo_hint is not None:
-        message = f"{message}\n{typo_hint}"
-    _fail(message)
+        guidance = f"{guidance}\n{typo_hint}"
+    raise ArchiveTierUnavailableError(
+        tier="index",
+        path=str(index_db_path),
+        reason="database file not found",
+        guidance=guidance,
+    )
 
 
 def _emit_missing_archive_empty_read(

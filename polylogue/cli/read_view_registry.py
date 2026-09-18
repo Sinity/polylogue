@@ -31,11 +31,20 @@ ReadViewOptionName = str
 #: ``renderer``
 #:     A client-side renderer composed from operations that already exist; it
 #:     adds no operation of its own.
+#: ``in-process``
+#:     Not classified yet: the handler reads the archive in this process
+#:     (through the Python API facade or the archive store) without reaching a
+#:     declared operation at all.  This is a *state*, not a design -- it names
+#:     the work S8/S9 still owe.  Ten views claimed ``session-read-projection``
+#:     while executing here, which made the table unfalsifiable
+#:     (polylogue-dutav); :data:`IN_PROCESS_READ_VIEWS` is the shrink-only
+#:     ratchet that keeps the honest count from growing back.
 ReadViewExecutionKind = Literal[
     "session-read-projection",
     "query-units-projection",
     "distinct-operation",
     "renderer",
+    "in-process",
 ]
 
 # Selection cardinality is shared by every read projection.  It is carried
@@ -77,53 +86,74 @@ class ReadViewHandlerMetadata:
     operations: tuple[str, ...] = field(kw_only=True, default=())
 
 
-# Every one of the six per-session evidence views below renders an index or
-# source relation the query grammar does not declare as a structural unit:
-# ``hook_events``, ``Session.session_events``, ``file_edits``,
-# ``session_agent_policies``, ``web_content_constructs``, and the
-# compaction-aware effective-context replay.  The two grammar units with
-# similar names read different relations at a different grain -- the
-# ``observed-event`` unit reads the materialized ``query_observed_events``
-# projection, not ``Session.session_events``; the ``file`` unit reads affected
-# file *paths* via ``query_files``, not the structured ``file_edits`` diffs --
-# so none of them lowers to ``query.units`` with a ``session:`` filter.  They
-# are ``session.read`` projections, and ``query-units-projection`` is
-# currently unpopulated.
+#: Views whose handler still reads the archive in this process.  The ratchet:
+#: a view may leave this set (by moving onto a declared operation), never join
+#: it.  ``tests/unit/cli/test_read_view_execution_routes.py`` proves membership
+#: by dispatching each view with the daemon absent and watching which
+#: operations reach the kernel, so a row cannot claim an operation it does not
+#: execute -- which is the state ten of these rows were in (polylogue-dutav).
+IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
+    {
+        "agent-policies",
+        "chronicle",
+        "correlation",
+        "dialogue",
+        "effective_context",
+        "events",
+        "file-edits",
+        "messages",
+        "neighbors",
+        "raw",
+        "temporal",
+        "web-content",
+    }
+)
+
+# The per-session evidence views render index or source relations the query
+# grammar does not declare as structural units: ``hook_events``,
+# ``Session.session_events``, ``file_edits``, ``session_agent_policies``,
+# ``web_content_constructs``, and the compaction-aware effective-context
+# replay.  The two grammar units with similar names read different relations at
+# a different grain -- the ``observed-event`` unit reads the materialized
+# ``query_observed_events`` projection, not ``Session.session_events``; the
+# ``file`` unit reads affected file *paths* via ``query_files``, not the
+# structured ``file_edits`` diffs -- so none of them lowers to ``query.units``
+# with a ``session:`` filter, and ``query-units-projection`` is unpopulated.
+# Only ``hooks`` has actually been moved onto ``session.read``
+# (``daemon_reads._SESSION_EVIDENCE_READERS``); the rest are ``in-process``
+# until S8/S9 declare their operations.
 READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
         "optional",
         accepts_query_set=True,
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="renderer",
+        operations=("cli.query",),
     ),
     "transcript": ReadViewHandlerMetadata(
         "transcript",
         "optional",
         accepts_query_set=True,
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="renderer",
+        operations=("cli.query",),
     ),
     "dialogue": ReadViewHandlerMetadata(
         "dialogue",
         "required",
         accepts_query_set=True,
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "messages": ReadViewHandlerMetadata(
         "messages",
         "required",
         MESSAGE_READ_VIEW_OPTION_NAMES,
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "raw": ReadViewHandlerMetadata(
         "raw",
         "required",
         MESSAGE_READ_VIEW_OPTION_NAMES,
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "hooks": ReadViewHandlerMetadata(
         "hooks",
@@ -135,15 +165,13 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "events",
         "required",
         EVENTS_READ_VIEW_OPTION_NAMES,
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "effective_context": ReadViewHandlerMetadata(
         "effective_context",
         "required",
         EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES,
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "lineage": ReadViewHandlerMetadata(
         "lineage",
@@ -160,20 +188,17 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "file-edits": ReadViewHandlerMetadata(
         "file-edits",
         "required",
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "agent-policies": ReadViewHandlerMetadata(
         "agent-policies",
         "required",
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "web-content": ReadViewHandlerMetadata(
         "web-content",
         "required",
-        execution_kind="session-read-projection",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "context": ReadViewHandlerMetadata(
         "context",
@@ -191,30 +216,26 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "neighbors",
         "query_or_session",
         NEIGHBOR_READ_VIEW_OPTION_NAMES,
-        execution_kind="renderer",
-        operations=("cli.query",),
+        execution_kind="in-process",
     ),
     "correlation": ReadViewHandlerMetadata(
         "correlation",
         "required",
         CORRELATION_READ_VIEW_OPTION_NAMES,
-        execution_kind="renderer",
-        operations=("session.read",),
+        execution_kind="in-process",
     ),
     "temporal": ReadViewHandlerMetadata(
         "temporal",
         "optional",
         accepts_query_set=True,
-        execution_kind="renderer",
-        operations=("cli.query", "session.read"),
+        execution_kind="in-process",
     ),
     "chronicle": ReadViewHandlerMetadata(
         "chronicle",
         "optional",
         CHRONICLE_READ_VIEW_OPTION_NAMES,
         accepts_query_set=True,
-        execution_kind="renderer",
-        operations=("cli.query", "session.read"),
+        execution_kind="in-process",
     ),
 }
 
@@ -263,6 +284,22 @@ def _validate_read_view_classification() -> None:
             offenders.append(f"{view_id}: a renderer must name the operations it composes")
         elif kind == "distinct-operation" and metadata.operations:
             offenders.append(f"{view_id}: its operation is not declared yet, so it must name none")
+        elif kind == "in-process" and metadata.operations:
+            offenders.append(f"{view_id}: an in-process view reaches no operation, so it must name none")
+    # The ratchet: the honest in-process set may shrink as views are migrated,
+    # but a new row may not quietly appear in it.
+    declared_in_process = {
+        view_id for view_id, metadata in READ_VIEW_HANDLER_METADATA.items() if metadata.execution_kind == "in-process"
+    }
+    added = sorted(declared_in_process - IN_PROCESS_READ_VIEWS)
+    if added:
+        offenders.append(f"new in-process views are not allowed: {', '.join(added)}")
+    stale = sorted(IN_PROCESS_READ_VIEWS - declared_in_process - set(READ_VIEW_HANDLER_METADATA))
+    if stale:
+        offenders.append(f"the in-process baseline names views that no longer exist: {', '.join(stale)}")
+    migrated = sorted(IN_PROCESS_READ_VIEWS & set(READ_VIEW_HANDLER_METADATA) - declared_in_process)
+    if migrated:
+        offenders.append(f"remove the migrated views from IN_PROCESS_READ_VIEWS: {', '.join(migrated)}")
     if offenders:
         raise RuntimeError("read-view classification drift: " + "; ".join(sorted(offenders)))
 
@@ -287,6 +324,7 @@ __all__ = [
     "LINEAGE_READ_VIEW_OPTION_NAMES",
     "TOPOLOGY_READ_VIEW_OPTION_NAMES",
     "EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES",
+    "IN_PROCESS_READ_VIEWS",
     "MESSAGE_READ_VIEW_OPTION_NAMES",
     "NEIGHBOR_READ_VIEW_OPTION_NAMES",
     "READ_VIEW_HANDLER_METADATA",

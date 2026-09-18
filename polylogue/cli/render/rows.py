@@ -243,10 +243,19 @@ def _page_envelope(
 
     from polylogue.archive.query.spec import session_count_unit_label
 
-    total = _object_int(payload.get("total") or len(rows))
+    # A ``None`` total is the operation's honest answer, not a missing field: a
+    # vector lane exposes a bounded nearest-neighbour page and deliberately
+    # reports no archive-wide cardinality (``daemon_reads._search_payload``).
+    # Substituting ``len(rows)`` turned that into a confident "3 of 3"
+    # (polylogue-jfabc), so the unknown is carried through instead.
+    raw_total = payload.get("total")
+    total: int | None = _object_int(raw_total) if raw_total is not None else None
     effective_limit = _object_int(payload.get("limit") or len(rows) or limit)
     total_unit = payload.get("total_unit")
     next_cursor = payload.get("next_cursor")
+    # The operation decides continuation (``daemon_reads.page_next_offset``);
+    # the renderer only reports what it decided.
+    raw_next_offset = payload.get("next_offset")
     envelope: dict[str, object] = {
         "mode": mode,
         "origin": origin,
@@ -255,7 +264,7 @@ def _page_envelope(
         "total_unit": total_unit if isinstance(total_unit, str) else session_count_unit_label(True),
         "limit": effective_limit,
         "offset": offset,
-        "next_offset": offset + len(rows) if total > offset + len(rows) else None,
+        "next_offset": raw_next_offset if isinstance(raw_next_offset, int) else None,
         # The operation mints the ranked continuation cursor itself
         # (``build_search_envelope`` -> ``build_search_cursor``); dropping it
         # here made ranked pages non-continuable by transport.
@@ -263,7 +272,11 @@ def _page_envelope(
         "source": source,
     }
     outcome = payload.get("outcome")
-    envelope["outcome"] = dict(outcome) if isinstance(outcome, Mapping) else decide_outcome(matched=total).to_dict()
+    envelope["outcome"] = (
+        dict(outcome)
+        if isinstance(outcome, Mapping)
+        else decide_outcome(matched=total if total is not None else len(rows)).to_dict()
+    )
     return envelope
 
 

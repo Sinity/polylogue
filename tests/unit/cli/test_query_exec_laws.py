@@ -2446,7 +2446,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
     assert [item["session"]["id"] for item in payload["items"]] != []
 
 
-def test_async_execute_query_archive_session_seed_without_vector_backend_raises_usage_error(
+def test_async_execute_query_archive_session_seed_without_vector_backend_fails_typed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2475,7 +2475,12 @@ def test_async_execute_query_archive_session_seed_without_vector_backend_raises_
     # to its own refusal). The law is the typed refusal itself plus the
     # ``list_summaries`` guard above: a missing backend must never quietly
     # become an unfiltered page.
-    with pytest.raises(click.UsageError, match="semantic retrieval is unavailable"):
+    # An unavailable retrieval lane is not a syntax mistake, so it no longer
+    # exits 2 -- the *empty* status -- behind Click's usage banner
+    # (polylogue-jtrtj). It exits through the one read-failure terminal.
+    from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, FAILED_READ_EXIT_CODE
+
+    with pytest.raises(SystemExit) as caught:
         asyncio.run(
             _execute_query_params(
                 env,
@@ -2487,6 +2492,8 @@ def test_async_execute_query_archive_session_seed_without_vector_backend_raises_
                 },
             )
         )
+    assert caught.value.code == FAILED_READ_EXIT_CODE
+    assert caught.value.code != EMPTY_EXIT_CODE
 
 
 def test_lineage_id_cli_query_materializes_parent_child_refs(cli_workspace: dict[str, Path]) -> None:

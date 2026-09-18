@@ -320,6 +320,10 @@ class OperationCancelRequest(OperationStatusRequest):
     pass
 
 
+#: Sentinel distinguishing "the key is absent" from "the key is an honest null".
+_MISSING = object()
+
+
 class _OperationResult(BaseModel):
     """Base for declared result payloads; envelopes own authority metadata."""
 
@@ -365,6 +369,17 @@ class QueryResult(_OperationResult):
         unit = payload.pop("total_unit", None)
         if not isinstance(unit, str) or not unit:
             raise ValueError("session query result requires its total unit")
+        # ``next_offset`` is a sibling for the third time and the same reason:
+        # both envelopes forbid extras and both live in the derived-schema
+        # closure.  Every page owes it, because a client that must see the
+        # complete matched set (a mutating verb's cardinality guard) walks it,
+        # and its absence read as "this page was the last one" -- which let
+        # ``delete --all`` act on the first page only (polylogue-w3s0q).
+        next_offset = payload.pop("next_offset", _MISSING)
+        if next_offset is _MISSING:
+            raise ValueError("session query result requires its next-page offset")
+        if not (next_offset is None or (isinstance(next_offset, int) and not isinstance(next_offset, bool))):
+            raise ValueError("next_offset must be an integer offset or null")
         if "items" in payload:
             SessionListResponse.model_validate_json(json.dumps(payload), strict=True)
         else:
