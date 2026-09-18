@@ -3247,13 +3247,27 @@ class LiveBatchProcessor:
             # The store proved emptiness at open under the writer lease; the
             # policy below turns that one fact into the shape, exactly as the
             # offline replay does from its own destination ownership.
-            cold_build_engaged = bool(getattr(archive, "active_cold_build_engaged", False))
+            # polylogue-b7dkb: the same pass writes into either the active
+            # generation (proven empty at open) or an owned inactive one the
+            # daemon created for this build. The second admits strictly more:
+            # no reader can open it, so the reader-visible schema change --
+            # the deferred secondary indexes, already dropped at open -- is
+            # licensed too, and the connection took the full bulk profile.
+            owned_generation = bool(getattr(archive, "owns_inactive_generation", False))
+            active_cold_build = bool(getattr(archive, "active_cold_build_engaged", False))
+            generation_empty = bool(getattr(archive, "index_generation_empty_at_open", False))
+            cold_build_engaged = owned_generation or active_cold_build
             batch_shape = select_cold_build_shape(
                 destination=WriteDestination(
                     tier="index",
-                    active_rebuildable_generation=cold_build_engaged,
+                    owned_rebuildable_generation=owned_generation,
+                    active_rebuildable_generation=active_cold_build,
                 ),
-                archive_empty=cold_build_engaged,
+                # Fresh mode asserts the session id is absent, so it is
+                # licensed by THIS pass finding the generation empty -- not by
+                # owning it. A cold build's later pages take the ordinary
+                # compare/replace path while keeping every other lever.
+                archive_empty=generation_empty,
             )
             # A per-pass ledger, not a durable one: fresh mode refuses a second
             # write of a session id, so a page carrying two revisions of one
@@ -3267,6 +3281,7 @@ class LiveBatchProcessor:
                     reason="index generation is empty",
                     shape=batch_shape.reason,
                     fresh_build=batch_shape.fresh_build,
+                    owned_generation=owned_generation,
                     files=len(records),
                 )
             for record_index, record in enumerate(records):
@@ -4042,7 +4057,7 @@ class LiveBatchProcessor:
             # is why a freshly ingested 50k-message session searched as empty.
             if result.session_ids:
                 repair_message_fts_index_sync(archive._conn, list(dict.fromkeys(result.session_ids)))
-            if cold_build_engaged:
+            if active_cold_build:
                 # The cold-build shape is licensed per pass, so it is also
                 # surrendered per pass: verify the constraint the build ran
                 # without (foreign_keys=OFF), restore live durability and

@@ -962,6 +962,7 @@ class DaemonIntakeService:
         budget: int = DEFAULT_INTAKE_BYTE_BUDGET,
         idle_delay_s: float = 5.0,
         wakeup: asyncio.Event | None = None,
+        on_backlog_drained: Callable[[], Awaitable[None] | None] | None = None,
     ) -> None:
         self.dispatcher = dispatcher
         # A count-scale budget (the previous literal 64) left a class's
@@ -972,11 +973,23 @@ class DaemonIntakeService:
         self.budget = max(1, budget)
         self.idle_delay_s = max(0.05, idle_delay_s)
         self._wakeup = wakeup if wakeup is not None else asyncio.Event()
+        # polylogue-b7dkb: the one moment a cold build can be declared
+        # finished is a pass that found nothing to do AFTER a pass that did
+        # something. Fired once; a later backlog is ordinary live ingest.
+        self._on_backlog_drained = on_backlog_drained
+        self._progressed_once = False
 
     async def run(self) -> None:
         while True:
             self._wakeup.clear()
             result = await self.dispatcher.run_once(budget=self.budget)
+            if result.progressed:
+                self._progressed_once = True
+            elif self._progressed_once and self._on_backlog_drained is not None:
+                drained, self._on_backlog_drained = self._on_backlog_drained, None
+                outcome = drained()
+                if isinstance(outcome, Awaitable):
+                    await outcome
             try:
                 async with asyncio.timeout(0.05 if result.progressed else self.idle_delay_s):
                     await self._wakeup.wait()

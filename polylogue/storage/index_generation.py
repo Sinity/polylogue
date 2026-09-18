@@ -35,6 +35,20 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import descriptor_alias_path
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
+#: Durable and disposable archive members an index generation reaches by
+#: read-through symlink rather than owning. ``audit.db`` joined the set with
+#: the daemon's cold build (polylogue-b7dkb): revision governance reads the
+#: excision policy out of the audit tier on every raw admission, so a
+#: generation that cannot see it cannot host an ordinary ingest pass.
+_GENERATION_READ_THROUGH_MEMBERS: tuple[str, ...] = (
+    "source.db",
+    "user.db",
+    "embeddings.db",
+    "audit.db",
+    "ops.db",
+    "blob",
+)
+
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
 _LOCK_HOST_PATTERN = re.compile(r"host=(\S+)")
 
@@ -1112,7 +1126,7 @@ class IndexGenerationStore:
             raise RuntimeError(f"generation already exists: {generation_id}") from None
         try:
             _assert_no_symlink_ancestry(root, label="generation directory")
-            for filename in ("source.db", "user.db", "embeddings.db", "ops.db", "blob"):
+            for filename in _GENERATION_READ_THROUGH_MEMBERS:
                 source = self.archive_root / filename
                 if source.exists() or source.is_symlink():
                     target, identity, is_directory = _stable_link_target(source, label=f"durable tier {filename}")
