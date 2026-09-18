@@ -15,6 +15,7 @@ from polylogue.core.errors import SchemaSkewError
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.identity import (
     VECTOR_DERIVATION_HASH_SQL_FUNCTION,
+    EmbeddingRecipe,
     register_embedding_identity_sql,
 )
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, logger
@@ -35,14 +36,20 @@ def _configure_current_embedding_messages(
     conn: sqlite3.Connection,
     *,
     index_path: Path | None = None,
-    model: str,
+    recipe: EmbeddingRecipe,
     attach_index: bool = True,
     register_identity: bool = True,
 ) -> None:
-    """Bind the current-index projection on an already-open vector reader."""
+    """Bind the current-index projection on an already-open vector reader.
+
+    The projection addresses vectors by the *whole* configured recipe, not by
+    model name: ``polylogue_vector_derivation_hash`` takes a registered recipe
+    hash (polylogue-crcst), so a model string here resolves to no recipe and
+    the projection raises instead of listing the current messages.
+    """
 
     if register_identity:
-        register_embedding_identity_sql(conn)
+        register_embedding_identity_sql(conn, recipe=recipe)
     if attach_index:
         if index_path is None:
             raise ValueError("embedding projection attachment requires an explicit index path")
@@ -86,7 +93,7 @@ def _configure_current_embedding_messages(
         ) AS eligible
         WHERE LENGTH(TRIM(COALESCE(eligible.text, ''))) >= 20
         """,
-        (model,),
+        (recipe.recipe_hash,),
     )
 
 
@@ -94,7 +101,7 @@ def open_vector_read_snapshot(
     *,
     embeddings_path: Path,
     index_path: Path,
-    model: str,
+    recipe: EmbeddingRecipe,
     configure_connection: Callable[[sqlite3.Connection], None] | None = None,
     defer_projection: bool = False,
 ) -> sqlite3.Connection:
@@ -117,21 +124,21 @@ def open_vector_read_snapshot(
             loaded, error = try_load_sqlite_vec(conn)
             if not loaded:
                 raise SqliteVecError(f"sqlite-vec extension failed to load: {error or 'unknown error'}")
-            register_embedding_identity_sql(conn)
+            register_embedding_identity_sql(conn, recipe=recipe)
             # Each persistent database has its own read-only URI.
             conn.execute("ATTACH DATABASE ? AS archive_index", (f"file:{quote(str(index_path))}?mode=ro",))
             conn.execute("BEGIN")
             conn.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
             conn.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
             if not defer_projection:
-                prepare_vector_read_projection(conn, model=model)
+                prepare_vector_read_projection(conn, recipe=recipe)
         return conn
     except BaseException:
         conn.close()
         raise
 
 
-def prepare_vector_read_projection(connection: sqlite3.Connection, *, model: str) -> None:
+def prepare_vector_read_projection(connection: sqlite3.Connection, *, recipe: EmbeddingRecipe) -> None:
     """Build the derived lookup after publication exclusion has been released."""
     if not connection.in_transaction:
         raise SqliteVecError("semantic projection requires an already pinned read transaction")
@@ -142,7 +149,7 @@ def prepare_vector_read_projection(connection: sqlite3.Connection, *, model: str
         try:
             _configure_current_embedding_messages(
                 connection,
-                model=model,
+                recipe=recipe,
                 attach_index=False,
                 register_identity=False,
             )
@@ -241,7 +248,11 @@ class SqliteVecRuntimeMixin:
                     raise SqliteVecError(f"managed embedding projection found no active index at {index_path}")
                 try:
                     with _vector_projection_errors():
-                        _configure_current_embedding_messages(conn, index_path=index_path, model=self.model)
+                        _configure_current_embedding_messages(
+                            conn,
+                            index_path=index_path,
+                            recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
+                        )
                 except BaseException:
                     conn.close()
                     raise

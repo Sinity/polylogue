@@ -165,6 +165,8 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             TARGET_RESOURCES,
             MCPResultSemantics,
         )
+        from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES
+        from polylogue.surfaces.payloads import serialize_surface_payload
 
         mcp_result_semantics = {
             "exhaustive": MCPResultSemantics.EXHAUSTIVE_PAGE,
@@ -174,11 +176,13 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
             "bounded-context": MCPResultSemantics.BOUNDED_CONTEXT,
             "recursive-page": MCPResultSemantics.RECURSIVE_GRAPH,
         }
-        units = []
-        for descriptor in query_unit_descriptors(terminal_supported=True):
-            declared_examples = query_discovery_examples(unit_source=descriptor.plural_source)
-            units.append(
-                {
+        descriptors = list(query_unit_descriptors(terminal_supported=True))
+
+        def _units(*, include_field_names: bool) -> list[dict[str, object]]:
+            built: list[dict[str, object]] = []
+            for descriptor in descriptors:
+                declared_examples = query_discovery_examples(unit_source=descriptor.plural_source)
+                unit: dict[str, object] = {
                     "unit": descriptor.unit,
                     "source": descriptor.plural_source,
                     "description": descriptor.description,
@@ -187,11 +191,6 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                         if declared_examples
                         else descriptor.terminal_example or descriptor.example
                     ),
-                    # Keep the catalog itself below the MCP response budget. Full
-                    # field descriptions remain available from query explain/
-                    # completion routes; discovery needs the bounded vocabulary,
-                    # examples, and recovery contract in its first response.
-                    "fields": [field.name for field in descriptor.fields],
                     "aggregate_group_fields": list(descriptor.aggregate_group_fields),
                     "exists_supported": descriptor.exists_supported,
                     "lowerer": descriptor.lowerer_kind,
@@ -199,9 +198,25 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                     "stable_order": "time" if descriptor.time_sort_supported else "canonical",
                     "result_semantics": "exhaustive",
                 }
-            )
-        return hooks.json_payload(
-            MCPRootPayload(
+                # Full field descriptions always live behind the declared
+                # ``detail`` route; discovery carries the bounded vocabulary,
+                # examples, and recovery contract in its first response. The
+                # per-unit field NAMES are the largest and fastest-growing part
+                # of that catalog, so they are what gives way when the archive's
+                # unit set outgrows the response budget -- see below.
+                if include_field_names:
+                    unit["fields"] = [field.name for field in descriptor.fields]
+                else:
+                    unit["field_count"] = len(descriptor.fields)
+                    unit["fields_via"] = {
+                        "tool": "explain",
+                        "arguments": {"subject": "capability", "unit": descriptor.unit},
+                    }
+                built.append(unit)
+            return built
+
+        def _catalog(units: list[dict[str, object]]) -> MCPRootPayload[dict[str, object]]:
+            return MCPRootPayload(
                 root={
                     "version": 2,
                     "kind": "query-capability-catalog",
@@ -247,7 +262,16 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                     },
                 }
             )
-        )
+
+        # This catalog is discovery itself: handing it to the generic
+        # over-budget envelope replaces the whole query vocabulary with a
+        # retry stub, so a client learns nothing about how to query at all.
+        # Every new query unit grows it, so the fit is measured here and the
+        # one declared reduction is applied, rather than assumed.
+        catalog = _catalog(_units(include_field_names=True))
+        if len(serialize_surface_payload(catalog, exclude_none=False).encode("utf-8")) > MCP_RESPONSE_BUDGET_BYTES:
+            catalog = _catalog(_units(include_field_names=False))
+        return hooks.json_payload(catalog)
 
     @mcp.resource("polylogue://messages/{conv_id}")
     async def messages_resource(conv_id: str) -> str:

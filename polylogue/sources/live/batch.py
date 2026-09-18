@@ -2587,8 +2587,7 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif codex_owned_sqlite_name or (
-                fallback_provider is Provider.CODEX
-                and codex_member is not None
+                codex_member is not None
                 and codex_member.disposition != "out-of-scope"
                 and codex_state.is_in_scope_codex_sqlite_path(path)
             ):
@@ -2599,6 +2598,18 @@ class LiveBatchProcessor:
                 # gate keeps this cheap for the vast majority of ~/.codex
                 # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
                 # then re-confirms the table shape before trusting the name.
+                #
+                # That structural re-confirmation, not the operator's watch
+                # source name, is what admits the file (polylogue-bzx7h's
+                # foreign ``state_5.sqlite`` classifies as ``unknown`` and is
+                # still refused here). Gating this arm on
+                # ``fallback_provider is Provider.CODEX`` made admission depend
+                # on the watch source being named exactly ``codex-state``, so
+                # two Codex installs watched as ``codex-state-a``/``-b`` had
+                # their state databases silently excluded. Only the
+                # source-only/degraded route -- ``codex_owned_sqlite_name``,
+                # where the schema is deliberately never inspected -- keeps the
+                # provider requirement, because there the name is all there is.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:

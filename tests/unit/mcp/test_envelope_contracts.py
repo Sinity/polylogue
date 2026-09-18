@@ -367,7 +367,17 @@ def test_action_affordance_capability_resource_matches_catalog(read_server: MCPS
 def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
     read_server: MCPServerUnderTest,
 ) -> None:
-    """Discovery must teach protocol roles and executable query grammar together."""
+    """Discovery must teach protocol roles and executable query grammar together.
+
+    This is also the budget guard for the catalog itself: it is a fixed
+    response that grows with every new query unit, and ``_json_payload``
+    silently replaces an over-budget body with the generic retry envelope --
+    which for *discovery* means a client learns nothing about how to query at
+    all. Anti-vacuity: let the catalog exceed ``MCP_RESPONSE_BUDGET_BYTES``
+    (drop the declared field-name reduction in
+    ``query_capabilities_resource``) and every assertion below fails on the
+    envelope's keys, starting with ``version``.
+    """
     from tests.infra.mcp import invoke_surface
 
     result = invoke_surface(_resource(read_server, "polylogue://capabilities/query"))
@@ -380,6 +390,7 @@ def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
     assert len(result.encode("utf-8")) <= MCP_RESPONSE_BUDGET_BYTES
 
     assert root["version"] == 2
+    assert root["kind"] == "query-capability-catalog"
     assert root["mcp_algebra"]["read_transactions"]
     assert root["mcp_algebra"]["resources"]
     assert root["mcp_algebra"]["prompts"]
@@ -422,6 +433,9 @@ def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
 
     for unit in root["units"]:
         assert parse_unit_source_expression(unit["example"]) is not None
+        # Field vocabulary is either inline or behind the declared route --
+        # never silently absent.
+        assert unit.get("fields") or (unit.get("field_count") and unit.get("fields_via"))
 
 
 class TestResourceErrorEnvelopes:

@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.daemon_execution import OperationRuntime
     from polylogue.operations.daemon_reads import DaemonReadDependencies
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
 
 
 class ConcurrentArchivePublicationError(DatabaseError):
@@ -159,7 +160,7 @@ def open_operation_read(
     *,
     publication_guard: Callable[[], AbstractContextManager[object]] | None = None,
     read_timeout: float = 2.0,
-    vector_model: str | None = None,
+    vector_recipe: EmbeddingRecipe | None = None,
     execution_context: QueryExecutionContext | None = None,
 ) -> Iterator[PinnedOperationRead]:
     """Open and force tier snapshots before releasing publication exclusion.
@@ -227,14 +228,14 @@ def open_operation_read(
                     "archive was republished while pinning an unguarded operation read; retry the read"
                 )
             vector_failure = None
-            if vector_model is not None and callable(pin_snapshot):
+            if vector_recipe is not None and callable(pin_snapshot):
                 from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
 
                 try:
                     archive.operation_vector_connection = open_vector_read_snapshot(
                         embeddings_path=root / "embeddings.db",
                         index_path=location.active_index_path,
-                        model=vector_model,
+                        recipe=vector_recipe,
                         configure_connection=archive.configure_operation_read_connection,
                         defer_projection=True,
                     )
@@ -263,9 +264,9 @@ def open_operation_read(
         if vector_connection is not None:
             from polylogue.storage.search_providers.sqlite_vec_runtime import prepare_vector_read_projection
 
-            assert vector_model is not None
+            assert vector_recipe is not None
             try:
-                prepare_vector_read_projection(vector_connection, model=vector_model)
+                prepare_vector_read_projection(vector_connection, recipe=vector_recipe)
             except DatabaseError as exc:
                 if execution_context is not None and execution_context.should_abort():
                     raise
