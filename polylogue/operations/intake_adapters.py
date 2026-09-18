@@ -26,6 +26,12 @@ from polylogue.daemon.intake import (
 )
 from polylogue.logging import WARNING, emit
 from polylogue.sources.live.acquisition_log import log_unclaimed_file
+from polylogue.sources.live.cold_build import (
+    ColdBuildGeneration,
+    active_index_generation_is_empty,
+    clear_cold_build_generation,
+    register_cold_build_generation,
+)
 from polylogue.sources.live.metrics import REFUSED_DAEMON_DEGRADED
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
@@ -34,6 +40,7 @@ from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 _T = TypeVar("_T")
 
 __all__ = [
+    "ColdBuildGeneration",
     "DaemonIntakeContext",
     "DaemonIntakeService",
     "FileIntakeAdapter",
@@ -41,8 +48,11 @@ __all__ = [
     "CallbackIntakeAdapter",
     "RawMaterializationIntakeAdapter",
     "RawMaterializationDiscovery",
-    "discover_pending_raw_ids",
+    "active_index_generation_is_empty",
     "build_intake_adapters",
+    "clear_cold_build_generation",
+    "discover_pending_raw_ids",
+    "register_cold_build_generation",
 ]
 
 

@@ -2137,6 +2137,7 @@ async def _run_daemon_services_under_active_writer_lease(
     registry does not declare.
     """
     from polylogue.daemon import process_start as _process_start
+    from polylogue.daemon.intake_adapters import ColdBuildGeneration
     from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
 
@@ -2836,13 +2837,11 @@ async def _run_daemon_services_under_active_writer_lease(
             if not watcher_creation_blocked:
                 async with Polylogue() as polylogue:
                     from polylogue.daemon.intake_adapters import (
+                        ColdBuildGeneration,
                         DaemonIntakeContext,
                         DaemonIntakeService,
-                        build_intake_adapters,
-                    )
-                    from polylogue.sources.live.cold_build import (
-                        ColdBuildGeneration,
                         active_index_generation_is_empty,
+                        build_intake_adapters,
                         clear_cold_build_generation,
                         register_cold_build_generation,
                     )
@@ -3196,7 +3195,7 @@ async def _run_daemon_services_under_active_writer_lease(
             # the same outcome as a crash, and the previous active generation
             # is exactly where the readers left it.
             if cold_build is not None and not cold_build.settled:
-                from polylogue.sources.live.cold_build import clear_cold_build_generation
+                from polylogue.daemon.intake_adapters import clear_cold_build_generation
 
                 with contextlib.suppress(Exception):
                     cold_build.discard()
