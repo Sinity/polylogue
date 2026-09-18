@@ -876,6 +876,20 @@ def daemon_write_coordinator() -> DaemonWriteCoordinator:
     return coordinator
 
 
+def register_write_coordinator(loop: asyncio.AbstractEventLoop, coordinator: DaemonWriteCoordinator) -> None:
+    """Bind ``coordinator`` as *the* coordinator for ``loop``.
+
+    A caller that constructs its own coordinator -- the standalone HTTP write
+    runtime is the only one -- must register it, or a later
+    :func:`daemon_write_coordinator` call on that loop mints a second
+    coordinator and the process has two serialization queues instead of one.
+    """
+    existing = _COORDINATORS.get(loop)
+    if existing is not None and existing is not coordinator:
+        raise RuntimeError("a different write coordinator is already registered for this event loop")
+    _COORDINATORS[loop] = coordinator
+
+
 __all__ = [
     "DaemonWriteCoordinator",
     "DaemonWriteEvent",
@@ -883,4 +897,5 @@ __all__ = [
     "DaemonWriteThreadBridge",
     "daemon_write_coordinator",
     "daemon_write_telemetry_payload",
+    "register_write_coordinator",
 ]

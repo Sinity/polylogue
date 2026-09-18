@@ -81,6 +81,7 @@ from polylogue.daemon.webui_data import (
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
+    register_write_coordinator,
 )
 from polylogue.logging import DEBUG, ERROR, WARNING, emit, propagate
 from polylogue.logging import span as log_span
@@ -6305,6 +6306,7 @@ class _StandaloneWriteRuntime:
         def run() -> None:
             asyncio.set_event_loop(self.loop)
             self.coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+            register_write_coordinator(self.loop, self.coordinator)
             ready.set()
             self.loop.run_forever()
             self.loop.close()

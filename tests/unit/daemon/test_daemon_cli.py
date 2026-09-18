@@ -2637,7 +2637,10 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
         return current_coordinator
 
     def profile_exists() -> bool:
-        with sqlite3.connect(archive_root / "index.db") as conn:
+        # A read, so it opens read-only: the daemon under test holds the
+        # process-wide writer boundary and a writable open here would be a
+        # second in-process writer (polylogue-8qm4k).
+        with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'session_profiles'").fetchone():
                 return False
             return (
@@ -2703,7 +2706,15 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
                 stack.enter_context(patch(target, idle_loop))
 
             await run_until_observed_sweep()
-            with sqlite3.connect(archive_root / "index.db") as conn:
+            # This fixture really does write the archive out from under the
+            # running daemon, to force reconvergence. It is a declared test
+            # authority, not a production route, so it says so.
+            from polylogue.storage.sqlite.write_lease import declared_unguarded_write
+
+            with (
+                declared_unguarded_write("test fixture clears derived rows to force reconvergence"),
+                sqlite3.connect(archive_root / "index.db") as conn,
+            ):
                 assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
                 for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
                     conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
@@ -2915,7 +2926,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     )
                 assert admission_tasks and all(item is intake_tasks[0] for item in admission_tasks)
                 expected_versions = 1 if browser else 2
-                with sqlite3.connect(archive_root / "source.db") as conn:
+                with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
                     evidence = conn.execute(
                         "SELECT decision, revision_authority FROM raw_session_memberships WHERE logical_source_key = ?",
                         (session_id,),
@@ -2933,7 +2944,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                 assert sum(report.done == 1 for report in session_reports) == expected_versions, str(
                     ([(report.frame.scope, report.done) for report in kernel_reports], admission_metrics, evidence)
                 )
-                with sqlite3.connect(archive_root / "index.db") as conn:
+                with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
                     assert conn.execute("SELECT session_id FROM session_profiles").fetchall() == [(session_id,)]
                     assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (expected_versions,)
                 if browser:

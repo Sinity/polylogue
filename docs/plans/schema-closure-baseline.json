@@ -554,6 +554,7 @@
     "polylogue/storage/sqlite/schema_manifest.py",
     "polylogue/storage/sqlite/sqlite_vec_extension.py",
     "polylogue/storage/sqlite/wal_checkpoint.py",
+    "polylogue/storage/sqlite/write_guard.py",
     "polylogue/storage/sqlite/write_lease.py",
     "polylogue/storage/tier_access.py",
     "polylogue/storage/usage.py",
