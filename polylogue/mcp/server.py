@@ -109,11 +109,25 @@ def _get_server(
 
 
 def serve_stdio(services: RuntimeServices | None = None, *, capabilities: MCPCapabilities = MCPCapabilities()) -> None:
-    """Start MCP server with stdio transport."""
+    """Start MCP server with stdio transport.
+
+    Read-only MCP does not write archive tiers. Write and maintenance
+    capabilities do, and they run in a process that is not ``polylogued
+    run``, so they arm the same connection-level write guard the daemon
+    arms: an unleased ``sqlite3.connect`` onto an archive tier is refused
+    instead of contending through the busy timeout (polylogue-8qm4k).
+    """
     from polylogue.mcp.call_log import start_mcp_call_log
 
     start_mcp_call_log()
-    _get_server(services, capabilities=capabilities).run(transport="stdio")
+    server = _get_server(services, capabilities=capabilities)
+    if capabilities.write or capabilities.maintenance:
+        from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
+
+        with arm_write_lease_enforcement(process_wide=True), install_archive_write_guard():
+            server.run(transport="stdio")
+        return
+    server.run(transport="stdio")
 
 
 __all__ = ["_instructions_for_capabilities", "build_server", "serve_stdio"]
