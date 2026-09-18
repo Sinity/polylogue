@@ -20,6 +20,17 @@ from polylogue.schemas.packages import SchemaVersionPackage
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 
 
+def _load_committed_package(provider: str) -> SchemaVersionPackage | None:
+    """Load the manifest of the provider's default committed package.
+
+    Observation time and sample counts live in the manifest rather than in the
+    element schema document, which is a byte-deterministic content projection
+    (see :func:`polylogue.schemas.audit.checks.check_schema_staleness`).
+    """
+    schema_root = Path(__file__).resolve().parent.parent / "providers"
+    return SchemaRegistry(storage_root=schema_root).get_package(provider, version="default")
+
+
 def _scoped(provider: str, check: CheckResult) -> AuditCheck:
     return AuditCheck(
         name=check.name,
@@ -59,7 +70,8 @@ def audit_provider(provider: str, *, db_path: Path | None = None) -> AuditReport
     report.checks.append(_scoped(provider, check_privacy_guards(schema)))
     report.checks.append(_scoped(provider, check_semantic_roles(schema)))
     report.checks.append(_scoped(provider, check_annotation_coverage(schema)))
-    report.checks.append(_scoped(provider, check_schema_staleness(schema)))
+    package = _load_committed_package(provider)
+    report.checks.append(_scoped(provider, check_schema_staleness(package.last_seen if package else None)))
 
     if db_path is not None:
         report.checks.append(
@@ -84,15 +96,18 @@ def audit_all_providers(
     report = AuditReport()
 
     schemas = {}
+    sample_counts: dict[str, int | None] = {}
     for provider in provider_list:
         provider_report = audit_provider(provider, db_path=db_path)
         report.checks.extend(provider_report.checks)
         schema = _load_committed_schema(provider)
         if schema:
             schemas[provider] = schema
+            package = _load_committed_package(provider)
+            sample_counts[provider] = package.sample_count if package else None
 
     if len(schemas) >= 2:
-        report.checks.append(check_cross_provider_consistency(schemas))
+        report.checks.append(check_cross_provider_consistency(schemas, sample_counts=sample_counts))
 
     return report
 

@@ -11,6 +11,7 @@ from polylogue.core.outcomes import OutcomeStatus
 from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
     check_privacy_guards,
+    check_schema_staleness,
     check_semantic_roles,
 )
 from polylogue.schemas.audit.models import AuditCheck, AuditReport
@@ -493,3 +494,55 @@ class TestCheckAnnotationCoverage:
         }
         result = check_annotation_coverage(schema)
         assert "1/2" in result.message or "50" in result.message
+
+
+class TestSchemaStaleness:
+    """Staleness reads the package manifest, not the element document.
+
+    Anti-vacuity: re-adding a wall-clock ``x-polylogue-generated-at`` to
+    published elements (which would break the byte-deterministic regeneration
+    that proves a package unchanged), reading the timestamp back out of the
+    element document, or failing the audit on age alone turns these red.
+    """
+
+    def test_manifest_timestamp_is_reported(self) -> None:
+        result = check_schema_staleness("2026-09-15T20:26:40.426177+00:00")
+        assert result.status is PASS
+        assert "days ago" in result.message
+
+    def test_missing_manifest_timestamp_warns(self) -> None:
+        result = check_schema_staleness(None)
+        assert result.status is WARN
+        assert "no observation time" in result.message
+
+    def test_unparseable_manifest_timestamp_warns(self) -> None:
+        result = check_schema_staleness("not-a-timestamp")
+        assert result.status is WARN
+
+    def test_age_alone_never_fails_the_audit(self) -> None:
+        result = check_schema_staleness("2020-01-01T00:00:00+00:00")
+        assert result.status is PASS
+        assert "refresh from current source material" in result.message
+
+    def test_audit_reports_observation_time_for_timestampless_elements(self) -> None:
+        """Packages published by the current route carry no wall-clock field.
+
+        Their staleness must still resolve, from the package manifest.
+        """
+        from polylogue.core.schema_subjects import CORE_SCHEMA_PROVIDERS
+        from polylogue.schemas.audit.walkers import _load_committed_schema
+        from polylogue.schemas.audit.workflow import _load_committed_package
+
+        timestampless = []
+        for provider in CORE_SCHEMA_PROVIDERS:
+            schema = _load_committed_schema(provider)
+            package = _load_committed_package(provider)
+            if schema is None or package is None:
+                continue
+            if "x-polylogue-generated-at" in schema:
+                continue
+            timestampless.append(provider)
+            assert check_schema_staleness(package.last_seen).status is PASS, (
+                f"{provider}: manifest observation time did not resolve"
+            )
+        assert timestampless, "no committed package exercises the timestampless publication path"
