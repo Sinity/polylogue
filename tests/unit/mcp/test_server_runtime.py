@@ -116,3 +116,44 @@ def test_serve_stdio_runs_cached_server() -> None:
 
     mock_get_server.assert_called_once_with("services", capabilities=MCPCapabilities())
     server.run.assert_called_once_with(transport="stdio")
+
+
+def test_serve_stdio_does_not_arm_the_write_guard_when_read_only() -> None:
+    """Read-only MCP is not a writer; arming would overclaim the boundary."""
+    server = MagicMock()
+    with (
+        patch("polylogue.mcp.server._get_server", return_value=server),
+        patch("polylogue.core.write_lease.arm_write_lease_enforcement") as arm,
+        patch("polylogue.core.write_lease.install_archive_write_guard") as guard,
+    ):
+        server_module.serve_stdio(services="services")
+    arm.assert_not_called()
+    guard.assert_not_called()
+    server.run.assert_called_once_with(transport="stdio")
+
+
+def test_serve_stdio_arms_the_write_guard_when_writes_are_enabled() -> None:
+    """Standalone MCP with write or maintenance is a writer process.
+
+    Anti-vacuity: drop the arming in ``serve_stdio`` and this still runs the
+    server, but an unleased ``sqlite3.connect`` onto ``source.db`` would
+    contend through the busy timeout exactly as the 2026-09-05 rehearsal did.
+    """
+    server = MagicMock()
+    arm_cm = MagicMock()
+    arm_cm.__enter__.return_value = None
+    arm_cm.__exit__.return_value = None
+    guard_cm = MagicMock()
+    guard_cm.__enter__.return_value = None
+    guard_cm.__exit__.return_value = None
+    with (
+        patch("polylogue.mcp.server._get_server", return_value=server),
+        patch("polylogue.core.write_lease.arm_write_lease_enforcement", return_value=arm_cm) as arm,
+        patch("polylogue.core.write_lease.install_archive_write_guard", return_value=guard_cm) as guard,
+    ):
+        server_module.serve_stdio(services="services", capabilities=MCPCapabilities(write=True))
+    arm.assert_called_once_with(process_wide=True)
+    guard.assert_called_once_with()
+    server.run.assert_called_once_with(transport="stdio")
+    assert arm_cm.__enter__.called
+    assert guard_cm.__enter__.called
