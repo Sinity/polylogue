@@ -1392,6 +1392,8 @@ class LiveBatchProcessor:
             failed_file_count=len(failed_paths),
             excluded_file_count=sum(excluded_reasons.values()),
             excluded_reasons=dict(excluded_reasons),
+            excluded_paths={str(path): reason for path, reason in excluded_by_path.items()},
+            deferred_paths=tuple(str(path) for path in deferred_paths),
             source_group_count=len({self._source_name_for(path) for path in paths}),
             input_bytes=input_bytes,
             ingested_bytes=ingested_bytes,

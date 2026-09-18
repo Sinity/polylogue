@@ -24,6 +24,9 @@ from polylogue.daemon.intake import (
     IntakeAdapter,
     IntakeItem,
 )
+from polylogue.logging import WARNING, emit
+from polylogue.sources.live.acquisition_log import log_unclaimed_file
+from polylogue.sources.live.metrics import REFUSED_DAEMON_DEGRADED
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
@@ -75,13 +78,95 @@ def _walk_entry_key(path: Path, *, is_dir: bool) -> str:
     return text + os.sep if is_dir else text
 
 
+def _real_path(path: Path) -> str:
+    """The resolved real path used as this walk's cycle-detection identity."""
+
+    return os.path.realpath(path)
+
+
+def _emit_discovery_fault(source: WatchSource, fault: WalkFault, *, reason: str) -> None:
+    """Report one non-fatal discovery fault without losing the rest of the page.
+
+    A symlink cycle and a dangling symlink are both permanent properties of
+    the tree: refusing the whole class for them would strand every real file
+    beside them forever. They are still evidence -- the same
+    ``daemon.intake.discovery_failed`` shape the dispatcher emits -- so the
+    entry is counted per path instead of silently vanishing.
+    """
+
+    emit(
+        "daemon.intake.discovery_failed",
+        level=WARNING,
+        outcome="degraded",
+        reason=reason,
+        component=source.name,
+        path=str(fault.path),
+        error_detail=fault.detail,
+    )
+
+
+def _admit_linked_directory(
+    source: WatchSource,
+    path: Path,
+    *,
+    visited_real_paths: set[str] | None,
+) -> bool:
+    """Whether a directory symlink may be descended into on this walk.
+
+    Containment is the standing rule the live watcher already enforces
+    through ``deepest_source_for_path``: a link whose resolved target lies
+    outside the source root is rejected, never admitted. Only a link that
+    stays inside the root is followed, which is what makes a
+    ``current -> 2026-09`` style export pointer discoverable without letting
+    a link hand intake material the source was never configured to read.
+    """
+
+    try:
+        real = _real_path(path)
+        root_real = _real_path(source.root)
+    except OSError as exc:
+        _emit_discovery_fault(
+            source,
+            WalkFault(path, f"symlink target could not be resolved: {exc}"),
+            reason="unresolvable_symlink",
+        )
+        return False
+    if real != root_real and not real.startswith(root_real + os.sep):
+        _emit_discovery_fault(
+            source,
+            WalkFault(path, f"symlink target {real} escapes the source root"),
+            reason="escaping_symlink",
+        )
+        return False
+    if visited_real_paths is not None:
+        if real in visited_real_paths:
+            _emit_discovery_fault(
+                source,
+                WalkFault(path, f"symlink cycle: {real} was already visited"),
+                reason="symlink_cycle",
+            )
+            return False
+        visited_real_paths.add(real)
+    return True
+
+
 def _ordered_children(
     source: WatchSource,
     directory: Path,
     after: str | None,
     scandir: Callable[[Path], Any] = os.scandir,
+    *,
+    visited_real_paths: set[str] | None = None,
 ) -> list[tuple[str, Path, bool]]:
-    """Siblings of ``directory``, reverse-sorted so a stack pops them in order."""
+    """Siblings of ``directory``, reverse-sorted so a stack pops them in order.
+
+    Directory symlinks are followed: an operator who mounts an export tree
+    through a symlink configured a real source root, and refusing to enter it
+    made the source silently unacquired. Following links needs the two guards
+    below -- ``visited_real_paths`` (resolved real paths already entered on
+    this walk) terminates cycles, and a resolved target outside the source
+    root is rejected rather than followed.
+    """
 
     children: list[tuple[str, Path, bool]] = []
     try:
@@ -101,8 +186,15 @@ def _ordered_children(
         for entry in entries:
             path = Path(entry.path)
             try:
-                if entry.is_dir(follow_symlinks=False):
+                is_link = entry.is_symlink()
+                if entry.is_dir(follow_symlinks=False) or (is_link and entry.is_dir()):
                     if source.ignores_directory(path):
+                        continue
+                    if is_link and not _admit_linked_directory(
+                        source,
+                        path,
+                        visited_real_paths=visited_real_paths,
+                    ):
                         continue
                     key = _walk_entry_key(path, is_dir=True)
                     # Every descendant path begins with ``key``. When the
@@ -114,6 +206,15 @@ def _ordered_children(
                     children.append((key, path, True))
                     continue
                 if not entry.is_file(follow_symlinks=False):
+                    if is_link and not entry.is_file():
+                        # A dangling link is a fault, not an absence: the
+                        # export it named is missing. Counting it keeps the
+                        # walk alive over the rest of the directory.
+                        _emit_discovery_fault(
+                            source,
+                            WalkFault(path, "symlink target does not exist"),
+                            reason="broken_symlink",
+                        )
                     continue
             except FileNotFoundError:
                 # Ordinary producer churn: the entry vanished between the
@@ -127,6 +228,27 @@ def _ordered_children(
             children.append((_walk_entry_key(path, is_dir=False), path, False))
     children.sort(key=lambda child: child[0], reverse=True)
     return children
+
+
+def _log_unclaimed_intake_candidate(path: Path, *, source_name: str, suffixes: tuple[str, ...]) -> None:
+    """Log one discovered file no configured suffix accepts.
+
+    Best-effort ``stat``: a file that vanished between the listing and this
+    call was still seen and unclaimed, just without size/mtime detail.
+    """
+    try:
+        stat_result = path.stat()
+        size: int | None = stat_result.st_size
+        mtime: float | None = stat_result.st_mtime
+    except OSError:
+        size, mtime = None, None
+    log_unclaimed_file(
+        path=path,
+        size=size,
+        mtime=mtime,
+        reason=f"suffix not in watched set {suffixes} for source {source_name!r}",
+        source_name=source_name,
+    )
 
 
 def _bounded_source_paths(
@@ -147,6 +269,11 @@ def _bounded_source_paths(
     loss rather than delay. Emitting in cursor order also makes the
     ``limit`` early exit safe -- the next pass resumes at exactly the key
     the previous one stopped on, mid-directory or not.
+
+    Directory symlinks whose target stays inside the source root are
+    followed, so an export tree mounted behind a link is discovered. Every
+    directory entered on this walk records its resolved real path, which is
+    what terminates a cycle.
     """
 
     if limit <= 0:
@@ -161,7 +288,16 @@ def _bounded_source_paths(
             [WalkFault(source.root, "source root is unavailable")],
         )
     found: list[Path] = []
-    stack: list[list[tuple[str, Path, bool]]] = [_ordered_children(source, source.root, after, scandir)]
+    visited_real_paths: set[str] = {_real_path(source.root)}
+    stack: list[list[tuple[str, Path, bool]]] = [
+        _ordered_children(
+            source,
+            source.root,
+            after,
+            scandir,
+            visited_real_paths=visited_real_paths,
+        )
+    ]
     while stack and len(found) < limit:
         level = stack[-1]
         if not level:
@@ -169,12 +305,28 @@ def _bounded_source_paths(
             continue
         key, path, is_dir = level.pop()
         if is_dir:
-            stack.append(_ordered_children(source, path, after, scandir))
+            visited_real_paths.add(_real_path(path))
+            stack.append(
+                _ordered_children(
+                    source,
+                    path,
+                    after,
+                    scandir,
+                    visited_real_paths=visited_real_paths,
+                )
+            )
             continue
         if after is not None and key <= after:
             continue
         try:
-            if deepest_source_for_path(path, all_sources) is not source or not source.accepts(path):
+            if deepest_source_for_path(path, all_sources) is not source:
+                continue
+            if not source.accepts(path):
+                # A file this source's own walk reached but whose suffix no
+                # detector is configured to accept. The record exists whether
+                # or not an operator runs the standalone sweep, and discovery
+                # is the only production walk left that reaches it.
+                _log_unclaimed_intake_candidate(path, source_name=source.name, suffixes=source.suffixes)
                 continue
         except FileNotFoundError:
             continue
@@ -242,56 +394,199 @@ class FileIntakeAdapter(IntakeAdapter):
         return tuple(items)
 
     async def admit(self, item: IntakeItem) -> AdmissionResult:
-        path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
-        if path is None:
-            return AdmissionResult(AdmissionOutcome.TERMINAL, reason="file intake item has no path")
-        if not path.is_file():
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source carrier vanished: {path}")
+        outcomes = await self.admit_page((item,))
+        return outcomes[item.item_id]
+
+    async def admit_page(self, items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
+        """Admit a whole discovery page as one ingest batch, one hold.
+
+        Every fixed cost of a live batch -- the writer hold, the six-tier
+        bootstrap, the retention scan, the archive-wide convergence pass and
+        the parse stage's own warm -- is paid once per call. Admitting one
+        file per call made each of those a per-file cost over a corpus of
+        tens of thousands of files, and handed ``LiveParseStage`` a single
+        path per batch, which is no parallelism at all.
+
+        The batch is one call; the *outcomes* stay per item, read back from
+        ``LiveBatchMetrics`` by path, so the dispatcher's deficit,
+        ``retry_after`` and isolation accounting are exactly what they were
+        under per-file admission.
+        """
+        outcomes: dict[str, AdmissionResult] = {}
+        batch: list[IntakeItem] = []
+        for item in items:
+            path = Path(item.payload) if isinstance(item.payload, (str, Path)) else None
+            if path is None:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.TERMINAL, reason="file intake item has no path"
+                )
+                continue
+            if not path.is_file():
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason=f"source carrier vanished: {path}"
+                )
+                continue
+            batch.append(item)
+        if not batch:
+            return outcomes
+
         try:
+            # The source-selection/cursor authority gate runs before anything
+            # in this page can mutate cursor state -- before initialization,
+            # before the needs-work selection reads a row. A page whose
+            # authority is refused must leave the archive exactly as it was.
+            processor = getattr(self.context.watcher, "_batch_processor", None)
+            if processor is not None:
+                processor.require_cursor_authority([Path(cast(Any, item.payload)) for item in batch])
+            # Cursor initialization precedes every read of cursor state, and
+            # takes the writer admission to do it: the selection below reads
+            # the cursor rows, so doing it first would touch (and create) the
+            # store outside the writer lease.
             cursor = getattr(self.context.watcher, "_cursor", None)
             run_writer_sync = getattr(self.context.watcher, "_run_writer_sync", None)
             if cursor is not None and callable(run_writer_sync):
                 await run_writer_sync("watcher.intake.cursor_initialize", cursor.initialize)
-            metrics = await self.context.watcher._ingest_files(
-                [path], queued_file_count=1, whole_archive_convergence=False
-            )
-            stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
-            if stale_cursor_writes:
-                return AdmissionResult(
-                    AdmissionOutcome.RETRYABLE,
-                    reason=f"source cursor write was stale: {path}",
+            # Narrow the page before it costs anything more: a bounded walk
+            # re-offers files whose cursor already accounts for them, and
+            # handing those to the batch buys a planning pass per file per
+            # pass for no admission.
+            paths = [Path(cast(Any, item.payload)) for item in batch]
+            select = getattr(self.context.watcher, "select_ingest_candidates", None)
+            if not callable(select):
+                needed = set(paths)
+            elif callable(run_writer_sync):
+                # The selection is a read that can decide to write: an
+                # incomplete-append deferral, an archived-cursor
+                # reconciliation and a device-drift rebase all correct cursor
+                # rows in place. Those are ordinary archive writes, so they
+                # run through the writer admission like every other one --
+                # under process-wide lease enforcement an unadmitted cursor
+                # write is refused, which turned the whole page retryable.
+                needed = set(await run_writer_sync("watcher.intake.select", select, paths))
+            else:
+                needed = set(select(paths))
+            skipped = [item for item in batch if Path(cast(Any, item.payload)) not in needed]
+            for item in skipped:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.DUPLICATE, actual_cost=max(1, int(item.estimated_cost))
                 )
-            failed = int(getattr(metrics, "failed_file_count", 0) or 0)
-            if failed:
-                return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {path}")
-            succeeded = int(getattr(metrics, "succeeded_file_count", 0) or 0)
-            if not succeeded:
-                # This route calls ``_ingest_files`` directly, so the watcher's
-                # own ``_log_ingest_metrics`` never runs for it and the
-                # "admitted nothing" line was invisible on the intake path.
-                _log_ingest_metrics(f"live.intake: {self.class_name}", metrics)
-                excluded = int(getattr(metrics, "excluded_file_count", 0) or 0)
-                if excluded:
-                    # polylogue-onbz3: a durable refusal is not "already
-                    # admitted under this identity". Reporting DUPLICATE here
-                    # advanced the cursor and counted the pass as progress.
-                    reasons = getattr(metrics, "excluded_reasons", {}) or {}
-                    return AdmissionResult(
-                        AdmissionOutcome.EXCLUDED,
-                        reason=f"source admission excluded {path}: {sorted(reasons)}",
-                        actual_cost=item.estimated_cost,
-                    )
-                return AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item.estimated_cost)
+            batch = [item for item in batch if Path(cast(Any, item.payload)) in needed]
+            if not batch:
+                return outcomes
+            paths = [Path(cast(Any, item.payload)) for item in batch]
+            metrics = await self.context.watcher._ingest_files(
+                paths,
+                queued_file_count=len(paths) + len(skipped),
+                skipped_file_count=len(skipped),
+                whole_archive_convergence=False,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            # A cursor-authority refusal lands here too: it is retryable for
+            # every item in the page, and nothing in the archive changed. Say
+            # so once per page: a class that reports only ``retried`` counts
+            # is otherwise a silent refusal with no reason anywhere.
+            reason = f"{type(exc).__name__}: {exc}"
+            emit(
+                "daemon.intake.page_refused",
+                level=WARNING,
+                outcome="degraded",
+                reason="page_admission_failed",
+                component=self.class_name,
+                files=len(batch),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            for item in batch:
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason)
+            return outcomes
+
+        stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
+        if stale_cursor_writes:
+            # A stale cursor write means this batch raced another authority
+            # for the same source rows; the whole page is retried rather than
+            # acknowledged, even where some files reported success, because a
+            # cursor advanced under a losing write is not evidence about any
+            # item in the page.
+            for item in batch:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason="source cursor write was stale"
+                )
+            return outcomes
+
+        succeeded = {str(path) for path in (getattr(metrics, "succeeded_paths", ()) or ())}
+        failed = set(getattr(metrics, "failed_paths", ()) or ())
+        deferred = set(getattr(metrics, "deferred_paths", ()) or ())
+        # ``failed_paths`` carries the retry projection, deferrals included.
+        # A deferral is its own outcome, so it must not be reported as a
+        # failure here.
+        failed -= deferred
+        excluded_by_path = dict(getattr(metrics, "excluded_paths", {}) or {})
+        if not succeeded:
+            # This route calls ``_ingest_files`` directly, so the watcher's
+            # own ``_log_ingest_metrics`` never runs for it and the
+            # "admitted nothing" line was invisible on the intake path.
+            _log_ingest_metrics(f"live.intake: {self.class_name}", metrics)
+
+        # Reconcile the batch's measured read against the items that actually
+        # produced it. An append-mode file reads far less than its size, so
+        # charging every item its full estimate would overstate the class's
+        # spend; distributing the measured total over the admitted items in
+        # proportion to their estimates keeps the class budget denominated in
+        # bytes actually read.
+        refused_reasons = dict(getattr(metrics, "refused_bytes_by_reason", {}) or {})
+        unattempted_is_retryable = bool(getattr(metrics, "time_budget_exceeded", False)) or (
+            REFUSED_DAEMON_DEGRADED in refused_reasons
+        )
+        read_bytes = int(getattr(metrics, "source_payload_read_bytes", 0) or 0)
+        estimated_total = sum(max(1, int(item.estimated_cost)) for item in batch)
+        for item in batch:
+            key = str(Path(cast(Any, item.payload)))
+            item_estimate = max(1, int(item.estimated_cost))
+            actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
+            if key in succeeded:
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
+            elif key in excluded_by_path:
+                # polylogue-onbz3: a durable refusal is not "already admitted
+                # under this identity". Reporting DUPLICATE here advanced the
+                # cursor and counted the pass as progress.
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.EXCLUDED,
+                    reason=f"source admission excluded {key}: {excluded_by_path[key]}",
+                    actual_cost=item_estimate,
+                )
+            elif key in deferred:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.DEFERRED,
+                    reason=f"source admission deferred {key}",
+                    actual_cost=item_estimate,
+                )
+            elif key in failed:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason=f"source admission failed: {key}"
+                )
+            elif unattempted_is_retryable:
+                # The pass ran out of its declared time budget, or refused
+                # the whole batch while degraded: this item was never
+                # attempted, so it is ordinary backlog, not a re-seen one.
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE,
+                    reason=f"source admission left {key} unattempted",
+                )
+            else:
+                # Offered and attempted, with nothing new to admit under this
+                # identity: the ordinary re-discovery of an already-ingested
+                # file. Acknowledgeable, never progress.
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item_estimate)
+
+        admitted_paths = [path for path in paths if str(path) in succeeded]
+        if admitted_paths:
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):
-                await converge_embeddings([path])
+                await converge_embeddings(admitted_paths)
             converge_profiles = getattr(self.context.watcher, "_converge_session_profiles_off_writer", None)
             if callable(converge_profiles):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
-        except (OSError, ValueError, RuntimeError) as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{type(exc).__name__}: {exc}")
-        actual = int(getattr(metrics, "source_payload_read_bytes", 0) or item.estimated_cost)
-        return AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=max(1, actual))
+        return outcomes
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable
@@ -344,6 +639,33 @@ class MultiplexIntakeAdapter(IntakeAdapter):
         if adapter is None:
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="configured source item lost its adapter")
         return await adapter.admit(item)
+
+    async def admit_page(self, items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
+        """Split one page along source ownership and admit each part as a page.
+
+        One root's files are one ingest batch. Splitting here rather than
+        admitting item by item is what keeps the per-batch fixed cost paid
+        once per root per pass, and the parts are disjoint, so the per-item
+        outcomes recombine without ambiguity.
+        """
+        outcomes: dict[str, AdmissionResult] = {}
+        groups: dict[int, tuple[IntakeAdapter, list[IntakeItem]]] = {}
+        for item in items:
+            adapter = self._by_item.get(item.item_id)
+            if adapter is None:
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason="configured source item lost its adapter"
+                )
+                continue
+            groups.setdefault(id(adapter), (adapter, []))[1].append(item)
+        for adapter, group in groups.values():
+            admit_page = getattr(adapter, "admit_page", None)
+            if admit_page is None:
+                for item in group:
+                    outcomes[item.item_id] = await adapter.admit(item)
+                continue
+            outcomes.update(await admit_page(tuple(group)))
+        return outcomes
 
     async def acknowledge(self, item: IntakeItem) -> None:
         adapter = self._by_item.pop(item.item_id, None)

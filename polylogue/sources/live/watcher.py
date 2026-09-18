@@ -1,13 +1,12 @@
-"""Live JSONL session watcher.
+"""Live source watch and the single live-ingest entry point.
 
-Watches one or more roots for ``*.jsonl`` changes via ``watchfiles`` and
-ingests new or grown files through the archive pipeline. Idempotent via
-content-hash dedup; the cursor table suppresses re-work when the stored
-content fingerprint and parser fingerprint still match the file.
-
-Files are batched: all changed files within a debounce window are collected
-and ingested in a single pipeline call. This avoids the O(n²) problem where
-each file triggered a full source-tree rescan via ``parse_file()``.
+Watches one or more roots via ``watchfiles`` and turns each observation into
+a disposable intake hint for ``FairIntakeDispatcher``, which owns discovery,
+planning and admission. The dispatcher's file adapter calls
+``LiveWatcher._ingest_files`` with a whole page, and ``LiveBatchProcessor``
+does the work. Ingestion is idempotent via content-hash dedup; the cursor
+table suppresses re-work when the stored content fingerprint and parser
+fingerprint still match the file.
 """
 
 from __future__ import annotations
@@ -15,10 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
-import stat as stat_module
-import time
-import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -27,24 +23,18 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from polylogue.archive.revision_authority import decided_unresolved_membership_sql
-from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.protocols import ArchiveRootOwner
-from polylogue.core.source_halts import halted_sources, source_halt
+from polylogue.core.source_halts import halted_sources
 from polylogue.core.sources import provider_from_origin
-from polylogue.core.sqlite_locking import is_transient_sqlite_lock
-from polylogue.core.stage_admission import stage_write_admission
-from polylogue.core.write_hold import WriteHoldBudgetError
-from polylogue.logging import INFO, WARNING, emit, get_logger
+from polylogue.logging import get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
     hook_carrier_provider_dir,
     hook_spool_sources,
 )
-from polylogue.sources.live.acquisition_log import log_unclaimed_file
 from polylogue.sources.live.archive_open import _source_tier_acquisition_required
 from polylogue.sources.live.batch import (
-    CursorAuthorityBlockedError,
     LiveBatchEventEmitter,
     LiveBatchProcessor,
     fingerprint_file,
@@ -60,12 +50,10 @@ from polylogue.sources.live.batch_support import (
     tail_hash_and_last_complete_newline_from_path,
     tail_hash_from_path,
 )
-from polylogue.sources.live.convergence_debt import ConvergenceDebt, debt_by_path
 from polylogue.sources.live.cursor import (
     CursorObservationRebase,
     CursorRecord,
     CursorStore,
-    WholeArchiveConvergencePledge,
 )
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
@@ -77,7 +65,6 @@ from polylogue.sources.sqlite_snapshot import (
     sqlite_member_revision,
     sqlite_source_revision,
 )
-from polylogue.sources.walk_faults import WalkFault, WalkFaultRecorder
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 
 logger = get_logger(__name__)
@@ -88,24 +75,11 @@ logger = get_logger(__name__)
 # v3: tool-result outcomes now derive `is_error` from an explicit exit code
 # (#4539), so records parsed under v2 retain a stale unknown outcome.
 _PARSER_FINGERPRINT = "live-batched-v3"
-# A catch-up writer owns the only archive writer for the whole chunk.  The
-# former 50-file/64-MiB envelope held it for 14+ minutes on the real archive,
-# starving fresh watcher events.  Keep historical convergence fair by
-# yielding after a handful of files; one individually large source still owns
-# one bounded logical-session write, but cannot be bundled with dozens more.
-_CATCH_UP_MAX_BATCH_FILES = 4
-_CATCH_UP_MAX_BATCH_BYTES = 16 * 1024 * 1024
-# Derived convergence is deferred across several committed ingest chunks, but
-# it never becomes an unbounded end-of-backlog pass. Eight source chunks keep
-# the later FTS/insight/embedding scope finite while removing their fixed
-# setup cost from every four-file writer hold.
-_CATCH_UP_CONVERGENCE_MAX_FILES = _CATCH_UP_MAX_BATCH_FILES * 8
-_CATCH_UP_HOT_FILE_AGE_S = 60.0 * 60.0
-# polylogue-11cg9: the file/byte caps above bound a catch-up chunk's *size*
-# but not the *time* a single full-ingest pass can hold the sole archive
-# writer -- a handful of files, or one slow-to-parse file, can still exceed
-# them by any margin (the original de2a incident was an in-size-bounds 7 MB
-# chunk that held the writer for 860s). Mirrors de2a's
+# polylogue-11cg9: the dispatcher's byte budget bounds an admitted page's
+# *size* but not the *time* a single full-ingest pass can hold the sole
+# archive writer -- a handful of files, or one slow-to-parse file, can still
+# exceed it by any margin (the original de2a incident was an in-size-bounds
+# 7 MB batch that held the writer for 860s). Mirrors de2a's
 # ``_RAW_MATERIALIZATION_MAX_PASS_SECONDS`` / qlae's
 # ``_DRIVE_CATCHUP_MAX_PASS_SECONDS`` constant and value -- checked between
 # acquired files, full-ingest progress groups and archive-write records (a
@@ -122,16 +96,10 @@ _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 # NOT be treated as "the writer is done" just because the stat happened to
 # match on a second, immediate check. Only a source that has been sitting at
 # the exact same byte state for a long time is plausibly finished rather than
-# merely paused; matches the periodic catch-up safety net's own duty cycle
-# (``_PERIODIC_CATCH_UP_MAX_INTERVAL_S``) so the escalation cannot fire
-# before that safety net would have re-observed the file anyway.
+# merely paused; an hour is far longer than the dispatcher's own
+# re-discovery cadence, so the escalation cannot fire before an ordinary
+# pass would have re-observed the file anyway.
 _STUCK_DEFERRED_APPEND_AGE_S = 60.0 * 60.0
-# Filesystem notifications are the real-time delivery path.  This sweep is a
-# recovery mechanism for notifications missed while the daemon was unavailable
-# or a watch backend was briefly unhealthy.  Keeping it at the watch cadence
-# made a large, otherwise-idle archive continuously rescan itself.
-_PERIODIC_CATCH_UP_INTERVAL_S = 5.0 * 60.0
-_PERIODIC_CATCH_UP_MAX_INTERVAL_S = 60.0 * 60.0
 INBOX_SOURCE_SUFFIXES = (".jsonl", ".zip", ".json", ".ndjson", ".db", ".sqlite", ".sqlite3")
 
 
@@ -192,22 +160,6 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
             "%s: max_pass_seconds budget exceeded -- remaining files deferred to the next tick (polylogue-11cg9)",
             prefix,
         )
-
-
-def _log_unclaimed_catch_up_candidate(path: Path, *, source_name: str, reason: str) -> None:
-    """Log one file the catch-up scan reached but no source suffix accepted.
-
-    Best-effort ``stat`` for size/mtime -- a file that vanished between the
-    ``os.walk`` listing and this call is still worth a log record (it WAS
-    seen and unclaimed), just without size/mtime detail.
-    """
-    try:
-        stat_result = path.stat()
-        size: int | None = stat_result.st_size
-        mtime: float | None = stat_result.st_mtime
-    except OSError:
-        size, mtime = None, None
-    log_unclaimed_file(path=path, size=size, mtime=mtime, reason=reason, source_name=source_name)
 
 
 def _directory_identity(path: Path) -> tuple[int, int] | None:
@@ -385,37 +337,6 @@ class SessionProfileConvergenceCallback(Protocol):
     def __call__(self, session_ids: Sequence[str], /) -> Awaitable[object]: ...
 
 
-@dataclass(frozen=True, slots=True)
-class CandidateSourceFile:
-    """One statted source file candidate from a catch-up scan."""
-
-    path: Path
-    source_name: str
-    suffix: str
-    stat: os.stat_result
-
-
-@dataclass(frozen=True, slots=True)
-class CatchUpPlan:
-    """Planned catch-up work after bulk cursor comparison."""
-
-    candidates: tuple[CandidateSourceFile, ...]
-    needed: tuple[Path, ...]
-    skipped_file_count: int
-    needed_bytes: int
-    #: Files excluded because their source is halted. Reported apart from
-    #: ``skipped_file_count`` because "the cursor says there is nothing to do"
-    #: and "this source cannot make progress at all" are different facts, and
-    #: collapsing them hides a stopped source inside ordinary skip counts.
-    halted_file_count: int = 0
-    halted_sources: tuple[str, ...] = ()
-    #: Paths the catch-up scan could not read. Carried on the plan so the
-    #: terminal event reports a counted degradation naming each path: a walk
-    #: that skipped a subtree is not a walk that found it empty, and a
-    #: from-scratch rebuild has no prior row count to reveal the difference.
-    unreadable: tuple[WalkFault, ...] = ()
-
-
 def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
     """SQLite lock contention, as opposed to a broken database."""
     message = str(exc).lower()
@@ -423,12 +344,16 @@ def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
 
 
 class LiveWatcher:
-    """Async watcher that ingests grown JSONL files in batches.
+    """Filesystem watch that wakes the fair-intake dispatcher.
 
-    On startup (catch-up), all files across all roots are fingerprinted
-    and the changed ones are ingested in a single batch. During live
-    watching, files that change within the debounce window are batched
-    together.
+    Acquisition has one route: ``FairIntakeDispatcher`` discovers, plans and
+    admits pages through ``FileIntakeAdapter``, which calls
+    :meth:`_ingest_files`. This watcher owns no queue, no catch-up scan and
+    no schedule of its own -- it turns a filesystem event into a bumped
+    intake revision plus a wakeup, so the dispatcher's next pass is prompt
+    rather than waiting out its idle delay. It also owns the batch
+    processor, the cursor store and the parse stage the adapter's ingest
+    runs through.
     """
 
     def __init__(
@@ -436,22 +361,18 @@ class LiveWatcher:
         polylogue: ArchiveRootOwner,
         sources: Iterable[WatchSource],
         *,
-        debounce_s: float = 2.0,
         cursor: CursorStore | None = None,
         max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
-        catch_up_event_emitter: Callable[..., None] | None = None,
         write_coordinator: WriteCoordinator | None = None,
         parse_stage: LiveParseStage | None = None,
         embedding_owner: EmbeddingConvergenceOwner | None = None,
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
-        intake_hints_only: bool = False,
         intake_wakeup: asyncio.Event | None = None,
     ) -> None:
         self._polylogue = polylogue
         self._sources = tuple(sources)
-        self._debounce_s = debounce_s
         self._cursor = cursor or CursorStore(
             _cursor_db_path(polylogue),
             initialize=write_coordinator is None,
@@ -466,13 +387,8 @@ class LiveWatcher:
         # import (polylogue-c0l7n).
         self._embedding_owner = embedding_owner
         self._session_profile_callback = session_profile_callback
-        # The daemon's fair intake service owns acquisition when this is true.
-        # The watcher remains valuable as a low-latency wake/hint producer,
-        # but must not start a competing catch-up, debounce, or hook drain.
-        self._intake_hints_only = intake_hints_only
         self._intake_wakeup = intake_wakeup
         self._intake_revisions = dict.fromkeys((source.root for source in self._sources), 0)
-        self._catch_up_event_emitter = catch_up_event_emitter
         self._event_emitter = event_emitter
         self._published_source_halts: dict[str, str] = {}
         # polylogue-wf8a: always on -- pre-parsing runs entirely BEFORE the
@@ -494,21 +410,9 @@ class LiveWatcher:
             if parse_stage is not None
             else LiveParseStage(shard_directory=Path(polylogue.archive_root) / "parse-shards")
         )
-        self._pending_paths: set[Path] = set()
-        self._forced_reparse_paths: set[Path] = set()
-        self._pending_scheduled = False
-        self._drain_task: asyncio.Task[None] | None = None
-        self._failed_retry_task: asyncio.Task[None] | None = None
-        self._periodic_catch_up_task: asyncio.Task[None] | None = None
-        self._failed_retry_deadline: float | None = None
-        self._last_enqueue_at = 0.0
-        self._last_batch_at: float = 0.0
-        self._batch_lock = asyncio.Lock()
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._catch_up_complete = asyncio.Event()
-        self._catch_up_active = False
-        self._catch_up_convergence_deferred = False
         self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         # Set once per reconciliation scope: True when the index tier has no
         # materialized sessions at all despite source.db holding successfully
@@ -549,15 +453,6 @@ class LiveWatcher:
         """Disposable invalidation of one source's file-discovery position."""
         return self._intake_revisions[source.root]
 
-    @property
-    def catch_up_active(self) -> bool:
-        """Whether a chunked catch-up ingest loop is running right now.
-
-        Whole-archive maintenance passes wait for it to finish rather than
-        repeating archive-wide work between chunks.
-        """
-        return self._catch_up_active
-
     def _existing_source_roots(self) -> list[Path]:
         """Return configured roots that exist at the instant of a scan."""
         return [source.root for source in self._sources if source.exists()]
@@ -578,26 +473,14 @@ class LiveWatcher:
             self._catch_up_complete.set()
             return
 
-        # Register the filesystem watch before catch-up.  Starting it only
-        # after catch-up left a blind interval where a writer could append
-        # after its file was scanned but before ``awatch`` took its snapshot.
         watch_task = asyncio.create_task(self._watch_changes(roots))
         await asyncio.sleep(0)
         try:
-            if self._intake_hints_only:
-                # Discovery is deliberately owned by FairIntakeDispatcher.
-                # Mark the old gate ready so unrelated maintenance does not
-                # wait for an intake authority that is not this watcher.
-                self._catch_up_complete.set()
-            else:
-                try:
-                    await self._catch_up(roots)
-                finally:
-                    self._catch_up_complete.set()
-                self._schedule_failed_retry_scan()
-                self._ensure_pending_scheduled()
-                self._periodic_catch_up_task = asyncio.create_task(self._periodic_catch_up(roots))
-
+            # Discovery is owned by FairIntakeDispatcher, so nothing here
+            # gates on an acquisition sweep of its own. The event stays for
+            # the maintenance loops that still wait on it: it is ready as
+            # soon as the watch is registered.
+            self._catch_up_complete.set()
             logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
             await watch_task
         finally:
@@ -605,7 +488,6 @@ class LiveWatcher:
                 watch_task.cancel()
             with suppress(asyncio.CancelledError):
                 await watch_task
-            self._cancel_periodic_catch_up()
 
     async def _watch_changes(self, roots: list[Path]) -> None:
         from watchfiles import Change, awatch
@@ -619,547 +501,12 @@ class LiveWatcher:
             for change, raw_path in changes:
                 if change is Change.deleted:
                     continue
-                if self._intake_hints_only:
-                    self._enqueue(Path(raw_path))
-                    continue
-                observed_path = Path(raw_path)
-                if change is Change.added and observed_path.is_dir():
-                    self._enqueue_added_directory(observed_path)
-                    continue
-                path = self._canonical_watch_path(observed_path)
-                if path is None:
-                    continue
-                if not self._source_accepts(path):
-                    continue
-                self._enqueue(path)
+                self._note_intake_hint(Path(raw_path))
 
     def stop(self) -> None:
         self._stop.set()
-        self._cancel_failed_retry_task()
-        self._cancel_periodic_catch_up()
         if self._parse_stage is not None and self._owns_parse_stage:
             self._parse_stage.shutdown()
-
-    def cancel_pending(self) -> None:
-        task = self._drain_task
-        if task is not None and not task.done():
-            task.cancel()
-        self._drain_task = None
-        self._pending_scheduled = False
-        self._cancel_failed_retry_task()
-        self._cancel_periodic_catch_up()
-
-    async def _periodic_catch_up(self, _initial_roots: list[Path]) -> None:
-        delay_s = _PERIODIC_CATCH_UP_INTERVAL_S
-        while not self._stop.is_set():
-            await asyncio.sleep(delay_s)
-            if self._stop.is_set():
-                return
-            try:
-                roots = self._existing_source_roots()
-                if roots:
-                    await self._catch_up(roots)
-            except sqlite3.OperationalError as exc:
-                if not is_transient_sqlite_lock(exc):
-                    raise
-                logger.warning("live.watcher: archive busy during periodic catch-up; will retry")
-            # A periodic pass is deliberately a low-duty-cycle safety net.
-            # Event-driven batches and explicit failed-file retry wakeups keep
-            # normal writes and known failures prompt; repeatedly walking every
-            # source tree does neither.
-            delay_s = min(delay_s * 2, _PERIODIC_CATCH_UP_MAX_INTERVAL_S)
-
-    def _cancel_periodic_catch_up(self) -> None:
-        task = self._periodic_catch_up_task
-        if task is not None and not task.done():
-            task.cancel()
-        self._periodic_catch_up_task = None
-
-    # ------------------------------------------------------------------
-    # Catch-up: batch all changed files
-    # ------------------------------------------------------------------
-
-    async def _catch_up(self, roots: list[Path]) -> None:
-        faults = WalkFaultRecorder()
-        candidates = self._scan_catch_up_candidates(roots, faults)
-        unreadable = faults.collected()
-        if unreadable:
-            emit(
-                "source.catch_up.scan_unreadable",
-                level=WARNING,
-                outcome="degraded",
-                errors=len(unreadable),
-                path=str(unreadable[0].path),
-                error_detail="; ".join(str(fault) for fault in unreadable),
-            )
-        if not candidates:
-            if unreadable:
-                # Zero candidates behind an unreadable path is a degraded
-                # scope, never an empty one. Emitting here is what keeps the
-                # "nothing to do" exit distinguishable from "nothing could
-                # be read".
-                await self._emit_unreadable_scan_terminal(unreadable, discovered=0)
-            # A quiescent archive still redeems an interrupted cycle's pledge:
-            # the owed archive-wide stages are not conditional on new bytes.
-            await self._redeem_whole_archive_pledges(())
-            return
-
-        now = time.time()
-        hot_candidates = tuple(
-            candidate for candidate in candidates if now - candidate.stat.st_mtime <= _CATCH_UP_HOT_FILE_AGE_S
-        )
-        hot_paths = {candidate.path for candidate in hot_candidates}
-        cold_candidates = tuple(candidate for candidate in candidates if candidate.path not in hot_paths)
-        if hot_candidates:
-            logger.info(
-                "live.watcher: prioritizing %d recently modified source file(s) before backlog catch-up",
-                len(hot_candidates),
-            )
-        for group in (hot_candidates, cold_candidates):
-            if self._stop.is_set():
-                break
-            if group:
-                await self._catch_up_candidates(group, unreadable=unreadable)
-                # One plan owns the scan's faults; the second group must not
-                # report them again as if they were fresh evidence.
-                unreadable = ()
-
-    async def _catch_up_candidates(
-        self,
-        candidates: tuple[CandidateSourceFile, ...],
-        *,
-        unreadable: tuple[WalkFault, ...] = (),
-    ) -> None:
-        """Plan and ingest one priority class of catch-up candidates."""
-        plan_holder: list[CatchUpPlan] = []
-
-        async def prepare_catch_up() -> None:
-            # The preflight must precede both cursor initialization and the
-            # planning pass. ``_plan_catch_up`` can reconcile missing cursors
-            # and rebase matching filesystem observations before ingestion has
-            # a chance to apply its own gate.
-            admitted = self._batch_processor.admit_paths([candidate.path for candidate in candidates])
-            await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
-            admitted = self._batch_processor.admit_paths(admitted)
-            admitted_set = set(admitted)
-            planned = tuple(candidate for candidate in candidates if candidate.path in admitted_set)
-            logger.info("live.watcher: catch-up scan over %d file(s)", len(planned))
-            plan_holder.append(self._plan_catch_up(planned, unreadable=unreadable))
-
-        try:
-            await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
-        except CursorAuthorityBlockedError as exc:
-            logger.warning("live.watcher: catch-up planning refused by cursor authority: %s", exc)
-            if unreadable:
-                await self._emit_unreadable_scan_terminal(unreadable, discovered=len(candidates))
-            return
-        plan = plan_holder[0]
-        await self._publish_source_halts()
-        if not plan.needed:
-            if plan.unreadable:
-                # Every discovered file is cursored, but part of the scope was
-                # never discovered at all. Reporting this exit as ordinary
-                # convergence is the defect.
-                await self._emit_unreadable_scan_terminal(plan.unreadable, discovered=len(plan.candidates))
-            # Every file is cursored, so this start has no ingest to do. That
-            # is exactly the state an interrupted cycle leaves behind, and the
-            # pledge is the only evidence that its archive-wide stages never
-            # ran -- consult it before concluding the archive is converged.
-            await self._redeem_whole_archive_pledges(tuple(candidate.path for candidate in plan.candidates))
-            return
-        inherited_pledges = tuple(pledge.pledge_id for pledge in self._open_whole_archive_pledges())
-        operation_id = f"watcher-catch-up:{uuid.uuid4()}"
-        pledge_anchor = next(iter(plan.needed))
-        # Pledge before the first chunk commits a cursor. Any interrupt from
-        # here until the final flush completes -- SIGKILL, OOM, reboot, a
-        # degraded short-circuit, or a graceful stop -- leaves this row
-        # behind; without it the next start sees only cursored files.
-        await self._run_writer_sync(
-            "watcher.catch_up.pledge",
-            self._cursor.pledge_whole_archive_convergence,
-            pledge_id=operation_id,
-            anchor_path=pledge_anchor,
-        )
-        cycle_started = time.perf_counter()
-        await self._emit_catch_up_cycle(
-            operation_id=operation_id,
-            phase="start",
-            backlog_start=len(plan.candidates),
-            backlog_end=len(plan.candidates),
-            discovered=len(plan.candidates),
-            attempted=0,
-            skipped=0,
-            ingested=0,
-            quarantine_count=0,
-            errors_by_kind={},
-            cursor_before=None,
-            cursor_after=None,
-            duration_ms=0.0,
-            stage_timings_s={},
-            repair=None,
-            halted_file_count=plan.halted_file_count,
-            halted_sources=plan.halted_sources,
-        )
-        candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
-        chunks = tuple(self._chunk_catch_up_paths(plan.needed, candidate_by_path))
-        attempted = 0
-        ingested = 0
-        failed = 0
-        halted_mid_run = 0
-        stage_timings_s: dict[str, float] = {}
-        deferred_convergence_paths: list[Path] = []
-        deferred_session_ids: list[str] = []
-        whole_archive_anchor: Path | None = None
-        logger.info(
-            "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, halted=%d, chunks=%d",
-            len(plan.needed),
-            plan.needed_bytes / 1e6,
-            plan.skipped_file_count,
-            plan.halted_file_count,
-            len(chunks),
-        )
-        self._catch_up_active = True
-        try:
-            for index, chunk in enumerate(chunks, start=1):
-                if self._stop.is_set():
-                    await self._emit_catch_up_terminal(
-                        operation_id,
-                        "stopped",
-                        plan,
-                        attempted,
-                        ingested,
-                        failed,
-                        stage_timings_s,
-                        cycle_started,
-                        halted_mid_run=halted_mid_run,
-                    )
-                    return
-                if is_fully_degraded():
-                    # Every remaining chunk would take the writer lease only to
-                    # be refused at the same short-circuit. The condition holds
-                    # until restart, so the loop ends here rather than paying
-                    # one lease per chunk to learn it again.
-                    reason = degraded_reason()
-                    logger.warning(
-                        "live.watcher: catch-up stopped at chunk %d/%d, daemon degraded (%s): %s",
-                        index,
-                        len(chunks),
-                        "unknown" if reason is None else reason.code,
-                        "no reason recorded" if reason is None else reason.message,
-                    )
-                    await self._publish_source_halts()
-                    await self._emit_catch_up_terminal(
-                        operation_id,
-                        "halted",
-                        plan,
-                        attempted,
-                        ingested,
-                        failed,
-                        stage_timings_s,
-                        cycle_started,
-                        halted_mid_run=halted_mid_run,
-                    )
-                    return
-                # A source that halted after planning is dropped here too: the
-                # plan was built before the halt existed, and re-planning only
-                # helps the next pass.
-                chunk_paths = [path for path in chunk if source_halt(candidate_by_path[path].source_name) is None]
-                if len(chunk_paths) != len(chunk):
-                    halted_mid_run += len(chunk) - len(chunk_paths)
-                    await self._publish_source_halts()
-                if not chunk_paths:
-                    continue
-                chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk_paths)
-                logger.info(
-                    "live.watcher: catch-up chunk %d/%d ingesting %d file(s) (%.1f MB)",
-                    index,
-                    len(chunks),
-                    len(chunk_paths),
-                    chunk_bytes / 1e6,
-                )
-                chunk_index = index
-
-                async def ingest_chunk(
-                    chunk_index: int = chunk_index,
-                    chunk_paths: list[Path] = chunk_paths,
-                ) -> None:
-                    nonlocal attempted, ingested, failed
-                    nonlocal whole_archive_anchor
-                    # Raw and cursor commits retain their normal bounded
-                    # per-chunk boundary. Derived work accumulates across
-                    # those commits and is flushed below in a separate,
-                    # bounded convergence batch.
-                    ingest_kwargs: dict[str, Any] = {
-                        "queued_file_count": len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
-                        "skipped_file_count": plan.skipped_file_count if chunk_index == 1 else 0,
-                    }
-                    self._catch_up_convergence_deferred = True
-                    try:
-                        metrics = await self._ingest_files(chunk_paths, **ingest_kwargs)
-                    finally:
-                        self._catch_up_convergence_deferred = False
-                    if metrics is not None:
-                        _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
-                        # Keep the catch-up coordinator compatible with older
-                        # metrics objects and focused test doubles.  The chunk
-                        # itself is the authoritative fallback denominator.
-                        attempted += int(getattr(metrics, "needed_file_count", len(chunk_paths)) or len(chunk_paths))
-                        ingested += int(getattr(metrics, "succeeded_file_count", 0) or 0)
-                        failed += int(getattr(metrics, "failed_file_count", 0) or 0)
-                        for stage, elapsed_s in getattr(metrics, "stage_timings_s", {}).items():
-                            stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
-                        completed_paths = tuple(getattr(metrics, "succeeded_paths", ()) or ())
-                        changed_session_ids = tuple(getattr(metrics, "changed_session_ids", ()) or ())
-                        # A source observation can commit without creating or
-                        # updating a session.  Session IDs only narrow the
-                        # profile follow-up; the completed path still needs
-                        # the bounded generic convergence pass and its debt
-                        # outcome recorded.
-                        if completed_paths:
-                            deferred_convergence_paths.extend(completed_paths)
-                            deferred_session_ids.extend(changed_session_ids)
-                            if whole_archive_anchor is None and completed_paths:
-                                whole_archive_anchor = completed_paths[0]
-                        if (
-                            getattr(metrics, "succeeded_file_count", 0) == 0
-                            and getattr(metrics, "failed_file_count", 0) == 0
-                        ):
-                            self._defer_unaccounted_failed_retries(chunk_paths)
-
-                try:
-                    await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
-                except WriteHoldBudgetError as exc:
-                    # The chunk ran one work item past the bound it was
-                    # admitted under. Ending it here is what makes the bound
-                    # real; the files it did not reach are ordinary backlog.
-                    failed += len(chunk_paths)
-                    logger.warning(
-                        "live.watcher: catch-up chunk %d/%d ended at its declared writer-hold bound: %s",
-                        chunk_index,
-                        len(chunks),
-                        exc,
-                    )
-                    self._defer_unaccounted_failed_retries(chunk_paths)
-                except sqlite3.OperationalError as exc:
-                    if not _is_retryable_lock_error(exc):
-                        raise
-                    # A write that lost a lock race is this chunk's failure,
-                    # never the daemon's death: the cursor retry policy brings
-                    # the chunk back. Rehearsal 2026-09-05 died here while the
-                    # Drive catch-up held source.db for 112 s.
-                    failed += len(chunk_paths)
-                    logger.warning(
-                        "live.watcher: catch-up chunk %d/%d deferred, archive write lost a lock race: %s",
-                        chunk_index,
-                        len(chunks),
-                        exc,
-                    )
-                    self._defer_unaccounted_failed_retries(chunk_paths)
-                if len(deferred_convergence_paths) >= _CATCH_UP_CONVERGENCE_MAX_FILES:
-                    await self._flush_catch_up_convergence(
-                        deferred_convergence_paths,
-                        deferred_session_ids,
-                        stage_timings_s,
-                        whole_archive=False,
-                    )
-                    deferred_convergence_paths.clear()
-                    deferred_session_ids.clear()
-            if self._stop.is_set():
-                await self._emit_catch_up_terminal(
-                    operation_id,
-                    "stopped",
-                    plan,
-                    attempted,
-                    ingested,
-                    failed,
-                    stage_timings_s,
-                    cycle_started,
-                    halted_mid_run=halted_mid_run,
-                )
-                return
-            final_paths: Sequence[Path]
-            if deferred_convergence_paths:
-                final_paths = deferred_convergence_paths
-            elif whole_archive_anchor is not None:
-                # A full-size final derived batch may have flushed just before
-                # the last source chunk. Run the archive-wide stages once
-                # without reopening a broad source scope.
-                final_paths = [whole_archive_anchor]
-            else:
-                # Nothing reached a derived flush this cycle. The archive-wide
-                # stages are still owed -- to this cycle's pledge and to any
-                # it inherited -- so run them against the pledged anchor
-                # rather than releasing an unkept pledge.
-                final_paths = [pledge_anchor]
-            flushed = await self._flush_catch_up_convergence(
-                final_paths,
-                deferred_session_ids if deferred_convergence_paths else (),
-                stage_timings_s,
-                whole_archive=True,
-            )
-            if flushed:
-                await self._release_whole_archive_pledges((*inherited_pledges, operation_id))
-            backlog_end = max(0, len(plan.candidates) - plan.skipped_file_count - ingested)
-            await self._emit_catch_up_cycle(
-                operation_id=operation_id,
-                phase="end",
-                backlog_start=len(plan.candidates),
-                backlog_end=backlog_end,
-                discovered=len(plan.candidates),
-                attempted=attempted,
-                skipped=plan.skipped_file_count,
-                ingested=ingested,
-                quarantine_count=0,
-                errors_by_kind=(
-                    ({"ingest_failed": failed} if failed else {})
-                    | ({"unreadable_source_path": len(plan.unreadable)} if plan.unreadable else {})
-                ),
-                cursor_before=None,
-                cursor_after=None,
-                duration_ms=(time.perf_counter() - cycle_started) * 1000.0,
-                stage_timings_s=stage_timings_s,
-                repair={"required": failed, "performed": 0, "remaining": backlog_end},
-                halted_file_count=plan.halted_file_count + halted_mid_run,
-                halted_sources=tuple(sorted(halted_sources())),
-            )
-            await self._emit_catch_up_terminal(
-                operation_id,
-                "success",
-                plan,
-                attempted,
-                ingested,
-                failed,
-                stage_timings_s,
-                cycle_started,
-                backlog_end,
-                halted_mid_run=halted_mid_run,
-            )
-            self._schedule_failed_retry_scan()
-        except asyncio.CancelledError:
-            await self._emit_catch_up_terminal(
-                operation_id,
-                "cancelled",
-                plan,
-                attempted,
-                ingested,
-                failed,
-                stage_timings_s,
-                cycle_started,
-                halted_mid_run=halted_mid_run,
-            )
-            raise
-        except CursorAuthorityBlockedError as exc:
-            logger.warning("live.watcher: catch-up refused by cursor authority: %s", exc)
-            return
-        except BaseException:
-            await self._emit_catch_up_terminal(
-                operation_id,
-                "failure",
-                plan,
-                attempted,
-                ingested,
-                failed,
-                stage_timings_s,
-                cycle_started,
-                halted_mid_run=halted_mid_run,
-            )
-            raise
-        finally:
-            self._catch_up_active = False
-
-    async def _flush_catch_up_convergence(
-        self,
-        paths: Sequence[Path],
-        session_ids: Sequence[str],
-        stage_timings_s: dict[str, float],
-        *,
-        whole_archive: bool,
-    ) -> bool:
-        """Converge one bounded set of already-committed catch-up subjects.
-
-        Returns whether the pass actually ran. A caller holding a
-        whole-archive pledge may only release it on ``True``.
-        """
-        reason = degraded_reason()
-        if reason is not None and reason.derived_only:
-            # Source-only admission cannot resolve derived subjects or clear
-            # their retry evidence while the index generation is unavailable.
-            return False
-        unique_paths = tuple(dict.fromkeys(paths))
-        if not unique_paths:
-            return False
-        unique_session_ids = tuple(dict.fromkeys(session_ids))
-
-        await self._flush_convergence_off_writer(
-            "watcher.catch_up.convergence",
-            unique_paths,
-            unique_session_ids,
-            stage_timings_s,
-            whole_archive=whole_archive,
-        )
-        # These owners can perform network/CPU work. They must stay outside
-        # the writer admission that made the generic FTS pass and debt writes.
-        await self._converge_embeddings_off_writer(unique_paths)
-        await self._converge_session_profiles_off_writer(unique_session_ids)
-        return True
-
-    def _open_whole_archive_pledges(self) -> tuple[WholeArchiveConvergencePledge, ...]:
-        """Return catch-up pledges whose archive-wide flush never completed.
-
-        A read failure is deliberately not caught here.  Returning any value --
-        an empty tuple, or a sentinel -- would make "the ledger could not be
-        read" indistinguishable from "nothing is owed" at some caller, which is
-        the exact silent loss this pledge exists to prevent.  Letting the error
-        propagate keeps the pledge row intact, so the cycle is deferred by the
-        catch-up loop's existing lock-race policy and the next cycle redeems it.
-        """
-        return self._cursor.open_whole_archive_convergence_pledges()
-
-    async def _release_whole_archive_pledges(self, pledge_ids: Sequence[str]) -> None:
-        if not pledge_ids:
-            return
-        await self._run_writer_sync(
-            "watcher.catch_up.pledge_release",
-            self._cursor.release_whole_archive_convergence_pledges,
-            tuple(pledge_ids),
-        )
-
-    async def _redeem_whole_archive_pledges(self, fallback_paths: Sequence[Path]) -> None:
-        """Run the archive-wide stages a previous interrupted cycle still owes.
-
-        The pledge outlives the process, so this is reached on an ordinary
-        start with no ingest work at all -- the state in which the old code
-        reported a converged archive whose archive-wide projections were
-        never built.
-        """
-        if self._stop.is_set():
-            return
-        pledges = self._open_whole_archive_pledges()
-        if not pledges:
-            return
-        anchor = next(
-            (pledge.anchor_path for pledge in pledges if pledge.anchor_path.exists()),
-            None,
-        )
-        if anchor is None:
-            anchor = next((path for path in fallback_paths if path.exists()), None)
-        if anchor is None:
-            anchor = pledges[0].anchor_path
-        emit(
-            "live.catch_up.pledge.redeeming",
-            level=INFO,
-            outcome="ok",
-            pledge_count=len(pledges),
-            path=anchor,
-        )
-        flushed = await self._flush_catch_up_convergence(
-            [anchor],
-            (),
-            {},
-            whole_archive=True,
-        )
-        if flushed:
-            await self._release_whole_archive_pledges(tuple(pledge.pledge_id for pledge in pledges))
 
     def _hook_sources(self) -> tuple[WatchSource, ...]:
         """Return the declared hook-carrier sources, preserving configured order.
@@ -1174,431 +521,63 @@ class LiveWatcher:
             if source.source_id is not None and source.role in {"primary-writable", "legacy-read-only"}
         ) or tuple(source for source in self._sources if source.name == "hooks")
 
-    def _scan_catch_up_candidates(
-        self,
-        roots: list[Path],
-        faults: WalkFaultRecorder | None = None,
-    ) -> tuple[CandidateSourceFile, ...]:
-        """Statted candidates under *roots*, recording every unreadable path.
+    def _note_intake_hint(self, path: Path) -> None:
+        """Invalidate the dispatcher's walk position for the observed root.
 
-        ``faults`` collects the paths this scan could not read -- a missing
-        source root, a directory ``os.walk`` could not descend, an entry that
-        could not be statted. Without the ``onerror`` hook, ``os.walk``
-        silently omits an unreadable subtree, so the caller saw a short
-        candidate list identical to a genuinely smaller tree.
+        The hint is disposable in both directions: losing it costs latency
+        (the dispatcher's idle pass still finds the file), and a spurious one
+        costs one bounded re-walk. Nothing here decides what is ingested.
         """
-        recorder = faults if faults is not None else WalkFaultRecorder()
-        root_set = {root.resolve() for root in roots}
-        candidates: list[CandidateSourceFile] = []
-        for source in self._sources:
-            if source.root.resolve() not in root_set:
-                continue
-            if not source.exists():
-                # A configured root that is absent is evidence, not silence:
-                # an unmounted export drive otherwise reported backlog 0.
-                recorder.record(source.root, f"source root is unavailable for source {source.name!r}")
-                continue
-            walk = _SourceTreeWalk(source)
-            for directory, dirnames, filenames in os.walk(
-                source.root, followlinks=True, onerror=recorder.on_walk_error
-            ):
-                dirnames[:] = walk.descendable(Path(directory), dirnames)
-                for filename in filenames:
-                    path = Path(directory) / filename
-                    if not walk.contains(Path(directory), path):
-                        continue
-                    # A file behind a directory symlink resolves outside every
-                    # configured root, so ownership only has to settle which
-                    # source wins where roots overlap.
-                    owner = deepest_source_for_path(path, self._sources)
-                    if owner is not None and owner is not source:
-                        continue
-                    if not source.accepts(path):
-                        # Unclaimed-file sweep (mission item 2): a file this
-                        # source's own root walk reached but whose suffix no
-                        # detector is configured to accept at all. Logged here
-                        # -- the real catch-up scan, run at daemon startup and
-                        # on every periodic sweep -- rather than only from a
-                        # standalone diagnostic, so the record exists whether
-                        # or not an operator remembers to run one.
-                        _log_unclaimed_catch_up_candidate(
-                            path,
-                            source_name=source.name,
-                            reason=f"suffix not in watched set {source.suffixes} for source {source.name!r}",
-                        )
-                        continue
-                    try:
-                        stat = path.stat()
-                    except FileNotFoundError:
-                        continue
-                    except OSError as exc:
-                        recorder.record(path, f"source file could not be statted: {exc}")
-                        continue
-                    if not stat_module.S_ISREG(stat.st_mode):
-                        continue
-                    candidates.append(
-                        CandidateSourceFile(
-                            path=path,
-                            source_name=source.name,
-                            suffix=path.suffix,
-                            stat=stat,
-                        )
-                    )
-        return tuple(_interleave_by_source(candidates))
-
-    def _plan_catch_up(
-        self,
-        candidates: tuple[CandidateSourceFile, ...],
-        *,
-        unreadable: tuple[WalkFault, ...] = (),
-    ) -> CatchUpPlan:
-        if not candidates:
-            return CatchUpPlan(candidates=(), needed=(), skipped_file_count=0, needed_bytes=0, unreadable=unreadable)
-        cursor_records = self._cursor.get_records(candidate.path for candidate in candidates)
-        needed: list[Path] = []
-        rebases: list[CursorObservationRebase] = []
-        skipped = 0
-        needed_bytes = 0
-        halted = 0
-        halted_names: set[str] = set()
-        with self._archived_cursor_reconciliation_scope():
-            for candidate in candidates:
-                if self._stop.is_set():
-                    break
-                # A halted source is dropped here, where work is selected.
-                # Refusing it later, where work executes, still costs a chunk
-                # and a writer lease per candidate for as long as the halt
-                # lasts -- 926 leases held to ingest nothing in rehearsal-11.
-                if source_halt(candidate.source_name) is not None:
-                    halted += 1
-                    halted_names.add(candidate.source_name)
-                    continue
-                if self._needs_work_from_state(
-                    candidate.path,
-                    stat=candidate.stat,
-                    cursor=cursor_records.get(candidate.path),
-                    rebase_queue=rebases,
-                ):
-                    needed.append(candidate.path)
-                    needed_bytes += candidate.stat.st_size
-                else:
-                    skipped += 1
-        if rebases:
-            self._cursor.rebase_authoritative_observations(rebases)
-        if halted_names:
-            logger.warning(
-                "live.watcher: catch-up excluded %d file(s) from halted source(s): %s",
-                halted,
-                ", ".join(f"{name} ({self._halt_reason_code(name)})" for name in sorted(halted_names)),
-            )
-        return CatchUpPlan(
-            candidates=candidates,
-            needed=tuple(needed),
-            skipped_file_count=skipped,
-            needed_bytes=needed_bytes,
-            halted_file_count=halted,
-            halted_sources=tuple(sorted(halted_names)),
-            unreadable=unreadable,
-        )
-
-    @staticmethod
-    def _halt_reason_code(source_name: str) -> str:
-        reason = source_halt(source_name)
-        return "halted" if reason is None else reason.code
-
-    def _chunk_catch_up_paths(
-        self,
-        paths: tuple[Path, ...],
-        candidate_by_path: dict[Path, CandidateSourceFile],
-    ) -> tuple[tuple[Path, ...], ...]:
-        chunks: list[tuple[Path, ...]] = []
-        current: list[Path] = []
-        current_bytes = 0
-        for path in paths:
-            size = candidate_by_path[path].stat.st_size
-            would_exceed_count = len(current) >= _CATCH_UP_MAX_BATCH_FILES
-            would_exceed_bytes = current_bytes > 0 and current_bytes + size > _CATCH_UP_MAX_BATCH_BYTES
-            if current and (would_exceed_count or would_exceed_bytes):
-                chunks.append(tuple(current))
-                current = []
-                current_bytes = 0
-            current.append(path)
-            current_bytes += size
-        if current:
-            chunks.append(tuple(current))
-        return tuple(chunks)
-
-    # ------------------------------------------------------------------
-    # Live: debounced batch scheduling
-    # ------------------------------------------------------------------
-
-    def _enqueue(self, path: Path) -> None:
-        """Enqueue a path for batched ingestion after debounce."""
-        if self._intake_hints_only:
-            observed = path.resolve()
-            for root in self._intake_revisions:
-                resolved_root = root.resolve()
-                if observed.is_relative_to(resolved_root) or resolved_root.is_relative_to(observed):
-                    self._intake_revisions[root] += 1
-            if self._intake_wakeup is not None:
-                self._intake_wakeup.set()
-            return
-        self._pending_paths.add(path)
-        if self._source_name_for(path).split(":", 1)[0] == "claude-code" and path.parent.name == "tool-results":
-            session_dir = path.parent.parent
-            root_transcript = session_dir.parent / f"{session_dir.name}.jsonl"
-            owners = [root_transcript, *sorted((session_dir / "subagents").glob("agent-*.jsonl"))]
-            owner_paths = {owner for owner in owners if owner.is_file()}
-            self._pending_paths.update(owner_paths)
-            self._forced_reparse_paths.update(owner_paths)
-        self._last_enqueue_at = time.monotonic()
-        self._ensure_pending_scheduled()
-
-    def _ensure_pending_scheduled(self) -> None:
-        if not self._pending_paths or self._stop.is_set():
-            return
-        if self._drain_task is None or self._drain_task.done():
-            self._pending_scheduled = True
-            self._drain_task = asyncio.create_task(self._debounced_batch())
-
-    def _schedule_failed_retry_scan(self) -> None:
-        if self._stop.is_set():
-            return
-        due_paths: list[Path] = []
-        next_retry_at: datetime | None = None
-        for record in self._cursor.list_retry_records():
-            path = Path(record.source_path)
-            if not self._source_accepts(path):
-                continue
-            if _retry_due(record.next_retry_at):
-                due_paths.append(path)
-                continue
-            retry_at = _parse_retry_at(record.next_retry_at)
-            if retry_at is not None and (next_retry_at is None or retry_at < next_retry_at):
-                next_retry_at = retry_at
-        if due_paths:
-            logger.info("live.watcher: scheduling %d failed file(s) whose retry is due", len(due_paths))
-            self._pending_paths.update(due_paths)
-            self._ensure_pending_scheduled()
-        if next_retry_at is not None:
-            self._schedule_failed_retry_wakeup(next_retry_at)
-
-    def _schedule_failed_retry_wakeup(self, retry_at: datetime) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        delay_s = max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
-        deadline = loop.time() + delay_s
-        if (
-            self._failed_retry_task is not None
-            and not self._failed_retry_task.done()
-            and self._failed_retry_deadline is not None
-            and self._failed_retry_deadline <= deadline
-        ):
-            return
-        self._cancel_failed_retry_task()
-        self._failed_retry_deadline = deadline
-        self._failed_retry_task = asyncio.create_task(self._wake_failed_retries(delay_s))
-
-    async def _wake_failed_retries(self, delay_s: float) -> None:
-        try:
-            await asyncio.sleep(delay_s)
-            self._failed_retry_deadline = None
-            self._failed_retry_task = None
-            self._schedule_failed_retry_scan()
-        except asyncio.CancelledError:
-            raise
-
-    def _cancel_failed_retry_task(self) -> None:
-        task = self._failed_retry_task
-        if task is not None and not task.done():
-            task.cancel()
-        self._failed_retry_task = None
-        self._failed_retry_deadline = None
-
-    async def _debounced_batch(self) -> None:
-        """Wait for the debounce window, then drain pending paths serially."""
-        try:
-            await asyncio.sleep(self._debounce_s)
-
-            while not self._stop.is_set():
-                await self._wait_for_pending_quiet()
-
-                flushed = await self._flush_pending()
-                if not flushed:
-                    break
-        finally:
-            if self._pending_paths and not self._stop.is_set():
-                self._drain_task = asyncio.create_task(self._debounced_batch())
-            else:
-                self._pending_scheduled = False
-                self._drain_task = None
-
-    async def _wait_for_pending_quiet(self) -> None:
-        """Wait until no enqueue event lands during the quiet window."""
-        quiet_s = self._debounce_s
-        while self._pending_paths and not self._stop.is_set():
-            last_enqueue_at = self._last_enqueue_at
-            elapsed_s = time.monotonic() - last_enqueue_at
-            if elapsed_s >= quiet_s:
-                return
-            await asyncio.sleep(max(quiet_s - elapsed_s, 0.01))
-            if self._last_enqueue_at == last_enqueue_at:
-                return
-
-    async def _flush_pending(self) -> bool:
-        """Flush one pending path snapshot and report whether work ran."""
-        async with self._batch_lock:
-            if not self._pending_paths:
-                return False
-            # Keep the handoff immutable.  ``admit_paths`` may consume an
-            # authority refusal and narrow the local batch, but an outer
-            # retryable failure must restore the complete snapshot that was
-            # removed from the queue.  Paths enqueued after this lock is
-            # released remain in ``_pending_paths`` and are merged by the
-            # requeue helper below.
-            snapshot_paths = tuple(self._pending_paths)
-            paths = list(snapshot_paths)
-            self._pending_paths.clear()
-            forced_paths = frozenset(self._forced_reparse_paths.intersection(snapshot_paths))
-            self._forced_reparse_paths.difference_update(paths)
-
-        ingested_paths: list[Path] = []
-        converged_paths: tuple[Path, ...] = ()
-        changed_session_ids: tuple[str, ...] = ()
-        convergence_stage_timings: dict[str, float] = {}
-
-        async def requeue(
-            retry_paths: Iterable[Path],
-            retry_forced_paths: Iterable[Path],
-        ) -> None:
-            """Restore uncommitted work without disturbing concurrent enqueue."""
-            paths_to_requeue = tuple(retry_paths)
-            if not paths_to_requeue:
-                return
-            paths_to_requeue_set = set(paths_to_requeue)
-            async with self._batch_lock:
-                self._pending_paths.update(paths_to_requeue)
-                self._forced_reparse_paths.update(path for path in retry_forced_paths if path in paths_to_requeue_set)
-
-        async def flush_batch() -> None:
-            nonlocal paths, changed_session_ids, converged_paths
-            # Filtering a changed-file batch invokes cursor reconciliation and
-            # lifecycle actuators, so the source-selection proof must be
-            # consumed before initialization or any stateful decision.
-            paths = self._batch_processor.admit_paths(paths)
-            await self._run_writer_sync("watcher.live_batch.cursor_initialize", self._cursor.initialize)
-            paths = self._batch_processor.admit_paths(paths)
-            # Filter to files that actually need work.
-            cursor_records = self._cursor.get_records(paths)
-            needed = []
-            with self._archived_cursor_reconciliation_scope():
-                for path in paths:
-                    try:
-                        stat = path.stat()
-                    except FileNotFoundError:
-                        continue
-                    if path in forced_paths or self._needs_work_from_state(
-                        path, stat=stat, cursor=cursor_records.get(path)
-                    ):
-                        needed.append(path)
-            if not needed:
-                self._defer_unaccounted_failed_retries(paths)
-                return
-
-            logger.info("live.watcher: batching %d changed file(s)", len(needed))
-            ingested_paths.extend(needed)
-            try:
-                metrics = await self._ingest_files(
-                    needed,
-                    queued_file_count=len(paths),
-                    skipped_file_count=len(paths) - len(needed),
-                    # The generic stage pass runs after this coordinated
-                    # region releases the writer. Holding the lease across
-                    # Drive downloads, archive-wide materialization and the
-                    # Sinex drain is what polylogue-ssplv removes.
-                    defer_convergence=True,
-                )
-            except sqlite3.OperationalError as exc:
-                if not _is_retryable_lock_error(exc):
-                    raise
-                logger.warning("live.watcher: changed-file batch deferred, archive write lost a lock race: %s", exc)
-                self._defer_unaccounted_failed_retries(needed)
-                # ``_ingest_files`` is allowed to catch per-record failures,
-                # but a transient archive lock aborts this batch before its
-                # needed paths are durably accounted for.  Requeue only the
-                # paths that reached ingestion; the outer handlers below use
-                # the complete immutable snapshot for coordination failures.
-                await requeue(needed, forced_paths)
-                return
-            if metrics is not None:
-                changed_session_ids = tuple(getattr(metrics, "changed_session_ids", ()) or ())
-                converged_paths = tuple(getattr(metrics, "succeeded_paths", ()) or ())
-                _log_ingest_metrics("live.watcher: changed-file batch", metrics)
-                if (
-                    getattr(metrics, "succeeded_file_count", 0) == 0
-                    and getattr(metrics, "failed_file_count", 0) == 0
-                    and needed
-                ):
-                    self._defer_unaccounted_failed_retries(needed)
-            self._schedule_failed_retry_scan()
-
-        try:
-            await self._run_coordinated("watcher.live_batch", flush_batch)
-            # The writer gate is released here. The embedding stage deferred
-            # inside the coordinated region above rather than calling a
-            # provider under it; the owner runs that work now, holding neither
-            # the gate nor the embedding generation lock, so an unrelated
-            # archive writer proceeds while the provider works (polylogue-c0l7n).
-            await self._flush_convergence_off_writer(
-                "watcher.live_batch.convergence",
-                converged_paths,
-                changed_session_ids,
-                convergence_stage_timings,
-                whole_archive=True,
-            )
-            await self._converge_embeddings_off_writer(ingested_paths)
-            await self._converge_session_profiles_off_writer(changed_session_ids)
-        except WriteHoldBudgetError as exc:
-            logger.warning("live.watcher: changed-file batch ended at its declared writer-hold bound: %s", exc)
-            await requeue(snapshot_paths, forced_paths)
-        except CursorAuthorityBlockedError as exc:
-            logger.warning("live.watcher: changed-file batch refused by cursor authority: %s", exc)
-            # Authority denial must leave both durable cursor state and the
-            # in-memory work queue intact.  Otherwise the source is invisible
-            # until a later catch-up scan instead of retrying on the next
-            # authorized debounce flush.
-            await requeue(snapshot_paths, forced_paths)
-            return True
-        except sqlite3.OperationalError as exc:
-            if not is_transient_sqlite_lock(exc):
-                raise
-            logger.warning("live.watcher: archive busy; requeueing %d changed file(s)", len(snapshot_paths))
-            await requeue(snapshot_paths, forced_paths)
-            await asyncio.sleep(self._debounce_s)
-        return True
+        observed = path.resolve()
+        for root in self._intake_revisions:
+            resolved_root = root.resolve()
+            if observed.is_relative_to(resolved_root) or resolved_root.is_relative_to(observed):
+                self._intake_revisions[root] += 1
+        if self._intake_wakeup is not None:
+            self._intake_wakeup.set()
 
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def _defer_unaccounted_failed_retries(self, paths: list[Path]) -> None:
-        """Move no-op failed retries back into backoff instead of hot-looping."""
-        deferred = 0
-        for path in paths:
-            record = self._cursor.get_record(path)
-            if record is None or record.excluded or record.failure_count <= 0:
-                continue
-            if not _retry_due(record.next_retry_at):
-                continue
-            self._cursor.mark_failed(path)
-            deferred += 1
-        if deferred:
-            logger.warning(
-                "live.watcher: deferred %d failed retry file(s) after no-op ingest batch",
-                deferred,
-            )
+    def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+        """Narrow one admitted page to the files that actually need ingesting.
+
+        The dispatcher's discovery is a bounded walk with a disposable
+        position, so it re-offers files whose cursor already accounts for
+        them. This is the one place that decides, in bulk, which of those are
+        real work: the cursor comparison, the archived-cursor reconciliation
+        scope (one read-only connection pair for the whole page rather than
+        one per file) and the device-drift rebase all run here, before the
+        batch takes any writer admission.
+
+        A file this returns nothing for is not refused -- the caller reports
+        it as already admitted under its own identity, which is what the
+        cursor says.
+        """
+        if not paths:
+            return ()
+        cursor_records = self._cursor.get_records(paths)
+        rebases: list[CursorObservationRebase] = []
+        needed: list[Path] = []
+        with self._archived_cursor_reconciliation_scope():
+            for path in paths:
+                if self._stop.is_set():
+                    break
+                try:
+                    stat = path.stat()
+                except FileNotFoundError:
+                    continue
+                if self._needs_work_from_state(
+                    path,
+                    stat=stat,
+                    cursor=cursor_records.get(path),
+                    rebase_queue=rebases,
+                ):
+                    needed.append(path)
+        if rebases:
+            self._cursor.rebase_authoritative_observations(rebases)
+        return tuple(needed)
 
     def _needs_work(self, path: Path) -> bool:
         """Return True if the file is new, grown, or fingerprint-changed."""
@@ -2218,96 +1197,37 @@ class LiveWatcher:
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
-        whole_archive_convergence: bool = True,
-        defer_convergence: bool = False,
+        whole_archive_convergence: bool = False,
     ) -> LiveBatchMetrics:
-        """Ingest files through the reusable daemon live batch processor."""
+        """Ingest one admitted page through the daemon live batch processor.
+
+        The writer hold is taken once for the page, not once per file. It
+        cannot yet be dropped altogether: ``ingest_files`` performs ops-tier
+        writes (attempt progress, convergence debt, cursor commits) that are
+        not individually admitted, and process-wide lease enforcement refuses
+        an unadmitted write. Making each of those self-admitting -- the shape
+        the convergence stages already moved to -- is what removes this hold;
+        until then the page is what bounds it, and a page is what the
+        dispatcher's byte budget bounds.
+
+        The lock is process-local ordering on top of that: one live ingest at
+        a time in this process.
+        """
         self._batch_processor.require_cursor_authority(paths)
         async with self._ingest_lock:
 
             async def ingest() -> LiveBatchMetrics:
-                ingest_kwargs: dict[str, Any] = {
-                    "queued_file_count": queued_file_count,
-                    "skipped_file_count": skipped_file_count,
-                    "max_pass_seconds": _LIVE_INGEST_MAX_PASS_SECONDS,
-                    "whole_archive_convergence": whole_archive_convergence,
-                }
-                if defer_convergence or self._catch_up_convergence_deferred:
-                    ingest_kwargs["defer_convergence"] = True
                 return await self._batch_processor.ingest_files(
                     paths,
-                    **ingest_kwargs,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                    whole_archive_convergence=whole_archive_convergence,
                 )
 
             if self._write_coordinator is None:
-                metrics = await ingest()
-            else:
-                metrics = await self._write_coordinator.run("watcher.live_ingest", ingest)
-        return metrics
-
-    def _stage_write_admission(self) -> Callable[[str, Callable[[], Any]], Any] | None:
-        """Admission that hands one stage's write section to the daemon writer.
-
-        Built from the injected coordinator rather than a daemon import: this
-        package must not depend on the daemon surface. The ``None`` timeout is
-        deliberate -- the coordinator owns the worker until the transaction
-        really returns, so a caller-side timeout can never admit a second
-        archive writer for the same partition.
-        """
-        coordinator = self._write_coordinator
-        if coordinator is None:
-            return None
-        loop = asyncio.get_running_loop()
-
-        def admission(actor: str, work: Callable[[], Any]) -> Any:
-            return asyncio.run_coroutine_threadsafe(coordinator.run_sync(actor, work), loop).result()
-
-        return admission
-
-    async def _flush_convergence_off_writer(
-        self,
-        actor: str,
-        paths: Sequence[Path],
-        session_ids: Sequence[str],
-        stage_timings_s: dict[str, float],
-        *,
-        whole_archive: bool,
-    ) -> None:
-        """Run the generic stage pass with the writer lease released.
-
-        The pass used to run inside ``run_sync``, so a Drive download, an
-        archive-wide graph materialization and a Sinex transport drain all
-        executed while every other archive writer queued behind them
-        (polylogue-ssplv). Each stage now brackets its own short publication
-        with ``admit_stage_write``; a stage that has not split compute from
-        publication yet says so in its ``writer_admission`` field and the
-        engine brackets that stage alone.
-        """
-        unique_paths = tuple(dict.fromkeys(paths))
-        if not unique_paths:
-            return
-        unique_session_ids = tuple(dict.fromkeys(session_ids))
-        admission = self._stage_write_admission()
-
-        def run_pass() -> tuple[dict[str, float], list[ConvergenceDebt]]:
-            with stage_write_admission(admission):
-                _completed, _elapsed, timings, debts = self._batch_processor._converge_paths(
-                    unique_paths,
-                    whole_archive=whole_archive,
-                    session_ids=unique_session_ids,
-                )
-            return timings, debts
-
-        timings, debts = await asyncio.to_thread(run_pass)
-        debt_by_source_path = debt_by_path(debts)
-
-        def record_outcomes() -> None:
-            for path in unique_paths:
-                self._batch_processor._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
-
-        await self._run_writer_sync(f"{actor}.outcome", record_outcomes)
-        for stage, elapsed_s in timings.items():
-            stage_timings_s[stage] = stage_timings_s.get(stage, 0.0) + elapsed_s
+                return await ingest()
+            return cast(LiveBatchMetrics, await self._write_coordinator.run("watcher.live_ingest", ingest))
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""
@@ -2332,80 +1252,6 @@ class LiveWatcher:
             # Source admission is already durable.  The owner reconstructs
             # missed work from output inspection in its periodic no-hint pass.
             logger.warning("live.watcher: lease-free session profile convergence did not complete", exc_info=True)
-
-    async def _emit_unreadable_scan_terminal(
-        self,
-        unreadable: tuple[WalkFault, ...],
-        *,
-        discovered: int,
-    ) -> None:
-        """Report a scan whose scope was partly unreadable as degraded.
-
-        Used on the exits that end a cycle without running the ordinary
-        terminal emit -- no candidates at all, planning refused, or nothing
-        needing work. Those exits previously produced no record whatsoever,
-        which is how an unmounted root read as a converged source.
-        """
-        await self._emit_catch_up_cycle(
-            operation_id=f"watcher-catch-up-scan:{uuid.uuid4()}",
-            phase="terminal",
-            backlog_start=discovered,
-            backlog_end=0,
-            discovered=discovered,
-            attempted=0,
-            skipped=0,
-            ingested=0,
-            quarantine_count=0,
-            errors_by_kind={"unreadable_source_path": len(unreadable)},
-            cursor_before=None,
-            cursor_after=None,
-            duration_ms=0.0,
-            stage_timings_s={},
-            repair=None,
-            unreadable_paths=tuple(str(fault.path) for fault in unreadable),
-            terminal_outcome="degraded",
-        )
-
-    async def _emit_catch_up_terminal(
-        self,
-        operation_id: str,
-        outcome: str,
-        plan: CatchUpPlan,
-        attempted: int,
-        ingested: int,
-        failed: int,
-        stage_timings_s: Mapping[str, float],
-        cycle_started: float,
-        backlog_end: int | None = None,
-        halted_mid_run: int = 0,
-    ) -> None:
-        resolved_backlog_end = (
-            max(0, len(plan.candidates) - plan.skipped_file_count - ingested) if backlog_end is None else backlog_end
-        )
-        await self._emit_catch_up_cycle(
-            operation_id=operation_id,
-            phase="terminal",
-            backlog_start=len(plan.candidates),
-            backlog_end=resolved_backlog_end,
-            discovered=len(plan.candidates),
-            attempted=attempted,
-            skipped=plan.skipped_file_count,
-            ingested=ingested,
-            quarantine_count=0,
-            errors_by_kind={"ingest_failed": failed} if failed else {},
-            cursor_before=None,
-            cursor_after=None,
-            duration_ms=(time.perf_counter() - cycle_started) * 1000.0,
-            stage_timings_s=stage_timings_s,
-            repair={"required": failed, "performed": 0, "remaining": resolved_backlog_end},
-            halted_file_count=plan.halted_file_count + halted_mid_run,
-            halted_sources=tuple(sorted(set(plan.halted_sources) | set(halted_sources()))),
-            unreadable_paths=tuple(str(fault.path) for fault in plan.unreadable),
-            # A cycle that ingested everything it discovered is still degraded
-            # when part of its scope was never discovered. ``success`` is only
-            # honest over a scope that was fully readable.
-            terminal_outcome=("degraded" if plan.unreadable and outcome == "success" else outcome),
-        )
 
     async def _publish_source_halts(self) -> None:
         """Record every newly halted source as a durable event, once each.
@@ -2432,15 +1278,6 @@ class LiveWatcher:
                 emitter,
                 "source_ingest_halted",
                 payload,
-            )
-
-    async def _emit_catch_up_cycle(self, **kwargs: object) -> None:
-        """Persist lifecycle facts through the daemon's write coordinator."""
-        if self._catch_up_event_emitter is not None:
-            await self._run_writer_sync(
-                "watcher.catch_up.event",
-                self._catch_up_event_emitter,
-                **kwargs,
             )
 
     async def _run_coordinated(self, actor: str, operation: Callable[[], Awaitable[None]]) -> None:
@@ -2560,16 +1397,7 @@ class LiveWatcher:
 
         if not self._directory_is_watch_relevant(directory):
             return
-        if self._intake_hints_only:
-            self._enqueue(directory)
-            return
-        for parent, dir_names, file_names in os.walk(directory):
-            dir_names[:] = [name for name in dir_names if self._directory_is_watch_relevant(Path(parent) / name)]
-            for name in file_names:
-                candidate = Path(parent) / name
-                canonical = self._canonical_watch_path(candidate)
-                if canonical is not None:
-                    self._enqueue(canonical)
+        self._note_intake_hint(directory)
 
     def _watch_filter(self, _change: object, path: str) -> bool:
         """Accept configured source files under hidden canonical roots.
@@ -2584,40 +1412,6 @@ class LiveWatcher:
         return self._canonical_watch_path(observed_path) is not None or (
             observed_path.is_dir() and self._directory_is_watch_relevant(observed_path)
         )
-
-
-def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[CandidateSourceFile]:
-    """Round-robin candidates across source families (#1616).
-
-    Plain alphabetical sort by path puts all of one source's files
-    before any of another's, so a long-source-first catch-up hides
-    small-source ingestion progress for hours. Bucket by source_name,
-    sort each bucket by path for determinism, then round-robin across
-    buckets so the first chunk contains some of every present family.
-
-    Exception: browser-capture spool files drain FIRST. The raw
-    materialization conveyor yields the writer while any spool file
-    lacks a cursor (daemon/cli.py), so interleaving them across the
-    whole plan parks source→index self-healing for the entire catch-up
-    (observed live 2026-07-18: conveyor idle for hours behind ~600
-    spooled captures spread over ~700 chunks).
-    """
-    buckets: dict[str, list[CandidateSourceFile]] = {}
-    for candidate in candidates:
-        buckets.setdefault(candidate.source_name, []).append(candidate)
-    for source_name in buckets:
-        buckets[source_name].sort(key=lambda candidate: candidate.path)
-    ordered: list[CandidateSourceFile] = list(buckets.pop("browser-capture", []))
-    iterators = [iter(buckets[name]) for name in sorted(buckets)]
-    while iterators:
-        next_round = []
-        for it in iterators:
-            picked = next(it, None)
-            if picked is not None:
-                ordered.append(picked)
-                next_round.append(it)
-        iterators = next_round
-    return ordered
 
 
 def _legacy_data_home_inbox_sources() -> tuple[WatchSource, ...]:

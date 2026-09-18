@@ -37,6 +37,7 @@ from polylogue.daemon.intake import (
 )
 from polylogue.daemon.observation import ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
+from polylogue.logging import capture
 from polylogue.operations.intake_adapters import (
     CallbackIntakeAdapter,
     DaemonIntakeContext,
@@ -1050,6 +1051,7 @@ async def test_a_durably_excluded_file_is_not_reported_as_a_duplicate(
                 stale_cursor_write_count=0,
                 excluded_file_count=1,
                 excluded_reasons={"unsupported_shape": 1},
+                excluded_paths={str(capture): "unsupported_shape"},
                 source_payload_read_bytes=len("{}"),
             )
 
@@ -1243,3 +1245,248 @@ async def test_a_raising_discovery_is_published_unmeasured_not_as_zeros() -> Non
     observation = board.snapshot()["intake.broken"]
     assert observation.state is ObservationState.FAILED
     assert "spool directory vanished" in (observation.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_a_dispatcher_pass_admits_its_whole_page_as_one_ingest_batch(tmp_path: Path) -> None:
+    """polylogue-v4dcc: one page is one ingest batch, with per-item outcomes.
+
+    Every per-batch fixed cost the live route pays -- the writer hold, the
+    tier bootstrap, the convergence pass -- is paid once per page here. The
+    outcomes still come back per path, so deficit, retry and isolation
+    accounting are unchanged.
+
+    Anti-vacuity: restore per-item admission (``admit`` once per file inside
+    the dispatcher loop, or an ``admit_page`` that loops over ``admit``) and
+    this goes red on the ingest-call count, the convergence call counts, and
+    the per-path outcome split below.
+    """
+
+    paths = [tmp_path / f"session-{index}.json" for index in range(5)]
+    for path in paths:
+        path.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+    admitted, excluded_path, deferred_path = paths[:3], paths[3], paths[4]
+
+    class PageWatcher:
+        def __init__(self) -> None:
+            self.ingest_batches: list[list[Path]] = []
+            self.embedding_calls: list[tuple[Path, ...]] = []
+            self.profile_calls: list[tuple[str, ...]] = []
+
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, batch: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            self.ingest_batches.append(list(batch))
+            return SimpleNamespace(
+                succeeded_file_count=len(admitted),
+                succeeded_paths=tuple(admitted),
+                failed_file_count=0,
+                failed_paths=[str(deferred_path)],
+                deferred_paths=(str(deferred_path),),
+                excluded_file_count=1,
+                excluded_reasons={"unsupported_shape": 1},
+                excluded_paths={str(excluded_path): "unsupported_shape"},
+                stale_cursor_write_count=0,
+                source_payload_read_bytes=50,
+                changed_session_ids=("s1", "s2"),
+            )
+
+        async def _converge_embeddings_off_writer(self, batch: Sequence[Path]) -> None:
+            self.embedding_calls.append(tuple(batch))
+
+        async def _converge_session_profiles_off_writer(self, session_ids: Sequence[str]) -> None:
+            self.profile_calls.append(tuple(session_ids))
+
+    watcher = PageWatcher()
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=8)])
+
+    result = await dispatcher.run_once(budget=1_000_000)
+
+    assert watcher.ingest_batches == [paths]
+    assert watcher.embedding_calls == [tuple(admitted)]
+    assert watcher.profile_calls == [("s1", "s2")]
+    report = result.require_report("capture")
+    assert (report.admitted, report.excluded, report.deferred, report.retried) == (3, 1, 1, 0)
+    assert result.progressed is True
+
+
+@pytest.mark.asyncio
+async def test_a_page_never_splits_below_one_file_and_stops_at_the_class_share(tmp_path: Path) -> None:
+    """A page fills up to the class byte share and is never split below one file.
+
+    Anti-vacuity: drop the byte-aware plan (admit the whole discovered page
+    regardless of deficit) and the first assertion goes red; refuse an item
+    larger than the share and the second does.
+    """
+
+    batches: list[list[Path]] = []
+
+    class RecordingAdapter:
+        def __init__(self, items: Sequence[IntakeItem]) -> None:
+            self._items = tuple(items)
+
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            return self._items[:limit]
+
+        async def admit(self, item: IntakeItem) -> AdmissionResult:
+            # An adapter still owes the per-item entry point: the dispatcher
+            # falls back to it whenever a page-shaped one is absent.
+            return (await self.admit_page((item,)))[item.item_id]
+
+        async def admit_page(self, items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
+            batches.append([cast(Path, item.payload) for item in items])
+            return {item.item_id: AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=1) for item in items}
+
+        async def acknowledge(self, _item: IntakeItem) -> None:
+            return None
+
+    def _item(name: str, cost: int) -> IntakeItem:
+        return IntakeItem(item_id=name, class_name="capture", payload=tmp_path / name, estimated_cost=cost)
+
+    page = [_item("a", 40), _item("b", 40), _item("c", 40)]
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=RecordingAdapter(page), page_size=8)])
+    await dispatcher.run_once(budget=100)
+    assert [path.name for path in batches[0]] == ["a", "b"]
+
+    batches.clear()
+    whale = [_item("whale", 10_000)]
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=RecordingAdapter(whale), page_size=8)])
+    await dispatcher.run_once(budget=100)
+    assert [path.name for path in batches[0]] == ["whale"]
+
+
+def _linked_export_source(tmp_path: Path) -> tuple[WatchSource, Path]:
+    """A source root whose export tree is reached through an in-root link."""
+
+    root = tmp_path / "root"
+    export = root / "store" / "2026-09"
+    export.mkdir(parents=True)
+    (export / "session.json").write_text("{}")
+    (root / "current").symlink_to(export, target_is_directory=True)
+    return WatchSource(name="capture", root=root, suffixes=(".json",)), root / "current" / "session.json"
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_export_tree_is_discovered_and_admitted(tmp_path: Path) -> None:
+    """polylogue-lu1dk: an export tree behind an in-root link is acquired.
+
+    Anti-vacuity: restore ``entry.is_dir(follow_symlinks=False)`` as the only
+    directory test in ``_ordered_children`` and the walk never enters
+    ``current/``, so the linked path is never discovered and never ingested.
+    """
+
+    source, linked_session = _linked_export_source(tmp_path)
+    ingested: list[Path] = []
+
+    class RecordingWatcher:
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            ingested.extend(paths)
+            return SimpleNamespace(
+                succeeded_file_count=len(paths),
+                failed_file_count=0,
+                stale_cursor_write_count=0,
+                source_payload_read_bytes=2 * len(paths),
+                succeeded_paths=[str(path) for path in paths],
+            )
+
+        async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
+            return None
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=tmp_path / "archive",
+            watcher=RecordingWatcher(),  # type: ignore[arg-type]
+            sources=(source,),
+        ),
+        source,
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=8)])
+
+    result = await dispatcher.run_once(budget=64)
+
+    assert result.require_report("capture").discovered >= 1
+    assert linked_session in ingested
+
+
+def test_a_symlink_cycle_terminates_and_is_reported_once(tmp_path: Path) -> None:
+    """A link back to an ancestor ends the walk instead of recursing forever.
+
+    Anti-vacuity: drop the ``visited_real_paths`` check in
+    ``_admit_linked_directory`` and this walk descends ``loop/loop/loop/...``
+    until the recursion limit; drop the fault emission and the cycle is
+    silent.
+    """
+
+    root = tmp_path / "root"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    kept = nested / "session.json"
+    kept.write_text("{}")
+    (nested / "loop").symlink_to(root, target_is_directory=True)
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    with capture() as records:
+        found = _bounded_source_paths(source, (source,), limit=32, after=None)
+
+    assert found == [kept]
+    cycles = [record for record in records if record.get("reason") == "symlink_cycle"]
+    assert [record["path"] for record in cycles] == [str(nested / "loop")]
+    assert cycles[0]["event"] == "daemon.intake.discovery_failed"
+
+
+def test_a_dangling_symlink_is_a_fault_not_a_crash(tmp_path: Path) -> None:
+    """A link whose target is gone is counted, and its siblings still discovered.
+
+    Anti-vacuity: remove the broken-symlink branch in ``_ordered_children``
+    and the missing export vanishes from the walk with no record at all.
+    """
+
+    root = tmp_path / "root"
+    root.mkdir()
+    kept = root / "session.json"
+    kept.write_text("{}")
+    (root / "gone.json").symlink_to(tmp_path / "never-existed.json")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    with capture() as records:
+        found = _bounded_source_paths(source, (source,), limit=32, after=None)
+
+    assert found == [kept]
+    faults = [record for record in records if record.get("reason") == "broken_symlink"]
+    assert [record["path"] for record in faults] == [str(root / "gone.json")]
+    assert faults[0]["event"] == "daemon.intake.discovery_failed"
+
+
+def test_a_directory_symlink_escaping_the_source_root_is_refused(tmp_path: Path) -> None:
+    """Containment outranks following: an escaping link is a fault, not material.
+
+    Anti-vacuity: drop the containment check in ``_admit_linked_directory``
+    and ``outside/secret.json`` -- a tree this source was never configured to
+    read -- is discovered as intake material.
+    """
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.json").write_text("{}")
+    root = tmp_path / "root"
+    root.mkdir()
+    kept = root / "session.json"
+    kept.write_text("{}")
+    (root / "escape").symlink_to(outside, target_is_directory=True)
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+
+    with capture() as records:
+        found = _bounded_source_paths(source, (source,), limit=32, after=None)
+
+    assert found == [kept]
+    escapes = [record for record in records if record.get("reason") == "escaping_symlink"]
+    assert [record["path"] for record in escapes] == [str(root / "escape")]

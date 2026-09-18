@@ -128,6 +128,17 @@ class LiveBatchMetrics:
     #: pass that admits nothing is never reported as an idle one.
     excluded_file_count: int = 0
     excluded_reasons: dict[str, int] = field(default_factory=dict)
+    #: The excluded paths themselves, mapped to their typed reason. The
+    #: counts above aggregate by reason and so cannot say *which* file was
+    #: refused; a page-shaped admitter reports one outcome per item and
+    #: needs exactly that. Deliberately absent from ``to_payload``: source
+    #: paths are scheduling evidence, not operator telemetry.
+    excluded_paths: dict[str, str] = field(default_factory=dict)
+    #: Paths this batch deliberately deferred (bounded backpressure: no new
+    #: authority-relevant append this pass). Folded into ``failed_paths``
+    #: for the retry projection, but a deferral is not a failure and an
+    #: item-level admitter must not report it as one.
+    deferred_paths: tuple[str, ...] = ()
     failed_paths: list[str] = field(default_factory=list)
     # Internal scheduling evidence for a later catch-up convergence batch.
     # This is deliberately absent from event payloads: source paths are not

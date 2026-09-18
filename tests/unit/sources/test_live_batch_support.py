@@ -4700,11 +4700,8 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
 
     monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", original_hash)
     watcher = LiveWatcher(polylogue, (WatchSource(name="codex", root=root),), cursor=cursor)
-    scheduled_retries: list[object] = []
-    monkeypatch.setattr(watcher, "_schedule_failed_retry_wakeup", scheduled_retries.append)
-    watcher._schedule_failed_retry_scan()
-    assert len(scheduled_retries) == 1
-
+    # The deferred observation carries its own retry time; the dispatcher
+    # re-offers the file on a later pass and the selection below decides.
     original_reconcile = watcher._reconcile_archived_cursor_outcome
     monkeypatch.setattr(
         watcher,

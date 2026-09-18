@@ -814,7 +814,6 @@ async def test_the_freshness_gate_skips_a_checkpointed_but_unchanged_database(
             ),
             (_hermes_source(root),),
             cursor=cursor,
-            debounce_s=0.0,
         )
         record = cursor.get_record(source_path)
         assert record is not None
@@ -851,7 +850,6 @@ async def test_the_freshness_gate_reopens_a_logically_changed_database(
             ),
             (_hermes_source(root),),
             cursor=cursor,
-            debounce_s=0.0,
         )
         record = cursor.get_record(source_path)
         assert record is not None
@@ -876,7 +874,6 @@ def test_an_out_of_scope_database_is_not_a_declared_codex_member(tmp_path: Path)
         ),
         (WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db")),),
         cursor=cursor,
-        debounce_s=0.0,
     )
 
     assert watcher._is_declared_codex_database(root / "state_5.sqlite") is True

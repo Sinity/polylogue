@@ -98,7 +98,7 @@ async def _acquire(archive_root: Path, spool_root: Path) -> int:
     from polylogue.sources.live.watcher import LiveWatcher
 
     sources = _carrier_sources(spool_root)
-    watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources, intake_hints_only=True)
+    watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources)
     context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
     dispatcher = FairIntakeDispatcher(
         tuple(

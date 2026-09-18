@@ -4,7 +4,6 @@ debounce, bootstrap scan, and end-to-end via the watchfiles event loop."""
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import shutil
 import sqlite3
@@ -25,8 +24,12 @@ from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.daemon.events import emit_catch_up_cycle, query_daemon_events
-from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
+from polylogue.operations.intake_adapters import (
+    DaemonIntakeContext,
+    FileIntakeAdapter,
+    _bounded_source_paths,
+)
 from polylogue.readiness.capability import raw_frontier_integrity_projection
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
@@ -247,77 +250,56 @@ async def test_live_watcher_refuses_ahead_cursor_before_append_or_full_write(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("force_full_fallback", [False, True], ids=["append-route", "full-fallback-route"])
-async def test_live_watcher_catch_up_refuses_ahead_cursor_before_cursor_planning(
+async def test_page_admission_refuses_an_ahead_cursor_before_touching_cursor_state(
     tmp_path: Path,
     force_full_fallback: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Catch-up must stop before initialize or planning can mutate cursor state."""
+    """Admission stops before initialize or the needs-work selection can run.
+
+    Anti-vacuity: move the authority check after ``cursor.initialize`` (or
+    after the selection) in ``FileIntakeAdapter.admit_page`` and the call
+    counters below go non-zero.
+    """
     _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
         tmp_path,
         force_full_fallback=force_full_fallback,
     )
-    candidates = watcher._scan_catch_up_candidates([source_path.parent])
     before = _live_archive_snapshot(tmp_path)
     initialize_calls = 0
-    plan_calls = 0
+    select_calls = 0
 
     def track_initialize() -> None:
         nonlocal initialize_calls
         initialize_calls += 1
 
-    def track_plan(_candidates: tuple[live_watcher.CandidateSourceFile, ...]) -> live_watcher.CatchUpPlan:
-        nonlocal plan_calls
-        plan_calls += 1
-        raise AssertionError("cursor authority must gate catch-up before planning")
-
-    monkeypatch.setattr(cursor, "initialize", track_initialize)
-    monkeypatch.setattr(watcher, "_plan_catch_up", track_plan)
-
-    await watcher._catch_up_candidates(candidates)
-
-    assert initialize_calls == 0
-    assert plan_calls == 0
-    assert _live_archive_snapshot(tmp_path) == before
-    watcher.stop()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("force_full_fallback", [False, True], ids=["append-route", "full-fallback-route"])
-async def test_live_watcher_flush_refuses_ahead_cursor_before_cursor_filtering(
-    tmp_path: Path,
-    force_full_fallback: bool,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Flush must stop before initialize or cursor lifecycle decisions can run."""
-    _processor, watcher, cursor, source_path = _seed_live_cursor_authority_case(
-        tmp_path,
-        force_full_fallback=force_full_fallback,
-    )
-    watcher._pending_paths.add(source_path)
-    before = _live_archive_snapshot(tmp_path)
-    initialize_calls = 0
-    filter_calls = 0
-
-    def track_initialize() -> None:
-        nonlocal initialize_calls
-        initialize_calls += 1
-
-    def fail_filter(*args: object, **kwargs: object) -> bool:
+    def fail_select(*args: object, **kwargs: object) -> bool:
         del args, kwargs
-        nonlocal filter_calls
-        filter_calls += 1
-        raise AssertionError("cursor authority must gate flush before cursor filtering")
+        nonlocal select_calls
+        select_calls += 1
+        raise AssertionError("cursor authority must gate admission before cursor filtering")
 
     monkeypatch.setattr(cursor, "initialize", track_initialize)
-    monkeypatch.setattr(watcher, "_needs_work_from_state", fail_filter)
+    monkeypatch.setattr(watcher, "_needs_work_from_state", fail_select)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        watcher._sources[0],
+    )
+    item = IntakeItem(
+        item_id=f"file:{source_path}",
+        class_name=watcher._sources[0].name,
+        payload=source_path,
+        estimated_cost=source_path.stat().st_size,
+    )
 
-    assert await watcher._flush_pending() is True
+    outcomes = await adapter.admit_page((item,))
 
+    assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.RETRYABLE]
+    assert "source-selection gate blocked" in str(outcomes[item.item_id].reason)
     assert initialize_calls == 0
-    assert filter_calls == 0
+    assert select_calls == 0
     assert _live_archive_snapshot(tmp_path) == before
-    assert watcher._pending_paths == {source_path}
+    assert adapter._after is None
     watcher.stop()
 
 
@@ -1166,9 +1148,7 @@ def _make_watcher(
     tmp_path: Path,
     root: Path,
     *,
-    debounce_s: float = 0.01,
     event_emitter: MagicMock | None = None,
-    catch_up_event_emitter: Callable[..., None] | None = None,
     write_coordinator: WriteCoordinator | None = None,
     sources: tuple[WatchSource, ...] | None = None,
 ) -> tuple[LiveWatcher, _FullIngestMock]:
@@ -1179,10 +1159,8 @@ def _make_watcher(
     watcher = LiveWatcher(
         polylogue,
         sources,
-        debounce_s=debounce_s,
         cursor=cursor,
         event_emitter=event_emitter,
-        catch_up_event_emitter=catch_up_event_emitter,
         write_coordinator=write_coordinator,
     )
     full_ingest = _FullIngestMock()
@@ -1207,7 +1185,13 @@ def test_watcher_default_cursor_uses_archive_database(tmp_path: Path) -> None:
     assert watcher._cursor._db_path == db_path
 
 
-def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_page_selection_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """One page reads its cursor rows in one bulk call, never one read per file.
+
+    Anti-vacuity: replace the bulk ``get_records`` in
+    ``select_ingest_candidates`` with a per-path ``get_record`` loop and the
+    stubbed per-file reader below raises.
+    """
     root = tmp_path / "src"
     root.mkdir()
     files = [root / f"session-{index}.jsonl" for index in range(3)]
@@ -1225,163 +1209,11 @@ def test_catch_up_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: pytest.M
     def fail_get_record(path: Path) -> CursorRecord | None:
         raise AssertionError(f"catch-up should use bulk cursor reads, not per-file reads: {path}")
 
-    captured: dict[str, object] = {}
-
-    async def fake_ingest_files(
-        paths: list[Path],
-        *,
-        queued_file_count: int | None = None,
-        skipped_file_count: int = 0,
-        **_kwargs: object,
-    ) -> None:
-        captured["paths"] = paths
-        captured["queued_file_count"] = queued_file_count
-        captured["skipped_file_count"] = skipped_file_count
-
     monkeypatch.setattr(watcher._cursor, "get_records", counted_get_records)
     monkeypatch.setattr(watcher._cursor, "get_record", fail_get_record)
-    watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
 
-    asyncio.run(watcher._catch_up([root]))
-
+    assert list(watcher.select_ingest_candidates(files)) == files
     assert bulk_calls == 1
-    assert captured["paths"] == files
-    assert captured["queued_file_count"] == 3
-    assert captured["skipped_file_count"] == 0
-
-
-def test_real_catch_up_route_emits_coordinated_success_lifecycle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    source = root / "session.jsonl"
-    source.write_text('{"role":"user","content":"a"}\n')
-    archive_root = tmp_path / "archive"
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
-    coordinator_events: list[DaemonWriteEvent] = []
-    coordinator = DaemonWriteCoordinator(observer=coordinator_events.append)
-    watcher, full_ingest = _make_watcher(
-        tmp_path,
-        root,
-        catch_up_event_emitter=emit_catch_up_cycle,
-        write_coordinator=coordinator,
-    )
-
-    asyncio.run(watcher._catch_up([root]))
-
-    assert full_ingest.await_count == 1
-    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
-    payloads: list[dict[str, object]] = []
-    for event in events:
-        payload = event["payload"]
-        assert isinstance(payload, dict)
-        payloads.append(payload)
-    assert [payload["phase"] for payload in payloads] == ["start", "end", "terminal"]
-    start, end, terminal = events
-    assert start["operation_id"] == end["operation_id"] == terminal["operation_id"]
-    start_payload, end_payload, terminal_payload = payloads
-    assert start_payload["backlog_start"] == 1
-    assert end_payload["attempted"] == 1
-    assert end_payload["ingested"] == 1
-    assert end_payload["backlog_end"] == 0
-    assert terminal_payload["terminal_outcome"] == "success"
-    assert [
-        event.actor
-        for event in coordinator_events
-        if event.actor == "watcher.catch_up.event" and event.phase == "released"
-    ] == [
-        "watcher.catch_up.event",
-        "watcher.catch_up.event",
-        "watcher.catch_up.event",
-    ]
-
-
-@pytest.mark.parametrize(("outcome", "exception"), [("failure", RuntimeError), ("cancelled", asyncio.CancelledError)])
-def test_real_catch_up_route_emits_terminal_receipt_after_ingest_abort(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    outcome: str,
-    exception: type[BaseException],
-) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    (root / "session.jsonl").write_text('{"role":"user","content":"a"}\n')
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
-    coordinator_events: list[DaemonWriteEvent] = []
-    watcher, _ = _make_watcher(
-        tmp_path,
-        root,
-        catch_up_event_emitter=emit_catch_up_cycle,
-        write_coordinator=DaemonWriteCoordinator(observer=coordinator_events.append),
-    )
-
-    async def abort_ingest(
-        _paths: list[Path],
-        *,
-        queued_file_count: int | None = None,
-        skipped_file_count: int = 0,
-        **_kwargs: object,
-    ) -> LiveBatchMetrics:
-        del queued_file_count, skipped_file_count
-        raise exception("abort")
-
-    watcher._ingest_files = abort_ingest  # type: ignore[assignment]
-
-    with pytest.raises(exception):
-        asyncio.run(watcher._catch_up([root]))
-
-    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
-    payloads = [cast(dict[str, object], event["payload"]) for event in events]
-    assert [payload["phase"] for payload in payloads] == ["start", "terminal"]
-    assert payloads[-1]["terminal_outcome"] == outcome
-    assert any(event.actor == "watcher.catch_up.event" and event.phase == "released" for event in coordinator_events)
-
-
-def test_real_catch_up_route_emits_terminal_receipt_when_stopped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    (root / "session.jsonl").write_text('{"role":"user","content":"a"}\n')
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
-    coordinator_events: list[DaemonWriteEvent] = []
-    watcher, full_ingest = _make_watcher(
-        tmp_path,
-        root,
-        catch_up_event_emitter=emit_catch_up_cycle,
-        write_coordinator=DaemonWriteCoordinator(observer=coordinator_events.append),
-    )
-    original_ingest = watcher._ingest_files
-
-    async def stop_after_ingest(
-        paths: list[Path],
-        *,
-        queued_file_count: int | None = None,
-        skipped_file_count: int = 0,
-        whole_archive_convergence: bool = True,
-        **kwargs: object,
-    ) -> LiveBatchMetrics:
-        metrics = await original_ingest(
-            paths,
-            queued_file_count=queued_file_count,
-            skipped_file_count=skipped_file_count,
-            whole_archive_convergence=whole_archive_convergence,
-            **kwargs,  # type: ignore[arg-type]
-        )
-        watcher.stop()
-        return metrics
-
-    watcher._ingest_files = stop_after_ingest  # type: ignore[method-assign]
-
-    asyncio.run(watcher._catch_up([root]))
-
-    assert full_ingest.await_count == 1
-    events = list(reversed(query_daemon_events(kind="catch_up_cycle", limit=10)))
-    payloads = [cast(dict[str, object], event["payload"]) for event in events]
-    assert [payload["phase"] for payload in payloads] == ["start", "terminal"]
-    assert payloads[-1]["terminal_outcome"] == "stopped"
-    assert any(event.actor == "watcher.catch_up.event" and event.phase == "released" for event in coordinator_events)
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
@@ -1706,40 +1538,6 @@ def test_watch_filter_accepts_directories_but_not_unmatched_files_under_broad_ro
     assert watcher._watch_filter(object(), str(child_directory)) is True
 
 
-@pytest.mark.asyncio
-async def test_hints_only_enqueue_does_not_scan_or_retain_paths(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Restoring debounce or recursive directory admission violates hint ownership."""
-    root = tmp_path / "source"
-    root.mkdir()
-    wakeup = asyncio.Event()
-    source = WatchSource(name="configured", root=root)
-    sibling = WatchSource(name="sibling", root=tmp_path / "sibling")
-    watcher = LiveWatcher(
-        SimpleNamespace(archive_root=tmp_path),
-        (source, sibling),
-        intake_hints_only=True,
-        intake_wakeup=wakeup,
-    )
-
-    def unexpected_walk(*_args: object, **_kwargs: object) -> Any:
-        raise AssertionError("watcher hints must not enumerate source directories")
-
-    monkeypatch.setattr("polylogue.sources.live.watcher.os.walk", unexpected_walk)
-    try:
-        for index in range(100):
-            watcher._enqueue(root / f"{index}.jsonl")
-        watcher._enqueue_added_directory(root)
-        assert wakeup.is_set()
-        assert watcher._pending_paths == set()
-        assert watcher._drain_task is None
-        assert watcher.intake_revision(source) == 101
-        assert watcher.intake_revision(sibling) == 0
-    finally:
-        watcher.stop()
-
-
 def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1760,13 +1558,11 @@ def test_added_directory_scan_rejects_file_symlinks_escaping_source_root(
         root,
         sources=(WatchSource(name="codex", root=root, suffixes=(".jsonl",)),),
     )
-    enqueued: list[Path] = []
-    monkeypatch.setattr(watcher, "_enqueue", enqueued.append)
-
     assert watcher._canonical_watch_path(escaping) is None
     watcher._enqueue_added_directory(added)
 
-    assert enqueued == [internal]
+    source = watcher._sources[0]
+    assert _bounded_source_paths(source, watcher._sources, limit=8, after=None) == [internal]
 
 
 def test_added_directory_scan_retains_a_deeper_root_under_outer_ignore(
@@ -1794,13 +1590,12 @@ def test_added_directory_scan_retains_a_deeper_root_under_outer_ignore(
             WatchSource(name="codex", root=inner, suffixes=(".jsonl",)),
         ),
     )
-    enqueued: list[Path] = []
-    monkeypatch.setattr(watcher, "_enqueue", enqueued.append)
-
     assert watcher._watch_filter(object(), str(ignored)) is True
     watcher._enqueue_added_directory(ignored)
+    assert watcher.intake_revision(watcher._sources[1]) > 0
 
-    assert enqueued == [session]
+    inner_source = watcher._sources[1]
+    assert _bounded_source_paths(inner_source, watcher._sources, limit=8, after=None) == [session]
 
 
 def test_hermes_cursor_records_acquisition_revision_not_live_tail(tmp_path: Path) -> None:
@@ -3478,25 +3273,10 @@ def test_parse_failure_retries_after_backoff(tmp_path: Path, frozen_clock: Froze
 # --- catch_up bootstrap --------------------------------------------------------
 
 
-def test_catch_up_processes_pre_existing_files(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    # Session files at {project}/{uuid}.jsonl
-    proj = root / "my-project"
-    proj.mkdir()
-    files = [proj / f"s{i}.jsonl" for i in range(3)]
-    for f in files:
-        f.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-
-    asyncio.run(watcher._catch_up([root]))
-    assert parse_sources.await_count == 1
-
-
-def test_catch_up_acquires_source_without_reading_unavailable_index(
+def test_page_admission_acquires_source_without_reading_unavailable_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The real catch-up planner and batch route remain source-only while derived-only."""
+    """The real page-admission batch route remains source-only while derived-only."""
 
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
@@ -3528,7 +3308,7 @@ def test_catch_up_acquires_source_without_reading_unavailable_index(
         )
     )
     try:
-        asyncio.run(watcher._catch_up([root]))
+        asyncio.run(watcher._ingest_files([path], queued_file_count=1))
     finally:
         clear_degraded()
         parse_stage.shutdown()
@@ -3543,7 +3323,8 @@ def test_catch_up_acquires_source_without_reading_unavailable_index(
     assert row == (None, None)
 
 
-def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
+def test_a_cursored_file_is_rediscovered_without_being_ingested_again(tmp_path: Path) -> None:
+    """Anti-vacuity: drop the selection in ``admit_page`` and the ingest runs again."""
     root = tmp_path / "src"
     root.mkdir()
     proj = root / "my-project"
@@ -3554,11 +3335,24 @@ def test_catch_up_skips_already_processed(tmp_path: Path) -> None:
     asyncio.run(_ingest_one(watcher, f))
     parse_sources.reset_mock()
 
-    asyncio.run(watcher._catch_up([root]))
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        watcher._sources[0],
+    )
+
+    async def _admit() -> dict[str, Any]:
+        page = await adapter.discover(limit=8)
+        assert [Path(cast(Any, item.payload)) for item in page] == [f]
+        return dict(await adapter.admit_page(page))
+
+    outcomes = asyncio.run(_admit())
+    assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.DUPLICATE]
     assert parse_sources.await_count == 0
 
 
-def test_catch_up_rebases_device_drift_after_one_prefix_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_page_selection_rebases_device_drift_after_one_prefix_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A remount must not make every later restart rehash stable history."""
     root = tmp_path / "src"
     root.mkdir()
@@ -3617,7 +3411,7 @@ def test_catch_up_rebases_device_drift_after_one_prefix_proof(tmp_path: Path, mo
 
     monkeypatch.setattr(watcher._cursor, "rebase_authoritative_observations", counted_rebase)
 
-    asyncio.run(watcher._catch_up([root]))
+    assert watcher.select_ingest_candidates([path]) == ()
     rebased = watcher._cursor.get_record(path)
     assert calls == 1
     assert rebase_batches == 1
@@ -3625,148 +3419,12 @@ def test_catch_up_rebases_device_drift_after_one_prefix_proof(tmp_path: Path, mo
     assert rebased is not None
     assert rebased.st_dev == stat.st_dev
 
-    asyncio.run(watcher._catch_up([root]))
+    assert watcher.select_ingest_candidates([path]) == ()
     assert calls == 1
     assert parse_sources.await_count == 0
 
 
-def test_catch_up_finds_subagent_files(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    proj = root / "my-project"
-    session_dir = proj / "some-uuid"
-    subagents = session_dir / "subagents"
-    subagents.mkdir(parents=True)
-    f = subagents / "agent-abc123.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-
-    asyncio.run(watcher._catch_up([root]))
-    assert parse_sources.await_count == 1
-
-
-def test_catch_up_ignores_non_jsonl(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    proj = root / "my-project"
-    proj.mkdir()
-    (proj / "session.jsonl").write_text('{"a":1}\n')
-    (proj / "config.toml").write_text("x=1")
-    (proj / "README.md").write_text("# hi")
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-
-    asyncio.run(watcher._catch_up([root]))
-    assert parse_sources.await_count == 1
-
-
-def test_catch_up_uses_source_suffix_contract_for_json_sessions(tmp_path: Path) -> None:
-    root = tmp_path / "gemini"
-    root.mkdir()
-    (root / "session.json").write_text('{"sessionId":"s1","messages":[]}\n')
-    (root / "notes.md").write_text("# no")
-    watcher, parse_sources = _make_watcher(
-        tmp_path,
-        root,
-        sources=(WatchSource(name="gemini-cli", root=root, suffixes=(".json", ".jsonl")),),
-    )
-
-    asyncio.run(watcher._catch_up([root]))
-
-    assert parse_sources.await_count == 1
-
-
-def test_catch_up_recurses_like_live_watch(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    (root / "orphan.jsonl").write_text('{"a":1}\n')
-    deep = root / "p" / "u" / "extra" / "deep.jsonl"
-    deep.parent.mkdir(parents=True)
-    deep.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-
-    asyncio.run(watcher._catch_up([root]))
-    assert parse_sources.await_count == 1
-
-
-def test_catch_up_prunes_runtime_dependency_trees(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    session = root / "sessions" / "session.jsonl"
-    session.parent.mkdir()
-    session.write_text('{"a":1}\n')
-    dependency = root / "venv" / "lib" / "site-packages" / "generated.jsonl"
-    dependency.parent.mkdir(parents=True)
-    dependency.write_text('{"not":"a session"}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-
-    asyncio.run(watcher._catch_up([root]))
-
-    assert parse_sources.await_count == 1
-
-
-def test_catch_up_handles_empty_roots(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    watcher, parse_sources = _make_watcher(tmp_path, root)
-    asyncio.run(watcher._catch_up([root]))
-    assert parse_sources.await_count == 0
-
-
 # --- debounce ------------------------------------------------------------------
-
-
-def test_debounce_coalesces_rapid_changes(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    f = root / "session.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
-
-    async def _drive() -> None:
-        for _ in range(5):
-            watcher._enqueue(f)
-            await asyncio.sleep(0.01)
-        # Wait for debounce to flush the batch
-        while watcher._pending_scheduled or watcher._pending_paths:
-            await asyncio.sleep(0.02)
-        await asyncio.sleep(0.1)  # let the flush task complete
-
-    asyncio.run(_drive())
-    # All 5 enqueues should coalesce into 1 batch
-    assert parse_sources.await_count == 1
-
-
-def test_debounce_waits_for_same_path_quiet_window(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    f = root / "session.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, _parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
-    producer_done = asyncio.Event()
-    batches: list[bool] = []
-
-    async def fake_ingest(
-        paths: list[Path],
-        *,
-        queued_file_count: int | None = None,
-        skipped_file_count: int = 0,
-        **_kwargs: object,
-    ) -> None:
-        del paths, queued_file_count, skipped_file_count
-        batches.append(producer_done.is_set())
-
-    async def _drive() -> None:
-        watcher._ingest_files = fake_ingest  # type: ignore[assignment,method-assign]
-        for _ in range(4):
-            watcher._enqueue(f)
-            await asyncio.sleep(0.03)
-        producer_done.set()
-        while watcher._pending_scheduled or watcher._pending_paths:
-            await asyncio.sleep(0.01)
-
-    asyncio.run(_drive())
-
-    assert batches == [True]
 
 
 # --- WatchSource ---------------------------------------------------------------
@@ -3803,63 +3461,6 @@ def test_claude_watch_source_accepts_declared_tool_result_extensions_and_extensi
     assert source.accepts(tmp_path / "session" / "notes.txt") is False
 
 
-@pytest.mark.asyncio
-async def test_claude_sidecar_enqueue_also_reparses_owning_transcripts(tmp_path: Path) -> None:
-    """Removing owner expansion would leave sidecar joins stale after a sidecar-only event."""
-    session_dir = tmp_path / "session-1"
-    sidecar_dir = session_dir / "tool-results"
-    subagents_dir = session_dir / "subagents"
-    sidecar_dir.mkdir(parents=True)
-    subagents_dir.mkdir(parents=True)
-    root_transcript = tmp_path / "session-1.jsonl"
-    subagent = subagents_dir / "agent-child.jsonl"
-    root_transcript.write_text("{}\n", encoding="utf-8")
-    subagent.write_text("{}\n", encoding="utf-8")
-    sidecar = sidecar_dir / "toolu.txt"
-    sidecar.write_text("complete result", encoding="utf-8")
-    watcher = LiveWatcher(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
-        (WatchSource(name="claude-code", root=tmp_path, suffixes=(".jsonl",)),),
-        cursor=CursorStore(tmp_path / "cursor.db"),
-    )
-    try:
-        watcher._enqueue(sidecar)
-        assert watcher._pending_paths == {sidecar, root_transcript, subagent}
-    finally:
-        watcher.stop()
-
-
-@pytest.mark.asyncio
-async def test_claude_sidecar_owner_bypasses_unchanged_cursor_filter(tmp_path: Path) -> None:
-    session_dir = tmp_path / "session-1"
-    sidecar_dir = session_dir / "tool-results"
-    sidecar_dir.mkdir(parents=True)
-    root_transcript = tmp_path / "session-1.jsonl"
-    root_transcript.write_text("{}\n", encoding="utf-8")
-    sidecar = sidecar_dir / "toolu.txt"
-    sidecar.write_text("complete result", encoding="utf-8")
-    watcher = LiveWatcher(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
-        (WatchSource(name="claude-code", root=tmp_path, suffixes=(".jsonl",)),),
-        cursor=CursorStore(tmp_path / "cursor.db"),
-    )
-    ingested: list[Path] = []
-
-    async def fake_ingest(paths: list[Path], **_kwargs: object) -> None:
-        ingested.extend(paths)
-
-    try:
-        test_watcher = cast(Any, watcher)
-        test_watcher._batch_processor.require_cursor_authority = lambda *args, **kwargs: None
-        test_watcher._needs_work_from_state = lambda *args, **kwargs: False
-        test_watcher._ingest_files = fake_ingest
-        watcher._enqueue(sidecar)
-        assert await watcher._flush_pending() is True
-        assert ingested == [root_transcript]
-    finally:
-        watcher.stop()
-
-
 def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> None:
     """A nested explicit root owns its files regardless of source order."""
     root = tmp_path / "codex"
@@ -3885,8 +3486,10 @@ def test_source_accepts_prefers_most_specific_nested_root(tmp_path: Path) -> Non
         directory_source = watcher._source_for_directory(sessions)
         assert directory_source is not None
         assert directory_source.name == "codex"
-        candidates = watcher._scan_catch_up_candidates([root, sessions])
-        assert [(candidate.path, candidate.source_name) for candidate in candidates] == [(path, "codex")]
+        discovered = _bounded_source_paths(
+            watcher._sources[1], watcher._sources, limit=8, after=None
+        ) + _bounded_source_paths(watcher._sources[0], watcher._sources, limit=8, after=None)
+        assert discovered == [path]
     finally:
         parse_stage.shutdown()
 
@@ -3947,279 +3550,6 @@ def test_browser_capture_spool_is_default_json_source(
 
 
 # --- end-to-end via watchfiles -------------------------------------------------
-
-
-def test_end_to_end_modify_triggers_ingest(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    f = root / "session.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
-
-    async def _drive() -> None:
-        run_task = asyncio.create_task(watcher.run())
-        await asyncio.wait_for(watcher.catch_up_complete.wait(), timeout=5.0)
-        baseline = parse_sources.await_count
-        # Append immediately at the old catch-up/watch handoff boundary.
-        with open(f, "a") as fh:
-            fh.write('{"b":2}\n')
-        for _ in range(60):
-            if parse_sources.await_count > baseline:
-                break
-            await asyncio.sleep(0.1)
-        watcher.stop()
-        try:
-            await asyncio.wait_for(run_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            run_task.cancel()
-        assert parse_sources.await_count > baseline
-
-    asyncio.run(_drive())
-
-
-def test_end_to_end_new_file_creation_triggers_ingest(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
-
-    async def _drive() -> None:
-        run_task = asyncio.create_task(watcher.run())
-        await asyncio.sleep(0.2)  # ensure awatch is up
-        f = root / "fresh.jsonl"
-        f.write_text('{"new":true}\n')
-        for _ in range(60):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.1)
-        watcher.stop()
-        try:
-            await asyncio.wait_for(run_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            run_task.cancel()
-        assert parse_sources.await_count >= 1
-
-    asyncio.run(_drive())
-
-
-def test_end_to_end_hidden_root_file_creation_triggers_ingest(tmp_path: Path) -> None:
-    root = tmp_path / ".hidden" / "browser-capture"
-    root.mkdir(parents=True)
-    watcher, parse_sources = _make_watcher(
-        tmp_path,
-        root,
-        debounce_s=0.05,
-        sources=(WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
-    )
-
-    async def _drive() -> None:
-        run_task = asyncio.create_task(watcher.run())
-        await asyncio.sleep(0.2)  # ensure awatch is up
-        f = root / "chatgpt" / "fresh.json"
-        f.parent.mkdir()
-        f.write_text('{"polylogue_capture_kind":"browser_llm_session"}\n')
-        for _ in range(60):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.1)
-        watcher.stop()
-        try:
-            await asyncio.wait_for(run_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            run_task.cancel()
-        assert parse_sources.await_count >= 1
-
-    asyncio.run(_drive())
-
-
-def test_periodic_catch_up_drains_missed_browser_capture_event(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / ".hidden" / "browser-capture"
-    root.mkdir(parents=True)
-    watcher, parse_sources = _make_watcher(
-        tmp_path,
-        root,
-        debounce_s=0.05,
-        sources=(WatchSource(name="browser-capture", root=root, suffixes=(".json",)),),
-    )
-    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.05)
-
-    async def _drive() -> None:
-        task = asyncio.create_task(watcher._periodic_catch_up([root]))
-        f = root / "chatgpt" / "missed.json"
-        f.parent.mkdir()
-        f.write_text('{"polylogue_capture_kind":"browser_llm_session"}\n')
-        for _ in range(60):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.05)
-        watcher.stop()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        assert parse_sources.await_count >= 1
-
-    asyncio.run(_drive())
-
-
-def test_periodic_catch_up_adds_configured_nested_root_created_after_start(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A late nested root remains recoverable after its add event is missed."""
-    outer = tmp_path / "sources"
-    nested = outer / "late-codex"
-    outer.mkdir()
-    watcher, parse_sources = _make_watcher(
-        tmp_path,
-        outer,
-        sources=(
-            WatchSource(name="outer", root=outer, suffixes=(".jsonl",)),
-            WatchSource(name="nested", root=nested, suffixes=(".jsonl",)),
-        ),
-    )
-    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.02)
-
-    async def _drive() -> None:
-        task = asyncio.create_task(watcher._periodic_catch_up([outer]))
-        await asyncio.sleep(0.03)
-        nested.mkdir()
-        (nested / "missed.jsonl").write_text('{"type":"session_meta","payload":{"id":"late"}}\n')
-        for _ in range(60):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.05)
-        watcher.stop()
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
-        assert parse_sources.await_count >= 1
-
-    asyncio.run(_drive())
-
-
-def test_watcher_run_periodically_rediscovers_nested_root_created_after_start(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The daemon route refreshes configured roots after its initial watch snapshot."""
-    outer = tmp_path / "sources"
-    nested = outer / "late-codex"
-    outer.mkdir()
-    watcher, parse_sources = _make_watcher(
-        tmp_path,
-        outer,
-        sources=(
-            WatchSource(name="outer", root=outer, suffixes=(".jsonl",)),
-            WatchSource(name="nested", root=nested, suffixes=(".jsonl",)),
-        ),
-    )
-    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.02)
-
-    async def wait_for_stop(_roots: list[Path]) -> None:
-        await watcher._stop.wait()
-
-    monkeypatch.setattr(watcher, "_watch_changes", wait_for_stop)
-
-    async def _drive() -> None:
-        task = asyncio.create_task(watcher.run())
-        await asyncio.wait_for(watcher.catch_up_complete.wait(), timeout=1.0)
-        nested.mkdir()
-        (nested / "missed.jsonl").write_text('{"type":"session_meta","payload":{"id":"late"}}\n')
-        for _ in range(60):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.05)
-        watcher.stop()
-        await asyncio.wait_for(task, timeout=1.0)
-        assert parse_sources.await_count >= 1
-
-    asyncio.run(_drive())
-
-
-def test_periodic_catch_up_backs_off_after_each_reconciliation_pass(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    watcher, _parse_sources = _make_watcher(tmp_path, root)
-    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_INTERVAL_S", 0.01)
-    monkeypatch.setattr(live_watcher, "_PERIODIC_CATCH_UP_MAX_INTERVAL_S", 0.04)
-    delays: list[float] = []
-    passes = 0
-
-    async def fake_sleep(delay_s: float) -> None:
-        delays.append(delay_s)
-
-    async def fake_catch_up(_roots: list[Path]) -> None:
-        nonlocal passes
-        passes += 1
-        if passes == 3:
-            watcher.stop()
-
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    watcher._catch_up = fake_catch_up  # type: ignore[assignment,method-assign]
-
-    asyncio.run(watcher._periodic_catch_up([root]))
-
-    assert delays == [0.01, 0.02, 0.04]
-
-
-def test_end_to_end_deletion_does_not_ingest(tmp_path: Path) -> None:
-    root = tmp_path / "src"
-    root.mkdir()
-    f = root / "doomed.jsonl"
-    f.write_text('{"a":1}\n')
-    watcher, parse_sources = _make_watcher(tmp_path, root, debounce_s=0.05)
-
-    async def _drive() -> None:
-        run_task = asyncio.create_task(watcher.run())
-        # Wait for catch_up
-        for _ in range(50):
-            if parse_sources.await_count >= 1:
-                break
-            await asyncio.sleep(0.05)
-        baseline = parse_sources.await_count
-        f.unlink()
-        await asyncio.sleep(0.5)
-        watcher.stop()
-        try:
-            await asyncio.wait_for(run_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            run_task.cancel()
-        assert parse_sources.await_count == baseline  # deletion did not trigger ingest
-
-    asyncio.run(_drive())
-
-
-def test_interleave_drains_browser_capture_spool_before_round_robin(tmp_path: Path) -> None:
-    """Spool files gate the raw-materialization conveyor's writer yield, so
-    catch-up must cursor them first instead of spreading them across the
-    whole plan; remaining families keep the #1616 round-robin."""
-    from polylogue.sources.live.watcher import CandidateSourceFile, _interleave_by_source
-
-    def candidate(name: str, source: str) -> CandidateSourceFile:
-        path = tmp_path / source / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"{}")
-        return CandidateSourceFile(path=path, source_name=source, suffix=path.suffix, stat=path.stat())
-
-    candidates = [
-        candidate("a.jsonl", "codex"),
-        candidate("b.json", "browser-capture"),
-        candidate("c.jsonl", "claude-code"),
-        candidate("d.json", "browser-capture"),
-        candidate("e.jsonl", "codex"),
-    ]
-
-    ordered = _interleave_by_source(candidates)
-
-    assert [item.source_name for item in ordered[:2]] == ["browser-capture", "browser-capture"]
-    rest = [item.source_name for item in ordered[2:]]
-    assert sorted(rest) == ["claude-code", "codex", "codex"]
-    assert rest[0] != rest[1] or rest[1] != rest[2]
 
 
 @pytest.mark.asyncio
@@ -4433,30 +3763,6 @@ def test_lock_contention_is_retryable_and_corruption_is_not() -> None:
     assert not _is_retryable_lock_error(sqlite3.OperationalError("database disk image is malformed"))
 
 
-@pytest.mark.asyncio
-async def test_catch_up_chunk_losing_a_lock_race_defers_instead_of_dying(tmp_path: Path) -> None:
-    """A locked archive write fails the chunk and the watcher continues."""
-    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path, exact_frontier=True)
-    calls: list[list[Path]] = []
-
-    async def locked_ingest(paths: list[Path], **_: object) -> None:
-        calls.append(list(paths))
-        raise sqlite3.OperationalError("database is locked")
-
-    watcher._ingest_files = locked_ingest  # type: ignore[assignment, method-assign]
-    deferred: list[list[Path]] = []
-    watcher._defer_unaccounted_failed_retries = lambda paths: deferred.append(list(paths))  # type: ignore[method-assign]
-    watcher._batch_processor.require_cursor_authority = lambda *args, **kwargs: None  # type: ignore[method-assign]
-    watcher._needs_work_from_state = lambda *args, **kwargs: True  # type: ignore[method-assign]
-    watcher._pending_paths.add(source_path)
-
-    assert await watcher._flush_pending() is not None
-
-    assert calls == [[source_path]]
-    assert deferred == [[source_path]]
-    watcher.stop()
-
-
 def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_reading(tmp_path: Path) -> None:
     """A decided-ambiguous verdict stops catch-up re-reading the same bytes.
 
@@ -4522,3 +3828,81 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
     source_path.write_bytes(payload + b'{"native_id":"decided-unresolved-2"}\n')
     assert watcher._needs_work(source_path) is True
     watcher.stop()
+
+
+def test_discovery_claims_nested_sessions_and_declared_suffixes_only(tmp_path: Path) -> None:
+    """The one production walk: which files the dispatcher's discovery claims.
+
+    Covers what the deleted catch-up scan used to prove -- nested project
+    directories, subagent transcripts, an orphan at the root, a declared
+    non-``.jsonl`` suffix, and the runtime-dependency prune -- against the
+    walk that actually runs now.
+
+    Anti-vacuity: accept every suffix and the ``.toml``/``.md`` files appear;
+    drop the ignored-directory check and the ``site-packages`` file appears;
+    stop descending and the subagent transcript disappears.
+    """
+
+    root = tmp_path / "src"
+    subagents = root / "my-project" / "some-uuid" / "subagents"
+    subagents.mkdir(parents=True)
+    session = root / "my-project" / "session.jsonl"
+    session.write_text('{"a":1}\n')
+    orphan = root / "orphan.jsonl"
+    orphan.write_text('{"a":1}\n')
+    agent = subagents / "agent-abc123.jsonl"
+    agent.write_text('{"a":1}\n')
+    (root / "my-project" / "config.toml").write_text("x=1")
+    (root / "my-project" / "README.md").write_text("# hi")
+    dependency = root / "venv" / "lib" / "site-packages" / "generated.jsonl"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text('{"not":"a session"}\n')
+
+    source = WatchSource(name="test", root=root)
+    assert set(_bounded_source_paths(source, (source,), limit=32, after=None)) == {session, orphan, agent}
+
+    gemini_root = tmp_path / "gemini"
+    gemini_root.mkdir()
+    gemini_session = gemini_root / "session.json"
+    gemini_session.write_text('{"sessionId":"s1","messages":[]}\n')
+    (gemini_root / "notes.md").write_text("# no")
+    gemini = WatchSource(name="gemini-cli", root=gemini_root, suffixes=(".json", ".jsonl"))
+    assert _bounded_source_paths(gemini, (gemini,), limit=32, after=None) == [gemini_session]
+
+
+def test_a_watch_event_wakes_the_dispatcher_which_ingests_the_new_file(tmp_path: Path) -> None:
+    """End to end on the one route: observe -> hint -> discover -> admit -> ingest.
+
+    Anti-vacuity: stop bumping the intake revision (or stop setting the
+    wakeup) in ``_note_intake_hint`` and the revision/wakeup assertions go
+    red; break page admission and the ingest never runs.
+    """
+
+    root = tmp_path / "src"
+    root.mkdir()
+    watcher, parse_sources = _make_watcher(tmp_path, root)
+    wakeup = asyncio.Event()
+    watcher._intake_wakeup = wakeup
+    source = watcher._sources[0]
+    before = watcher.intake_revision(source)
+
+    created = root / "session.jsonl"
+    created.write_text('{"role":"user","content":"a"}\n')
+    watcher._note_intake_hint(created)
+
+    assert watcher.intake_revision(source) > before
+    assert wakeup.is_set()
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
+        source,
+    )
+
+    async def _admit() -> dict[str, Any]:
+        page = await adapter.discover(limit=8)
+        assert [Path(cast(Any, item.payload)) for item in page] == [created]
+        return dict(await adapter.admit_page(page))
+
+    outcomes = asyncio.run(_admit())
+    assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.ADMITTED]
+    assert parse_sources.await_count == 1
