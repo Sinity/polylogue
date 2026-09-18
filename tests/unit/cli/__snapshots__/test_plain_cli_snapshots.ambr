@@ -22,13 +22,13 @@
           "count": 4,
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             },
             {
-              "session_id": "chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>"
+              "session_id": "chatgpt-export:eef16694-50ca-432d-8aba-<HASH>"
             },
             {
-              "session_id": "chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>"
+              "session_id": "claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>"
             },
             {
               "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
@@ -58,7 +58,7 @@
           },
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
           ]
         },
@@ -74,25 +74,22 @@
         "wallclock_span": {
           "earliest_first_message_at": "<TIMESTAMP>",
           "latest_last_message_at": "<TIMESTAMP>",
-          "span_ms": 62119928670,
-          "summed_wall_duration_ms": 65855417361,
+          "span_ms": 75192153659,
+          "summed_wall_duration_ms": <HASH>,
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
-            },
-            {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
           ]
         },
         "wallclock_distribution_s": {
           "count": 4,
-          "total": 65855417.361,
-          "minimum": 180.0,
-          "p50": 240.0,
-          "p90": 33945341.715,
-          "maximum": 33945341.715,
-          "mean": 16463854.34025
+          "total": 129570673.603,
+          "minimum": 240.0,
+          "p50": 420.0,
+          "p90": 75192153.659,
+          "maximum": 75192153.659,
+          "mean": 32392668.40075
         },
         "pathologies": {
           "status": "clean",
@@ -132,13 +129,13 @@
           "count": 4,
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             },
             {
-              "session_id": "chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>"
+              "session_id": "chatgpt-export:eef16694-50ca-432d-8aba-<HASH>"
             },
             {
-              "session_id": "chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>"
+              "session_id": "claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>"
             },
             {
               "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
@@ -148,14 +145,11 @@
         "wallclock_span": {
           "earliest_first_message_at": "<TIMESTAMP>",
           "latest_last_message_at": "<TIMESTAMP>",
-          "span_ms": 62119928670,
-          "summed_wall_duration_ms": 65855417361,
+          "span_ms": 75192153659,
+          "summed_wall_duration_ms": <HASH>,
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
-            },
-            {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
           ]
         },
@@ -171,7 +165,7 @@
           },
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
           ]
         },
@@ -182,7 +176,7 @@
           "cost_is_estimated": false,
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
           ],
           "reason": "no session in scope carries a positive cost figure"
@@ -191,7 +185,7 @@
           "count": 0,
           "evidence_refs": [
             {
-              "session_id": "claude-code-session:b489d070-7914-48a8-bea4-<HASH>"
+              "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
           ]
         },
@@ -222,7 +216,7 @@
 # name: test_json_analyze_snapshot
   '''
   {
-    "avg_messages_per_session": 5.0,
+    "avg_messages_per_session": 6.5,
     "db_size_bytes": <SIZE_BYTES>,
     "embedded_messages": 0,
     "embedded_sessions": 0,
@@ -235,11 +229,11 @@
     "embedding_oldest_at": null,
     "embedding_readiness_status": "none",
     "material_origins": {
-      "assistant_authored": 4,
-      "human_authored": 6
+      "assistant_authored": 6,
+      "human_authored": 7
     },
     "message_types": {
-      "message": 10
+      "message": 13
     },
     "messages_missing_embedding_provenance": 0,
     "mode": "stats",
@@ -257,12 +251,12 @@
     "query": null,
     "retrieval_ready": false,
     "role_counts": {
-      "assistant": 4,
-      "user": 6
+      "assistant": 6,
+      "user": 7
     },
     "stale_embedding_messages": 0,
     "total_attachments": 0,
-    "total_messages": 10,
+    "total_messages": 13,
     "total_sessions": 2
   }
   
@@ -420,7 +414,7 @@
     "omitted_facet_counts": {},
     "time_range": null,
     "total_sessions": 2,
-    "total_messages": 10,
+    "total_messages": 13,
     "scoped": {
       "origins": {
         "chatgpt-export": 2
@@ -434,7 +428,7 @@
       "has_flags": {},
       "omitted": {},
       "total_sessions": 2,
-      "total_messages": 10
+      "total_messages": 13
     },
     "global": {
       "origins": {
@@ -449,7 +443,7 @@
       "has_flags": {},
       "omitted": {},
       "total_sessions": 2,
-      "total_messages": 10
+      "total_messages": 13
     },
     "idf": {
       "origins": {
@@ -484,23 +478,23 @@
             "state": "enabled"
           }
         },
-        "anchor": "session-chatgpt-export-e5f5c891-4be3-48a8-8b39-<HASH>",
+        "anchor": "session-chatgpt-export-a46b6fce-e78d-447c-bd87-<HASH>",
         "created_at": "<TIMESTAMP>",
-        "id": "chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>",
-        "message_count": 5,
+        "id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>",
+        "message_count": 8,
         "origin": "chatgpt-export",
         "relative_time": "<RELATIVE_AGE>",
         "tags": [],
         "target_ref": {
-          "identity_key": "session:chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>",
-          "session_id": "chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>",
-          "target_id": "chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>",
+          "identity_key": "session:chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>",
+          "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>",
+          "target_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>",
           "target_type": "session"
         },
         "terminal_state": "unknown",
-        "title": "synthetic-88754 synthetic-88754",
+        "title": "Improving search index performance",
         "updated_at": "<TIMESTAMP>",
-        "words": 41
+        "words": 78
       },
       {
         "actions": {
@@ -517,23 +511,23 @@
             "state": "enabled"
           }
         },
-        "anchor": "session-chatgpt-export-e53f9644-b39e-4df2-9c0a-<HASH>",
+        "anchor": "session-chatgpt-export-eef16694-50ca-432d-8aba-<HASH>",
         "created_at": "<TIMESTAMP>",
-        "id": "chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>",
+        "id": "chatgpt-export:eef16694-50ca-432d-8aba-<HASH>",
         "message_count": 5,
         "origin": "chatgpt-export",
         "relative_time": "<RELATIVE_AGE>",
         "tags": [],
         "target_ref": {
-          "identity_key": "session:chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>",
-          "session_id": "chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>",
-          "target_id": "chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>",
+          "identity_key": "session:chatgpt-export:eef16694-50ca-432d-8aba-<HASH>",
+          "session_id": "chatgpt-export:eef16694-50ca-432d-8aba-<HASH>",
+          "target_id": "chatgpt-export:eef16694-50ca-432d-8aba-<HASH>",
           "target_type": "session"
         },
         "terminal_state": "unknown",
-        "title": "synthetic-95568 synthetic-95568 synthe",
+        "title": "Debugging flaky async pipeline tests",
         "updated_at": "<TIMESTAMP>",
-        "words": 65
+        "words": 47
       }
     ],
     "limit": 20,
@@ -570,7 +564,7 @@
     "config_path": null,
     "next_action": "runtime diagnostics not observed from pinned archive",
     "sessions": 2,
-    "messages": 10,
+    "messages": 13,
     "component_readiness": {
       "raw_materialization": {
         "component": "raw_materialization",
@@ -654,8 +648,8 @@
         "last_success": null,
         "last_attempt": null,
         "counts": {
-          "message_indexed_count": 12,
-          "message_indexable_count": 12,
+          "message_indexed_count": 13,
+          "message_indexable_count": 13,
           "missing_rows": 0,
           "excess_rows": 0,
           "identity_mismatch_rows": 0
@@ -1141,10 +1135,10 @@
         },
         "table_counts": {
           "sessions": 2,
-          "messages": 10,
-          "blocks": 12,
+          "messages": 13,
+          "blocks": 13,
           "actions": 0,
-          "messages_fts": 12,
+          "messages_fts": 13,
           "session_profiles": 0,
           "threads": 2,
           "thread_sessions": 2
@@ -1287,7 +1281,7 @@
         "index": {
           "exists": true,
           "wal_bytes": null,
-          "sqlite_stat1_rows": 47,
+          "sqlite_stat1_rows": 41,
           "planner_stats_present": true,
           "wal_metadata": {
             "state": "not_observed",
@@ -1482,14 +1476,14 @@
       "available": true,
       "scan": "bounded_raw_observation_page",
       "candidate_count": 2,
-      "total_blob_bytes": 13457,
-      "max_blob_bytes": 7563,
+      "total_blob_bytes": 15790,
+      "max_blob_bytes": 9542,
       "top_raw_rows": [
         {
           "raw_id": "<HASH>",
           "origin": "chatgpt-export",
           "source_path": "<PATH>",
-          "blob_size": 7563,
+          "blob_size": 9542,
           "oversized": false,
           "stream_safe": true
         },
@@ -1497,7 +1491,7 @@
           "raw_id": "<HASH>",
           "origin": "chatgpt-export",
           "source_path": "<PATH>",
-          "blob_size": 5894,
+          "blob_size": 6248,
           "oversized": false,
           "stream_safe": true
         }
@@ -1506,8 +1500,8 @@
         {
           "origin": "chatgpt-export",
           "raw_count": 2,
-          "total_blob_bytes": 13457,
-          "max_blob_bytes": 7563
+          "total_blob_bytes": 15790,
+          "max_blob_bytes": 9542
         }
       ],
       "page_limit": 5,
@@ -1546,7 +1540,7 @@
   ## Distributions
   
   - Cost per session (USD): no signal
-  - Wall time per session: n=4 total=6.58554e+<DURATION> min=180 p50=240 p90=3.39453e+07 max=3.39453e+07 mean=1.64639e+07
+  - Wall time per session: n=4 total=1.29571e+<DURATION> min=240 p50=420 p90=7.51922e+07 max=7.51922e+07 mean=3.23927e+07
   
   ## Failure-mode pathologies
   
@@ -1572,7 +1566,7 @@
   | Field | Value |
   | --- | --- |
   | session_count | 4 |
-  | wallclock_span | span_ms=62119928670, summed_wall_ms=65855417361 |
+  | wallclock_span | span_ms=75192153659, summed_wall_ms=<HASH> |
   | estimated_cost_usd | $0.000000 (estimated) |
   | token_lanes | input=0, output=0, cache_read=0, cache_write=0 |
   | top_expensive_session | no_signal: no session in scope carries a positive cost figure |
@@ -1586,11 +1580,11 @@
   
   | Field | Evidence refs |
   | --- | --- |
-  | session_count | claude-code-session:b489d070-7914-48a8-bea4-<HASH>, chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>, chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH> |
-  | wallclock_span | claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>, claude-code-session:b489d070-7914-48a8-bea4-<HASH> |
-  | estimated_cost | claude-code-session:b489d070-7914-48a8-bea4-<HASH> |
-  | top_expensive_session | claude-code-session:b489d070-7914-48a8-bea4-<HASH> |
-  | subagent_branch_count | claude-code-session:b489d070-7914-48a8-bea4-<HASH> |
+  | session_count | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>, chatgpt-export:eef16694-50ca-432d-8aba-<HASH>, claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH> |
+  | wallclock_span | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
+  | estimated_cost | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
+  | top_expensive_session | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
+  | subagent_branch_count | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
   
   
   '''
@@ -1610,8 +1604,8 @@
   total_cost: $0.00 (estimated) across 4 sessions, 4 unpriced
   tokens: in=0 out=0 cache_read=0 cache_write=0
   cost_per_session_usd: no signal
-  wall_per_session_s: n=4 total=6.58554e+<DURATION> min=180 p50=240 p90=3.39453e+07 max=3.39453e+07 mean=1.64639e+07
-  wallclock_span_ms: 62119928670
+  wall_per_session_s: n=4 total=1.29571e+<DURATION> min=240 p50=420 p90=7.51922e+07 max=7.51922e+07 mean=3.23927e+07
+  wallclock_span_ms: 75192153659
   pathologies: clean (detectors ran; no pathology found)
   context_loss: clean (detectors ran; no pathology found)
   
@@ -1622,7 +1616,7 @@
   Postmortem bundle
     scope: matched=4, analyzed=4
     sessions: 4
-    wallclock: span_ms=62119928670 summed_wall_ms=65855417361 (<TIMESTAMP> -> <TIMESTAMP>)
+    wallclock: span_ms=75192153659 summed_wall_ms=<HASH> (<TIMESTAMP> -> <TIMESTAMP>)
     cost: $0.000000 (estimated)
       tokens: input=0 output=0 cache_read=0 cache_write=0
     top_expensive_session: no_signal (no session in scope carries a positive cost figure)
@@ -1632,35 +1626,35 @@
     wasted_loop: clean (no pathology found)
     failure_mode: clean (no pathology found)
     evidence:
-      session_count: claude-code-session:b489d070-7914-48a8-bea4-<HASH>, chatgpt-export:e5f5c891-4be3-48a8-8b39-<HASH>, chatgpt-export:e53f9644-b39e-4df2-9c0a-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>
-      wallclock_span: claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>, claude-code-session:b489d070-7914-48a8-bea4-<HASH>
-      estimated_cost: claude-code-session:b489d070-7914-48a8-bea4-<HASH>
-      top_expensive_session: claude-code-session:b489d070-7914-48a8-bea4-<HASH>
-      subagent_branch_count: claude-code-session:b489d070-7914-48a8-bea4-<HASH>
+      session_count: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>, chatgpt-export:eef16694-50ca-432d-8aba-<HASH>, claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>
+      wallclock_span: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
+      estimated_cost: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
+      top_expensive_session: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
+      subagent_branch_count: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
   
   '''
 # ---
 # name: test_plain_analyze_snapshot
   '''
   Sessions: 2
-  Messages: 10
+  Messages: 13
   Attachments: 0
   Origins: 1
-  Average messages: 5.0
+  Average messages: 6.5
   
   '''
 # ---
 # name: test_plain_read_all_origin_filter_snapshot
   '''
-  chatgpt-export:…7c9f3bc3  <TIMESTAMP>  chatgpt-export            synthetic-88754 synthetic-88754 (5 msgs)
-  chatgpt-export:…f7eae66e  <TIMESTAMP>  chatgpt-export            synthetic-95568 synthetic-95568 synthe (5 msgs)
+  chatgpt-export:…72173fa3  <TIMESTAMP>  chatgpt-export            Improving search index performance (8 msgs)
+  chatgpt-export:…e2c328aa  <TIMESTAMP>  chatgpt-export            Debugging flaky async pipeline tests (5 msgs)
   
   '''
 # ---
 # name: test_plain_read_all_snapshot
   '''
-  chatgpt-export:…7c9f3bc3  <TIMESTAMP>  chatgpt-export            synthetic-88754 synthetic-88754 (5 msgs)
-  chatgpt-export:…f7eae66e  <TIMESTAMP>  chatgpt-export            synthetic-95568 synthetic-95568 synthe (5 msgs)
+  chatgpt-export:…72173fa3  <TIMESTAMP>  chatgpt-export            Improving search index performance (8 msgs)
+  chatgpt-export:…e2c328aa  <TIMESTAMP>  chatgpt-export            Debugging flaky async pipeline tests (5 msgs)
   
   '''
 # ---
