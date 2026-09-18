@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output as JSON.")
     args = parser.parse_args(argv)
 
+    from polylogue.core.schema_subjects import INFERENCE_EXCLUDED_SUBJECTS
     from polylogue.schemas.source_frontier import (
         SchemaFrontierError,
         check_frontier,
@@ -44,8 +45,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-frontier: {exc}", file=sys.stderr)
         return 1
 
+    # Declared non-applicability is code-owned, not document-owned: a subject
+    # here has a zero denominator because it was never admissible, so it can
+    # carry neither a declared root nor a recorded member. Reporting it beside
+    # the declaration is what makes "zero eligible material" checkable instead
+    # of merely absent.
+    non_applicable = {
+        token: reason
+        for token, reason in sorted(INFERENCE_EXCLUDED_SUBJECTS.items())
+        if subjects is None or token in subjects
+    }
+
+    def _print_non_applicable() -> None:
+        for token, reason in non_applicable.items():
+            print(f"  {token}: declared non-applicable, zero eligible material by declaration")
+            print(f"      reason: {reason}")
+
     if args.list:
         payload = frontier.to_payload()
+        payload["declared_non_applicable"] = dict(non_applicable)
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -64,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
                         print(f"      excluded {exclusion.pattern}: {exclusion.reason}{owner}")
                     if root.zero_material_reason is not None:
                         print(f"      zero eligible material: {root.zero_material_reason}")
+            _print_non_applicable()
         return 0
 
     if args.record:
@@ -92,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.json:
-        print(json.dumps(check.to_payload(), indent=2, sort_keys=True))
+        check_payload = check.to_payload()
+        check_payload["declared_non_applicable"] = dict(non_applicable)
+        print(json.dumps(check_payload, indent=2, sort_keys=True))
     else:
         state = "OK" if check.ok else "RED"
         print(f"schema-frontier: {state}")
@@ -100,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  checked_roots={check.checked_roots} checked_members={check.checked_members}")
         print(f"  content_verified={str(check.content_verified).lower()}")
         print(f"  errors={len(check.errors)} notices={len(check.notices)}")
+        _print_non_applicable()
         for finding in check.notices:
             member = f" [{finding.member}]" if finding.member else ""
             print(f"  notice {finding.kind}: {finding.subject} {finding.root}{member} -- {finding.detail}")

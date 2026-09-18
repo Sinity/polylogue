@@ -21,6 +21,14 @@ class SchemaSubjectSpec:
     origins: tuple[str, ...]
     requires_package: bool = True
     package_not_required_reason: str | None = None
+    #: Why this subject is outside the schema-*inference* denominator. Set only
+    #: for a subject whose wire format this repository authors: its shape is a
+    #: decision made here, changed together with its writer, never a discovery
+    #: made from evidence. An excluded subject has no source-evidence adapter
+    #: by design -- writing one would infer a schema for a format we control --
+    #: so the inference route refuses the token outright rather than admitting
+    #: its material and refusing it member by member.
+    inference_excluded_reason: str | None = None
 
 
 SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
@@ -61,11 +69,25 @@ SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
         "browser-capture",
         None,
         ("unknown-export",),
-        package_not_required_reason="first-party transport envelope, not a provider payload",
+        requires_package=False,
+        package_not_required_reason=(
+            "first-party transport envelope, not a provider payload; its structural contract is the authored "
+            "Pydantic model in polylogue/browser_capture/models.py, not an inferred package"
+        ),
+        inference_excluded_reason=(
+            "browser-capture is authored in this repository -- the browser-extension/ writer and the "
+            "polylogue-browser-capture-native-host reader are both ours -- so its shape is a decision, not "
+            "evidence to discover. No source-evidence adapter should exist for it; the envelope model and its "
+            "parser change together."
+        ),
     ),
 )
 
 SCHEMA_SUBJECT_BY_TOKEN: Final[dict[str, SchemaSubjectSpec]] = {item.token: item for item in SCHEMA_SUBJECTS}
+#: Subjects declared outside the schema-inference denominator, with their reason.
+INFERENCE_EXCLUDED_SUBJECTS: Final[dict[str, str]] = {
+    item.token: reason for item in SCHEMA_SUBJECTS if (reason := item.inference_excluded_reason) is not None
+}
 CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = tuple(
     item.token for item in SCHEMA_SUBJECTS if item.provider is not None and item.requires_package
 )
@@ -83,12 +105,25 @@ def schema_subject(token: str) -> SchemaSubjectSpec | None:
     return SCHEMA_SUBJECT_BY_TOKEN.get(token.strip().lower().replace("_", "-"))
 
 
+def inference_exclusion_reason(token: str) -> str | None:
+    """Return why this subject is outside the inference denominator, if it is.
+
+    A declared exclusion is the authority for a zero denominator: the subject
+    contributes no eligible material because it was never admissible, which is
+    a different claim from "every member was refused".
+    """
+
+    return INFERENCE_EXCLUDED_SUBJECTS.get(token.strip().lower().replace("_", "-"))
+
+
 __all__ = [
     "CORE_SCHEMA_ORIGINS",
     "CORE_SCHEMA_PROVIDERS",
+    "INFERENCE_EXCLUDED_SUBJECTS",
     "SCHEMA_PACKAGE_DIRECTORIES",
     "SCHEMA_SUBJECTS",
     "SCHEMA_SUBJECT_BY_TOKEN",
     "SchemaSubjectSpec",
+    "inference_exclusion_reason",
     "schema_subject",
 ]

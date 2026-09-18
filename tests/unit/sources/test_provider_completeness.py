@@ -7,7 +7,12 @@ from pytest import MonkeyPatch
 
 from polylogue.core.enums import Origin
 from polylogue.core.provider_identity import CORE_SCHEMA_PROVIDERS, canonical_schema_provider
-from polylogue.core.schema_subjects import CORE_SCHEMA_ORIGINS, SCHEMA_PACKAGE_DIRECTORIES, SCHEMA_SUBJECTS
+from polylogue.core.schema_subjects import (
+    CORE_SCHEMA_ORIGINS,
+    INFERENCE_EXCLUDED_SUBJECTS,
+    SCHEMA_PACKAGE_DIRECTORIES,
+    SCHEMA_SUBJECTS,
+)
 from polylogue.schemas.registry import SCHEMA_DIR, schema_subject_diagnostics
 from polylogue.sources import provider_completeness as module
 from polylogue.sources.origin_specs import ORIGIN_SPECS
@@ -38,13 +43,14 @@ def test_provider_completeness_reports_representative_modes() -> None:
 
     # Browser capture is a first-party, Polylogue-controlled envelope (not an
     # inferred third-party export shape): the receiver enforces
-    # polylogue.browser_capture.models.BrowserCaptureEnvelope on every
-    # accepted capture, so the pydantic-derived catalog under
-    # polylogue/schemas/providers/browser-capture/ is the authoritative wire
-    # schema, not a harvested-sample approximation (polylogue-cfz6).
+    # polylogue.browser_capture.models.BrowserCaptureEnvelope on every accepted
+    # capture, so that authored model is the authoritative wire schema and the
+    # row's schema evidence. The subject is declared outside the
+    # schema-inference denominator and has no committed inferred package
+    # (polylogue-cfz6, polylogue-tnqqt AC3).
     assert browser.maturity == "accepted"
     assert browser.status == "complete"
-    assert browser.schema_package.owner_path == "polylogue/schemas/providers/browser-capture/catalog.json"
+    assert browser.schema_package.owner_path == "polylogue/browser_capture/models.py"
     assert browser.schema_package.status == "complete"
     assert not browser.blockers
 
@@ -110,6 +116,26 @@ def test_schema_subject_declaration_reaches_every_package_and_origin() -> None:
     assert all(canonical_schema_provider(item.token) == item.token for item in SCHEMA_SUBJECTS)
     assert set(CORE_SCHEMA_ORIGINS) == {origin for item in SCHEMA_SUBJECTS for origin in item.origins}
     assert schema_subject_diagnostics() == ()
+
+
+def test_inference_excluded_subject_has_no_package_to_refresh() -> None:
+    """A subject declared outside the inference denominator is one whose wire
+    format this repository authors. An inferred package for it would be a
+    snapshot of our own model presented as an observation, and its presence is
+    precisely what invites someone to "refresh" a subject that must never be
+    inferred.
+
+    Anti-vacuity: restore ``polylogue/schemas/providers/browser-capture/`` (or
+    flip its ``requires_package``) and this goes red.
+    """
+    assert INFERENCE_EXCLUDED_SUBJECTS, "no subject declares an inference exclusion"
+    for item in SCHEMA_SUBJECTS:
+        if item.inference_excluded_reason is None:
+            continue
+        assert not item.requires_package, f"{item.token} is excluded from inference but still requires a package"
+        assert not (SCHEMA_DIR / item.package_dir).exists(), (
+            f"{item.token} is excluded from inference but a committed package remains"
+        )
 
 
 def test_schema_subject_diagnostics_catches_added_or_removed_package(tmp_path: Path) -> None:

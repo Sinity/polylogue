@@ -35,6 +35,7 @@ import tempfile
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument
+from polylogue.core.schema_subjects import inference_exclusion_reason
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.generation.workflow import (
     build_provider_bundle_from_sources,
@@ -69,6 +70,13 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
         raise ValueError("source schema commits require complete inputs; --no-full-corpus is unavailable")
     if request.source_inputs and request.max_samples is not None:
         raise ValueError("source schema commits require complete inputs; --max-samples is unavailable")
+    excluded = inference_exclusion_reason(request.provider)
+    if excluded is not None:
+        # Declared non-applicability, not a missing adapter: there is nothing
+        # to infer for a wire format this repository authors, so the commit
+        # route refuses the subject instead of writing an inferred package
+        # that would compete with the authored contract.
+        raise ValueError(f"{request.provider} is declared outside the schema-inference denominator: {excluded}")
     provider_token = str(canonical_schema_provider(request.provider))
     output_dir = output_dir.absolute()
     handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME

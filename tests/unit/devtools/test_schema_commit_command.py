@@ -188,15 +188,16 @@ def test_unsupported_sources_keep_coverage_in_failure_output(
         "get_config",
         lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
     )
-    source = tmp_path / "capture.json"
-    source.write_text('{"polylogue_capture_kind":"session"}', encoding="utf-8")
+    source = tmp_path / "conversations" / "session.pb"
+    source.parent.mkdir()
+    source.write_bytes(b"synthetic-protobuf-bytes")
 
     code = schema_commit.main(
         [
             "--provider",
-            "browser-capture",
+            "antigravity",
             "--source",
-            f"browser-capture={source}",
+            f"antigravity={source}",
             "--source-cache",
             str(tmp_path / "evidence.sqlite"),
             "--output-dir",
@@ -211,13 +212,44 @@ def test_unsupported_sources_keep_coverage_in_failure_output(
     assert code == 1
     assert payload["success"] is False
     provenance = payload["phase_receipt"]["source"]
-    assert provenance["source_terminal_reasons"] == {"browser_capture_adapter_unavailable": 1}
+    assert provenance["source_terminal_reasons"] == {"antigravity_protobuf_adapter_unavailable": 1}
     assert provenance["source_input_bytes"] == source.stat().st_size
     events = [json.loads(line.removeprefix("schema-commit: ")) for line in captured.err.splitlines()]
     completed = [event for event in events if event["phase"] == "source_evidence"]
     assert len(completed) == 1
     assert completed[0]["state"] == "completed"
     assert completed[0]["source_terminal_reasons"] == provenance["source_terminal_reasons"]
+
+
+def test_declared_non_applicable_subject_is_refused_by_the_commit_route(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Anti-vacuity: without this refusal the commit route would generate and
+    commit an inferred package for a format this repository authors, which is
+    exactly the artifact the exclusion retires."""
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
+    source = tmp_path / "capture.json"
+    source.write_text('{"polylogue_capture_kind":"browser_llm_session"}', encoding="utf-8")
+
+    code = schema_commit.main(
+        [
+            "--provider",
+            "browser-capture",
+            "--source",
+            f"browser-capture={source}",
+            "--output-dir",
+            str(tmp_path / "packages"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "outside the schema-inference denominator" in captured.err
+    assert not (tmp_path / "packages" / "browser-capture").exists()
 
 
 def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
