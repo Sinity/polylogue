@@ -269,3 +269,49 @@ def _run_child(
         text=True,
         check=False,
     )
+
+
+def test_rss_trajectory_localizes_growth_to_the_tests_that_caused_it(tmp_path: Path) -> None:
+    """A worker's peak grows with tests executed; the trajectory names where.
+
+    Anti-vacuity: dropping the nodeid label, or sampling once instead of on a
+    cadence, leaves a single peak number that cannot distinguish an import
+    floor from growth, and this reddens on the flat-then-rising shape.
+    """
+    recorder = suite_cost.SuiteCostRecorder(tmp_path / "receipts", "gw0", None, sample_rss=True)
+    retained: list[bytearray] = []
+    for index in range(3 * suite_cost._SAMPLE_EVERY):
+        recorder.note_test(f"tests/unit/{'grows' if index >= suite_cost._SAMPLE_EVERY else 'flat'}/test_{index}.py::t")
+        if index >= suite_cost._SAMPLE_EVERY:
+            retained.append(bytearray(512_000))
+
+    payload = recorder.payload()
+    trajectory = payload["rss_trajectory"]
+    assert [point["tests"] for point in trajectory] == [suite_cost._SAMPLE_EVERY * step for step in (1, 2, 3)]
+    assert trajectory[0]["nodeid"].startswith("tests/unit/flat/")
+    assert trajectory[-1]["nodeid"].startswith("tests/unit/grows/")
+    # The flat segment allocates nothing; the rest retains 500 x 512 kB.
+    # RSS is the resident subset, not the allocated byte count, so the floor
+    # is a clearly-rising hundred-mebibyte delta rather than the full 244 MiB.
+    assert trajectory[-1]["rss_kib"] - trajectory[0]["rss_kib"] > 100_000
+    assert payload["rss_growth_kib"] >= trajectory[-1]["rss_kib"] - payload["rss_start_kib"]
+    assert not payload["rss_trajectory_truncated"]
+    assert len(retained) == 2 * suite_cost._SAMPLE_EVERY
+
+
+def test_rss_trajectory_is_off_unless_asked_for(tmp_path: Path) -> None:
+    """An unsampled run must not read as a measured flat trajectory.
+
+    Anti-vacuity: emitting the keys unconditionally (as zeroes or otherwise)
+    reddens this, which is what would let a run nobody asked to sample be
+    reported as evidence that a worker's memory does not grow.
+    """
+    recorder = suite_cost.SuiteCostRecorder(tmp_path / "receipts", "gw0", None)
+    recorder.note_test("tests/unit/x/test_a.py::t")
+    recorder.sample_memory()
+
+    payload = recorder.payload()
+    assert "rss_trajectory" not in payload
+    assert "peak_rss_kib" not in payload
+    assert "rss_growth_kib" not in payload
+    assert "tier_init" in payload

@@ -8,6 +8,12 @@ decide it -- how each archive-tier initialization resolved (page-copy
 prototype, fresh DDL, or full DDL reapply) and the process's write bytes --
 per xdist worker, and :func:`aggregate_suite_cost` sums them into one receipt.
 
+A worker's resident peak is the other half of that cost, and the half that
+caps parallelism: the corpus width is memory-bound, so a worker's peak decides
+how many workers fit the pytest slice. ``POLYLOGUE_SUITE_COST_RSS`` adds an
+O(1) resident-memory trajectory labelled with the nodeid at each sample, which
+attributes growth to a directory instead of to the run as a whole.
+
 Inert unless ``POLYLOGUE_SUITE_COST_DIR`` names a directory.
 """
 
@@ -46,6 +52,40 @@ SUITE_COST_SCRATCH_ENV: Final = "POLYLOGUE_SUITE_COST_SCRATCH"
 #: Walking the temp tree is O(files); at this cadence a 20k-test worker pays
 #: it a few dozen times, which is noise against the run.
 _SAMPLE_EVERY: Final = 250
+
+#: Opt-in for the resident-memory trajectory. ``/proc/self/statm`` is an O(1)
+#: read of a handful of integers -- the same cost class as ``/proc/self/io`` --
+#: but the trajectory it builds is a diagnostic for one question: a pytest
+#: worker's peak grows with tests *executed*, and neither the import floor nor
+#: the tier-init tally locates that growth. Sampling resident pages beside the
+#: nodeid that had just run attributes the growth to a directory, which is what
+#: turns "the worker peaks at 2.2 GiB" into a fixable place.
+#:
+#: Opt-in rather than always-on because it is an investigation aid, not a
+#: budget number: the receipt keys are absent on an unsampled run so a run that
+#: was never asked cannot read as a measured flat trajectory.
+SUITE_COST_RSS_ENV: Final = "POLYLOGUE_SUITE_COST_RSS"
+
+#: Resident pages and the process page size, for converting ``statm`` to KiB.
+_STATM_PATH: Final = Path("/proc/self/statm")
+_PAGE_KIB: Final = os.sysconf("SC_PAGE_SIZE") // 1024
+
+#: Trajectory points kept. At ``_SAMPLE_EVERY`` a 20k-test worker produces 80
+#: points, so this bounds a pathological run rather than a realistic one: the
+#: list must not itself become the growth it is measuring.
+_RSS_SAMPLE_LIMIT: Final = 512
+
+
+def _read_rss_kib() -> int | None:
+    """Resident set size in KiB, or None when ``statm`` is unreadable.
+
+    One read of one short procfs line: O(1) in both the run length and the
+    scratch tree, unlike the basetemp walk above.
+    """
+    with contextlib.suppress(OSError, ValueError, IndexError):
+        return int(_STATM_PATH.read_text().split()[1]) * _PAGE_KIB
+    return None
+
 
 #: Hard stop for one walk, so even an opted-in sample cannot become the run's
 #: dominant cost. A truncated sample is reported as truncated, never as a peak.
@@ -109,9 +149,11 @@ class SuiteCostRecorder:
         *,
         role: str = "worker",
         sample_scratch: bool = False,
+        sample_rss: bool = False,
     ) -> None:
         self._directory = directory
         self._sample_scratch = sample_scratch
+        self._sample_rss = sample_rss
         self._worker_id = worker_id
         self._role = role
         self._basetemp_source = basetemp
@@ -121,6 +163,11 @@ class SuiteCostRecorder:
         self._peak_apparent = 0
         self._peak_allocated = 0
         self._scratch_truncated = False
+        self._rss_start_kib = _read_rss_kib() if sample_rss else None
+        self._peak_rss_kib = self._rss_start_kib or 0
+        self._rss_trajectory: list[dict[str, Any]] = []
+        self._rss_truncated = False
+        self._last_nodeid = ""
 
     def _basetemp(self) -> Path | None:
         """Resolve the scratch root late: the temp-path plugin configures after this one."""
@@ -134,10 +181,32 @@ class SuiteCostRecorder:
                 return self._basetemp_source
         return None
 
-    def note_test(self) -> None:
+    def note_test(self, nodeid: str = "") -> None:
         self._tests += 1
-        if self._sample_scratch and self._tests % _SAMPLE_EVERY == 0:
-            self.sample_storage()
+        if nodeid:
+            self._last_nodeid = nodeid
+        if self._tests % _SAMPLE_EVERY == 0:
+            if self._sample_scratch:
+                self.sample_storage()
+            self.sample_memory()
+
+    def sample_memory(self) -> None:
+        """Record one resident-memory point; a no-op unless the trajectory was asked for.
+
+        The nodeid carried is the test that had just finished when the sample
+        was taken, so a rising segment names the directory it rose in. It is
+        the sample's label, not a claim that this one test allocated the step.
+        """
+        if not self._sample_rss:
+            return
+        rss = _read_rss_kib()
+        if rss is None:
+            return
+        self._peak_rss_kib = max(self._peak_rss_kib, rss)
+        if len(self._rss_trajectory) >= _RSS_SAMPLE_LIMIT:
+            self._rss_truncated = True
+            return
+        self._rss_trajectory.append({"tests": self._tests, "rss_kib": rss, "nodeid": self._last_nodeid})
 
     def sample_storage(self) -> None:
         """Record the scratch-tree peak; a no-op unless the walk was asked for."""
@@ -172,10 +241,22 @@ class SuiteCostRecorder:
                 if self._sample_scratch
                 else {}
             ),
+            **(
+                {
+                    "rss_start_kib": self._rss_start_kib,
+                    "peak_rss_kib": self._peak_rss_kib,
+                    "rss_growth_kib": max(0, self._peak_rss_kib - (self._rss_start_kib or 0)),
+                    "rss_trajectory": self._rss_trajectory,
+                    "rss_trajectory_truncated": self._rss_truncated,
+                }
+                if self._sample_rss
+                else {}
+            ),
         }
 
     def write(self) -> Path:
         self.sample_storage()
+        self.sample_memory()
         self._directory.mkdir(parents=True, exist_ok=True)
         destination = self._directory / f"{self._worker_id}.json"
         destination.write_text(json.dumps(self.payload(), indent=2, sort_keys=True) + "\n")
@@ -206,12 +287,13 @@ def pytest_configure(config: pytest.Config) -> None:
         resolve_basetemp,
         role=role,
         sample_scratch=os.environ.get(SUITE_COST_SCRATCH_ENV, "").strip() not in ("", "0", "false", "no"),
+        sample_rss=os.environ.get(SUITE_COST_RSS_ENV, "").strip() not in ("", "0", "false", "no"),
     )
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if _RECORDER is not None and report.when == "call":
-        _RECORDER.note_test()
+        _RECORDER.note_test(report.nodeid)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -244,6 +326,7 @@ def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
             tier_total[name] = tier_total.get(name, 0) + int(value)
     write_bytes = io_total.get("write_bytes", 0)
     sampled = [worker for worker in workers if "peak_scratch_apparent_bytes" in worker]
+    rss_sampled = [worker for worker in workers if "peak_rss_kib" in worker]
     return {
         "workers": len(workers),
         "tests": tests,
@@ -274,6 +357,19 @@ def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
                 "peak_scratch_truncated": any(bool(w.get("peak_scratch_truncated")) for w in sampled),
             }
             if sampled
+            else {}
+        ),
+        # Resident peaks, like scratch peaks, have no shared sampling clock:
+        # report the largest single worker rather than a sum that would claim a
+        # simultaneous suite peak nobody observed. Absent -- never zero -- when
+        # no worker was asked, so an unsampled run cannot read as measured.
+        **(
+            {
+                "peak_rss_kib": max(int(w.get("peak_rss_kib", 0)) for w in rss_sampled),
+                "rss_growth_kib": max(int(w.get("rss_growth_kib", 0)) for w in rss_sampled),
+                "rss_trajectory_truncated": any(bool(w.get("rss_trajectory_truncated")) for w in rss_sampled),
+            }
+            if rss_sampled
             else {}
         ),
         "per_worker": workers,
@@ -355,6 +451,7 @@ __all__ = [
     "PLUGIN_NAME",
     "RUN_RECEIPT_NAME",
     "SUITE_COST_DIR_ENV",
+    "SUITE_COST_RSS_ENV",
     "SUITE_COST_SCRATCH_ENV",
     "SuiteCostRecorder",
     "aggregate_suite_cost",
