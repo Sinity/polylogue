@@ -494,6 +494,34 @@ def test_real_revision_receipt_authorizes_only_current_byte_head_supersession(tm
     )
 
 
+def test_path_scoped_retention_preserves_the_full_chain_and_deletion_receipt(tmp_path: Path) -> None:
+    """A page scope changes query breadth, never the chain safety verdict.
+
+    Anti-vacuity: filtering only the candidate raw instead of its logical
+    source head loses the newest raw's protection and makes this parity check
+    fail. The production dispatcher passes this scope before it compacts a
+    page, so a global authority query cannot silently return through this
+    route.
+    """
+    old_raw_id, new_raw_id = _seed_real_full_supersession(tmp_path)
+    source_path = tmp_path / "session.jsonl"
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        global_authority = active_raw_retention_authority(conn, index_db_path=tmp_path / "index.db")
+        scoped_authority = active_raw_retention_authority(
+            conn,
+            index_db_path=tmp_path / "index.db",
+            authority_source_paths=(source_path,),
+        )
+
+    expected = RawRetentionAuthority(
+        protected_raw_ids=frozenset({new_raw_id}),
+        eligible_raw_ids=frozenset({old_raw_id}),
+    )
+    assert global_authority == expected
+    assert scoped_authority == expected
+
+
 def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: Path) -> None:
     """Terminal authority scans only the caller's source-path scope."""
 

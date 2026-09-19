@@ -31,6 +31,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
+from polylogue.storage import raw_retention
 from tests.infra.workload_declarations import convergence_corpus_specs
 
 _MAX_DISPATCHER_PASSES = 32
@@ -174,6 +175,37 @@ def test_dispatcher_intake_is_within_direct_ingest_bound(tmp_path: Path, monkeyp
         f"dispatcher_s={dispatcher['total_s']:.4f} direct_s={direct['total_s']:.4f} "
         f"payload_bytes={int(dispatcher['payload_bytes'])} passes={int(dispatcher['passes'])}"
     )
+
+
+def test_dispatcher_retention_authority_is_scoped_to_its_admitted_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live page never asks retention to inventory an unrelated archive.
+
+    This reaches the production dispatcher, adapter, batch materialization,
+    and raw-compaction callback. Anti-vacuity: removing the source-path scope
+    from ``LiveBatchProcessor._compact_superseded_raw_snapshots`` leaves the
+    batch successful, but makes this assertion red before the global query
+    can return deletion authority.
+    """
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
+    corpus = _write_corpus(tmp_path / "dispatcher")
+    expected_paths = frozenset(_jsonl_files(corpus))
+    observed_scopes: list[frozenset[Path] | None] = []
+    original = raw_retention.active_raw_retention_authority
+
+    def recording_authority(*args: object, **kwargs: object) -> raw_retention.RawRetentionAuthority:
+        paths = kwargs.get("authority_source_paths")
+        observed_scopes.append(frozenset(cast(list[Path], paths)) if paths is not None else None)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(raw_retention, "active_raw_retention_authority", recording_authority)
+
+    result = _run_dispatcher_ingest(corpus, tmp_path / "archive")
+
+    assert result["succeeded_files"] == result["files"]
+    assert observed_scopes == [expected_paths]
 
 
 def test_rehearsal_chunk_route_numbers_are_labelled_deleted() -> None:
