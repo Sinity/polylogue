@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import click
@@ -60,6 +61,10 @@ from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.read_views.standard import run_read_dialogue, run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.read_views.web_content_constructs import run_read_web_content_constructs
 from polylogue.cli.shared.types import AppEnv
+from polylogue.operations.session_projections import (
+    SESSION_LIST_PROJECTIONS,
+    validate_session_list_projection_cli_contract,
+)
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
@@ -109,14 +114,6 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         run_read_hooks,
         default_format="json",
     ),
-    "events": ReadViewHandler(
-        "events",
-        "required",
-        run_read_events,
-        default_format="json",
-        accepted_options=EVENTS_READ_VIEW_OPTION_NAMES,
-        option_builder=build_events_options,
-    ),
     "effective_context": ReadViewHandler(
         "effective_context",
         "required",
@@ -140,24 +137,6 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="json",
         accepted_options=TOPOLOGY_READ_VIEW_OPTION_NAMES,
         option_builder=build_topology_options,
-    ),
-    "file-edits": ReadViewHandler(
-        "file-edits",
-        "required",
-        run_read_file_edits,
-        default_format="json",
-    ),
-    "agent-policies": ReadViewHandler(
-        "agent-policies",
-        "required",
-        run_read_agent_policies,
-        default_format="json",
-    ),
-    "web-content": ReadViewHandler(
-        "web-content",
-        "required",
-        run_read_web_content_constructs,
-        default_format="json",
     ),
     "context": ReadViewHandler(
         "context",
@@ -210,6 +189,57 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
 }
 
 
+_SESSION_LIST_CLI_HANDLER_TEMPLATES: dict[str, ReadViewHandler] = {
+    "events": ReadViewHandler(
+        "events",
+        "required",
+        run_read_events,
+        default_format="json",
+        accepted_options=EVENTS_READ_VIEW_OPTION_NAMES,
+        option_builder=build_events_options,
+    ),
+    "file-edits": ReadViewHandler(
+        "file-edits",
+        "required",
+        run_read_file_edits,
+        default_format="json",
+    ),
+    "agent-policies": ReadViewHandler(
+        "agent-policies",
+        "required",
+        run_read_agent_policies,
+        default_format="json",
+    ),
+    "web-content": ReadViewHandler(
+        "web-content",
+        "required",
+        run_read_web_content_constructs,
+        default_format="json",
+    ),
+}
+
+
+def session_list_read_view_handlers() -> dict[str, ReadViewHandler]:
+    """Build the CLI entries declared by the shared session-projection table."""
+
+    handlers: dict[str, ReadViewHandler] = {}
+    for projection in SESSION_LIST_PROJECTIONS.values():
+        try:
+            template = _SESSION_LIST_CLI_HANDLER_TEMPLATES[projection.cli_handler]
+        except KeyError as exc:
+            raise RuntimeError(
+                f"session projection {projection.name!r} names unknown CLI handler {projection.cli_handler!r}"
+            ) from exc
+        handlers[projection.name] = replace(template, view_id=projection.name)
+    return handlers
+
+
+READ_VIEW_HANDLERS.update(session_list_read_view_handlers())
+# Preserve the profile registry's stable public order after injecting the
+# table-derived entries above.
+READ_VIEW_HANDLERS = {view_id: READ_VIEW_HANDLERS[view_id] for view_id in read_view_choices()}
+
+
 def run_read_view(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Execute a registered read view."""
 
@@ -248,6 +278,7 @@ def validate_read_view_handler_registry() -> None:
 
     profile_ids = set(read_view_choices())
     handler_ids = set(READ_VIEW_HANDLERS)
+    validate_session_list_projection_cli_contract(handler_ids)
     metadata_ids = set(READ_VIEW_HANDLER_METADATA)
     missing = sorted(profile_ids - handler_ids)
     extra = sorted(handler_ids - profile_ids)
@@ -295,6 +326,7 @@ __all__ = [
     "read_view_handler_ids",
     "read_view_option_names",
     "read_view_options_for_view",
+    "session_list_read_view_handlers",
     "run_query_set_read_view",
     "run_read_view",
     "validate_read_view_handler_registry",
