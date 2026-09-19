@@ -847,24 +847,22 @@ class LiveBatchProcessor:
         catch-up batch. It also leaves existing convergence debt untouched;
         only an executed pass may resolve that evidence.
 
-        The batch is the scope of one shared ``ops.db`` write connection
-        (:meth:`CursorStore.ops_write_scope`): the cursor store's attempt,
-        cursor and telemetry writes share it instead of opening one connection
-        each. The scope opens and closes inside this call, so it never spans a
-        chunk boundary, and its flush runs on every exit path.
+        Each ops-tier publication takes the daemon writer through
+        :meth:`_run_sync`.  The shared ops connection remains inside the
+        synchronous archive-publication worker, where its thread-local scope
+        cannot leak over page planning, parsing, or convergence.
         """
-        with self._cursor.ops_write_scope():
-            return await self._ingest_files_in_ops_scope(
-                paths,
-                queued_file_count=queued_file_count,
-                skipped_file_count=skipped_file_count,
-                emit_event=emit_event,
-                max_pass_seconds=max_pass_seconds,
-                whole_archive_convergence=whole_archive_convergence,
-                defer_convergence=defer_convergence,
-            )
+        return await self._ingest_files(
+            paths,
+            queued_file_count=queued_file_count,
+            skipped_file_count=skipped_file_count,
+            emit_event=emit_event,
+            max_pass_seconds=max_pass_seconds,
+            whole_archive_convergence=whole_archive_convergence,
+            defer_convergence=defer_convergence,
+        )
 
-    async def _ingest_files_in_ops_scope(
+    async def _ingest_files(
         self,
         paths: list[Path],
         *,
@@ -875,7 +873,7 @@ class LiveBatchProcessor:
         whole_archive_convergence: bool = True,
         defer_convergence: bool = False,
     ) -> LiveBatchMetrics:
-        """Body of :meth:`ingest_files`, run under its ``ops.db`` write scope."""
+        """Body of :meth:`ingest_files`, with each ops write separately admitted."""
         authorization = self.require_cursor_authority(paths)
         refused_paths = self._refused_paths
         self._refused_paths = frozenset()
@@ -900,12 +898,14 @@ class LiveBatchProcessor:
         # split below reconciles exactly, even if a file grows mid-batch.
         path_sizes = {path: _path_size(path) for path in paths}
         input_bytes = sum(path_sizes.values())
-        attempt_id = self._cursor.begin_ingest_attempt(
+        attempt_id = await self._run_ops_write(
+            "attempt_start",
+            self._cursor.begin_ingest_attempt,
             paths=paths,
             input_bytes=input_bytes,
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
         )
-        self._record_attempt_progress(
+        await self._record_attempt_progress_admitted(
             attempt_id,
             phase="planning",
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
@@ -969,7 +969,7 @@ class LiveBatchProcessor:
                 return
             plans = pending_append_plans
             pending_append_plans = []
-            self._record_attempt_progress(
+            await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="append_parse",
                 succeeded_file_count=len(succeeded_paths),
@@ -1009,7 +1009,7 @@ class LiveBatchProcessor:
                 },
             }
             release_process_memory()
-            self._record_attempt_progress(
+            await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="convergence",
                 succeeded_file_count=len(succeeded_paths),
@@ -1037,17 +1037,24 @@ class LiveBatchProcessor:
             debt_by_source_path = debt_by_path(convergence_debt)
             for plan in append_result.succeeded:
                 succeeded_paths.add(plan.path)
-                if not self._record_append_cursor(plan):
+                if not await self._run_ops_write("cursor_append", self._record_append_cursor, plan):
                     stale_cursor_write_count += 1
                 cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
                 if not defer_convergence:
-                    self._record_convergence_outcome(plan.path, debt_by_source_path.get(plan.path, ()))
+                    await self._run_ops_write(
+                        "convergence_outcome",
+                        self._record_convergence_outcome,
+                        plan.path,
+                        debt_by_source_path.get(plan.path, ()),
+                    )
                 session_id = append_result.session_ids_by_path.get(plan.path)
                 if session_id:
                     updated_session_touches.append((plan.source_name, session_id))
             for plan in append_result.failed:
                 failed_paths.append(str(plan.path))
-                cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
+                cursor_fingerprint_read_bytes += await self._run_ops_write(
+                    "cursor_failed", self._record_failed_cursor, plan.path
+                )
             for plan in append_result.deferred:
                 # polylogue-hat0: this plan's bytes are already durably
                 # written and revision-bound in source.db (write_raw_payload
@@ -1057,7 +1064,9 @@ class LiveBatchProcessor:
                 # observation of an unchanged file recognizes there is
                 # nothing new to capture instead of re-mining an identical
                 # duplicate raw row forever.
-                cursor_fingerprint_read_bytes += record_deferred_append_cursor(
+                cursor_fingerprint_read_bytes += await self._run_ops_write(
+                    "cursor_deferred",
+                    record_deferred_append_cursor,
                     self._cursor,
                     plan.path,
                     cursor=self._cursor.get_record(plan.path),
@@ -1097,7 +1106,9 @@ class LiveBatchProcessor:
                 # _append_plan itself recognized an already-pending deferred
                 # range with no growth past it). Preserve any existing
                 # pending-authority marker unchanged rather than clearing it.
-                cursor_fingerprint_read_bytes += record_deferred_append_cursor(
+                cursor_fingerprint_read_bytes += await self._run_ops_write(
+                    "cursor_deferred",
+                    record_deferred_append_cursor,
                     self._cursor,
                     path,
                     cursor=cursor,
@@ -1156,7 +1167,7 @@ class LiveBatchProcessor:
                     break
                 t0 = time.perf_counter()
                 try:
-                    self._record_attempt_progress(
+                    await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse",
                         succeeded_file_count=len(succeeded_paths),
@@ -1201,7 +1212,7 @@ class LiveBatchProcessor:
                     # hit the same structural error with no information gain.
                     for path in grouped_paths:
                         failed_paths.append(str(path))
-                    self._record_attempt_progress(
+                    await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
                         succeeded_file_count=len(succeeded_paths),
@@ -1221,7 +1232,7 @@ class LiveBatchProcessor:
                     attempt_disposition = classify_archive_write_exception(exc)
                     for path in grouped_paths:
                         failed_paths.append(str(path))
-                    self._record_attempt_progress(
+                    await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
                         succeeded_file_count=len(succeeded_paths),
@@ -1249,8 +1260,10 @@ class LiveBatchProcessor:
                     attempt_disposition = classify_archive_write_exception(exc)
                     for path in source_paths:
                         failed_paths.append(str(path))
-                        cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
-                    self._record_attempt_progress(
+                        cursor_fingerprint_read_bytes += await self._run_ops_write(
+                            "cursor_failed", self._record_failed_cursor, path
+                        )
+                    await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
                         succeeded_file_count=len(succeeded_paths),
@@ -1268,7 +1281,7 @@ class LiveBatchProcessor:
                 source_payload_read_bytes += full_result.source_payload_read_bytes
                 _accumulate_stage_timings(stage_timings, full_result.stage_timings_s)
                 release_process_memory()
-                self._record_attempt_progress(
+                await self._record_attempt_progress_admitted(
                     attempt_id,
                     phase="convergence",
                     succeeded_file_count=len(succeeded_paths),
@@ -1305,7 +1318,9 @@ class LiveBatchProcessor:
                 debt_by_source_path = debt_by_path(convergence_debt)
                 for path in full_result.succeeded:
                     succeeded_paths.add(path)
-                    cursor_fingerprint_read_bytes += self._record_full_cursor(
+                    cursor_fingerprint_read_bytes += await self._run_ops_write(
+                        "cursor_full",
+                        self._record_full_cursor,
                         path,
                         raw_fingerprint=full_result.raw_fingerprints.get(path),
                         raw_byte_size=full_result.raw_byte_sizes.get(path),
@@ -1319,10 +1334,17 @@ class LiveBatchProcessor:
                     if self._last_cursor_write_stale:
                         stale_cursor_write_count += 1
                     if convergence_ran and not _source_tier_acquisition_required():
-                        self._record_convergence_outcome(path, debt_by_source_path.get(path, ()))
+                        await self._run_ops_write(
+                            "convergence_outcome",
+                            self._record_convergence_outcome,
+                            path,
+                            debt_by_source_path.get(path, ()),
+                        )
                 for path in full_result.failed:
                     failed_paths.append(str(path))
-                    cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
+                    cursor_fingerprint_read_bytes += await self._run_ops_write(
+                        "cursor_failed", self._record_failed_cursor, path
+                    )
                 excluded_by_path.update(full_result.excluded)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
@@ -1358,7 +1380,7 @@ class LiveBatchProcessor:
         materialized_session_count = len(
             {session_id for _source_name, session_id in (*new_session_touches, *updated_session_touches)}
         )
-        self._record_attempt_progress(
+        await self._record_attempt_progress_admitted(
             attempt_id,
             phase="cursor_update",
             succeeded_file_count=len(succeeded_paths),
@@ -1389,7 +1411,9 @@ class LiveBatchProcessor:
             # (polylogue-3r36h). Record it as what it is: deliberate
             # bounded-backpressure debt, which lands as
             # ``convergence_debt.status = 'deferred'``.
-            self._cursor.record_convergence_debt(
+            await self._run_ops_write(
+                "convergence_debt",
+                self._cursor.record_convergence_debt,
                 stage="live_ingest_deferred",
                 subject_type="source_path",
                 subject_id=str(deferred_path),
@@ -1456,7 +1480,7 @@ class LiveBatchProcessor:
         )
         if emit_event and self._event_emitter is not None:
             self._event_emitter("ingestion_batch", metrics.to_payload())
-        self._record_attempt_progress(
+        await self._record_attempt_progress_admitted(
             attempt_id,
             phase="completed",
             status="completed",
@@ -1497,7 +1521,9 @@ class LiveBatchProcessor:
                 evidence_ref="batch:per_item_failure_aggregate",
                 diagnostic=f"{len(retry_paths)} source item(s) failed without a batch-level exception",
             )
-        self._cursor.finish_ingest_attempt(
+        await self._run_ops_write(
+            "attempt_finish",
+            self._cursor.finish_ingest_attempt,
             attempt_id,
             status="completed" if not retry_paths else "completed_with_failures",
             phase="completed",
@@ -1553,6 +1579,20 @@ class LiveBatchProcessor:
 
     def _record_attempt_progress(self, attempt_id: str, **kwargs: Any) -> None:
         record_attempt_progress(self._cursor, attempt_id, **kwargs)
+
+    async def _run_ops_write(
+        self,
+        operation: str,
+        function: Callable[P, T],
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Admit one ops-tier publication without holding a whole intake page."""
+        return await self._run_sync(f"watcher.live_ingest.ops.{operation}", function, *args, **kwargs)
+
+    async def _record_attempt_progress_admitted(self, attempt_id: str, **kwargs: Any) -> None:
+        await self._run_ops_write("attempt_progress", self._record_attempt_progress, attempt_id, **kwargs)
 
     def _full_ingest_heartbeat(
         self,
