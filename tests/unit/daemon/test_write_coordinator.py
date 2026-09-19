@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.write_lease import arm_write_lease_enforcement, install_archive_write_guard
 from polylogue.daemon.write_coordinator import (
     _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR,
     _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH,
@@ -23,6 +24,8 @@ from polylogue.daemon.write_coordinator import (
     _PriorityGate,
     daemon_write_telemetry_payload,
 )
+from polylogue.sources.live.cold_build import ColdBuildGeneration, active_index_generation_is_empty
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def test_actor_priority_classifies_bulk_ingest_below_everything_else() -> None:
@@ -34,6 +37,46 @@ def test_actor_priority_classifies_bulk_ingest_below_everything_else() -> None:
     assert _actor_priority("daemon.lifecycle.heartbeat") == 0
     # Exact "watcher" (no trailing segment) is not the bulk-ingest convention.
     assert _actor_priority("watcher") == 0
+
+
+@pytest.mark.asyncio
+async def test_cold_build_lifecycle_writable_opens_stay_under_one_coordinator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon's generation lifecycle uses the same archive-bound gate."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    generation: ColdBuildGeneration | None = None
+    try:
+        with arm_write_lease_enforcement(process_wide=True), install_archive_write_guard():
+            assert (
+                await coordinator.run_sync(
+                    "daemon.cold_build.probe",
+                    active_index_generation_is_empty,
+                    root,
+                )
+                is True
+            )
+            generation = await coordinator.run_sync(
+                "daemon.cold_build.begin",
+                ColdBuildGeneration.begin,
+                root,
+                reason="test",
+            )
+            assert (
+                await coordinator.run_sync(
+                    "daemon.cold_build.session_count",
+                    generation.session_count,
+                )
+                == 0
+            )
+            await coordinator.run_sync("daemon.cold_build.discard", generation.discard)
+    finally:
+        await coordinator.shutdown(timeout=1.0)
+    assert generation is not None
+    assert generation.settled
 
 
 @pytest.mark.asyncio
