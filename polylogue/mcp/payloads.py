@@ -660,13 +660,15 @@ def _ref_payload(ref: object) -> MCPSessionRefPayload:
 def session_topology_payload(topology: object, *, session_id: str) -> MCPSessionTopologyPayload:
     """Build the typed MCP payload for ``get_session_topology`` (#1261)."""
     from polylogue.analysis.topology import SessionTopology
-    from polylogue.operations.topology_envelope import topology_public_envelope
+    from polylogue.operations.topology_envelope import MAX_NODE_LIMIT, topology_public_envelope
 
     assert isinstance(topology, SessionTopology)
     # The operation boundary owns the envelope and its one outcome decision;
     # MCP only frames it. Re-deciding here is what let a truncated or
     # cycle-bearing topology report `ok`.
-    return MCPSessionTopologyPayload.model_validate(topology_public_envelope(topology, session_id=session_id))
+    return MCPSessionTopologyPayload.model_validate(
+        topology_public_envelope(topology, session_id=session_id, node_limit=MAX_NODE_LIMIT)
+    )
 
 
 def logical_session_payload(logical_session: object) -> MCPLogicalSessionPayload:

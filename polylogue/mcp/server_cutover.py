@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.mcp.declarations.adapter import register_declared_handler
@@ -30,8 +30,9 @@ from polylogue.operations.session_projections import (
     SESSION_LIST_PROJECTIONS,
     MCPReadView,
     SessionListProjection,
+    is_mcp_get_session_projection,
+    is_mcp_read_view,
     mcp_get_session_projection_names,
-    mcp_read_view_names,
     session_list_projection_names,
 )
 from polylogue.surfaces.outcome import decide_outcome
@@ -495,6 +496,42 @@ def insight_projections() -> frozenset[str]:
     return _STANDALONE_INSIGHT_REPORTS | registry_insight_projections()
 
 
+def mcp_query_projection_names() -> tuple[str, ...]:
+    """Return every ``query(projection=...)`` token the dispatcher serves.
+
+    Registry insight names are intentionally read at module construction time
+    so the MCP tool schema and runtime guard agree with the live registry.
+    """
+
+    return tuple(
+        sorted(
+            {
+                "default",
+                "session-operations",
+                "timeline",
+                "sessions",
+                *_PERSONAL_STATE_PROJECTIONS,
+                *insight_projections(),
+            }
+        )
+    )
+
+
+def mcp_get_projection_names() -> tuple[str, ...]:
+    """Return session and cost-outlook projection tokens accepted by ``get``."""
+
+    from polylogue.cost.outlook import ProjectionMethod
+
+    return (*mcp_get_session_projection_names(), *(method.value for method in ProjectionMethod))
+
+
+# See the matching dynamically derived aliases in session_projections.py.
+# Python/Pydantic resolve these literal values at import time, while Mypy needs
+# the precise ignore because it cannot statically reduce a function result.
+MCPQueryProjection: TypeAlias = cast(Any, Literal.__getitem__(mcp_query_projection_names()))
+MCPGetProjection: TypeAlias = cast(Any, Literal.__getitem__(mcp_get_projection_names())) | None  # type: ignore[valid-type]
+
+
 def _registry_descriptor(projection: str) -> Any:
     from polylogue.analysis.registry import INSIGHT_REGISTRY
 
@@ -952,7 +989,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
     async def query(
         expression: str | None = None,
         limit: int | None = None,
-        projection: str = "default",
+        projection: MCPQueryProjection = "default",
         continuation: str | None = None,
         offset: int | None = None,
         origin: str | None = None,
@@ -1001,6 +1038,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         """
 
         async def run() -> str:
+            if projection not in mcp_query_projection_names():
+                return hooks.error_json(
+                    f"unsupported query projection: {projection}", code="invalid_argument", tool="query"
+                )
             if projection == "session-operations" and session_operation is None:
                 return hooks.error_json(
                     "session-operations projection requires session_operation", code="invalid_argument", tool="query"
@@ -1271,7 +1312,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         f"read view {view!r} requires a session ref", code="invalid_argument", tool="read"
                     )
                 return await _session_list_projection_payload(list_projection, session_id, tool="read")
-            if view not in mcp_read_view_names():
+            if not is_mcp_read_view(view):
                 return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
             payload = await hooks.get_polylogue().resolve_ref(normalized)
             if limit is not None and hasattr(payload, "items"):
@@ -1280,7 +1321,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
         return await hooks.async_safe_call("read", run, session_id=session_id)
 
-    async def get(ref: str, projection: str | None = None) -> str:
+    async def get(ref: str, projection: MCPGetProjection = None) -> str:
         """Resolve one exact stable object or evidence identity.
 
         ``projection="orchestration"`` returns versioned structured launch,
@@ -1330,6 +1371,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         metric_id = normalized.removeprefix("metric:") if normalized.startswith("metric:") else None
 
         async def run() -> str:
+            if projection is not None and projection not in mcp_get_projection_names():
+                return hooks.error_json(
+                    f"unsupported get projection: {projection}", code="invalid_argument", tool="get"
+                )
             if plan_name is not None:
                 return await _cost_outlook_payload(hooks, plan_name=plan_name, method=projection)
             if metric_id is not None:
@@ -1338,7 +1383,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         "metric refs do not accept a projection", code="invalid_argument", tool="get"
                     )
                 return _metric_definition_payload(hooks, metric_id)
-            if projection is not None and projection not in mcp_get_session_projection_names():
+            if not is_mcp_get_session_projection(projection):
                 return hooks.error_json(
                     f"unsupported get projection: {projection}", code="invalid_argument", tool="get"
                 )
