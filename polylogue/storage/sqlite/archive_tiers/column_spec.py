@@ -10,7 +10,7 @@ domain fields stay with the typed models.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Container, Mapping
+from collections.abc import Callable, Container, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -179,6 +179,40 @@ class TableColumnSpec:
                 value = col.record_transform(value)
             result[col.record_name] = value
         return result
+
+    def bind_record_mapper(self, column_names: Sequence[str]) -> Callable[[sqlite3.Row], dict[str, Any]]:
+        """Bind this record projection to one cursor layout, not one row.
+
+        The caller owns the binding's lifetime. Rebind for another SELECT.
+        Exact-name presence retains omitted-field defaults. Positional lookup
+        preserves sqlite3.Row's first-match, ASCII-case-insensitive lookup,
+        including duplicate aliases; non-ASCII names are exact-match only.
+        Transforms remain in declaration order and exceptions propagate.
+        """
+        names = frozenset(column_names)
+        positions: dict[tuple[bool, str], int] = {}
+        for index, name in enumerate(column_names):
+            key = (name.isascii(), name.lower() if name.isascii() else name)
+            positions.setdefault(key, index)
+        plan = []
+        for column in self.record_columns:
+            record_name = column.record_name
+            assert record_name is not None
+            if record_name in names:
+                key = (record_name.isascii(), record_name.lower() if record_name.isascii() else record_name)
+                plan.append((record_name, positions[key], column.record_transform))
+        bound = tuple(plan)
+
+        def decode(row: sqlite3.Row) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for name, index, transform in bound:
+                value = row[index]
+                if transform is not None:
+                    value = transform(value)
+                result[name] = value
+            return result
+
+        return decode
 
     def domain_kwargs(self, record: Any, *, accepted: Container[str] | None = None) -> dict[str, Any]:
         """Project a runtime record into domain-model constructor kwargs.

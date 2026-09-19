@@ -21,7 +21,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_SPEC
-from polylogue.storage.sqlite.queries.mappers import _row_to_message
+from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
 
 logger = get_logger(__name__)
 
@@ -114,7 +114,8 @@ async def _own_messages(conn: aiosqlite.Connection, session_id: str) -> list[Mes
         (session_id,),
     )
     rows = await cursor.fetchall()
-    return [_row_to_message(row) for row in rows]
+    decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
+    return [decode(row) for row in rows]
 
 
 async def get_messages(conn: aiosqlite.Connection, session_id: str) -> list[MessageRecord]:
@@ -373,10 +374,10 @@ async def get_messages_batch(
             tuple(params),
         )
         rows = await cursor.fetchall()
-
+        decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
         for row in rows:
             cid = row["session_id"]
-            msg = _row_to_message(row)
+            msg = decode(row)
             if cid in result:
                 result[cid].append(msg)
             for requested, resolved in resolved_pairs:
@@ -472,7 +473,8 @@ async def get_messages_paginated(
 
     cursor = await conn.execute(query, tuple(params))
     rows = await cursor.fetchall()
-    messages = [_row_to_message(row) for row in rows]
+    decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
+    messages = [decode(row) for row in rows]
 
     return messages, total, LineageCompleteness()
 
@@ -567,7 +569,8 @@ async def get_message_edge_windows(
         """,
         (*params, edge_limit),
     )
-    first = [_row_to_message(row) for row in await first_cursor.fetchall()]
+    first_decode = bind_message_row_mapper(tuple(column[0] for column in first_cursor.description or ()))
+    first = [first_decode(row) for row in await first_cursor.fetchall()]
     first_ids = {record.message_id for record in first}
 
     last_cursor = await conn.execute(
@@ -581,7 +584,8 @@ async def get_message_edge_windows(
         """,
         (*params, edge_limit),
     )
-    last_desc = [_row_to_message(row) for row in await last_cursor.fetchall()]
+    last_decode = bind_message_row_mapper(tuple(column[0] for column in last_cursor.description or ()))
+    last_desc = [last_decode(row) for row in await last_cursor.fetchall()]
     last = [record for record in reversed(last_desc) if record.message_id not in first_ids]
     return first, last, total
 
@@ -672,8 +676,10 @@ async def iter_messages(
         last_variant = int(last_row["branch_index"])
         have_cursor = True
 
+        decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
+
         for row in rows:
-            yield _row_to_message(row)
+            yield decode(row)
             yielded += 1
             if limit is not None and yielded >= limit:
                 return
