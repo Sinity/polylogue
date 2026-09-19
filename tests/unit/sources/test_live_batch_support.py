@@ -97,10 +97,14 @@ def test_jsonl_complete_prefix_is_lexical_and_newline_bound(
 def test_jsonl_complete_prefix_validates_only_the_tail_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     """A restored forward scanner invokes JSON decoding for every record."""
     payload = b'{"record":0}\n' * 10_000 + b'{"partial":'
-    original_loads = json.loads
+    original_loads: Any = json.loads
     calls = 0
 
-    def tail_only_loads(value: object, *args: object, **kwargs: object) -> object:
+    def tail_only_loads(
+        value: str | bytes | bytearray,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         nonlocal calls
         calls += 1
         return original_loads(value, *args, **kwargs)

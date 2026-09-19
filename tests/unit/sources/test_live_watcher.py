@@ -1523,9 +1523,14 @@ def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
     original_hash_range = live_batch.sha256_range_from_path
     hashes = 0
 
-    def mutate_after_first_hash(*args: object, **kwargs: object) -> tuple[str, int]:
+    def mutate_after_first_hash(
+        path_to_hash: Path,
+        end: int,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[str, int]:
         nonlocal hashes
-        result = original_hash_range(*args, **kwargs)
+        result = original_hash_range(path_to_hash, end, *args, **kwargs)
         hashes += 1
         if hashes == 1:
             path.write_bytes(payload.replace(b"x", b"y"))
