@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import selectors
 import sqlite3
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -20,7 +22,9 @@ from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWri
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _make_watcher(tmp_path: Path, root: Path) -> LiveWatcher:
@@ -365,6 +369,89 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
     assert record is not None
     assert record.byte_size == source.stat().st_size
     assert record.byte_offset == len(complete)
+
+
+@pytest.mark.asyncio
+async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -> None:
+    """A page's off-writer parse yields to maintenance before publication.
+
+    This exercises the production watcher -> batch -> parse-prefetch route and
+    a real temporary SQLite archive.  The parser is paused after the batch has
+    recorded its initial ops evidence but before the archive publication.  A
+    maintenance writer must run during that pause; the later archive write
+    then queues behind it.  Reinstating ``coordinator.run('watcher.live_ingest',
+    ...)`` around the whole page leaves maintenance blocked until parsing ends,
+    so the assertion below times out.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    source = source_root / "session.jsonl"
+    source.write_bytes(
+        b"".join(
+            json.dumps(row, sort_keys=True).encode() + b"\n"
+            for row in (
+                {"type": "session_meta", "payload": {"id": "writer-queue"}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": "writer-queue-m1",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "queue test"}],
+                    },
+                },
+            )
+        )
+    )
+    parser_started = threading.Event()
+    release_parser = threading.Event()
+    stage = LiveParseStage(max_workers=1, max_inflight_bytes=1_000_000)
+    original_warm = stage.warm
+
+    def paused_warm(candidates: object) -> int:
+        parser_started.set()
+        assert release_parser.wait(timeout=5.0), "test did not release parse prefetch"
+        return original_warm(candidates)  # type: ignore[arg-type]
+
+    stage.warm = paused_warm  # type: ignore[method-assign]
+    events: list[DaemonWriteEvent] = []
+    coordinator = DaemonWriteCoordinator(observer=events.append, archive_root=archive_root)
+    polylogue = cast(
+        Any,
+        SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
+    )
+    watcher = LiveWatcher(
+        polylogue,
+        (WatchSource(name="codex", root=source_root),),
+        cursor=CursorStore(archive_root / "index.db"),
+        write_coordinator=coordinator,
+        parse_stage=stage,
+    )
+    maintenance_entered = asyncio.Event()
+    release_maintenance = asyncio.Event()
+
+    async def maintenance() -> None:
+        maintenance_entered.set()
+        await release_maintenance.wait()
+
+    ingest_task = asyncio.create_task(watcher._ingest_files([source]))
+    assert await asyncio.to_thread(parser_started.wait, 5.0)
+    maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
+    await asyncio.wait_for(maintenance_entered.wait(), timeout=1.0)
+    release_parser.set()
+    await asyncio.sleep(0)
+    release_maintenance.set()
+    metrics = await ingest_task
+    await maintenance_task
+
+    assert metrics.succeeded_file_count == 1
+    actors = [event.actor for event in events if event.phase == "queued"]
+    maintenance_index = actors.index("maintenance.raw_materialization")
+    assert any(actor.startswith("watcher.live_ingest.") for actor in actors[maintenance_index + 1 :])
+    watcher.stop()
+    assert await coordinator.shutdown(timeout=1.0)
 
 
 def test_a_wrong_shaped_coordinator_cannot_silently_ungate_writes(tmp_path: Path) -> None:

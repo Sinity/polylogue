@@ -1202,33 +1202,22 @@ class LiveWatcher:
     ) -> LiveBatchMetrics:
         """Ingest one admitted page through the daemon live batch processor.
 
-        The writer hold is taken once for the page, not once per file. It
-        cannot yet be dropped altogether: ``ingest_files`` performs ops-tier
-        writes (attempt progress, convergence debt, cursor commits) that are
-        not individually admitted, and process-wide lease enforcement refuses
-        an unadmitted write. Making each of those self-admitting -- the shape
-        the convergence stages already moved to -- is what removes this hold;
-        until then the page is what bounds it, and a page is what the
-        dispatcher's byte budget bounds.
+        ``LiveBatchProcessor`` self-admits its ops-tier publications and its
+        archive publication.  Do not wrap the whole page in the daemon writer:
+        planning, parsing and convergence must leave maintenance able to run.
 
         The lock is process-local ordering on top of that: one live ingest at
         a time in this process.
         """
         self._batch_processor.require_cursor_authority(paths)
         async with self._ingest_lock:
-
-            async def ingest() -> LiveBatchMetrics:
-                return await self._batch_processor.ingest_files(
-                    paths,
-                    queued_file_count=queued_file_count,
-                    skipped_file_count=skipped_file_count,
-                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
-                    whole_archive_convergence=whole_archive_convergence,
-                )
-
-            if self._write_coordinator is None:
-                return await ingest()
-            return cast(LiveBatchMetrics, await self._write_coordinator.run("watcher.live_ingest", ingest))
+            return await self._batch_processor.ingest_files(
+                paths,
+                queued_file_count=queued_file_count,
+                skipped_file_count=skipped_file_count,
+                max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                whole_archive_convergence=whole_archive_convergence,
+            )
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""
