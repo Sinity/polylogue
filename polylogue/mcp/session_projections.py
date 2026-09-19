@@ -14,6 +14,7 @@ to be a subset of the shared read-view vocabulary in ``archive/viewport``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, TypeAlias
 
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 
@@ -41,9 +42,27 @@ SESSION_LIST_PROJECTIONS: dict[str, SessionListProjection] = {
     )
 }
 
+# The table is also the vocabulary owned jointly by MCP ``read`` and ``get``.
+# The two routes retain their non-list views, but neither keeps a second copy
+# of the session-list names.
+SESSION_LIST_PROJECTION_NAMES = tuple(SESSION_LIST_PROJECTIONS)
+MCP_READ_VIEW_NAMES = ("summary", "topology", "messages", *SESSION_LIST_PROJECTION_NAMES)
+MCP_GET_SESSION_PROJECTION_NAMES = ("orchestration", *SESSION_LIST_PROJECTION_NAMES)
+
+# This alias feeds MCP's generated input schema.  ``Literal.__getitem__`` is
+# the Python 3.10-compatible dynamic spelling of a table-derived Literal.
+MCPReadView: TypeAlias = Literal.__getitem__(MCP_READ_VIEW_NAMES) | None
+
 _UNDECLARED = set(SESSION_LIST_PROJECTIONS) - set(READ_VIEW_PROFILE_BY_ID)
 if _UNDECLARED:
     raise RuntimeError(f"MCP session projections not in the shared read-view vocabulary: {sorted(_UNDECLARED)}")
 
 
-__all__ = ["SESSION_LIST_PROJECTIONS", "SessionListProjection"]
+__all__ = [
+    "MCP_GET_SESSION_PROJECTION_NAMES",
+    "MCP_READ_VIEW_NAMES",
+    "MCPReadView",
+    "SESSION_LIST_PROJECTION_NAMES",
+    "SESSION_LIST_PROJECTIONS",
+    "SessionListProjection",
+]
