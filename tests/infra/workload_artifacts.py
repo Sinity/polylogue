@@ -287,7 +287,13 @@ class FinishedBuildResourceProbe:
             peak_rss_self_bytes=max(self_usage.ru_maxrss, 0) * 1024,
             read_io_bytes=max(_process_io_bytes("read_bytes") - self.read_io_bytes, 0),
             write_io_bytes=max(_process_io_bytes("write_bytes") - self.write_io_bytes, 0),
-            storage_bytes=sum(path.stat().st_size for path in _pinned_paths(storage_root) if _is_regular(path)),
+            # An owned inactive generation links durable source tiers rather
+            # than copying them. Measure only files this finished arm owns;
+            # following a link would charge external source authority to the
+            # candidate and would make the denominator depend on its parent.
+            storage_bytes=sum(
+                path.stat().st_size for path in _pinned_paths(storage_root, skip_symlinks=True) if _is_regular(path)
+            ),
         )
         self._finished = True
         return measurement
@@ -1324,8 +1330,12 @@ class _DirectoryEntryIterator(Protocol):
     def close(self) -> None: ...
 
 
-def _pinned_paths(root: Path, *, budget: int = 100_000) -> Iterator[Path]:
-    """Stream a tree from pinned descriptors with depth and node bounds."""
+def _pinned_paths(root: Path, *, budget: int = 100_000, skip_symlinks: bool = False) -> Iterator[Path]:
+    """Stream a tree from pinned descriptors with depth and node bounds.
+
+    Artifact publication keeps the default refusal. Finished-build resource
+    accounting may skip linked durable tiers, but never follows them.
+    """
     if budget <= 0:
         raise ValueError("cache enumeration budget must be positive")
     root_fd = _open_pinned_dir(root)
@@ -1351,6 +1361,8 @@ def _pinned_paths(root: Path, *, budget: int = 100_000) -> Iterator[Path]:
             path = prefix / entry.name
             info = entry.stat(follow_symlinks=False)
             if stat.S_ISLNK(info.st_mode):
+                if skip_symlinks:
+                    continue
                 raise ValueError(f"symlink node is not allowed: {path}")
             if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError(f"unsupported cache node is not allowed: {path}")
