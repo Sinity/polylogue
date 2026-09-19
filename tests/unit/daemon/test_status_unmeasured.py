@@ -7,6 +7,7 @@ default, the literal, or the hardcoded component state that
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -192,6 +193,39 @@ def test_measured_idle_ingest_ledger_still_certifies_performance(
 
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
     assert claim_guard["perf_measurable"]["value"] is True
+
+
+def test_fts_read_error_is_unknown_not_an_empty_source_count(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The production status builder must not turn a read error into zero.
+
+    Anti-vacuity: restoring FTSReadiness' numeric zero defaults makes this
+    route report an empty source relation and changes the component from
+    unknown to missing.
+    """
+
+    _patch_healthy_collectors(monkeypatch, tmp_path)
+    (tmp_path / "index.db").write_bytes(b"sqlite source placeholder")
+    from polylogue.daemon.fts_status import fts_readiness_info
+
+    def unreadable_source(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("source table unreadable")
+
+    # ``_build`` reaches _fts_readiness_info -> fts_readiness_info through the
+    # normal component registry; only the source connection is faulted.
+    monkeypatch.setattr("polylogue.daemon.fts_status.open_readonly_connection", unreadable_source)
+    monkeypatch.setattr(
+        status_module,
+        "_fts_readiness_info",
+        lambda: fts_readiness_info(status_module._active_status_db_path()),
+    )
+
+    status = _build()
+
+    assert status.fts_readiness.message_indexed_count is None
+    assert status.fts_readiness.message_indexable_count is None
+    assert status.fts_readiness.coverage_pct is None
+    readiness = cast(dict[str, dict[str, object]], status.component_readiness)
+    assert readiness["search"]["state"] == "unknown"
 
 
 @pytest.mark.parametrize("daemon_alive", [True, False])
