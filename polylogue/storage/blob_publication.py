@@ -15,6 +15,7 @@ from uuid import uuid4
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
+from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
@@ -107,17 +108,23 @@ class BlobPublicationReservationStore:
 
     source_db_path: Path
 
+    def _open_connection(self) -> sqlite3.Connection:
+        """Open the reservation's dedicated source writer under shared policy.
+
+        Reservations intentionally keep their own short transaction: publisher
+        flush runs after any caller-owned source transaction has committed, so
+        joining an arbitrary archive handle would widen the publication
+        boundary. The common source factory applies local pragmas only;
+        source.db's WAL mode was established by fresh bootstrap.
+        """
+        return open_source_tier_write_connection(self.source_db_path, archive_root=self.source_db_path.parent)
+
     def reserve_many(self, receipts: Sequence[BlobPublicationReceipt]) -> None:
         if not receipts:
             return
         now_ms = int(time.time() * 1000)
-        # Do not apply the general archive connection profile here. Its
-        # journal-mode PRAGMA fails immediately when GC owns the source write
-        # lock; the publication protocol must instead wait at BEGIN IMMEDIATE.
         require_write_lease(f"blob publication({self.source_db_path})", archive_root=self.source_db_path.parent)
-        conn = sqlite3.connect(self.source_db_path, timeout=30.0)
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn = self._open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.executemany(

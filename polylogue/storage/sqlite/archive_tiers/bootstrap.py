@@ -749,6 +749,13 @@ def initialize_archive_database(
                 f"{path} schema version {current_version} is not the current {tier.value} tier version "
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
+        if tier is ArchiveTier.SOURCE:
+            # Database mode belongs to fresh source-tier initialization, not
+            # each later writer open: the latter may run while a publication
+            # or GC transaction owns source.db's mode-transition lock.
+            from polylogue.storage.sqlite.connection_profile import initialize_source_tier_database_mode
+
+            initialize_source_tier_database_mode(conn)
         initialize_fresh_archive_tier(conn, tier, required_version)
         if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
             from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
