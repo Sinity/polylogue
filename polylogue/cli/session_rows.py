@@ -18,6 +18,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+import click
+
 from polylogue.cli.select import SelectSessionRow
 
 if TYPE_CHECKING:
@@ -108,22 +110,57 @@ def query_complete_session_ids(
     ids: list[str] = []
     seen: set[str] = set()
     offset = 0
+    expected_total: int | None = None
+    total_is_known = False
     while True:
         payload = _query_page(
             config, request, limit=COMPLETE_SELECTION_PAGE, offset=offset, daemon_disabled=daemon_disabled
         )
         rows = _session_rows(payload)
-        if not rows:
-            return ids
+        raw_total = payload.get("total")
+        if raw_total is not None:
+            if isinstance(raw_total, bool) or not isinstance(raw_total, int) or raw_total < 0:
+                _incomplete_selection("cli.query returned an invalid total")
+            if total_is_known and raw_total != expected_total:
+                _incomplete_selection("cli.query changed its total while resolving the selection")
+            expected_total = raw_total
+            total_is_known = True
+        elif total_is_known:
+            _incomplete_selection("cli.query stopped reporting its total while resolving the selection")
+
         for row in rows:
             session_id = str(row.get("id") or row.get("session_id") or "")
-            if session_id and session_id not in seen:
-                seen.add(session_id)
-                ids.append(session_id)
-        next_offset = payload.get("next_offset")
-        if not isinstance(next_offset, int) or next_offset <= offset:
+            if not session_id:
+                _incomplete_selection("cli.query returned a row without a session id")
+            if session_id in seen:
+                _incomplete_selection("cli.query repeated a session id while resolving the selection")
+            seen.add(session_id)
+            ids.append(session_id)
+
+        if "next_offset" not in payload:
+            _incomplete_selection("cli.query omitted continuation metadata")
+        next_offset = payload["next_offset"]
+        if next_offset is None:
+            if total_is_known and len(ids) != expected_total:
+                _incomplete_selection("cli.query ended before its reported total")
             return ids
+        if isinstance(next_offset, bool) or not isinstance(next_offset, int):
+            _incomplete_selection("cli.query returned an invalid continuation offset")
+        if not rows:
+            _incomplete_selection("cli.query continued after an empty page")
+        if next_offset <= offset:
+            _incomplete_selection("cli.query continuation did not advance")
+        if next_offset != offset + len(rows):
+            _incomplete_selection("cli.query continuation skipped or overlapped rows")
+        if total_is_known and next_offset > expected_total:
+            _incomplete_selection("cli.query continuation exceeded its reported total")
         offset = next_offset
+
+
+def _incomplete_selection(detail: str) -> None:
+    """Fail closed before a mutating verb can apply a partial selection."""
+
+    raise click.ClickException(f"Refusing incomplete all-selection: {detail}.")
 
 
 def query_session_rows_with_authority(
