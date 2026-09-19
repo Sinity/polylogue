@@ -39,8 +39,8 @@ every other runtime path uses (`polylogue/config.py`):
 | Config file | `sources.hermes.root` in `polylogue.toml` |
 | Default | `~/.hermes` |
 
-There is no dedicated `polylogued run` flag for the Hermes root specifically
-(unlike, say, `--debounce-s`); use the environment variable or config file.
+There is no dedicated `polylogued run` flag for the Hermes root specifically;
+use the environment variable or config file.
 `polylogued run --root <path>` adds an ordinary export root alongside the
 typed default sources; it does not change the Hermes root. Use the environment
 variable or config file when the Hermes state root itself must move.

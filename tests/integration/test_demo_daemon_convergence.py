@@ -232,8 +232,6 @@ async def test_import_demo_converges_through_live_daemon_path(
                 "run",
                 "--root",
                 str(inbox),
-                "--debounce-s",
-                "0.05",
                 "--no-browser-capture",
                 "--api-port",
                 str(api_port),
