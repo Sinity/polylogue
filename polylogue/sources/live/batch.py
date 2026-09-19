@@ -5611,6 +5611,7 @@ class LiveBatchProcessor:
                         conn,
                         index_db_path=index_db,
                         terminal_source_paths=paths,
+                        authority_source_paths=paths,
                     )
                 except RawRetentionSafetyError as exc:
                     logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)

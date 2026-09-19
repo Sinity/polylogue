@@ -139,6 +139,9 @@ def _blob_hash_text(value: object) -> str | None:
 
 def _active_index_raw_authority(
     index_db_path: Path,
+    *,
+    raw_ids: frozenset[str] | None = None,
+    logical_source_keys: frozenset[str] | None = None,
 ) -> tuple[frozenset[str], tuple[_IndexRawRevisionHead, ...], tuple[_EligibleRawReceipt, ...]]:
     """Read current raw references and explicit deletion receipts read-only.
 
@@ -178,32 +181,22 @@ def _active_index_raw_authority(
         uri = f"{index_db_path.resolve().as_uri()}?mode=ro"
         with closing(sqlite3.connect(uri, uri=True)) as conn:
             conn.execute("PRAGMA query_only = ON")
-            session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
-            head_rows = conn.execute(
-                """SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
-                          accepted_frontier_kind, accepted_frontier,
-                          acquisition_generation, append_end_offset
-                   FROM raw_revision_heads"""
-            ).fetchall()
-            eligible_rows = conn.execute(
-                """SELECT DISTINCT application.raw_id,
-                          application.logical_source_key,
-                          application.source_revision,
-                          application.baseline_raw_id,
-                          application.predecessor_raw_id
-                   FROM raw_revision_applications AS application
-                   JOIN raw_revision_heads AS head
-                     ON head.logical_source_key = application.logical_source_key
-                    AND head.session_id = application.session_id
-                    AND head.accepted_raw_id = application.accepted_raw_id
-                    AND head.accepted_source_revision = application.accepted_source_revision
-                    AND head.accepted_content_hash = application.accepted_content_hash
-                    AND head.acquisition_generation = application.acquisition_generation
-                    AND head.append_end_offset IS application.append_end_offset
-                    AND head.decided_at_ms = application.decided_at_ms
-                   WHERE application.decision = 'superseded'
-                     AND head.accepted_frontier_kind = 'byte'"""
-            ).fetchall()
+            if raw_ids is None:
+                session_rows = conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL").fetchall()
+            else:
+                session_rows = _index_rows_for_raw_ids(
+                    conn,
+                    "SELECT DISTINCT raw_id FROM sessions WHERE raw_id IN ({placeholders})",
+                    raw_ids,
+                )
+            if logical_source_keys is None:
+                head_rows = conn.execute(_INDEX_RETENTION_HEAD_SQL.format(where_clause="")).fetchall()
+                eligible_rows = conn.execute(_INDEX_RETENTION_ELIGIBLE_SQL.format(where_clause="")).fetchall()
+            else:
+                head_rows = _index_rows_for_logical_source_keys(conn, _INDEX_RETENTION_HEAD_SQL, logical_source_keys)
+                eligible_rows = _index_rows_for_logical_source_keys(
+                    conn, _INDEX_RETENTION_ELIGIBLE_SQL, logical_source_keys
+                )
     except (OSError, sqlite3.Error) as exc:
         raise RawRetentionSafetyError(f"index tier raw authority is unreadable: {exc}") from exc
     session_raw_ids = frozenset(str(row[0]) for row in session_rows if row[0] is not None and str(row[0]))
@@ -230,6 +223,71 @@ def _active_index_raw_authority(
         for row in eligible_rows
     )
     return session_raw_ids, heads, eligible_receipts
+
+
+_INDEX_RETENTION_HEAD_SQL = """SELECT logical_source_key, accepted_raw_id, accepted_source_revision,
+                                      accepted_frontier_kind, accepted_frontier,
+                                      acquisition_generation, append_end_offset
+                               FROM raw_revision_heads AS head
+                               WHERE 1 = 1{where_clause}"""
+
+_INDEX_RETENTION_ELIGIBLE_SQL = """SELECT DISTINCT application.raw_id,
+                                          application.logical_source_key,
+                                          application.source_revision,
+                                          application.baseline_raw_id,
+                                          application.predecessor_raw_id
+                                   FROM raw_revision_applications AS application
+                                   JOIN raw_revision_heads AS head
+                                     ON head.logical_source_key = application.logical_source_key
+                                    AND head.session_id = application.session_id
+                                    AND head.accepted_raw_id = application.accepted_raw_id
+                                    AND head.accepted_source_revision = application.accepted_source_revision
+                                    AND head.accepted_content_hash = application.accepted_content_hash
+                                    AND head.acquisition_generation = application.acquisition_generation
+                                    AND head.append_end_offset IS application.append_end_offset
+                                    AND head.decided_at_ms = application.decided_at_ms
+                                   WHERE application.decision = 'superseded'
+                                     AND head.accepted_frontier_kind = 'byte'{where_clause}"""
+
+_RETENTION_SCOPE_BATCH_SIZE = 500
+
+
+def _value_batches(values: frozenset[str]) -> Iterable[tuple[str, ...]]:
+    ordered = tuple(sorted(values))
+    for start in range(0, len(ordered), _RETENTION_SCOPE_BATCH_SIZE):
+        yield ordered[start : start + _RETENTION_SCOPE_BATCH_SIZE]
+
+
+def _index_rows_for_raw_ids(
+    conn: sqlite3.Connection,
+    statement: str,
+    raw_ids: frozenset[str],
+) -> list[tuple[object, ...]]:
+    rows: list[tuple[object, ...]] = []
+    for batch in _value_batches(raw_ids):
+        if not batch:
+            continue
+        placeholders = ", ".join("?" for _ in batch)
+        rows.extend(conn.execute(statement.format(placeholders=placeholders), batch).fetchall())
+    return rows
+
+
+def _index_rows_for_logical_source_keys(
+    conn: sqlite3.Connection,
+    statement: str,
+    logical_source_keys: frozenset[str],
+) -> list[tuple[object, ...]]:
+    rows: list[tuple[object, ...]] = []
+    for batch in _value_batches(logical_source_keys):
+        if not batch:
+            continue
+        placeholders = ", ".join("?" for _ in batch)
+        rows.extend(
+            conn.execute(
+                statement.format(where_clause=f" AND head.logical_source_key IN ({placeholders})"), batch
+            ).fetchall()
+        )
+    return rows
 
 
 def _active_index_raw_authority_from_connection(
@@ -451,6 +509,7 @@ def active_raw_retention_authority(
     *,
     index_db_path: Path,
     terminal_source_paths: Iterable[Path] | None = None,
+    authority_source_paths: Iterable[Path] | None = None,
 ) -> RawRetentionAuthority:
     """Return current protection plus explicitly authorized deletion rows.
 
@@ -460,13 +519,28 @@ def active_raw_retention_authority(
     deletion. Callers must serialize this read with source deletion under the
     daemon's single-writer contract, or stop the daemon for manual cleanup.
     ``terminal_source_paths`` scopes terminal-artifact protection only for a
-    deletion operation constrained to those same physical paths; callers that
-    may delete archive-wide must leave it unset.
+    deletion operation constrained to those same physical paths. Supplying
+    ``authority_source_paths`` also narrows the index authority reads to the
+    raw identities and logical sources carried by that deletion page. This is
+    safe only for a caller that will delete rows from those same paths.
     """
     original_row_factory = conn.row_factory
     conn.row_factory = sqlite3.Row
     try:
-        session_raw_ids, heads, eligible_receipts = _active_index_raw_authority(index_db_path)
+        scoped_raw_ids: frozenset[str] | None = None
+        scoped_logical_source_keys: frozenset[str] | None = None
+        if authority_source_paths is not None:
+            scoped_paths = tuple(sorted({str(path) for path in authority_source_paths}))
+            if scoped_paths:
+                scoped_raw_ids, scoped_logical_source_keys = _raw_retention_scope(conn, scoped_paths)
+            else:
+                scoped_raw_ids = frozenset()
+                scoped_logical_source_keys = frozenset()
+        session_raw_ids, heads, eligible_receipts = _active_index_raw_authority(
+            index_db_path,
+            raw_ids=scoped_raw_ids,
+            logical_source_keys=scoped_logical_source_keys,
+        )
         seeds = set(session_raw_ids)
         seeds.update(head.accepted_raw_id for head in heads)
         if not seeds:
@@ -526,6 +600,28 @@ def active_raw_retention_authority(
         raise RawRetentionSafetyError(f"raw retention authority is unreadable: {exc}") from exc
     finally:
         conn.row_factory = original_row_factory
+
+
+def _raw_retention_scope(
+    conn: sqlite3.Connection,
+    source_paths: tuple[str, ...],
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Return the raw and logical identities a path-bounded cleanup can touch."""
+
+    raw_ids: set[str] = set()
+    logical_source_keys: set[str] = set()
+    for start in range(0, len(source_paths), _RETENTION_SCOPE_BATCH_SIZE):
+        paths = source_paths[start : start + _RETENTION_SCOPE_BATCH_SIZE]
+        placeholders = ", ".join("?" for _ in paths)
+        rows = conn.execute(
+            f"SELECT raw_id, logical_source_key FROM raw_sessions WHERE source_path IN ({placeholders})",
+            paths,
+        ).fetchall()
+        for raw_id, logical_source_key in rows:
+            raw_ids.add(str(raw_id))
+            if logical_source_key is not None and str(logical_source_key):
+                logical_source_keys.add(str(logical_source_key))
+    return frozenset(raw_ids), frozenset(logical_source_keys)
 
 
 def protected_active_raw_revision_ids(
