@@ -1011,6 +1011,7 @@ async def _periodic_raw_materialization_convergence(
     raw_observation_owner: Any | None = None,
     raw_intake_wakeup: asyncio.Event | None = None,
     raw_intake_discovery: Any | None = None,
+    session_profile_callback: Callable[[Sequence[str] | None], Awaitable[object]] | None = None,
 ) -> None:
     """Wake the canonical bounded raw-observation intake after catch-up."""
     if raw_observation_owner is None or raw_intake_wakeup is None or raw_intake_discovery is None:
@@ -1021,6 +1022,7 @@ async def _periodic_raw_materialization_convergence(
         await _maybe_run_raw_materialization_whale_pass(
             raw_observation_owner=raw_observation_owner,
             raw_intake_discovery=raw_intake_discovery,
+            session_profile_callback=session_profile_callback,
         )
 
     await daemon_periodic_runner().run(
@@ -1453,6 +1455,7 @@ async def _maybe_run_raw_materialization_whale_pass(
     *,
     raw_observation_owner: Any | None = None,
     raw_intake_discovery: Any | None = None,
+    session_profile_callback: Callable[[Sequence[str] | None], Awaitable[object]] | None = None,
 ) -> bool:
     """Escalate one resource-blocked, stream-safe component when quiescent.
 
@@ -1540,6 +1543,12 @@ async def _maybe_run_raw_materialization_whale_pass(
             else "canonical raw observation converged"
         )
     )
+    if success and report.done:
+        await _converge_raw_materialized_session_profiles(
+            root,
+            candidate,
+            session_profile_callback,
+        )
     await _publish_whale_receipt(
         kind="raw_materialization_whale_pass_completed",
         idempotency_key=f"{receipt_id}:terminal",
@@ -2786,6 +2795,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         raw_observation_owner=raw_observation_owner,
                         raw_intake_wakeup=raw_intake_wakeup,
                         raw_intake_discovery=raw_whale_discovery,
+                        session_profile_callback=session_profile_callback,
                     ),
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
