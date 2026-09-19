@@ -613,6 +613,12 @@ class BoundedComputeAdapter:
 
     def snapshot(self) -> AdmissionSnapshot:
         with self._lock:
+            # ``max_wait_s`` is a current starvation signal, not only a
+            # historical dispatch metric.  A queued background task has not
+            # reached ``_select_locked`` yet, so its delay must be accounted
+            # for here or status can report zero while that task is already
+            # beyond the declared starvation bound.
+            observed_at = monotonic()
             classes = tuple(
                 ClassAdmissionSnapshot(
                     admission_class=state.admission_class,
@@ -627,9 +633,12 @@ class BoundedComputeAdapter:
                     dispatched=state.dispatched,
                     completed=state.completed,
                     rejected=state.rejected,
-                    max_wait_s=state.max_wait_s,
+                    max_wait_s=max(
+                        state.max_wait_s,
+                        max((observed_at - task.queued_at for task in self._queues[name]), default=0.0),
+                    ),
                 )
-                for state in (self._classes[name] for name in ADMISSION_CLASSES)
+                for name, state in ((name, self._classes[name]) for name in ADMISSION_CLASSES)
             )
             return AdmissionSnapshot(
                 capacity_units=self.capacity_units,
