@@ -401,6 +401,51 @@ class JsonlBoundary:
     malformed_record: bool = False
 
 
+_JSONL_BLANK_LINE_RE = re.compile(rb"(?:\A|\n)[ \t\r]*(?:\n|\Z)")
+
+
+def _jsonl_record_count(prefix: bytes) -> int:
+    """Count non-blank JSONL records without penalising the ordinary path.
+
+    JSONL producers normally emit one record per physical line, so the C-level
+    ``bytes.count`` fast path is sufficient.  Preserve the older treatment of
+    blank lines when one is actually present, though: those lines are not
+    records and must not change admission accounting.
+    """
+    if not prefix:
+        return 0
+    if _JSONL_BLANK_LINE_RE.search(prefix) is None:
+        return prefix.count(b"\n") + (0 if prefix.endswith(b"\n") else 1)
+    records = 0
+    start = 0
+    while start < len(prefix):
+        end = prefix.find(b"\n", start)
+        line = prefix[start:] if end < 0 else prefix[start:end]
+        if line.strip():
+            records += 1
+        if end < 0:
+            break
+        start = end + 1
+    return records
+
+
+def _jsonl_tail_candidate(payload: bytes) -> tuple[int, bytes] | None:
+    """Return the last non-blank physical line by walking only the tail."""
+    end = len(payload)
+    while end:
+        start = payload.rfind(b"\n", 0, end) + 1
+        candidate = payload[start:end].strip()
+        if candidate:
+            return start, candidate
+        if start == 0:
+            break
+        # Exclude the preceding delimiter and inspect the physical line before
+        # it.  This skips any number of terminal blank lines without scanning
+        # earlier JSON records.
+        end = start - 1
+    return None
+
+
 def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
     """Find the maximal newline-terminated, syntactically valid JSON prefix.
 
@@ -418,30 +463,24 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
         return JsonlBoundary(0, 0, False)
 
     final_newline = payload.rfind(b"\n")
-    if final_newline == len(payload) - 1:
-        # A trailing delimiter contributes no record.  Validate the record
-        # immediately before it, if any, so a malformed final record cannot
-        # advance the cursor past itself.
-        candidate_end = final_newline
-        candidate_start = payload.rfind(b"\n", 0, candidate_end) + 1
-        candidate = payload[candidate_start:candidate_end].strip()
-        if not candidate:
-            return JsonlBoundary(len(payload), 0, False)
-        try:
-            json.loads(candidate)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return JsonlBoundary(candidate_start, payload[:candidate_start].count(b"\n"), True, True)
-        return JsonlBoundary(len(payload), payload.count(b"\n"), False)
+    complete_end = len(payload) if payload.endswith(b"\n") else final_newline + 1
+    tail = _jsonl_tail_candidate(payload)
+    if tail is None:
+        return JsonlBoundary(complete_end, _jsonl_record_count(payload[:complete_end]), complete_end != len(payload))
 
-    candidate_start = final_newline + 1
-    candidate = payload[candidate_start:].strip()
-    if not candidate:
-        return JsonlBoundary(len(payload), payload.count(b"\n"), False)
+    candidate_start, candidate = tail
     try:
         json.loads(candidate)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return JsonlBoundary(candidate_start, payload[:candidate_start].count(b"\n"), True, True)
-    return JsonlBoundary(len(payload), payload.count(b"\n") + 1, False)
+        return JsonlBoundary(candidate_start, _jsonl_record_count(payload[:candidate_start]), True, True)
+
+    # The tail candidate itself is unterminated only when it follows the final
+    # physical newline (or when the payload has none).  A valid such candidate
+    # completes the whole payload; otherwise preserve the original cursor
+    # boundary before an unfinished whitespace-only tail.
+    if final_newline < 0 or candidate_start == final_newline + 1:
+        return JsonlBoundary(len(payload), _jsonl_record_count(payload), False)
+    return JsonlBoundary(complete_end, _jsonl_record_count(payload[:complete_end]), complete_end != len(payload))
 
 
 def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:
