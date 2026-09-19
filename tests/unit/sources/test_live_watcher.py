@@ -1489,7 +1489,7 @@ def test_full_cursor_reuses_verified_acquisition_digest_at_eof(tmp_path: Path, m
     calls: list[tuple[int, int]] = []
     original_hash_range = cast(Callable[..., tuple[str, int]], live_batch.__dict__["sha256_range_from_path"])
 
-    def count_hash_range(*args: object, **kwargs: object) -> tuple[str, int]:
+    def count_hash_range(*args: Any, **kwargs: Any) -> tuple[str, int]:
         calls.append((int(kwargs["start_offset"]), int(kwargs["end_offset"])))
         return original_hash_range(*args, **kwargs)
 
