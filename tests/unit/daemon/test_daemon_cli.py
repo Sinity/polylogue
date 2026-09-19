@@ -4231,7 +4231,7 @@ def test_daemon_composition_gives_raw_whale_its_own_discovery_cursor(tmp_path: P
         periodic_discoveries.append(kwargs["raw_intake_discovery"])
         await asyncio.Event().wait()
 
-    def capture_build(*args: object, **kwargs: object) -> tuple[tuple[str, object], ...]:
+    def capture_build(*args: Any, **kwargs: Any) -> tuple[tuple[str, object], ...]:
         fair_discover.append(kwargs["raw_discover"])
         return cast(tuple[tuple[str, object], ...], build_real_intake_adapters(*args, **kwargs))
 
