@@ -584,7 +584,12 @@ class BoundedComputeAdapter:
                 return
             task.state = "done"
             state = self._classes[task.admission_class]
-            state.completed += 1
+            # ``completed`` is the denominator for work that actually reached
+            # dispatch.  A queued cancellation releases an admission
+            # reservation, but it never consumed a worker and therefore must
+            # not make completion exceed dispatch in the scheduler evidence.
+            if active:
+                state.completed += 1
             self._used_units -= task.units
             self._used_bytes -= task.bytes
             state.used_units -= task.units
