@@ -29,6 +29,7 @@ from tests.infra.workload_artifacts import (
     ArtifactGcReport,
     ArtifactResourceMeasurement,
     CorpusArtifactManifest,
+    FinishedBuildResourceProbe,
     ImmutableTreeArtifact,
     SeededArchiveClone,
     SeededArchiveQueryLease,
@@ -37,6 +38,7 @@ from tests.infra.workload_artifacts import (
     _journal_mode_delete_with_retry,
     _manifest_from_payload,
     _open_no_follow,
+    _pinned_paths,
     _recover_obsolete_staging,
     _recover_stale_handoffs,
     _recover_stale_staging,
@@ -64,6 +66,28 @@ from tests.infra.workload_declarations import (
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
+
+
+def test_finished_build_resource_probe_skips_linked_source_authority(tmp_path: Path) -> None:
+    """An inactive candidate counts only its owned files, never linked source tiers.
+
+    Anti-vacuity: restoring strict symlink refusal for the resource probe
+    raises here; following the link instead makes the 5-byte denominator
+    include the external 11-byte source fixture.
+    """
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "index.db").write_bytes(b"index")
+    source = tmp_path / "source.db"
+    source.write_bytes(b"source-tier!")
+    (candidate / "source.db").symlink_to(source)
+
+    with pytest.raises(ValueError, match="symlink node"):
+        tuple(_pinned_paths(candidate))
+
+    measurement = FinishedBuildResourceProbe.start().finish(candidate)
+
+    assert measurement.storage_bytes == len(b"index")
 
 
 def small_specs() -> tuple[CorpusSpec, ...]:
