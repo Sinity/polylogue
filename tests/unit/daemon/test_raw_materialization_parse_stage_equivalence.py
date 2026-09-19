@@ -211,7 +211,7 @@ def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_c
     """
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
-    payload = [
+    payload: list[dict[str, object]] = [
         {
             "id": native_id,
             "title": native_id,
