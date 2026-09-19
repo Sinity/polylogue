@@ -2268,6 +2268,8 @@ def _component_from_daemon_state(component: str, state: str, *, scope: str) -> C
 def _component_from_fts_readiness(readiness: FTSReadiness) -> ComponentReadiness:
     if readiness.messages_ready:
         state = CapabilityReadinessState.READY
+    elif readiness.message_indexable_count is None or readiness.message_indexed_count is None:
+        state = CapabilityReadinessState.UNKNOWN
     elif readiness.message_indexable_count == 0 or readiness.message_indexed_count == 0:
         state = CapabilityReadinessState.MISSING
     else:
@@ -3234,9 +3236,10 @@ def daemon_status_payload(
     browser_capture_enabled: bool | None = None,
     browser_capture_spool_path: Path | None = None,
     include_browser_capture_spool_path: bool = False,
-    include_raw_replay_backlog: bool = True,
-    include_exact_raw_materialization_readiness: bool = True,
-    include_archive_debt: bool = True,
+    include_raw_replay_backlog: bool = False,
+    include_exact_raw_materialization_readiness: bool = False,
+    include_archive_debt: bool = False,
+    include_assertion_candidate_queue: bool = False,
     registry: StatusComponentRegistry | None = None,
 ) -> JSONDocument:
     """Return the local daemon component status payload (backward-compat dict).
@@ -3313,30 +3316,38 @@ def daemon_status_payload(
     # queue collector here could answer for a different archive or interval.
     # Keep the persistent cache for ambient daemon refreshes and use a bounded
     # one-shot collector for explicit configurations.
-    if registry is not None and not config_was_explicit:
-        queue_snapshot = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+    if include_assertion_candidate_queue:
+        if registry is not None and not config_was_explicit:
+            queue_snapshot = registry.collect(names=["assertion_candidate_queue"])["assertion_candidate_queue"]
+        else:
+            queue_snapshot = StatusComponentRegistry(
+                [
+                    StatusComponentSpec(
+                        name="assertion_candidate_queue",
+                        scope="archive",
+                        collector=lambda: assertion_candidate_queue_status_summary(config=config),
+                        deadline_s=3.0,
+                        cost_class="moderate",
+                    )
+                ]
+            ).collect()["assertion_candidate_queue"]
+        assertion_candidate_queue = (
+            queue_snapshot.value
+            if queue_snapshot.value is not None
+            else {
+                "mode": "assertion-candidate-queue-health",
+                "state": "unavailable",
+                "pending_count": None,
+                "caveats": [f"queue health collection {queue_snapshot.state}"],
+            }
+        )
     else:
-        queue_snapshot = StatusComponentRegistry(
-            [
-                StatusComponentSpec(
-                    name="assertion_candidate_queue",
-                    scope="archive",
-                    collector=lambda: assertion_candidate_queue_status_summary(config=config),
-                    deadline_s=3.0,
-                    cost_class="moderate",
-                )
-            ]
-        ).collect()["assertion_candidate_queue"]
-    assertion_candidate_queue = (
-        queue_snapshot.value
-        if queue_snapshot.value is not None
-        else {
+        assertion_candidate_queue = {
             "mode": "assertion-candidate-queue-health",
             "state": "unavailable",
-            "pending_count": 0,
-            "caveats": [f"queue health collection {queue_snapshot.state}"],
+            "pending_count": None,
+            "caveats": ["excluded_from_compact_status"],
         }
-    )
 
     halted_units = halted_unit_status()
 

@@ -823,7 +823,7 @@ def test_daemon_status_payload_links_unified_archive_debt(monkeypatch: pytest.Mo
         patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
         patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
     ):
-        status_payload = daemon_status_payload(sources=())
+        status_payload = daemon_status_payload(sources=(), include_archive_debt=True)
 
     archive_debt = cast(dict[str, object], status_payload["archive_debt"])
     assert archive_debt["endpoint"] == "/api/archive-debt"
@@ -902,7 +902,11 @@ def test_daemon_status_marks_raw_materialization_debt_not_ready(
         patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
         patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
     ):
-        status_payload = daemon_status_payload(sources=())
+        status_payload = daemon_status_payload(
+            sources=(),
+            include_raw_replay_backlog=True,
+            include_exact_raw_materialization_readiness=True,
+        )
 
     materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
     raw_replay = cast(dict[str, object], status_payload["raw_replay_backlog"])
@@ -965,7 +969,7 @@ def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.Monkey
         patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
         patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
     ):
-        status_payload = daemon_status_payload(sources=())
+        status_payload = daemon_status_payload(sources=(), include_exact_raw_materialization_readiness=True)
 
     materialization = cast(dict[str, object], status_payload["raw_materialization_readiness"])
     assert materialization["lost_source_evidence_count"] == 1
@@ -2021,7 +2025,7 @@ def test_daemon_status_contains_malformed_scheduler_config_inside_bounded_queue_
         patch("polylogue.daemon.events.get_last_ingestion_batch", return_value=None),
         patch("polylogue.config.resolve_runtime_config", side_effect=ValueError("malformed interval")),
     ):
-        payload = daemon_status_payload(sources=())
+        payload = daemon_status_payload(sources=(), include_assertion_candidate_queue=True)
 
     queue = cast(dict[str, object], payload["assertion_candidate_queue"])
     assert queue["state"] == "unavailable"
@@ -2695,6 +2699,43 @@ def test_daemon_status_payload_stalled_component_does_not_block_healthy_componen
 
     archive_storage_collection = cast(dict[str, Any], cast(dict[str, Any], readiness["archive_storage"])["collection"])
     assert archive_storage_collection["state"] == "fresh"
+
+
+def test_compact_status_skips_stalled_optional_archive_debt_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The existing status route must not wait for optional archive-debt detail.
+
+    Anti-vacuity: restoring the old ``include_archive_debt=True`` default
+    makes this take the collector deadline before returning the healthy core.
+    """
+    import time
+
+    status = status_module.DaemonStatus(
+        daemon_liveness=True,
+        raw_frontier_integrity=status_module.RawFrontierIntegrity(overall_status="healthy"),
+        raw_failure_lifecycle_available=True,
+        raw_failure_lifecycle_state="healthy",
+    )
+
+    def slow_debt() -> dict[str, object]:
+        time.sleep(3.2)
+        return {"available": True, "rows": []}
+
+    with (
+        patch("polylogue.daemon.status.build_daemon_status", return_value=status),
+        patch("polylogue.daemon.status._archive_debt_status_summary", side_effect=slow_debt),
+        patch("polylogue.daemon.status.halted_unit_status", return_value=[]),
+        patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
+    ):
+        start = time.perf_counter()
+        payload = daemon_status_payload(sources=())
+        elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.5, f"optional archive-debt detail blocked compact status for {elapsed:.2f}s"
+    archive_debt = cast(dict[str, object], payload["archive_debt"])
+    assert archive_debt["available"] is False
+    assert archive_debt["reason"] == "excluded_from_bounded_status_snapshot"
 
 
 def test_periodic_status_component_registry_resumes_slow_embedding_readiness_across_ticks(
