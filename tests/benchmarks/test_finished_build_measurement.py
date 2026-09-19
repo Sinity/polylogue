@@ -55,7 +55,10 @@ _SESSION_COUNT = 516
 _RAW_PAYLOAD_TARGET_BYTES = 408_129
 _SEALED_INPUT_BYTES = 210_554_832
 _SEALED_INPUT_DIGEST = "b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed"
-_WORKER_COUNTS = (1, 4, 12)
+# This is a transport comparison, not a worker-scaling experiment.  Four is
+# the one ordinary ThreadPoolExecutor setting selected for this sealed arm;
+# changing it belongs to a separate parser-scaling measurement.
+_SELECTED_TRANSPORT_WORKER_COUNT = 4
 _INTERLEAVED_REPETITIONS = 2
 
 
@@ -539,7 +542,7 @@ def _capability_receipts(*, worker_count: int) -> tuple[_CapabilityReceipt, ...]
 
 def test_finished_build_measurement_declares_capability_boundary() -> None:
     """No direct writer attachment may impersonate a production replay arm."""
-    assert _WORKER_COUNTS == (1, 4, 12)
+    assert _SELECTED_TRANSPORT_WORKER_COUNT > 0
     assert _INTERLEAVED_REPETITIONS == 2
     assert {arm.name for arm in _ARMS} == {
         "retained-index-inline",
@@ -625,26 +628,25 @@ def test_finished_build_measurement_compacts_projection_before_rendering() -> No
 @pytest.mark.benchmark
 @pytest.mark.storage_scale
 @pytest.mark.timeout(900)
-@pytest.mark.parametrize("worker_count", _WORKER_COUNTS)
 def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scale(
     tmp_path: Path,
-    worker_count: int,
     _censused_input_template: tuple[Path, _SealedInput, _SourceCensusReceipt],
 ) -> None:
-    """Measure the supported thread counts with fresh, interleaved arm roots.
+    """Measure one selected transport choice with fresh, interleaved arm roots.
 
-    Every completed arm gets a clone of the one sealed source tree. The two
-    repetitions reverse their order, and N=4 changes the leading arm, so a
-    route cannot inherit one fixed cache or order position. Process and
-    retained-index shard cells remain explicit production-policy refusals.
+    Every completed arm gets a clone of the one sealed source tree and the two
+    repetitions reverse their order, so a route cannot inherit one fixed cache
+    or order position. Process and retained-index shard cells remain explicit
+    production-policy refusals, not unmeasured matrix cells.
     """
+    worker_count = _SELECTED_TRANSPORT_WORKER_COUNT
     template, sealed, source_census = _censused_input_template
     arms_by_name = {arm.name: arm for arm in _ARMS}
     retained = arms_by_name["retained-index-inline"]
     deferred_fresh = arms_by_name["deferred-index-fresh-inline"]
     deferred_fresh_shard = arms_by_name["deferred-index-fresh-shard"]
     supported_arms = (retained, deferred_fresh, deferred_fresh_shard)
-    ordered_first = (deferred_fresh_shard, deferred_fresh, retained) if worker_count == 4 else supported_arms
+    ordered_first = (deferred_fresh_shard, deferred_fresh, retained)
     receipts: list[_ArmReceipt] = []
     reference_snapshot: DerivedModelSnapshot | None = None
     for repetition in range(1, _INTERLEAVED_REPETITIONS + 1):

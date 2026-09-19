@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -26,6 +27,7 @@ import pytest
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.live.batch import LiveBatchProcessor
@@ -38,11 +40,28 @@ _MAX_DISPATCHER_PASSES = 32
 _THROUGHPUT_BOUND = 1.5
 
 
-def _write_corpus(root: Path) -> Path:
+@dataclass(frozen=True, slots=True)
+class _DispatcherMeasurement:
+    """One production-dispatcher receipt with its writer-hold split."""
+
+    total_s: float
+    payload_bytes: int
+    end_to_end_mb_s: float
+    succeeded_files: int
+    failed_files: int
+    files: int
+    passes: int
+    writer_hold_s: float | None = None
+    outside_writer_hold_s: float | None = None
+    raw_compaction_runs: int = 0
+    raw_compaction_time_s: float | None = None
+
+
+def _write_corpus(root: Path, *, prefix: str = "dispatcher-measure") -> Path:
     """Small deterministic Claude Code corpus: 10 files, 10 messages each."""
     spec = convergence_corpus_specs("xs-tiny-files")[0]
     project = root / "corpus" / "test-project"
-    SyntheticCorpus.write_spec_artifacts(spec, project, prefix="dispatcher-measure", index_width=4)
+    SyntheticCorpus.write_spec_artifacts(spec, project, prefix=prefix, index_width=4)
     return project.parent
 
 
@@ -88,18 +107,37 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
     }
 
 
-def _run_dispatcher_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float]:
+def _run_dispatcher_ingest(
+    corpus_root: Path,
+    archive_root: Path,
+    *,
+    observe_writer_holds: bool = False,
+) -> _DispatcherMeasurement:
     """The production scheduler: FairIntakeDispatcher + FileIntakeAdapter."""
     files = _jsonl_files(corpus_root)
     db_path = archive_root / "index.db"
     source = WatchSource(name="claude-code", root=corpus_root)
     converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
+    writer_events: list[DaemonWriteEvent] = []
+    batch_payloads: list[dict[str, object]] = []
+
+    def record_batch_event(name: str, payload: dict[str, object]) -> None:
+        if name == "ingestion_batch":
+            batch_payloads.append(payload)
+
+    coordinator = (
+        DaemonWriteCoordinator(observer=writer_events.append, archive_root=archive_root)
+        if observe_writer_holds
+        else None
+    )
     watcher = LiveWatcher(
         cast(Any, polylogue),
         (source,),
         cursor=CursorStore(db_path),
         converger=converger,
+        write_coordinator=coordinator,
+        event_emitter=record_batch_event if observe_writer_holds else None,
     )
     adapter = FileIntakeAdapter(
         DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=(source,)),
@@ -125,21 +163,34 @@ def _run_dispatcher_ingest(corpus_root: Path, archive_root: Path) -> dict[str, f
                 raise AssertionError(f"dispatcher did not drain in {_MAX_DISPATCHER_PASSES} passes")
         finally:
             watcher.stop()
+            if coordinator is not None:
+                assert await coordinator.shutdown(timeout=1.0)
         return admitted, passes
 
     started = time.perf_counter()
     admitted, passes = asyncio.run(drain())
     elapsed = time.perf_counter() - started
     payload = _payload_bytes(files)
-    return {
-        "total_s": elapsed,
-        "payload_bytes": float(payload),
-        "end_to_end_mb_s": _mb_s(payload, elapsed),
-        "succeeded_files": float(admitted),
-        "failed_files": 0.0,
-        "files": float(len(files)),
-        "passes": float(passes),
-    }
+    released = [event for event in writer_events if event.phase == "released"]
+    page_holds = [event.hold_seconds for event in released if event.actor == "watcher.live_ingest"]
+    writer_hold_s = page_holds[0] if len(page_holds) == 1 else None
+    batch_payload = batch_payloads[0] if len(batch_payloads) == 1 else {}
+    stage_timings = cast(dict[str, object], batch_payload.get("stage_timings_s", {}))
+    raw_compaction_runs = batch_payload.get("raw_compaction_runs")
+    raw_compaction_time_s = stage_timings.get("raw_compaction")
+    return _DispatcherMeasurement(
+        total_s=elapsed,
+        payload_bytes=payload,
+        end_to_end_mb_s=_mb_s(payload, elapsed),
+        succeeded_files=admitted,
+        failed_files=0,
+        files=len(files),
+        passes=passes,
+        writer_hold_s=writer_hold_s,
+        outside_writer_hold_s=(elapsed - writer_hold_s) if writer_hold_s is not None else None,
+        raw_compaction_runs=raw_compaction_runs if isinstance(raw_compaction_runs, int) else 0,
+        raw_compaction_time_s=float(raw_compaction_time_s) if isinstance(raw_compaction_time_s, (int, float)) else None,
+    )
 
 
 def test_dispatcher_intake_is_within_direct_ingest_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -160,20 +211,20 @@ def test_dispatcher_intake_is_within_direct_ingest_bound(tmp_path: Path, monkeyp
     dispatcher = _run_dispatcher_ingest(dispatcher_corpus, tmp_path / "dispatcher-archive")
     direct = _run_direct_ingest(direct_corpus, tmp_path / "direct-archive")
 
-    assert dispatcher["files"] == direct["files"] > 0
-    assert dispatcher["succeeded_files"] == dispatcher["files"]
+    assert dispatcher.files == direct["files"] > 0
+    assert dispatcher.succeeded_files == dispatcher.files
     assert direct["succeeded_files"] == direct["files"]
     assert direct["failed_files"] == 0
-    assert dispatcher["passes"] >= 1
+    assert dispatcher.passes >= 1
 
-    dispatcher_mb_s = dispatcher["end_to_end_mb_s"]
+    dispatcher_mb_s = dispatcher.end_to_end_mb_s
     direct_mb_s = direct["end_to_end_mb_s"]
     ratio = direct_mb_s / dispatcher_mb_s
     assert ratio <= _THROUGHPUT_BOUND, (
         f"dispatcher end_to_end_mb_s {dispatcher_mb_s:.4f} is {ratio:.2f}x slower than "
         f"direct ingest_files {direct_mb_s:.4f} (bound {_THROUGHPUT_BOUND}); "
-        f"dispatcher_s={dispatcher['total_s']:.4f} direct_s={direct['total_s']:.4f} "
-        f"payload_bytes={int(dispatcher['payload_bytes'])} passes={int(dispatcher['passes'])}"
+        f"dispatcher_s={dispatcher.total_s:.4f} direct_s={direct['total_s']:.4f} "
+        f"payload_bytes={dispatcher.payload_bytes} passes={dispatcher.passes}"
     )
 
 
@@ -204,8 +255,60 @@ def test_dispatcher_retention_authority_is_scoped_to_its_admitted_page(
 
     result = _run_dispatcher_ingest(corpus, tmp_path / "archive")
 
-    assert result["succeeded_files"] == result["files"]
+    assert result.succeeded_files == result.files
     assert observed_scopes == [expected_paths]
+
+
+def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real dispatcher pages keep compaction bounded as unrelated archive rows grow.
+
+    This runs the ordinary dispatcher, adapter, live materialization, and
+    compaction callback under the daemon coordinator.  It records actual
+    released writer holds rather than timing a local helper.  The three archive
+    populations distinguish an input-bounded retention call from a recurrence
+    of archive-wide work.  Anti-vacuity: removing
+    ``authority_source_paths=paths`` in the production compaction callback
+    changes every observed scope to ``None`` while the page still completes.
+    """
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
+
+    observed_scopes: list[frozenset[Path] | None] = []
+    original = raw_retention.active_raw_retention_authority
+
+    def recording_authority(*args: object, **kwargs: object) -> raw_retention.RawRetentionAuthority:
+        paths = kwargs.get("authority_source_paths")
+        observed_scopes.append(frozenset(cast(list[Path], paths)) if paths is not None else None)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(raw_retention, "active_raw_retention_authority", recording_authority)
+    measurements: list[_DispatcherMeasurement] = []
+    expected_scopes: list[frozenset[Path]] = []
+    for label, existing_batches in (("empty", 0), ("medium", 2), ("large", 4)):
+        archive_root = tmp_path / f"{label}-archive"
+        for batch in range(existing_batches):
+            seed = _write_corpus(tmp_path / f"{label}-seed-{batch}", prefix=f"{label}-seed-{batch}")
+            expected_scopes.append(frozenset(_jsonl_files(seed)))
+            _run_dispatcher_ingest(seed, archive_root)
+        corpus = _write_corpus(tmp_path / f"{label}-measurement", prefix=f"{label}-measurement")
+        expected_scopes.append(frozenset(_jsonl_files(corpus)))
+        measurements.append(_run_dispatcher_ingest(corpus, archive_root, observe_writer_holds=True))
+
+    assert observed_scopes == expected_scopes
+    assert all(measurement.succeeded_files == measurement.files > 0 for measurement in measurements)
+    assert all(measurement.failed_files == 0 for measurement in measurements)
+    assert all(measurement.writer_hold_s is not None and measurement.writer_hold_s > 0 for measurement in measurements)
+    assert all(
+        measurement.outside_writer_hold_s is not None and measurement.outside_writer_hold_s >= 0
+        for measurement in measurements
+    )
+    assert all(measurement.raw_compaction_runs == 1 for measurement in measurements)
+    assert all(
+        measurement.raw_compaction_time_s is not None and measurement.raw_compaction_time_s > 0
+        for measurement in measurements
+    )
 
 
 def test_rehearsal_chunk_route_numbers_are_labelled_deleted() -> None:
