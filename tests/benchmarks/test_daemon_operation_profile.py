@@ -25,7 +25,7 @@ import pytest
 
 from polylogue.daemon.execution import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
 from polylogue.daemon_client import DaemonClient
-from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, record_metrics
+from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, PROFILE_METRICS, profile_manifest, record_metrics
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
@@ -249,6 +249,8 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
 
     stop = threading.Event()
     background_completed = 0
+    peak_queue_units = 0
+    peak_queue_bytes = 0
     writes_completed = 0
     write_latency_ms: list[int] = []
     write_failures: list[str] = []
@@ -257,14 +259,25 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     def background_unit() -> None:
         sleep(0.005)
 
+    def observe_admission() -> None:
+        """Retain queue high-water marks while the real mixed load is active."""
+
+        nonlocal peak_queue_bytes, peak_queue_units
+        admission = kernel.snapshot()
+        with counters:
+            peak_queue_units = max(peak_queue_units, admission.queued_units)
+            peak_queue_bytes = max(peak_queue_bytes, admission.queued_bytes)
+
     def keep_background_busy() -> None:
         nonlocal background_completed
         while not stop.is_set():
             try:
                 submitted = kernel.submit(background_unit, admission_class="bulk-candidate")
             except DaemonBackpressureError:
+                observe_admission()
                 sleep(0.005)
                 continue
+            observe_admission()
             with suppress(Exception):
                 submitted.future.result(timeout=5)
                 with counters:
@@ -334,6 +347,7 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     while snapshot.used_units and perf_counter() < drain_deadline:
         sleep(0.05)
         snapshot = kernel.snapshot()
+    observe_admission()
     assert not write_failures, write_failures
     assert len(results) == 8
     # Every interactive read completed and was served a page, while the writer
@@ -352,6 +366,8 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     assert background_completed > 0
     assert snapshot.background_max_wait_s < MAX_BACKGROUND_STARVATION_S
     assert snapshot.used_units == 0, snapshot
+    assert peak_queue_units <= snapshot.capacity_units
+    assert peak_queue_bytes <= snapshot.capacity_bytes
     record_metrics(
         benchmark,
         concurrent_interference_p95_ms=max(elapsed, default=0),
@@ -359,6 +375,8 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
         background_operations=background_completed,
         background_throughput=background_completed / duration_s,
         queue_delay_ms=int(snapshot.background_max_wait_s * 1000),
+        peak_queue_units=peak_queue_units,
+        peak_queue_bytes=peak_queue_bytes,
         peak_rss_kib=getrusage(RUSAGE_SELF).ru_maxrss,
     )
 
@@ -382,3 +400,18 @@ def test_profile_declares_all_packet_workloads() -> None:
         "derivation-catch-up",
         "inactive-candidate",
     }
+
+
+def test_profile_declares_mixed_load_queue_high_water_metrics() -> None:
+    """Mixed-load output must retain queue depth and queued-byte maxima.
+
+    Anti-vacuity: removing either profile metric makes the benchmark helper
+    refuse its measured high-water value, so a drained final snapshot cannot
+    masquerade as bounded mixed-load admission.
+    """
+
+    expected = {"peak_queue_units", "peak_queue_bytes"}
+    manifest_metrics = profile_manifest()["metrics"]
+    assert isinstance(manifest_metrics, list)
+    assert expected <= set(PROFILE_METRICS)
+    assert expected <= set(manifest_metrics)
