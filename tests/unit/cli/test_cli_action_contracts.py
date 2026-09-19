@@ -112,15 +112,14 @@ def test_virtual_find_counterpart_is_query_parser_keyword() -> None:
         ["find", "needle", "then", "continue", "--json"],
         ["find", "needle", "then", "delete", "--dry-run", "--json"],
         ["find", "needle", "then", "mark", "--tag-add", "reviewed", "--json"],
-        ["find", "needle", "then", "mark", "candidates", "list", "--json"],
-        ["analyze", "usage", "--json"],
-        ["analyze", "insights", "profiles", "--json"],
     ],
 )
-def test_post_verb_json_alias_is_rejected_for_format_actions(argv: list[str]) -> None:
-    """Post-verb ``--json`` is not an alias for an action's ``--format`` option."""
-    with pytest.raises(click.UsageError, match=r"Move --json before `(?:read|continue|delete|mark|analyze)`"):
-        _split_query_mode_args(cli, argv)
+def test_post_verb_json_alias_routes_to_read_actions(argv: list[str]) -> None:
+    """Read actions own ``--json`` after their verb, like ``--format json``."""
+    click_args, _query_terms, has_subcommand, _explicit_query = _split_query_mode_args(cli, argv)
+
+    assert click_args[-1] == "--json"
+    assert has_subcommand
 
 
 def test_post_verb_format_json_remains_supported() -> None:

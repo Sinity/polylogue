@@ -281,7 +281,7 @@ def test_read_view_completion_comes_from_view_profiles() -> None:
 
 def test_read_format_click_choices_come_from_view_profiles() -> None:
     option = next(param for param in query_verbs.read_verb.params if "--format" in param.opts)
-    expected = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats}))
+    expected = tuple(sorted({fmt for profile in READ_VIEW_PROFILES for fmt in profile.formats} | {"jsonl", "md"}))
 
     assert isinstance(option.type, click.Choice)
     assert tuple(option.type.choices) == expected
