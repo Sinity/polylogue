@@ -41,6 +41,8 @@ PROFILE_METRICS: tuple[str, ...] = (
     "rows",
     "bytes",
     "queue_delay_ms",
+    "peak_queue_units",
+    "peak_queue_bytes",
     "writer_hold_ms",
     "background_operations",
     "background_throughput",
