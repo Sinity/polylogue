@@ -4183,6 +4183,87 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
     assert unresolved == [], f"declared services the composition route never resolved: {unresolved}"
 
 
+def test_daemon_composition_gives_raw_whale_its_own_discovery_cursor(tmp_path: Path) -> None:
+    """Whale selection cannot consume fair intake's raw continuation.
+
+    ``RawMaterializationDiscovery`` owns a process-local traversal cursor.  If
+    the periodic whale route borrows fair intake's instance, a whale probe
+    advances that cursor and changes which raw the fair adapter sees next.
+
+    Anti-vacuity: passing ``raw_intake_discovery`` to periodic raw convergence
+    instead of a separately constructed whale discovery makes the identities
+    below equal.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import intake_adapters as daemon_intake_adapters
+    from polylogue.operations.intake_adapters import build_intake_adapters as build_real_intake_adapters
+
+    created: list[object] = []
+    periodic_discoveries: list[object] = []
+    fair_discover: list[object] = []
+
+    class Discovery:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            created.append(self)
+
+        def discover_pending_raw_ids(self, _limit: int) -> tuple[tuple[str, int], ...]:
+            return ()
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher(_NoIntakeHints):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.catch_up_complete = asyncio.Event()
+
+        async def run(self) -> None:
+            await asyncio.sleep(0)
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            return None
+
+    async def capture_periodic(**kwargs: object) -> None:
+        periodic_discoveries.append(kwargs["raw_intake_discovery"])
+        await asyncio.Event().wait()
+
+    def capture_build(*args: object, **kwargs: object) -> tuple[tuple[str, object], ...]:
+        fair_discover.append(kwargs["raw_discover"])
+        return cast(tuple[tuple[str, object], ...], build_real_intake_adapters(*args, **kwargs))
+
+    with contextlib.ExitStack() as stack:
+        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
+        stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
+        stack.enter_context(patch.object(daemon_intake_adapters, "RawMaterializationDiscovery", Discovery))
+        stack.enter_context(patch.object(daemon_intake_adapters, "build_intake_adapters", capture_build))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_raw_materialization_convergence", capture_periodic))
+        stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert len(created) == 2
+    assert len(fair_discover) == 1
+    fair_cursor = inspect.getclosurevars(cast(Callable[..., object], fair_discover[0])).nonlocals[
+        "raw_intake_discovery"
+    ]
+    assert periodic_discoveries == [created[1]]
+    assert periodic_discoveries[0] is not fair_cursor
+
+
 @pytest.mark.uses_real_clock("bounds the focused-profile fixture's own wall-clock cost")
 def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_path: Path) -> None:
     """The API-disabled fixture profile.

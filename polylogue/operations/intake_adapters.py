@@ -582,6 +582,15 @@ class FileIntakeAdapter(IntakeAdapter):
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted",
                 )
+            elif not succeeded:
+                # A zero-success, zero-failure batch supplied no per-item
+                # verdict. The watcher retries this same shape; classifying
+                # it as DUPLICATE here acknowledged the fair-intake cursor
+                # and silently dropped the item.
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.RETRYABLE,
+                    reason=f"source admission produced no outcome: {key}",
+                )
             else:
                 # Offered and attempted, with nothing new to admit under this
                 # identity: the ordinary re-discovery of an already-ingested
