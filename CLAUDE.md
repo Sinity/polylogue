@@ -188,22 +188,23 @@ are not independently anchor-checked; durable citations belong in
 range still resolves. It does not judge whether the prose is still true.
 
 - `devtools test <sel>` — focused pytest through the managed harness (checkout
-  guard, environment, typed result). Never bare `pytest`.
-- `devtools verify` — static gates plus pytest, selecting from the checkout's
-  one testmon datafile (`.cache/testmon/testmondata`, environment `polylogue`)
-  and writing back. A managed run snapshots a newer primary-checkout seed into
-  a lane with SQLite backup, replacing unusable lane copies. If no seed is
-  available, the run reports a full seed run; `--all` runs every test and
-  updates fingerprints, and `--quick` is the static gates alone.
+  guard, environment, typed result). It does not load or update testmon; its
+  receipt's graph state is diagnostic only. Never bare `pytest`.
+- `devtools verify` — static gates plus a bounded affected pytest selection
+  when a usable checkout testmon graph (`.cache/testmon/testmondata`,
+  environment `polylogue`) can support one. An absent, unusable, or unbounded
+  graph refuses the affected plan before pytest; it never silently becomes a
+  corpus run. `devtools verify --all` explicitly runs the complete corpus and
+  updates its graph; `--quick` runs static gates only.
 - `devtools test <selection>` submits workstation pytest through its declared
   host pool and refuses if admission is unavailable. `--runner isolated` is
   explicit for CI without agentctl, not a workstation fallback. A job id is
   never slot ownership.
 - Read `.agentctl/project.toml` for the hosted candidate gate, review policy,
-  and operation-to-pool mappings on the current candidate. `pytest_focused`,
-  `verify_affected`, and `verify_all` are manual operations for explicitly
-  selected scopes; none is a per-worker, per-wave, or nightly requirement.
-  Check actual branch requirements.
+  and operation-to-pool mappings on the current candidate. `verify_all`
+  separately invokes `devtools verify --all` and declares a 03:00 schedule;
+  the declaration is not evidence of a live timer. Check actual branch and
+  runtime requirements.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
   `verify --quick` is the fast subset. `status`, `render [<surface>|all]
@@ -213,14 +214,12 @@ range still resolves. It does not judge whether the prose is still true.
   grep for `out of sync`.
 
 Testmon is an accelerator: a selected green proves the selected scope only,
-and the receipt names which selection ran. Focused `devtools test` runs do
-not load testmon and never change the checkout's corpus graph. Their receipt
-may report a diagnostic snapshot of that graph, but this is not selection
-evidence. Explicitly requested affected/full runs advance the broad graph.
-When `--all` is requested, the corpus runs as one
-collection; partitioning it would drop the edges of every test the last shard
-did not collect. A test names its anti-vacuity condition — what mutation or
-bypass would make it red.
+and the receipt names which selection ran. Focused `devtools test` receipts
+may report the graph diagnostically, but do not make selection evidence.
+Explicit affected and full verification advance the graph. When `--all` is
+requested, the corpus runs as one collection; partitioning it would drop the
+edges of every test the last shard did not collect. A test names its
+anti-vacuity condition — what mutation or bypass would make it red.
 Fixtures are generated and deterministic (`tests/infra/`: SessionBuilder,
 seeded archives, pathology composer, corpus programs); timestamp-sensitive
 tests use `frozen_clock` (an autouse guard rejects wall-clock reads). Keep

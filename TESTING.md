@@ -23,7 +23,7 @@ POLYLOGUE_PYTEST_WORKERS=8 devtools test tests/unit/storage   # ask for a wider 
 pytest -x tests/unit/storage/test_hybrid_laws.py
 
 # Complete-corpus baseline (unit/property/fuzz/integration; benchmarks excluded)
-devtools verify
+devtools verify --all
 
 # Full Nix/CI parity
 nix flake check
@@ -112,15 +112,23 @@ CI runs this journey in the `web-first-party-auth` job. Local NixOS development
 uses the system Chrome path discovered by `webui/playwright.config.ts`, so the
 browser install step is normally unnecessary after `npm ci`.
 
-`devtools verify` runs the static gates and then pytest, selecting from the
-checkout's single pytest-testmon datafile at `.cache/testmon/testmondata` under
-the fixed environment name `polylogue`. Every managed run traces into that
-datafile and writes back, `devtools test <selection>` included, so the graph is
-advanced rather than recomputed; a worktree is provisioned by copying master's
-datafile, which is valid immediately because paths are repo-relative and
-fingerprints are by content.
+Focused `devtools test <selection>` does not load or update testmon. Its
+receipt records the checkout graph only as a diagnostic.
 
-A managed run first snapshots the newer primary checkout datafile into a lane, using SQLite backup so the copy is consistent. An unusable lane copy is replaced by that snapshot, while no available seed is reported as a full run that seeds the graph. `--all` runs every test and still updates fingerprints, `--quick` runs the static gates alone, and a selected run reports only the tests it executed.
+Ordinary `devtools verify` runs static gates and then uses a usable
+pytest-testmon graph at `.cache/testmon/testmondata` (environment
+`polylogue`) to measure and bound an affected selection. It can snapshot a
+better primary-checkout graph into a lane through SQLite backup. If no usable
+graph is available, or the selection would re-execute the corpus or otherwise
+exceed its bound, verification records and refuses the affected plan before
+pytest. It never falls back to a full corpus run. `devtools verify --all` is
+the explicit complete-corpus command and updates the graph; `--quick` runs
+static gates only.
+
+AgentCTL's separately declared `verify_all` operation invokes `devtools verify
+--all` and has a 03:00 schedule in `.agentctl/project.toml`. That declaration
+does not prove a live timer; inspect AgentCTL runtime state when the schedule
+matters.
 
 The corpus runs as ONE collection. testmon drops every recorded test a run did
 not collect, so a partitioned run would keep only its last partition's edges.
