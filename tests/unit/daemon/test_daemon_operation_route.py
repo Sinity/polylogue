@@ -1066,15 +1066,13 @@ def test_expired_staged_ingest_releases_its_queued_compute_reservation(
             assert not caller.is_alive()
             assert len(envelopes) == 1
             assert envelopes[0]["outcome"] == "timed-out"
-            # The operation's ``finally`` may enqueue its independent
-            # publisher cleanup after this phase settles. The completed
-            # control unit proves the timed-out phase itself released its
-            # reservation before either blocked worker can dispatch it.
-            with stack.runtime._condition:
-                assert stack.runtime._condition.wait_for(
-                    lambda: stack.execution_kernel.snapshot().by_class("control").completed == 1,
-                    timeout=2,
-                )
+            # The operation's ``finally`` queues independent publisher cleanup.
+            # Exactly that one queued control reservation remains. The expired
+            # phase must have released its own reservation without becoming a
+            # completed dispatch.
+            control = stack.execution_kernel.snapshot().by_class("control")
+            assert control.used_units == control.queued_units == 1
+            assert control.completed == 0
         finally:
             release.set()
             for blocker in blockers:

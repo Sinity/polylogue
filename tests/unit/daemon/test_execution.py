@@ -298,6 +298,33 @@ def test_cancelled_queued_work_never_runs_and_returns_its_reservation() -> None:
         assert not ran.is_set()
 
 
+def test_cancelled_queued_work_is_not_counted_as_completed_dispatch() -> None:
+    """Scheduler counters distinguish a released queue reservation from executed work.
+
+    Anti-vacuity: incrementing ``completed`` for every reservation release
+    reports two completions after this queued cancellation and one dispatched
+    body, which corrupts the background-throughput denominator.
+    """
+
+    holder = _Blocker()
+    with _adapter(max_workers=1, queue_units=1) as adapter:
+        try:
+            running = adapter.submit(holder, admission_class="interactive-read")
+            assert holder.wait_started(1)
+            cancellation = CancellationHandle()
+            queued = adapter.submit(lambda: None, admission_class="interactive-read", cancellation=cancellation)
+            cancellation.cancel()
+            with pytest.raises(DaemonOperationCancelled):
+                queued.future.result(timeout=2)
+            holder.release.set()
+            running.future.result(timeout=2)
+            snapshot = adapter.snapshot().by_class("interactive-read")
+            assert snapshot.dispatched == 1
+            assert snapshot.completed == 1
+        finally:
+            holder.release.set()
+
+
 def test_background_dispatch_rotates_under_mixed_load() -> None:
     """Both background lanes progress while interactive and control stay active.
 
