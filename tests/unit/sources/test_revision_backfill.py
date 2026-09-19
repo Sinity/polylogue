@@ -256,18 +256,22 @@ def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -
         )
 
 
-@pytest.mark.parametrize("ingest_workers", (1, 4, 12))
 def test_frozen_inactive_generation_replays_through_sealed_session_shards(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ingest_workers: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The frozen candidate copies the live shard transport, never source rows.
 
     Anti-vacuity: replacing the writer's shard copy with inline row binding
     leaves the logical projection green but makes ``copies`` zero.
+
+    The completed finished-build measurement owns the one chosen transport
+    profile: four thread workers.  This law verifies that profile's real
+    sealed handoff without turning transport safety into a 1/4/12 grid.
     """
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
 
-    root = tmp_path / f"shard-n{ingest_workers}"
+    ingest_workers = 4
+    root = tmp_path / "shard-thread-4"
     bootstrap_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         archive.write_raw_payload(
