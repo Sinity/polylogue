@@ -89,6 +89,7 @@ class RawObservationReplacement:
     payload: RawParsePrefetchCache
     raw_ids: tuple[str, ...]
     empty: bool = False
+    already_valid: bool = False
 
 
 class RawObservationDerivation:
@@ -445,6 +446,22 @@ class RawObservationDerivation:
         from polylogue.sources.dispatch import is_stream_record_provider
         from polylogue.sources.revision_backfill import RawParsePrefetchCache, parse_retained_raw_sessions
 
+        # One component replay settles every member. The kernel classified the
+        # page before it began publishing, so a sibling can still arrive here
+        # with that old ``stale`` verdict after an earlier member has made the
+        # shared authoritative output current. Re-inspect at the compute
+        # boundary before parsing retained bytes again. The publication method
+        # repeats this check, so a later race remains pending rather than being
+        # certified from this observation alone.
+        if self.inspect(frame, (key,)).get(key) == "valid":
+            return RawObservationReplacement(
+                key,
+                "",
+                RawParsePrefetchCache(max_inflight_bytes=self.max_payload_bytes),
+                (),
+                already_valid=True,
+            )
+
         with open_operation_read(self.archive_root) as pinned:
             archive = pinned.archive
             raw_ids, _keys = archive.expand_raw_membership_selection([key])
@@ -473,6 +490,9 @@ class RawObservationDerivation:
         from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
         from polylogue.storage.index_generation import ActiveWriterLease
         from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids
+
+        if replacement.already_valid:
+            return self._current(frame) and self.inspect(frame, (replacement.key,)).get(replacement.key) == "valid"
 
         lease = ActiveWriterLease(self.archive_root)
         lease.acquire()
