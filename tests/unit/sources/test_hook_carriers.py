@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import threading
 import time
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,9 +24,11 @@ from polylogue.sources.hooks import (
     append_hook_event,
     find_carrier_event,
     hook_carrier_dir,
+    hook_carrier_provider_dir,
     read_hook_carrier,
     validated_hook_record,
 )
+from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
 from tests.infra.hook_carriers import acquire_hook_carriers, hook_event_count, materialize_hook_carriers
 
@@ -294,6 +298,72 @@ def test_an_appended_carrier_materializes_only_its_new_lines(tmp_path: Path, mon
         )
     assert materialize_hook_carriers(archive_root) == 7
     assert len(_carriers(spool_root)) == 1
+
+
+def test_grown_carrier_retains_only_an_append_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A carrier growth stores its tail once, under the carrier's physical chain.
+
+    Anti-vacuity: route a grown carrier through ordinary artifact admission
+    without revision binding and both rows are unclassified full captures,
+    including a second blob whose size is the entire grown carrier.
+    """
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    for index in range(3):
+        append_hook_event(
+            event_type="PreToolUse",
+            session_id="s",
+            provider="codex",
+            timestamp=_TIMESTAMP,
+            payload={"sequence": index},
+            root=spool_root,
+            event_id=f"{index:032x}",
+        )
+    assert acquire_hook_carriers(archive_root) == 1
+    carrier = _carriers(spool_root)[0]
+    initial_size = carrier.stat().st_size
+
+    for index in range(3, 7):
+        append_hook_event(
+            event_type="PostToolUse",
+            session_id="s",
+            provider="codex",
+            timestamp=_TIMESTAMP,
+            payload={"sequence": index},
+            root=spool_root,
+            event_id=f"{index:032x}",
+        )
+    grown_size = carrier.stat().st_size
+    source = WatchSource(
+        name="codex-hooks",
+        root=hook_carrier_provider_dir("codex", spool_root),
+        suffixes=(".ndjson",),
+        source_id="primary-hook-spool:codex",
+        role="primary-writable",
+    )
+    watcher = LiveWatcher(
+        SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
+        (source,),
+    )
+    metrics = asyncio.run(watcher._ingest_files([carrier]))
+    assert (metrics.append_file_count, metrics.full_file_count) == (1, 0)
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT origin, source_path, blob_size, revision_kind,
+                   append_start_offset, append_end_offset
+            FROM raw_sessions
+            WHERE source_path = ?
+            ORDER BY acquired_at_ms, raw_id
+            """,
+            (str(carrier),),
+        ).fetchall()
+
+    assert rows == [
+        ("codex-session", str(carrier), initial_size, "full", None, None),
+        ("codex-session", str(carrier), grown_size - initial_size, "append", initial_size, grown_size),
+    ]
 
 
 def test_carrier_coordinates_are_byte_offsets_not_ordinals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
