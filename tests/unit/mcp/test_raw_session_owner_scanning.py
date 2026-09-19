@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.operations.raw_sessions.page import CompactJSONPage
 from polylogue.operations.raw_sessions.sessions import SessionError, SessionLogService, SessionSource
 
 
@@ -199,3 +200,66 @@ def test_read_preserves_raw_offsets_and_replaces_malformed_utf8(tmp_path: Path) 
     assert read["offset"] == 1 and read["bytes"] == 4
     assert read["content"] == "\ufffd\ufffd\ufffd"
     assert read["next_offset"] is None
+
+
+def test_file_timeline_continuation_resumes_after_the_consumed_file(tmp_path: Path) -> None:
+    service, root = session_service(tmp_path)
+    first = root / "first.jsonl"
+    second = root / "second.jsonl"
+    first.write_text("needle\nneedle\n")
+    second.write_text("needle\n")
+    os.utime(first, ns=(1, 1))
+    os.utime(second, ns=(2, 2))
+    key = b"timeline-key"
+
+    page = service.timeline("claude-code", None, None, "needle", 1, cursor_key=key)
+    next_page = service.timeline("claude-code", None, None, "needle", 1, cursor=page["next_cursor"], cursor_key=key)
+
+    assert [entry["reference"] for entry in page["entries"]] == ["claude-code:second.jsonl"]
+    assert [entry["reference"] for entry in next_page["entries"]] == ["claude-code:first.jsonl"]
+    matches = service.search("claude-code", "needle", 10)["matches"]
+    assert len(matches) == 3
+
+
+def test_exact_reference_search_skips_unrelated_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service, root = session_service(tmp_path)
+    selected = root / "selected.jsonl"
+    selected.write_text("needle\n")
+    (root / "unrelated.jsonl").write_text("not selected\n")
+
+    def inventory_must_not_run(source: SessionSource) -> list[tuple[Path, os.stat_result]]:
+        raise AssertionError(f"unexpected inventory for {source.provider}")
+
+    monkeypatch.setattr(service, "_files", inventory_must_not_run)
+
+    result = service.search("claude-code", "needle", reference="claude-code:selected.jsonl")
+
+    assert [row["reference"] for row in result["matches"]] == ["claude-code:selected.jsonl"]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"text": "plain"}, {"text": "é\\nquoted"}],
+        [{"nested": [None, {"emoji": "☃"}]}],
+    ],
+)
+def test_compact_json_page_matches_complete_list_size(rows: list[dict[str, object]]) -> None:
+    page = CompactJSONPage(10_000)
+
+    for row in rows:
+        assert page.try_append(row)
+
+    import json
+
+    assert page.encoded_bytes == len(json.dumps(rows, separators=(",", ":")).encode())
+
+
+def test_compact_json_page_rejects_without_mutating_state() -> None:
+    row = {"text": "x" * 50}
+    page = CompactJSONPage(2 + len('{"text":"x"}') + 1)
+
+    assert page.try_append({"text": "x"})
+    before = (list(page.items), page.encoded_bytes)
+    assert not page.try_append(row)
+    assert (page.items, page.encoded_bytes) == before

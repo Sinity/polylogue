@@ -9,9 +9,12 @@ import hmac
 import json
 import os
 import stat
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
+
+from .page import CompactJSONPage
 
 
 class SessionError(ValueError):
@@ -211,7 +214,7 @@ class SessionLogService:
         }
 
     @staticmethod
-    def _source_revision(source: SessionSource, files: builtins.list[tuple[Path, os.stat_result]]) -> str:
+    def _source_revision(source: SessionSource, files: Sequence[tuple[Path, os.stat_result]]) -> str:
         """Identity of the exact searchable observation, not its contents."""
         rows = [
             (
@@ -263,7 +266,7 @@ class SessionLogService:
     def _scan_literal(
         self,
         source: SessionSource,
-        files: builtins.list[tuple[Path, os.stat_result]],
+        files: Sequence[tuple[Path, os.stat_result]],
         query: str,
         limit: int,
         scan_bytes: int,
@@ -271,9 +274,11 @@ class SessionLogService:
         cursor_key: bytes | None,
         purpose: str,
         one_per_file: bool,
+        *,
+        source_revision: str | None = None,
     ) -> dict[str, Any]:
         query_bytes = query.encode("utf-8")
-        revision = self._source_revision(source, files)
+        revision = source_revision if source_revision is not None else self._source_revision(source, files)
         scope = {
             "principal": self.scope,
             "provider": source.provider,
@@ -355,11 +360,12 @@ class SessionLogService:
                     "text": text,
                     "source_observation": (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns),
                 }
-                candidate = [*rows, row]
-                if len(candidate) > limit:
+                if len(rows) >= limit:
                     # Do not consume this match: the continuation replay window
                     # makes it the first candidate on the next page.
-                    next_state = dict(resume_after_last or state)
+                    # A file overview has already consumed the accepted file.
+                    # A match stream instead resumes after its last match.
+                    next_state = dict(state if one_per_file else (resume_after_last or state))
                     if cursor_key is None:
                         return {
                             "rows": rows,
@@ -423,13 +429,14 @@ class SessionLogService:
             raise SessionError("query must contain 1-1000 characters")
         if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
             raise SessionError("max_results must be a positive integer")
-        files = self._files(source)
         if reference is not None:
             selected_source, path = self._path_from_reference(reference)
             if selected_source.provider != provider:
                 raise SessionError("reference provider must match search provider")
             info = path.stat(follow_symlinks=False)
             files = [(path, info)]
+        else:
+            files = self._files(source)
         result = self._scan_literal(
             source,
             files,
@@ -461,6 +468,20 @@ class SessionLogService:
         cursor_key: bytes | None = None,
         scan_bytes: int = DEFAULT_SCAN_BYTES,
     ) -> dict[str, Any]:
+        if max_results < 1:
+            raise SessionError("max_results must be a positive integer")
+        return self.observe_timeline(provider, start_ns, end_ns, query).page(
+            max_results, cursor=cursor, cursor_key=cursor_key, scan_bytes=scan_bytes
+        )
+
+    def observe_timeline(
+        self,
+        provider: str,
+        start_ns: int | None,
+        end_ns: int | None,
+        query: str | None,
+    ) -> _ObservedTimeline:
+        """Bind one request's metadata enumeration; do not freeze live bytes."""
         source = self._source(provider)
         if start_ns is not None and start_ns < 0:
             raise SessionError("start time must not precede the Unix epoch")
@@ -470,29 +491,60 @@ class SessionLogService:
             raise SessionError("start time must not be after end time")
         if query is not None and (not query or len(query) > 1_000):
             raise SessionError("query must contain 1-1000 characters")
-        if isinstance(max_results, bool) or not isinstance(max_results, int) or max_results < 1:
-            raise SessionError("max_results must be a positive integer")
-        files = [
+        files = tuple(
             (path, info)
             for path, info in self._files(source)
             if (start_ns is None or info.st_mtime_ns >= start_ns) and (end_ns is None or info.st_mtime_ns <= end_ns)
-        ]
+        )
+        return _ObservedTimeline(self, source, files, query)
+
+
+class _ObservedTimeline:
+    """Request-owned metadata view, not a persistent cache or filesystem snapshot."""
+
+    def __init__(
+        self,
+        service: SessionLogService,
+        source: SessionSource,
+        files: tuple[tuple[Path, os.stat_result], ...],
+        query: str | None,
+    ):
+        self.service = service
+        self.source = source
+        self.files = files
+        self.query = query
+        self.revision = service._source_revision(source, files)
+        self.by_reference = (
+            {service._reference(source, path): info for path, info in files} if query is not None else {}
+        )
+
+    def page(
+        self,
+        max_results: int,
+        *,
+        cursor: str | None = None,
+        cursor_key: bytes | None = None,
+        scan_bytes: int = DEFAULT_SCAN_BYTES,
+    ) -> dict[str, Any]:
+        if max_results < 1:
+            raise SessionError("max_results must be a positive integer")
+        source, files, query = self.source, self.files, self.query
         if query is not None:
-            result = self._scan_literal(
+            result = self.service._scan_literal(
                 source,
                 files,
                 query,
                 max_results,
-                self._scan_bytes(scan_bytes),
+                self.service._scan_bytes(scan_bytes),
                 cursor,
                 cursor_key,
                 "session-timeline",
                 True,
+                source_revision=self.revision,
             )
-            by_reference = {self._reference(source, path): info for path, info in files}
             entries = []
             for row in result["rows"]:
-                info = by_reference[row["reference"]]
+                info = self.by_reference[row["reference"]]
                 entries.append(
                     {
                         "reference": row["reference"],
@@ -505,16 +557,16 @@ class SessionLogService:
                     }
                 )
             return {
-                "provider": provider,
+                "provider": source.provider,
                 "entries": entries,
                 "scanned_bytes": result["scanned_bytes"],
                 "truncated": result["truncated"],
                 "next_cursor": result["next_cursor"],
             }
 
-        revision = self._source_revision(source, files)
+        revision = self.revision
         scope = {
-            "principal": self.scope,
+            "principal": self.service.scope,
             "provider": source.provider,
             "query_sha256": None,
             "source_revision": revision,
@@ -522,35 +574,31 @@ class SessionLogService:
         if cursor is not None:
             if cursor_key is None:
                 raise SessionError("session continuation cursor is unavailable")
-            state = OpaqueSessionCursor(self.scope, cursor_key, "session-timeline").decode(cursor, scope)
+            state = OpaqueSessionCursor(self.service.scope, cursor_key, "session-timeline").decode(cursor, scope)
             if set(state) != {"file"} or not isinstance(state["file"], int) or state["file"] < 0:
                 raise SessionError("session continuation cursor is malformed")
         else:
             state = {"file": 0}
-        entries = []
-        response_budget = max(512, self.max_result_bytes - 16_384)
+        page = CompactJSONPage(max(512, self.service.max_result_bytes - 16_384))
+        entries = page.items
         while state["file"] < len(files):
             path, info = files[state["file"]]
             entry = {
-                "reference": self._reference(source, path),
+                "reference": self.service._reference(source, path),
                 "bytes": info.st_size,
                 "mtime_ns": info.st_mtime_ns,
                 "source_observation": (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns),
             }
-            if (
-                len(entries) >= max_results
-                or len(json.dumps([*entries, entry], separators=(",", ":")).encode()) > response_budget
-            ):
+            if len(entries) >= max_results or not page.try_append(entry):
                 break
-            entries.append(entry)
             state["file"] += 1
         truncated = state["file"] < len(files)
         return {
-            "provider": provider,
+            "provider": source.provider,
             "entries": entries,
             "scanned_bytes": 0,
             "truncated": truncated,
-            "next_cursor": OpaqueSessionCursor(self.scope, cursor_key, "session-timeline").encode(scope, state)
+            "next_cursor": OpaqueSessionCursor(self.service.scope, cursor_key, "session-timeline").encode(scope, state)
             if truncated and cursor_key is not None
             else None,
         }
