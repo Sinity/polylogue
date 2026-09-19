@@ -1,8 +1,17 @@
 """Daemon convergence performance probe.
 
-Generates synthetic JSONL at controlled scale tiers, runs the live watcher
-batch path with daemon post-ingest convergence stages, and measures timing
-for regression tracking.
+Generates synthetic JSONL at controlled scale tiers and measures
+``LiveBatchProcessor.ingest_files`` with post-ingest convergence.
+
+That call is the write entry ``FileIntakeAdapter.admit_page`` uses. It is
+not the production scheduler. ``polylogued run`` schedules through
+``FairIntakeDispatcher``; the paired measurement of that route lives in
+``tests/unit/daemon/test_dispatcher_intake_measurement.py``.
+
+Rehearsal-4 (2026-09-03) and the 09-15 ``real_ingest_driver.py`` /
+``hook_drain_driver.py`` numbers were measured on the watcher
+chunk/catch-up/hook-drain route. That route is deleted. Those receipts are
+historical for a deleted path, not current production.
 
 Run with:
     pytest tests/benchmarks/test_daemon_convergence.py \\
