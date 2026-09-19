@@ -1004,6 +1004,85 @@ def test_cancelled_queued_control_reports_cancelled_not_failed(tmp_path: Path) -
     assert envelope.get("error") is None
 
 
+def test_expired_staged_ingest_releases_its_queued_compute_reservation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timed-out staged operation must not retain a scheduler unit until dispatch.
+
+    The request enters the real daemon operation runtime and stages its first
+    ingest read on the shared bounded kernel. Two live kernel workers keep that
+    phase queued until the request deadline expires.
+
+    Anti-vacuity: without forwarding the exchange cancellation handle through
+    ``compute_phase``, the request reports ``timed-out`` while its queued
+    phase still owns its scheduler unit. The control-class completion counter
+    stays at zero before either blocking worker is released.
+    """
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS, DaemonOperationRequest
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+
+    entered = threading.Semaphore(0)
+    release = threading.Event()
+
+    def block_worker() -> None:
+        entered.release()
+        assert release.wait(timeout=60)
+
+    principal = MutationPrincipal(
+        actor_ref=f"daemon:unix:uid:{os.getuid()}",
+        capabilities=frozenset(spec.capability for spec in DAEMON_OPERATION_SPECS),
+        surface="cli",
+        role_label="daemon-unix-peer",
+    )
+    request = DaemonOperationRequest(
+        "ingest",
+        {"path": str(tmp_path / "unreached.json")},
+        request_id="expired-staged-ingest",
+        archive_root=str(tmp_path / "archive"),
+        deadline_ms=1_000,
+    )
+    envelopes: list[dict[str, object]] = []
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        # The test exercises deadline propagation before ingest's later
+        # session-maintenance phase, which is not part of this queue seam.
+        monkeypatch.setattr(stack.runtime, "require_session_maintenance", lambda: None)
+        blockers = [stack.execution_kernel.submit(block_worker) for _ in range(2)]
+        assert all(entered.acquire(timeout=2) for _ in blockers)
+
+        caller = threading.Thread(
+            target=lambda: envelopes.append(stack.runtime.call(request, principal)),
+            name="expired-staged-ingest-caller",
+            daemon=True,
+        )
+        caller.start()
+        try:
+            for _ in range(200):
+                if stack.execution_kernel.snapshot().queued_units == 1:
+                    break
+                threading.Event().wait(0.01)
+            assert stack.execution_kernel.snapshot().queued_units == 1
+            caller.join(timeout=2)
+            assert not caller.is_alive()
+            assert len(envelopes) == 1
+            assert envelopes[0]["outcome"] == "timed-out"
+            # The operation's ``finally`` may enqueue its independent
+            # publisher cleanup after this phase settles. The completed
+            # control unit proves the timed-out phase itself released its
+            # reservation before either blocked worker can dispatch it.
+            with stack.runtime._condition:
+                assert stack.runtime._condition.wait_for(
+                    lambda: stack.execution_kernel.snapshot().by_class("control").completed == 1,
+                    timeout=2,
+                )
+        finally:
+            release.set()
+            for blocker in blockers:
+                blocker.future.result(timeout=10)
+            with stack.runtime._condition:
+                assert stack.runtime._condition.wait_for(lambda: not stack.runtime._exchanges, timeout=5)
+
+
 def test_skewed_write_refusal_is_pre_dispatch_not_an_indeterminate_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
