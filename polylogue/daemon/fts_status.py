@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -19,11 +19,28 @@ class FTSReadiness(BaseModel):
     messages_ready: bool = False
     session_work_events_ready: bool = False
     invariant_ready: bool = False
-    message_indexed_count: int | None = 0
-    message_indexable_count: int | None = 0
-    coverage_pct: float | None = 0.0
-    coverage_exact: bool = True
+    # Counts have no honest zero default. A missing/corrupt source is not an
+    # empty FTS relation, and the status route must carry that distinction.
+    message_indexed_count: int | None = None
+    message_indexable_count: int | None = None
+    coverage_pct: float | None = None
+    coverage_exact: bool = False
     surfaces: dict[str, dict[str, int | bool | str | None]] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _withhold_unreadable_coverage(cls, value: object) -> object:
+        """Do not serialize the reader's error sentinel as measured coverage."""
+        if not isinstance(value, dict):
+            return value
+        if (
+            value.get("messages_ready") is False
+            and value.get("surfaces") == {}
+            and value.get("message_indexed_count") is None
+            and value.get("message_indexable_count") is None
+        ):
+            return {**value, "coverage_pct": None, "coverage_exact": False}
+        return value
 
 
 def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str | None]:
@@ -181,7 +198,8 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                 return archive_info
         return {
             "messages_ready": False,
-            "coverage_pct": 0.0,
+            "coverage_pct": None,
+            "coverage_exact": False,
         }
     try:
         # Readiness reports a skewed or unstamped tier as not-ready data; it must
