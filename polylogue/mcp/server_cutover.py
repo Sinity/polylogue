@@ -25,7 +25,14 @@ from polylogue.mcp.payloads import (
     MCPRootPayload,
     session_topology_payload,
 )
-from polylogue.mcp.session_projections import SESSION_LIST_PROJECTIONS
+from polylogue.mcp.session_projections import (
+    MCP_GET_SESSION_PROJECTION_NAMES,
+    MCP_READ_VIEW_NAMES,
+    SESSION_LIST_PROJECTION_NAMES,
+    SESSION_LIST_PROJECTIONS,
+    MCPReadView,
+    SessionListProjection,
+)
 from polylogue.operations.session_contracts import SessionOperation
 from polylogue.surfaces.outcome import decide_outcome
 
@@ -921,6 +928,27 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             _coordination_cache_holder.append(CoordinationEnvelopeCache())
         return _coordination_cache_holder[0]
 
+    async def _session_list_projection_payload(
+        projection: SessionListProjection,
+        session_id: str,
+        *,
+        tool: Literal["get", "read"],
+    ) -> str:
+        """Run one table-declared session list projection for either read route."""
+        rows = await getattr(hooks.get_polylogue(), projection.method)(session_id)
+        if rows is None:
+            return hooks.error_json(f"object not found: session:{session_id}", code="not_found", tool=tool)
+        return hooks.json_payload(
+            MCPRootPayload(
+                root={
+                    "session_id": session_id,
+                    "total": len(rows),
+                    projection.payload_key: rows,
+                    "outcome": decide_outcome(matched=len(rows)).to_dict(),
+                }
+            )
+        )
+
     async def query(
         expression: str | None = None,
         limit: int | None = None,
@@ -1119,7 +1147,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
     async def read(
         ref: str,
-        view: str | None = None,
+        view: MCPReadView = None,
         limit: int | None = None,
         offset: int | None = None,
         continuation: str | None = None,
@@ -1236,7 +1264,14 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         ),
                     )
                 )
-            if view not in (None, "summary"):
+            list_projection = SESSION_LIST_PROJECTIONS.get(view) if view is not None else None
+            if list_projection is not None:
+                if session_id is None:
+                    return hooks.error_json(
+                        f"read view {view!r} requires a session ref", code="invalid_argument", tool="read"
+                    )
+                return await _session_list_projection_payload(list_projection, session_id, tool="read")
+            if view not in MCP_READ_VIEW_NAMES:
                 return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
             payload = await hooks.get_polylogue().resolve_ref(normalized)
             if limit is not None and hasattr(payload, "items"):
@@ -1298,7 +1333,19 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             if plan_name is not None:
                 return await _cost_outlook_payload(hooks, plan_name=plan_name, method=projection)
             if metric_id is not None:
+                if projection is not None:
+                    return hooks.error_json(
+                        "metric refs do not accept a projection", code="invalid_argument", tool="get"
+                    )
                 return _metric_definition_payload(hooks, metric_id)
+            if projection is not None and projection not in MCP_GET_SESSION_PROJECTION_NAMES:
+                return hooks.error_json(
+                    f"unsupported get projection: {projection}", code="invalid_argument", tool="get"
+                )
+            if projection is not None and session_id is None:
+                return hooks.error_json(
+                    f"get projection {projection!r} requires a session ref", code="invalid_argument", tool="get"
+                )
             if projection == "orchestration" and session_id is not None:
                 evidence = await hooks.get_polylogue().get_session_orchestration(session_id)
                 if evidence is None:
@@ -1306,19 +1353,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return hooks.json_payload(MCPRootPayload(root=evidence.model_dump(mode="json")))
             list_projection = SESSION_LIST_PROJECTIONS.get(projection) if projection is not None else None
             if list_projection is not None and session_id is not None:
-                rows = await getattr(hooks.get_polylogue(), list_projection.method)(session_id)
-                if rows is None:
-                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
-                return hooks.json_payload(
-                    MCPRootPayload(
-                        root={
-                            "session_id": session_id,
-                            "total": len(rows),
-                            list_projection.payload_key: rows,
-                            "outcome": decide_outcome(matched=len(rows)).to_dict(),
-                        }
-                    )
-                )
+                return await _session_list_projection_payload(list_projection, session_id, tool="get")
             return hooks.json_payload(await hooks.get_polylogue().resolve_ref(normalized))
 
         return await hooks.async_safe_call("get", run, session_id=session_id)
@@ -1393,7 +1428,15 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         "total_messages": stats.message_count,
                     },
                 )
-                return hooks.json_payload(MCPRootPayload(root={"subject": subject, **page}))
+                return hooks.json_payload(
+                    MCPRootPayload(
+                        root={
+                            "subject": subject,
+                            **page,
+                            "read_views": list(SESSION_LIST_PROJECTION_NAMES),
+                        }
+                    )
+                )
             all_examples = query_discovery_examples()
             return hooks.json_payload(
                 MCPRootPayload(
