@@ -25,15 +25,15 @@ from polylogue.mcp.payloads import (
     MCPRootPayload,
     session_topology_payload,
 )
-from polylogue.mcp.session_projections import (
-    MCP_GET_SESSION_PROJECTION_NAMES,
-    MCP_READ_VIEW_NAMES,
-    SESSION_LIST_PROJECTION_NAMES,
+from polylogue.operations.session_contracts import SessionOperation
+from polylogue.operations.session_projections import (
     SESSION_LIST_PROJECTIONS,
     MCPReadView,
     SessionListProjection,
+    mcp_get_session_projection_names,
+    mcp_read_view_names,
+    session_list_projection_names,
 )
-from polylogue.operations.session_contracts import SessionOperation
 from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:
@@ -1271,7 +1271,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         f"read view {view!r} requires a session ref", code="invalid_argument", tool="read"
                     )
                 return await _session_list_projection_payload(list_projection, session_id, tool="read")
-            if view not in MCP_READ_VIEW_NAMES:
+            if view not in mcp_read_view_names():
                 return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
             payload = await hooks.get_polylogue().resolve_ref(normalized)
             if limit is not None and hasattr(payload, "items"):
@@ -1338,7 +1338,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         "metric refs do not accept a projection", code="invalid_argument", tool="get"
                     )
                 return _metric_definition_payload(hooks, metric_id)
-            if projection is not None and projection not in MCP_GET_SESSION_PROJECTION_NAMES:
+            if projection is not None and projection not in mcp_get_session_projection_names():
                 return hooks.error_json(
                     f"unsupported get projection: {projection}", code="invalid_argument", tool="get"
                 )
@@ -1433,7 +1433,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         root={
                             "subject": subject,
                             **page,
-                            "read_views": list(SESSION_LIST_PROJECTION_NAMES),
+                            "read_views": list(session_list_projection_names()),
                         }
                     )
                 )
