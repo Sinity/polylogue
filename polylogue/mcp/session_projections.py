@@ -14,7 +14,7 @@ to be a subset of the shared read-view vocabulary in ``archive/viewport``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias
+from typing import TypeAlias
 
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 
@@ -49,9 +49,11 @@ SESSION_LIST_PROJECTION_NAMES = tuple(SESSION_LIST_PROJECTIONS)
 MCP_READ_VIEW_NAMES = ("summary", "topology", "messages", *SESSION_LIST_PROJECTION_NAMES)
 MCP_GET_SESSION_PROJECTION_NAMES = ("orchestration", *SESSION_LIST_PROJECTION_NAMES)
 
-# This alias feeds MCP's generated input schema.  ``Literal.__getitem__`` is
-# the Python 3.10-compatible dynamic spelling of a table-derived Literal.
-MCPReadView: TypeAlias = Literal.__getitem__(MCP_READ_VIEW_NAMES) | None
+# The vocabulary is table-derived and validated at the operation boundary
+# below.  Static type checkers cannot represent a dynamically constructed
+# ``Literal`` alias, so keep the annotation broad while preserving the exact
+# runtime contract in ``server_cutover``.
+MCPReadView: TypeAlias = str | None
 
 _UNDECLARED = set(SESSION_LIST_PROJECTIONS) - set(READ_VIEW_PROFILE_BY_ID)
 if _UNDECLARED:
