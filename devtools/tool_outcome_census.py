@@ -1,7 +1,7 @@
 """Archive-wide census of tool-result outcomes and their unknown reasons.
 
 Usage:
-  devtools archive tool-outcome-census [--json] [--archive-root PATH]
+  devtools archive tool-outcome-census [--json] --archive-root PATH
 
 Classifies every ``tool_result`` block by origin, construct, structural
 outcome and unknown reason, and counts the four shapes the outcome contract
@@ -25,7 +25,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from polylogue.config import get_config
 from polylogue.core.enums import Origin, ToolOutcome
 from polylogue.sources.origin_specs import tool_outcome_unknown_reasons_for_origin
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -164,20 +163,19 @@ def _parser() -> argparse.ArgumentParser:
         prog="devtools archive tool-outcome-census",
         description="Classify every archived tool result by origin, construct, outcome and unknown reason.",
     )
-    parser.add_argument("--archive-root", type=Path, default=None, help="Override the active archive root.")
-    parser.add_argument("--index-db", type=Path, default=None, help="Read a specific index.db.")
+    parser.add_argument(
+        "--archive-root",
+        type=Path,
+        required=True,
+        help="Candidate archive root to census; active configured archives are never selected.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit the census as JSON on stdout.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.index_db is not None:
-        index_db = args.index_db.expanduser().resolve()
-    elif args.archive_root is not None:
-        index_db = args.archive_root.expanduser().resolve() / "index.db"
-    else:
-        index_db = get_config().db_path
+    index_db = args.archive_root.expanduser().resolve() / "index.db"
     if not index_db.exists():
         print(f"tool-outcome-census: no index.db found at {index_db}", file=sys.stderr)
         return 1

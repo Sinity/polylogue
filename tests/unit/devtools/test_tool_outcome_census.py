@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from devtools import tool_outcome_census
 from devtools.tool_outcome_census import UNPAIRED_CONSTRUCT, compute_tool_outcome_census
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider, ToolOutcome, ToolResultUnknownReason
@@ -142,3 +143,37 @@ def test_a_public_projection_that_contradicts_the_block_is_counted(tmp_path: Pat
         assert census.public_projection_disagreement == 1, census.defect_counts
     finally:
         conn.close()
+
+
+def test_main_refuses_an_unset_candidate_root_without_reading_active_config(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The acceptance census must never silently inspect the active archive.
+
+    Anti-vacuity: before the guard, ``main([])`` called this replacement and
+    would have opened the configured active ``index.db``.
+    """
+
+    def active_config_fallback() -> object:
+        raise AssertionError("tool-outcome census fell back to the active configured archive")
+
+    monkeypatch.setattr(tool_outcome_census, "get_config", active_config_fallback, raising=False)
+
+    with pytest.raises(SystemExit) as exc_info:
+        tool_outcome_census.main([])
+
+    assert exc_info.value.code == 2
+    assert "--archive-root" in capsys.readouterr().err
+
+
+def test_main_censuses_an_explicit_candidate_archive_root(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    candidate_root = tmp_path / "candidate"
+    candidate_root.mkdir()
+    conn = _connect(candidate_root / "index.db")
+    try:
+        _write_clean(conn)
+    finally:
+        conn.close()
+
+    assert tool_outcome_census.main(["--archive-root", str(candidate_root), "--json"]) == 0
+    assert '"clean": true' in capsys.readouterr().out
