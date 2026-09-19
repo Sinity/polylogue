@@ -2699,10 +2699,15 @@ async def _run_daemon_services_under_active_writer_lease(
             )
             from polylogue.daemon.intake_adapters import RawMaterializationDiscovery
 
-            # One long-lived discovery cursor belongs to the daemon's fair
-            # intake owner. Periodic maintenance and whale escalation borrow
-            # it rather than restarting a separate all-raw scan.
+            # Fair intake and the whale lane each retain their own bounded
+            # traversal. A whale probe is selection work, not an intake
+            # acknowledgement, so letting it advance the fair cursor changes
+            # ordinary discovery order behind the scheduler's back.
             raw_intake_discovery = RawMaterializationDiscovery(
+                archive_root_path,
+                max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
+            )
+            raw_whale_discovery = RawMaterializationDiscovery(
                 archive_root_path,
                 max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
@@ -2780,7 +2785,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         catch_up_complete=gate,
                         raw_observation_owner=raw_observation_owner,
                         raw_intake_wakeup=raw_intake_wakeup,
-                        raw_intake_discovery=raw_intake_discovery,
+                        raw_intake_discovery=raw_whale_discovery,
                     ),
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
