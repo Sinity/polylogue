@@ -32,10 +32,31 @@ def corpus_fidelity_archive(seeded_archive: SeededArchiveArtifact) -> SeededArch
     return seeded_archive
 
 
+@pytest.fixture(scope="session")
+def named_seeded_artifact() -> Callable[[str], SeededArchiveArtifact]:
+    """Lazily resolve each named artifact once per pytest worker.
+
+    The artifact cache already owns publication and cross-process reuse.  This
+    small session-local memo removes repeated fixture acquisition and
+    validation in one worker without warming the whole named catalog.
+    """
+    artifacts: dict[str, SeededArchiveArtifact] = {}
+
+    def resolve(name: str) -> SeededArchiveArtifact:
+        artifact = artifacts.get(name)
+        if artifact is None:
+            artifact = build_seeded_archive(named_corpus_specs(name))
+            artifacts[name] = artifact
+        return artifact
+
+    return resolve
+
+
 @pytest.fixture
 def named_seeded_archive(
     workspace_env: dict[str, Path],
     request: pytest.FixtureRequest,
+    named_seeded_artifact: Callable[[str], SeededArchiveArtifact],
 ) -> Callable[[str], SeededArchiveClone]:
     """Clone one registered immutable workload into this test's archive root.
 
@@ -59,7 +80,7 @@ def named_seeded_archive(
     request.addfinalizer(close_clones)
 
     def seed(name: str) -> SeededArchiveClone:
-        artifact = build_seeded_archive(named_corpus_specs(name))
+        artifact = named_seeded_artifact(name)
         clone = clone_seeded_archive(artifact, archive_root)
         clones.append(clone)
         return clone
@@ -72,6 +93,7 @@ def named_seeded_archive_ro(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
     workspace_env: dict[str, Path],
+    named_seeded_artifact: Callable[[str], SeededArchiveArtifact],
 ) -> Callable[[str], SeededArchiveQueryLease]:
     """Give read consumers an authenticated, query-only artifact lease.
 
@@ -92,9 +114,8 @@ def named_seeded_archive_ro(
     request.addfinalizer(close_leases)
 
     def seed(name: str) -> SeededArchiveQueryLease:
-        specs = named_corpus_specs(name)
-        artifact = build_seeded_archive(specs)
-        lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key(specs))
+        artifact = named_seeded_artifact(name)
+        lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key(named_corpus_specs(name)))
         leases.append(lease)
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(artifact.root))
         monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
