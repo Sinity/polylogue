@@ -700,17 +700,17 @@ def test_read_help_groups_options_by_ownership(cli_runner: CliRunner) -> None:
     assert "--repo-path" not in result.output
 
 
-def test_read_does_not_restore_post_verb_json_alias(cli_runner: CliRunner) -> None:
-    """polylogue-zok3: the public read route keeps JSON explicit via --format."""
+def test_read_restores_post_verb_json_alias(cli_runner: CliRunner) -> None:
+    """The read verb owns the same JSON alias as the root query route."""
 
     result = cli_runner.invoke(
         click_cli,
-        ["--plain", "read", "--view", "transcript", "--json"],
+        ["--plain", "read", "--views", "--json"],
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 2
-    assert "Move --json before `read`" in result.output
+    assert result.exit_code == 0
+    assert json.loads(result.output)["status"] == "ok"
 
 
 def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
@@ -1321,3 +1321,59 @@ class TestMcpServerImport:
             assert callable(serve_stdio)
         except ImportError:
             pytest.skip("MCP dependencies not installed")
+
+
+class TestOutputDialectNormalization:
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            ("table", "table"),
+            ("json", "json"),
+            ("jsonl", "ndjson"),
+            ("md", "markdown"),
+        ],
+    )
+    def test_root_dialect_golden_lowers_once_at_the_production_dispatch(
+        self, cli_runner: CliRunner, dialect: str, expected: str
+    ) -> None:
+        """Each public dialect reaches the ordinary query executor canonically.
+
+        Anti-vacuity: replacing the root option with a test-local parser leaves
+        ``execute_query_request`` uncalled and fails this test.
+        """
+
+        with patch("polylogue.cli.query.execute_query_request") as execute:
+            result = cli_runner.invoke(click_cli, ["--format", dialect, "find", "needle"], catch_exceptions=False)
+
+        assert result.exit_code == 0, result.output
+        request = execute.call_args.args[1]
+        assert request.params["output_format"] == expected
+
+    def test_read_json_alias_matches_the_format_json_golden(self, cli_runner: CliRunner) -> None:
+        formatted = cli_runner.invoke(click_cli, ["read", "--views", "--format", "json"], catch_exceptions=False)
+        aliased = cli_runner.invoke(click_cli, ["read", "--views", "--json"], catch_exceptions=False)
+
+        assert formatted.exit_code == aliased.exit_code == 0
+        assert json.loads(aliased.output) == json.loads(formatted.output)
+
+    def test_root_destination_does_not_change_dialect_at_query_dispatch(
+        self, cli_runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """``--to file --out`` reuses query delivery without changing JSON.
+
+        Anti-vacuity: the assertion observes the request passed to the normal
+        executor, rather than a mocked renderer or a helper-local copy.
+        """
+
+        destination = tmp_path / "sessions.json"
+        with patch("polylogue.cli.query.execute_query_request") as execute:
+            result = cli_runner.invoke(
+                click_cli,
+                ["--to", "file", "--out", str(destination), "--format", "json", "find", "needle"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        request = execute.call_args.args[1]
+        assert request.params["output_format"] == "json"
+        assert request.params["output"] == str(destination)

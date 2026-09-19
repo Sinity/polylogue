@@ -34,6 +34,7 @@ from polylogue.cli.read_view_registry import (
     READ_VIEW_HANDLER_METADATA,
     read_view_option_names,
 )
+from polylogue.cli.shared.formatting import json_output_option, normalize_output_dialect, output_dialect_choices
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.surfaces.outcome import render_outcome_line
@@ -980,13 +981,15 @@ def _summary_all_output_param(destination: str, out_path: str | None) -> str | N
     show_default=True,
     help="Field to print for selected or candidate sessions.",
 )
-@click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None)
+@click.option("--format", "-f", "output_format", type=output_dialect_choices(["json"]), default=None)
+@json_output_option
 @click.pass_context
 def select_verb(ctx: click.Context, limit: int, print_field: str, output_format: str | None) -> None:
     """Select one matched session or print bounded candidate identities."""
     from polylogue.cli.select import run_select
 
     request = _parent_request(ctx)
+    output_format = normalize_output_dialect(output_format)
     root_format = request.params.get("output_format")
     effective_format = (
         output_format if output_format is not None else root_format if isinstance(root_format, str) else None
@@ -1026,11 +1029,12 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(_READ_FORMATS),
+    type=output_dialect_choices(_READ_FORMATS),
     default=None,
     shell_complete=_complete_read_format,
     help="Output format (where applicable).",
 )
+@json_output_option
 @click.option(
     "--render",
     "render_expr",
@@ -1219,6 +1223,7 @@ def read_verb(
         polylogue read session:abc123 --format json
     """
     env: AppEnv = ctx.obj
+    output_format = normalize_output_dialect(output_format)
     request = _parent_request(ctx)
     # Rendering inherits the root format, but the explained stage reports what
     # the read verb itself was given: the stage describes this verb's options,
@@ -1623,10 +1628,11 @@ def read_verb(
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["json"]),
+    type=output_dialect_choices(["json"]),
     default=None,
     help="Emit the successor ContextImage as JSON instead of a resume command.",
 )
+@json_output_option
 @click.pass_context
 def continue_verb(
     ctx: click.Context,
@@ -1650,6 +1656,7 @@ def continue_verb(
         polylogue continue --candidates --repo /workspace/polylogue --recent polylogue/cli/query_verbs.py
     """
     env: AppEnv = ctx.obj
+    output_format = normalize_output_dialect(output_format)
     request = _parent_request(ctx)
     effective_output_format = output_format
     if effective_output_format is None:
@@ -1740,10 +1747,11 @@ def continue_verb(
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(["json"]),
+    type=output_dialect_choices(["json"]),
     default=None,
     help="Output format. JSON emits a MutationResultPayload.",
 )
+@json_output_option
 @click.pass_context
 def delete_verb(
     ctx: click.Context,
@@ -1783,6 +1791,7 @@ def delete_verb(
         resolve_session_ids_for_verb,
     )
 
+    output_format = normalize_output_dialect(output_format)
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
     effective_output_format = output_format or (
@@ -1861,10 +1870,11 @@ def delete_verb(
 @click.option(
     "--format",
     "output_format",
-    type=click.Choice(["json"]),
+    type=output_dialect_choices(["json"]),
     default=None,
     help="Output format. JSON emits a MutationResultPayload.",
 )
+@json_output_option
 @click.pass_context
 def mark_verb(
     ctx: click.Context,
@@ -1911,6 +1921,7 @@ def mark_verb(
     if ctx.invoked_subcommand is not None:
         return
 
+    output_format = normalize_output_dialect(output_format)
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
     effective_output_format = output_format or (
@@ -2092,10 +2103,13 @@ def mark_verb(
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
+    type=output_dialect_choices(
+        ["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv", "table"]
+    ),
     default=None,
     help="Output format (ndjson = one JSON document per row, streaming-friendly)",
 )
+@json_output_option
 @click.option("--limit", "-l", "-n", type=int, help="Max matched sessions before grouping")
 @click.pass_context
 def analyze_verb(
@@ -2131,6 +2145,7 @@ def analyze_verb(
         polylogue analyze usage --format json
         polylogue analyze latency --format json
     """
+    output_format = normalize_output_dialect(output_format)
     if ctx.invoked_subcommand is not None:
         if any(
             (
@@ -2355,11 +2370,15 @@ def _invoke_analyze_projection(ctx: click.Context, **kwargs: object) -> None:
 
 
 @analyze_verb.command("count")
-@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "ndjson"]), default=None)
+@click.option(
+    "--format", "-f", "output_format", type=output_dialect_choices(["markdown", "json", "ndjson"]), default=None
+)
+@json_output_option
 @click.pass_context
 def analyze_count_command(ctx: click.Context, *, output_format: str | None) -> None:
     """Print the matched-session count."""
     request = _named_analyze_request(ctx, count_only=True)
+    output_format = normalize_output_dialect(output_format)
     if output_format:
         request = request.with_param_updates(output_format=output_format)
     _execute_query_verb(ctx, request)
@@ -2369,12 +2388,16 @@ def analyze_count_command(ctx: click.Context, *, output_format: str | None) -> N
 @click.argument(
     "dimension", type=click.Choice(["origin", "month", "year", "day", "action", "tool", "repo", "work-kind"])
 )
-@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "ndjson"]), default=None)
+@click.option(
+    "--format", "-f", "output_format", type=output_dialect_choices(["markdown", "json", "ndjson"]), default=None
+)
+@json_output_option
 @click.option("--limit", "-l", "-n", type=int, default=None)
 @click.pass_context
 def analyze_by_command(ctx: click.Context, *, dimension: str, output_format: str | None, limit: int | None) -> None:
     """Group the matched sessions by DIMENSION."""
     request = _named_analyze_request(ctx, stats_only=False, stats_by=dimension)
+    output_format = normalize_output_dialect(output_format)
     if output_format:
         request = request.with_param_updates(output_format=output_format)
     if limit is not None:
@@ -2385,11 +2408,11 @@ def analyze_by_command(ctx: click.Context, *, dimension: str, output_format: str
 @analyze_verb.command("facets")
 @click.option("--no-idf", is_flag=True, help="Omit inverse-document-frequency weights.")
 @click.option("--include-deferred", is_flag=True, help="Compute deferred detail families.")
-@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default="text")
-@click.option("--json", "json_output", is_flag=True, help="Alias for --format json.")
+@click.option("--format", "-f", "output_format", type=output_dialect_choices(["text", "json"]), default=None)
+@json_output_option
 @click.pass_context
 def analyze_facets_command(
-    ctx: click.Context, *, no_idf: bool, include_deferred: bool, output_format: str, json_output: bool
+    ctx: click.Context, *, no_idf: bool, include_deferred: bool, output_format: str | None
 ) -> None:
     """Show facet families for the matched query scope."""
     env: AppEnv = ctx.obj
@@ -2397,13 +2420,14 @@ def analyze_facets_command(
     response = run_coroutine_sync(
         env.polylogue.facets(request.query_spec(), include_idf=not no_idf, include_deferred=include_deferred)
     )
-    emit_facets_response(response, output_format="json" if json_output else output_format)
+    emit_facets_response(response, output_format=normalize_output_dialect(output_format) or "text")
 
 
 @analyze_verb.command("cost-outlook")
 @click.option("--plan", "plan_name", required=True, help="Subscription plan name.")
 @click.option("--method", type=click.Choice(["linear", "trailing-7d-mean", "eom-naive"]), default="linear")
-@click.option("--format", "-f", "output_format", type=click.Choice(["text", "json"]), default=None)
+@click.option("--format", "-f", "output_format", type=output_dialect_choices(["text", "json"]), default=None)
+@json_output_option
 @click.pass_context
 def analyze_cost_outlook_command(ctx: click.Context, *, plan_name: str, method: str, output_format: str | None) -> None:
     """Project the current billing cycle for PLAN."""
@@ -2427,7 +2451,10 @@ def analyze_cost_outlook_command(ctx: click.Context, *, plan_name: str, method: 
 
 
 @analyze_verb.command("postmortem")
-@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), default=None)
+@click.option(
+    "--format", "-f", "output_format", type=output_dialect_choices(["markdown", "json", "plaintext"]), default=None
+)
+@json_output_option
 @click.option("--limit", "-l", "-n", type=int, default=None)
 @click.pass_context
 def analyze_postmortem_command(ctx: click.Context, *, output_format: str | None, limit: int | None) -> None:
@@ -2450,7 +2477,10 @@ def analyze_postmortem_command(ctx: click.Context, *, output_format: str | None,
 
 
 @analyze_verb.command("portfolio")
-@click.option("--format", "-f", "output_format", type=click.Choice(["markdown", "json", "plaintext"]), default=None)
+@click.option(
+    "--format", "-f", "output_format", type=output_dialect_choices(["markdown", "json", "plaintext"]), default=None
+)
+@json_output_option
 @click.option("--limit", "-l", "-n", type=int, default=None)
 @click.pass_context
 def analyze_portfolio_command(ctx: click.Context, *, output_format: str | None, limit: int | None) -> None:

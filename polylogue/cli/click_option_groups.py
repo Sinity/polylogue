@@ -12,6 +12,7 @@ from typing import TypeAlias
 
 import click
 
+from polylogue.cli.shared.formatting import output_dialect_choices
 from polylogue.operations.origin_filters import public_origin_filter_tokens
 
 ClickCallable: TypeAlias = Callable[..., object]
@@ -283,7 +284,21 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     click.option(
         "--output",
         "-o",
-        help="Output destinations: browser, clipboard, stdout (comma-separated)",
+        help="Legacy output destination: browser, clipboard, stdout, or a file path.",
+    ),
+    click.option(
+        "--to",
+        "output_destination",
+        type=click.Choice(["terminal", "stdout", "browser", "clipboard", "file"]),
+        default=None,
+        help="Output destination. Use --out PATH with --to file.",
+    ),
+    click.option(
+        "--out",
+        "out_path",
+        type=click.Path(),
+        default=None,
+        help="File path for --to file.",
     ),
     click.option(
         "--json",
@@ -296,7 +311,9 @@ OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "--format",
         "-f",
         "output_format",
-        type=click.Choice(["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
+        type=output_dialect_choices(
+            ["markdown", "json", "ndjson", "html", "obsidian", "org", "yaml", "plaintext", "csv", "table"]
+        ),
         help=(
             "Output format (for --latest, --stream, or verb output). "
             "`ndjson` emits one JSON document per line, streaming-friendly for shell "
