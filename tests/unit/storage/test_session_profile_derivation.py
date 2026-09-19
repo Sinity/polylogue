@@ -537,15 +537,17 @@ def test_marker_assertion_presence_deduplicates_identical_marker_ids() -> None:
     candidates = candidates_for_block("message-1", "block-1", "::note: repeat\n::note: repeat\n")
     assertion_ids = tuple(assertion_id_for_marker(candidate) for candidate in candidates)
     assert len(assertion_ids) == 2
-    assert assertion_ids[0] is not None
-    assert assertion_ids[0] == assertion_ids[1]
+    first_id, second_id = assertion_ids
+    assert first_id is not None
+    assert second_id is not None
+    assert first_id == second_id
 
     conn = sqlite3.connect(":memory:")
     try:
         conn.execute("CREATE TABLE assertions (assertion_id TEXT PRIMARY KEY)")
-        conn.execute("INSERT INTO assertions (assertion_id) VALUES (?)", (assertion_ids[0],))
-        assert _marker_assertions_present(conn, assertion_ids) is True
-        assert _marker_assertions_present(conn, (assertion_ids[0], "marker-missing")) is False
+        conn.execute("INSERT INTO assertions (assertion_id) VALUES (?)", (first_id,))
+        assert _marker_assertions_present(conn, (first_id, second_id)) is True
+        assert _marker_assertions_present(conn, (first_id, "marker-missing")) is False
     finally:
         conn.close()
 
