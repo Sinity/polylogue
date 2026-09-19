@@ -152,8 +152,10 @@ def query_complete_session_ids(
             _incomplete_selection("cli.query continuation did not advance")
         if next_offset != offset + len(rows):
             _incomplete_selection("cli.query continuation skipped or overlapped rows")
-        if total_is_known and next_offset > expected_total:
-            _incomplete_selection("cli.query continuation exceeded its reported total")
+        if total_is_known:
+            assert expected_total is not None
+            if next_offset > expected_total:
+                _incomplete_selection("cli.query continuation exceeded its reported total")
         offset = next_offset
 
 
