@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
+from typing import Any
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import (
@@ -43,14 +45,28 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
     return SessionRecord(**SESSIONS_SPEC.row_to_record_kwargs(row))
 
 
-def _row_to_message(row: sqlite3.Row) -> MessageRecord:
-    values = MESSAGES_SPEC.row_to_record_kwargs(row)
+def _row_to_message(
+    row: sqlite3.Row,
+    *,
+    record_mapper: Callable[[sqlite3.Row], dict[str, Any]] | None = None,
+) -> MessageRecord:
+    values = (record_mapper or MESSAGES_SPEC.row_to_record_kwargs)(row)
     if "parent_message_id" in values and values["parent_message_id"] is not None:
         values["parent_message_id"] = MessageId(str(values["parent_message_id"]))
     values.setdefault("message_id", row["message_id"])
     values.setdefault("session_id", row["session_id"])
     values.setdefault("content_hash", row["content_hash"])
     return MessageRecord(**values)
+
+
+def bind_message_row_mapper(column_names: Sequence[str]) -> Callable[[sqlite3.Row], MessageRecord]:
+    """Bind mechanical message extraction to one cursor's selected layout."""
+    record_mapper = MESSAGES_SPEC.bind_record_mapper(column_names)
+
+    def decode(row: sqlite3.Row) -> MessageRecord:
+        return _row_to_message(row, record_mapper=record_mapper)
+
+    return decode
 
 
 def _row_to_content_block(row: sqlite3.Row) -> BlockRecord:
