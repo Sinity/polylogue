@@ -1218,6 +1218,50 @@ async def test_a_pass_of_only_duplicates_is_not_progress() -> None:
 
 
 @pytest.mark.asyncio
+async def test_zero_success_file_intake_is_retryable_not_duplicate(tmp_path: Path) -> None:
+    """A batch with no per-path verdict must remain queued for retry.
+
+    polylogue-swicx: file intake acknowledged this shape as ``DUPLICATE`` even
+    though the watcher treats the same zero-success, zero-failure batch as
+    needing retry.  Drive the real adapter through the dispatcher so cursor
+    acknowledgement is part of the assertion.
+
+    Anti-vacuity: restoring ``AdmissionOutcome.DUPLICATE`` for the zero-success
+    fall-through makes the retry count and duplicate count below red.
+    """
+    capture = tmp_path / "capture.json"
+    capture.write_text("{}")
+    source = WatchSource(name="capture", root=tmp_path, suffixes=(".json",))
+
+    class ZeroSuccessWatcher:
+        def intake_revision(self, _source: WatchSource) -> int:
+            return 0
+
+        async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+            assert list(paths) == [capture]
+            return SimpleNamespace(
+                succeeded_file_count=0,
+                succeeded_paths=(),
+                failed_file_count=0,
+                failed_paths=(),
+                stale_cursor_write_count=0,
+                source_payload_read_bytes=0,
+            )
+
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=ZeroSuccessWatcher(), sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=adapter, page_size=8)])
+
+    intake_pass = await dispatcher.run_once()
+
+    report = intake_pass.require_report("capture")
+    assert (report.retried, report.duplicates) == (1, 0)
+    assert adapter._after is None
+
+
+@pytest.mark.asyncio
 async def test_a_raising_discovery_is_published_unmeasured_not_as_zeros() -> None:
     """A class that could not look is never a real reading of nothing.
 
