@@ -22,6 +22,7 @@ import pytest
 from polylogue.storage.derived.session.derivation import (
     SESSION_PROFILE_DOMAIN,
     SESSION_PROFILE_RECIPE_VERSION,
+    _marker_assertions_present,
     excess_session_profiles,
     inspect_session_profiles,
     publish_session_profile,
@@ -521,6 +522,32 @@ def test_marker_recovery_retries_without_replacing_a_valid_index_partition(
         assert conn.execute(
             "SELECT author_kind, body_text FROM assertions WHERE assertion_id = ?", (assertion_id,)
         ).fetchone() == ("user", "keep")
+
+
+def test_marker_assertion_presence_deduplicates_identical_marker_ids() -> None:
+    """Repeated equal marker requests count once in the assertion owner.
+
+    The parser intentionally gives identical markers in one block the same
+    durable identity.  Presence is therefore set membership, not occurrence
+    cardinality: an already-written assertion must satisfy both requests.
+    """
+    from polylogue.markers import candidates_for_block
+    from polylogue.markers.lowering import assertion_id_for_marker
+
+    candidates = candidates_for_block("message-1", "block-1", "::note: repeat\n::note: repeat\n")
+    assertion_ids = tuple(assertion_id_for_marker(candidate) for candidate in candidates)
+    assert len(assertion_ids) == 2
+    assert assertion_ids[0] is not None
+    assert assertion_ids[0] == assertion_ids[1]
+
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.execute("CREATE TABLE assertions (assertion_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO assertions (assertion_id) VALUES (?)", (assertion_ids[0],))
+        assert _marker_assertions_present(conn, assertion_ids) is True
+        assert _marker_assertions_present(conn, (assertion_ids[0], "marker-missing")) is False
+    finally:
+        conn.close()
 
 
 def test_prepared_generation_refuses_when_the_active_anchor_promotes(

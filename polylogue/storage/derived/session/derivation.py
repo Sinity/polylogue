@@ -85,6 +85,9 @@ def _marker_assertion_ids(conn: sqlite3.Connection, session_id: str) -> tuple[st
 
 
 def _marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[str]) -> bool:
+    # Marker identity intentionally coalesces identical markers in one block.
+    # Compare unique requested IDs with SQL set membership, not occurrence count.
+    assertion_ids = tuple(dict.fromkeys(assertion_ids))
     if not assertion_ids:
         return True
     placeholders = ",".join("?" * len(assertion_ids))
