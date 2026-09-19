@@ -1525,12 +1525,18 @@ def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
 
     def mutate_after_first_hash(
         path_to_hash: Path,
-        end: int,
-        *args: Any,
+        *,
+        start_offset: int,
+        end_offset: int,
         **kwargs: Any,
     ) -> tuple[str, int]:
         nonlocal hashes
-        result = original_hash_range(path_to_hash, end, *args, **kwargs)
+        result = original_hash_range(
+            path_to_hash,
+            start_offset=start_offset,
+            end_offset=end_offset,
+            **kwargs,
+        )
         hashes += 1
         if hashes == 1:
             path.write_bytes(payload.replace(b"x", b"y"))
