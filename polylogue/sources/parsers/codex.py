@@ -7,6 +7,7 @@ import json
 import pickle
 import re
 import shlex
+import sys
 import tempfile
 import unicodedata
 from collections import defaultdict, deque
@@ -97,6 +98,31 @@ _CODE_MODE_ITEM_CHILD_TYPES: dict[str, frozenset[str]] = {
 _CODE_MODE_ITEM_TEXT_KEYS = ("aggregated_output", "stdout", "formatted_output", "stderr")
 _STRUCTURAL_PATH_KEYS = frozenset({"path", "file_path", "paths", "file_paths", "image_path"})
 _STRUCTURAL_BYTE_KEYS = frozenset({"bytes", "byte_count", "bytes_written", "size_bytes", "written_bytes"})
+_CODEX_REPLAY_MEMORY_BUDGET_BYTES = 8 * 1024 * 1024
+_LIST_REFERENCE_BYTES = 8
+
+
+def _retained_record_bytes(value: object, seen: set[int]) -> int:
+    """Estimate the graph retained by the in-memory replay tier.
+
+    Codex stream records are JSON-shaped mappings and sequences.  Counting
+    their reachable Python objects prevents one giant nested payload from
+    silently evading the replay byte budget, while ``seen`` avoids charging a
+    shared object more than once.
+    """
+    value_id = id(value)
+    if value_id in seen:
+        return 0
+    seen.add(value_id)
+    size = sys.getsizeof(value)
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            size += _retained_record_bytes(key, seen)
+            size += _retained_record_bytes(child, seen)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            size += _retained_record_bytes(child, seen)
+    return size
 
 
 @dataclass(slots=True)
@@ -3717,12 +3743,27 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     """
     if not isinstance(records, Sequence) and not _reiterable:
         # The parser needs two lookahead-derived indexes before the materializing
-        # pass. Persist a private replay spool so a multi-million-record JSONL
-        # stream stays bounded by one decoded record instead of list(records).
-        with tempfile.TemporaryFile(mode="w+b") as spool:
-            for item in records:
+        # pass. Most session streams fit a bounded in-memory record list and
+        # avoid serializing every decoded record through pickle. Large streams
+        # retain the existing disk replay behavior after that byte budget.
+        replay: list[object] = []
+        replay_bytes = sys.getsizeof(replay)
+        seen: set[int] = set()
+        records_iterator = iter(records)
+        for item in records_iterator:
+            item_bytes = _retained_record_bytes(item, seen)
+            if replay_bytes + _LIST_REFERENCE_BYTES + item_bytes <= _CODEX_REPLAY_MEMORY_BUDGET_BYTES:
+                replay.append(item)
+                replay_bytes += _LIST_REFERENCE_BYTES + item_bytes
+                continue
+            with tempfile.TemporaryFile(mode="w+b") as spool:
+                for retained_item in replay:
+                    pickle.dump(retained_item, spool, protocol=pickle.HIGHEST_PROTOCOL)
                 pickle.dump(item, spool, protocol=pickle.HIGHEST_PROTOCOL)
-            return _parse_records(_PickleRecordReplay(spool), fallback_id, _reiterable=True)
+                for remaining_item in records_iterator:
+                    pickle.dump(remaining_item, spool, protocol=pickle.HIGHEST_PROTOCOL)
+                return _parse_records(_PickleRecordReplay(spool), fallback_id, _reiterable=True)
+        return _parse_records(replay, fallback_id, _reiterable=True)
 
     code_mode_envelopes, response_signatures = _codex_lookahead(records)
     messages: list[ParsedMessage] = []

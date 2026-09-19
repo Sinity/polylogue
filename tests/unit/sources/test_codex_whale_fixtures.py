@@ -2,12 +2,82 @@
 
 from __future__ import annotations
 
+import pickle
 from collections.abc import Iterator
+from typing import Any
 
 from pytest import MonkeyPatch
 
 from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionUnit
 from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS, multi_million_codex_stream
+
+
+def test_small_codex_stream_replays_from_memory_before_spilling(monkeypatch: MonkeyPatch) -> None:
+    """Anti-vacuity: restoring eager pickle spooling raises before the real parser runs.
+
+    The ordinary streaming dispatch path must retain a small decoded stream in
+    memory for its lookahead and materializing passes.  A disk replay remains
+    available only after the parser's bounded memory tier fills.
+    """
+    from polylogue.sources.dispatch import parse_stream_payload
+
+    payload = [
+        {"type": "session_meta", "payload": {"id": "memory-replay"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "memory-replay-message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "retain this stream"}],
+            },
+        },
+    ]
+    expected = parse_stream_payload("codex", payload, "memory-replay", source_path="memory-replay.jsonl")
+
+    def fail_eager_spool(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("small stream was serialized to the disk replay spool")
+
+    monkeypatch.setattr(pickle, "dump", fail_eager_spool)
+
+    sessions = parse_stream_payload("codex", iter(payload), "memory-replay", source_path="memory-replay.jsonl")
+
+    assert sessions == expected
+
+
+def test_codex_stream_spills_after_replay_memory_budget(monkeypatch: MonkeyPatch) -> None:
+    """The bounded tier keeps replay semantics when a stream must spill."""
+    from polylogue.sources.dispatch import parse_stream_payload
+    from polylogue.sources.parsers import codex
+
+    payload = [
+        {"type": "session_meta", "payload": {"id": "spilled-replay"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "spilled-replay-message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "preserve this stream"}],
+            },
+        },
+    ]
+    expected = parse_stream_payload("codex", payload, "spilled-replay", source_path="spilled-replay.jsonl")
+    original_dump = pickle.dump
+    dumped = 0
+
+    def count_dump(*args: Any, **kwargs: Any) -> None:
+        nonlocal dumped
+        dumped += 1
+        original_dump(*args, **kwargs)
+
+    monkeypatch.setattr(codex, "_CODEX_REPLAY_MEMORY_BUDGET_BYTES", 1)
+    monkeypatch.setattr(pickle, "dump", count_dump)
+
+    sessions = parse_stream_payload("codex", iter(payload), "spilled-replay", source_path="spilled-replay.jsonl")
+
+    assert sessions == expected
+    assert dumped == len(payload)
 
 
 def test_multi_million_codex_stream_uses_real_stream_dispatch_without_truncation(monkeypatch: MonkeyPatch) -> None:
