@@ -339,6 +339,7 @@ from polylogue.storage.sqlite.connection_profile import (
     WRITE_CONNECTION_PROFILE,
     open_connection,
     open_readonly_connection,
+    open_source_tier_write_connection,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
@@ -1395,9 +1396,12 @@ class ArchiveStore:
                 conn = sqlite3.connect(f"file:{quote(str(self.source_db_path))}?mode=ro", uri=True)
                 conn.execute("PRAGMA query_only = ON")
             else:
-                require_write_lease(f"ArchiveStore(source={self.source_db_path})", archive_root=self.archive_root)
-                conn = sqlite3.connect(self.source_db_path)
-            conn.execute("PRAGMA foreign_keys = ON")
+                # The persistent owner reuses this compatible handle. Its
+                # factory intentionally excludes journal_mode: bootstrap made
+                # that shared database-mode decision before source.db existed.
+                conn = open_source_tier_write_connection(self.source_db_path, archive_root=self.archive_root)
+            if self._read_only or self._inactive_candidate_durable_read_only:
+                conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
             self.configure_operation_read_connection(conn)
         return self._source_conn
