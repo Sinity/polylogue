@@ -45,6 +45,7 @@ from polylogue.sources.live.batch_support import (
     _DEFER_APPEND,
     _LARGE_JSON_DOCUMENT_PROVIDERS,
     _STREAMING_FULL_INGEST_BYTES,
+    JsonlBoundary,
     _AppendPlan,
     _AppendResult,
     _browser_capture_prefix_probe,
@@ -91,6 +92,25 @@ def test_jsonl_complete_prefix_is_lexical_and_newline_bound(
         record_count,
         incomplete,
     )
+
+
+def test_jsonl_complete_prefix_validates_only_the_tail_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A restored forward scanner invokes JSON decoding for every record."""
+    payload = b'{"record":0}\n' * 10_000 + b'{"partial":'
+    original_loads = json.loads
+    calls = 0
+
+    def tail_only_loads(value: object, *args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(json, "loads", tail_only_loads)
+
+    boundary = jsonl_complete_prefix(payload)
+
+    assert boundary == JsonlBoundary(len(payload) - len(b'{"partial":'), 10_000, True, True)
+    assert calls == 1
 
 
 def test_claude_frontier_accepts_header_replacement_and_conserves_body(tmp_path: Path) -> None:

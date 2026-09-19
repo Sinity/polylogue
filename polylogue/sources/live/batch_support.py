@@ -404,52 +404,44 @@ class JsonlBoundary:
 def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
     """Find the maximal newline-terminated, syntactically valid JSON prefix.
 
-    The lexical scan keeps only the current record in memory and treats
-    escaped quotes, backslashes, braces, and newlines inside strings as data.
-    The caller retains the original full bytes separately.
+    The boundary is decided from the tail because acquisition already retains
+    the full payload and parsing remains responsible for validating earlier
+    records.  Looking at every byte here made every full JSONL acquisition pay
+    a second Python-level parse before its normal parser ran.
+
+    A physical newline cannot occur inside valid JSON string data, so the
+    final line is sufficient to distinguish a complete tail from an append in
+    progress.  ``bytes.rfind`` and ``bytes.count`` run in C; only that final
+    candidate is decoded here.
     """
-    record_start = 0
-    depth = 0
-    in_string = False
-    escaped = False
-    complete_end = 0
-    records = 0
-    for offset, byte in enumerate(payload):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif byte == 0x5C:  # backslash
-                escaped = True
-            elif byte == 0x22:  # quote
-                in_string = False
-            continue
-        if byte == 0x22:
-            in_string = True
-        elif byte in (0x7B, 0x5B):  # { [
-            depth += 1
-        elif byte in (0x7D, 0x5D):  # } ]
-            depth = max(0, depth - 1)
-        elif byte == 0x0A and depth == 0:
-            line = payload[record_start : offset + 1].strip()
-            record_start = offset + 1
-            if not line:
-                complete_end = offset + 1
-                continue
-            try:
-                json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                return JsonlBoundary(complete_end, records, True, True)
-            complete_end = offset + 1
-            records += 1
-    trailing = payload[record_start:].strip()
-    if trailing and depth == 0 and not in_string:
+    if not payload:
+        return JsonlBoundary(0, 0, False)
+
+    final_newline = payload.rfind(b"\n")
+    if final_newline == len(payload) - 1:
+        # A trailing delimiter contributes no record.  Validate the record
+        # immediately before it, if any, so a malformed final record cannot
+        # advance the cursor past itself.
+        candidate_end = final_newline
+        candidate_start = payload.rfind(b"\n", 0, candidate_end) + 1
+        candidate = payload[candidate_start:candidate_end].strip()
+        if not candidate:
+            return JsonlBoundary(len(payload), 0, False)
         try:
-            json.loads(trailing)
+            json.loads(candidate)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return JsonlBoundary(complete_end, records, True, True)
-        else:
-            return JsonlBoundary(len(payload), records + 1, False)
-    return JsonlBoundary(complete_end, records, complete_end != len(payload))
+            return JsonlBoundary(candidate_start, payload[:candidate_start].count(b"\n"), True, True)
+        return JsonlBoundary(len(payload), payload.count(b"\n"), False)
+
+    candidate_start = final_newline + 1
+    candidate = payload[candidate_start:].strip()
+    if not candidate:
+        return JsonlBoundary(len(payload), payload.count(b"\n"), False)
+    try:
+        json.loads(candidate)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return JsonlBoundary(candidate_start, payload[:candidate_start].count(b"\n"), True, True)
+    return JsonlBoundary(len(payload), payload.count(b"\n") + 1, False)
 
 
 def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:
