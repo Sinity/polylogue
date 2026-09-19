@@ -184,7 +184,9 @@ def test_complete_selection_all_verbs_receive_every_real_operation_id(
 
     def record_mark(_env: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         mark_operations.append((operation, payload))
-        return {"status": "ok", "affected_count": len(payload["session_ids"])}
+        selection = payload["session_ids"]
+        assert isinstance(selection, list)
+        return {"status": "ok", "affected_count": len(selection)}
 
     delete_callback = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     mark_callback = getattr(query_verbs.mark_verb.callback, "__wrapped__", None)

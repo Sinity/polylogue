@@ -16,7 +16,7 @@ separate code path.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 
@@ -157,7 +157,7 @@ def query_complete_session_ids(
         offset = next_offset
 
 
-def _incomplete_selection(detail: str) -> None:
+def _incomplete_selection(detail: str) -> NoReturn:
     """Fail closed before a mutating verb can apply a partial selection."""
 
     raise click.ClickException(f"Refusing incomplete all-selection: {detail}.")
