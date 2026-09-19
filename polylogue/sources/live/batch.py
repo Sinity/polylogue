@@ -929,6 +929,7 @@ class LiveBatchProcessor:
         stale_cursor_write_count = 0
         parse_time_s = 0.0
         convergence_time_s = 0.0
+        raw_compaction_runs = 0
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
         excluded_by_path: dict[Path, str] = {}
@@ -1368,11 +1369,14 @@ class LiveBatchProcessor:
         )
 
         if succeeded_paths and not _source_tier_acquisition_required():
+            compaction_started = time.perf_counter()
             await self._run_sync(
                 "watcher.live_ingest.raw_compaction",
                 self._compact_superseded_raw_snapshots,
                 sorted(succeeded_paths),
             )
+            raw_compaction_runs = 1
+            stage_timings["raw_compaction"] = time.perf_counter() - compaction_started
 
         for deferred_path in deferred_paths:
             # The attempt receipt folds these into ``failed_file_count`` and
@@ -1438,6 +1442,7 @@ class LiveBatchProcessor:
             cgroup_memory_peak_mb=read_cgroup_memory_peak_mb(),
             cgroup_memory_swap_current_mb=read_cgroup_memory_swap_current_mb(),
             stale_cursor_write_count=stale_cursor_write_count,
+            raw_compaction_runs=raw_compaction_runs,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=retry_paths,
             succeeded_paths=tuple(sorted(succeeded_paths)),

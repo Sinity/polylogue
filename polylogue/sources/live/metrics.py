@@ -122,6 +122,10 @@ class LiveBatchMetrics:
     cgroup_memory_peak_mb: float | None = None
     cgroup_memory_swap_current_mb: float | None = None
     stale_cursor_write_count: int = 0
+    #: Fixed-cost raw-retention work paid after a successful live page.  This
+    #: remains separate from parse/convergence timing so a page-size change
+    #: cannot hide a recurring retention cost inside materialization.
+    raw_compaction_runs: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     #: Planned paths this batch deliberately admitted nothing for, mapped
     #: to the typed reason. Counted separately from succeeded/failed so a
@@ -246,6 +250,7 @@ class LiveBatchMetrics:
             "cgroup_memory_peak_mb": self.cgroup_memory_peak_mb,
             "cgroup_memory_swap_current_mb": self.cgroup_memory_swap_current_mb,
             "stale_cursor_write_count": self.stale_cursor_write_count,
+            "raw_compaction_runs": self.raw_compaction_runs,
             "stage_timings_s": self.stage_timings_s,
             "failed_paths": self.failed_paths,
             "new_sessions": new_sessions,
