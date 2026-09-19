@@ -3002,9 +3002,19 @@ async def _run_daemon_services_under_active_writer_lease(
                     # ingest does, only which index.db its rows land in --
                     # and readers keep resolving the previous active
                     # generation until the readiness pass promotes this one.
-                    cold_build_requested = cold_build_index or active_index_generation_is_empty(archive_root_path)
+                    # Generation bootstrap opens a writable index directly;
+                    # keep its probe inside the same coordinator as every
+                    # other daemon archive writer.
+                    active_generation_empty = await write_coordinator.run_sync(
+                        "daemon.cold_build.probe",
+                        active_index_generation_is_empty,
+                        archive_root_path,
+                    )
+                    cold_build_requested = cold_build_index or active_generation_empty
                     if cold_build_requested:
-                        cold_build = ColdBuildGeneration.begin(
+                        cold_build = await write_coordinator.run_sync(
+                            "daemon.cold_build.begin",
+                            ColdBuildGeneration.begin,
                             archive_root_path,
                             reason="explicit cold build" if cold_build_index else "empty active index generation",
                         )
@@ -3016,8 +3026,15 @@ async def _run_daemon_services_under_active_writer_lease(
                         if generation is None or generation.settled:
                             return
                         try:
-                            if await asyncio.to_thread(generation.session_count) > 0:
-                                await asyncio.to_thread(generation.promote)
+                            session_count = await write_coordinator.run_sync(
+                                "daemon.cold_build.session_count",
+                                generation.session_count,
+                            )
+                            if session_count > 0:
+                                await write_coordinator.run_sync(
+                                    "daemon.cold_build.promote",
+                                    generation.promote,
+                                )
                             else:
                                 # Nothing was built. Promoting an empty
                                 # candidate over a working index would be a

@@ -1018,6 +1018,16 @@ class IndexGenerationStore:
 
     def seal_candidate_membership(self, generation: IndexGeneration, *, source_snapshot: str) -> int:
         """Copy the selected source-head universe into the inactive generation."""
+        # The candidate index is an archive tier even though it lives below
+        # ``.index-generations``.  Keep this direct writable open behind the
+        # same archive-bound authority as ArchiveStore's factories; offline
+        # rebuild callers remain valid when enforcement is not armed.
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        require_write_lease(
+            f"IndexGenerationStore.seal_candidate_membership(index={generation.index_path})",
+            archive_root=self.archive_root,
+        )
         source_db = self.archive_root / "source.db"
         clause = f"""(
             NOT EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id = raw_sessions.raw_id)
@@ -1066,6 +1076,12 @@ class IndexGenerationStore:
         """Commit source membership after the corresponding replay transaction."""
         if not raw_ids:
             return
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        require_write_lease(
+            f"IndexGenerationStore.commit_candidate_membership(index={generation.index_path})",
+            archive_root=self.archive_root,
+        )
         with closing(sqlite3.connect(generation.index_path)) as conn:
             conn.executemany(
                 """UPDATE candidate_source_membership
@@ -1143,6 +1159,12 @@ class IndexGenerationStore:
                     # capture and post-link verification.
                     _require_path_identity(source, identity, label=f"durable tier {filename}")
             index_path = root / "index.db"
+            from polylogue.storage.sqlite.write_lease import require_write_lease
+
+            require_write_lease(
+                f"IndexGenerationStore.create(index={index_path})",
+                archive_root=self.archive_root,
+            )
             initialize_archive_database(index_path, ArchiveTier.INDEX, page_size=page_size)
             generation = IndexGeneration(
                 generation_id=generation_id,
@@ -1176,6 +1198,12 @@ class IndexGenerationStore:
 
     def promote(self, generation: IndexGeneration) -> IndexGeneration:
         """Promote a candidate while holding the lifecycle inode lock."""
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        require_write_lease(
+            f"IndexGenerationStore.promote(index={generation.index_path})",
+            archive_root=self.archive_root,
+        )
         with self._lifecycle_lock():
             return self._promote_unlocked(generation)
 

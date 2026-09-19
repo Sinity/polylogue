@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     open_connection,
@@ -117,6 +117,72 @@ def test_checkpoint_writer_refuses_a_different_archive_root(tmp_path: Path) -> N
         pytest.raises(UnleasedWriteError, match="outside the archive"),
     ):
         checkpoint_archive_wals(target_root, reason="test", warn_bytes=0)
+
+
+def test_index_generation_bootstrap_requires_the_archive_bound_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generation's direct writable index open cannot bypass admission.
+
+    Anti-vacuity: removing the lease assertion from ``IndexGenerationStore``
+    lets this production bootstrap create an archive-tier ``index.db`` while
+    the daemon's connection guard is armed but no writer owns the archive.
+    """
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    store = IndexGenerationStore.for_archive_root(root)
+
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.create(source_snapshot="snapshot-unleased")
+
+    with arm_write_lease_enforcement(), write_lease("test.generation", archive_root=root):
+        generation = store.create(source_snapshot="snapshot-leased")
+    assert Path(generation.index_path).is_file()
+
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.seal_candidate_membership(generation, source_snapshot="snapshot-unleased")
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.commit_candidate_membership(generation, ["raw-id"])
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.promote(generation)
+
+
+def test_cold_generation_open_binds_to_the_declared_archive_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The candidate path is not a substitute for its archive authority."""
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    store = IndexGenerationStore.for_archive_root(root)
+    with write_lease("test.generation", archive_root=root):
+        generation = store.create(source_snapshot="snapshot-leased")
+        candidate = Path(generation.index_path).parent
+        with ArchiveStore.open_cold_build_generation(
+            candidate,
+            generation_id=generation.generation_id,
+            owner_id=generation.owner_id,
+        ) as archive:
+            assert archive.archive_root == Path(generation.index_path).parent
+
+    wrong_root = tmp_path / "other"
+    wrong_root.mkdir()
+    with (
+        arm_write_lease_enforcement(),
+        write_lease("test.wrong-generation", archive_root=wrong_root),
+        pytest.raises(UnleasedWriteError, match="outside the archive"),
+    ):
+        ArchiveStore.open_cold_build_generation(
+            candidate,
+            generation_id=generation.generation_id,
+            owner_id=generation.owner_id,
+        )
 
 
 def test_embedding_failure_resolution_refuses_an_unleased_writer(tmp_path: Path) -> None:

@@ -692,6 +692,12 @@ class ArchiveStore:
         self._inactive_candidate_durable_read_only = (
             owned_inactive_generation is not None and not durable_writer
         ) or frozen_source_validation
+        # An inactive candidate is physically rooted below the generation
+        # lifecycle directory, but its read-through durable members belong to
+        # the configured archive.  Bind the write lease to that authoritative
+        # root rather than the candidate path so daemon cold-build opens are
+        # accepted only by the owner of the real archive.
+        self._write_lease_archive_root = archive_root
         self._active_writer_lease = None
         self._deferred_secondary_indexes: tuple[str, ...] = ()
         self._generation_empty_at_open = False
@@ -765,6 +771,7 @@ class ArchiveStore:
 
                     self._active_writer_lease = ActiveWriterLease(declared_archive_root)
                     self._active_writer_lease.acquire()
+                    self._write_lease_archive_root = declared_archive_root
                     try:
                         assert_writable_archive_identity(
                             configured_root=configured_archive_root(),
@@ -943,7 +950,10 @@ class ArchiveStore:
                 ) from exc
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
-            require_write_lease(f"ArchiveStore(index={self.index_db_path})", archive_root=archive_root)
+            require_write_lease(
+                f"ArchiveStore(index={self.index_db_path})",
+                archive_root=self._write_lease_archive_root,
+            )
             self._conn = (
                 sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only
