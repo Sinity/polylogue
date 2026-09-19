@@ -16,7 +16,9 @@ an extra serial cost is visible.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,7 +44,7 @@ _THROUGHPUT_BOUND = 1.5
 
 @dataclass(frozen=True, slots=True)
 class _DispatcherMeasurement:
-    """One production-dispatcher receipt with its writer-hold split."""
+    """One production-dispatcher receipt with its actual writer-hold split."""
 
     total_s: float
     payload_bytes: int
@@ -53,6 +55,7 @@ class _DispatcherMeasurement:
     passes: int
     writer_hold_s: float | None = None
     outside_writer_hold_s: float | None = None
+    writer_hold_count: int = 0
     raw_compaction_runs: int = 0
     raw_compaction_time_s: float | None = None
 
@@ -172,8 +175,17 @@ def _run_dispatcher_ingest(
     elapsed = time.perf_counter() - started
     payload = _payload_bytes(files)
     released = [event for event in writer_events if event.phase == "released"]
-    page_holds = [event.hold_seconds for event in released if event.actor == "watcher.live_ingest"]
-    writer_hold_s = page_holds[0] if len(page_holds) == 1 else None
+    # The dispatcher no longer takes one page-wide lease.  Its ordinary batch
+    # processor instead self-admits each bounded publication (full write,
+    # compaction, and ops receipts).  Sum those actual released holds; looking
+    # for the deleted ``watcher.live_ingest`` wrapper would report no hold at
+    # all and hide the work this production route still serializes.
+    page_holds = [
+        event.hold_seconds
+        for event in released
+        if event.actor.startswith("watcher.live_ingest.") and event.hold_seconds is not None
+    ]
+    writer_hold_s = sum(page_holds) if page_holds else None
     batch_payload = batch_payloads[0] if len(batch_payloads) == 1 else {}
     stage_timings = cast(dict[str, object], batch_payload.get("stage_timings_s", {}))
     raw_compaction_runs = batch_payload.get("raw_compaction_runs")
@@ -188,6 +200,7 @@ def _run_dispatcher_ingest(
         passes=passes,
         writer_hold_s=writer_hold_s,
         outside_writer_hold_s=(elapsed - writer_hold_s) if writer_hold_s is not None else None,
+        writer_hold_count=len(page_holds),
         raw_compaction_runs=raw_compaction_runs if isinstance(raw_compaction_runs, int) else 0,
         raw_compaction_time_s=float(raw_compaction_time_s) if isinstance(raw_compaction_time_s, (int, float)) else None,
     )
@@ -266,22 +279,44 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
 
     This runs the ordinary dispatcher, adapter, live materialization, and
     compaction callback under the daemon coordinator.  It records actual
-    released writer holds rather than timing a local helper.  The three archive
-    populations distinguish an input-bounded retention call from a recurrence
-    of archive-wide work.  Anti-vacuity: removing
-    ``authority_source_paths=paths`` in the production compaction callback
-    changes every observed scope to ``None`` while the page still completes.
+    released writer holds rather than timing a local helper, and traces the
+    retention authority's real index reads.  The three archive populations
+    distinguish input-bounded work from a recurrence of archive-wide work.
+    Anti-vacuity: restoring one retention call per file makes the authority
+    call/query-count assertion red; dropping ``authority_source_paths=paths``
+    makes the constrained-SQL assertion red while the page still completes.
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
     observed_scopes: list[frozenset[Path] | None] = []
+    retention_queries: list[tuple[frozenset[Path] | None, tuple[str, ...]]] = []
     original = raw_retention.active_raw_retention_authority
+    original_connect = sqlite3.connect
+    index_statements: list[str] = []
+
+    def tracing_connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = cast(Callable[..., sqlite3.Connection], original_connect)(database, *args, **kwargs)
+        # The retention authority opens the active index read-only.  Do not
+        # trace every source-tier write in the production page: only the three
+        # fixed-cost authority reads decide whether retention grew with archive
+        # size.
+        if str(database).endswith("/index.db?mode=ro"):
+            connection.set_trace_callback(index_statements.append)
+        return connection
+
+    # ``raw_retention`` imports this standard-library module, so this traces
+    # its real connection without reaching into a private production symbol.
+    monkeypatch.setattr(sqlite3, "connect", tracing_connect)
 
     def recording_authority(*args: object, **kwargs: object) -> raw_retention.RawRetentionAuthority:
         paths = kwargs.get("authority_source_paths")
-        observed_scopes.append(frozenset(cast(list[Path], paths)) if paths is not None else None)
-        return original(*args, **kwargs)  # type: ignore[arg-type]
+        scope = frozenset(cast(list[Path], paths)) if paths is not None else None
+        started = len(index_statements)
+        result = original(*args, **kwargs)  # type: ignore[arg-type]
+        observed_scopes.append(scope)
+        retention_queries.append((scope, tuple(index_statements[started:])))
+        return result
 
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", recording_authority)
     measurements: list[_DispatcherMeasurement] = []
@@ -297,9 +332,27 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
         measurements.append(_run_dispatcher_ingest(corpus, archive_root, observe_writer_holds=True))
 
     assert observed_scopes == expected_scopes
+    assert len(retention_queries) == len(expected_scopes)
+    for scope, statements in retention_queries:
+        assert scope is not None
+        selects = tuple(
+            " ".join(statement.lower().split())
+            for statement in statements
+            if statement.lstrip().upper().startswith("SELECT")
+        )
+        # One current page receives exactly its three authority reads: session
+        # references, accepted heads, and eligible receipts.  A per-file/chunk
+        # recurrence grows this count even when the archive's final content is
+        # identical, which is why this is a count rather than a timing bound.
+        assert len(selects) == 3
+        assert sum("select distinct raw_id from sessions" in statement for statement in selects) == 1
+        assert sum("raw_revision_heads" in statement for statement in selects) == 2
+        assert all(" in (" in statement for statement in selects)
+        assert all("where raw_id is not null" not in statement for statement in selects)
     assert all(measurement.succeeded_files == measurement.files > 0 for measurement in measurements)
     assert all(measurement.failed_files == 0 for measurement in measurements)
     assert all(measurement.writer_hold_s is not None and measurement.writer_hold_s > 0 for measurement in measurements)
+    assert all(measurement.writer_hold_count > 1 for measurement in measurements)
     assert all(
         measurement.outside_writer_hold_s is not None and measurement.outside_writer_hold_s >= 0
         for measurement in measurements
