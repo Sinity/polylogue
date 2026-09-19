@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
 from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail, jsonl_session_artifact
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
@@ -46,18 +46,12 @@ def _bind_append_revision(
     archive: Any,
     raw_id: str,
     *,
-    provider: Provider,
-    session_id: str,
+    logical_source_key: str,
     plan: _AppendPlan,
 ) -> tuple[str, RawRevisionAuthority]:
     """Persist an APPEND envelope from the append plan's durable identity."""
     if plan.cursor_fingerprint is None:
         raise ValueError("append payload did not prove cursor identity")
-    # Full-ingest governance keys cohorts by canonical Origin, not by the
-    # provider wire token (notably ``codex-session`` versus ``codex``). An
-    # append must join that same cohort or its proven byte-contiguous parent
-    # is invisible and the append is quarantined forever.
-    logical_source_key = f"{origin_from_provider(provider).value}:{session_id}"
     parent = archive.raw_append_revision_parent(
         logical_source_key,
         plan.start_offset,
@@ -86,6 +80,51 @@ def _bind_append_revision(
         ),
     )
     return logical_source_key, authority
+
+
+def hook_carrier_logical_source_key(*, provider: Provider, source_path: str) -> str:
+    """Return the physical-carrier revision key under its acquisition origin."""
+    return f"{origin_from_provider(provider).value}:{source_path}"
+
+
+def bind_hook_carrier_baseline_revision(
+    archive: Any,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_revision: str,
+) -> str:
+    """Bind an initially acquired carrier to its physical append chain."""
+    logical_source_key = hook_carrier_logical_source_key(provider=provider, source_path=source_path)
+    archive.bind_raw_revision(
+        raw_id,
+        RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind.FULL,
+            source_revision=source_revision,
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
+    )
+    return logical_source_key
+
+
+def _bind_hook_carrier_append_revision(
+    archive: Any,
+    raw_id: str,
+    *,
+    provider: Provider,
+    plan: _AppendPlan,
+) -> tuple[str, RawRevisionAuthority]:
+    """Bind one carrier tail without assigning its events a session identity."""
+    logical_source_key = hook_carrier_logical_source_key(provider=provider, source_path=str(plan.path))
+    return _bind_append_revision(
+        archive,
+        raw_id,
+        logical_source_key=logical_source_key,
+        plan=plan,
+    )
 
 
 def _write_append_raw_payload(
@@ -206,8 +245,7 @@ def _ingest_append_plans_archive(
                         _logical_source_key, authority = _bind_append_revision(
                             archive,
                             raw_id,
-                            provider=provider,
-                            session_id=plan.native_id_hint,
+                            logical_source_key=f"{origin_from_provider(provider).value}:{plan.native_id_hint}",
                             plan=plan,
                         )
                         if authority is RawRevisionAuthority.QUARANTINED:
@@ -259,6 +297,16 @@ def _ingest_append_plans_archive(
                             )
                             if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
                                 raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
+                            if classification.kind is ArtifactKind.HOOK_EVENT_CARRIER:
+                                _logical_source_key, authority = _bind_hook_carrier_append_revision(
+                                    archive,
+                                    artifact_result.raw_id,
+                                    provider=provider,
+                                    plan=plan,
+                                )
+                                if authority is RawRevisionAuthority.QUARANTINED:
+                                    deferred.append(plan)
+                                    continue
                             succeeded.append(plan)
                             continue
                     elif path_artifact is not None and not path_artifact.parse_as_session:
@@ -272,6 +320,16 @@ def _ingest_append_plans_archive(
                         )
                         if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
                             raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
+                        if path_artifact.kind is ArtifactKind.HOOK_EVENT_CARRIER:
+                            _logical_source_key, authority = _bind_hook_carrier_append_revision(
+                                archive,
+                                artifact_result.raw_id,
+                                provider=provider,
+                                plan=plan,
+                            )
+                            if authority is RawRevisionAuthority.QUARANTINED:
+                                deferred.append(plan)
+                                continue
                         raw_id = artifact_result.raw_id
                         succeeded.append(plan)
                         continue
@@ -334,8 +392,7 @@ def _ingest_append_plans_archive(
                     logical_source_key, authority = _bind_append_revision(
                         archive,
                         raw_id,
-                        provider=provider,
-                        session_id=session.provider_session_id,
+                        logical_source_key=f"{origin_from_provider(provider).value}:{session.provider_session_id}",
                         plan=plan,
                     )
                     if authority is RawRevisionAuthority.QUARANTINED:

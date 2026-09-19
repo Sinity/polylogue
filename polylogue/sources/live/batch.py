@@ -96,7 +96,11 @@ from polylogue.sources.dispatch import (
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
-from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
+from polylogue.sources.live.append_ingest import (
+    bind_hook_carrier_baseline_revision,
+    ingest_append_plans,
+    reset_transient_raw_parse_state,
+)
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
@@ -3442,6 +3446,14 @@ class LiveBatchProcessor:
                                 classification=artifact_classification,
                                 blob_publication_receipt_id=record.blob_publication_receipt_id,
                             ).raw_id
+                        if artifact_classification.kind is ArtifactKind.HOOK_EVENT_CARRIER:
+                            bind_hook_carrier_baseline_revision(
+                                archive,
+                                source_raw_id,
+                                provider=acquisition_provider,
+                                source_path=record.source_path,
+                                source_revision=blob_hash,
+                            )
                         _record_zip_container_coordinate(
                             archive,
                             record,
@@ -5151,9 +5163,13 @@ class LiveBatchProcessor:
         # Append planning is safe only for newline-delimited record streams.
         # Watch-source names describe acquisition routes, not file semantics:
         # mutable browser snapshots can arrive through the generic inbox.
-        if path.suffix.lower() != ".jsonl":
+        source_name = self._source_name_for(path)
+        provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        path_artifact = classify_artifact_path(str(path), provider=provider)
+        is_hook_carrier = path_artifact is not None and path_artifact.kind is ArtifactKind.HOOK_EVENT_CARRIER
+        if path.suffix.lower() != ".jsonl" and not (path.suffix.lower() == ".ndjson" and is_hook_carrier):
             return None
-        if self._source_name_for(path) == "hermes":
+        if source_name == "hermes" and not is_hook_carrier:
             # polylogue-flxh: the Hermes watch source's only .jsonl artifact
             # class is NeMo Relay ATOF (state.db is .db, ATIF/session
             # snapshots are .json -- see default_sources()'s own docstring).
@@ -5390,6 +5406,9 @@ class LiveBatchProcessor:
         NEW writes going forward, per polylogue-u19l's scope.
         """
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        path_artifact = classify_artifact_path(str(path), provider=provider)
+        if path_artifact is not None and path_artifact.kind is ArtifactKind.HOOK_EVENT_CARRIER:
+            return payload, None, None
         if provider in {Provider.CODEX, Provider.CLAUDE_CODE}:
             identity = self._existing_provider_session_id(
                 path,
