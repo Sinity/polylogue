@@ -185,6 +185,34 @@ def test_cold_generation_open_binds_to_the_declared_archive_root(
         )
 
 
+def test_cold_generation_discard_requires_the_archive_bound_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Empty-build teardown cannot remove a candidate outside writer admission.
+
+    Anti-vacuity: before ``discard_if_inactive`` asserted its archive-root
+    lease, this production ``ColdBuildGeneration.discard`` route succeeded
+    while enforcement was armed and removed the candidate's writable
+    ``index.db`` concurrently with any admitted writer.
+    """
+    from polylogue.sources.live.cold_build import ColdBuildGeneration
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    with write_lease("test.generation", archive_root=root):
+        generation = ColdBuildGeneration.begin(root, reason="test")
+
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        generation.discard()
+
+    assert generation.generation_root.is_dir()
+    with arm_write_lease_enforcement(), write_lease("test.generation", archive_root=root):
+        assert generation.discard() is True
+    assert generation.settled
+    assert not generation.generation_root.exists()
+
+
 def test_embedding_failure_resolution_refuses_an_unleased_writer(tmp_path: Path) -> None:
     """The CLI failure-resolution path cannot bypass archive-bound admission.
 

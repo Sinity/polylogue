@@ -3054,7 +3054,10 @@ async def _run_daemon_services_under_active_writer_lease(
                                 # Nothing was built. Promoting an empty
                                 # candidate over a working index would be a
                                 # data-losing no-op dressed as progress.
-                                await asyncio.to_thread(generation.discard)
+                                await write_coordinator.run_sync(
+                                    "daemon.cold_build.discard",
+                                    generation.discard,
+                                )
                         finally:
                             clear_cold_build_generation()
 
