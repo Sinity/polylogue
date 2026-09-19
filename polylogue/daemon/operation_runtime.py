@@ -147,6 +147,11 @@ class DaemonOperationRuntime:
         try:
             return await asyncio.shield(pending)
         except asyncio.CancelledError:
+            # A staged exchange cancels its coroutine before durable
+            # acceptance. Release this phase's scheduler reservation before
+            # waiting for its compute future, so a deadline cannot strand a
+            # queued unit behind saturated workers.
+            submitted.cancellation.cancel()
             while not pending.done():
                 try:
                     await asyncio.shield(pending)
@@ -488,7 +493,16 @@ class DaemonOperationRuntime:
                             if request.operation == "ingest"
                             else execute_insights_rebuild_operation
                         )
+
                         exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)
+
+                        def cancel_staged_before_acceptance() -> None:
+                            with self._condition:
+                                if not exchange.acceptance_started:
+                                    assert exchange.future is not None
+                                    exchange.future.cancel()
+
+                        exchange.cancellation.add_listener(cancel_staged_before_acceptance)
                     else:
                         scheduled = self._kernel.submit(
                             propagate(work),
