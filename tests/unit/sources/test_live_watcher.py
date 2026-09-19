@@ -1487,7 +1487,7 @@ def test_full_cursor_reuses_verified_acquisition_digest_at_eof(tmp_path: Path, m
     watcher, _parse_sources = _make_watcher(tmp_path, root)
     stat = path.stat()
     calls: list[tuple[int, int]] = []
-    original_hash_range = live_batch.sha256_range_from_path
+    original_hash_range = cast(Callable[..., tuple[str, int]], live_batch.__dict__["sha256_range_from_path"])
 
     def count_hash_range(*args: object, **kwargs: object) -> tuple[str, int]:
         calls.append((int(kwargs["start_offset"]), int(kwargs["end_offset"])))
@@ -1520,7 +1520,7 @@ def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
     path.write_bytes(payload)
     watcher, _parse_sources = _make_watcher(tmp_path, root)
     stat = path.stat()
-    original_hash_range = live_batch.sha256_range_from_path
+    original_hash_range = cast(Callable[..., tuple[str, int]], live_batch.__dict__["sha256_range_from_path"])
     hashes = 0
 
     def mutate_after_first_hash(
