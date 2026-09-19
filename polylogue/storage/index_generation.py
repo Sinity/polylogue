@@ -1586,6 +1586,17 @@ class IndexGenerationStore:
 
     def discard_if_inactive(self, generation: IndexGeneration) -> bool:
         """Remove a terminal failed candidate without risking an active target."""
+        # Removing an inactive generation removes its writable ``index.db``
+        # alongside lifecycle metadata.  It therefore belongs to the same
+        # archive-bound authority as create, membership publication, and
+        # promotion; the daemon must not race a candidate writer by treating
+        # empty-build cleanup as ordinary background filesystem work.
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        require_write_lease(
+            f"IndexGenerationStore.discard_if_inactive(index={generation.index_path})",
+            archive_root=self.archive_root,
+        )
         current = self.load(generation.generation_id)
         if current.owner_id != generation.owner_id or current.state != "inactive":
             return False
