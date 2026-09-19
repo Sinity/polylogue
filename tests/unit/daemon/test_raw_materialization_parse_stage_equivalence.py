@@ -200,3 +200,55 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
+
+
+def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_current_heads(tmp_path: Path) -> None:
+    """Raw-to-profile handoff follows authoritative heads, not residual session rows.
+
+    Anti-vacuity: querying ``sessions`` by raw component alone includes the
+    deliberately orphaned split member below and schedules a non-current
+    session partition.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    payload = [
+        {
+            "id": native_id,
+            "title": native_id,
+            "create_time": 1,
+            "current_node": "m",
+            "mapping": {
+                "m": {
+                    "id": "m",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "id": "m",
+                        "author": {"role": "user"},
+                        "create_time": 1,
+                        "content": {"content_type": "text", "parts": [native_id]},
+                    },
+                }
+            },
+        }
+        for native_id in ("active", "stale")
+    ]
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=json.dumps(payload).encode(),
+            source_path="split.json",
+            acquired_at_ms=1,
+        )
+    result = converge_raw_observations(
+        archive_root,
+        source_roots=(),
+        limit=1,
+        max_payload_bytes=10_000_000,
+    )
+    assert result.done == 1 and result.failed == 0
+    with sqlite3.connect(archive_root / "index.db") as index:
+        index.execute("DELETE FROM raw_revision_heads WHERE session_id = ?", ("chatgpt-export:stale",))
+        index.commit()
+
+    assert daemon_cli._raw_materialized_session_ids(archive_root, raw_id) == ("chatgpt-export:active",)

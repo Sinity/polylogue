@@ -43,8 +43,13 @@ def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple
         if index is None:
             return ()
         rows = index.execute(
-            f"SELECT session_id FROM sessions WHERE raw_id IN ({','.join('?' for _ in component_raw_ids)}) "
-            "ORDER BY session_id",
+            f"""SELECT s.session_id
+            FROM sessions AS s
+            JOIN raw_revision_heads AS head
+              ON head.session_id = s.session_id
+             AND head.accepted_raw_id = s.raw_id
+            WHERE head.accepted_raw_id IN ({",".join("?" for _ in component_raw_ids)})
+            ORDER BY s.session_id""",
             component_raw_ids,
         ).fetchall()
         return tuple(str(row[0]) for row in rows)
