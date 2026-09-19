@@ -442,6 +442,33 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     assert status.live_cursor.failing_files[0].next_retry_at is not None
 
 
+def test_build_daemon_status_omits_retired_catch_up_slo(tmp_path: Path) -> None:
+    """Status no longer projects a lifecycle that the dispatcher cannot emit.
+
+    Anti-vacuity: restoring ``ingest_slo`` or its catch-up lifecycle reader
+    puts the field back on the model, even when the temporary ops ledger
+    contains an old catch-up receipt.
+    """
+    db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        conn.execute("INSERT INTO daemon_events VALUES (1, 0, 'catch_up_cycle', 'retired', '{\"phase\": \"end\"}')")
+
+    with (
+        patch("polylogue.daemon.events._events_db_path", return_value=ops_db),
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        status = build_daemon_status(sources=())
+
+    assert "ingest_slo" not in status.model_dump()
+
+
 def test_build_daemon_status_uses_one_lifecycle_snapshot(tmp_path: Path) -> None:
     """A shutdown after the status read cannot make one payload contradict itself."""
     db = tmp_path / "index.db"

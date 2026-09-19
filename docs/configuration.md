@@ -193,9 +193,6 @@ allow_remote = false
 # auth_token = "..."   # required for remote binding or web origins
 # spool_path = "/home/user/.local/share/polylogue/browser-capture"
 
-[daemon.watch]
-debounce_s = 2.0
-
 [sources]
 roots = ["/home/user/.claude/projects", "/home/user/.codex/sessions"]
 

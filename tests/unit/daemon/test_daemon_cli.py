@@ -812,7 +812,7 @@ def test_polylogued_run_uses_default_sources() -> None:
         patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
         patch("polylogue.daemon.cli.asyncio.run") as run,
     ):
-        result = CliRunner().invoke(main, ["run", "--no-browser-capture", "--no-api", "--debounce-s", "0.25"])
+        result = CliRunner().invoke(main, ["run", "--no-browser-capture", "--no-api"])
 
     assert result.exit_code == 0
     assert default_sources.call_count == 1
@@ -821,6 +821,18 @@ def test_polylogued_run_uses_default_sources() -> None:
     assert inspect.iscoroutine(coroutine)
     coroutine.close()
     assert "Starting polylogued (watch=1 source(s)). Ctrl-C to stop." in result.stderr
+
+
+def test_polylogued_run_rejects_retired_debounce_option() -> None:
+    """The dispatcher owns scheduling, so its retired watcher option is absent.
+
+    Anti-vacuity: restoring the Click option makes this parse successfully
+    instead of reporting the unknown option before daemon startup.
+    """
+    result = CliRunner().invoke(main, ["run", "--debounce-s", "0.25", "--help"])
+
+    assert result.exit_code != 0
+    assert "No such option '--debounce-s'" in result.output
 
 
 def test_spool_override_replaces_default_browser_capture_source() -> None:
@@ -904,13 +916,13 @@ def test_polylogued_watch_uses_default_sources(workspace_env: dict[str, Path]) -
         patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
         patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services) as run_services,
     ):
-        result = runner.invoke(main, ["watch", "--debounce-s", "0.25"])
+        result = runner.invoke(main, ["watch"])
 
     assert result.exit_code == 0
     assert default_sources.call_count == 1
     assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
     run_services.assert_called_once()
-    assert run_services.call_args.kwargs["startup_message"] == "Watching 1 source(s); debounce=0.25s. Ctrl-C to stop."
+    assert run_services.call_args.kwargs["startup_message"] == "Watching 1 source(s). Ctrl-C to stop."
 
 
 def test_polylogued_watch_uses_supervised_fair_intake_composition(
@@ -926,7 +938,7 @@ def test_polylogued_watch_uses_supervised_fair_intake_composition(
         "polylogue.daemon.cli.run_daemon_services",
         side_effect=fake_run_daemon_services,
     ) as run_services:
-        result = CliRunner().invoke(main, ["watch", "--debounce-s", "0.25"])
+        result = CliRunner().invoke(main, ["watch"])
 
     assert result.exit_code == 0
     run_services.assert_called_once()
@@ -934,7 +946,6 @@ def test_polylogued_watch_uses_supervised_fair_intake_composition(
     assert recorded["enable_source_catchup"] is True
     assert recorded["enable_browser_capture"] is False
     assert recorded["enable_api"] is False
-    assert recorded["debounce_s"] == 0.25
 
 
 def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
@@ -2121,13 +2132,13 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
 
     class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **kwargs: object) -> None:
-            self.catch_up_complete = asyncio.Event()
+            self.watcher_ready = asyncio.Event()
             watcher_coordinators.append(kwargs["write_coordinator"])
             watcher_profile_callbacks.append(kwargs["session_profile_callback"])
 
         async def run(self) -> None:
             events.append("watcher")
-            self.catch_up_complete.set()
+            self.watcher_ready.set()
             if configured_drive:
                 await asyncio.wait_for(drive_called.wait(), 10)
             raise RuntimeError("watch stopped")
@@ -4109,10 +4120,10 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
 
     class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self.catch_up_complete = asyncio.Event()
+            self.watcher_ready = asyncio.Event()
 
         async def run(self) -> None:
-            self.catch_up_complete.set()
+            self.watcher_ready.set()
             raise RuntimeError("watch stopped")
 
         def stop(self) -> None:
@@ -4218,7 +4229,7 @@ def test_daemon_composition_gives_raw_whale_its_own_discovery_cursor(tmp_path: P
 
     class FakeWatcher(_NoIntakeHints):
         def __init__(self, *_args: object, **_kwargs: object) -> None:
-            self.catch_up_complete = asyncio.Event()
+            self.watcher_ready = asyncio.Event()
 
         async def run(self) -> None:
             await asyncio.sleep(0)

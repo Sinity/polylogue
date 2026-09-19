@@ -412,7 +412,7 @@ class LiveWatcher:
         )
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
-        self._catch_up_complete = asyncio.Event()
+        self._watcher_ready = asyncio.Event()
         self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         # Set once per reconciliation scope: True when the index tier has no
         # materialized sessions at all despite source.db holding successfully
@@ -446,8 +446,9 @@ class LiveWatcher:
         return await self._write_coordinator.run_sync(actor, function, *args, **kwargs)
 
     @property
-    def catch_up_complete(self) -> asyncio.Event:
-        return self._catch_up_complete
+    def watcher_ready(self) -> asyncio.Event:
+        """Set when this watcher has registered its source roots."""
+        return self._watcher_ready
 
     def intake_revision(self, source: WatchSource) -> int:
         """Disposable invalidation of one source's file-discovery position."""
@@ -470,7 +471,7 @@ class LiveWatcher:
         roots = self._existing_source_roots()
         if not roots:
             logger.warning("live.watcher: no source roots exist; nothing to watch")
-            self._catch_up_complete.set()
+            self._watcher_ready.set()
             return
 
         watch_task = asyncio.create_task(self._watch_changes(roots))
@@ -480,7 +481,7 @@ class LiveWatcher:
             # gates on an acquisition sweep of its own. The event stays for
             # the maintenance loops that still wait on it: it is ready as
             # soon as the watch is registered.
-            self._catch_up_complete.set()
+            self._watcher_ready.set()
             logger.info("live.watcher: watching %s", ", ".join(str(r) for r in roots))
             await watch_task
         finally:
