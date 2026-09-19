@@ -15,8 +15,10 @@ from polylogue.core.enums import Provider
 from polylogue.daemon import cli as daemon_cli
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.parse_prefetch import DaemonParseStage
+from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+from polylogue.operations.intake_adapters import RawMaterializationDiscovery
 from polylogue.operations.raw_observation_derivation import converge_raw_observations
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -252,3 +254,65 @@ def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_c
         index.commit()
 
     assert daemon_cli._raw_materialized_session_ids(archive_root, raw_id) == ("chatgpt-export:active",)
+
+
+@pytest.mark.asyncio
+async def test_whale_raw_materialization_hands_current_output_to_session_derivation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The whale route gives canonical profile derivation its published raw output.
+
+    Anti-vacuity: omitting the post-publication handoff leaves the real
+    ``session_profiles`` relation empty even though the whale's canonical raw
+    derivation wrote its session. This exercises the production whale owner,
+    raw publication, output query, and session-profile adapter against one
+    temporary SQLite archive.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_session("whale-profile-handoff", (("user", "question"),)),
+            source_path="whale-profile-handoff.jsonl",
+            acquired_at_ms=1,
+        )
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+        owner = RawObservationConvergenceOwner(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=bridge,
+            max_payload_bytes=1,
+        )
+        profiles = compose_session_profile_callback(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=bridge,
+            now=lambda: 0.0,
+        )
+        monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
+        monkeypatch.setattr(daemon_cli, "_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES", 1)
+        monkeypatch.setattr(daemon_cli, "_resolve_raw_materialization_whale_blob_limit_bytes", lambda: 1_000_000)
+        monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", lambda: asyncio.sleep(0))
+        monkeypatch.setattr(daemon_cli, "_publish_whale_receipt", lambda **_kwargs: asyncio.sleep(0))
+
+        assert await daemon_cli._maybe_run_raw_materialization_whale_pass(
+            raw_observation_owner=owner,
+            raw_intake_discovery=RawMaterializationDiscovery(archive_root, max_payload_bytes=1),
+            session_profile_callback=profiles.callback,
+        )
+        with _connect(archive_root / "index.db") as conn:
+            assert tuple(row[0] for row in conn.execute("SELECT session_id FROM sessions")) == (
+                "codex-session:whale-profile-handoff",
+            )
+            assert tuple(row[0] for row in conn.execute("SELECT session_id FROM session_profiles")) == (
+                "codex-session:whale-profile-handoff",
+            )
+            assert conn.execute("SELECT raw_id FROM sessions").fetchone()[0] == raw_id
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

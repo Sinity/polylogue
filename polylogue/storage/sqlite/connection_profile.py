@@ -584,6 +584,59 @@ def write_connection_pragma_statements(profile: SQLiteConnectionProfile) -> tupl
     return replace(profile, wal_autocheckpoint_pages=OWNED_WAL_AUTOCHECKPOINT_PAGES).pragma_statements
 
 
+def write_connection_local_pragma_statements(profile: SQLiteConnectionProfile) -> tuple[str, ...]:
+    """Return a writer profile without database-mode initialization.
+
+    ``journal_mode`` changes shared database state and needs an exclusive
+    transition lock. A later connection to an already-initialized durable tier
+    must therefore not replay it while another writer owns that tier's
+    transaction; the remaining statements are connection-local policy.
+    """
+    return tuple(
+        statement
+        for statement in write_connection_pragma_statements(profile)
+        if not statement.startswith("PRAGMA journal_mode")
+    )
+
+
+def initialize_source_tier_database_mode(conn: sqlite3.Connection) -> None:
+    """Set source.db's shared WAL mode while its fresh bootstrap owns the file.
+
+    This is deliberately separate from :func:`open_source_tier_write_connection`.
+    ``source.db`` is authoritative material: its normal writer profile uses
+    WAL/NORMAL with replay from retained input after a process crash, while a
+    power-loss guarantee remains the durable publication/cursor boundary, not
+    a claim made by this connection-local setting.
+    """
+    journal_mode = WRITE_CONNECTION_PROFILE.journal_mode
+    if journal_mode is None:
+        raise RuntimeError("the source-tier writer profile must declare a journal mode")
+    conn.execute(f"PRAGMA journal_mode={journal_mode}")
+
+
+def open_source_tier_write_connection(
+    path: str | Path,
+    *,
+    archive_root: str | Path | None = None,
+) -> sqlite3.Connection:
+    """Open a source-tier writer with the normal local policy only.
+
+    Bootstrap owns the one-time database-mode transition. This factory is
+    shared by the persistent archive handle and publication reservations so a
+    fresh source tier and a reservation transaction cannot drift on
+    synchronous, busy-timeout, or foreign-key policy.
+    """
+    require_write_lease(f"open_source_tier_write_connection({path})", archive_root=archive_root)
+    conn = sqlite3.connect(str(path), timeout=WRITE_CONNECTION_PROFILE.timeout_seconds)
+    try:
+        for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
+            conn.execute(statement)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 # ---------------------------------------------------------------------------
 # Mapped-bytes budget vs. the cgroup memory limit (polylogue-e98k)
 # ---------------------------------------------------------------------------
@@ -1568,6 +1621,9 @@ __all__ = [
     "arm_recurring_checkpoint_owner",
     "recurring_checkpoint_owner_armed",
     "write_connection_pragma_statements",
+    "write_connection_local_pragma_statements",
+    "initialize_source_tier_database_mode",
+    "open_source_tier_write_connection",
     "SQLiteConnectionProfile",
     "TIMEOUT_CLASSES",
     "WAL_AUTOCHECKPOINT_PAGES",
