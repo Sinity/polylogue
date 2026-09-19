@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import polylogue.sources.live.batch as live_batch
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
@@ -1474,6 +1475,80 @@ def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
     assert bytes_read == 2 * f.stat().st_size
     assert record is not None
     assert record.content_fingerprint == "raw-sha256"
+
+
+def test_full_cursor_reuses_verified_acquisition_digest_at_eof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A restored prefix hash rereads the full acquired payload a third time."""
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    payload = b'{"a":"' + (b"x" * 200_000) + b'"}\n'
+    path.write_bytes(payload)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    calls: list[tuple[int, int]] = []
+    original_hash_range = cast(Callable[..., tuple[str, int]], live_batch.__dict__["sha256_range_from_path"])
+
+    def count_hash_range(*args: Any, **kwargs: Any) -> tuple[str, int]:
+        calls.append((int(kwargs["start_offset"]), int(kwargs["end_offset"])))
+        return original_hash_range(*args, **kwargs)
+
+    monkeypatch.setattr(live_batch, "sha256_range_from_path", count_hash_range)
+
+    bytes_read = watcher._batch_processor._record_full_cursor(
+        path,
+        raw_fingerprint="raw-sha256",
+        captured_content_hash=sha256(payload).hexdigest(),
+        captured_file_observation=(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns),
+    )
+
+    assert calls == [(0, len(payload)), (0, len(payload))]
+    assert bytes_read == 2 * len(payload) + 64 * 1024
+    record = watcher._cursor.get_record(path)
+    assert record is not None
+    assert record.content_fingerprint == "raw-sha256"
+
+
+def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second full-capture proof binds the cursor to the acquired bytes."""
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    payload = b'{"a":"' + (b"x" * 200_000) + b'"}\n'
+    path.write_bytes(payload)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    original_hash_range = cast(Callable[..., tuple[str, int]], live_batch.__dict__["sha256_range_from_path"])
+    hashes = 0
+
+    def mutate_after_first_hash(
+        path_to_hash: Path,
+        end: int,
+        *args: Any,
+        **kwargs: Any,
+    ) -> tuple[str, int]:
+        nonlocal hashes
+        result = original_hash_range(path_to_hash, end, *args, **kwargs)
+        hashes += 1
+        if hashes == 1:
+            path.write_bytes(payload.replace(b"x", b"y"))
+        return result
+
+    monkeypatch.setattr(live_batch, "sha256_range_from_path", mutate_after_first_hash)
+
+    watcher._batch_processor._record_full_cursor(
+        path,
+        raw_fingerprint="raw-sha256",
+        captured_content_hash=sha256(payload).hexdigest(),
+        captured_file_observation=(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns),
+    )
+
+    assert hashes == 1
+    assert watcher._batch_processor._last_cursor_write_stale is True
+    record = watcher._cursor.get_record(path)
+    assert record is None or record.byte_offset == 0
 
 
 def test_hermes_wal_revision_triggers_resnapshot_and_maps_sidecar_event(tmp_path: Path) -> None:

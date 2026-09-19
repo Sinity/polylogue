@@ -1752,11 +1752,20 @@ class LiveBatchProcessor:
             )
             if frontier_byte_size is not None:
                 last_nl = frontier_byte_size
-            prefix_hash, prefix_bytes = sha256_range_from_path(
-                path,
-                start_offset=0,
-                end_offset=last_nl,
-            )
+            # The blob acquisition digest is already the exact hash of this
+            # complete prefix.  Reuse it only at EOF, after the surrounding
+            # full-capture proofs have verified that the mutable path still
+            # binds to that acquisition.  A deferred/incomplete JSONL tail
+            # has a shorter prefix and must be rehashed independently.
+            if captured_content_hash is not None and last_nl == byte_size:
+                prefix_hash = captured_content_hash.lower()
+                prefix_bytes = 0
+            else:
+                prefix_hash, prefix_bytes = sha256_range_from_path(
+                    path,
+                    start_offset=0,
+                    end_offset=last_nl,
+                )
             tail_hash = encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
             bytes_read += cursor_state_bytes + prefix_bytes
         if frontier_kind_for_origin(
