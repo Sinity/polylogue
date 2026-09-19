@@ -132,11 +132,15 @@ Options:
                                   Session counts count top-level sessions
                                   unless --no-root or root:false is used
                                   (polylogue-j8u2).
-  -o, --output TEXT               Output destinations: browser, clipboard,
-                                  stdout (comma-separated)
+  -o, --output TEXT               Legacy output destination: browser,
+                                  clipboard, stdout, or a file path.
+  --to [terminal|stdout|browser|clipboard|file]
+                                  Output destination. Use --out PATH with --to
+                                  file.
+  --out PATH                      File path for --to file.
   --json                          Shortcut for --format json. Disables color
                                   and progress for pipeable output. (#1689)
-  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
+  -f, --format [csv|html|json|jsonl|markdown|md|ndjson|obsidian|org|plaintext|table|yaml]
                                   Output format (for --latest, --stream, or
                                   verb output). `ndjson` emits one JSON
                                   document per line, streaming-friendly for
@@ -250,9 +254,10 @@ Options:
   --include-deferred              With --facets, compute deferred detail
                                   families: repos, roles, material origins,
                                   message types, actions, flags.
-  -f, --format [markdown|json|ndjson|html|obsidian|org|yaml|plaintext|csv]
+  -f, --format [csv|html|json|jsonl|markdown|md|ndjson|obsidian|org|plaintext|table|yaml]
                                   Output format (ndjson = one JSON document
                                   per row, streaming-friendly)
+  --json                          Alias for --format json.
   -l, -n, --limit INTEGER         Max matched sessions before grouping
   --help                          Show this message and exit.
 
@@ -330,8 +335,9 @@ Projection:
 Delivery and format:
   --to [terminal|stdout|browser|clipboard|file]
                                   Output destination.  [default: terminal]
-  -f, --format [csv|html|json|markdown|ndjson|obsidian|org|plaintext|text|yaml]
+  -f, --format [csv|html|json|jsonl|markdown|md|ndjson|obsidian|org|plaintext|text|yaml]
                                   Output format (where applicable).
+  --json                          Alias for --format json.
   --out PATH                      File path for --to file.
   --fields TEXT                   Fields for JSON/YAML outputs (--all).
 
@@ -361,6 +367,7 @@ Options:
   --print [id|title|origin]  Field to print for selected or candidate
                              sessions.  [default: id]
   -f, --format [json]
+  --json                     Alias for --format json.
   --help                     Show this message and exit.
 ```
 
@@ -391,6 +398,7 @@ Options:
   --yes            Confirm the deletion (required for actual deletion)
   --all            Delete all matched sessions (required when multiple match)
   --format [json]  Output format. JSON emits a MutationResultPayload.
+  --json           Alias for --format json.
   --help           Show this message and exit.
 ```
 
@@ -432,6 +440,7 @@ Options:
   --all             Apply to all matched sessions (default: singleton only)
   --first           Apply to the first matched session only
   --format [json]   Output format. JSON emits a MutationResultPayload.
+  --json            Alias for --format json.
   --help            Show this message and exit.
 ```
 
@@ -506,6 +515,7 @@ Options:
                                   [default: 10]
   -f, --format [json]             Emit the successor ContextImage as JSON
                                   instead of a resume command.
+  --json                          Alias for --format json.
   --help                          Show this message and exit.
 ```
 

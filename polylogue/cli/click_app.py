@@ -387,6 +387,8 @@ def cli(
     root: bool | None,
     # Output
     output: str | None,
+    output_destination: str | None,
+    out_path: str | None,
     output_format: str | None,
     explain_query: bool,
     why: bool,
@@ -465,6 +467,26 @@ def cli(
     # archive as a side effect of rendering it.
     if _is_help_request(ctx):
         return
+
+    from polylogue.cli.shared.formatting import normalize_output_dialect
+
+    output_format = normalize_output_dialect(output_format)
+    if output_destination == "file":
+        if out_path is None:
+            raise click.UsageError("--to file requires --out <path>.")
+        if output is not None:
+            raise click.UsageError("--output cannot be combined with --to/--out.")
+        output = out_path
+    elif output_destination is not None:
+        if out_path is not None:
+            raise click.UsageError("--out is only valid with --to file.")
+        if output is not None:
+            raise click.UsageError("--output cannot be combined with --to/--out.")
+        output = output_destination
+    elif out_path is not None:
+        raise click.UsageError("--out requires --to file.")
+    ctx.params["output"] = output
+    ctx.params["output_format"] = output_format
 
     # #1689: --json forces plain output and defaults to JSON format.
     if output_as_json:
