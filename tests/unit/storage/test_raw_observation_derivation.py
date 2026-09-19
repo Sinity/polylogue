@@ -6,6 +6,7 @@ import json
 import sqlite3
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -94,6 +95,46 @@ def test_split_member_loss_is_recovered_by_kernel_without_legacy_scanner(tmp_pat
     unchanged = _run(tmp_path)
     assert unchanged.work.computed == unchanged.work.published == 0
     assert _snapshot(tmp_path) == before
+
+
+def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sibling made current by the first replay must not replay the component again.
+
+    Anti-vacuity: process the initially stale status of every raw ID without
+    rechecking before preparation, and the second raw below invokes the real
+    replay route a second time despite the first publication having already
+    made its whole authoritative component current.
+    """
+    from polylogue.sources import revision_backfill
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = tuple(
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=b"[]",
+                source_path="shared-component.json",
+                source_index=index,
+                acquired_at_ms=1,
+            )
+            for index in range(2)
+        )
+        component, _logical_keys = archive.expand_raw_membership_selection([raw_ids[0]])
+    assert set(component) == set(raw_ids)
+
+    replay = Mock(wraps=revision_backfill.backfill_historical_revision_evidence)
+    monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", replay)
+
+    report = converge(
+        DerivationRegistry((RawObservationDerivation(tmp_path),)),
+        raw_observation_frame(tmp_path),
+        budget=Budget(page=2, discovery=2, inspection=4, compute=2, publication=2),
+    )
+
+    assert report.done == 2 and report.failed == report.pending == 0
+    assert replay.call_count == 1
+    adapter = RawObservationDerivation(tmp_path)
+    assert adapter.inspect(raw_observation_frame(tmp_path), raw_ids) == dict.fromkeys(raw_ids, "valid")
 
 
 def test_restart_without_ops_hints_recovers_index_loss_and_new_admission(tmp_path: Path) -> None:
