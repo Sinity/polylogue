@@ -390,3 +390,38 @@ def test_available_bytes_is_measured_where_generations_are_written(
     measure_archive_capacity(root)
 
     assert probed == [(real_location / GENERATIONS_DIRNAME).resolve()]
+
+
+def test_symlink_farm_inventory_counts_retained_generations_at_the_pointer_target(tmp_path: Path) -> None:
+    """A pointer target's generation root is retained archive state, not an external link.
+
+    Anti-vacuity: before the pointer-target traversal, this inventory listed no
+    generations and charged only the active index file. The retained generation
+    made the aggregate allocation smaller than its own allocated bytes.
+    """
+    real = tmp_path / "real"
+    for filename in ("source.db", "user.db", "audit.db", "embeddings.db", "ops.db"):
+        _dense(real / filename, 1024)
+    active = real / GENERATIONS_DIRNAME / "gen-1-active"
+    retained = real / GENERATIONS_DIRNAME / "gen-0-retained"
+    _dense(active / "index.db", 1024 * 1024)
+    _dense(retained / "index.db", 4 * 1024 * 1024)
+    (real / "index.db").symlink_to(active / "index.db")
+
+    root = tmp_path / "farm"
+    root.mkdir()
+    for filename in ("source.db", "user.db", "audit.db", "embeddings.db", "ops.db"):
+        (root / filename).symlink_to(real / filename)
+    (root / "index.db").symlink_to(real / "index.db")
+    (root / ACTIVE_POINTER_FILENAME).write_text(str((real / "index.db").absolute()), encoding="utf-8")
+
+    inventory = measure_archive_capacity(root)
+
+    assert [measurement.generation_id for measurement in inventory.generations] == [
+        "gen-0-retained",
+        "gen-1-active",
+    ]
+    assert [measurement.active for measurement in inventory.generations] == [False, True]
+    assert inventory.population("index_generations").allocated_bytes >= (
+        _allocated(active / "index.db") + _allocated(retained / "index.db")
+    )

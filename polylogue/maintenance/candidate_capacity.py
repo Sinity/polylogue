@@ -439,13 +439,36 @@ def _measure_database(accumulator: _Accumulator, path: Path, *, label: str) -> N
         _measure_path(accumulator, path.with_name(path.name + suffix), label=f"{label} sidecar")
 
 
-def _generations_root(archive_root: Path) -> Path:
-    """The generations root, refusing the one link that would hide the index."""
-    root = archive_root / GENERATIONS_DIRNAME
+def _checked_generations_root(root: Path, *, label: str) -> Path:
+    """Refuse a generation-root link instead of measuring an arbitrary target."""
     metadata = _lstat(root, label="index generations root")
     if metadata is not None and stat.S_ISLNK(metadata.st_mode):
-        raise ArchiveCapacityError(f"index generations root is a symlink: {root}")
+        raise ArchiveCapacityError(f"{label} is a symlink: {root}")
     return root
+
+
+def _generations_root(archive_root: Path) -> Path:
+    """The configured archive's generations root."""
+    return _checked_generations_root(archive_root / GENERATIONS_DIRNAME, label="index generations root")
+
+
+def _generation_roots(configured: Path, location: ArchiveLocation) -> tuple[Path, ...]:
+    """Every generation root reachable through the configured archive topology.
+
+    A symlink-farm archive keeps its active index and future candidates beside
+    the canonical pointer target, not beside the configured root. That target
+    is an authenticated archive member through ``ArchiveLocation``. Its
+    generation directory is therefore retained state to inventory, while any
+    links encountered *inside* either generation root remain untrusted and are
+    never followed by ``_iter_tree``.
+    """
+    from polylogue.storage.index_generation import canonical_active_index_path
+
+    target = canonical_active_index_path(location).parent / GENERATIONS_DIRNAME
+    target = _checked_generations_root(target, label="active pointer generation root")
+    if target.absolute() == configured.absolute():
+        return (configured,)
+    return (configured, target)
 
 
 def _generations_available_bytes(archive_root: Path, generations_root: Path) -> int:
@@ -490,7 +513,7 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
         raise ArchiveCapacityError(f"archive root is not a directory: {root}")
     # Path safety before identity: a generations root replaced by a link is
     # refused on its own terms, whatever the pointer then claims.
-    generations_root = _generations_root(root)
+    configured_generations_root = _generations_root(root)
     try:
         location = ArchiveLocation.resolve(root)
     except ArchiveLocationError as exc:
@@ -499,14 +522,13 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
     # directory (IndexGenerationStore.generations_root), which in a
     # symlink-farm layout is not the archive root and can sit on another
     # filesystem.
-    from polylogue.storage.index_generation import canonical_active_index_path
-
-    store_generations_root = canonical_active_index_path(location).parent / GENERATIONS_DIRNAME
+    generation_roots = _generation_roots(configured_generations_root, location)
+    store_generations_root = generation_roots[-1]
 
     seen: set[tuple[int, int]] = set()
     accumulators = {name: _Accumulator(name, seen) for name in POPULATION_NAMES}
 
-    generations = _measure_generations(accumulators["index_generations"], generations_root, location)
+    generations = _measure_generations(accumulators["index_generations"], generation_roots, location)
 
     # The root's own ``index.db`` is whatever is literally there -- a stub, a
     # promotion symlink, or a pre-generation index. The pointer target is the
@@ -571,35 +593,36 @@ def _active_generation_id(location: ArchiveLocation) -> str | None:
 
 
 def _measure_generations(
-    accumulator: _Accumulator, generations_root: Path, location: ArchiveLocation
+    accumulator: _Accumulator, generations_roots: tuple[Path, ...], location: ArchiveLocation
 ) -> tuple[GenerationMeasurement, ...]:
-    """Measure each generation directory separately, then charge the whole root."""
+    """Measure every retained generation directory, then charge each root."""
     active_id = _active_generation_id(location)
     measurements: list[GenerationMeasurement] = []
-    try:
-        with os.scandir(generations_root) as scan:
-            entries = sorted(scan, key=lambda entry: entry.name)
-    except FileNotFoundError:
-        entries = []
-    except OSError as exc:
-        raise ArchiveCapacityError(f"cannot enumerate index generations: {generations_root}") from exc
-    for entry in entries:
-        if not entry.is_dir(follow_symlinks=False) or not entry.name.startswith("gen-"):
-            continue
-        # Per-generation figures are measured on their own dedup set: a
-        # generation's size is a property of that generation, not of the order
-        # the inventory happened to walk its siblings in.
-        isolated = _Accumulator(entry.name, set())
-        _measure_path(isolated, Path(entry.path), label=f"index generation {entry.name}")
-        measurements.append(
-            GenerationMeasurement(
-                generation_id=entry.name,
-                allocated_bytes=isolated.allocated,
-                logical_bytes=isolated.logical,
-                active=entry.name == active_id,
+    for generations_root in generations_roots:
+        try:
+            with os.scandir(generations_root) as scan:
+                entries = sorted(scan, key=lambda entry: entry.name)
+        except FileNotFoundError:
+            entries = []
+        except OSError as exc:
+            raise ArchiveCapacityError(f"cannot enumerate index generations: {generations_root}") from exc
+        for entry in entries:
+            if not entry.is_dir(follow_symlinks=False) or not entry.name.startswith("gen-"):
+                continue
+            # Per-generation figures are measured on their own dedup set: a
+            # generation's size is a property of that generation, not of the
+            # order the inventory happened to walk its siblings in.
+            isolated = _Accumulator(entry.name, set())
+            _measure_path(isolated, Path(entry.path), label=f"index generation {entry.name}")
+            measurements.append(
+                GenerationMeasurement(
+                    generation_id=entry.name,
+                    allocated_bytes=isolated.allocated,
+                    logical_bytes=isolated.logical,
+                    active=entry.name == active_id,
+                )
             )
-        )
-    _measure_path(accumulator, generations_root, label="index generations")
+        _measure_path(accumulator, generations_root, label="index generations")
     return tuple(measurements)
 
 
