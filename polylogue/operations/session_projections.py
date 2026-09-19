@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import Any, Literal, TypeAlias, cast
 
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 
@@ -55,6 +55,18 @@ def mcp_get_session_projection_names() -> tuple[str, ...]:
     return ("orchestration", *session_list_projection_names())
 
 
+def is_mcp_read_view(value: object) -> bool:
+    """Return whether ``value`` is one of the runtime-declared MCP read views."""
+
+    return value is None or value in mcp_read_view_names()
+
+
+def is_mcp_get_session_projection(value: object) -> bool:
+    """Return whether ``value`` is one of the runtime-declared session projections."""
+
+    return value is None or value in mcp_get_session_projection_names()
+
+
 def validate_session_list_projection_cli_contract(cli_handler_ids: Collection[str]) -> None:
     """Reject a projection that MCP can serve but CLI cannot dispatch."""
 
@@ -69,7 +81,12 @@ SESSION_LIST_PROJECTION_NAMES = session_list_projection_names()
 MCP_READ_VIEW_NAMES = mcp_read_view_names()
 MCP_GET_SESSION_PROJECTION_NAMES = mcp_get_session_projection_names()
 
-MCPReadView: TypeAlias = str | None
+# These aliases are evaluated when the module loads, after the table above is
+# declared.  A table addition therefore reaches MCP's public Literal schema
+# without a duplicate hand-maintained type list. Mypy cannot evaluate a
+# runtime tuple expansion as a type expression, but Python and Pydantic can.
+MCPReadView: TypeAlias = cast(Any, Literal.__getitem__(mcp_read_view_names())) | None  # type: ignore[valid-type]
+MCPGetSessionProjection: TypeAlias = cast(Any, Literal.__getitem__(mcp_get_session_projection_names())) | None  # type: ignore[valid-type]
 
 _UNDECLARED = set(SESSION_LIST_PROJECTIONS) - set(READ_VIEW_PROFILE_BY_ID)
 if _UNDECLARED:
@@ -79,10 +96,13 @@ if _UNDECLARED:
 __all__ = [
     "MCP_GET_SESSION_PROJECTION_NAMES",
     "MCP_READ_VIEW_NAMES",
+    "MCPGetSessionProjection",
     "MCPReadView",
     "SESSION_LIST_PROJECTION_NAMES",
     "SESSION_LIST_PROJECTIONS",
     "SessionListProjection",
+    "is_mcp_get_session_projection",
+    "is_mcp_read_view",
     "mcp_get_session_projection_names",
     "mcp_read_view_names",
     "session_list_projection_names",

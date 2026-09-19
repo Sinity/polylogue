@@ -26,13 +26,11 @@ from __future__ import annotations
 from typing import Final, cast
 
 from polylogue.analysis.topology import SessionTopology
-from polylogue.operations.topology_envelope import bound_topology_envelope, topology_public_envelope
-
-#: Default ``node_limit`` used when the client does not pass ``?limit=``.
-DEFAULT_NODE_LIMIT: Final[int] = 200
-
-#: Hard cap rejected by :func:`coerce_node_limit` regardless of client input.
-MAX_NODE_LIMIT: Final[int] = 1000
+from polylogue.operations.topology_envelope import (
+    DEFAULT_NODE_LIMIT,
+    MAX_NODE_LIMIT,
+    topology_public_envelope,
+)
 
 #: Readiness vocabulary mirrored into the reader's MK3 chip classes.
 READINESS_OK: Final[str] = "ok"
@@ -117,13 +115,11 @@ def build_topology_envelope(
     """
 
     effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
-    canonical = topology_public_envelope(topology)
-    full_nodes = list(cast("list[dict[str, object]]", canonical["nodes"]))
-    bounded = bound_topology_envelope(canonical, node_limit=effective_limit)
+    bounded = topology_public_envelope(topology, node_limit=effective_limit)
 
     kept_nodes = cast("list[dict[str, object]]", bounded["nodes"])
     kept_edges = cast("list[dict[str, object]]", bounded["edges"])
-    truncated_count = max(len(full_nodes) - len(kept_nodes), int(not topology.nodes_complete))
+    truncated_count = max(len(topology.nodes) - len(kept_nodes), int(not topology.nodes_complete))
     unresolved_edge_count = sum(1 for edge in kept_edges if not edge["resolved"])
 
     readiness = _readiness(
@@ -136,7 +132,7 @@ def build_topology_envelope(
     return {
         **bounded,
         "node_count": len(kept_nodes),
-        "total_node_count": len(full_nodes) if topology.nodes_complete else None,
+        "total_node_count": len(topology.nodes) if topology.nodes_complete else None,
         "truncated_count": truncated_count,
         "unresolved_edge_count": unresolved_edge_count,
         "readiness": readiness,

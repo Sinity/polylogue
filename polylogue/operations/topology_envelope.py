@@ -31,6 +31,12 @@ from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 #: Reason recorded when the requested session has no topology at all.
 TOPOLOGY_EMPTY_REASON: Final[str] = "no_topology_in_scope"
 
+#: Default topology page size and its hard transport ceiling.  The producer
+#: below is shared by MCP and HTTP, so neither surface can retain a separate
+#: unbounded topology serialization path.
+DEFAULT_NODE_LIMIT: Final[int] = 200
+MAX_NODE_LIMIT: Final[int] = 1000
+
 
 def topology_outcome(topology: SessionTopology) -> OutcomeEnvelope:
     """Decide the one terminal outcome for a topology answer.
@@ -52,16 +58,19 @@ def topology_public_envelope(
     topology: SessionTopology,
     *,
     session_id: str | None = None,
+    node_limit: int = MAX_NODE_LIMIT,
 ) -> dict[str, object]:
-    """Return the canonical public topology envelope with its outcome.
+    """Return the bounded canonical public topology envelope with its outcome.
 
-    This is the one payload CLI, MCP, HTTP and the Python API serialize.
-    Transport framing is the only difference permitted between them.
+    This is the one payload CLI, MCP, HTTP and the Python API serialize. The
+    shared hard ceiling applies even when a caller supplies a larger limit;
+    transport framing is the only difference permitted between them.
     """
 
     payload = topology.public_payload(session_id)
     payload["outcome"] = topology_outcome(topology).to_dict()
-    return payload
+    effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
+    return bound_topology_envelope(payload, node_limit=effective_limit)
 
 
 def bound_topology_envelope(
@@ -120,6 +129,8 @@ def bound_topology_envelope(
 
 
 __all__ = [
+    "DEFAULT_NODE_LIMIT",
+    "MAX_NODE_LIMIT",
     "TOPOLOGY_EMPTY_REASON",
     "bound_topology_envelope",
     "topology_outcome",

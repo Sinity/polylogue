@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import Literal, get_args, get_origin, get_type_hints
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ import pytest
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
+from polylogue.mcp.server_cutover import mcp_get_projection_names, mcp_query_projection_names
 from polylogue.operations.session_projections import (
     SESSION_LIST_PROJECTION_NAMES,
     SESSION_LIST_PROJECTIONS,
@@ -28,6 +30,14 @@ from polylogue.operations.session_projections import (
     mcp_read_view_names,
 )
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
+
+
+def _literal_values(annotation: object) -> set[str]:
+    """Flatten a Literal or an optional Literal into its string choices."""
+
+    if get_origin(annotation) is Literal:
+        return {value for value in get_args(annotation) if isinstance(value, str)}
+    return {value for argument in get_args(annotation) for value in _literal_values(argument)}
 
 
 def test_every_mcp_projection_is_a_declared_read_view() -> None:
@@ -174,6 +184,32 @@ async def test_unknown_session_projection_is_rejected(mcp_server: MCPServerUnder
 
     assert get_payload["code"] == "invalid_argument"
     assert read_payload["code"] == "invalid_argument"
+
+
+@pytest.mark.asyncio
+async def test_mcp_read_query_and_get_projection_literals_and_guards_are_live(
+    mcp_server: MCPServerUnderTest,
+) -> None:
+    """MCP schemas and runtime rejection use their derived projection vocabularies.
+
+    Anti-vacuity: red if a handler returns to an unrestricted ``str``
+    annotation, or an unknown query projection silently falls through to the
+    default unit-query route.
+    """
+
+    read = mcp_server._tool_manager._tools["read"].fn
+    query = mcp_server._tool_manager._tools["query"].fn
+    get = mcp_server._tool_manager._tools["get"].fn
+
+    assert _literal_values(get_type_hints(read)["view"]) == set(mcp_read_view_names())
+    assert _literal_values(get_type_hints(query)["projection"]) == set(mcp_query_projection_names())
+    assert _literal_values(get_type_hints(get)["projection"]) == set(mcp_get_projection_names())
+    assert set(mcp_get_session_projection_names()) <= _literal_values(get_type_hints(get)["projection"])
+
+    with patch("polylogue.mcp.server._get_polylogue", return_value=make_polylogue_mock()):
+        payload = json.loads(await invoke_surface_async(query, projection="not-a-projection"))
+
+    assert payload["code"] == "invalid_argument"
 
 
 @pytest.mark.asyncio
