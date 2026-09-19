@@ -163,7 +163,7 @@ def open_operation_read(
     vector_recipe: EmbeddingRecipe | None = None,
     execution_context: QueryExecutionContext | None = None,
 ) -> Iterator[PinnedOperationRead]:
-    """Open and force tier snapshots before releasing publication exclusion.
+    """Own the explicit controlled operation-read boundary and pin its snapshots.
 
     ``publication_guard`` is supplied by the process that *owns* publication
     (the daemon runtime), which can genuinely hold a republication off while
