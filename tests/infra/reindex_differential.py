@@ -8,10 +8,12 @@ otherwise the differential fails before it can quietly lose coverage.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import re
 import sqlite3
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -20,6 +22,7 @@ from typing import Any
 from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from tests.infra.workload_artifacts import FinishedBuildResourceMeasurement, FinishedBuildResourceProbe
 
 SqlValue = str | int | float | bytes | None
 FactRow = tuple[SqlValue, ...]
@@ -109,6 +112,63 @@ class DerivedModelSnapshot:
     open_debt: tuple[FactRow, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class FinishedBuildWorkIdentity:
+    """The selected logical work, independent from its production arm."""
+
+    source_identity: str
+    code_identity: str
+    profile_identity: str
+
+    def __post_init__(self) -> None:
+        if not all((self.source_identity, self.code_identity, self.profile_identity)):
+            raise ValueError("finished-build work identity requires source, code, and profile identities")
+
+
+@dataclass(frozen=True, slots=True)
+class FinishedBuildRoute:
+    """A declared arm bound to the production callable that executed it."""
+
+    variant: str
+    callable_identity: str
+
+    def __post_init__(self) -> None:
+        if not self.variant or not self.callable_identity:
+            raise ValueError("finished-build route requires an arm and production callable identity")
+        if not self.callable_identity.startswith("polylogue."):
+            raise ValueError("finished-build route must name a Polylogue production callable")
+
+    @classmethod
+    def from_production_callable(cls, variant: str, route: Callable[..., object]) -> FinishedBuildRoute:
+        module = getattr(route, "__module__", None)
+        qualname = getattr(route, "__qualname__", None)
+        if not isinstance(module, str) or not isinstance(qualname, str):
+            raise ValueError("finished-build route callable has no stable Python identity")
+        return cls(variant=variant, callable_identity=f"{module}.{qualname}")
+
+
+@dataclass(frozen=True, slots=True)
+class FinishedBuildOutput:
+    """A completed, read-through output snapshot for one production arm."""
+
+    work: FinishedBuildWorkIdentity
+    route: FinishedBuildRoute
+    canonical_logical_digest: str
+    schema_object_census: tuple[tuple[str, str], ...]
+    schema_identity: str
+    output_session_count: int
+    output_message_count: int
+    output_block_count: int
+    resources: FinishedBuildResourceMeasurement
+    snapshot: DerivedModelSnapshot
+
+    def __post_init__(self) -> None:
+        if not self.canonical_logical_digest or not self.schema_identity:
+            raise ValueError("finished-build output requires canonical and schema identities")
+        if min(self.output_session_count, self.output_message_count, self.output_block_count) < 0:
+            raise ValueError("finished-build output counts cannot be negative")
+
+
 def compared_table_census() -> tuple[str, ...]:
     """Return all ordinary current-DDL index tables with a declared policy."""
     tables = frozenset(_CREATE_TABLE.findall(INDEX_DDL))
@@ -153,6 +213,51 @@ def snapshot_derived_model(
     )
 
 
+def capture_finished_build_output(
+    archive_root: Path,
+    index_path: Path,
+    *,
+    work: FinishedBuildWorkIdentity,
+    route: FinishedBuildRoute,
+    resource_probe: FinishedBuildResourceProbe,
+    session_ids: tuple[str, ...],
+    search_queries: tuple[str, ...],
+) -> FinishedBuildOutput:
+    """Capture only an output that has passed every terminal read condition.
+
+    The snapshot uses the regular archive readers and FTS search route. Its
+    readiness assertion is intentionally before all receipt values: a caller
+    cannot time/release a replay, then hide final FTS work behind a later
+    operation while still claiming a completed comparison.
+    """
+    snapshot = snapshot_derived_model(
+        archive_root,
+        index_path,
+        session_ids=session_ids,
+        search_queries=search_queries,
+    )
+    assert_derived_model_ready(snapshot)
+    schema_object_census, schema_identity = _finished_schema_census(index_path)
+    with _connect(index_path) as conn:
+        output_session_count, output_message_count, output_block_count = (
+            int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            for table in ("sessions", "messages", "blocks")
+        )
+    resources = resource_probe.finish(archive_root)
+    return FinishedBuildOutput(
+        work=work,
+        route=route,
+        canonical_logical_digest=_canonical_logical_digest(snapshot),
+        schema_object_census=schema_object_census,
+        schema_identity=schema_identity,
+        output_session_count=output_session_count,
+        output_message_count=output_message_count,
+        output_block_count=output_block_count,
+        resources=resources,
+        snapshot=snapshot,
+    )
+
+
 def assert_derived_models_equivalent(expected: DerivedModelSnapshot, actual: DerivedModelSnapshot) -> None:
     """Fail with the first durable/public differential, named for diagnosis."""
     expected_tables = dict(expected.tables)
@@ -176,6 +281,33 @@ def assert_derived_models_equivalent(expected: DerivedModelSnapshot, actual: Der
         raise AssertionError(f"open convergence debt differs: expected={expected.open_debt}, actual={actual.open_debt}")
 
 
+def assert_finished_builds_equivalent(expected: FinishedBuildOutput, actual: FinishedBuildOutput) -> None:
+    """Require same selected work and identical completed logical output.
+
+    Routes are deliberately allowed to differ. That is the comparison being
+    made, while each receipt retains its exact production callable and arm
+    variant for an audit of what actually ran.
+    """
+    if expected.work != actual.work:
+        raise AssertionError(f"finished-build work identity differs: expected={expected.work}, actual={actual.work}")
+    assert_derived_model_ready(expected.snapshot)
+    assert_derived_model_ready(actual.snapshot)
+    assert_derived_models_equivalent(expected.snapshot, actual.snapshot)
+    for field_name in (
+        "canonical_logical_digest",
+        "schema_object_census",
+        "schema_identity",
+        "output_session_count",
+        "output_message_count",
+        "output_block_count",
+    ):
+        if getattr(expected, field_name) != getattr(actual, field_name):
+            raise AssertionError(
+                f"finished-build {field_name} differs: "
+                f"expected={getattr(expected, field_name)!r}, actual={getattr(actual, field_name)!r}"
+            )
+
+
 def assert_derived_model_ready(snapshot: DerivedModelSnapshot) -> None:
     """Keep a matching but jointly stale generation from passing the lane."""
     if snapshot.fts.source_rows != snapshot.fts.indexed_rows:
@@ -184,6 +316,38 @@ def assert_derived_model_ready(snapshot: DerivedModelSnapshot) -> None:
         )
     if snapshot.open_debt:
         raise AssertionError(f"convergence debt remains: {snapshot.open_debt}")
+
+
+def _finished_schema_census(index_path: Path) -> tuple[tuple[tuple[str, str], ...], str]:
+    """Read the declared schema shape after the route's terminal read checks."""
+    with _connect(index_path) as conn:
+        objects = tuple(
+            (str(kind), str(name))
+            for kind, name in conn.execute(
+                """
+                SELECT type, name
+                FROM sqlite_master
+                WHERE name NOT LIKE 'sqlite_%'
+                ORDER BY type, name
+                """
+            )
+        )
+        row = conn.execute("SELECT identity FROM schema_identity WHERE tier = 'index'").fetchone()
+    if row is None or not str(row[0]):
+        raise AssertionError("finished build has no index schema identity")
+    return objects, str(row[0])
+
+
+def _canonical_logical_digest(snapshot: DerivedModelSnapshot) -> str:
+    """Hash the sorted logical differential, not a database page image."""
+
+    def default(value: object) -> str:
+        if isinstance(value, bytes):
+            return value.hex()
+        raise TypeError(f"cannot canonically encode {type(value).__name__}")
+
+    payload = json.dumps(asdict(snapshot), default=default, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _connect(path: Path) -> sqlite3.Connection:
