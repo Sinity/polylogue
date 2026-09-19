@@ -12,11 +12,17 @@ from polylogue.maintenance.source_manifest_continuity import (
     SourceContinuityError,
     SourceDeclaration,
     SourceRole,
+    WantedSourceReceiptError,
     build_source_frontier,
     build_source_manifest,
+    build_wanted_source_receipt,
+    campaign_default_wanted_source_policy,
     canonical_source_declarations,
+    load_wanted_source_receipt,
+    preflight_rebuild,
     recheck_source_manifest,
     validate_backup_evidence,
+    write_wanted_source_receipt,
 )
 
 
@@ -199,3 +205,99 @@ def test_frontier_digest_binds_captured_member_after_path_mutation(tmp_path: Pat
     # frontier.
     frontier.verify_integrity()
     assert frontier.members[0].content_sha256 != ""
+
+
+def test_wanted_source_receipt_round_trip_and_operator_preflight_are_private(tmp_path: Path) -> None:
+    source = _source(tmp_path, "wanted")
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    declaration = SourceDeclaration("configured-0", SourceRole.DIRECTORY, source, True)
+
+    receipt = write_wanted_source_receipt(archive, [declaration])
+    loaded = load_wanted_source_receipt(archive, declarations=[declaration])
+    preflight = preflight_rebuild(archive, declarations=[declaration])
+
+    assert loaded.receipt_sha256 == receipt.receipt_sha256
+    assert loaded.item_count == 2
+    assert preflight.as_dict() == {
+        "outcome": "ok",
+        "receipt_sha256": receipt.receipt_sha256,
+        "policy_identity": receipt.policy_identity,
+        "declaration_sha256": receipt.declaration_sha256,
+        "frontier_sha256": receipt.frontier_sha256,
+        "item_count": 2,
+        "byte_count": 7,
+    }
+    # The operator-facing projection carries proof identities, never roots or
+    # member coordinates.
+    assert "root" not in preflight.as_dict()
+    assert "relative_path" not in preflight.as_dict()
+
+
+def test_wanted_source_receipt_rejects_tampering_and_policy_revision(tmp_path: Path) -> None:
+    source = _source(tmp_path, "tamper")
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    declaration = SourceDeclaration("configured-0", SourceRole.DIRECTORY, source, True)
+    receipt = write_wanted_source_receipt(archive, [declaration])
+    path = archive / ".maintenance-state" / "wanted-sources" / "selected.json"
+    payload = path.read_text(encoding="utf-8").replace(receipt.frontier_sha256, "0" * 64)
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(WantedSourceReceiptError, match="integrity"):
+        load_wanted_source_receipt(archive, declarations=[declaration])
+
+    write_wanted_source_receipt(
+        archive,
+        [declaration],
+        policy=campaign_default_wanted_source_policy().__class__(revision="2"),
+    )
+    with pytest.raises(WantedSourceReceiptError, match="policy mismatch"):
+        load_wanted_source_receipt(archive, declarations=[declaration])
+
+
+def test_wanted_source_receipt_refuses_missing_root_and_duplicate_members(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    missing = SourceDeclaration("missing", SourceRole.DIRECTORY, tmp_path / "absent", True)
+    incomplete = build_wanted_source_receipt([missing])
+    assert incomplete.blockers and not incomplete.complete
+    write_wanted_source_receipt(archive, [missing])
+    with pytest.raises(WantedSourceReceiptError, match="missing or unavailable"):
+        load_wanted_source_receipt(archive)
+
+    source = _source(tmp_path, "duplicate")
+    declaration = SourceDeclaration("duplicate", SourceRole.DIRECTORY, source, True)
+    receipt = build_wanted_source_receipt([declaration])
+    object.__setattr__(receipt, "members", receipt.members + (receipt.members[0],))
+    with pytest.raises(WantedSourceReceiptError, match="duplicate"):
+        receipt.verify_integrity()
+
+
+def test_same_byte_replacement_is_a_new_wanted_source_identity(tmp_path: Path) -> None:
+    source = _source(tmp_path, "replacement")
+    declaration = SourceDeclaration("replacement", SourceRole.DIRECTORY, source, True)
+    first = build_wanted_source_receipt([declaration])
+    original = (source / "one.jsonl").read_bytes()
+    (source / "one.jsonl").unlink()
+    (source / "one.jsonl").write_bytes(original)
+    second = build_wanted_source_receipt([declaration])
+    assert first.members[0].content_sha256 == second.members[0].content_sha256
+    assert first.members[0].identity != second.members[0].identity
+    assert first.receipt_sha256 != second.receipt_sha256
+
+
+def test_campaign_policy_excludes_non_standalone_kinds_but_keeps_raw_evidence(tmp_path: Path) -> None:
+    wanted = _source(tmp_path, "wanted-kind")
+    discovery = _source(tmp_path, "discovery-kind")
+    declarations = [
+        SourceDeclaration("standalone", SourceRole.DIRECTORY, wanted, True),
+        SourceDeclaration("discovery", SourceRole.DIRECTORY, discovery, True),
+    ]
+    receipt = build_wanted_source_receipt(
+        declarations,
+        source_kinds={"discovery": "discovery-only"},
+    )
+
+    assert [member.source_id for member in receipt.members] == ["standalone", "standalone"]
+    assert receipt.excluded_source_ids == ("discovery",)
+    assert receipt.complete

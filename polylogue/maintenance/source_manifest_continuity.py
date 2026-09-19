@@ -10,10 +10,23 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Final
+
+from polylogue.maintenance.receipt_fs import (
+    atomic_replace_receipt,
+    existing_maintenance_receipt_directory,
+    maintenance_receipt_directory,
+    read_optional_receipt,
+)
+from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 
 
 class SourceContinuityError(ValueError):
     """A source declaration, manifest, or continuity receipt is unsafe."""
+
+
+class WantedSourceReceiptError(SourceContinuityError):
+    """A wanted-source receipt cannot authorize a rebuild."""
 
 
 class SourceRole(StrEnum):
@@ -45,6 +58,17 @@ class FrontierState(StrEnum):
     PRESENT = "present"
     VALID_EMPTY = "valid-empty"
     UNAVAILABLE = "unavailable"
+
+
+WANTED_SOURCE_RECEIPT_SCHEMA: Final = "polylogue.wanted-source.v1"
+WANTED_SOURCE_RECEIPT_DIRNAME: Final = "wanted-sources"
+WANTED_SOURCE_RECEIPT_FILENAME: Final = "selected.json"
+_DEFAULT_EXCLUDED_SOURCE_KINDS: Final = (
+    "discovery-only",
+    "experimental",
+    "optional",
+    "native-sinex",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +197,455 @@ class SourceFrontier:
         expected = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         if expected != self.frontier_sha256:
             raise SourceContinuityError("source frontier integrity check failed")
+
+
+@dataclass(frozen=True, slots=True)
+class WantedSourcePolicy:
+    """The explicit source population policy bound to a rebuild receipt.
+
+    The default policy is intentionally conservative: every declaration that
+    reaches this function is wanted, including raw evidence that a parser may
+    later reject. Discovery-only, experimental/optional, and native Sinex
+    populations are not declarations in the configured-source frontier. A
+    caller that has those classifications can pass them in ``source_kinds``
+    to :func:`build_wanted_source_receipt`; they are recorded as excluded
+    rather than silently becoming wanted members.
+    """
+
+    name: str = "campaign-default"
+    revision: str = "1"
+    included_roles: tuple[SourceRole, ...] = tuple(SourceRole)
+    excluded_kinds: tuple[str, ...] = _DEFAULT_EXCLUDED_SOURCE_KINDS
+
+    def __post_init__(self) -> None:
+        if not self.name.strip() or not self.revision.strip():
+            raise WantedSourceReceiptError("wanted-source policy name and revision must be non-empty")
+        if len(set(self.included_roles)) != len(self.included_roles):
+            raise WantedSourceReceiptError("wanted-source policy contains duplicate roles")
+        if len(set(self.excluded_kinds)) != len(self.excluded_kinds):
+            raise WantedSourceReceiptError("wanted-source policy contains duplicate exclusions")
+
+    @property
+    def identity(self) -> str:
+        payload = {
+            "name": self.name,
+            "revision": self.revision,
+            "included_roles": [role.value for role in self.included_roles],
+            "excluded_kinds": list(self.excluded_kinds),
+        }
+        return hashlib.sha256(_canonical_json(payload)).hexdigest()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "revision": self.revision,
+            "included_roles": [role.value for role in self.included_roles],
+            "excluded_kinds": list(self.excluded_kinds),
+            "identity": self.identity,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> WantedSourcePolicy:
+        try:
+            roles_raw = payload["included_roles"]
+            excluded_raw = payload["excluded_kinds"]
+            if not isinstance(roles_raw, list) or not isinstance(excluded_raw, list):
+                raise TypeError
+            policy = cls(
+                name=str(payload["name"]),
+                revision=str(payload["revision"]),
+                included_roles=tuple(SourceRole(str(role)) for role in roles_raw),
+                excluded_kinds=tuple(str(kind) for kind in excluded_raw),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WantedSourceReceiptError("invalid wanted-source policy") from exc
+        if payload.get("identity") != policy.identity:
+            raise WantedSourceReceiptError("wanted-source policy identity mismatch")
+        return policy
+
+    def select(
+        self,
+        declarations: Iterable[SourceDeclaration],
+        *,
+        source_kinds: Mapping[str, str] | None = None,
+    ) -> tuple[tuple[SourceDeclaration, ...], tuple[str, ...]]:
+        kinds = source_kinds or {}
+        selected: list[SourceDeclaration] = []
+        excluded: list[str] = []
+        for declaration in declarations:
+            kind = kinds.get(declaration.source_id)
+            if kind in self.excluded_kinds or declaration.role not in self.included_roles:
+                excluded.append(declaration.source_id)
+            else:
+                selected.append(declaration)
+        return tuple(selected), tuple(excluded)
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _declaration_digest(declarations: Iterable[SourceDeclaration]) -> str:
+    return hashlib.sha256(
+        _canonical_json([(row.source_id, row.role.value, str(row.root), row.mutable) for row in declarations])
+    ).hexdigest()
+
+
+def _frontier_digest(
+    declarations: Iterable[SourceDeclaration],
+    members: Iterable[FrontierMember],
+    root_states: Mapping[str, FrontierState],
+    blockers: Iterable[str],
+) -> str:
+    payload = {
+        "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in declarations],
+        "members": [
+            (m.source_id, m.coordinate, m.identity, m.content_sha256, m.size, m.logical_sha256) for m in members
+        ],
+        "root_states": sorted((key, value.value) for key, value in root_states.items()),
+        "blockers": list(blockers),
+    }
+    return hashlib.sha256(_canonical_json(payload)).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class WantedSourceReceipt:
+    """Private, policy-bound denominator for a final rebuild."""
+
+    policy: WantedSourcePolicy
+    declarations: tuple[SourceDeclaration, ...]
+    members: tuple[FrontierMember, ...]
+    root_states: Mapping[str, FrontierState]
+    blockers: tuple[str, ...]
+    frontier_sha256: str
+    excluded_source_ids: tuple[str, ...] = ()
+    receipt_sha256: str = ""
+
+    @property
+    def policy_identity(self) -> str:
+        return self.policy.identity
+
+    @property
+    def declaration_sha256(self) -> str:
+        return _declaration_digest(self.declarations)
+
+    @property
+    def complete(self) -> bool:
+        return not self.blockers and all(state is not FrontierState.UNAVAILABLE for state in self.root_states.values())
+
+    @property
+    def item_count(self) -> int:
+        return len(self.members)
+
+    @property
+    def byte_count(self) -> int:
+        return sum(member.size for member in self.members)
+
+    def _payload(self, *, include_receipt_digest: bool) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "schema": WANTED_SOURCE_RECEIPT_SCHEMA,
+            "policy": self.policy.as_dict(),
+            "declaration_sha256": self.declaration_sha256,
+            "declarations": [
+                {
+                    "source_id": declaration.source_id,
+                    "role": declaration.role.value,
+                    "root": str(declaration.root),
+                    "mutable": declaration.mutable,
+                }
+                for declaration in self.declarations
+            ],
+            "excluded_source_ids": list(self.excluded_source_ids),
+            "root_states": {key: value.value for key, value in sorted(self.root_states.items())},
+            "blockers": list(self.blockers),
+            "members": [
+                {
+                    "source_id": member.source_id,
+                    "coordinate": member.coordinate,
+                    "identity": member.identity,
+                    "content_sha256": member.content_sha256,
+                    "size": member.size,
+                    "logical_sha256": member.logical_sha256,
+                }
+                for member in self.members
+            ],
+            "frontier_sha256": self.frontier_sha256,
+            "item_count": self.item_count,
+            "byte_count": self.byte_count,
+            "complete": self.complete,
+        }
+        if include_receipt_digest:
+            payload["receipt_sha256"] = self.receipt_sha256
+        return payload
+
+    def as_dict(self) -> dict[str, object]:
+        return self._payload(include_receipt_digest=True)
+
+    def verify_integrity(self) -> None:
+        self.policy.__post_init__()
+        declaration_ids = {declaration.source_id for declaration in self.declarations}
+        if len(declaration_ids) != len(self.declarations):
+            raise WantedSourceReceiptError("wanted-source receipt contains duplicate declarations")
+        if set(self.root_states) != declaration_ids:
+            raise WantedSourceReceiptError("wanted-source receipt root states do not cover declarations")
+        if tuple(sorted(self.excluded_source_ids)) != self.excluded_source_ids:
+            raise WantedSourceReceiptError("wanted-source receipt exclusions are not canonical")
+        if any(member.source_id not in declaration_ids for member in self.members):
+            raise WantedSourceReceiptError("wanted-source receipt member is outside its declarations")
+        keys = [member.key for member in self.members]
+        if len(keys) != len(set(keys)):
+            raise WantedSourceReceiptError("wanted-source receipt contains duplicate members")
+        coordinates = [(member.source_id, member.coordinate) for member in self.members]
+        if len(coordinates) != len(set(coordinates)):
+            raise WantedSourceReceiptError("wanted-source receipt contains duplicate member coordinates")
+        if any(member.size < 0 for member in self.members):
+            raise WantedSourceReceiptError("wanted-source receipt member size is negative")
+        expected_frontier = _frontier_digest(self.declarations, self.members, self.root_states, self.blockers)
+        if expected_frontier != self.frontier_sha256:
+            raise WantedSourceReceiptError("wanted-source frontier integrity check failed")
+        payload = self._payload(include_receipt_digest=False)
+        expected_receipt = hashlib.sha256(_canonical_json(payload)).hexdigest()
+        if expected_receipt != self.receipt_sha256:
+            raise WantedSourceReceiptError("wanted-source receipt integrity check failed")
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> WantedSourceReceipt:
+        try:
+            if payload.get("schema") != WANTED_SOURCE_RECEIPT_SCHEMA:
+                raise WantedSourceReceiptError("unsupported wanted-source receipt schema")
+            policy_payload = payload["policy"]
+            declarations_payload = payload["declarations"]
+            members_payload = payload["members"]
+            states_payload = payload["root_states"]
+            if not isinstance(policy_payload, Mapping) or not isinstance(declarations_payload, list):
+                raise TypeError
+            if not isinstance(members_payload, list) or not isinstance(states_payload, Mapping):
+                raise TypeError
+            declarations = tuple(
+                SourceDeclaration(
+                    str(row["source_id"]),
+                    SourceRole(str(row["role"])),
+                    Path(str(row["root"])),
+                    bool(row["mutable"]),
+                )
+                for row in declarations_payload
+                if isinstance(row, Mapping)
+            )
+            members = tuple(
+                FrontierMember(
+                    str(row["source_id"]),
+                    str(row["coordinate"]),
+                    str(row["identity"]),
+                    str(row["content_sha256"]),
+                    int(row["size"]),
+                    None if row.get("logical_sha256") is None else str(row["logical_sha256"]),
+                )
+                for row in members_payload
+                if isinstance(row, Mapping)
+            )
+            root_states = {str(key): FrontierState(str(value)) for key, value in states_payload.items()}
+            excluded = payload.get("excluded_source_ids", [])
+            blockers = payload.get("blockers", [])
+            if not isinstance(excluded, list) or not isinstance(blockers, list):
+                raise TypeError
+            result = cls(
+                policy=WantedSourcePolicy.from_dict(policy_payload),
+                declarations=declarations,
+                members=members,
+                root_states=root_states,
+                blockers=tuple(str(item) for item in blockers),
+                frontier_sha256=str(payload["frontier_sha256"]),
+                excluded_source_ids=tuple(str(item) for item in excluded),
+                receipt_sha256=str(payload["receipt_sha256"]),
+            )
+        except WantedSourceReceiptError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WantedSourceReceiptError("invalid wanted-source receipt") from exc
+        result.verify_integrity()
+        if payload.get("declaration_sha256") != result.declaration_sha256:
+            raise WantedSourceReceiptError("wanted-source declaration digest mismatch")
+        if payload.get("item_count") != result.item_count or payload.get("byte_count") != result.byte_count:
+            raise WantedSourceReceiptError("wanted-source receipt denominators mismatch")
+        if payload.get("complete") is not result.complete:
+            raise WantedSourceReceiptError("wanted-source receipt completeness mismatch")
+        return result
+
+
+@dataclass(frozen=True, slots=True)
+class RebuildPreflightReceipt:
+    """Operator-safe receipt emitted after validating a wanted-source file."""
+
+    receipt_sha256: str
+    policy_identity: str
+    declaration_sha256: str
+    frontier_sha256: str
+    item_count: int
+    byte_count: int
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "outcome": "ok",
+            "receipt_sha256": self.receipt_sha256,
+            "policy_identity": self.policy_identity,
+            "declaration_sha256": self.declaration_sha256,
+            "frontier_sha256": self.frontier_sha256,
+            "item_count": self.item_count,
+            "byte_count": self.byte_count,
+        }
+
+
+def campaign_default_wanted_source_policy() -> WantedSourcePolicy:
+    """Return a fresh default policy for the campaign's final rebuild."""
+    return WantedSourcePolicy()
+
+
+def build_wanted_source_receipt(
+    declarations: Iterable[SourceDeclaration],
+    *,
+    policy: WantedSourcePolicy | None = None,
+    source_kinds: Mapping[str, str] | None = None,
+) -> WantedSourceReceipt:
+    """Enumerate the selected declarations once and bind their denominator."""
+    selected_policy = policy or campaign_default_wanted_source_policy()
+    rows = tuple(declarations)
+    if len({row.source_id for row in rows}) != len(rows):
+        raise WantedSourceReceiptError("wanted-source declarations contain duplicate source IDs")
+    selected, excluded = selected_policy.select(rows, source_kinds=source_kinds)
+    if not selected:
+        members: tuple[FrontierMember, ...] = ()
+        root_states: Mapping[str, FrontierState] = {}
+        blockers: tuple[str, ...] = ()
+    else:
+        frontier = build_source_frontier(selected)
+        members = frontier.members
+        root_states = frontier.root_states
+        blockers = frontier.blockers
+    frontier_digest = _frontier_digest(selected, members, root_states, blockers)
+    provisional = WantedSourceReceipt(
+        policy=selected_policy,
+        declarations=selected,
+        members=members,
+        root_states=root_states,
+        blockers=blockers,
+        frontier_sha256=frontier_digest,
+        excluded_source_ids=tuple(sorted(excluded)),
+    )
+    digest = hashlib.sha256(_canonical_json(provisional._payload(include_receipt_digest=False))).hexdigest()
+    # Construct the sealed value explicitly; the receipt is immutable and has
+    # no mutable refresh path.
+    result = WantedSourceReceipt(
+        selected_policy,
+        selected,
+        members,
+        root_states,
+        blockers,
+        frontier_digest,
+        tuple(sorted(excluded)),
+        digest,
+    )
+    result.verify_integrity()
+    return result
+
+
+def _ensure_wanted_source_state(archive_root: Path) -> None:
+    root = Path(archive_root)
+    metadata = root.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise WantedSourceReceiptError("archive root is not a real directory")
+    state = root / MAINTENANCE_STATE_DIRNAME
+    try:
+        state_metadata = state.lstat()
+    except FileNotFoundError:
+        state.mkdir(mode=0o700)
+        return
+    if stat.S_ISLNK(state_metadata.st_mode) or not stat.S_ISDIR(state_metadata.st_mode):
+        raise WantedSourceReceiptError("maintenance state is not a real directory")
+
+
+def write_wanted_source_receipt(
+    archive_root: Path,
+    declarations: Iterable[SourceDeclaration],
+    *,
+    policy: WantedSourcePolicy | None = None,
+    source_kinds: Mapping[str, str] | None = None,
+) -> WantedSourceReceipt:
+    """Atomically publish one private wanted-source receipt."""
+    receipt = build_wanted_source_receipt(declarations, policy=policy, source_kinds=source_kinds)
+    _ensure_wanted_source_state(Path(archive_root))
+    with maintenance_receipt_directory(Path(archive_root), WANTED_SOURCE_RECEIPT_DIRNAME) as directory_fd:
+        atomic_replace_receipt(
+            directory_fd,
+            WANTED_SOURCE_RECEIPT_FILENAME,
+            json.dumps(receipt.as_dict(), indent=2, sort_keys=True).encode("utf-8"),
+        )
+    return receipt
+
+
+def _read_wanted_source_receipt(archive_root: Path) -> WantedSourceReceipt:
+    with existing_maintenance_receipt_directory(Path(archive_root), WANTED_SOURCE_RECEIPT_DIRNAME) as directory_fd:
+        if directory_fd is None:
+            raise WantedSourceReceiptError("wanted-source receipt is missing")
+        raw = read_optional_receipt(directory_fd, WANTED_SOURCE_RECEIPT_FILENAME)
+    if raw is None:
+        raise WantedSourceReceiptError("wanted-source receipt is missing")
+    try:
+        payload = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise WantedSourceReceiptError("wanted-source receipt is not valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise WantedSourceReceiptError("wanted-source receipt must be a JSON object")
+    return WantedSourceReceipt.from_dict(payload)
+
+
+def load_wanted_source_receipt(
+    archive_root: Path,
+    *,
+    policy: WantedSourcePolicy | None = None,
+    declarations: Iterable[SourceDeclaration] | None = None,
+) -> WantedSourceReceipt:
+    """Load and validate a private receipt before any rebuild publication."""
+    receipt = _read_wanted_source_receipt(Path(archive_root))
+    expected_policy = policy or campaign_default_wanted_source_policy()
+    if receipt.policy.identity != expected_policy.identity:
+        raise WantedSourceReceiptError("wanted-source receipt policy mismatch")
+    if declarations is not None:
+        expected, _excluded = expected_policy.select(tuple(declarations))
+        if _declaration_digest(expected) != receipt.declaration_sha256:
+            raise WantedSourceReceiptError("wanted-source receipt declaration mismatch")
+    for declaration in receipt.declarations:
+        try:
+            _real_root(Path(declaration.root))
+        except SourceContinuityError as exc:
+            raise WantedSourceReceiptError(
+                f"wanted-source receipt root is missing or unavailable: {declaration.source_id}"
+            ) from exc
+    if not receipt.complete:
+        raise WantedSourceReceiptError("wanted-source receipt is incomplete")
+    return receipt
+
+
+def preflight_rebuild(
+    archive_root: Path,
+    *,
+    policy: WantedSourcePolicy | None = None,
+    declarations: Iterable[SourceDeclaration] | None = None,
+) -> RebuildPreflightReceipt:
+    """Authorize a rebuild from the frozen receipt, never a fresh source walk."""
+    receipt = load_wanted_source_receipt(Path(archive_root), policy=policy, declarations=declarations)
+    return RebuildPreflightReceipt(
+        receipt_sha256=receipt.receipt_sha256,
+        policy_identity=receipt.policy_identity,
+        declaration_sha256=receipt.declaration_sha256,
+        frontier_sha256=receipt.frontier_sha256,
+        item_count=receipt.item_count,
+        byte_count=receipt.byte_count,
+    )
+
+
+# Explicit aliases make the operation seam discoverable to callers that name
+# the receipt as the authorization rather than as a generic preflight.
+require_rebuild_preflight = preflight_rebuild
 
 
 def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFrontier:
