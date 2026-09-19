@@ -23,9 +23,11 @@ from polylogue.analysis.topology import (
     TOPOLOGY_GAP_TRUNCATED,
     TOPOLOGY_GAP_UNRESOLVED_PARENT,
     SessionTopology,
+    TopologyNode,
 )
 from polylogue.api import Polylogue
-from polylogue.daemon.topology_http import build_topology_envelope
+from polylogue.core.types import SessionId
+from polylogue.daemon.topology_http import MAX_NODE_LIMIT, build_topology_envelope
 from polylogue.mcp.payloads import session_topology_payload
 from polylogue.operations.topology_envelope import (
     TOPOLOGY_EMPTY_REASON,
@@ -290,6 +292,38 @@ async def test_surface_bounding_reports_truncation_as_degraded(workspace_env: di
     http_payload = build_topology_envelope(topology, node_limit=1)
     assert http_payload["nodes_complete"] is False
     assert _outcome(http_payload)["state"] == "degraded"
+
+
+def test_mcp_and_http_apply_the_same_hard_topology_node_limit() -> None:
+    """The MCP serializer must not bypass the daemon's topology safety bound.
+
+    Anti-vacuity: red before the shared bounded envelope producer, when MCP
+    serializes all ``MAX_NODE_LIMIT + 1`` nodes while HTTP truncates at the
+    hard cap.
+    """
+
+    node_count = MAX_NODE_LIMIT + 1
+    topology = SessionTopology(
+        target_id=SessionId("node-0"),
+        root_id=SessionId("node-0"),
+        nodes=tuple(
+            TopologyNode(
+                session_id=SessionId(f"node-{index}"),
+                origin="claude-code-session",
+                is_root=index == 0,
+            )
+            for index in range(node_count)
+        ),
+        edges=(),
+    )
+
+    mcp_payload = session_topology_payload(topology, session_id="node-0").model_dump(mode="json")
+    http_payload = build_topology_envelope(topology, node_limit=MAX_NODE_LIMIT + 1)
+
+    assert len(_rows(mcp_payload, "nodes")) == MAX_NODE_LIMIT
+    assert len(_rows(http_payload, "nodes")) == MAX_NODE_LIMIT
+    assert _outcome(mcp_payload) == _outcome(http_payload)
+    assert TOPOLOGY_GAP_TRUNCATED in _gaps(_outcome(mcp_payload))
 
 
 def test_cycle_topology_is_degraded(workspace_env: dict[str, Path]) -> None:
