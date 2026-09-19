@@ -6,6 +6,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from time import monotonic
 
 import pytest
 
@@ -243,6 +244,32 @@ def test_background_work_keeps_a_slot_while_interactive_load_saturates() -> None
         finally:
             interactive_body.release.set()
             background_body.release.set()
+
+
+@pytest.mark.uses_real_clock("queued starvation age is measured by the production scheduler clock")
+def test_snapshot_includes_the_age_of_queued_background_work() -> None:
+    """A queued background task contributes to the observable starvation bound.
+
+    Anti-vacuity: computing ``max_wait_s`` only when dispatch starts leaves
+    this admitted task at zero for its entire queue lifetime.
+    """
+
+    holder = _Blocker()
+    with _adapter(max_workers=1, queue_units=2) as adapter:
+        try:
+            adapter.submit(holder, admission_class="interactive-read")
+            assert holder.wait_started(1)
+            queued = adapter.submit(lambda: None, admission_class="incremental-background")
+            deadline = monotonic() + 1
+            snapshot = adapter.snapshot()
+            while snapshot.background_max_wait_s <= 0 and monotonic() < deadline:
+                threading.Event().wait(0.01)
+                snapshot = adapter.snapshot()
+            assert snapshot.by_class("incremental-background").queued_units == 1
+            assert snapshot.background_max_wait_s > 0
+        finally:
+            holder.release.set()
+            queued.future.result(timeout=5)
 
 
 def test_cancelled_queued_work_never_runs_and_returns_its_reservation() -> None:
