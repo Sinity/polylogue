@@ -58,7 +58,6 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--root` | (auto) | Add an export watch root alongside typed defaults (repeatable) |
-| `--debounce-s` | `2.0` | Inert. The watcher has no queue to debounce since acquisition became the dispatcher's; the flag and its `daemon.watch.debounce_s` config key are still accepted and still do nothing. |
 | `--no-watch` | off | Disable the live source watcher |
 | `--no-browser-capture` | off | Disable the browser-capture receiver |
 | `--no-api` | off | Disable the HTTP API + web reader |

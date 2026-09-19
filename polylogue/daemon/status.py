@@ -68,7 +68,6 @@ from polylogue.daemon.live_ingest_attempt_workload import (
     workload_fields,
 )
 from polylogue.daemon.periodic import periodic_loop_payload
-from polylogue.daemon.slo import IngestSloStatus, slo_status_info
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
@@ -641,7 +640,6 @@ class DaemonStatus(BaseModel):
     catchup: CatchupStatus = Field(default_factory=CatchupStatus)
     convergence: ConvergenceDebtSummary = Field(default_factory=ConvergenceDebtSummary)
     cursor_lag: CursorLagSummary = Field(default_factory=CursorLagSummary)
-    ingest_slo: IngestSloStatus = Field(default_factory=IngestSloStatus)
     db_size_bytes: int = 0
     wal_size_bytes: int = 0
     #: ``None`` when the blob-store walk was not performed (the compact path
@@ -2983,7 +2981,6 @@ def build_daemon_status(
     )
     convergence = _convergence_debt_from_snapshot(snapshots["convergence"])
     cursor_lag = _v("cursor_lag", CursorLagSummary())
-    ingest_slo = slo_status_info(cursor_lag=cursor_lag)
     catchup = catchup_status_info(
         active_db,
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
@@ -3153,7 +3150,6 @@ def build_daemon_status(
         catchup=catchup,
         convergence=convergence,
         cursor_lag=cursor_lag,
-        ingest_slo=ingest_slo,
         db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
         wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
         blob_dir_size_bytes=_v("blob_size", None, unmeasured=None),

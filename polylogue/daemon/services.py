@@ -430,7 +430,7 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
     ),
     # --- acquisition
     _spec(
-        "catch_up_complete_bridge",
+        "watcher_ready_bridge",
         owner="daemon.watcher",
         trigger=ServiceTrigger.ONESHOT,
         requires=(ServiceCapability.WATCH, ServiceCapability.DERIVED_WRITES),

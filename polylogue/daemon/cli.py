@@ -197,8 +197,8 @@ _STATUS_SNAPSHOT_REFRESH_INTERVAL_SECONDS = 10
 _HEARTBEAT_INTERVAL_SECONDS = 900
 _DB_OPTIMIZE_INTERVAL_SECONDS = 86_400
 
-# polylogue-5xxmc: ``catch_up_complete`` sequences a maintenance loop behind
-# the watcher's readiness (see ``_bridge_catch_up_complete`` below) so
+# polylogue-5xxmc: watcher readiness sequences a maintenance loop behind
+# watch registration (see ``_bridge_watcher_ready`` below) so
 # archive-wide convergence work never races a starting watcher for the single
 # writer. Acquisition itself is the dispatcher's, so the event is now set as
 # soon as the watch is registered. That sequencing is a startup-ordering aid,
@@ -1035,11 +1035,11 @@ async def _periodic_raw_materialization_convergence(
     )
 
 
-async def _bridge_catch_up_complete(
+async def _bridge_watcher_ready(
     source: asyncio.Event,
     target: asyncio.Event,
 ) -> None:
-    """Forward watcher catch-up completion to daemon maintenance loops."""
+    """Forward watcher readiness to daemon maintenance loops."""
     await source.wait()
     target.set()
 
@@ -2044,7 +2044,7 @@ async def _shutdown_writer_coordinator_with_rebuild_exclusion(
 async def run_daemon_services(
     *,
     sources: tuple[WatchSource, ...],
-    debounce_s: float,
+    debounce_s: float | None = None,
     enable_watch: bool,
     enable_source_catchup: bool = True,
     enable_browser_capture: bool,
@@ -2093,7 +2093,6 @@ async def run_daemon_services(
         await _run_daemon_services_under_active_writer_lease(
             rebuild_exclusion=rebuild_exclusion,
             sources=sources,
-            debounce_s=debounce_s,
             enable_watch=enable_watch,
             enable_source_catchup=enable_source_catchup,
             enable_browser_capture=enable_browser_capture,
@@ -2119,7 +2118,6 @@ async def _run_daemon_services_under_active_writer_lease(
     *,
     rebuild_exclusion: ArchiveWriterRebuildExclusion,
     sources: tuple[WatchSource, ...],
-    debounce_s: float,
     enable_watch: bool,
     enable_source_catchup: bool = True,
     enable_browser_capture: bool,
@@ -2546,7 +2544,7 @@ async def _run_daemon_services_under_active_writer_lease(
     converger: DaemonConverger | None = None
     session_profile_callback: SessionProfileCallback | None = None
     embedding_callback: EmbeddingConvergenceOwner | None = None
-    catch_up_complete_gate: asyncio.Event | None = None
+    watcher_ready_gate: asyncio.Event | None = None
     raw_intake_wakeup = asyncio.Event()
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
@@ -2762,8 +2760,8 @@ async def _run_daemon_services_under_active_writer_lease(
                     reason="disabled_for_this_run",
                     loop="drive source catch-up",
                 )
-            catch_up_complete_gate = asyncio.Event() if enable_watch else None
-            gate = catch_up_complete_gate
+            watcher_ready_gate = asyncio.Event() if enable_watch else None
+            gate = watcher_ready_gate
             # One real producer/consumer pair on the in-process bus
             # (polylogue-14t7): the post-commit write effect announces a
             # committed ingest, and the embedding backlog loop wakes on it
@@ -2844,7 +2842,7 @@ async def _run_daemon_services_under_active_writer_lease(
         # ``watcher_creation_blocked``/``watcher_blocked`` above); reuse that
         # result. The watcher itself gates only on ``watcher_creation_blocked``
         # (durable-tier mismatch) -- a derived-only mismatch leaves
-        # ``converger``/``catch_up_complete_gate`` at their None defaults
+        # ``converger``/``watcher_ready_gate`` at their None defaults
         # (the ``if not watcher_blocked:`` block above was skipped), so the
         # watcher runs acquire-only: raw acquisition proceeds, no
         # convergence coupling (polylogue-gbs02).
@@ -3068,14 +3066,14 @@ async def _run_daemon_services_under_active_writer_lease(
                     )
                     supervisor.start("fair_intake", intake_service.run)
                     if enable_watch:
-                        watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
+                        watcher_ready = getattr(watcher, "watcher_ready", None)
                         supervisor.start("watcher", watcher.run)
-                        if catch_up_complete_gate is not None and watcher_catch_up_complete is not None:
+                        if watcher_ready_gate is not None and watcher_ready is not None:
                             supervisor.start(
-                                "catch_up_complete_bridge",
-                                lambda: _bridge_catch_up_complete(
-                                    watcher_catch_up_complete,
-                                    catch_up_complete_gate,
+                                "watcher_ready_bridge",
+                                lambda: _bridge_watcher_ready(
+                                    watcher_ready,
+                                    watcher_ready_gate,
                                 ),
                             )
                     if lifecycle_events_enabled:
@@ -3083,7 +3081,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             "component_started",
                             archive_root_path=archive_root_path,
                             component="intake",
-                            payload={"source_count": len(sources), "debounce_s": debounce_s},
+                            payload={"source_count": len(sources)},
                         )
                     await supervisor.wait()
             else:
@@ -3572,13 +3570,6 @@ def health_command(
     help="Add a watch root alongside typed defaults (repeatable).",
 )
 @click.option(
-    "--debounce-s",
-    type=float,
-    default=2.0,
-    show_default=True,
-    help="Quiet-period (seconds) before parsing a modified file.",
-)
-@click.option(
     "--host",
     default="127.0.0.1",
     show_default=True,
@@ -3692,7 +3683,6 @@ def health_command(
 def run_command(
     ctx: click.Context,
     roots: tuple[Path, ...],
-    debounce_s: float,
     host: str,
     port: int,
     spool_path: Path | None,
@@ -3736,8 +3726,6 @@ def run_command(
 
     if not roots and cfg.source_roots:
         roots = tuple(Path(root).expanduser() for root in cfg.source_roots)
-    if parameter_is_default("debounce_s"):
-        debounce_s = cfg.watch_debounce_s
     if parameter_is_default("host") and cfg.layer_of("browser_capture_host") != "default":
         host = cfg.browser_capture_host
     if parameter_is_default("port") and cfg.layer_of("browser_capture_port") != "default":
@@ -3796,7 +3784,6 @@ def run_command(
         asyncio.run(
             run_daemon_services(
                 sources=sources,
-                debounce_s=debounce_s,
                 enable_watch=enable_watch,
                 enable_source_catchup=enable_source_catchup,
                 enable_browser_capture=enable_browser_capture,
@@ -3828,19 +3815,12 @@ def run_command(
     help="Add a watch root alongside typed defaults (repeatable).",
 )
 @click.option(
-    "--debounce-s",
-    type=float,
-    default=2.0,
-    show_default=True,
-    help="Quiet-period (seconds) before parsing a modified file.",
-)
-@click.option(
     "--no-default-sources",
     is_flag=True,
     default=False,
     help="Watch only the given --root values; do not add the typed default sources.",
 )
-def watch_command(roots: tuple[Path, ...], debounce_s: float, no_default_sources: bool) -> None:
+def watch_command(roots: tuple[Path, ...], no_default_sources: bool) -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.durable_change_train import ArchiveOwnershipError
     from polylogue.paths import archive_root
@@ -3864,7 +3844,6 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float, no_default_sources
         asyncio.run(
             run_daemon_services(
                 sources=sources,
-                debounce_s=debounce_s,
                 enable_watch=True,
                 enable_source_catchup=True,
                 enable_browser_capture=False,
@@ -3872,7 +3851,7 @@ def watch_command(roots: tuple[Path, ...], debounce_s: float, no_default_sources
                 browser_capture_port=8765,
                 browser_capture_spool_path=None,
                 enable_api=False,
-                startup_message=f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
+                startup_message=f"Watching {len(sources)} source(s). Ctrl-C to stop.",
             )
         )
     except ArchiveOwnershipError as exc:

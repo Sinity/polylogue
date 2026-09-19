@@ -569,12 +569,6 @@ class TestPolylogueConfigDefaults:
 
         assert load_polylogue_config().hermes_root == ""
 
-    def test_watch_debounce_default(self, workspace_env: dict[str, Path]) -> None:
-        from polylogue.config import load_polylogue_config
-
-        cfg = load_polylogue_config()
-        assert cfg.watch_debounce_s == 2.0
-
 
 class TestPolylogueConfigEnvOverrides:
     """POLYLOGUE_* env vars override defaults."""
@@ -644,15 +638,6 @@ class TestPolylogueConfigEnvOverrides:
         monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "8888")
         cfg = load_polylogue_config()
         assert cfg.browser_capture_port == 8888
-
-    def test_env_overrides_watch_debounce(
-        self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]
-    ) -> None:
-        from polylogue.config import load_polylogue_config
-
-        monkeypatch.setenv("POLYLOGUE_WATCH_DEBOUNCE_S", "5.0")
-        cfg = load_polylogue_config()
-        assert cfg.watch_debounce_s == 5.0
 
     def test_env_overrides_hermes_root(self, monkeypatch: pytest.MonkeyPatch, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config

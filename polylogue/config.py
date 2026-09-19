@@ -563,10 +563,6 @@ class PolylogueConfig:
         return {}
 
     @property
-    def watch_debounce_s(self) -> float:
-        return float(str(self._data.get("watch_debounce_s", 2.0)))
-
-    @property
     def browser_capture_host(self) -> str:
         return str(self._data.get("browser_capture_host", "127.0.0.1"))
 
@@ -1024,15 +1020,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="path-layout",
         reload_behavior="startup-bound",
         description="Spool directory for browser-capture JSONL before archive ingestion.",
-    ),
-    ConfigInventoryEntry(
-        "watch_debounce_s",
-        toml_path="daemon.watch.debounce_s",
-        env_var="POLYLOGUE_WATCH_DEBOUNCE_S",
-        cli_override="polylogued run --debounce-s",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description="Quiet period before the live watcher parses a changed file.",
     ),
     ConfigInventoryEntry(
         "source_roots",
@@ -1598,7 +1585,6 @@ _INT_CONFIG_KEYS = frozenset(
 _FLOAT_CONFIG_KEYS = frozenset(
     {
         "embedding_max_cost_usd",
-        "watch_debounce_s",
         "daemon_parse_stage_warm_timeout_seconds",
         "live_watcher_parse_stage_warm_timeout_seconds",
     }
@@ -1801,7 +1787,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "health_blob_integrity_sample_size": 100,
         "health_convergence_debt": {},
         "health_cursor_lag": {},
-        "watch_debounce_s": 2.0,
         "browser_capture_host": "127.0.0.1",
         "browser_capture_spool_path": "",
         "browser_capture_auth_token": None,
