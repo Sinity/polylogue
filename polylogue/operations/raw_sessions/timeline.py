@@ -5,7 +5,8 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from .sessions import OpaqueSessionCursor, SessionError, SessionLogService
+from .page import CompactJSONPage
+from .sessions import OpaqueSessionCursor, SessionError, SessionLogService, _ObservedTimeline
 from .sources import (
     LOCAL_AUTHORITY,
     UNAVAILABLE_SOURCES,
@@ -124,41 +125,46 @@ class TimelineService:
                     }
                 )
 
-        # One look-ahead per provider is sufficient for an exact k-way merge:
-        # a provider's next file cannot outrank its pending newest entry.
+        # Every refill in this request shares the same metadata observation.
+        # New external requests create new observations; this is not a cache.
+        readers: dict[str, _ObservedTimeline] = {}
+
+        def load_head(provider: str, after: str | None) -> dict[str, Any]:
+            try:
+                reader = readers.get(provider)
+                if reader is None:
+                    reader = self.sessions.observe_timeline(provider, start_ns, end_ns, query)
+                    readers[provider] = reader
+                result = reader.page(1, cursor=after, cursor_key=effective_cursor_key, scan_bytes=scan_bytes)
+            except SessionError as exc:
+                raise TimelineError(str(exc)) from exc
+            if result["entries"]:
+                state["pending"][provider] = {"entry": result["entries"][0], "after": result["next_cursor"]}
+            elif result["next_cursor"] is None:
+                state["done"].append(provider)
+            else:
+                state["current"][provider] = result["next_cursor"]
+            return result
+
+        # One look-ahead per provider is sufficient while each head is known.
         for provider in raw:
             if provider in state["done"] or provider in state["pending"]:
                 continue
-            try:
-                result = self.sessions.timeline(
-                    provider,
-                    start_ns,
-                    end_ns,
-                    query,
-                    1,
-                    cursor=state["current"].get(provider),
-                    cursor_key=effective_cursor_key,
-                    scan_bytes=scan_bytes,
-                )
-            except SessionError as exc:
-                raise TimelineError(str(exc)) from exc
+            result = load_head(provider, state["current"].get(provider))
             source_row = next(row for row in sources if row["source"] == provider)
             source_row["coverage"] = {
                 "scanned_bytes": result["scanned_bytes"],
                 "truncated": result["truncated"],
             }
-            if result["entries"]:
-                state["pending"][provider] = {
-                    "entry": result["entries"][0],
-                    "after": result["next_cursor"],
-                }
-            elif result["next_cursor"] is not None:
-                state["current"][provider] = result["next_cursor"]
-            else:
-                state["done"].append(provider)
 
-        entries: list[dict[str, Any]] = []
+        page = CompactJSONPage(max(1, self.sessions.max_result_bytes - 16_384))
+        entries = page.items
         while state["pending"] and len(entries) < limit:
+            # A bounded filtered scan may advance without finding its next
+            # head. Do not emit an older head until every live source has a
+            # head or is exhausted. A short or empty continued page is valid.
+            if any(provider not in state["done"] and provider not in state["pending"] for provider in raw):
+                break
             provider, pending = max(state["pending"].items(), key=lambda row: row[1]["entry"]["mtime_ns"])
             entry = pending["entry"]
             candidate = {
@@ -167,41 +173,16 @@ class TimelineService:
                 "object_reference": entry["reference"],
                 **{key: value for key, value in entry.items() if key != "reference"},
             }
-            if len(json.dumps(entries + [candidate], separators=(",", ":")).encode()) > max(
-                1, self.sessions.max_result_bytes - 16_384
-            ):
+            if not page.try_append(candidate):
                 break
-            entries.append(candidate)
             state["pending"].pop(provider)
             if pending["after"] is None:
                 state["done"].append(provider)
             else:
                 state["current"][provider] = pending["after"]
-                # Metadata-only timelines can cheaply fill a page from the
-                # winning provider without weakening the k-way ordering.
+                # Reuse the request-owned observation for the next head.
                 if query is None:
-                    try:
-                        follow = self.sessions.timeline(
-                            provider,
-                            start_ns,
-                            end_ns,
-                            None,
-                            1,
-                            cursor=pending["after"],
-                            cursor_key=effective_cursor_key,
-                            scan_bytes=scan_bytes,
-                        )
-                    except SessionError as exc:
-                        raise TimelineError(str(exc)) from exc
-                    if follow["entries"]:
-                        state["pending"][provider] = {
-                            "entry": follow["entries"][0],
-                            "after": follow["next_cursor"],
-                        }
-                    elif follow["next_cursor"] is None:
-                        state["done"].append(provider)
-                    else:
-                        state["current"][provider] = follow["next_cursor"]
+                    load_head(provider, pending["after"])
 
         more = bool(state["pending"]) or any(provider not in state["done"] for provider in raw)
         next_cursor = None

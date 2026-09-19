@@ -269,6 +269,64 @@ def test_raw_fanout_continuation_keeps_pending_source_and_global_timeline_order(
     assert stamps == [4_000_000_000, 3_000_000_000, 2_000_000_000, 1_000_000_000]
 
 
+def test_raw_timeline_observes_each_provider_once_per_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    roots = [tmp_path / name for name in ("claude", "codex")]
+    sources = tuple(
+        SessionSource(provider, root) for provider, root in zip(("claude-code", "codex"), roots, strict=True)
+    )
+    for index, root in enumerate(roots):
+        root.mkdir()
+        for file_index in range(3):
+            path = root / f"{file_index}.jsonl"
+            path.write_text("{}\n")
+            stamp = (index * 3 + file_index + 1) * 1_000_000_000
+            os.utime(path, ns=(stamp, stamp))
+
+    from polylogue.operations.raw_sessions.sessions import SessionLogService
+
+    observed: list[str] = []
+    original = SessionLogService._files
+
+    def record(_self: SessionLogService, source: SessionSource) -> list[tuple[Path, os.stat_result]]:
+        observed.append(source.provider)
+        return original(source)
+
+    monkeypatch.setattr(SessionLogService, "_files", record)
+
+    result = raw_operation(RawTimeline(limit=5), sources=sources)
+
+    assert result.items
+    assert observed == ["claude-code", "codex"]
+
+
+def test_filtered_raw_timeline_waits_for_a_sparse_source_frontier(tmp_path: Path) -> None:
+    newer_root = tmp_path / "claude"
+    older_root = tmp_path / "codex"
+    newer_root.mkdir()
+    older_root.mkdir()
+    newer = newer_root / "newer.jsonl"
+    older = older_root / "older.jsonl"
+    newer.write_text("x" * 24 + " needle\n")
+    older.write_text("needle\n")
+    os.utime(newer, ns=(2_000_000_000, 2_000_000_000))
+    os.utime(older, ns=(1_000_000_000, 1_000_000_000))
+    sources = (SessionSource("claude-code", newer_root), SessionSource("codex", older_root))
+
+    request = RawTimeline(limit=1, query="needle", scan_bytes=8)
+    page = raw_operation(request, sources=sources)
+    assert page.items == []
+    assert page.continuation is not None
+    assert page.coverage.complete is False
+
+    for _ in range(64):
+        if page.items:
+            break
+        page = raw_operation(request.model_copy(update={"continuation": page.continuation}), sources=sources)
+
+    assert page.items
+    assert [row.reference for row in page.items] == ["claude-code:newer.jsonl"]
+
+
 @pytest.mark.uses_real_clock("Cancellation must interrupt a running SQLite statement through the owner transaction.")
 @pytest.mark.asyncio
 async def test_session_owner_cancellation_drains_controlled_reader(
