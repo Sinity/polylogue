@@ -208,6 +208,92 @@ class ArtifactResourceMeasurement:
 
 
 @dataclass(frozen=True)
+class FinishedBuildResourceMeasurement:
+    """Physical evidence from one completed build interval.
+
+    The counters retain their collection boundary. ``ru_maxrss`` is this
+    process's high-water mark, and ``RUSAGE_CHILDREN`` is cumulative, so
+    neither is presented as an invented per-worker allocation. A caller that
+    starts isolated production arms can compare the values directly; callers
+    sharing a process retain the evidence but must not claim it is exclusive.
+    """
+
+    elapsed_seconds: float
+    self_cpu_seconds: float
+    child_cpu_seconds: float
+    peak_rss_self_bytes: int
+    read_io_bytes: int
+    write_io_bytes: int
+    storage_bytes: int
+
+    def __post_init__(self) -> None:
+        if (
+            min(
+                self.elapsed_seconds,
+                self.self_cpu_seconds,
+                self.child_cpu_seconds,
+                self.peak_rss_self_bytes,
+                self.read_io_bytes,
+                self.write_io_bytes,
+                self.storage_bytes,
+            )
+            < 0
+        ):
+            raise ValueError("finished-build resource measurement cannot be negative")
+
+    def to_payload(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass
+class FinishedBuildResourceProbe:
+    """One bounded interval for a production finished-build arm.
+
+    This uses the same kernel counters as artifact construction. It starts
+    immediately before the production route and finishes only after the
+    caller has completed its final read/closure checks, preventing a receipt
+    from reporting a fast early stage as the finished operation.
+    """
+
+    started: float
+    self_cpu_seconds: float
+    child_cpu_seconds: float
+    read_io_bytes: int
+    write_io_bytes: int
+    _finished: bool = False
+
+    @classmethod
+    def start(cls) -> FinishedBuildResourceProbe:
+        self_usage = resource.getrusage(resource.RUSAGE_SELF)
+        child_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        return cls(
+            started=time.monotonic(),
+            self_cpu_seconds=self_usage.ru_utime + self_usage.ru_stime,
+            child_cpu_seconds=child_usage.ru_utime + child_usage.ru_stime,
+            read_io_bytes=_process_io_bytes("read_bytes"),
+            write_io_bytes=_process_io_bytes("write_bytes"),
+        )
+
+    def finish(self, storage_root: Path) -> FinishedBuildResourceMeasurement:
+        """Record the interval after the build's output has been finalized."""
+        if self._finished:
+            raise RuntimeError("finished-build resource probe has already been closed")
+        self_usage = resource.getrusage(resource.RUSAGE_SELF)
+        child_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        measurement = FinishedBuildResourceMeasurement(
+            elapsed_seconds=max(time.monotonic() - self.started, 0.0),
+            self_cpu_seconds=max((self_usage.ru_utime + self_usage.ru_stime) - self.self_cpu_seconds, 0.0),
+            child_cpu_seconds=max((child_usage.ru_utime + child_usage.ru_stime) - self.child_cpu_seconds, 0.0),
+            peak_rss_self_bytes=max(self_usage.ru_maxrss, 0) * 1024,
+            read_io_bytes=max(_process_io_bytes("read_bytes") - self.read_io_bytes, 0),
+            write_io_bytes=max(_process_io_bytes("write_bytes") - self.write_io_bytes, 0),
+            storage_bytes=sum(path.stat().st_size for path in _pinned_paths(storage_root) if _is_regular(path)),
+        )
+        self._finished = True
+        return measurement
+
+
+@dataclass(frozen=True)
 class CorpusArtifactManifest:
     """Authenticated publication record for a deterministic corpus artifact.
 
@@ -1342,21 +1428,28 @@ def _measure_rows(root: Path) -> dict[str, int]:
     return counts
 
 
-def _process_write_bytes() -> int:
-    """Bytes this process has sent to the block layer, or 0 where unreadable.
+def _process_io_bytes(field_name: str) -> int:
+    """One Linux block-layer I/O counter, or 0 where unreadable.
 
     ``/proc/self/io`` is Linux-only and can be denied by kernel hardening, so a
     missing counter reports as an unmeasured 0 rather than failing a build.
     """
+    if field_name not in {"read_bytes", "write_bytes"}:
+        raise ValueError(f"unsupported process I/O counter: {field_name}")
     try:
         with open("/proc/self/io", encoding="utf-8") as handle:
             for line in handle:
                 field, _, value = line.partition(":")
-                if field == "write_bytes":
+                if field == field_name:
                     return max(int(value.strip()), 0)
     except (OSError, ValueError):
         return 0
     return 0
+
+
+def _process_write_bytes() -> int:
+    """Bytes this process has sent to the block layer, or 0 where unreadable."""
+    return _process_io_bytes("write_bytes")
 
 
 def _peak_rss_bytes() -> int:
@@ -3241,6 +3334,8 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
 __all__ = [
     "ArtifactGcDisposition",
     "ArtifactResourceMeasurement",
+    "FinishedBuildResourceMeasurement",
+    "FinishedBuildResourceProbe",
     "ArtifactGcEntry",
     "ArtifactGcReport",
     "ImmutableTreeArtifact",
