@@ -117,6 +117,24 @@ def test_jsonl_complete_prefix_validates_only_the_tail_candidate(monkeypatch: py
     assert calls == 1
 
 
+def test_jsonl_complete_prefix_keeps_malformed_record_before_terminal_blank_lines() -> None:
+    """A one-line tail probe must not skip a malformed, newline-terminated record."""
+    payload = b'{"accepted":1}\n{"malformed":}\n\n'
+
+    boundary = jsonl_complete_prefix(payload)
+
+    assert boundary == JsonlBoundary(len(b'{"accepted":1}\n'), 1, True, True)
+
+
+def test_jsonl_complete_prefix_counts_records_before_terminal_blank_lines() -> None:
+    """Blank JSONL separators are not admitted records."""
+    payload = b'{"first":1}\n\n{"second":2}\n\n'
+
+    boundary = jsonl_complete_prefix(payload)
+
+    assert boundary == JsonlBoundary(len(payload), 2, False)
+
+
 def test_claude_frontier_accepts_header_replacement_and_conserves_body(tmp_path: Path) -> None:
     path, plan, owner, processor = _seed_claude_live_append_plan(
         tmp_path,
