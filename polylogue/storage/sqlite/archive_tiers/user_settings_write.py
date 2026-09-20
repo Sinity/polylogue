@@ -47,12 +47,22 @@ def known_setting_keys() -> frozenset[str]:
     return frozenset(_SETTING_VALIDATORS)
 
 
-def _validate_setting(setting_key: str, value: JSONValue) -> None:
+def validate_user_setting(setting_key: str, value: JSONValue) -> None:
+    """Refuse an unknown key or a value its validator rejects.
+
+    Public because the write is prepared and authorized before it is applied
+    (polylogue-r29bv): a refusal that only fires inside ``set_user_setting``
+    would issue an authorization for a write that cannot happen.
+    """
+
     validator = _SETTING_VALIDATORS.get(setting_key)
     if validator is None:
         choices = ", ".join(sorted(_SETTING_VALIDATORS))
         raise ValueError(f"unknown setting key {setting_key!r}; known keys: {choices}")
     validator(value)
+
+
+_validate_setting = validate_user_setting
 
 
 @dataclass(frozen=True, slots=True)
