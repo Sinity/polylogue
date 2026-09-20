@@ -885,8 +885,6 @@ Prompts: `cost_of`.
 - `polylogue://messages/{conv_id}` — objects message; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
 - `polylogue://session-tree/{conv_id}` — objects session; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
 - `polylogue://origin/{name}/recent` — objects session, result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://raw-authority-census/{census_id}/{offset}` — objects result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}` — objects result-set; required capability `read`; read-only object projection; resources never acquire instruction or mutation authority.
 
 ### Workflow prompts
 

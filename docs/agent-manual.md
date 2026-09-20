@@ -212,8 +212,6 @@ Stable objects are addressable as MCP resources and as `read`/`get` refs. Curren
 - `polylogue://messages/{conv_id}` — read-only object projection; resources never acquire instruction or mutation authority.
 - `polylogue://session-tree/{conv_id}` — read-only object projection; resources never acquire instruction or mutation authority.
 - `polylogue://origin/{name}/recent` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://raw-authority-census/{census_id}/{offset}` — read-only object projection; resources never acquire instruction or mutation authority.
-- `polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}` — read-only object projection; resources never acquire instruction or mutation authority.
 - `polylogue://agent/manual` — this generated standing manual.
 - `polylogue://agent/reference` — the generated deep reference.
 - `polylogue://agent/manifest` — capability-scoped target/runtime reconciliation for this server.

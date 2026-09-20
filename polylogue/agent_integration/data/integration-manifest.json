@@ -86,9 +86,7 @@
     "polylogue://session/{conv_id}",
     "polylogue://messages/{conv_id}",
     "polylogue://session-tree/{conv_id}",
-    "polylogue://origin/{name}/recent",
-    "polylogue://raw-authority-census/{census_id}/{offset}",
-    "polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}"
+    "polylogue://origin/{name}/recent"
   ],
   "schema_status": "live-verified",
   "schema_version": 2,
