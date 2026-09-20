@@ -347,3 +347,97 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
     assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 1
     index.close()
     source.close()
+
+
+def _multi_attachment_session(session_id: str, file_ids: tuple[str, ...]) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id=session_id,
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="two drive docs")],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id=file_id,
+                provider_file_id=file_id,
+                message_provider_id="m0",
+                name=f"{file_id}.txt",
+                mime_type="text/plain",
+                upload_origin="drive",
+            )
+            for file_id in file_ids
+        ],
+    )
+
+
+def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path: Path) -> None:
+    """Retained bytes stay reachable when a raw carries several attachments.
+
+    A Drive session with two live-fetched attachments writes two durable
+    ``blob_refs`` rows under the same ``ref_id``. After the derived tier is
+    rebuilt both index rows are ``unfetched`` while both payloads are still in
+    the blob store, so both must re-bind from retained evidence without a
+    provider request -- and must do so even when the provider files are gone.
+
+    Anti-vacuity: with a raw-wide acquisition coordinate the two refs are
+    indistinguishable, the survival probe refuses as ambiguous, both rows fall
+    through to the downloader, the deleted-file refusal marks them terminally
+    ``unavailable``, and the retained bytes become unreachable from the index.
+    Reverting the per-attachment coordinate therefore fails these assertions.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(
+        index,
+        _multi_attachment_session("two-docs", ("drive-file-a", "drive-file-b")),
+        raw_id="two-docs-raw",
+    )
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    source.row_factory = sqlite3.Row
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    payloads = {
+        "drive-file-a": b"first retained document",
+        "drive-file-b": b"second retained document",
+    }
+    first = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=lambda file_id: payloads[file_id],
+    )
+    assert first.acquired == 2
+    assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 2
+
+    # Rebuild the derived tier; the durable source ledger and blob bytes survive.
+    with index:
+        index.execute("UPDATE attachments SET blob_hash = NULL, byte_count = 0, acquisition_status = 'unfetched'")
+
+    attempted: list[str] = []
+
+    def gone(file_id: str) -> bytes:
+        attempted.append(file_id)
+        raise DriveNotFoundError(file_id)
+
+    second = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=gone,
+    )
+
+    rows = {
+        bytes(row["blob_hash"]).hex() if row["blob_hash"] is not None else None: row["acquisition_status"]
+        for row in index.execute("SELECT blob_hash, acquisition_status FROM attachments")
+    }
+    assert attempted == []
+    assert second.acquired == 2
+    assert second.terminal == 0
+    assert second.complete
+    assert rows == {
+        hashlib.sha256(payloads["drive-file-a"]).digest().hex(): "acquired",
+        hashlib.sha256(payloads["drive-file-b"]).digest().hex(): "acquired",
+    }
+    # Re-binding adds no duplicate durable ref.
+    assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 2
+    index.close()
+    source.close()
