@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1129,3 +1129,182 @@ def prune_successful_verify_runs(
         _close_retention_lock(lock_fd)
         for fd in (runs_fd, verify_fd, root_fd):
             os.close(fd)
+
+
+#: The diagnosis an abandoned run carries. Distinct from
+#: ``verification_interrupted``, which is what the in-process signal handlers
+#: write: that one proves a handler ran and unwound. This one says the
+#: opposite -- the run's own process died without ever writing a terminal
+#: state, and this receipt was reconciled from outside it.
+ABANDONED_DIAGNOSIS = "verification_abandoned"
+#: Where AgentCTL keeps the per-job outcome document this reconciler adopts.
+_AGENTCTL_JOBS_RELPATH = Path("agentctl") / "jobs"
+
+
+def _owning_pid(run_id: str) -> int | None:
+    """The pid embedded in ``make_run_id``'s ``<stamp>-<tier>-<pid>-<uuid8>``.
+
+    A tier may contain ``-`` (``focused-test``), so the pid is read from the
+    right. None when the id does not carry one, which is the same answer as a
+    live pid: nothing about this run can be concluded from outside it.
+    """
+    parts = run_id.rsplit("-", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        pid = int(parts[1])
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _process_is_live(pid: int) -> bool:
+    """Whether ``pid`` still names a process.
+
+    A pid this user may not signal is still a live process, so
+    ``PermissionError`` is 'live'. Every uncertain answer is 'live': the cost
+    of leaving a stranded receipt one cycle longer is a stale row, and the cost
+    of the opposite is overwriting a running verification's own receipt.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
+def _agentctl_state_root(env: Mapping[str, str] | None = None) -> Path:
+    source = os.environ if env is None else env
+    state_home = source.get("XDG_STATE_HOME")
+    base = Path(state_home) if state_home else Path(source.get("HOME", "~")).expanduser() / ".local" / "state"
+    return base / _AGENTCTL_JOBS_RELPATH
+
+
+def read_agentctl_outcome(job_id: str, *, state_root: Path | None = None) -> dict[str, Any] | None:
+    """The AgentCTL ``.outcome`` document for ``job_id``, when one exists.
+
+    This is execution provenance, not semantic status: it says how the process
+    ended, which is exactly the fact a receipt abandoned mid-run is missing.
+    """
+    if not job_id or "/" in job_id or job_id.startswith("."):
+        return None
+    root = _agentctl_state_root() if state_root is None else state_root
+    try:
+        document = json.loads((root / f"{job_id}.outcome").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _adopt_outcome(payload: dict[str, Any], outcome: Mapping[str, Any]) -> None:
+    """Take the process-level ending AgentCTL recorded for this run."""
+    exit_code = outcome.get("exit_code")
+    if isinstance(exit_code, int):
+        payload["exit_code"] = exit_code
+        payload["status"] = "success" if exit_code == 0 else "failed"
+    ended = outcome.get("outcome")
+    if isinstance(ended, str) and ended:
+        payload["termination_reason"] = ended
+    payload["agentctl_outcome_adopted"] = True
+
+
+def reconcile_abandoned_verify_runs(
+    *,
+    runs_root: Path,
+    state_root: Path | None = None,
+    is_live: Callable[[int], bool] = _process_is_live,
+) -> list[dict[str, Any]]:
+    """Give every stranded ``running`` receipt a terminal state, and say why.
+
+    ``VerifyRun.finish`` is the only in-process exit from ``running``, and a
+    SIGKILL (systemd-oomd, a hard cancel, a host that lost power) cannot reach
+    it: the signal handlers in ``devtools.verify`` fire for SIGINT/SIGTERM and
+    for nothing else. Without this, such a run stays ``running`` forever and
+    every reader downstream propagates that as a legal state -- four
+    consecutive scheduled runs were stranded that way by 2026-09-20.
+
+    The owning pid is embedded in the run id, so liveness is decidable from the
+    receipt alone. A run whose pid is still live is LEFT ALONE; only a receipt
+    with no process behind it is reconciled, and any AgentCTL ``.outcome``
+    recorded for the same job is adopted so the run reports how it actually
+    ended rather than merely that it stopped.
+
+    ``runs_root`` is the directory of run directories -- the one the caller is
+    about to read -- so a reader with a relocated cache reconciles that cache
+    and not the checkout's.
+
+    Returns the payloads it rewrote, newest first by run id, so a caller can
+    append history for them.
+    """
+    reconciled: list[dict[str, Any]] = []
+    try:
+        entries = sorted(runs_root.iterdir())
+    except OSError:
+        return reconciled
+    for run_dir in entries:
+        path = run_dir / "run.json"
+        try:
+            if not run_dir.is_dir() or run_dir.is_symlink():
+                continue
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("status") != "running":
+            continue
+        run_id = payload.get("run_id")
+        if not isinstance(run_id, str) or run_dir.name != run_id:
+            continue
+        pid = _owning_pid(run_id)
+        if pid is None or is_live(pid):
+            continue
+        payload["status"] = "failed"
+        payload["exit_code"] = None
+        payload["diagnosis"] = ABANDONED_DIAGNOSIS
+        payload["finished_at"] = utc_now()
+        payload["abandoned_pid"] = pid
+        job_id = payload.get("agentctl_job_id")
+        if isinstance(job_id, str):
+            outcome = read_agentctl_outcome(job_id, state_root=state_root)
+            if outcome is not None:
+                _adopt_outcome(payload, outcome)
+        for step in payload.get("steps") or ():
+            if isinstance(step, dict) and step.get("status") == "running":
+                step["status"] = "failed"
+                step["exit"] = payload.get("exit_code")
+                step["diagnosis"] = ABANDONED_DIAGNOSIS
+                step["finished_at"] = payload["finished_at"]
+        try:
+            _write_json(path, payload)
+        except OSError:
+            continue
+        reconciled.append(payload)
+    reconciled.sort(key=lambda entry: str(entry.get("run_id")), reverse=True)
+    return reconciled
+
+
+def reconcile_and_record_abandoned_verify_runs(
+    *,
+    runs_root: Path,
+    state_root: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Reconcile stranded receipts and give each one a durable history row.
+
+    ``finish`` is what normally appends history, so an abandoned run has none:
+    without a row it is invisible to ``devtools why --history`` and outside
+    what ``prune_successful_verify_runs`` may bound. Appending here is what
+    turns the reconciliation into evidence rather than a local file edit.
+
+    The history and evidence lanes are derived from ``runs_root`` for the same
+    reason the scan is: a caller reading a relocated cache must not append to
+    the checkout's.
+    """
+    reconciled = reconcile_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
+    cache = runs_root.parent
+    for payload in reconciled:
+        with contextlib.suppress(OSError, ValueError):
+            append_verify_history(payload, path=cache / VERIFY_HISTORY_PATH.name)
+        with contextlib.suppress(OSError, ValueError):
+            append_verification_evidence(payload, path=cache / VERIFY_EVIDENCE_PATH.name)
+    return reconciled

@@ -59,6 +59,7 @@ from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     PYTEST_CANONICAL_REPORT_NAME,
+    VERIFY_RUNS_DIR,
     VerifyRun,
     append_verification_evidence,
     append_verify_history,
@@ -67,6 +68,7 @@ from devtools.verify_runs import (
     env_for_pytest_step,
     git_head,
     prune_successful_verify_runs,
+    reconcile_and_record_abandoned_verify_runs,
 )
 from devtools.worker_memory import CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
@@ -1000,6 +1002,11 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--runner", choices=("managed", "isolated"), default="managed")
     args = parser.parse_args(argv)
     _anchor_verification_paths()
+    # Before this run writes its own ``running`` receipt, give a terminal state
+    # to any earlier one whose process is gone. A verification killed outright
+    # runs no handler of its own, so the next reader is the only thing that can
+    # close it out.
+    reconcile_and_record_abandoned_verify_runs(runs_root=ROOT / VERIFY_RUNS_DIR)
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"

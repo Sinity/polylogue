@@ -270,3 +270,120 @@ def test_detail_without_a_durable_history_row_is_reported_not_silently_retained(
 
     assert receipt["orphaned_detail_run_ids"] == [orphan["run_id"]]
     assert (tmp_path / str(orphan["artifact_dir"])).exists()
+
+
+def _running_run(root: Path, *, pid: int, job_id: str | None = None) -> Path:
+    """A ``running`` receipt whose run id names ``pid`` as its owner.
+
+    Built through the production id shape rather than a hand-written string:
+    the reconciler reads the owning pid out of the run id, so a fixture that
+    invented its own format would prove nothing about the real one.
+    """
+    run = VerifyRun(tier="all", argv=["--all"], git_head="git:test", root=root, mirror_current=False)
+    stamp, tier, _pid, suffix = str(run.run_id).rsplit("-", 3)
+    run_id = f"{stamp}-{tier}-{pid}-{suffix}"
+    moved = root / verify_runs.VERIFY_RUNS_DIR / run_id
+    run.run_dir.rename(moved)
+    payload = dict(verify_runs._read_json(moved / "run.json") or {})
+    payload["run_id"] = run_id
+    payload["artifact_dir"] = str(verify_runs.VERIFY_RUNS_DIR / run_id)
+    payload["steps"] = [{"step_id": "01-pytest", "name": "pytest", "status": "running"}]
+    if job_id is not None:
+        payload["agentctl_job_id"] = job_id
+    verify_runs._write_json(moved / "run.json", payload)
+    return moved / "run.json"
+
+
+def _dead_pid() -> int:
+    """A pid with no process behind it, established rather than assumed."""
+    spawned = os.fork()
+    if spawned == 0:  # pragma: no cover - the child never returns to pytest
+        os._exit(0)
+    os.waitpid(spawned, 0)
+    return spawned
+
+
+def test_a_killed_run_becomes_terminal_on_the_next_receipt_read(tmp_path: Path) -> None:
+    """A SIGKILLed verification cannot close its own receipt; the next read must.
+
+    ``VerifyRun.finish`` is the only in-process exit from ``running``, and
+    systemd-oomd sends SIGKILL, so four consecutive scheduled runs sat
+    ``running`` forever with nothing that would ever correct them.
+
+    Anti-vacuity: remove the reconciler call (or the status rewrite inside it)
+    and the receipt stays ``running`` and the history row is never appended --
+    both assertions below go red.
+    """
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+    path = _running_run(tmp_path, pid=_dead_pid())
+
+    reconciled = verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root)
+
+    assert [entry["run_id"] for entry in reconciled] == [path.parent.name]
+    payload = cast(dict[str, object], verify_runs._read_json(path))
+    assert payload["status"] == "failed"
+    assert payload["diagnosis"] == verify_runs.ABANDONED_DIAGNOSIS
+    assert payload["finished_at"]
+    assert payload["steps"][0]["status"] == "failed"  # type: ignore[index]
+    # Terminal for every downstream reader, not merely on disk.
+    assert verify_runs._terminal_status(payload) == "failed"
+    assert verify_runs.canonical_verification_receipt(payload)["status"] != "running"
+    history = verify_runs._read_history_pinned(tmp_path / verify_runs.VERIFY_HISTORY_PATH)
+    assert [row["run_id"] for row in history] == [path.parent.name]
+
+
+def test_a_running_run_with_a_live_owner_is_left_alone(tmp_path: Path) -> None:
+    """A verification still running owns its own receipt.
+
+    Anti-vacuity: reconcile on status alone, without the liveness check, and
+    this run's receipt is overwritten as abandoned while its process is still
+    writing steps into it.
+    """
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+    path = _running_run(tmp_path, pid=os.getpid())
+
+    assert verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root) == []
+
+    payload = cast(dict[str, object], verify_runs._read_json(path))
+    assert payload["status"] == "running"
+    assert "diagnosis" not in payload
+    assert not (tmp_path / verify_runs.VERIFY_HISTORY_PATH).exists()
+
+
+def test_an_abandoned_run_adopts_the_agentctl_outcome_when_one_exists(tmp_path: Path) -> None:
+    """The authoritative ending was recorded next door the whole time.
+
+    Anti-vacuity: drop the adoption and the run reports only that it stopped,
+    with no exit code and no cancellation -- the ``cancelled`` assertion and
+    the exit code both go red.
+    """
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+    state_root = tmp_path / "agentctl-jobs"
+    state_root.mkdir()
+    (state_root / "polylogue-verify_all-6e84077f.outcome").write_text(
+        '{"exit_code": 130, "outcome": "cancelled", "pool": "pytest-heavy"}', encoding="utf-8"
+    )
+    path = _running_run(tmp_path, pid=_dead_pid(), job_id="polylogue-verify_all-6e84077f")
+
+    verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
+
+    payload = cast(dict[str, object], verify_runs._read_json(path))
+    assert payload["exit_code"] == 130
+    assert payload["diagnosis"] == verify_runs.ABANDONED_DIAGNOSIS
+    assert payload["agentctl_outcome_adopted"] is True
+    assert verify_runs._terminal_status(payload) == "cancelled"
+
+
+def test_a_run_id_without_an_owning_pid_is_not_reconciled(tmp_path: Path) -> None:
+    """An id this reconciler cannot read an owner from proves nothing.
+
+    Anti-vacuity: treat an unparseable id as abandoned and any receipt written
+    by a future id shape is closed out while its run is still going.
+    """
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+    run_dir = runs_root / "handwritten-run"
+    run_dir.mkdir(parents=True)
+    verify_runs._write_json(run_dir / "run.json", {"run_id": "handwritten-run", "status": "running", "steps": []})
+
+    assert verify_runs.reconcile_abandoned_verify_runs(runs_root=runs_root) == []
+    assert cast(dict[str, object], verify_runs._read_json(run_dir / "run.json"))["status"] == "running"
