@@ -24,6 +24,7 @@ domain models rather than plans:
 | [Derived-artifact freshness](derived-artifact-freshness.md) | Source-digest and verify-or-refuse law for derived state (polylogue-ntwtk) |
 | [Convergence simplification inventory](convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign — what phases (b)-(d) remove and why (polylogue-m6tp) |
 | [Addressable raw decisions](raw-decision-authority.md) | Durable raw-authority decisions addressed by plan digest instead of per-pass census membership; per-field disposition, transactions, and migration order (polylogue-gen6d) |
+| [Interrupted retained source generations](interrupted-retained-source-generation.md) | Durable abandonment and release policy for accepted source generations left nonterminal by an interrupted daemon ingest (polylogue-xt5ga) |
 | [Daemon core](daemon-core.md) | The resident daemon: ownership, write serialization, ingest shape, convergence, service lifecycle, status cost, with rehearsal measurements (polylogue-bp12n) |
 | [Domain derivation adoption ledger](domain-derivation-deletion-ledger.md) | Production ownership, deletion accounting, and remaining convergence predecessors. |
 
