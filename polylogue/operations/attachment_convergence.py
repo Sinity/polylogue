@@ -98,6 +98,25 @@ def _permanent_failure(exc: BaseException) -> bool:
     return status in {403, 404}
 
 
+def _acquisition_coordinate(row: sqlite3.Row) -> str:
+    """Name the attachment whose bytes a durable source ref carries.
+
+    ``blob_refs`` is keyed on ``(blob_hash, ref_type, ref_id)``; the raw
+    session id alone therefore does not distinguish two attachments of the
+    same raw, and ``source_url`` is ``None`` for every Drive-hosted document
+    (``sources/parsers/drive_support_attachments.py`` never sets it).  Writing
+    one raw-wide coordinate made every multi-attachment raw ambiguous on the
+    way back: after a derived-tier rebuild the survival probe refused, both
+    rows fell through to the provider, and a deleted file turned retained
+    bytes into a terminal ``unavailable`` row.  The provider file id is the
+    stable per-attachment name available at both ends of that round trip.
+    """
+    source_url = row["source_url"]
+    if isinstance(source_url, str) and source_url:
+        return source_url
+    return f"attachment:{row['provider_file_id']}"
+
+
 def _surviving_blob_ref(
     source_conn: sqlite3.Connection,
     *,
@@ -113,9 +132,11 @@ def _surviving_blob_ref(
     the correct recovery and a re-download is waste that a dead provider file
     would turn into permanent loss.
 
-    Ambiguity is refused rather than guessed: several attachments of one raw
-    session can share the fallback coordinate, and binding the wrong blob to
-    an attachment is worse than fetching it again.
+    Ambiguity is refused rather than guessed: binding the wrong blob to an
+    attachment is worse than fetching it again.  ``_acquisition_coordinate``
+    keeps the coordinate per attachment rather than per raw session, so the
+    refusal is reserved for genuinely indistinguishable evidence instead of
+    firing on every raw that carries more than one attachment.
     """
     rows = source_conn.execute(
         """
@@ -189,7 +210,7 @@ def converge_drive_attachments(
                 terminal_ids.append(attachment_id)
                 continue
             raw_id = str(row["raw_id"])
-            source_path = str(row["source_url"] or "attachment-convergence")
+            source_path = _acquisition_coordinate(row)
             surviving = _surviving_blob_ref(
                 source_conn,
                 raw_id=raw_id,
@@ -276,7 +297,7 @@ def converge_drive_attachments(
                     blob_hash=blob_hash,
                     raw_id=str(row["raw_id"]),
                     ref_type="attachment",
-                    source_path=str(row["source_url"] or "attachment-convergence"),
+                    source_path=source_path,
                     size_bytes=byte_count,
                     acquired_at_ms=observed_at_ms,
                     publication_receipt_id=publisher.receipt_id(blob_hash_hex),
