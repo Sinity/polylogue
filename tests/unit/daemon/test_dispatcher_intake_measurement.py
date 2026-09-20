@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import statistics
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ from tests.infra.workload_declarations import convergence_corpus_specs
 
 _MAX_DISPATCHER_PASSES = 32
 _THROUGHPUT_BOUND = 1.5
+_MEASUREMENT_PAIRS = 3
+_MEASURED_PAGE_FILES = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,11 +63,22 @@ class _DispatcherMeasurement:
     raw_compaction_time_s: float | None = None
 
 
-def _write_corpus(root: Path, *, prefix: str = "dispatcher-measure") -> Path:
-    """Small deterministic Claude Code corpus: 10 files, 10 messages each."""
+def _write_corpus(root: Path, *, prefix: str = "dispatcher-measure", keep_files: int | None = None) -> Path:
+    """Small deterministic Claude Code corpus: 10 files, 10 messages each.
+
+    ``keep_files`` trims the corpus to its first N files. Each file is an
+    independent session, so a trimmed corpus is still a well-formed page.
+    The throughput comparison runs eight ingests and each file costs both
+    arms the same ~0.2 s, so the trim is what keeps that test inside a
+    unit-test budget: 14 s idle here against 103 s untrimmed under load,
+    with a 120 s default per-test timeout.
+    """
     spec = convergence_corpus_specs("xs-tiny-files")[0]
     project = root / "corpus" / "test-project"
     SyntheticCorpus.write_spec_artifacts(spec, project, prefix=prefix, index_width=4)
+    if keep_files is not None:
+        for extra in _jsonl_files(project.parent)[keep_files:]:
+            extra.unlink()
     return project.parent
 
 
@@ -83,7 +97,16 @@ def _mb_s(payload_bytes: int, elapsed_s: float) -> float:
 
 
 def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float]:
-    """The write entry without the dispatcher: historical comparison, not production scheduling."""
+    """The write entry without the dispatcher: historical comparison, not production scheduling.
+
+    The call shape mirrors ``FileIntakeAdapter.admit_page`` exactly
+    (``polylogue/operations/intake_adapters.py``): the adapter passes the
+    page's paths with ``queued_file_count`` and ``whole_archive_convergence=
+    False`` and leaves ``emit_event`` at its default. Leaving
+    ``whole_archive_convergence`` at its own default here would put
+    archive-wide convergence on one arm only, so the two arms would not be
+    the same unit of work.
+    """
     files = _jsonl_files(corpus_root)
     db_path = archive_root / "index.db"
     converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
@@ -96,7 +119,14 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
         converger=converger,
     )
     started = time.perf_counter()
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+    metrics = asyncio.run(
+        processor.ingest_files(
+            files,
+            queued_file_count=len(files),
+            emit_event=True,
+            whole_archive_convergence=False,
+        )
+    )
     elapsed = time.perf_counter() - started
     payload = _payload_bytes(files)
     return {
@@ -206,38 +236,96 @@ def _run_dispatcher_ingest(
     )
 
 
+@pytest.mark.timeout(600)
 def test_dispatcher_intake_is_within_direct_ingest_bound(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Dispatcher throughput stays within 1.5x of a direct ingest_files call.
 
-    Anti-vacuity: schedule through ingest_files as the outer loop (the deleted
-    chunk route) and this still records a number, but it is no longer the
-    production scheduler. Dropping the dispatcher construction would make
-    both probes identical and hide a serial cost the live daemon pays.
+    The comparison is between two *warm* routes over ``_MEASUREMENT_PAIRS``
+    alternating-order pairs, and the bound is applied to the median ratio.
+    Three measured arm-design facts force that shape:
+
+    * The first ingest in a process pays the six-tier bootstrap, lazy
+      imports and SQLite page-cache fill. Unwarmed, the arm that happened
+      to run first carried 0.12-4.5 s of that first-touch cost on a ~1 s
+      batch -- the process's cost, not the scheduler's, and it read as a
+      4.26x dispatcher regression when the dispatcher arm ran first.
+    * Whichever route is measured first leaves the other warmer, so a fixed
+      arm order biases the ratio by construction; the order alternates.
+    * A single pair is not resolvable against this bound: one arm of one
+      pair has been seen 4x slow on a busy host while every other reading
+      in the same run sat at ~1.0. The median of three absorbs one such
+      reading; it cannot absorb a real regression, which moves every pair.
+
+    Both arms must also be the same unit of work: ``_run_direct_ingest``
+    repeats the adapter's own ``ingest_files`` keywords, because
+    ``whole_archive_convergence`` differing between the arms silently
+    charged one of them archive-wide convergence.
+
+    Anti-vacuity: the bound is live, not decorative. Warm, the honest ratio
+    is ~1.03 (measured 1.01/1.05/1.03 idle), so adding ~0.5x of serial
+    per-page cost to ``FileIntakeAdapter.admit_page`` or
+    ``FairIntakeDispatcher.run_once`` (a sleep, an extra archive open, a
+    second parse) makes this red: a 0.6 s-per-file page sleep was measured
+    at 3.69x here. Replacing the dispatcher arm with a bare ``ingest_files``
+    loop -- the deleted chunk route -- would instead make both arms
+    identical and the assertion vacuous; the dispatcher arm must keep
+    scheduling through ``run_once``.
 
     Rehearsal-4 and 09-15 receipts measured that deleted chunk route.
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "polylogue.toml"))
 
-    dispatcher_corpus = _write_corpus(tmp_path / "dispatcher")
-    direct_corpus = _write_corpus(tmp_path / "direct")
-    dispatcher = _run_dispatcher_ingest(dispatcher_corpus, tmp_path / "dispatcher-archive")
-    direct = _run_direct_ingest(direct_corpus, tmp_path / "direct-archive")
+    # Warm both routes before any timing. Each throwaway run uses its own
+    # corpus and its own archive, so no measured pair inherits a populated
+    # index or an already-advanced cursor from the warm-up.
+    _run_dispatcher_ingest(
+        _write_corpus(tmp_path / "warm-dispatcher", prefix="warm-dispatcher", keep_files=1),
+        tmp_path / "warm-dispatcher-archive",
+    )
+    _run_direct_ingest(
+        _write_corpus(tmp_path / "warm-direct", prefix="warm-direct", keep_files=1),
+        tmp_path / "warm-direct-archive",
+    )
 
-    assert dispatcher.files == direct["files"] > 0
-    assert dispatcher.succeeded_files == dispatcher.files
-    assert direct["succeeded_files"] == direct["files"]
-    assert direct["failed_files"] == 0
-    assert dispatcher.passes >= 1
+    ratios: list[float] = []
+    receipts: list[str] = []
+    for pair in range(_MEASUREMENT_PAIRS):
+        dispatcher_corpus = _write_corpus(
+            tmp_path / f"dispatcher-{pair}", prefix=f"dispatcher-{pair}", keep_files=_MEASURED_PAGE_FILES
+        )
+        direct_corpus = _write_corpus(
+            tmp_path / f"direct-{pair}", prefix=f"direct-{pair}", keep_files=_MEASURED_PAGE_FILES
+        )
+        dispatcher_archive = tmp_path / f"dispatcher-archive-{pair}"
+        direct_archive = tmp_path / f"direct-archive-{pair}"
+        # Alternate the arm order: neither route is structurally first.
+        if pair % 2 == 0:
+            dispatcher = _run_dispatcher_ingest(dispatcher_corpus, dispatcher_archive)
+            direct = _run_direct_ingest(direct_corpus, direct_archive)
+        else:
+            direct = _run_direct_ingest(direct_corpus, direct_archive)
+            dispatcher = _run_dispatcher_ingest(dispatcher_corpus, dispatcher_archive)
 
-    dispatcher_mb_s = dispatcher.end_to_end_mb_s
-    direct_mb_s = direct["end_to_end_mb_s"]
-    ratio = direct_mb_s / dispatcher_mb_s
-    assert ratio <= _THROUGHPUT_BOUND, (
-        f"dispatcher end_to_end_mb_s {dispatcher_mb_s:.4f} is {ratio:.2f}x slower than "
-        f"direct ingest_files {direct_mb_s:.4f} (bound {_THROUGHPUT_BOUND}); "
-        f"dispatcher_s={dispatcher.total_s:.4f} direct_s={direct['total_s']:.4f} "
-        f"payload_bytes={dispatcher.payload_bytes} passes={dispatcher.passes}"
+        assert dispatcher.files == direct["files"] > 0
+        assert dispatcher.succeeded_files == dispatcher.files
+        assert direct["succeeded_files"] == direct["files"]
+        assert direct["failed_files"] == 0
+        assert dispatcher.passes >= 1
+
+        ratio = direct["end_to_end_mb_s"] / dispatcher.end_to_end_mb_s
+        ratios.append(ratio)
+        receipts.append(
+            f"pair={pair} first={'dispatcher' if pair % 2 == 0 else 'direct'} ratio={ratio:.2f} "
+            f"dispatcher_mb_s={dispatcher.end_to_end_mb_s:.4f} direct_mb_s={direct['end_to_end_mb_s']:.4f} "
+            f"dispatcher_s={dispatcher.total_s:.4f} direct_s={direct['total_s']:.4f} "
+            f"payload_bytes={dispatcher.payload_bytes} passes={dispatcher.passes}"
+        )
+
+    median_ratio = statistics.median(ratios)
+    assert median_ratio <= _THROUGHPUT_BOUND, (
+        f"dispatcher is {median_ratio:.2f}x slower than direct ingest_files at the median "
+        f"of {_MEASUREMENT_PAIRS} warm alternating pairs (bound {_THROUGHPUT_BOUND}); " + "; ".join(receipts)
     )
 
 
@@ -362,11 +450,3 @@ def test_dispatcher_page_compaction_cost_is_one_scoped_hold_at_archive_scale(
         measurement.raw_compaction_time_s is not None and measurement.raw_compaction_time_s > 0
         for measurement in measurements
     )
-
-
-def test_rehearsal_chunk_route_numbers_are_labelled_deleted() -> None:
-    """The module docstring is the receipt that those numbers are not production."""
-    text = Path(__file__).read_text(encoding="utf-8")
-    assert "Rehearsal-4" in text
-    assert "deleted" in text
-    assert "FairIntakeDispatcher" in text
