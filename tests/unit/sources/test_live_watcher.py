@@ -3315,7 +3315,14 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["changed_session_count"] == 1
     assert payload["parse_time_s"] >= 0
     assert payload["total_time_s"] >= 0
-    assert payload["stage_timings_s"] == {"full.index_parsed_write": 0.02, "full.provider_parse": 0.01}
+    # The two parse/write stages this test pins are asserted by value; the
+    # batch also times its post-commit raw compaction, whose duration is real
+    # elapsed time and not a fixture value.
+    stage_timings = payload["stage_timings_s"]
+    assert isinstance(stage_timings, dict)
+    assert stage_timings["full.index_parsed_write"] == 0.02
+    assert stage_timings["full.provider_parse"] == 0.01
+    assert set(stage_timings) <= {"full.index_parsed_write", "full.provider_parse", "raw_compaction"}
     assert payload["failed_paths"] == []
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         events = conn.execute(
@@ -3987,3 +3994,63 @@ def test_a_watch_event_wakes_the_dispatcher_which_ingests_the_new_file(tmp_path:
     outcomes = asyncio.run(_admit())
     assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.ADMITTED]
     assert parse_sources.await_count == 1
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher", "polylogue.sources.live.cursor")
+def test_stale_deferral_escalates_when_recorded_byte_size_lags_the_file(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """polylogue-3r36h: the ``size != cursor.byte_size`` branch escalates too.
+
+    Its sibling (``size == cursor.byte_size``) already ages a deferred
+    observation out and records a durable failure. This branch returned False
+    on a stat match with no escalation and no ``mark_failed``, so a cursor
+    whose recorded ``byte_size`` lagged the file parked forever, invisible to
+    ``list_retry_records``.
+
+    Anti-vacuity: delete the age-gated escalation from that branch and the
+    final ``failure_count == 1`` drops back to 0.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    f.write_bytes(original)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    # Grow the file first, then record a cursor that carries the GROWN file's
+    # stat but the ORIGINAL byte_size: the stat-match fast path fires while
+    # ``size == cursor.byte_size`` is false, which is the branch under test.
+    f.write_bytes(original + (b"x" * 4096))
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+
+    # Fresh observation: still plausibly an in-progress writer.
+    assert watcher._needs_work(f) is False
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 0
+
+    _backdate_cursor(tmp_path, f, now=frozen_clock.now(), seconds_ago=live_watcher._STUCK_DEFERRED_APPEND_AGE_S + 1)
+
+    # Same unchanged stat, now far too old to be an active writer: the
+    # unbounded probe finds no complete trailing record anywhere, so this
+    # becomes a durable, retryable failure instead of another silent park.
+    assert watcher._needs_work(f) is False
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 1

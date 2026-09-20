@@ -776,6 +776,28 @@ class LiveWatcher:
             # oversized JSONL record must not make the 15-second safety scan
             # reread its first 64 MiB forever.
             if _cursor_stat_matches(cursor, stat):
+                # polylogue-3r36h: the sibling branch above (size ==
+                # cursor.byte_size) escalates a deferral that has sat at the
+                # same byte state for _STUCK_DEFERRED_APPEND_AGE_S; this one
+                # returned False forever instead, so a file whose recorded
+                # byte_size disagrees with its size stalled with no durable
+                # signal and nothing in list_retry_records. Same escalation,
+                # same reason: an ordinary in-progress writer leaves this
+                # state between two close polls, a finished one leaves it for
+                # hours.
+                if not _cursor_age_exceeds(cursor, _STUCK_DEFERRED_APPEND_AGE_S):
+                    return False
+                if not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor, probe_bytes=None):
+                    return True
+                logger.warning(
+                    "live.watcher: %s has no complete trailing record across its entire "
+                    "outstanding tail (%d bytes past offset %d) and stopped changing; "
+                    "marking failed for durable visibility instead of parking silently",
+                    path,
+                    stat.st_size - cursor.byte_offset,
+                    cursor.byte_offset,
+                )
+                self._cursor.mark_failed(path, failed_stat=stat)
                 return False
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:

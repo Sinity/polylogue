@@ -1503,6 +1503,20 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
             "source_message_id",
             """source_message_id              TEXT REFERENCES messages(message_id) ON DELETE SET NULL""",
         ),
+        # polylogue-1pzmq: the provider's own id for the message this usage
+        # describes, retained even when it resolves to no row here. The event
+        # used to be DROPPED whenever this id was absent from the writer's
+        # native-id map -- which is exactly what happens to a message whose
+        # provider id is duplicated within its session (those messages get
+        # content-derived ids, so the map deliberately excludes them). Keeping
+        # the declared id plus ``source_message_resolution`` makes an
+        # unattributable usage event identifiable AS unattributable instead of
+        # silently absent.
+        _raw_column("source_message_provider_id", """source_message_provider_id     TEXT"""),
+        _raw_column(
+            "source_message_resolution",
+            f"""source_message_resolution      TEXT NOT NULL DEFAULT 'session' CHECK({literal_check("source_message_resolution", "resolved", "session", "ambiguous", "unresolved")})""",
+        ),
         _raw_column("position", """position                       INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "provider_event_type",
@@ -1564,6 +1578,14 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
         # writer's redundant set because this typed row is meant to carry the
         # whole payload -- without a column for it the id was dropped.
         _raw_column("request_id", """request_id                     TEXT"""),
+        # polylogue-1pzmq: the provider's terminal signal for the call this
+        # usage describes (Gemini/Drive ``finishReason``, Anthropic
+        # ``stop_reason``). Same reason ``request_id`` has a column: these
+        # event types are in the writer's redundant set because this typed row
+        # is meant to carry the whole payload, and a finish reason reported
+        # alongside all-zero token fields used to make the row look like "no
+        # evidence" and vanish with the reason inside it.
+        _raw_column("finish_reason", """finish_reason                  TEXT"""),
     ),
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
 )

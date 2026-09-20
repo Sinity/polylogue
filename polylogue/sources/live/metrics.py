@@ -165,6 +165,11 @@ class LiveBatchMetrics:
     time_budget_exceeded: bool = False
 
     @property
+    def deferred_file_count(self) -> int:
+        """Planned paths this batch deliberately deferred. Never a failure."""
+        return len(self.deferred_paths)
+
+    @property
     def refused_bytes(self) -> int:
         """Offered bytes this batch admitted nothing for, all reasons summed."""
         return sum(self.refused_bytes_by_reason.values())
@@ -209,6 +214,10 @@ class LiveBatchMetrics:
             "skipped_file_count": self.skipped_file_count,
             "succeeded_file_count": self.succeeded_file_count,
             "failed_file_count": self.failed_file_count,
+            # polylogue-3r36h: deferrals were held only as paths (scheduling
+            # evidence, deliberately not in the payload), so an event consumer
+            # could not tell a pass that deferred work from an idle one.
+            "deferred_file_count": self.deferred_file_count,
             # A refused file is a counted outcome of this batch, not an
             # absence. Omitting these two left every consumer -- persisted
             # events, daemon status, the CLI -- reading an exclusion as if

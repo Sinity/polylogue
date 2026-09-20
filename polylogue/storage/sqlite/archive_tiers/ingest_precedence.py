@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Sequence
 from typing import Literal
 
@@ -16,10 +17,29 @@ from polylogue.sources.parsers.base_models import ParsedSessionEvent
 BrowserCapturePrecedence = Literal["default", "replace", "skip"]
 
 
+#: How far ahead of this machine's clock a stored session timestamp may sit
+#: and still be trusted as freshness evidence (polylogue-1pzmq).
+#:
+#: Honest skew exists and must survive: an unsynchronized provider clock, a
+#: timestamp written in the wrong timezone (up to 14h), a capture taken on a
+#: laptop whose clock is a day out. A week is far beyond all of those and far
+#: short of the failure this bounds -- an export whose ``update_time`` is
+#: years ahead (a corrupt field, seconds/milliseconds confusion in the other
+#: direction, or a crafted payload). This is a tolerance, not a clamp: a
+#: timestamp past it is not rewritten, it simply stops being usable as proof
+#: that the stored body is fresher than an incoming one.
+UNTRUSTED_FUTURE_FRESHNESS_TOLERANCE_MS = 7 * 24 * 60 * 60 * 1000
+
+
+def _freshness_is_untrusted(value_ms: int | None, *, now_ms: int) -> bool:
+    return value_ms is not None and value_ms > now_ms + UNTRUSTED_FUTURE_FRESHNESS_TOLERANCE_MS
+
+
 def should_skip_stale_replace(
     *,
     incoming_freshness_ms: int | None,
     existing_updated_at_ms: int | None,
+    now_ms: int | None = None,
 ) -> bool:
     """Return whether an incoming full-replace write is strictly staler than what is stored.
 
@@ -61,7 +81,25 @@ def should_skip_stale_replace(
     outcome. Recomputing revision membership under current code
     (``backfill_historical_revision_evidence``) resolves that case correctly
     upstream of this function.
+
+    An implausibly far-future *stored* timestamp is not freshness evidence
+    (polylogue-1pzmq). ``incoming_freshness_ms`` is parser output -- for
+    ChatGPT, ``payload["update_time"]`` copied straight out of the export --
+    so one malformed or crafted export could pin a session body permanently:
+    every later genuine replay compared against a year-3000 ``updated_at_ms``
+    and lost. Past the tolerance the stored value stops deciding the
+    comparison and the incoming write proceeds, exactly as it does for the
+    ordinary tie.
+
+    An untrusted *incoming* timestamp is deliberately not skipped either:
+    unknown freshness already replaces (the ``None`` case), and refusing here
+    would let one bad export block its own session's re-ingest. It reaches
+    storage as the session's timestamp and is then subject to this same rule
+    on the next write.
     """
+    effective_now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    if _freshness_is_untrusted(existing_updated_at_ms, now_ms=effective_now_ms):
+        return False
     return (
         existing_updated_at_ms is not None
         and incoming_freshness_ms is not None

@@ -151,7 +151,7 @@
               "type": "null"
             }
           ],
-          "default": 0,
+          "default": null,
           "title": "Cache Read Tokens"
         },
         "cache_write_tokens": {
@@ -163,7 +163,7 @@
               "type": "null"
             }
           ],
-          "default": 0,
+          "default": null,
           "title": "Cache Write Tokens"
         },
         "content_blocks": {
@@ -212,7 +212,7 @@
               "type": "null"
             }
           ],
-          "default": 0,
+          "default": null,
           "title": "Input Tokens"
         },
         "is_active_leaf": {
@@ -263,7 +263,7 @@
               "type": "null"
             }
           ],
-          "default": 0,
+          "default": null,
           "title": "Output Tokens"
         },
         "parent_id": {

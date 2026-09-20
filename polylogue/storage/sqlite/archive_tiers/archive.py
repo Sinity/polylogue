@@ -7635,8 +7635,26 @@ def _summary_order_by(*, sample: bool, sort: str | None, reverse: bool) -> str:
             ) {direction}, s.sort_key_ms {direction}, s.session_id {direction}
         """
     if sort == "tokens":
+        # polylogue-qgyuj: a session none of whose messages carries a token
+        # counter has an UNKNOWN total, not a measured zero. The inner
+        # COALESCE stays -- a message with a known input_tokens and an
+        # unknown cache_read_tokens must still contribute its known part
+        # (bare addition would null the whole row) -- but the sum itself must
+        # not rank "never measured" alongside "measured zero". The leading
+        # key holds unmeasured sessions out of the ranked band in BOTH
+        # directions, exactly as ``s.sort_key_ms IS NULL`` does for the date
+        # sort; without it, ``sort=tokens --reverse`` answered "which
+        # sessions used the fewest tokens" with the sessions whose provider
+        # reports no per-message usage at all (every ChatGPT export). EXISTS
+        # stops at the first measured message rather than re-summing.
         return f"""
-            ORDER BY (
+            ORDER BY NOT EXISTS (
+                SELECT 1
+                FROM messages m
+                WHERE m.session_id = s.session_id
+                  AND (m.input_tokens IS NOT NULL OR m.output_tokens IS NOT NULL
+                       OR m.cache_read_tokens IS NOT NULL OR m.cache_write_tokens IS NOT NULL)
+            ), (
                 SELECT COALESCE(SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)
                     + COALESCE(m.cache_read_tokens, 0) + COALESCE(m.cache_write_tokens, 0)), 0)
                 FROM messages m
