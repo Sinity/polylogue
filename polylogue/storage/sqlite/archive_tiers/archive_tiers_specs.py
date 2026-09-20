@@ -595,10 +595,6 @@ BLOCKS_SPEC = _make_table_spec(
             "search_text TEXT GENERATED ALWAYS AS (trim(COALESCE(text, '') || ' ' || COALESCE(tool_name, '')"
             f" || ' ' || COALESCE({_TOOL_COMMAND_SQL}, '') || ' ' || COALESCE({_TOOL_PATH_SQL}, ''))) VIRTUAL",
         ),
-        _raw_column(
-            "tool_detail_text",
-            "tool_detail_text TEXT GENERATED ALWAYS AS (lower(COALESCE(tool_command, '') || ' ' || COALESCE(tool_path, ''))) VIRTUAL",
-        ),
     ),
     record_only_columns=(_derived_column("metadata", "NULL"),),
     table_constraints=(

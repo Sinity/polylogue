@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from polylogue.archive.topology.edge import topology_status_composes_sql, topology_status_excluded_sql
 from polylogue.storage.fts.sql import (
-    FTS_BULK_SESSION_WRITE_GUARD,
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
     FTS_MESSAGES_TABLE_SQL,
     FTS_TRIGGER_DDL,
@@ -362,12 +361,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # triggers and rebuild/repair/freshness machinery but no application-layer
 # consumers. Its only MATCH reader had zero production callers; the live
 # thread-search path already uses a LIKE substring scan. The sibling
-# `blocks_command_trigram` was kept at v63 because `devtools/affordance_usage.py`'s
-# `_cli_action_rows` was a real consumer with a documented archive-scale
-# speedup; that devtools module was deleted 2026-08-25 (polylogue-9m6ry,
-# completed campaign analytics) with no product-surface replacement, so
-# whether `blocks_command_trigram` still has a live consumer is now open --
-# see the v63 declaration in lifecycle.py.
+# Its sibling `blocks_command_trigram` was kept at v63 for
+# `devtools/affordance_usage.py`'s `_cli_action_rows`; that devtools module was
+# deleted 2026-08-25 (polylogue-9m6ry) with no product-surface replacement, and
+# v101 drops the trigram surface too (polylogue-nv356).
 # polylogue-xselt: v64 adds parser/lowering semantic stamps consumed by the
 # reindex acceptance gate. They remain nullable only so pre-bootstrap index
 # generations can be opened long enough to undergo the semantic replay.
@@ -496,7 +493,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # executes a decision that was already recorded. `dominant_repo` keeps the
 # real repository attribution. METADATA_ONLY: the column carried no value on
 # any row, so no stored row and no derived value changes.
-INDEX_SCHEMA_VERSION = 103
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -508,6 +504,16 @@ INDEX_SCHEMA_VERSION = 103
 _TRIGRAM_BULK_GUARD_NOT_SET = (
     f"NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{FTS_BULK_SESSION_WRITE_GUARD}')"
 )
+# polylogue-nv356: v104 drops ``blocks_command_trigram``, its three triggers,
+# the ``blocks.tool_detail_text`` generated projection that existed only to
+# feed it, and its rebuild/repair machinery in ``storage/fts``. Its one
+# consumer (``devtools/affordance_usage.py``'s ``_cli_action_rows``) was
+# deleted on 2026-08-25 with no product-surface replacement; a repo-wide grep
+# at this head found no query consumer, only the surface's own DDL, its
+# rebuild helpers and one verification gap check. INDEX-ONLY: no reader
+# regresses because no reader existed; the derived identity moves and an
+# existing index tier meets it as a typed ``SchemaSkew``.
+INDEX_SCHEMA_VERSION = 104
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
@@ -785,67 +791,6 @@ ON session_refs(kind, repo, ref_number);
 
 -- FTS triggers for messages_fts table are now dynamically composed from sql.py
 -- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
-
--- ohbx: trigram-tokenized (not unicode61) so `detail LIKE '%pattern%'` gets
--- SQLite's built-in trigram LIKE-acceleration for arbitrary substrings, not
--- just whole tokens -- unicode61/messages_fts would miss a match like
--- "notpolyloguefile.txt" (no token boundary around the substring), and
--- searches a much larger candidate set (the word can appear in ordinary
--- prose, not just tool invocations). External content (not contentless,
--- unlike messages_fts) is required: contentless trigram tables silently
--- return zero rows for LIKE queries because SQLite needs to re-read the
--- real text from the content table to verify a candidate trigram match
--- (verified locally against the SQLite forum's own explanation of this
--- exact mechanism before relying on it).
---
--- Query-shape note for callers: SQLite's planner does NOT automatically
--- drive a `blocks_command_trigram JOIN blocks` from the trigram table's
--- LIKE index -- a plain join lets it choose to scan `blocks` as the outer
--- loop and probe the trigram table per row, which is *slower* than the old
--- raw scan (measured: 26s vs 0.15s at 300K rows). The trigram index must
--- drive the query explicitly via `blocks.rowid IN (SELECT rowid FROM
--- blocks_command_trigram WHERE tool_detail_text LIKE ...)`, which forces
--- the trigram LIKE-optimization to run first and reduces the outer table
--- to an indexed rowid lookup (measured: 900x+ faster than the raw scan at
--- 915K rows, using this exact shape).
-CREATE VIRTUAL TABLE IF NOT EXISTS blocks_command_trigram USING fts5(
-    tool_detail_text,
-    tokenize='trigram',
-    content='blocks',
-    content_rowid='rowid'
-);
-
-CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_ai
-AFTER INSERT ON blocks
-WHEN new.block_type = 'tool_use' AND new.tool_detail_text != ' ' AND {_TRIGRAM_BULK_GUARD_NOT_SET} BEGIN
-    INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
-    VALUES (new.rowid, new.tool_detail_text);
-END;
-
--- External-content FTS5 tables require the special 'delete' command form
--- with the OLD column value supplied (not a plain DELETE by rowid) --
--- verified locally: a bare `DELETE FROM blocks_command_trigram WHERE rowid
--- = old.rowid` leaves stale trigram postings that later raise "fts5:
--- missing row N from content table" once the real row is gone from
--- `blocks`, because FTS5 needs the old text to locate the exact postings
--- to remove rather than re-reading it from the (already-deleted) content
--- row.
-CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_ad
-AFTER DELETE ON blocks
-WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' ' AND {_TRIGRAM_BULK_GUARD_NOT_SET} BEGIN
-    INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
-    VALUES ('delete', old.rowid, old.tool_detail_text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS blocks_command_trigram_au
-AFTER UPDATE ON blocks WHEN {_TRIGRAM_BULK_GUARD_NOT_SET} BEGIN
-    INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
-    SELECT 'delete', old.rowid, old.tool_detail_text
-    WHERE old.block_type = 'tool_use' AND old.tool_detail_text != ' ';
-    INSERT INTO blocks_command_trigram(rowid, tool_detail_text)
-    SELECT new.rowid, new.tool_detail_text
-    WHERE new.block_type = 'tool_use' AND new.tool_detail_text != ' ';
-END;
 
 -- polylogue-2i2w: deliberately NO tool_input/output_text columns here. This
 -- relation is a join/rank/outcome index over paired tool_use/tool_result

@@ -249,16 +249,13 @@ pair a use block with a same-id result block from another session.
 
 ## Full-text search
 
-`index.db` carries three FTS5 virtual tables. `messages_fts` and
-`session_work_events_fts` use the `unicode61` tokenizer (no porter stemmer in
-this SQLite build); `blocks_command_trigram` uses the `trigram` tokenizer to
-accelerate substring/`LIKE`-style lookups over tool command/detail text:
+`index.db` carries two FTS5 virtual tables. Both use the `unicode61`
+tokenizer (no porter stemmer in this SQLite build):
 
 | Virtual table | Indexes |
 |---------------|---------|
 | `messages_fts` | Block `search_text` (text + tool name + command/path), contentless (`content=''`, `contentless_delete=1`) |
 | `session_work_events_fts` | Work-event search text |
-| `blocks_command_trigram` | `tool_use` block `tool_detail_text`, external-content (`content='blocks'`), `tokenize='trigram'` |
 
 `messages_fts` is kept in sync with `blocks` by the `messages_fts_ai/ad/au`
 triggers. During bulk ingest these triggers are suspended for performance and

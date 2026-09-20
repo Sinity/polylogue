@@ -14,11 +14,11 @@ The fix wraps the delete in both ``derived_refresh_guard`` rows
 maintenance explicitly, one pass, mirroring ``_bulk_fts_session_guard``'s
 delete-then-guard-then-mutate shape (``write.py``).
 
-These tests prove: (a) FTS/identity/trigram coherence after a bulk delete
+These tests prove: (a) FTS/identity coherence after a bulk delete
 through the PRODUCT delete API; (b) ``action_pairs``/``delegation_facts`` rows
 for the deleted sessions are gone; (c) anti-vacuity -- a *canary* trigger
 carrying the exact same ``WHEN NOT EXISTS (... derived_refresh_guard ...)``
-condition as the real ``blocks_action_pairs_ad``/``blocks_command_trigram_ad``
+condition as the real ``blocks_action_pairs_ad``/``messages_fts_ad``
 triggers never fires during the delete. ``sqlite3.Connection.set_trace_callback``
 was tried first and rejected: it only reports the outer statement text
 (``DELETE FROM sessions ...``), never the SQL text executed *inside* a
@@ -42,7 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.live_ingest import write_index_session
 
 # Mirrors the exact WHEN-clause guard names the real triggers gate on (see
-# ``blocks_action_pairs_ad`` and ``blocks_command_trigram_ad`` in
+# ``blocks_action_pairs_ad`` and ``messages_fts_ad`` in
 # ``storage/sqlite/archive_tiers/index.py``).
 _SESSION_WRITE_GUARD = "session-write"
 _FTS_BULK_GUARD = "fts-bulk-session-write"
@@ -51,7 +51,7 @@ _FTS_BULK_GUARD = "fts-bulk-session-write"
 def _install_canary_triggers(conn: sqlite3.Connection, counts: dict[str, int]) -> None:
     """Install AFTER-DELETE canary triggers on ``blocks`` carrying the exact
     same guard WHEN-clauses as the real ``blocks_action_pairs_ad`` and
-    ``blocks_command_trigram_ad`` production triggers.
+    ``messages_fts_ad`` production triggers.
 
     A canary fires precisely when the corresponding expensive real trigger
     body would also have fired for that row -- so a nonzero canary count
@@ -85,28 +85,13 @@ def _install_canary_triggers(conn: sqlite3.Connection, counts: dict[str, int]) -
     )
     conn.execute(
         f"""
-        CREATE TEMP TRIGGER _canary_trigram_ad
+        CREATE TEMP TRIGGER _canary_fts_bulk_ad
         AFTER DELETE ON blocks
-        WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' '
-         AND NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{_FTS_BULK_GUARD}')
+        WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{_FTS_BULK_GUARD}')
         BEGIN
             SELECT _canary_hit('fts_bulk');
         END;
         """
-    )
-
-
-def _trigram_ghost_posting_count(conn: sqlite3.Connection) -> int:
-    """Indexed trigram rows whose content-table (``blocks``) row is gone."""
-    return int(
-        conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM blocks_command_trigram_docsize AS d
-            LEFT JOIN blocks AS b ON b.rowid = d.id
-            WHERE b.rowid IS NULL
-            """
-        ).fetchone()[0]
     )
 
 
@@ -203,7 +188,7 @@ def _tool_session(provider_session_id: str, *, n_pairs: int) -> ParsedSession:
     )
 
 
-def test_delete_sessions_bulk_leaves_fts_trigram_and_action_pairs_coherent(tmp_path: Path) -> None:
+def test_delete_sessions_bulk_leaves_fts_and_action_pairs_coherent(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     session_ids: list[str] = []
     with ArchiveStore(root) as facade:
@@ -215,7 +200,7 @@ def test_delete_sessions_bulk_leaves_fts_trigram_and_action_pairs_coherent(tmp_p
     conn.row_factory = sqlite3.Row
     try:
         # Sanity: the sessions actually produced action_pairs, indexable FTS
-        # rows, and trigram-indexed tool_use blocks before the delete -- a
+        # rows, and indexed tool_use blocks before the delete -- a
         # test that starts from an already-empty state would prove nothing.
         action_pairs_before = conn.execute(
             "SELECT COUNT(*) FROM action_pairs WHERE session_id IN ({})".format(", ".join("?" for _ in session_ids)),
@@ -224,8 +209,6 @@ def test_delete_sessions_bulk_leaves_fts_trigram_and_action_pairs_coherent(tmp_p
         assert action_pairs_before == 3 * 4  # one action_pairs row per tool_use/tool_result pair
         fts_rows_before = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
         assert fts_rows_before > 0
-        trigram_rows_before = conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0]
-        assert trigram_rows_before == 3 * 4  # one indexed tool_use block per pair
 
         # Manually seed a delegation_facts row so the explicit
         # ``DELETE FROM delegation_facts WHERE parent_session_id = ?``
@@ -257,13 +240,11 @@ def test_delete_sessions_bulk_leaves_fts_trigram_and_action_pairs_coherent(tmp_p
         ).fetchone()[0]
         assert remaining_sessions == 0
 
-        # (a) FTS coherence: no dangling docsize/identity/trigram postings.
+        # (a) FTS coherence: no dangling docsize/identity postings.
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
         assert _fts_docsize_ghost_count(conn) == 0
         assert conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == 0
         assert _fts_identity_orphan_count(conn) == 0
-        assert conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0] == 0
-        assert _trigram_ghost_posting_count(conn) == 0
 
         # (b) action_pairs / delegation_facts rows for the deleted sessions
         # are gone.
@@ -291,7 +272,7 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(
 ) -> None:
     """Anti-vacuity: install canary triggers carrying the exact WHEN-clause
     guard conditions of the real ``blocks_action_pairs_ad`` /
-    ``blocks_command_trigram_ad`` triggers, then prove neither one fires
+    ``messages_fts_ad`` triggers, then prove neither one fires
     during a bulk ``delete_sessions`` call through the PRODUCT API.
 
     What would make this fail: removing (or narrowing the scope of) either
@@ -299,8 +280,8 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(
     ``ArchiveStore.delete_sessions``. With the ``'session-write'`` guard
     absent, ``blocks_action_pairs_ad`` (and this test's mirroring canary)
     fires once per deleted ``blocks`` row; with ``'fts-bulk-session-write'``
-    absent, ``blocks_command_trigram_ad`` (and its canary) fires once per
-    deleted tool_use block. Either regression flips the corresponding canary
+    absent, ``messages_fts_ad`` (and its canary) fires once per deleted
+    block. Either regression flips the corresponding canary
     count from 0 to a positive number equal to the number of blocks deleted
     while that guard was unset.
     """
@@ -334,60 +315,3 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(
     assert counts == {"session_write": 0, "fts_bulk": 0}, (
         f"unguarded per-row trigger canary fired during bulk delete: {counts}"
     )
-
-
-def _downgrade_trigram_trigger_to_ungated(conn: sqlite3.Connection) -> None:
-    """Replace ``blocks_command_trigram_ad`` with its pre-#3259 body: the same
-    delete logic, but with the ``derived_refresh_guard`` WHEN-clause removed.
-
-    Simulates an archive last rebuilt before the guard clause was added to
-    this trigger -- ``CREATE TRIGGER IF NOT EXISTS`` never upgrades an
-    existing same-name trigger, so such an archive keeps exactly this body
-    forever without a real rebuild.
-    """
-    conn.execute("DROP TRIGGER blocks_command_trigram_ad")
-    conn.execute(
-        """
-        CREATE TRIGGER blocks_command_trigram_ad
-        AFTER DELETE ON blocks
-        WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' '
-        BEGIN
-            INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text)
-            VALUES ('delete', old.rowid, old.tool_detail_text);
-        END;
-        """
-    )
-    conn.commit()
-
-
-def test_delete_sessions_bulk_falls_back_safely_on_pre_guard_archive(tmp_path: Path) -> None:
-    """Regression (CodeRabbit #3263 P1): on an archive whose trigram trigger
-    predates the bulk-write guard, ``delete_sessions`` must not rely on that
-    guard -- doing so double-deletes each trigram posting (the explicit
-    pre-delete, then the ungated trigger firing again during the cascade),
-    which FTS5 reports as "database disk image is malformed" and rolls back
-    the whole batch."""
-    root = tmp_path / "archive"
-    session_ids: list[str] = []
-    with ArchiveStore(root) as facade:
-        for i in range(2):
-            session_ids.append(write_index_session(facade, _tool_session(f"legacy-delete-{i}", n_pairs=3)))
-
-        _downgrade_trigram_trigger_to_ungated(facade._conn)
-        deleted = facade.delete_sessions(tuple(session_ids))
-    assert deleted == 2
-
-    index_db_path = root / "index.db"
-    conn = sqlite3.connect(index_db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        remaining_sessions = conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE session_id IN ({})".format(", ".join("?" for _ in session_ids)),
-            session_ids,
-        ).fetchone()[0]
-        assert remaining_sessions == 0
-        assert conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0] == 0
-        assert _trigram_ghost_posting_count(conn) == 0
-        assert conn.execute("SELECT COUNT(*) FROM derived_refresh_guard").fetchone()[0] == 0
-    finally:
-        conn.close()

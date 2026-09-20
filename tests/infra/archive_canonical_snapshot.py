@@ -165,7 +165,6 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
 NON_COMPARABLE_RELATIONS: Mapping[str, str] = {
     "index.messages_fts": "compared through public search projections",
     "index.messages_fts_identity": "compared through indexed block identity projections",
-    "index.blocks_command_trigram": "compared through action/public projections",
     "index.session_work_events_fts": "compared through public work-event projections",
     "index.query_unit_frame_state": "cursor invalidation is route history, not archive state",
     "source.raw_revision_applications": "attempt receipt ids and timestamps are run-local",

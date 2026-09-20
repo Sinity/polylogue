@@ -91,8 +91,6 @@ from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
-    trigram_delete_session_rows_sql,
-    trigram_insert_session_rows_sql,
 )
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -1317,7 +1315,7 @@ def write_parsed_session_to_archive(
         with transaction:
             conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
             if bulk_build:
-                # polylogue-v6i3: gate messages_fts/blocks_command_trigram trigger
+                # polylogue-v6i3: gate the messages_fts trigger
                 # BODIES for this session's *entire* write (block inserts in the
                 # ordinary merge/full-replace paths, not just the prefix-tail
                 # reextract cascade -- see _bulk_fts_session_guard, which detects
@@ -4182,18 +4180,9 @@ def _replace_full_session_messages_and_blocks(
             t0 = time.perf_counter()
             conn.execute(delete_session_identity_rows_sql(1), (session_id,))
             add_timing("fts_identity_delete", t0)
-            # Full replacement also deletes and recreates tool-use blocks.  The
-            # trigram external-content index must be cleared while their old text
-            # is still available, before the guard below suppresses its per-row
-            # triggers.  Leaving it trigger-maintained made a live 18 MB Codex
-            # transcript spend minutes performing thousands of individual FTS5
-            # updates under the sole writer lock.
-            t0 = time.perf_counter()
-            conn.execute(trigram_delete_session_rows_sql(), (session_id,))
-            add_timing("fts_trigram_delete", t0)
         t0 = time.perf_counter()
-        # Keep the canonical triggers structurally present and gate both the
-        # message and trigram bodies for the whole replacement.  This is the
+        # Keep the canonical triggers structurally present and gate the
+        # message bodies for the whole replacement.  This is the
         # same protocol used for guarded lineage rewrites, but here it covers
         # the session's own delete and insert as well.
         conn.execute(
@@ -4269,7 +4258,6 @@ def _replace_full_session_messages_and_blocks(
                 # polylogue-miwv: identity-ledger companion, same chunk params
                 # as the messages_fts insert above.
                 conn.execute(insert_session_identity_rows_sql(1), (session_id,))
-                conn.execute(trigram_insert_session_rows_sql(), (session_id,))
                 add_timing("fts_insert", t0)
             conn.execute(
                 "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
@@ -7897,10 +7885,9 @@ def _bulk_fts_session_guard(
 
     While ``enabled``, this sets a **dedicated** ``derived_refresh_guard`` row
     (``fts-bulk-session-write``) that gates the ``messages_fts_{ai,ad,au}``
-    trigger BODIES (see ``polylogue.storage.fts.sql``) and, since
-    polylogue-v6i3, the ``blocks_command_trigram_{ai,ad,au}`` bodies as well
-    (see ``archive_tiers/index.py``) -- so both surfaces get the explicit
-    session-scoped delete/re-insert bracketing below; the triggers stay
+    trigger BODIES (see ``polylogue.storage.fts.sql``) -- so that surface
+    gets the explicit session-scoped delete/re-insert bracketing below; the
+    triggers stay
     structurally present in ``sqlite_master`` throughout; only their WHEN
     clause short-circuits. This is deliberately a *different* guard name from
     the existing ``session-write`` guard: that guard is set unconditionally
@@ -7927,9 +7914,9 @@ def _bulk_fts_session_guard(
     re-insert/re-delete the same row (that would prematurely clear the
     guard for the remainder of the outer write) and must not perform the
     explicit delete-then-reinsert either: the bulk-build lifecycle leaves
-    ``messages_fts``/``blocks_command_trigram`` empty throughout replay and
-    repopulates both archive-wide exactly once at readiness, so any
-    per-session insert here would just be redone work.
+    ``messages_fts`` empty throughout replay and repopulates it archive-wide
+    exactly once at readiness, so any per-session insert here would just be
+    redone work.
     """
     if bulk_build:
         yield
@@ -7941,14 +7928,6 @@ def _bulk_fts_session_guard(
     # polylogue-miwv: identity-ledger companion, same chunk params as the
     # messages_fts delete above.
     conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-    # polylogue-v6i3 gated blocks_command_trigram's trigger bodies on this same
-    # guard row, so the trigram index needs the same explicit session-scoped
-    # delete-then-reinsert bracketing or the guarded block mutations leave
-    # stale external-content postings (later LIKE queries then raise
-    # "fts5: missing row N from content table"). The delete MUST run here,
-    # while the doomed prefix blocks still exist -- external-content FTS5
-    # deletion needs the OLD text to locate postings.
-    conn.execute(trigram_delete_session_rows_sql(), (session_id,))
     conn.execute(
         "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
         (FTS_BULK_SESSION_WRITE_GUARD,),
@@ -7960,8 +7939,6 @@ def _bulk_fts_session_guard(
         # polylogue-miwv: identity-ledger companion, same chunk params as the
         # messages_fts insert above.
         conn.execute(insert_session_identity_rows_sql(1), (session_id,))
-        # Trigram companion: repopulate from whatever tool_use blocks survive.
-        conn.execute(trigram_insert_session_rows_sql(), (session_id,))
         conn.execute(
             "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
             (FTS_BULK_SESSION_WRITE_GUARD,),

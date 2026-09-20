@@ -23,20 +23,16 @@ from polylogue.storage.fts.sql import (
     FTS_REBUILD_SQL,
     FTS_TRIGGER_DDL,
     SESSION_WORK_EVENT_FTS_TRIGGER_DDL,
-    TRIGRAM_REBUILD_DELETE_ALL_SQL,
     IndexedMessage,
     chunked,
     excess_message_rows_sql,
     insert_all_message_identity_rows_sql,
     insert_all_message_rows_sql,
-    insert_all_trigram_rows_sql,
     insert_missing_message_rows_range_sql,
     insert_missing_message_rows_sql,
     message_identity_mismatch_sql,
     repair_all_message_identity_rows_sql,
     repair_message_identity_rows_range_sql,
-    trigram_delete_session_rows_sql,
-    trigram_insert_session_rows_sql,
 )
 from polylogue.storage.sqlite.connection_profile import (
     BOUNDED_REPAIR_CACHE_SIZE_KIB,
@@ -362,23 +358,6 @@ def rebuild_fts_index_sync(
     _rebuild_session_work_events_fts_sync(conn)
 
 
-def rebuild_command_trigram_index_sync(conn: sqlite3.Connection) -> None:
-    """Rebuild the full ``blocks_command_trigram`` index from persisted blocks.
-
-    polylogue-v6i3: companion to :func:`rebuild_fts_index_sync` for the
-    bulk-build readiness repopulate. ``blocks_command_trigram`` is an
-    external-content FTS5 table, so it is cleared with the FTS5
-    ``'delete-all'`` command (see :data:`TRIGRAM_REBUILD_DELETE_ALL_SQL`) and
-    repopulated from ``blocks.tool_detail_text`` in one bulk insert -- the
-    same shape as the manual pre-promote recovery script this supersedes.
-    A no-op when either table is absent (pre-trigram-schema archives).
-    """
-    if not _table_exists_sync(conn, "blocks") or not _table_exists_sync(conn, "blocks_command_trigram"):
-        return
-    conn.execute(TRIGRAM_REBUILD_DELETE_ALL_SQL)
-    conn.execute(insert_all_trigram_rows_sql())
-
-
 def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
     """Drop and recreate the block-backed message FTS surface.
 
@@ -580,14 +559,6 @@ def repair_message_fts_index_sync(
 
     for session_id in dict.fromkeys(session_ids):
         replace_fts_partition_sync(conn, session_id)
-    # A deferred full-replace deletes a session's blocks_command_trigram
-    # postings at write time (using the old block text) but skips the matching
-    # reinsert, so this repair is the only catch-up. The message FTS partition
-    # above is owned by the derivation adapter; trigram remains a separate
-    # canonical write projection.
-    for session_id in dict.fromkeys(session_ids):
-        conn.execute(trigram_delete_session_rows_sql(), (session_id,))
-        conn.execute(trigram_insert_session_rows_sql(), (session_id,))
     del record_exact_snapshot
 
 
@@ -902,7 +873,6 @@ __all__ = [
     "message_fts_triggers_present_sync",
     "delete_excess_message_rows_batched_sync",
     "insert_missing_message_rows_batched_sync",
-    "rebuild_command_trigram_index_sync",
     "rebuild_fts_index_async",
     "rebuild_fts_index_sync",
     "rebuild_messages_fts_content_sync",

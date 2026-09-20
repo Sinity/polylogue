@@ -37,7 +37,6 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -68,7 +67,7 @@ def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
 
 
 def _tool_msg(pid: str, role: Role, text: str, position: int, command: str) -> ParsedMessage:
-    """Message carrying a tool_use block so ``blocks_command_trigram`` is exercised."""
+    """Message carrying a tool_use block alongside its text block."""
     return ParsedMessage(
         provider_message_id=pid,
         role=role,
@@ -86,39 +85,6 @@ def _tool_msg(pid: str, role: Role, text: str, position: int, command: str) -> P
                 tool_input={"command": command},
             ),
         ],
-    )
-
-
-def _trigram_rows_for_session(conn: sqlite3.Connection, session_id: str) -> list[tuple[object, ...]]:
-    """Session-scoped indexed trigram content, independent of literal rowid."""
-    rows = conn.execute(
-        """
-        SELECT b.block_id, b.tool_detail_text
-        FROM blocks AS b
-        JOIN blocks_command_trigram_docsize AS d ON d.id = b.rowid
-        WHERE b.session_id = ?
-        ORDER BY b.block_id
-        """,
-        (session_id,),
-    ).fetchall()
-    return sorted(tuple(row) for row in rows)
-
-
-def _trigram_ghost_posting_count(conn: sqlite3.Connection) -> int:
-    """Indexed trigram rows whose content-table (``blocks``) row is gone.
-
-    Any nonzero count is exactly the stale-external-content state that later
-    raises ``fts5: missing row N from content table`` on a LIKE query.
-    """
-    return int(
-        conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM blocks_command_trigram_docsize AS d
-            LEFT JOIN blocks AS b ON b.rowid = d.id
-            WHERE b.rowid IS NULL
-            """
-        ).fetchone()[0]
     )
 
 
@@ -152,7 +118,7 @@ def _write_partial_tail_scenario(conn: sqlite3.Connection, *, bulk_fts: bool) ->
             _msg("c0", Role.USER, "hello", 0),
             # Identical tool block in child prefix and parent so the prefix
             # match holds while the inherited (soon-deleted) rows carry
-            # trigram-indexed content.
+            # indexed content.
             _tool_msg("c1", Role.ASSISTANT, "hi there", 1, "rg inherited-prefix-grep"),
             _msg("cx", Role.USER, "child diverges here", 2),
             _tool_msg("cy", Role.ASSISTANT, "child reply", 3, "pytest tests/unit -q"),
@@ -225,16 +191,12 @@ def test_bulk_fts_on_produces_identical_fts_rows_as_off(tmp_path: Path, scenario
     conn_off = _connect(tmp_path / "off.db")
     child_id_off = scenario(conn_off, bulk_fts=False)
     rows_off = _fts_rows_for_session(conn_off, child_id_off)
-    trigram_off = _trigram_rows_for_session(conn_off, child_id_off)
-    ghosts_off = _trigram_ghost_posting_count(conn_off)
     assert_session_fts_exact_sync(conn_off, child_id_off)
     conn_off.close()
 
     conn_on = _connect(tmp_path / "on.db")
     child_id_on = scenario(conn_on, bulk_fts=True)
     rows_on = _fts_rows_for_session(conn_on, child_id_on)
-    trigram_on = _trigram_rows_for_session(conn_on, child_id_on)
-    ghosts_on = _trigram_ghost_posting_count(conn_on)
     assert_session_fts_exact_sync(conn_on, child_id_on)
     # The guard row must never leak past the write it protected.
     assert (
@@ -248,12 +210,6 @@ def test_bulk_fts_on_produces_identical_fts_rows_as_off(tmp_path: Path, scenario
 
     assert child_id_off == child_id_on
     assert rows_on == rows_off
-    # blocks_command_trigram shares the same guard row (polylogue-v6i3), so it
-    # needs the same equivalence: identical indexed content, zero stale
-    # external-content postings for deleted blocks.
-    assert trigram_on == trigram_off
-    assert ghosts_off == 0
-    assert ghosts_on == 0
     if scenario is _write_partial_tail_scenario:
         # The full-tail scenario legitimately ends with zero surviving blocks
         # (the whole child was inherited) -- only the partial-tail scenario's
@@ -262,61 +218,13 @@ def test_bulk_fts_on_produces_identical_fts_rows_as_off(tmp_path: Path, scenario
         assert rows_off, "scenario produced no FTS rows -- test would pass vacuously"
 
 
-def test_bulk_fts_trigram_survives_guarded_prefix_delete(tmp_path: Path) -> None:
-    """Regression (#3259 review P1): the guard suppresses the trigram triggers
-    too, so without the explicit trigram delete/re-insert bracketing the
-    guarded prefix delete leaves stale external-content postings whose LIKE
-    queries later raise ``fts5: missing row N from content table``."""
-    conn = _connect(tmp_path / "index.db")
-    child_id = _write_partial_tail_scenario(conn, bulk_fts=True)
-
-    # No indexed posting may point at a deleted blocks row.
-    assert _trigram_ghost_posting_count(conn) == 0
-
-    # The inherited-prefix command must be findable only via the parent's own
-    # surviving row, and the query must not raise on ghost postings. This is
-    # the exact production query shape (trigram-driven rowid IN lookup).
-    hit_sessions = {
-        row[0]
-        for row in conn.execute(
-            """
-            SELECT DISTINCT session_id FROM blocks
-            WHERE rowid IN (
-                SELECT rowid FROM blocks_command_trigram
-                WHERE tool_detail_text LIKE '%inherited-prefix-grep%'
-            )
-            """
-        ).fetchall()
-    }
-    assert hit_sessions == {"codex-session:parent"}
-    # The child's surviving divergent-tail tool block stays indexed.
-    tail_hits = conn.execute(
-        """
-        SELECT COUNT(*) FROM blocks
-        WHERE session_id = ? AND rowid IN (
-            SELECT rowid FROM blocks_command_trigram
-            WHERE tool_detail_text LIKE '%pytest tests/unit%'
-        )
-        """,
-        (child_id,),
-    ).fetchone()[0]
-    assert tail_hits == 1
-    # NOTE: FTS5's `('integrity-check', 1)` command is deliberately NOT used
-    # here -- blocks_command_trigram is a *partial* external-content index
-    # (tool_use rows only, filtered in the trigger WHEN clauses), so the
-    # content-table comparison always reports the unindexed rows as corruption
-    # even on a perfectly healthy archive. The ghost-posting count above is
-    # the applicable coherence proof.
-    conn.close()
-
-
-def test_full_replace_bulk_guard_rebuilds_both_fts_surfaces(tmp_path: Path) -> None:
-    """A normal full replacement must batch both FTS surfaces, not just lineage deletes.
+def test_full_replace_bulk_guard_rebuilds_the_fts_surface(tmp_path: Path) -> None:
+    """A normal full replacement must batch FTS, not just lineage deletes.
 
     The production live-ingest path uses a full replacement for a changed
     Codex JSONL.  This exercises its own tool-use delete/insert cycle and
-    proves the guard's explicit rebuild leaves messages FTS, trigram search,
-    and the guard state coherent.
+    proves the guard's explicit rebuild leaves messages FTS and the guard
+    state coherent.
     """
     conn = _connect(tmp_path / "index.db")
     original = ParsedSession(
@@ -335,85 +243,10 @@ def test_full_replace_bulk_guard_rebuilds_both_fts_surfaces(tmp_path: Path) -> N
     assert write_parsed_session_to_archive(conn, replacement) == session_id
 
     assert_session_fts_exact_sync(conn, session_id)
-    assert _trigram_ghost_posting_count(conn) == 0
-    assert (
-        conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
-            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%after-command%')",
-            (session_id,),
-        ).fetchone()[0]
-        == 1
-    )
-    assert (
-        conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
-            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%before-command%')",
-            (session_id,),
-        ).fetchone()[0]
-        == 0
-    )
     assert (
         conn.execute(
             "SELECT COUNT(*) FROM derived_refresh_guard WHERE guard_name = ?",
             (FTS_BULK_SESSION_WRITE_GUARD,),
-        ).fetchone()[0]
-        == 0
-    )
-    conn.close()
-
-
-def test_deferred_full_replace_trigram_survives_catchup_repair(tmp_path: Path) -> None:
-    """Regression: a deferred full-replace must not permanently drop trigram postings.
-
-    ``defer_fts_rebuild=True`` skips the immediate re-insert (the live-ingest
-    perf path -- polylogue-6mvg) and instead marks FTS stale for the existing
-    session-scoped convergence-debt retry. ``repair_message_fts_index_sync``
-    is that catch-up's only repair call, so it must repopulate
-    ``blocks_command_trigram`` too, not just ``messages_fts``.
-    """
-    conn = _connect(tmp_path / "index.db")
-    original = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="deferred-full-replace",
-        title="before",
-        messages=[_tool_msg("m0", Role.ASSISTANT, "before", 0, "rg before-command")],
-    )
-    session_id = write_parsed_session_to_archive(conn, original)
-    replacement = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="deferred-full-replace",
-        title="after",
-        messages=[_tool_msg("m1", Role.ASSISTANT, "after", 0, "pytest after-command")],
-    )
-    assert write_parsed_session_to_archive(conn, replacement, defer_fts_rebuild=True) == session_id
-
-    # Deferred: the replacement's trigram posting is not yet present.
-    assert (
-        conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
-            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%after-command%')",
-            (session_id,),
-        ).fetchone()[0]
-        == 0
-    )
-
-    repair_message_fts_index_sync(conn, [session_id], record_exact_snapshot=False)
-
-    assert_session_fts_exact_sync(conn, session_id)
-    assert _trigram_ghost_posting_count(conn) == 0
-    assert (
-        conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
-            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%after-command%')",
-            (session_id,),
-        ).fetchone()[0]
-        == 1
-    )
-    assert (
-        conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE session_id = ? AND rowid IN "
-            "(SELECT rowid FROM blocks_command_trigram WHERE tool_detail_text LIKE '%before-command%')",
-            (session_id,),
         ).fetchone()[0]
         == 0
     )
