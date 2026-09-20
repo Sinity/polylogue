@@ -130,7 +130,7 @@ def record_source_attachments(
                 raise ValueError("acquired attachment byte count does not match its bytes")
         elif not attachment.reason:
             raise ValueError("unavailable attachment requires an evidence-backed reason")
-        offered = {
+        offered: dict[str, object] = {
             "origin": attachment.origin,
             "source_class": attachment.source_class,
             "reachability": "current" if attachment.disposition == "acquired" else "unavailable",

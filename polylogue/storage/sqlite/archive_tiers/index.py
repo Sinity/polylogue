@@ -494,16 +494,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # real repository attribution. METADATA_ONLY: the column carried no value on
 # any row, so no stored row and no derived value changes.
 
-# polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
-# trigger BODIES on the same dedicated bulk-build guard row messages_fts's
-# triggers already use (see storage/fts/sql.py's _FTS_BULK_GUARD_NOT_SET).
-# Additive/inert on existing archives -- CREATE TRIGGER IF NOT EXISTS keeps
-# the prior (ungated) trigram trigger body on an archive until its next
-# rebuild, matching the messages_fts precedent from #3152 (no
-# INDEX_SCHEMA_VERSION bump needed for an additive, inert trigger-body change).
-_TRIGRAM_BULK_GUARD_NOT_SET = (
-    f"NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{FTS_BULK_SESSION_WRITE_GUARD}')"
-)
 # polylogue-nv356: v104 drops ``blocks_command_trigram``, its three triggers,
 # the ``blocks.tool_detail_text`` generated projection that existed only to
 # feed it, and its rebuild/repair machinery in ``storage/fts``. Its one
