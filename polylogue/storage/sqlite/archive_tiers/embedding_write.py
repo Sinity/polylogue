@@ -24,6 +24,7 @@ from polylogue.storage.embeddings.identity import (
 )
 from polylogue.storage.search_providers.sqlite_vec_support import _serialize_f32
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.archive_tiers.types import EmbeddingAttemptState, EmbeddingFailureState
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +76,9 @@ class ArchiveEmbeddingWrite:
     request_spec: EmbeddingRequestSpec | None = None
 
 
-EmbeddingFailureState = Literal["retryable", "terminal", "acknowledged", "superseded", "resolved"]
+# polylogue-3szyi: `EmbeddingFailureState` now lives in archive_tiers/types.py
+# beside `EmbeddingAttemptState`, so the embeddings DDL generates its CHECK
+# from the same declaration this module writes against.
 EmbeddingFailureResolution = Literal["acknowledge", "requeue", "supersede"]
 
 
@@ -752,7 +755,7 @@ def record_embedding_failure(
     failure_id = f"embedding-failure:{uuid.uuid4()}"
     origin_value = _enum_value(origin)
     refs = tuple(dict.fromkeys(str(ref) for ref in message_refs))
-    desired_state = "failed_retryable" if retryable else "failed_terminal"
+    desired_state: EmbeddingAttemptState = "failed_retryable" if retryable else "failed_terminal"
     lifecycle: EmbeddingFailureState = "retryable" if retryable else "terminal"
     applied = False
     stale_attempt = False

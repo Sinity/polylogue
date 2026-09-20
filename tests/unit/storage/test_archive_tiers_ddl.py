@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -1199,3 +1200,97 @@ def test_threads_view_declares_no_unconditional_null_column(tmp_path: Path) -> N
     body = re.sub(r"--[^\n]*", "", body)
     nulls = re.findall(r"(?<![\w.])NULL\s+AS\s+(\w+)", body, flags=re.IGNORECASE)
     assert nulls == [], f"threads view aliases bare NULL literals as columns: {nulls}"
+
+
+def test_embeddings_tier_tables_render_from_specs(tmp_path: Path) -> None:
+    """Every embeddings CREATE TABLE renders from a spec, or states its reason.
+
+    polylogue-a7xr.27: the index tier was the only spec-driven tier; the
+    embeddings tier now matches it, so adding a column touches the spec and
+    the tier's lifecycle delta only. `message_embeddings` is the one stated
+    exception: `USING vec0(...)` is an extension-defined virtual-table
+    declaration, not a column list a TableColumnSpec can render.
+
+    Anti-vacuity: hand-writing a column list back into any of the five
+    `CREATE TABLE` statements in archive_tiers/embeddings.py makes the
+    body-rendering assertion below fail, because that table's spec body will
+    no longer be a substring of the DDL.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import EMBEDDINGS_TABLE_SPECS
+    from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION, EMBEDDINGS_DDL
+
+    created = re.findall(r"CREATE (?:VIRTUAL )?TABLE IF NOT EXISTS (\w+)", EMBEDDINGS_DDL)
+    assert set(created) == {"message_embeddings", *EMBEDDINGS_TABLE_SPECS}
+
+    for name, spec in EMBEDDINGS_TABLE_SPECS.items():
+        assert spec.ddl_body in EMBEDDINGS_DDL, f"{name} does not render from its spec"
+
+    # The spec-local dimension constant and the tier's exported one are the
+    # same number; the CHECK below is what binds them.
+    assert f"CHECK(dimension = {EMBEDDING_DIMENSION})" in EMBEDDINGS_DDL
+
+
+def test_embeddings_vocabularies_generate_their_check_from_the_python_owner(tmp_path: Path) -> None:
+    """The two closed embeddings vocabularies accept exactly their declared members.
+
+    polylogue-3szyi: `embedding_failures.lifecycle_state` and
+    `embedding_derivation_state.attempt_state` were hand-typed
+    `CHECK(col IN (...))` lists with no generator tie -- the first had a
+    matching `Literal` (`EmbeddingFailureState`) that the DDL simply did not
+    use, the second had no Python owner at all. Both now generate from
+    `archive_tiers/types.py`.
+
+    Anti-vacuity: detaching either CHECK from its owner (writing the literal
+    list back into the spec) leaves this test green only while the two agree;
+    adding a member to the Literal without the generator tie makes the
+    accept-every-member loop fail on the new value, and widening the SQL list
+    beyond the Literal makes the reject-a-non-member assertion fail.
+    """
+    from typing import get_args
+
+    from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import EMBEDDINGS_TABLE_SPECS
+    from polylogue.storage.sqlite.archive_tiers.types import EmbeddingAttemptState, EmbeddingFailureState
+
+    conn = _connect(tmp_path / "vocab.db")
+    try:
+        conn.execute(
+            f"CREATE TABLE embedding_derivation_state ("
+            f"{EMBEDDINGS_TABLE_SPECS['embedding_derivation_state'].ddl_body}) STRICT"
+        )
+        conn.execute(
+            f"CREATE TABLE embedding_failures ({EMBEDDINGS_TABLE_SPECS['embedding_failures'].ddl_body}) STRICT"
+        )
+
+        for index, state in enumerate(get_args(EmbeddingAttemptState)):
+            conn.execute(
+                "INSERT INTO embedding_derivation_state ("
+                "session_id, generation, derivation_key, source_hash, recipe_hash,"
+                " output_contract_hash, attempt_state, updated_at_ms)"
+                " VALUES (?, 1, zeroblob(32), zeroblob(32), zeroblob(32), zeroblob(32), ?, 0)",
+                (f"s-{index}", state),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO embedding_derivation_state ("
+                "session_id, generation, derivation_key, source_hash, recipe_hash,"
+                " output_contract_hash, attempt_state, updated_at_ms)"
+                " VALUES ('s-bad', 1, zeroblob(32), zeroblob(32), zeroblob(32), zeroblob(32), 'in_flight', 0)"
+            )
+
+        for index, state in enumerate(get_args(EmbeddingFailureState)):
+            conn.execute(
+                "INSERT INTO embedding_failures ("
+                "failure_id, session_id, origin, provider, model, error_class, error_message,"
+                " retryable, lifecycle_state, created_at_ms, updated_at_ms)"
+                " VALUES (?, 's', 'codex-session', 'p', 'm', 'c', 'e', 0, ?, 0, 0)",
+                (f"f-{index}", state),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO embedding_failures ("
+                "failure_id, session_id, origin, provider, model, error_class, error_message,"
+                " retryable, lifecycle_state, created_at_ms, updated_at_ms)"
+                " VALUES ('f-bad', 's', 'codex-session', 'p', 'm', 'c', 'e', 0, 'abandoned', 0, 0)"
+            )
+    finally:
+        conn.close()
