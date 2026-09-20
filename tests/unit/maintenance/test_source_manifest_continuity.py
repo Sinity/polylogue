@@ -68,6 +68,13 @@ def test_duplicate_roots_and_symlinks_fail_closed(tmp_path: Path) -> None:
                 SourceDeclaration("b", SourceRole.DIRECTORY, root, True),
             ]
         )
+    with pytest.raises(SourceContinuityError, match="duplicate roots"):
+        build_source_frontier(
+            [
+                SourceDeclaration("a", SourceRole.DIRECTORY, root, True),
+                SourceDeclaration("b", SourceRole.DIRECTORY, root, True),
+            ]
+        )
     link = tmp_path / "link"
     link.symlink_to(root, target_is_directory=True)
     with pytest.raises(SourceContinuityError, match="real directory|unreadable"):
@@ -301,3 +308,24 @@ def test_campaign_policy_excludes_non_standalone_kinds_but_keeps_raw_evidence(tm
     assert [member.source_id for member in receipt.members] == ["standalone", "standalone"]
     assert receipt.excluded_source_ids == ("discovery",)
     assert receipt.complete
+
+
+def test_policy_classification_is_bound_when_receipt_is_loaded_and_preflighted(tmp_path: Path) -> None:
+    wanted = _source(tmp_path, "wanted-classified")
+    discovery = _source(tmp_path, "discovery-classified")
+    declarations = [
+        SourceDeclaration("standalone", SourceRole.DIRECTORY, wanted, True),
+        SourceDeclaration("discovery", SourceRole.DIRECTORY, discovery, True),
+    ]
+    source_kinds = {"discovery": "discovery-only"}
+    archive = tmp_path / "archive-classified"
+    archive.mkdir()
+
+    receipt = write_wanted_source_receipt(archive, declarations, source_kinds=source_kinds)
+    loaded = load_wanted_source_receipt(archive, declarations=declarations, source_kinds=source_kinds)
+    preflight = preflight_rebuild(archive, declarations=declarations, source_kinds=source_kinds)
+
+    assert loaded.receipt_sha256 == receipt.receipt_sha256
+    assert preflight.receipt_sha256 == receipt.receipt_sha256
+    with pytest.raises(WantedSourceReceiptError, match="declaration mismatch"):
+        load_wanted_source_receipt(archive, declarations=declarations)

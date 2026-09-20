@@ -603,6 +603,7 @@ def load_wanted_source_receipt(
     *,
     policy: WantedSourcePolicy | None = None,
     declarations: Iterable[SourceDeclaration] | None = None,
+    source_kinds: Mapping[str, str] | None = None,
 ) -> WantedSourceReceipt:
     """Load and validate a private receipt before any rebuild publication."""
     receipt = _read_wanted_source_receipt(Path(archive_root))
@@ -610,7 +611,7 @@ def load_wanted_source_receipt(
     if receipt.policy.identity != expected_policy.identity:
         raise WantedSourceReceiptError("wanted-source receipt policy mismatch")
     if declarations is not None:
-        expected, _excluded = expected_policy.select(tuple(declarations))
+        expected, _excluded = expected_policy.select(tuple(declarations), source_kinds=source_kinds)
         if _declaration_digest(expected) != receipt.declaration_sha256:
             raise WantedSourceReceiptError("wanted-source receipt declaration mismatch")
     for declaration in receipt.declarations:
@@ -630,9 +631,12 @@ def preflight_rebuild(
     *,
     policy: WantedSourcePolicy | None = None,
     declarations: Iterable[SourceDeclaration] | None = None,
+    source_kinds: Mapping[str, str] | None = None,
 ) -> RebuildPreflightReceipt:
     """Authorize a rebuild from the frozen receipt, never a fresh source walk."""
-    receipt = load_wanted_source_receipt(Path(archive_root), policy=policy, declarations=declarations)
+    receipt = load_wanted_source_receipt(
+        Path(archive_root), policy=policy, declarations=declarations, source_kinds=source_kinds
+    )
     return RebuildPreflightReceipt(
         receipt_sha256=receipt.receipt_sha256,
         policy_identity=receipt.policy_identity,
@@ -655,6 +659,8 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
         raise SourceContinuityError("source frontier declaration is empty")
     if len({row.source_id for row in rows}) != len(rows):
         raise SourceContinuityError("source frontier contains duplicate source IDs")
+    if len({Path(row.root).absolute() for row in rows}) != len(rows):
+        raise SourceContinuityError("source frontier contains duplicate roots")
     from polylogue.sources.source_snapshot import SourceSnapshotError, observe_source_members
 
     members: list[FrontierMember] = []
