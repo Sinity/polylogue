@@ -271,6 +271,12 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "Prove the archive is coherent after a rebuild, restore, or promotion. Read-only.",
     ),
     _command(
+        "wanted-sources",
+        "_wanted_sources",
+        "wanted_sources_command",
+        "Freeze or authorize the private wanted-source denominator for the final rebuild.",
+    ),
+    _command(
         "blob-residue-compare",
         "_blob_residue_compare",
         "blob_residue_compare_command",
