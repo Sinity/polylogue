@@ -141,6 +141,8 @@ class _CountingKey(str):
 
     __slots__ = ("comparisons",)
 
+    comparisons: int
+
     def __new__(cls, value: str) -> _CountingKey:
         key = super().__new__(cls, value)
         key.comparisons = 0
