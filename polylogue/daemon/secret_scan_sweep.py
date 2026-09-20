@@ -29,7 +29,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.daemon.periodic import catch_up_gate, daemon_periodic_runner
+from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
 from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
@@ -85,13 +85,13 @@ def run_secret_scan_sweep_once_sync(
 
 async def periodic_secret_scan_sweep(
     *,
-    catch_up_complete: asyncio.Event | None = None,
+    watcher_registered: asyncio.Event | None = None,
 ) -> None:
     """Periodically drain one bounded page of the archive-wide secret sweep.
 
-    Gated on ``catch_up_complete`` (when given) so the first pass never
+    Gated on ``watcher_registered`` (when given) so the first pass never
     races initial source catch-up -- same gating shape as every other
-    ``catch_up_complete``-gated periodic loop in ``daemon/cli.py``.
+    ``watcher_registered``-gated periodic loop in ``daemon/cli.py``.
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.paths import archive_root
@@ -141,7 +141,7 @@ async def periodic_secret_scan_sweep(
         "secret_scan_sweep",
         once,
         interval_s=SECRET_SCAN_SWEEP_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         run_first=False,
         on_error="record",
         error_event=None,

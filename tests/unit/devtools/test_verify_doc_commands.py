@@ -46,11 +46,11 @@ class TestCheckDocsRepoBaseline:
         normalized_section = " ".join(lower_section.replace("#", " ").split())
 
         restart = section.index("systemctl --user start polylogued.service")
-        gate_timeout = f"{daemon_cli._CATCH_UP_GATE_TIMEOUT_SECONDS:g}-second gate timeout"
+        gate_timeout = f"{daemon_cli._WATCHER_REGISTRATION_TIMEOUT_SECONDS:g}-second gate timeout"
         interval = f"{blob_gc_periodic.BLOB_GC_INTERVAL_SECONDS:g}-second interval"
         max_batch = f"at most {blob_gc_periodic.BLOB_GC_MAX_BATCH} blobs"
         first_wait = section.index(interval)
-        gate_release = lower_section.index("after the catch-up event or timeout")
+        gate_release = lower_section.index("after watcher registration or timeout")
 
         assert "manual blob reclamation is not a supported route" in normalized_section
         assert "reservation ttls must not be inferred" in normalized_section

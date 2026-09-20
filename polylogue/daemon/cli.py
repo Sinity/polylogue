@@ -57,7 +57,7 @@ from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntak
 from polylogue.daemon.lineage_startup import (
     ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
-from polylogue.daemon.periodic import catch_up_gate, daemon_periodic_runner
+from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
 from polylogue.daemon.service_halt import HaltRegistry
 from polylogue.daemon.services import (
     PRODUCTION_PROFILE,
@@ -198,17 +198,17 @@ _HEARTBEAT_INTERVAL_SECONDS = 900
 _DB_OPTIMIZE_INTERVAL_SECONDS = 86_400
 
 # polylogue-5xxmc: watcher readiness sequences a maintenance loop behind
-# watch registration (see ``_bridge_watcher_ready`` below) so
+# watch registration (see ``_bridge_watcher_registered`` below) so
 # archive-wide convergence work never races a starting watcher for the single
 # writer. Acquisition itself is the dispatcher's, so the event is now set as
 # soon as the watch is registered. That sequencing is a startup-ordering aid,
-# not a permanent kill switch -- if the watcher never reaches catch-up-complete
+# not a permanent kill switch -- if the watcher never registers
 # (crash, hang, or any other path that leaves the bridge task without a source
 # event to forward) every gated loop must still eventually run instead of
 # parking on ``Event.wait()`` forever. Verified live 2026-08-03: gated
 # maintenance loops frozen, convergence_debt retries stalled since 2026-07-31
 # with zero journal signal beyond the periodic schema_version health line.
-_CATCH_UP_GATE_TIMEOUT_SECONDS = 1800.0  # 30 minutes
+_WATCHER_REGISTRATION_TIMEOUT_SECONDS = 1800.0  # 30 minutes
 
 
 def _archive_root_exists() -> bool:
@@ -223,29 +223,29 @@ def _health_check_interval_s() -> float:
     return float(load_polylogue_config().health_check_interval_s)
 
 
-async def _await_catch_up_gate(
-    catch_up_complete: asyncio.Event | None,
+async def _await_watcher_registration(
+    watcher_registered: asyncio.Event | None,
     *,
     loop_name: str,
-    timeout_s: float = _CATCH_UP_GATE_TIMEOUT_SECONDS,
+    timeout_s: float = _WATCHER_REGISTRATION_TIMEOUT_SECONDS,
 ) -> None:
-    """Wait for the watcher's initial catch-up, bounded by ``timeout_s``.
+    """Wait for watcher registration, bounded by ``timeout_s``.
 
     Preserves the exact prior behavior when the gate is released promptly
-    (or never supplied): the wait returns as soon as ``catch_up_complete``
+    (or never supplied): the wait returns as soon as ``watcher_registered``
     is set. Only a gate that stays unset for the full timeout gets a single
-    WARNING and the loop proceeds without having observed catch-up.
+    WARNING and the loop proceeds without having observed registration.
     """
-    if catch_up_complete is None or catch_up_complete.is_set():
+    if watcher_registered is None or watcher_registered.is_set():
         return
     try:
-        await asyncio.wait_for(catch_up_complete.wait(), timeout=timeout_s)
+        await asyncio.wait_for(watcher_registered.wait(), timeout=timeout_s)
     except TimeoutError:
         emit(
-            "daemon.catch_up_gate.timeout",
+            "daemon.watcher_registered.timeout",
             level=WARNING,
             outcome="unmeasured",
-            reason="catch_up_gate_not_released",
+            reason="watcher_registration_not_observed",
             loop=loop_name,
             timeout_ms=round(timeout_s * 1000, 3),
         )
@@ -755,12 +755,12 @@ async def _run_drive_source_catchup_safely(
 async def _periodic_drive_source_catchup(
     *,
     session_profile_callback: SessionProfileCallback,
-    catch_up_complete: asyncio.Event | None = None,
+    watcher_registered: asyncio.Event | None = None,
 ) -> None:
     """Periodically converge remote Drive sources such as AiStudio exports.
 
     The first pass normally runs immediately in the background.  A live
-    watcher supplies ``catch_up_complete`` so fresh local session evidence
+    watcher supplies ``watcher_registered`` so fresh local session evidence
     gets the single archive writer before remote download/index work.  The
     gate is deliberately absent for maintenance-only callers.
     """
@@ -774,7 +774,7 @@ async def _periodic_drive_source_catchup(
         "drive_source_catchup",
         once,
         interval_s=_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         run_first=True,
     )
 
@@ -940,7 +940,7 @@ async def _periodic_convergence_check(
     sources: tuple[WatchSource, ...],
     *,
     fts_owner: FtsConvergenceOwner,
-    catch_up_complete: asyncio.Event | None = None,
+    watcher_registered: asyncio.Event | None = None,
     session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]] | None = None,
 ) -> None:
     """Periodically retry recorded derived convergence debt."""
@@ -956,7 +956,7 @@ async def _periodic_convergence_check(
         "convergence_check",
         once,
         interval_s=_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         run_first=True,
     )
 
@@ -1007,13 +1007,13 @@ async def _retry_convergence_debt_once(db: Path) -> None:
 
 async def _periodic_raw_materialization_convergence(
     *,
-    catch_up_complete: asyncio.Event | None = None,
+    watcher_registered: asyncio.Event | None = None,
     raw_observation_owner: Any | None = None,
     raw_intake_wakeup: asyncio.Event | None = None,
     raw_intake_discovery: Any | None = None,
     session_profile_callback: Callable[[Sequence[str] | None], Awaitable[object]] | None = None,
 ) -> None:
-    """Wake the canonical bounded raw-observation intake after catch-up."""
+    """Wake the canonical bounded raw-observation intake after registration."""
     if raw_observation_owner is None or raw_intake_wakeup is None or raw_intake_discovery is None:
         raise RuntimeError("raw materialization requires the canonical observation owner, discovery, and intake wakeup")
 
@@ -1029,13 +1029,13 @@ async def _periodic_raw_materialization_convergence(
         "raw_observation_convergence",
         once,
         interval_s=_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         run_first=True,
         error_event="daemon.raw_materialization.whale_schedule_failed",
     )
 
 
-async def _bridge_watcher_ready(
+async def _bridge_watcher_registered(
     source: asyncio.Event,
     target: asyncio.Event,
 ) -> None:
@@ -2044,7 +2044,6 @@ async def _shutdown_writer_coordinator_with_rebuild_exclusion(
 async def run_daemon_services(
     *,
     sources: tuple[WatchSource, ...],
-    debounce_s: float | None = None,
     enable_watch: bool,
     enable_source_catchup: bool = True,
     enable_browser_capture: bool,
@@ -2469,7 +2468,7 @@ async def _run_daemon_services_under_active_writer_lease(
         raise
 
     # Whale receipts are durable filesystem-first recovery records. Drain them
-    # before any watcher catch-up gate or schema-dependent maintenance loop so a
+    # before any watcher-registration gate or schema-dependent maintenance loop so a
     # restart does not leave terminal lifecycle state parked behind initial
     # source ingestion. This is deliberately outside the ``watcher_blocked``
     # branch: the outbox is independent of derived-tier readiness.
@@ -2544,7 +2543,7 @@ async def _run_daemon_services_under_active_writer_lease(
     converger: DaemonConverger | None = None
     session_profile_callback: SessionProfileCallback | None = None
     embedding_callback: EmbeddingConvergenceOwner | None = None
-    watcher_ready_gate: asyncio.Event | None = None
+    watcher_registered_gate_event: asyncio.Event | None = None
     raw_intake_wakeup = asyncio.Event()
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
@@ -2760,8 +2759,8 @@ async def _run_daemon_services_under_active_writer_lease(
                     reason="disabled_for_this_run",
                     loop="drive source catch-up",
                 )
-            watcher_ready_gate = asyncio.Event() if enable_watch else None
-            gate = watcher_ready_gate
+            watcher_registered_gate_event = asyncio.Event() if enable_watch else None
+            gate = watcher_registered_gate_event
             # One real producer/consumer pair on the in-process bus
             # (polylogue-14t7): the post-commit write effect announces a
             # committed ingest, and the embedding backlog loop wakes on it
@@ -2782,14 +2781,14 @@ async def _run_daemon_services_under_active_writer_lease(
                     lambda: _periodic_convergence_check(
                         sources,
                         fts_owner=fts_owner,
-                        catch_up_complete=gate,
+                        watcher_registered=gate,
                         session_profile_callback=session_profile_callback,
                     ),
                 ),
                 (
                     "raw_observation_convergence",
                     lambda: _periodic_raw_materialization_convergence(
-                        catch_up_complete=gate,
+                        watcher_registered=gate,
                         raw_observation_owner=raw_observation_owner,
                         raw_intake_wakeup=raw_intake_wakeup,
                         raw_intake_discovery=raw_whale_discovery,
@@ -2802,30 +2801,30 @@ async def _run_daemon_services_under_active_writer_lease(
                 (
                     "embedding_backlog",
                     lambda: periodic_embedding_backlog_check(
-                        catch_up_complete=gate,
+                        watcher_registered=gate,
                         converge=embedding_convergence.callback,
                         wakeup=ingest_wakeup,
                     ),
                 ),
                 (
                     "embedding_orphan_reconcile",
-                    lambda: periodic_embedding_orphan_reconcile_check(catch_up_complete=gate),
+                    lambda: periodic_embedding_orphan_reconcile_check(watcher_registered=gate),
                 ),
                 ("db_optimize", _periodic_db_optimize),
                 ("status_snapshot_refresh", _periodic_status_snapshot_refresh),
                 (
                     "judgment_automation",
                     lambda: periodic_judgment_automation_sweep(
-                        catch_up_complete=gate,
+                        watcher_registered=gate,
                         archive_root_path=archive_root_path,
                     ),
                 ),
-                ("blob_gc", lambda: periodic_blob_gc_check(catch_up_complete=gate)),
+                ("blob_gc", lambda: periodic_blob_gc_check(watcher_registered=gate)),
                 (
                     "blob_publication_reconciliation",
-                    lambda: periodic_blob_publication_reconciliation_check(catch_up_complete=gate),
+                    lambda: periodic_blob_publication_reconciliation_check(watcher_registered=gate),
                 ),
-                ("secret_scan_sweep", lambda: periodic_secret_scan_sweep(catch_up_complete=gate)),
+                ("secret_scan_sweep", lambda: periodic_secret_scan_sweep(watcher_registered=gate)),
             )
             for service_name, service_factory in periodic_services:
                 supervisor.start(service_name, service_factory)
@@ -2842,7 +2841,7 @@ async def _run_daemon_services_under_active_writer_lease(
         # ``watcher_creation_blocked``/``watcher_blocked`` above); reuse that
         # result. The watcher itself gates only on ``watcher_creation_blocked``
         # (durable-tier mismatch) -- a derived-only mismatch leaves
-        # ``converger``/``watcher_ready_gate`` at their None defaults
+        # ``converger``/``watcher_registered_gate_event`` at their None defaults
         # (the ``if not watcher_blocked:`` block above was skipped), so the
         # watcher runs acquire-only: raw acquisition proceeds, no
         # convergence coupling (polylogue-gbs02).
@@ -3066,14 +3065,14 @@ async def _run_daemon_services_under_active_writer_lease(
                     )
                     supervisor.start("fair_intake", intake_service.run)
                     if enable_watch:
-                        watcher_ready = getattr(watcher, "watcher_ready", None)
+                        watcher_registered = getattr(watcher, "watcher_ready", None)
                         supervisor.start("watcher", watcher.run)
-                        if watcher_ready_gate is not None and watcher_ready is not None:
+                        if watcher_registered_gate_event is not None and watcher_registered is not None:
                             supervisor.start(
-                                "watcher_ready_bridge",
-                                lambda: _bridge_watcher_ready(
-                                    watcher_ready,
-                                    watcher_ready_gate,
+                                "watcher_registered_bridge",
+                                lambda: _bridge_watcher_registered(
+                                    watcher_registered,
+                                    watcher_registered_gate_event,
                                 ),
                             )
                     if lifecycle_events_enabled:

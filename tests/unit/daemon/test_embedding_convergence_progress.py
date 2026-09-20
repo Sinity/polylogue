@@ -23,7 +23,7 @@ class _EmbeddingConfig:
         return {"voyage_api_key": self.voyage_api_key, "embedding_max_cost_usd": 5.0}.get(key, default)
 
 
-def test_periodic_embedding_backlog_waits_for_catch_up_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_periodic_embedding_backlog_waits_for_watcher_registration(monkeypatch: pytest.MonkeyPatch) -> None:
     """The periodic production route invokes its retained composition only after catch-up.
 
     Anti-vacuity: removing the catch-up wait starts the callback before its
@@ -40,7 +40,7 @@ def test_periodic_embedding_backlog_waits_for_catch_up_complete(monkeypatch: pyt
         gate = asyncio.Event()
         monkeypatch.setattr(embedding_backlog, "EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS", 0)
         task = asyncio.create_task(
-            embedding_backlog.periodic_embedding_backlog_check(catch_up_complete=gate, converge=converge)
+            embedding_backlog.periodic_embedding_backlog_check(watcher_registered=gate, converge=converge)
         )
         await asyncio.sleep(0)
         assert calls == []

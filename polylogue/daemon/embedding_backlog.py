@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.core.enums import OperationStatus
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
-from polylogue.daemon.periodic import catch_up_gate, daemon_periodic_runner
+from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
 from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -73,7 +73,7 @@ def recover_embedding_catchup_receipts(archive_root: Path) -> int:
 
 async def periodic_embedding_backlog_check(
     *,
-    catch_up_complete: asyncio.Event | None = None,
+    watcher_registered: asyncio.Event | None = None,
     converge: Callable[[Sequence[str] | None], Awaitable[EmbeddingConvergenceResult]] | None = None,
     wakeup: asyncio.Event | None = None,
 ) -> None:
@@ -131,7 +131,7 @@ async def periodic_embedding_backlog_check(
         "embedding_backlog",
         once,
         interval_s=EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         wakeup=wakeup,
         run_first=False,
         on_error="record",
@@ -141,7 +141,7 @@ async def periodic_embedding_backlog_check(
 
 async def periodic_embedding_orphan_reconcile_check(
     *,
-    catch_up_complete: asyncio.Event | None = None,
+    watcher_registered: asyncio.Event | None = None,
 ) -> None:
     """Periodically reconcile one bounded batch of orphan embedding rows.
 
@@ -201,7 +201,7 @@ async def periodic_embedding_orphan_reconcile_check(
         "embedding_orphan_reconcile",
         once,
         interval_s=EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         run_first=False,
         on_error="record",
         error_event=None,
