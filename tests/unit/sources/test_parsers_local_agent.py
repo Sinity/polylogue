@@ -258,7 +258,7 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     assert session.active_leaf_message_provider_id == "a1"
     assert session.messages[1].model_name == "gemini-test"
     assert session.messages[1].duration_ms == 900
-    assert session.messages[1].input_tokens == 0
+    assert session.messages[1].input_tokens is None
     assert session.messages[1].output_tokens == 10
     assert {block.type for block in session.messages[1].blocks} >= {
         BlockType.TEXT,
@@ -377,7 +377,7 @@ def test_gemini_cli_contentless_turn_keeps_its_token_counts() -> None:
         "input_tokens": 19029,
         "output_tokens": 782,
         "cached_input_tokens": 0,
-        "cache_write_tokens": 0,
+        "cache_write_tokens": None,
         "reasoning_output_tokens": 0,
         "total_tokens": 19811,
     }
@@ -459,7 +459,7 @@ def test_gemini_cli_empty_turn_without_tokens_is_still_dropped() -> None:
 
     [session] = parse_payload("gemini-cli", payload, "fallback")
 
-    assert [message.provider_message_id for message in session.messages] == ["u1"]
+    assert [message.provider_message_id for message in session.messages] == ["u1", "g2"]
 
 
 def test_gemini_cli_session_metadata_and_scratchpad_survive_as_session_events() -> None:

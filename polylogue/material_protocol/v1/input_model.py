@@ -86,10 +86,10 @@ class MessageInput:
     occurred_at_ms: int | None = None
     model_name: str | None = None
     parent_native_id: str | None = None
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     duration_ms: int | None = None
     blocks: tuple[BlockInput, ...] = ()
     attachments: tuple[AttachmentInput, ...] = ()

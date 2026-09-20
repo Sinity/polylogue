@@ -461,6 +461,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # become the code-mode child's tool_result text and its structural
 # ``tool_outcome``. SEMANTIC_REPARSE: the evidence exists only in the acquired
 # source, so stored rows cannot recover it.
+# polylogue-qgyuj: v100 preserves unknown message-grain usage as NULL rather
+# than coercing an unreported counter to measured zero. Existing message rows
+# require semantic replay from retained raw evidence; session/cumulative usage
+# remains at its original provider grain and is not allocated to messages.
+#
 # polylogue-qvxun: v99 folds the three Codex-named projection tables
 # (``codex_thread_state``, ``codex_thread_spawn_edges``,
 # ``codex_thread_state_provenance``) into the provider-neutral work-evidence
@@ -470,7 +475,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # now carries no provider-named table. SEMANTIC_REPARSE: the rows exist only in
 # the acquired export, so they are recomputed from it rather than copied
 # across.
-INDEX_SCHEMA_VERSION = 99
+INDEX_SCHEMA_VERSION = 100
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

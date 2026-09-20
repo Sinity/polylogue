@@ -831,7 +831,7 @@ def _parse_message_row(
                 outcome_unknown_reason=outcome_reason,
             )
         )
-    token_count = _non_negative_int(_row_value(row, "token_count")) or 0
+    token_count = _non_negative_int(_row_value(row, "token_count"))
     observed = _sqlite_bool(_row_value(row, "observed"), default=False)
     active = _sqlite_bool(_row_value(row, "active"), default=True)
     return ParsedMessage(
@@ -845,8 +845,8 @@ def _parse_message_row(
         is_active_path=active,
         material_origin=_material_origin(role, observed=observed),
         model_name=fallback_model,
-        output_tokens=token_count if role is Role.ASSISTANT else 0,
-        input_tokens=token_count if role is Role.USER else 0,
+        output_tokens=token_count if role is Role.ASSISTANT else (0 if token_count is not None else None),
+        input_tokens=token_count if role is Role.USER else (0 if token_count is not None else None),
         end_turn=_end_turn_from_finish_reason(_row_value(row, "finish_reason")),
         stop_reason=_stop_reason_from_finish_reason(_row_value(row, "finish_reason")),
     )

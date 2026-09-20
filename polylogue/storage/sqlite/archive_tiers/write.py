@@ -4280,8 +4280,14 @@ def _replace_full_session_messages_and_blocks(
 
 def _messages_have_token_counts(messages: Sequence[ParsedMessage]) -> bool:
     return any(
-        message.input_tokens or message.output_tokens or message.cache_read_tokens or message.cache_write_tokens
+        value is not None
         for message in messages
+        for value in (
+            message.input_tokens,
+            message.output_tokens,
+            message.cache_read_tokens,
+            message.cache_write_tokens,
+        )
     )
 
 
@@ -6720,10 +6726,10 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
               WHERE m.session_id = session_model_usage.session_id
                 AND m.model_name = session_model_usage.model_name
                 AND (
-                    COALESCE(m.input_tokens, 0) != 0
-                    OR COALESCE(m.output_tokens, 0) != 0
-                    OR COALESCE(m.cache_read_tokens, 0) != 0
-                    OR COALESCE(m.cache_write_tokens, 0) != 0
+                    m.input_tokens IS NOT NULL
+                    OR m.output_tokens IS NOT NULL
+                    OR m.cache_read_tokens IS NOT NULL
+                    OR m.cache_write_tokens IS NOT NULL
                 )
           )
         """,
@@ -8477,10 +8483,10 @@ def _reextract_provider_usage_tail_db(
               WHERE m.session_id = session_model_usage.session_id
                 AND m.model_name = session_model_usage.model_name
                 AND (
-                    COALESCE(m.input_tokens, 0) != 0
-                    OR COALESCE(m.output_tokens, 0) != 0
-                    OR COALESCE(m.cache_read_tokens, 0) != 0
-                    OR COALESCE(m.cache_write_tokens, 0) != 0
+                    m.input_tokens IS NOT NULL
+                    OR m.output_tokens IS NOT NULL
+                    OR m.cache_read_tokens IS NOT NULL
+                    OR m.cache_write_tokens IS NOT NULL
                 )
           )
         """,

@@ -297,8 +297,8 @@ def _design_assistant_messages(
                 kind="claude-design-assistant-segment",
             )
         )
-        input_tokens = 0
-        if not first_segment_emitted and isinstance(turn_input_tokens, int):
+        input_tokens: int | None = None
+        if not first_segment_emitted and isinstance(turn_input_tokens, int) and turn_input_tokens >= 0:
             input_tokens = turn_input_tokens
         first_segment_emitted = True
         messages.append(
