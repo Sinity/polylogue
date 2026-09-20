@@ -36,6 +36,7 @@ from polylogue.sources.parsers import antigravity, hermes_identity, hermes_spans
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_acquisition_components import sniff_zip_provider
 from polylogue.sources.source_walk import _resolve_source_paths
+from polylogue.storage.sqlite.archive_tiers.source_write import read_capture_mode_resolution
 from polylogue.surfaces.payloads import (
     ImportDetectorEvidencePayload,
     ImportExplainEntryPayload,
@@ -131,6 +132,7 @@ def explain_import_archive(
                 entry = _archive_entry_from_rows(
                     row,
                     artifact_rows=artifact_rows,
+                    source_conn=source_conn,
                     index_conn=index_conn,
                     redact_paths=redact_paths,
                 )
@@ -180,6 +182,7 @@ def _archive_entry_from_rows(
     row: sqlite3.Row,
     *,
     artifact_rows: tuple[sqlite3.Row, ...],
+    source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection | None,
     redact_paths: bool,
 ) -> ImportExplainEntryPayload:
@@ -227,6 +230,18 @@ def _archive_entry_from_rows(
     else:
         artifact_evidence = (_evidence("source.raw_artifacts", matched=False, reason="no artifact row recorded"),)
 
+    # Read the full observation set, not `raw_sessions.capture_mode`: that
+    # column caches only the first-known mode, so a byte-identical payload
+    # acquired twice by different mechanisms would report one of them as if
+    # it were the only fact on record (polylogue-buns AC2 / polylogue-7xg00).
+    capture_resolution = read_capture_mode_resolution(source_conn, raw_id)
+    if capture_resolution.status == "ambiguous":
+        caveats.append(
+            "capture mode is ambiguous: "
+            + ", ".join(mode.value for mode in capture_resolution.modes)
+            + " were all observed for these bytes"
+        )
+
     return ImportExplainEntryPayload(
         raw_ref=f"raw:{raw_id}",
         source_path=source_path,
@@ -234,6 +249,8 @@ def _archive_entry_from_rows(
         provider_hint=str(row["origin"]),
         detected_origin=str(row["origin"]),
         detected_provider=None,
+        capture_mode_status=capture_resolution.status,
+        capture_modes=tuple(mode.value for mode in capture_resolution.modes),
         detector="source.raw_sessions",
         detector_evidence=(
             _evidence("source.raw_sessions", matched=True, reason=f"raw_id={raw_id}"),

@@ -326,6 +326,9 @@ class ImportFidelityDeclarationPayload(SurfacePayloadModel):
     caveats: tuple[str, ...] = ()
 
 
+CaptureModeResolutionStatus = Literal["unknown", "unambiguous", "ambiguous"]
+
+
 class ImportExplainEntryPayload(SurfacePayloadModel):
     """Explanation for one raw artifact or archive entry inspected by import explain."""
 
@@ -335,6 +338,15 @@ class ImportExplainEntryPayload(SurfacePayloadModel):
     provider_hint: str | None = None
     detected_origin: str | None = None
     detected_provider: str | None = None
+    # Acquisition capture mode, kept distinct from `detected_origin` because
+    # the Provider -> Origin mapping is non-injective (GEMINI and DRIVE both
+    # land on AISTUDIO_DRIVE): an origin can never be reversed into the mode
+    # that produced it. `capture_modes` is the full durable resolution from
+    # `source.raw_capture_observations`, not the first-known
+    # `raw_sessions.capture_mode` cache, so a raw whose byte-identical
+    # payload was acquired twice by different mechanisms reports both.
+    capture_mode_status: CaptureModeResolutionStatus | None = None
+    capture_modes: tuple[str, ...] = ()
     detector: str
     detector_evidence: tuple[ImportDetectorEvidencePayload, ...] = ()
     parser: str | None = None
