@@ -2824,3 +2824,99 @@ def test_alias_invalidation_records_retryable_convergence_debt(tmp_path: Path) -
     assert "identity contradiction" in debt[0]["last_error"]
     # Retryable, not an inert marker: the row carries a scheduled retry.
     assert debt[0]["next_retry_at"]
+
+
+def test_only_a_prefix_sharing_edge_may_carry_a_branch_anchor(tmp_path: Path) -> None:
+    """The canonical DDL rejects a contradictory inheritance/anchor pair.
+
+    A ``spawned-fresh`` child references its parent without inheriting a
+    prefix, and an undecided edge has no evidence for a divergence point, so
+    neither may carry ``branch_point_message_id`` /
+    ``branch_point_content_address``. Composition reads the anchor as the last
+    inherited parent message, so a contradictory row is a lineage the reader
+    would silently compose from (polylogue-pkst AC1).
+
+    The law is deliberately one-directional: a prefix-sharing edge whose
+    parent message has not landed yet keeps a NULL anchor, which the last two
+    positive cases pin -- tightening it to require the anchor would reject
+    captured evidence for an unarrived parent.
+
+    Anti-vacuity: this drives the real generated DDL through
+    ``initialize_archive_database``, so deleting the table constraint from
+    ``SESSION_LINKS_SPEC`` makes both refusals succeed; the positive cases
+    fail if the constraint is written as a plain equality, because
+    ``inheritance = 'prefix-sharing'`` evaluates to NULL for an undecided
+    edge and SQLite lets a NULL CHECK pass.
+    """
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('child', 'codex-session', zeroblob(32))"
+        )
+
+        def insert(dst: str, inheritance: str | None, anchor: str | None) -> None:
+            conn.execute(
+                "INSERT INTO session_links (src_session_id, dst_origin, dst_native_id, link_type, "
+                "inheritance, branch_point_message_id, method, confidence, evidence_json, observed_at_ms) "
+                "VALUES ('codex-session:child', 'codex-session', ?, 'fork', ?, ?, 'test', 1.0, '[]', 1)",
+                (dst, inheritance, anchor),
+            )
+
+        anchor = "codex-session:parent:n:m1"
+        with pytest.raises(sqlite3.IntegrityError):
+            insert("p", "spawned-fresh", anchor)
+        with pytest.raises(sqlite3.IntegrityError):
+            insert("q", None, anchor)
+
+        # Representable: a decided prefix-sharing edge, and the unresolved
+        # shapes the resolver actually writes before a parent arrives.
+        insert("r", "prefix-sharing", anchor)
+        insert("s", "prefix-sharing", None)
+        insert("t", "spawned-fresh", None)
+        insert("u", None, None)
+        conn.commit()
+        stored = {
+            str(row[0]): (row[1], row[2])
+            for row in conn.execute("SELECT dst_native_id, inheritance, branch_point_message_id FROM session_links")
+        }
+    finally:
+        conn.close()
+
+    assert stored == {
+        "r": ("prefix-sharing", anchor),
+        "s": ("prefix-sharing", None),
+        "t": ("spawned-fresh", None),
+        "u": (None, None),
+    }
+
+
+def test_a_content_address_witness_is_also_refused_without_prefix_sharing(tmp_path: Path) -> None:
+    """The same law covers the branch point's content-address witness.
+
+    ``branch_point_content_address`` is derived only alongside
+    ``branch_point_message_id`` (``archive_tiers/write.py``'s
+    ``_message_content_address_for_id``), and a reader treats it as proof the
+    anchor still names the message it was bound to. A witness on a
+    non-prefix-sharing edge is the same contradiction.
+
+    Anti-vacuity: drop ``branch_point_content_address`` from the constraint
+    and this insert succeeds.
+    """
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('child', 'codex-session', zeroblob(32))"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO session_links (src_session_id, dst_origin, dst_native_id, link_type, "
+                "inheritance, branch_point_content_address, method, confidence, evidence_json, observed_at_ms) "
+                "VALUES ('codex-session:child', 'codex-session', 'p', 'fork', 'spawned-fresh', "
+                "zeroblob(32), 'test', 1.0, '[]', 1)"
+            )
+    finally:
+        conn.close()

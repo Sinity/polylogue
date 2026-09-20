@@ -4008,10 +4008,16 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
                 raise ValueError("manual continuation parent session does not exist")
             index.execute(
+                # ``status`` is an exceptional marker (``TopologyEdgeStatus``:
+                # repaired / quarantined / authority-contradicted), not the
+                # ordinary resolved state -- resolvedness is carried by
+                # ``resolved_dst_session_id IS NOT NULL``. Writing 'resolved'
+                # here failed the column's generated CHECK, so this route
+                # raised IntegrityError on every call (polylogue-pkst).
                 """INSERT OR REPLACE INTO session_links
                    (src_session_id, dst_origin, dst_native_id, link_type, inheritance,
-                    resolved_dst_session_id, status, method, confidence, evidence_json, observed_at_ms)
-                   VALUES (?, ?, ?, 'continuation', 'spawned-fresh', ?, 'resolved',
+                    resolved_dst_session_id, method, confidence, evidence_json, observed_at_ms)
+                   VALUES (?, ?, ?, 'continuation', 'spawned-fresh', ?,
                            'manual-continuation', 1.0, '[]', ?)""",
                 (child, parent_origin, parent_native, parent, now_ms),
             )
@@ -4029,7 +4035,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 target_ref=f"session:{child}",
                 kind=AssertionKind.HANDOFF,
                 body_text=f"Continuation from session {parent}.",
-                author_ref="service:polylogue",
+                # ``author_ref`` is an ObjectRef: ``service`` is not a
+                # declared kind, so this raised before the assertion landed
+                # (polylogue-pkst). ``actor:`` is the kind the other
+                # automated writers use (``actor:judgment-automation``).
+                author_ref="actor:polylogue",
                 author_kind="service",
                 evidence_refs=[f"session:{parent}", f"session:{child}"],
                 status=AssertionStatus.CANDIDATE,
