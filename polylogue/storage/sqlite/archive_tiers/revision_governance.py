@@ -2191,6 +2191,26 @@ def replace_raw_membership_census(
             ).fetchone()
             if dependent is not None:
                 raise ActiveByteRevisionChainError("an active byte-revision chain cannot move to membership governance")
+            if sessions and detail not in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS:
+                # A retirement that leaves membership rows behind is only observable
+                # through its ``raw_membership_census.detail`` marker: the retired raw
+                # loses its ``logical_source_key`` and goes ``quarantined``, so
+                # ``raw_membership_retired_full_revision_siblings`` and
+                # ``_raw_revision_source_path_has_divergent_evidence`` find it by
+                # detail alone. An unrecognized marker is not a harmless label -- it
+                # makes the retirement invisible, and a later-arriving sibling for the
+                # same identity is then accepted as an unconditional singleton
+                # byte-proven baseline, which is exactly the polylogue-52l2 hazard the
+                # marker exists to prevent. Refuse the write instead of letting an
+                # unknown source value read back as success (polylogue-sze30).
+                #
+                # A census with no surviving membership row (a non-session artifact or
+                # retained-state export) has no logical identity to be ambiguous
+                # about, so its detail stays free explanatory prose.
+                raise ValueError(
+                    "full-revision retirement with membership rows requires a recognized governance marker; "
+                    f"got {detail!r}, expected one of {RETIRED_FULL_REVISION_GOVERNANCE_DETAILS!r}"
+                )
             conn.execute(
                 """
                 UPDATE raw_sessions
