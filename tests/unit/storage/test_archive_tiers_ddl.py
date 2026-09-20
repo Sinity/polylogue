@@ -1166,3 +1166,36 @@ def test_index_fresh_init_and_converged_live_archive_agree_schema_wise(tmp_path:
             conn.close()
 
     assert _schema_ddl(fresh_path) == _schema_ddl(converged_path)
+
+
+def test_threads_view_declares_no_unconditional_null_column(tmp_path: Path) -> None:
+    """The `threads` view must not alias a bare NULL literal as an output column.
+
+    polylogue-cuxz.12: it carried `NULL AS dominant_repo_id`, a column that was
+    NULL on all 9,914 live rows because nothing could ever produce a value for
+    it -- no writer, no reader, no hydration, no intended identity join. A
+    column structurally incapable of carrying a value is a lie in the read
+    model, not a placeholder. `dominant_repo` (the repo name, chosen by member
+    count) remains the real repository attribution.
+
+    Scoped to `threads` on purpose. `delegation_facts_source` legitimately
+    writes `NULL AS <col>` in individual UNION branches where the other branch
+    supplies the value, so an archive-wide form check would be wrong.
+
+    Anti-vacuity: restoring `NULL AS dominant_repo_id` to the `threads` view
+    makes both assertions below fail.
+    """
+    import re
+
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    thread_columns = [str(row["name"]) for row in conn.execute("PRAGMA table_info(threads)").fetchall()]
+    assert "dominant_repo_id" not in thread_columns
+    assert "dominant_repo" in thread_columns, "the real repository attribution must survive"
+
+    body = str(conn.execute("SELECT sql FROM sqlite_schema WHERE type='view' AND name='threads'").fetchone()[0])
+    # sqlite_schema stores the CREATE text verbatim, comments included.
+    body = re.sub(r"--[^\n]*", "", body)
+    nulls = re.findall(r"(?<![\w.])NULL\s+AS\s+(\w+)", body, flags=re.IGNORECASE)
+    assert nulls == [], f"threads view aliases bare NULL literals as columns: {nulls}"
