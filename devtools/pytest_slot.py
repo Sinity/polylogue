@@ -83,6 +83,36 @@ POLL_INTERVAL_S: Final = 2.0
 #: starves every other checkout on the host until someone notices.
 REAPED_SIGNALS: Final[tuple[signal.Signals, ...]] = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
+#: The whole budget a signalled run has before the unit is SIGKILLed:
+#: ``systemctl --user show -p DefaultTimeoutStopUSec`` on this host. Nothing
+#: here enforces it -- it is the ceiling everything below is sized against,
+#: and if the runtime's default moves, this line must move with it.
+UNIT_STOP_BUDGET_S: Final = 15.0
+#: How long the child process group gets to end on SIGTERM, and then on
+#: SIGKILL, before the signal is re-raised into the caller's own handler.
+#:
+#: These are deliberately small. The reap runs FIRST (see :func:`_on_exit`),
+#: so every second it spends is a second the receipt-writing handler above it
+#: does not have. The shipped form was 5 + 5, and on 2026-09-20 a cancelled
+#: corpus run spent 10.01s of a 15s budget here (Stopping 03:05:26.885 ->
+#: Stopped 03:05:36.898) and the interrupted receipt never landed: what was
+#: left had to cover finish_interrupted_steps, append_verify_history,
+#: append_verification_evidence, prune_successful_verify_runs and
+#: write_failure_seed on a host whose io_full_avg10 had just been flagged at
+#: 26.1. Reaping a child is cheap to retry from outside; a receipt that was
+#: never written is not recoverable at all.
+#:
+#: Both legs are spent in full, not as a worst case. ``stop()`` runs inside a
+#: signal handler nested in the process's own blocking ``Popen.wait()``, which
+#: holds ``_waitpid_lock``; the nested ``wait(timeout=...)`` can never acquire
+#: it, so each leg spins to its own timeout even when the child died at once.
+#: Measured here: 4.015s for 2 + 2, against the incident's 10.01s for 5 + 5.
+STOP_TERM_GRACE_S: Final = 2.0
+STOP_KILL_GRACE_S: Final = 2.0
+#: What the reap may spend of the unit's stop budget in the worst case. The
+#: majority of :data:`UNIT_STOP_BUDGET_S` must remain for the outer handler.
+STOP_ESCALATION_BUDGET_S: Final = STOP_TERM_GRACE_S + STOP_KILL_GRACE_S
+
 #: The only keys the ``agentctl`` client inherits: what the runtime needs to
 #: reach the queue and enter the project environment. Everything pytest needs
 #: travels in the launch file, because the queue persists the client's
@@ -508,6 +538,13 @@ def _on_exit(*actions: Callable[[], None]) -> Iterator[None]:
     A signal runs the actions, restores the previous handler and re-raises the
     signal, so an outer handler (or the default action) decides what the
     signal means; the actions are what must not be skipped on the way there.
+
+    They also run BEFORE that outer handler, which makes their duration a tax
+    on it. The caller's handler is what writes the run's terminal receipt, and
+    the whole sequence shares one unit stop budget, so an action here must be
+    bounded well inside :data:`UNIT_STOP_BUDGET_S` -- see
+    :data:`STOP_ESCALATION_BUDGET_S`. An action that can block is a receipt
+    that does not get written.
     """
 
     def run_actions() -> None:
@@ -875,12 +912,12 @@ def _run_held(
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGTERM)
         try:
-            process.wait(timeout=5)
+            process.wait(timeout=STOP_TERM_GRACE_S)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(process.pid, signal.SIGKILL)
             with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=5)
+                process.wait(timeout=STOP_KILL_GRACE_S)
 
     try:
         with _on_exit(stop, on_exit):
@@ -1031,12 +1068,12 @@ def _run_launch(launch_path: Path) -> int:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(child.pid, signal.SIGTERM)
             try:
-                child.wait(timeout=2)
+                child.wait(timeout=STOP_TERM_GRACE_S)
             except subprocess.TimeoutExpired:
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.killpg(child.pid, signal.SIGKILL)
                 with contextlib.suppress(subprocess.TimeoutExpired):
-                    child.wait(timeout=2)
+                    child.wait(timeout=STOP_KILL_GRACE_S)
         with contextlib.suppress(OSError):
             receipt = _write_interrupted_result(
                 log_path,

@@ -875,3 +875,114 @@ def test_a_killed_run_leaves_no_temporary_tree(tmp_path: Path, kill_signal: sign
         sweep_stale_temp_trees(root)
     assert not tree.exists()
     assert list(root.iterdir()) == []
+
+
+def test_the_child_reap_leaves_the_majority_of_the_unit_stop_budget() -> None:
+    """The reap runs before the outer handler, so its worst case is a tax on it.
+
+    A signalled run has one budget, and the receipt -- not the reap -- is the
+    part of it that cannot be recovered afterwards.
+
+    Anti-vacuity: restore the shipped 5 + 5 escalation and the worst case is
+    10s of a 15s budget, which is not a minority of it, so this goes red.
+    """
+    assert pytest_slot.STOP_ESCALATION_BUDGET_S == pytest_slot.STOP_TERM_GRACE_S + pytest_slot.STOP_KILL_GRACE_S
+    assert pytest_slot.STOP_ESCALATION_BUDGET_S < pytest_slot.UNIT_STOP_BUDGET_S / 2
+
+
+#: A signalled waiter whose child refuses SIGTERM, so ``stop()`` must escalate
+#: the whole way before the outer handler can write anything. The receipt this
+#: writes stands in for verify.py's own terminal receipt: the same handler, in
+#: the same place, after the same reap.
+_SIGNALLED_HELD_RUN = """
+import os, pathlib, signal, sys
+sys.path.insert(0, {repo!r})
+from devtools.pytest_slot import _run_held
+
+receipt = pathlib.Path({receipt!r})
+
+
+class Interrupted(BaseException):
+    pass
+
+
+def interrupt(signal_number, frame):
+    raise Interrupted()
+
+
+signal.signal(signal.SIGTERM, interrupt)
+ignores_sigterm = (
+    "import signal, sys, time\\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n"
+    "sys.stderr.write('up\\\\n'); sys.stderr.flush()\\n"
+    "time.sleep(120)\\n"
+)
+try:
+    _run_held(
+        [sys.executable, "-c", ignores_sigterm],
+        cwd={cwd!r},
+        env={{"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}},
+        stdout=sys.stderr,
+        on_exit=lambda: None,
+    )
+except Interrupted:
+    receipt.write_text("terminal")
+"""
+
+
+@pytest.mark.load_sensitive
+@pytest.mark.uses_real_clock("spends a real stop budget on a real child process group")
+def test_a_signalled_held_run_writes_its_receipt_inside_the_stop_budget(tmp_path: Path) -> None:
+    """The interrupted receipt lands before the unit's stop budget runs out.
+
+    Observed 2026-09-20 on a cancelled corpus run: Stopping 03:05:26.885 ->
+    Stopped 03:05:36.898, 10.01s of a 15s ``DefaultTimeoutStopUSec`` spent
+    escalating SIGTERM/SIGKILL at the child, leaving ~5s for
+    finish_interrupted_steps, append_verify_history,
+    append_verification_evidence, prune_successful_verify_runs and
+    write_failure_seed. The receipt did not land.
+
+    The child here ignores SIGTERM, so the reap takes its full escalation --
+    which it does anyway: ``stop()`` runs inside a signal handler nested in
+    the blocking ``Popen.wait()`` that holds ``_waitpid_lock``, so each leg
+    spins to its own timeout. Measured 4.015s for 2 + 2.
+
+    Anti-vacuity: restore ``wait(timeout=5)`` on both legs and the reap costs
+    the incident's 10.01s, which is past the budget below twice over: the
+    constant assertion goes red and so does the receipt.
+    """
+    receipt = tmp_path / "terminal-receipt"
+    repo = str(Path(pytest_slot.__file__).resolve().parents[1])
+    waiter = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _SIGNALLED_HELD_RUN.format(repo=repo, cwd=str(tmp_path), receipt=str(receipt)),
+        ],
+        env={"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/home/nobody")},
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert waiter.stderr is not None
+        assert waiter.stderr.readline().strip() == b"up", "the SIGTERM-ignoring child never started"
+        waiter.send_signal(signal.SIGTERM)
+        # Under half the unit's stop budget, and above the whole escalation
+        # with room for the unwind: what is under test is that the reap left
+        # the handler above it time to finish. The relationship between the
+        # constants is asserted on its own above; this budget is the wall
+        # clock, so the failure here is behavioural.
+        budget = 6.0
+        assert budget < pytest_slot.UNIT_STOP_BUDGET_S / 2
+        try:
+            waiter.wait(timeout=budget)
+        except subprocess.TimeoutExpired:
+            waiter.kill()
+            waiter.wait(timeout=30)
+            pytest.fail(f"the waiter did not unwind within {budget}s of the signal")
+    finally:
+        if waiter.poll() is None:  # pragma: no cover - only on a stuck waiter
+            waiter.kill()
+            waiter.wait(timeout=30)
+        waiter.stderr.close()
+
+    assert receipt.read_text() == "terminal", "the outer handler must reach its receipt work"
