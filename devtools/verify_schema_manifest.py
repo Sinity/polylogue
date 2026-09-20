@@ -309,6 +309,17 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
     current = _render_schema_state(None)
     violations: list[str] = []
 
+    # A reset to v1 is valid only as one complete archive-format transition.
+    # Treating an individual tier's downgrade as sufficient would turn an
+    # accidental edit (or a forgotten migration) into an apparent new floor.
+    # The active-root marker provides the runtime admission proof; this gate
+    # enforces the corresponding repository-shape proof.
+    reset_to_new_floor = all(
+        previous.versions.get(tier, 0) > ARCHIVE_FORMAT_FLOOR_VERSION
+        and current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION
+        for tier in _DURABLE_TIERS
+    )
+
     for tier in _DURABLE_TIERS:
         violations.extend(_migration_integrity_violations(base, tier))
         old_version = previous.versions.get(tier)
@@ -333,7 +344,7 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
             # treating the reset as an ordinary schema downgrade here would
             # reject the intentional v1 floor while allowing no useful
             # migration path.  Other backwards moves remain prohibited.
-            if new_version != ARCHIVE_FORMAT_FLOOR_VERSION:
+            if new_version != ARCHIVE_FORMAT_FLOOR_VERSION or not reset_to_new_floor:
                 violations.append(f"{tier.value}: schema version moved backwards from v{old_version} to v{new_version}")
         elif new_version != old_version:
             expected = set(range(old_version + 1, new_version + 1))

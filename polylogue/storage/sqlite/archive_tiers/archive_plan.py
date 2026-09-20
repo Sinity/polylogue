@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -16,6 +18,15 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 ARCHIVE_FORMAT_MARKER_NAME = ".polylogue-format.json"
 ARCHIVE_FORMAT_LINEAGE = "polylogue.archive-format.v1"
 _DURABLE_FORMAT_TIERS = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
+
+
+def _fsync_directory(path: Path) -> None:
+    """Durably publish a replacement marker directory entry."""
+    directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 class ArchiveInitAction(StrEnum):
@@ -90,7 +101,22 @@ def record_fresh_archive_format(archive_root: Path) -> Path:
         "durable_schema_fingerprints": durable_fingerprints,
     }
     payload["digest"] = _format_digest(payload)
-    marker_path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    # Publish the marker as one complete file.  A torn JSON marker would make
+    # the next startup refuse the archive, so never write directly to the
+    # authority path.
+    archive_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{marker_path.name}.", dir=archive_root)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, marker_path)
+        _fsync_directory(marker_path.parent)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
     return marker_path
 
 
@@ -129,6 +155,14 @@ def assert_archive_format_lineage(archive_root: Path) -> None:
         raise RuntimeError(f"archive format marker has incomplete durable schema evidence: {marker_path}")
     for tier in _DURABLE_FORMAT_TIERS:
         path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"archive format marker names a missing durable tier: {path}") from exc
+        except OSError as exc:
+            raise RuntimeError(f"cannot inspect archive format tier: {path}") from exc
+        if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
+            raise RuntimeError(f"archive format marker names an unsafe durable tier file: {path}")
         version = _read_user_version(path)
         if version is None:
             raise RuntimeError(f"archive format marker names a missing durable tier: {path}")
