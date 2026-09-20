@@ -34,7 +34,7 @@ def test_line_inline_escape_markdown_and_malformed_are_observable() -> None:
 
 
 def test_registry_covers_declared_authoring_kinds_and_unknown_inline_is_evidence() -> None:
-    expected = {"note", "claim", "lesson", "decision", "predict", "handoff", "anchor", "bead", "eval"}
+    expected = {"note", "claim", "lesson", "decision", "predict", "blocker", "handoff", "anchor", "bead", "eval"}
     assert expected <= {spec.kind for spec in MARKER_REGISTRY}
     found = parse_markers("[[future-kind: retain this evidence]]\n[[note: keep this]]\n")
     assert [(item.kind, item.body, item.malformed) for item in found] == [
@@ -88,3 +88,35 @@ def test_candidate_lowering_uses_existing_assertion_service_and_exact_refs(tmp_p
 def test_ownerless_declaration_fails_actionably() -> None:
     with pytest.raises(ValueError, match="lowering_target"):
         MarkerRegistry((MarkerKindSpec("orphan", "text", None, "bad"),))
+
+
+def test_objective_posture_assertion_kinds_are_all_agent_authorable(tmp_path: Path) -> None:
+    """Anti-vacuity: drop a MarkerKindSpec whose lowering target objective posture
+    reads -- or drop a kind from ``ASSERTION_TIER_KINDS`` -- and this goes red.
+
+    ``analysis/objective_posture.py`` declares the assertion kinds that decide a
+    session's posture. Before polylogue-jwqj, BLOCKER was readable there but had
+    no direct authoring affordance at all, so an agent could state "I am handed
+    off" and not "I am blocked".
+    """
+
+    from polylogue.analysis.objective_posture import ASSERTION_TIER_KINDS
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    authorable = {spec.lowering_target for spec in MARKER_REGISTRY}
+    assert set(ASSERTION_TIER_KINDS) <= authorable
+
+    user_db = tmp_path / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    conn = sqlite3.connect(user_db)
+    try:
+        candidates = candidates_for_block("message-9", "block-9", "::blocker: waiting on a credential\n")
+        assert [candidate.assertion_kind for candidate in candidates] == [AssertionKind.BLOCKER]
+        ids = lower_markers(conn, candidates, now_ms=456)
+        kinds = [
+            row[0] for row in conn.execute("SELECT kind FROM assertions WHERE assertion_id IN (?)", ids).fetchall()
+        ]
+        assert kinds == [AssertionKind.BLOCKER.value]
+    finally:
+        conn.close()

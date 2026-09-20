@@ -54,6 +54,13 @@ MARKER_REGISTRY = MarkerRegistry(
         MarkerKindSpec("claim", "text", AssertionKind.NOTE, "claim candidate"),
         MarkerKindSpec("assertion", "text", AssertionKind.NOTE, "assertion candidate"),
         MarkerKindSpec("decision", "text", AssertionKind.DECISION, "decision candidate"),
+        # BLOCKER and HANDOFF are the two kinds `analysis/objective_posture.py`
+        # reads from the assertion tier to declare "blocked"/"awaiting_operator".
+        # HANDOFF already had this direct authoring affordance; BLOCKER did not,
+        # so the only routes that could produce one were internal detection
+        # (storage/repair.py, daemon/judgment_automation.py) or a supersede
+        # judgment over an existing candidate (polylogue-jwqj claim 5).
+        MarkerKindSpec("blocker", "text", AssertionKind.BLOCKER, "blocker candidate"),
         MarkerKindSpec("event", "text", AssertionKind.RUN_STATE, "event candidate"),
         MarkerKindSpec("finding", "text", AssertionKind.FINDING, "finding candidate"),
         MarkerKindSpec("handoff", "text", AssertionKind.HANDOFF, "handoff candidate"),

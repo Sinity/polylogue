@@ -138,6 +138,14 @@ caveats/skips
 The explanation should answer "why did this raw material become these archive
 rows?" without collapsing the answer into a single provider string.
 
+The archive-backed route (`polylogue/sources/import_explain.py`,
+`explain_import_archive`) reports capture mode as `capture_mode_status` plus
+`capture_modes`, read from `source.raw_capture_observations` rather than the
+first-known `raw_sessions.capture_mode` cache. Byte-identical material
+acquired twice by different mechanisms shares one content-derived `raw_id`
+and one public origin, so the entry reports `ambiguous` with every observed
+mode and a caveat naming them.
+
 ### Provider/importer package completeness
 
 Completeness rows should be keyed by public origin plus capture mode or package

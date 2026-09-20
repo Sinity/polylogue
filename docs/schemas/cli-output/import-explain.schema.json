@@ -48,6 +48,31 @@
           "default": null,
           "title": "Artifact Kind"
         },
+        "capture_mode_status": {
+          "anyOf": [
+            {
+              "enum": [
+                "unknown",
+                "unambiguous",
+                "ambiguous"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capture Mode Status"
+        },
+        "capture_modes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Capture Modes",
+          "type": "array"
+        },
         "caveats": {
           "default": [],
           "items": {
