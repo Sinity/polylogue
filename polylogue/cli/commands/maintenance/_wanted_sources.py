@@ -28,31 +28,45 @@ count-shaped: source ids, roles, root states and totals, never a path.
 from __future__ import annotations
 
 import json
+from typing import NamedTuple
 
 import click
 
 from polylogue.paths import archive_root
 
 
-def _root_state_rows(receipt: object) -> list[dict[str, object]]:
+class _RootRow(NamedTuple):
+    """One declared root's contribution to the frozen denominator."""
+
+    source_id: str
+    role: str
+    state: str
+    item_count: int
+    byte_count: int
+
+    def as_dict(self) -> dict[str, object]:
+        return self._asdict()
+
+
+def _root_state_rows(receipt: object) -> list[_RootRow]:
     states = getattr(receipt, "root_states", {})
     counts: dict[str, int] = {}
     sizes: dict[str, int] = {}
     for member in getattr(receipt, "members", ()):
         counts[member.source_id] = counts.get(member.source_id, 0) + 1
         sizes[member.source_id] = sizes.get(member.source_id, 0) + member.size
-    rows: list[dict[str, object]] = []
+    rows: list[_RootRow] = []
     for declaration in getattr(receipt, "declarations", ()):
         source_id = declaration.source_id
         state = states.get(source_id)
         rows.append(
-            {
-                "source_id": source_id,
-                "role": declaration.role.value,
-                "state": state.value if state is not None else "unknown",
-                "item_count": counts.get(source_id, 0),
-                "byte_count": sizes.get(source_id, 0),
-            }
+            _RootRow(
+                source_id=source_id,
+                role=declaration.role.value,
+                state=state.value if state is not None else "unknown",
+                item_count=counts.get(source_id, 0),
+                byte_count=sizes.get(source_id, 0),
+            )
         )
     return rows
 
@@ -95,25 +109,39 @@ def wanted_sources_command(freeze: bool, output_format: str) -> None:
     policy = campaign_default_wanted_source_policy()
 
     payload: dict[str, object]
+    rows: list[_RootRow] = []
     try:
         if freeze:
             receipt = write_wanted_source_receipt(root, declarations, policy=policy)
+            rows = _root_state_rows(receipt)
+            receipt_sha256 = receipt.receipt_sha256
+            policy_identity = receipt.policy_identity
+            declaration_sha256 = receipt.declaration_sha256
+            frontier_sha256 = receipt.frontier_sha256
+            item_count = receipt.item_count
+            byte_count = receipt.byte_count
             payload = {
                 "outcome": "ok",
                 "action": "freeze",
-                "receipt_sha256": receipt.receipt_sha256,
-                "policy_identity": receipt.policy_identity,
-                "declaration_sha256": receipt.declaration_sha256,
-                "frontier_sha256": receipt.frontier_sha256,
-                "item_count": receipt.item_count,
-                "byte_count": receipt.byte_count,
+                "receipt_sha256": receipt_sha256,
+                "policy_identity": policy_identity,
+                "declaration_sha256": declaration_sha256,
+                "frontier_sha256": frontier_sha256,
+                "item_count": item_count,
+                "byte_count": byte_count,
                 "complete": receipt.complete,
                 "blocker_count": len(receipt.blockers),
                 "excluded_source_ids": list(receipt.excluded_source_ids),
-                "roots": _root_state_rows(receipt),
+                "roots": [row.as_dict() for row in rows],
             }
         else:
             preflight = require_rebuild_preflight(root, policy=policy, declarations=declarations)
+            receipt_sha256 = preflight.receipt_sha256
+            policy_identity = preflight.policy_identity
+            declaration_sha256 = preflight.declaration_sha256
+            frontier_sha256 = preflight.frontier_sha256
+            item_count = preflight.item_count
+            byte_count = preflight.byte_count
             payload = {"action": "preflight", **preflight.as_dict()}
     except WantedSourceReceiptError as exc:
         refusal = {
@@ -132,16 +160,13 @@ def wanted_sources_command(freeze: bool, output_format: str) -> None:
         return
 
     click.echo(f"Wanted sources: {'FROZEN' if freeze else 'AUTHORIZED'}")
-    click.echo(f"Receipt: {payload['receipt_sha256']}")
-    click.echo(f"Policy:  {payload['policy_identity']} ({policy.name} rev {policy.revision})")
-    click.echo(f"Declarations: {payload['declaration_sha256']}")
-    click.echo(f"Frontier:     {payload['frontier_sha256']}")
-    click.echo(f"Denominator:  {int(payload['item_count']):,} items; {int(payload['byte_count']):,} bytes")
-    for row in payload.get("roots", []):  # type: ignore[union-attr]
-        click.echo(
-            f"  {row['source_id']} [{row['role']}] {row['state']}: "
-            f"{int(row['item_count']):,} items; {int(row['byte_count']):,} bytes"
-        )
+    click.echo(f"Receipt: {receipt_sha256}")
+    click.echo(f"Policy:  {policy_identity} ({policy.name} rev {policy.revision})")
+    click.echo(f"Declarations: {declaration_sha256}")
+    click.echo(f"Frontier:     {frontier_sha256}")
+    click.echo(f"Denominator:  {item_count:,} items; {byte_count:,} bytes")
+    for row in rows:
+        click.echo(f"  {row.source_id} [{row.role}] {row.state}: {row.item_count:,} items; {row.byte_count:,} bytes")
 
 
 __all__ = ["wanted_sources_command"]

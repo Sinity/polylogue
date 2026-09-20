@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
@@ -36,7 +37,7 @@ def configured_source_root(
     return root
 
 
-def _run(runner: CliRunner, *args: str) -> tuple[int, dict[str, object]]:
+def _run(runner: CliRunner, *args: str) -> tuple[int, dict[str, Any]]:
     result = runner.invoke(cli, ["ops", "maintenance", "wanted-sources", *args, "--output-format", "json"])
     start = result.output.index("{")
     return result.exit_code, json.loads(result.output[start:])
@@ -59,7 +60,7 @@ def test_polylogue_co2iz_preflight_refuses_until_a_receipt_is_frozen(
     assert frozen["complete"] is True
     assert frozen["item_count"] == 2
     assert frozen["blocker_count"] == 0
-    assert int(frozen["byte_count"]) > 0
+    assert frozen["byte_count"] > 0
 
     ok_exit, authorized = _run(cli_runner)
     assert ok_exit == 0
