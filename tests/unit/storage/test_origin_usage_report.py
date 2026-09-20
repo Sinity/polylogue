@@ -387,7 +387,11 @@ def test_logical_rollup_adds_normalized_prefix_tail_deltas(tmp_path: Path) -> No
             message_count, word_count, content_hash
         ) VALUES ('codex-session', ?, ?, 'standard', 1, 1, 1, 1, zeroblob(32))
         """,
-        [("rollup-parent", "parent"), ("rollup-child", "child")],
+        [
+            ("rollup-parent", "parent"),
+            ("rollup-parent-alt", "alternate parent"),
+            ("rollup-child", "child"),
+        ],
     )
     conn.executemany(
         """
@@ -411,6 +415,15 @@ def test_logical_rollup_adds_normalized_prefix_tail_deltas(tmp_path: Path) -> No
             link_type, branch_point_message_id, inheritance, observed_at_ms
         ) VALUES ('codex-session:rollup-child', 'codex-session', 'rollup-parent',
                   'codex-session:rollup-parent', 'fork', 'parent:message', 'prefix-sharing', 1)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO session_links (
+            src_session_id, dst_origin, dst_native_id, resolved_dst_session_id,
+            link_type, branch_point_message_id, inheritance, observed_at_ms
+        ) VALUES ('codex-session:rollup-child', 'codex-session', 'rollup-parent-alt',
+                  'codex-session:rollup-parent-alt', 'resume', 'parent:message-alt', 'prefix-sharing', 2)
         """
     )
     report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
