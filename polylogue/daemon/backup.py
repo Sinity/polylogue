@@ -39,6 +39,7 @@ from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
     archive_tier_paths,
+    assert_archive_format_authority,
     sign_verification_receipt,
 )
 from polylogue.storage.blob_integrity import (
@@ -1545,9 +1546,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         if ".polylogue-format.json" in authority_files and all(
             (restored / f"{tier}.db").is_file() for tier in ("source", "user", "audit")
         ):
-            from polylogue.storage.sqlite.archive_tiers.archive_plan import assert_archive_format_lineage
-
-            assert_archive_format_lineage(restored)
+            assert_archive_format_authority(restored)
         omitted_absent = all(
             not (restored / name).exists() and not (restored / name).is_symlink() for name in omitted_tiers
         )
