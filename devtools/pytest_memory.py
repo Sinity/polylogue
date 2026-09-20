@@ -15,8 +15,11 @@ compared against.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Final
 
@@ -122,11 +125,16 @@ class ProcessGroupMemorySampler:
         interval_s: float = SAMPLE_INTERVAL_S,
         proc: Path = Path("/proc"),
         meminfo: Path = Path("/proc/meminfo"),
+        snapshot_path: Path | None = None,
+        snapshot_context: Callable[[], Mapping[str, Any]] | None = None,
     ) -> None:
         self._pgid = pgid
         self._interval_s = interval_s
         self._proc = proc
         self._meminfo = meminfo
+        self._snapshot_path = snapshot_path
+        self._snapshot_context = snapshot_context
+        self._context_lock = threading.Lock()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -144,6 +152,7 @@ class ProcessGroupMemorySampler:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self.persist()
         self._thread = threading.Thread(target=self._loop, name="pytest-memory-sampler", daemon=True)
         self._thread.start()
 
@@ -153,7 +162,7 @@ class ProcessGroupMemorySampler:
         thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=self._interval_s * 4)
-        return self.snapshot()
+        return self.persist()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -200,6 +209,7 @@ class ProcessGroupMemorySampler:
                         entry[f"peak_{measure}"] = rollup[measure]
             if available is not None and (self._available_minimum is None or available < self._available_minimum):
                 self._available_minimum = available
+        self.persist()
 
     def snapshot(self) -> dict[str, Any]:
         """The attribution as it stands, whether or not sampling has ended."""
@@ -229,3 +239,34 @@ class ProcessGroupMemorySampler:
                 # peak of zero as a measurement.
                 document["unmeasured"] = "no sample observed the process group"
             return document
+
+    def persist(self) -> dict[str, Any]:
+        """Publish a kill-survivable sidecar, when one was requested."""
+        memory = self.snapshot()
+        if self._snapshot_path is None:
+            return memory
+        context: Mapping[str, Any] = {}
+        if self._snapshot_context is not None:
+            with self._context_lock:
+                try:
+                    candidate = self._snapshot_context()
+                except Exception as exc:  # pragma: no cover - defensive telemetry path
+                    candidate = {"telemetry_error": f"{type(exc).__name__}: {exc}"}
+                if isinstance(candidate, Mapping):
+                    context = candidate
+        document: dict[str, Any] = {
+            "schema_version": 1,
+            "kind": "polylogue.pytest-slot-telemetry",
+            "memory": memory,
+            **dict(context),
+        }
+        path = self._snapshot_path
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{self._pgid}.tmp")
+            temporary.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+            os.replace(temporary, path)
+        except (OSError, TypeError, ValueError):
+            # Telemetry must never change the result of the verification run.
+            pass
+        return memory

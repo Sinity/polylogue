@@ -26,6 +26,7 @@ Anti-vacuity:
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -190,6 +191,32 @@ def test_the_attribution_is_bounded(tmp_path: Path) -> None:
     assert document["processes_seen"] == total
     assert document["processes"][0]["peak_pss_kib"] == total * KIB
     assert document["peak"]["processes"] == total
+
+
+def test_a_periodic_snapshot_persists_memory_and_context(tmp_path: Path) -> None:
+    """A kill can leave the last complete sidecar even without a final receipt."""
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=900 * KIB)
+    sidecar = tmp_path / "pytest.telemetry.json"
+    sampler = ProcessGroupMemorySampler(
+        100,
+        proc=proc,
+        meminfo=_meminfo(tmp_path, 4000),
+        snapshot_path=sidecar,
+        snapshot_context=lambda: {
+            "sizing": {"workers": 3, "requested_workers": 8},
+            "progress": {"selected_count": 23449, "terminal_count": 1200},
+        },
+    )
+
+    sampler.sample()
+
+    telemetry = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert telemetry["kind"] == "polylogue.pytest-slot-telemetry"
+    assert telemetry["sizing"]["workers"] == 3
+    assert telemetry["progress"]["terminal_count"] == 1200
+    assert telemetry["memory"]["peak"]["pss_kib"] == 900 * KIB
+    assert telemetry["memory"]["processes"][0]["pid"] == 100
 
 
 @pytest.mark.uses_real_clock("waits on a real sampling thread")
