@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
 
 import click
 
-from polylogue.api import Polylogue
 from polylogue.api.archive import candidate_capture_kind
-from polylogue.paths import archive_root
+from polylogue.cli.shared.types import AppEnv
 from polylogue.surfaces.payloads import AssertionClaimPayload
 
 MAX_NOTE_STDIN_BYTES = 256 * 1024
@@ -61,7 +59,9 @@ def _stdin_note() -> str:
     "expired claims are excluded from ASSERTION_CLAIM_KINDS reads (preamble compiler etc.).",
 )
 @click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
+@click.pass_obj
 def note_command(
+    env: AppEnv,
     text: str | None,
     from_stdin: bool,
     refs: tuple[str, ...],
@@ -79,23 +79,32 @@ def note_command(
     body_text = _stdin_note() if from_stdin else text
     assert body_text is not None
 
-    async def run() -> AssertionClaimPayload:
-        async with Polylogue(archive_root=archive_root()) as poly:
-            return await poly.capture_assertion_candidate(
-                body_text=body_text,
-                kind=candidate_capture_kind(kind_name),
-                refs=refs,
-                scope_refs=_scope_refs(repo, topic),
-                cwd=Path.cwd(),
-                idempotency_key=idempotency_key,
-                ttl_seconds=ttl_seconds,
-            )
+    # A durable ``user.db`` assertion row: the daemon owns it. The facade
+    # route this replaced (``Polylogue.capture_assertion_candidate`` ->
+    # ``_execute_facade_mutation``) opened a writable store in this process,
+    # which the mutation-authority layering rule could not see because the
+    # call entered through ``polylogue/api`` (polylogue-gjwto / r29bv
+    # criterion 2). ``cwd`` is sent explicitly because ``--ref last`` resolves
+    # the operator's repository, not the daemon's working directory.
+    from polylogue.cli.archive_query import submit_cli_mutation
 
-    try:
-        captured = asyncio.run(run())
-    except (RuntimeError, ValueError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    payload = captured.model_dump(mode="json")
+    captured = submit_cli_mutation(
+        env,
+        "mutation.assertion.candidate.capture",
+        {
+            "body_text": body_text,
+            "kind": candidate_capture_kind(kind_name).value,
+            "refs": list(refs),
+            "scope_refs": list(_scope_refs(repo, topic)),
+            "cwd": str(Path.cwd()),
+            "idempotency_key": idempotency_key,
+            "ttl_seconds": ttl_seconds,
+        },
+    )
+    claim = captured.get("result")
+    if not isinstance(claim, dict):
+        raise click.ClickException("daemon accepted the capture but returned no claim")
+    payload = AssertionClaimPayload.model_validate(claim).model_dump(mode="json")
     if output_format == "json":
         click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return

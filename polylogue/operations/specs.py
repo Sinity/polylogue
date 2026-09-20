@@ -584,7 +584,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Capture one terminal assertion as a private, non-injected candidate. Resolution, idempotency, "
             "TTL, and the user-tier write are executed through OperationExecutor/"
-            "CaptureAssertionCandidateActuator with role_only confirmation."
+            "CaptureAssertionCandidateActuator with role_only confirmation. The CLI lowers it to the declared "
+            "mutation.assertion.candidate.capture daemon operation; MCP still drives the facade (decision D2)."
         ),
         surfaces=("facade", "cli", "mcp"),
         mutates_state=True,
@@ -592,21 +593,29 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+        # "cli" is the daemon's own principal surface for an operation it
+        # serves (polylogue/daemon/uds.py); "api" stays because MCP still
+        # drives the facade for this capture (decision D2).
+        allowed_surfaces=("api", "cli"),
     ),
     OperationSpec(
         name="mutate-set-user-setting",
         kind=OperationKind.MAINTENANCE,
         description=(
             "Insert-or-update one typed user_settings row. Key/value validation, the durable user-tier write and "
-            "its audit record run through OperationExecutor/SetUserSettingActuator with role_only confirmation."
+            "its audit record run through OperationExecutor/SetUserSettingActuator, executed by the daemon under "
+            "the declared mutation.user.setting.set operation."
         ),
-        surfaces=("facade", "cli"),
+        surfaces=("cli",),
         mutates_state=True,
         idempotent=True,
         effects=("DbWrite",),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
-        allowed_surfaces=("api", "cli"),
+        # "cli" is the daemon's own principal surface for a mutation it serves
+        # (polylogue/daemon/uds.py, polylogue/daemon/http.py); "api" is gone
+        # because no facade method drives this actuator any more.
+        allowed_surfaces=("cli",),
         target_authority=(
             TargetAuthorityPolicy(
                 key="set-user-setting",

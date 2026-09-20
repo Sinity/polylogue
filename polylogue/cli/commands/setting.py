@@ -13,28 +13,38 @@ import json
 
 import click
 
+from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import archive_root
+
+
+def _print_setting(row: dict[str, object], *, output_format: str) -> None:
+    """Render one setting row, however it was obtained.
+
+    The read paths hold a storage envelope and the write path holds the
+    daemon's JSON result; both reduce to these four fields, so the rendering
+    is one function rather than one per transport.
+    """
+    if output_format == "json":
+        click.echo(json.dumps(row, ensure_ascii=False, sort_keys=True))
+        return
+    click.echo(
+        f"{row['setting_key']} = {row['value']!r} (author={row['author_ref']}, updated_at_ms={row['updated_at_ms']})"
+    )
 
 
 def _print_envelope(env: object, *, output_format: str) -> None:
     from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
 
     assert isinstance(env, ArchiveUserSettingEnvelope)
-    if output_format == "json":
-        click.echo(
-            json.dumps(
-                {
-                    "setting_key": env.setting_key,
-                    "value": env.value,
-                    "updated_at_ms": env.updated_at_ms,
-                    "author_ref": env.author_ref,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        )
-        return
-    click.echo(f"{env.setting_key} = {env.value!r} (author={env.author_ref}, updated_at_ms={env.updated_at_ms})")
+    _print_setting(
+        {
+            "setting_key": env.setting_key,
+            "value": env.value,
+            "updated_at_ms": env.updated_at_ms,
+            "author_ref": env.author_ref,
+        },
+        output_format=output_format,
+    )
 
 
 @click.group("setting")
@@ -68,20 +78,28 @@ def setting_get_command(setting_key: str, output_format: str) -> None:
 @click.argument("setting_key")
 @click.argument("value")
 @click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
-def setting_set_command(setting_key: str, value: str, output_format: str) -> None:
-    """Insert-or-update one typed setting row (rejects unknown keys/values)."""
+@click.pass_obj
+def setting_set_command(env: AppEnv, setting_key: str, value: str, output_format: str) -> None:
+    """Insert-or-update one typed setting row (rejects unknown keys/values).
 
-    from polylogue.api import Polylogue
+    ``user.db`` is the archive's one irreplaceable tier and the daemon is its
+    sole writer, so this lowers to the declared ``mutation.user.setting.set``
+    operation instead of opening a writable store in the CLI process
+    (polylogue-gjwto / polylogue-r29bv). With no daemon the command refuses
+    rather than becoming a second writer.
+    """
 
-    async def run() -> object:
-        async with Polylogue(archive_root=archive_root()) as poly:
-            return await poly.set_setting(setting_key, value)
+    from polylogue.cli.archive_query import submit_cli_mutation
 
-    try:
-        envelope = asyncio.run(run())
-    except (ValueError, RuntimeError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    _print_envelope(envelope, output_format=output_format)
+    written = submit_cli_mutation(
+        env,
+        "mutation.user.setting.set",
+        {"setting_key": setting_key, "value": value},
+    )
+    row = written.get("result")
+    if not isinstance(row, dict):
+        raise click.ClickException("daemon accepted the setting write but returned no row")
+    _print_setting(row, output_format=output_format)
 
 
 @setting_command.command("list")

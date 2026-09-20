@@ -170,10 +170,13 @@ polylogue setting list
 registry (`polylogue/archive/semantic/subscription_pricing.py`) — this is
 deliberately a typed key registry (`subscription_tier` is the only key today),
 not a free-form key-value store. `polylogue.api.Polylogue.get_setting` /
-`.set_setting` / `.list_settings` expose the same read/write pair to Python
-callers; `polylogue/storage/sqlite/archive_tiers/user_settings_write.py` is
-the underlying sync storage module both the CLI and the async facade route
-through.
+`.list_settings` expose the reads to Python callers; the write has no facade
+method, because `user.db` is durable and the daemon is its sole writer —
+`setting set` lowers to the declared `mutation.user.setting.set` operation and
+refuses when no daemon is running.
+`polylogue/storage/sqlite/archive_tiers/user_settings_write.py` is the
+underlying sync storage module the daemon-side actuator and the facade reads
+both route through.
 
 ### Codex disjoint billing lanes
 

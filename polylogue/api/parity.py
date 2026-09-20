@@ -434,7 +434,6 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "save_view",
             "save_workspace",
             "set_metadata",
-            "set_setting",
             "update_metadata",
         ),
     ),
