@@ -14,9 +14,11 @@ from polylogue.paths import archive_root
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def blob_conservation_command(sample_size: int, output_format: str) -> None:
     """Verify both directions of blob/reference conservation without mutation."""
-    from polylogue.maintenance.blob_conservation import check_blob_conservation
+    # Import the module through its package so the command and maintenance
+    # tests share the same lazy module object even after an unload/reload.
+    from polylogue.maintenance import blob_conservation
 
-    report = check_blob_conservation(archive_root(), sample_size=sample_size)
+    report = blob_conservation.check_blob_conservation(archive_root(), sample_size=sample_size)
     if output_format == "json":
         click.echo(json.dumps(report.to_dict(), indent=2, sort_keys=True))
     else:
