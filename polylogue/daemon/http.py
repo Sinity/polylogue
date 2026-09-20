@@ -2960,6 +2960,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         result = self._sync_run(_run)
         self._send_json(HTTPStatus.OK, result)
 
+    #: Declared terminal unit expression behind ``/api/paste-browser``.
+    #:
+    #: Message grain on purpose. The session-scoped ``has_paste`` filter lowers
+    #: to ``sessions.paste_count > 0``, a materialized aggregate that can lag a
+    #: direct message write; the paste browser needs the paste-bearing MESSAGES
+    #: themselves, which is why polylogue-q54dt declared the message-grain
+    #: sibling instead of leaving this route hand-rolling a full-archive walk.
+    PASTE_BROWSER_UNIT_QUERY = "messages where has_paste:true"
+
     async def _do_paste_browser(
         self,
         poly: Polylogue,
@@ -2967,59 +2976,51 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
-        # Walk all session summaries and emit one entry per
-        # paste-evidence message. The message-level storage flag
-        # is the load-bearing signal — we deliberately do not pre-
-        # filter on the session-level flag; direct message writes in
-        # fixtures or replay paths may be visible before aggregate
-        # columns are refreshed.
-        convs = await poly.filter().list_summaries()
+        # One bounded declared read. ``offset``/``limit`` are pushed into the
+        # query-unit route and lowered to SQL LIMIT/OFFSET, so serving page N
+        # costs one page, not one full-archive session walk plus a per-session
+        # ``get_session`` hydration (polylogue-q54dt).
+        envelope = await poly.query_units(
+            self.PASTE_BROWSER_UNIT_QUERY,
+            limit=limit,
+            offset=offset,
+        )
+        rows = tuple(getattr(envelope, "items", ()))
+        # ``next_offset`` is set from a real limit+1 probe by the query-unit
+        # executor, so it distinguishes "the page filled" from "this is the
+        # end" without a second scan.
+        page_truncated = getattr(envelope, "next_offset", None) is not None
+        matched_so_far = offset + len(rows)
         entries: list[PasteBrowserEntry] = []
-        total_messages_seen = 0
-        # polylogue-q54dt: the walk stops as soon as the page is full, so the
-        # running counter is a lower bound on the match count from that point
-        # on -- never the archive total. Report it as a bound, not a total.
-        page_truncated = False
-        for summary in convs:
-            conv = await poly.get_session(str(summary.id))
-            if conv is None:
-                continue
-            for msg in conv.messages:
-                if not bool(getattr(msg, "has_paste", False)):
-                    continue
-                total_messages_seen += 1
-                if total_messages_seen <= offset:
-                    continue
-                if len(entries) >= limit:
-                    page_truncated = True
-                    break
-                text = msg.text or ""
-                spans = envelope_paste_spans(text, has_paste=True)
-                snippet = snippet_for_paste(text, spans)
-                anchor = reader_anchor("message", msg.id)
-                entries.append(
-                    PasteBrowserEntry(
-                        session_id=str(summary.id),
-                        session_title=summary.display_title or str(summary.id),
-                        origin=summary.origin,
-                        message_id=str(msg.id),
-                        message_anchor=anchor,
-                        role=str(msg.role) if msg.role else "",
-                        timestamp=msg.timestamp.isoformat() if msg.timestamp else None,
-                        word_count=int(getattr(msg, "word_count", 0) or 0),
-                        snippet=snippet,
-                        paste_spans=spans,
-                        has_diff=any(span.get("kind") == "diff" for span in spans),
-                    )
+        for row in rows:
+            text = str(getattr(row, "text", "") or "")
+            spans = envelope_paste_spans(text, has_paste=True)
+            message_id = str(row.message_id)
+            occurred_at_ms = getattr(row, "occurred_at_ms", None)
+            entries.append(
+                PasteBrowserEntry(
+                    session_id=str(row.session_id),
+                    session_title=str(getattr(row, "title", None) or row.session_id),
+                    origin=str(row.origin) if row.origin else None,
+                    message_id=message_id,
+                    message_anchor=reader_anchor("message", message_id),
+                    role=str(getattr(row, "role", "") or ""),
+                    timestamp=(
+                        datetime.fromtimestamp(occurred_at_ms / 1000, tz=UTC).isoformat()
+                        if isinstance(occurred_at_ms, int)
+                        else None
+                    ),
+                    word_count=int(getattr(row, "word_count", 0) or 0),
+                    snippet=snippet_for_paste(text, spans),
+                    paste_spans=spans,
+                    has_diff=any(span.get("kind") == "diff" for span in spans),
                 )
-            if len(entries) >= limit:
-                page_truncated = True
-                break
+            )
         return build_paste_browser_payload(
             entries,
-            total=None if page_truncated else total_messages_seen,
+            total=None if page_truncated else matched_so_far,
             total_is_exact=not page_truncated,
-            matched_so_far=total_messages_seen,
+            matched_so_far=matched_so_far,
         )
 
     # ------------------------------------------------------------------
