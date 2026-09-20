@@ -31,6 +31,7 @@ from polylogue.storage.derived.session.input_binding import (
     session_input_bindings_async,
 )
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_DOMAIN
+from polylogue.storage.derived.session.usage_rollup import SESSION_USAGE_ROLLUP_DOMAIN
 from polylogue.storage.sqlite.write_lease import write_lease
 
 __all__ = [
@@ -495,30 +496,32 @@ def publish_prepared_session_profile(
     *,
     generation_is_current: Callable[[], bool] | None = None,
 ) -> bool:
-    """Refresh usage then atomically publish a lease-free prepared partition.
+    """Atomically publish a lease-free prepared partition. Nothing else.
 
-    Usage refresh precedes the exact-value check.  This preserves the #4855
-    order (message evidence, reconciliation, provider evidence, repricing)
-    while refusing a bundle prepared from the previous rollup.  A later pass
-    reads that canonical rollup outside the writer and can publish it whole.
+    This publisher owns exactly one transaction and commits exactly one thing:
+    the prepared four-table family. It does **not** reconcile canonical usage.
+
+    It used to. ``_refresh_provider_usage_rollup`` ran here and was committed
+    before the prepared bundle's exact-value check -- so publication moved an
+    input the prepared bundle had already read, and the check that followed
+    necessarily failed for every session whose rollup had drifted. The first
+    computation was doomed by construction and a second pass did the real
+    work, while ``False`` was returned from a call that had already committed
+    a usage change.
+
+    :data:`SESSION_USAGE_ROLLUP_DOMAIN` now owns that reconciliation and the
+    kernel converges it first (it is a declared prerequisite key below), so a
+    bundle arrives here already prepared from the settled rollup.
+    ``session_insight_compute_binding`` remains the exact-content backstop:
+    if the rollup moved anyway, this refuses without side effects.
     """
     from polylogue.storage.derived.session.rebuild import (
         PreparedSessionInsightPartition,
-        _refresh_provider_usage_rollup,
         publish_prepared_session_insight_partition,
     )
 
     if not isinstance(prepared, PreparedSessionInsightPartition):
         raise TypeError(f"expected PreparedSessionInsightPartition, got {type(prepared).__name__}")
-    if generation_is_current is not None and not generation_is_current():
-        return False
-    if prepared.bundle is not None:
-        _refresh_provider_usage_rollup(conn, prepared.session_id)
-        # The canonical usage rollup is independently derived from persisted
-        # evidence.  Commit it before the prepared partition transaction: a
-        # changed rollup must survive a binding refusal so the next lease-free
-        # preparation reads the exact values that publication will verify.
-        conn.commit()
     if generation_is_current is not None and not generation_is_current():
         return False
     return publish_prepared_session_insight_partition(conn, prepared)
@@ -548,7 +551,10 @@ class SessionProfileDerivation:
     # ``prepare_session_insight_partition`` reads the materialized counters
     # from ``sessions`` for the bounded profile projection, so profile
     # publication must wait for this session's authoritative counter part.
-    prerequisites = (SESSION_SUMMARY_DOMAIN,)
+    # It also reads the canonical ``session_model_usage`` rollup, which is
+    # itself derived: reconciling it here would move an input this partition
+    # had already read. The rollup is a separate domain converged first.
+    prerequisites = (SESSION_SUMMARY_DOMAIN, SESSION_USAGE_ROLLUP_DOMAIN)
     recipe_version = SESSION_PROFILE_RECIPE_VERSION
 
     def __init__(
@@ -700,14 +706,22 @@ class SessionProfileDerivation:
         return key in self._quiet_keys(frame) if self._quiet_keys is not None else False
 
     def prerequisite_keys(self, frame: object, key: str) -> tuple[tuple[str, str], ...]:
-        """The profile reads this session's materialized summary counters."""
+        """The exact upstream keys this session's profile reads.
+
+        Its materialized summary counters, and its reconciled canonical usage
+        rollup. Naming the rollup key here -- not just the domain -- is what
+        makes the reconciliation happen *before* preparation for this session
+        and only for this session.
+        """
         del frame
         conn = self._read_connection()
         try:
             # Retiring an orphan consumes no session counters. Requiring the
             # deleted upstream row would prevent excess cleanup after restart.
             exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (key,)).fetchone()
-            return ((SESSION_SUMMARY_DOMAIN, key),) if exists else ()
+            if not exists:
+                return ()
+            return ((SESSION_SUMMARY_DOMAIN, key), (SESSION_USAGE_ROLLUP_DOMAIN, key))
         finally:
             conn.close()
 

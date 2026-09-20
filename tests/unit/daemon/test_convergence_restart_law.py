@@ -22,6 +22,7 @@ from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,
     make_session_profile_frame,
     make_session_summary_derivation,
+    make_session_usage_rollup_derivation,
 )
 from tests.infra.convergence_harness import (
     converge_session_profiles,
@@ -175,7 +176,13 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
     )
     converger = DaemonConverger(
         (),
-        derivations=(make_session_summary_derivation(recovered.index_db, archive_root=recovered.root), adapter),
+        derivations=(
+            make_session_summary_derivation(recovered.index_db, archive_root=recovered.root),
+            make_session_usage_rollup_derivation(
+                recovered.index_db, archive_root=recovered.root, now=lambda: observed_now
+            ),
+            adapter,
+        ),
     )
     owner = SessionProfileConvergenceOwner(
         converger,
@@ -184,6 +191,11 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
     )
     archive_frame = make_session_profile_frame(recovered.index_db, archive_root=recovered.root, scope=None)
     try:
+        # The profile reads this session's canonical usage rollup, which is a
+        # separate domain. Converge it first so the assertions below measure
+        # profile-domain sweep fairness rather than prerequisite ordering; the
+        # hot target's rollup stays deferred with it.
+        await owner.converge(archive_frame, domains=("session_usage_rollup",))
         # Discovery is the relevant pass bound: quiet deferral consumes no
         # compute capacity, while an inspection limit stops before the quiet
         # predicate is evaluated. One discovered page therefore captures the
@@ -207,9 +219,10 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
                 archive_root=recovered.root,
                 scope=(recovered.target_session_id,),
             ),
-            budget=Budget(page=1, compute=1),
+            budget=Budget(page=1, compute=2),
         )
-        assert targeted.done == 1
+        # The now-quiet target needs both its rollup and its profile.
+        assert targeted.done == 2
         assert targeted.pending == 0
         assert (
             session_materialization_facts(recovered.index_db, session_id=recovered.target_session_id).profile

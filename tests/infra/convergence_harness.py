@@ -44,6 +44,7 @@ from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,
     make_session_profile_frame,
     make_session_summary_derivation,
+    make_session_usage_rollup_derivation,
 )
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -361,7 +362,11 @@ def converge_session_profiles(
             )
             converger = DaemonConverger(
                 (),
-                derivations=(make_session_summary_derivation(index_db, archive_root=archive_root), adapter),
+                derivations=(
+                    make_session_summary_derivation(index_db, archive_root=archive_root),
+                    make_session_usage_rollup_derivation(index_db, archive_root=archive_root, now=now),
+                    adapter,
+                ),
             )
             owner = SessionProfileConvergenceOwner(
                 converger,

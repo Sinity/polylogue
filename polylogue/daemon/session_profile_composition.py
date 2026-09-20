@@ -18,6 +18,7 @@ from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,
     make_session_profile_frame,
     make_session_summary_derivation,
+    make_session_usage_rollup_derivation,
 )
 
 SessionProfileCallback = Callable[[Sequence[str] | None], Awaitable[DerivationReport]]
@@ -46,13 +47,17 @@ def compose_session_profile_callback(
     # on every generation observation; composition never opens a pointer stub.
     index_path = archive_root / "index.db"
     summary = make_session_summary_derivation(index_path, archive_root=archive_root)
+    # Ordered before the profile: the profile reads the canonical usage rollup,
+    # so reconciling it inside profile publication would move an input the
+    # prepared partition had already read (polylogue-bp12n.1).
+    usage_rollup = make_session_usage_rollup_derivation(index_path, archive_root=archive_root, now=now)
     profile = make_session_profile_derivation(
         index_path,
         archive_root=archive_root,
         now=now,
     )
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger(stages=(), derivations=(summary, profile)),
+        DaemonConverger(stages=(), derivations=(summary, usage_rollup, profile)),
         compute_adapter=compute_adapter,
         write_bridge=write_bridge,
     )

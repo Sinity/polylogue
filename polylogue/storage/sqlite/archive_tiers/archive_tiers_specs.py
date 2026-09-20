@@ -1937,6 +1937,28 @@ DERIVED_REFRESH_GUARD_SPEC = _make_table_spec(
     (_raw_column("guard_name", """guard_name TEXT PRIMARY KEY"""),),
 )
 
+
+# The canonical ``session_model_usage`` rollup is a derived projection of
+# ``messages``, ``session_provider_usage_events`` and ``sessions``, but its
+# rows cannot say which values of those relations produced them: the rollup
+# stores totals, not the evidence it summed. This is the one binding the
+# output relation genuinely cannot carry, so the usage-rollup derivation keeps
+# it beside the rows (polylogue-bp12n.1 AC2/AC3). It is not a freshness ledger:
+# there is no timestamp, no attempt counter and no status -- only the exact
+# input-value digest and the recipe the rollup was produced under, both of
+# which inspection recomputes and compares.
+SESSION_USAGE_ROLLUP_BINDINGS_SPEC = _make_table_spec(
+    "session_usage_rollup_bindings",
+    (
+        _raw_column(
+            "session_id",
+            """session_id     TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE""",
+        ),
+        _raw_column("input_binding", """input_binding  TEXT NOT NULL"""),
+        _raw_column("recipe_version", """recipe_version TEXT NOT NULL"""),
+    ),
+)
+
 WORK_EVIDENCE_GRAPHS_SPEC = _make_table_spec(
     "work_evidence_graphs",
     (
@@ -2194,6 +2216,7 @@ INDEX_TABLE_SPECS = {
     "delegation_facts": DELEGATION_FACTS_SPEC,
     "delegation_refresh_scope": DELEGATION_REFRESH_SCOPE_SPEC,
     "derived_refresh_guard": DERIVED_REFRESH_GUARD_SPEC,
+    "session_usage_rollup_bindings": SESSION_USAGE_ROLLUP_BINDINGS_SPEC,
     "work_evidence_graphs": WORK_EVIDENCE_GRAPHS_SPEC,
     "work_evidence_nodes": WORK_EVIDENCE_NODES_SPEC,
     "work_evidence_edges": WORK_EVIDENCE_EDGES_SPEC,
