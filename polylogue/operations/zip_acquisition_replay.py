@@ -77,6 +77,7 @@ def resolve_member_candidate(
     expected_digest: str | None,
     hint_mode: MemberAddressingMode | None,
     hint_index: int | None,
+    expected_is_structural: bool = False,
 ) -> MemberResolution:
     """Resolve one recorded reference by content identity, hint first.
 
@@ -97,10 +98,14 @@ def resolve_member_candidate(
         return MemberResolution(None, "ambiguous", "content_identity:unavailable")
 
     hinted = _hinted_candidate(candidates, hint_mode=hint_mode, hint_index=hint_index)
-    if hinted is not None and _matches_expected(hinted, expected_digest):
+    if hinted is not None and _matches_expected(hinted, expected_digest, structural_only=expected_is_structural):
         return MemberResolution(hinted.payload_bytes, "hint_verified", None)
 
-    matching = [candidate for candidate in candidates if _matches_expected(candidate, expected_digest)]
+    matching = [
+        candidate
+        for candidate in candidates
+        if _matches_expected(candidate, expected_digest, structural_only=expected_is_structural)
+    ]
     if not matching:
         return MemberResolution(None, "unmatched", "content_identity:unmatched")
     # Every match carries identical bytes, so the recovered value is the same
@@ -114,7 +119,18 @@ def _digest(candidate: MemberCandidate) -> str:
     return candidate.content_identity
 
 
-def _matches_expected(candidate: MemberCandidate, expected_digest: str) -> bool:
+def _matches_expected(candidate: MemberCandidate, expected_digest: str, *, structural_only: bool = False) -> bool:
+    """Match the declared identity without weakening a structural claim.
+
+    ``blob_hash`` is the compatibility identity for rows written before
+    member content identities existed.  Once a row carries
+    ``content_identity``, however, accepting a byte hash as an alternative
+    would let a deliberately colliding/mutated row pass replay verification.
+    The caller therefore marks structural identities explicitly; the public
+    resolver keeps its historical byte-hash fallback for legacy callers.
+    """
+    if structural_only:
+        return candidate.content_identity == expected_digest
     return candidate.content_identity == expected_digest or candidate.byte_identity == expected_digest
 
 
@@ -214,11 +230,13 @@ def zip_reacquisition_payload(
         # the backup. Any unreadable or unparseable container therefore
         # leaves this reference unproven and lets verification fail closed.
         return None, f"error:{exc}"
+    structural_identity = _has_valid_digest(row.get("content_identity")) or _has_valid_digest(row.get("content_digest"))
     resolution = resolve_member_candidate(
         candidates,
         expected_digest=_expected_digest(row),
         hint_mode=hint_mode,
         hint_index=hint_index,
+        expected_is_structural=structural_identity,
     )
     return resolution.payload_bytes, resolution.error
 
@@ -245,6 +263,16 @@ def _expected_digest(row: Mapping[str, object]) -> str | None:
     # remains a safe compatibility identity (and is never used for migrated
     # rows, which carry ``content_identity``).
     return blob_hash.lower()
+
+
+def _has_valid_digest(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _recorded_addressing_mode(row: Mapping[str, object]) -> MemberAddressingMode | None:
