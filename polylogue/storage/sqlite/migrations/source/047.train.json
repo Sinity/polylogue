@@ -1,0 +1,69 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "backup-profile:source-tier",
+  "current_version": 46,
+  "declared_at_ms": 0,
+  "drop_constraints": [],
+  "failure": null,
+  "fresh_ddl_parity": null,
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "manifest_sha256": null,
+  "migration": {
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/047_source_item_member_dispositions.sql",
+    "path": "047_source_item_member_dispositions.sql",
+    "requires_backup": true,
+    "slot": 47,
+    "sql_sha256": null,
+    "target_version": 47,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "polylogue-bwu75",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": ["proof:source-v47:retained-member-disposition"],
+      "owner_ref": "polylogue-bwu75",
+      "rider_id": "rider:retained-member-disposition",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:source-v47:retained-member-disposition",
+          "consumer_id": "retained-zip-enumeration",
+          "production_ref": "polylogue.sources.retained_acquisition:iter_retained_source_records",
+          "roles": ["write"]
+        },
+        {
+          "behavior_proof_ref": "proof:source-v47:retained-member-disposition",
+          "consumer_id": "source-member-receipt",
+          "production_ref": "polylogue.storage.source_generation_receipts:source_generation_receipt",
+          "roles": ["read"]
+        }
+      ],
+      "schema_objects": [
+        "column:source_items.enumerated_member_count",
+        "column:source_items.enumeration_member_digest",
+        "table:source_item_member_dispositions",
+        "index:idx_source_item_member_dispositions_item",
+        "view:source_item_reconciliation"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "slot": 47,
+  "source_continuity_evidence": null,
+  "state": "declared",
+  "target_version": 47,
+  "tier": "source",
+  "train_id": "train:source:v47"
+}

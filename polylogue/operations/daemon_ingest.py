@@ -17,7 +17,12 @@ from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
 from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
 from polylogue.operations.ingest_acceptance import IngestActuator, ingest_plan
-from polylogue.operations.ingest_inputs import PreparedSourceRecord, enumerate_ingest_input, prepare_ingest_inputs
+from polylogue.operations.ingest_inputs import (
+    PreparedSourceMemberDisposition,
+    PreparedSourceRecord,
+    enumerate_ingest_input,
+    prepare_ingest_inputs,
+)
 from polylogue.operations.insight_acceptance import SessionInsightPartReceipt
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import (
@@ -332,18 +337,41 @@ class IngestExecution:
             check_stop=self.check_stop,
         )
         coordinates: list[str] = []
+        member_ordinals: set[int] = set()
+        member_count: int | None = None
         try:
             current = await self.runtime.compute_phase(lambda: next(iterator, None))
             while current is not None:
                 self.check_stop()
                 following = await self.runtime.compute_phase(lambda: next(iterator, None))
-                coordinates.append(current.member.record_coordinate)
+                if isinstance(current, PreparedSourceMemberDisposition):
+                    member_ordinals.add(current.entry_ordinal)
+                    member_count = current.member_count
+                else:
+                    coordinates.append(current.member.record_coordinate)
+                    if current.member.entry_ordinal is not None:
+                        member_ordinals.add(current.member.entry_ordinal)
+                    member_count = current.member_count
                 await self._publish_record(
-                    generation, item, current, tuple(coordinates) if following is None else None, acquired_at_ms
+                    generation,
+                    item,
+                    current,
+                    tuple(coordinates) if following is None else None,
+                    acquired_at_ms,
+                    tuple(sorted(member_ordinals)) if following is None else None,
+                    member_count if following is None else None,
                 )
                 current = following
             if not coordinates:
-                await self._publish_record(generation, item, None, (), acquired_at_ms)
+                await self._publish_record(
+                    generation,
+                    item,
+                    None,
+                    (),
+                    acquired_at_ms,
+                    tuple(sorted(member_ordinals)),
+                    member_count if member_count is not None else 0,
+                )
         finally:
             await self.runtime.compute_phase(iterator.close)
 
@@ -351,12 +379,30 @@ class IngestExecution:
         self,
         generation: RetainedSourceGeneration,
         item: RetainedSourceInput,
-        prepared: PreparedSourceRecord | None,
+        prepared: PreparedSourceRecord | PreparedSourceMemberDisposition | None,
         completed_coordinates: tuple[str, ...] | None,
         observed_at_ms: int,
+        completed_member_ordinals: tuple[int, ...] | None = None,
+        member_count: int | None = None,
     ) -> None:
         def publish(connection: sqlite3.Connection) -> None:
-            if prepared is not None:
+            if isinstance(prepared, PreparedSourceMemberDisposition):
+                from polylogue.storage.sqlite.archive_tiers.source_items import (
+                    SourceItemMemberDisposition,
+                    record_source_item_member_disposition,
+                )
+
+                record_source_item_member_disposition(
+                    connection,
+                    source_generation_id=prepared.source_generation_id,
+                    source_item_id=prepared.source_item_id,
+                    entry_ordinal=prepared.entry_ordinal,
+                    member_name=prepared.member_name,
+                    disposition=SourceItemMemberDisposition(prepared.disposition),
+                    diagnostic=prepared.diagnostic,
+                    observed_at_ms=observed_at_ms,
+                )
+            elif prepared is not None:
                 execute_source_item_admission(connection, prepared.admission, prepared.member)
             if completed_coordinates is not None:
                 complete_source_item_enumeration(
@@ -366,6 +412,8 @@ class IngestExecution:
                     enumeration_fingerprint=generation.enumeration_fingerprint,
                     record_coordinates=completed_coordinates,
                     enumerated_at_ms=observed_at_ms,
+                    member_ordinals=completed_member_ordinals,
+                    member_count=member_count,
                 )
 
         await self.source_write(publish)

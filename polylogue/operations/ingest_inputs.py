@@ -32,6 +32,18 @@ class PreparedSourceRecord:
     record: RawSessionRecord
     admission: RawAdmissionPlan
     member: SourceItemAdmission
+    member_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSourceMemberDisposition:
+    source_generation_id: str
+    source_item_id: str
+    entry_ordinal: int
+    member_name: str
+    disposition: str
+    diagnostic: str
+    member_count: int
 
 
 def prepare_ingest_inputs(
@@ -109,7 +121,7 @@ def enumerate_ingest_input(
     publisher: ArchiveBlobPublisher,
     acquired_at_ms: int,
     check_stop: Callable[[], None],
-) -> Generator[PreparedSourceRecord, None, None]:
+) -> Generator[PreparedSourceRecord | PreparedSourceMemberDisposition, None, None]:
     """Yield canonical admission plans; only normal exhaustion closes the item."""
     item_id = source_item_id(
         source_generation_id=source_generation_id,
@@ -119,9 +131,26 @@ def enumerate_ingest_input(
     acquired_at = datetime.fromtimestamp(acquired_at_ms / 1000, UTC).isoformat()
     blob_size = publisher.blob_path(item.blob_hash).stat().st_size
     for retained in iter_retained_source_records(
-        source_path=item.source_path, blob_hash=item.blob_hash, blob_size=blob_size, blob_store=publisher
+        source_path=item.source_path,
+        blob_hash=item.blob_hash,
+        blob_size=blob_size,
+        blob_store=publisher,
+        on_member_disposition=lambda *_fields: None,
     ):
         check_stop()
+        if retained.member_disposition is not None:
+            if retained.entry_ordinal is None or retained.member_name is None or retained.diagnostic is None:
+                raise ValueError("retained member disposition lacks its exact central-directory identity")
+            yield PreparedSourceMemberDisposition(
+                source_generation_id,
+                item_id,
+                retained.entry_ordinal,
+                retained.member_name,
+                retained.member_disposition,
+                retained.diagnostic,
+                retained.member_count or 0,
+            )
+            continue
         record = make_raw_record(
             retained.data,
             "machine-ingest",
@@ -145,5 +174,6 @@ def enumerate_ingest_input(
                 retained.split_index,
                 retained.data.addressing_mode.value if retained.data.addressing_mode is not None else None,
             ),
+            retained.member_count,
         )
     check_stop()
