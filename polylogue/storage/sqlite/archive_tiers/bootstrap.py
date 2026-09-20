@@ -702,6 +702,22 @@ def initialize_archive_database(
     elif inactive_destination is not None:
         raise ArchiveTupleError("inactive_destination does not match an archive tuple candidate path")
     if allow_create:
+        # Fresh bootstrap must not follow a pre-existing durable pathname out
+        # of the archive root.  ``Path.exists()`` misses dangling symlinks,
+        # so inspect the directory entry before SQLite gets a chance to
+        # create or follow it.  Derived tuple destinations are validated by
+        # their capability above and are intentionally not subject to the
+        # active-root durable containment rule.
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            metadata = None
+        if (
+            metadata is not None
+            and tier in DURABLE_MIGRATION_TIERS
+            and (path.is_symlink() or not path.is_file() or metadata.st_nlink != 1)
+        ):
+            raise RuntimeError(f"durable tier is not a safe fresh file path; refusing initialization: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path)
         if page_size is not None:
@@ -843,10 +859,29 @@ def _initialize_active_archive_root(root: Path) -> None:
         # gets a writable connection.  A historical v1 file therefore cannot
         # be restamped into apparent compatibility.
         format_marker = archive_format_marker_path(root)
-        any_tier_exists = any((root / spec.filename).exists() for spec in ARCHIVE_TIER_SPECS.values())
-        if any_tier_exists:
+        # A pending intent is the authenticated recovery authority for a
+        # partially-created fresh archive.  Validate it before enforcing the
+        # completed format marker, otherwise a crash between the first tier
+        # and marker publication becomes unrecoverable.
+        if has_pending_bootstrap:
+            _validate_fresh_durable_bootstrap_intent(root)
+            if has_durable_train_state:
+                raise RuntimeError(
+                    "fresh durable bootstrap intent conflicts with durable train state; "
+                    "refusing to guess which authority is current"
+                )
+        any_durable_tier_exists = any(
+            (root / archive_tier_spec(tier).filename).exists() or (root / archive_tier_spec(tier).filename).is_symlink()
+            for tier in DURABLE_MIGRATION_TIERS
+        )
+        missing_audit_with_recovery_receipt = (
+            pending_audit_adoption and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
+        )
+        if any_durable_tier_exists and not (
+            (has_pending_bootstrap and not has_bootstrap_marker) or missing_audit_with_recovery_receipt
+        ):
             assert_archive_format_lineage(root)
-        elif format_marker.exists():
+        elif format_marker.exists() and not any_durable_tier_exists:
             raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
 
         def classify_paths() -> tuple[bool, bool]:
@@ -862,13 +897,6 @@ def _initialize_active_archive_root(root: Path) -> None:
             return durable_exists, adoption
 
         durable_tier_exists, pre_marker_adoption = classify_paths()
-        if has_pending_bootstrap:
-            _validate_fresh_durable_bootstrap_intent(root)
-            if has_durable_train_state:
-                raise RuntimeError(
-                    "fresh durable bootstrap intent conflicts with durable train state; "
-                    "refusing to guess which authority is current"
-                )
         fresh_durable_bootstrap = (
             not durable_tier_exists
             and not has_durable_train_state

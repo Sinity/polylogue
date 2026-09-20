@@ -95,6 +95,31 @@ def test_initialize_archive_tier_files_does_not_mutate_a_partial_marked_root(tmp
     assert (tmp_path / "ops.db").read_bytes() == ops_before
 
 
+def test_active_bootstrap_refuses_dangling_durable_symlink(tmp_path: Path) -> None:
+    """Fresh creation must not let SQLite follow a durable symlink target."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    source = tmp_path / "source.db"
+    external = tmp_path / "outside.db"
+    source.symlink_to(external)
+
+    with pytest.raises(RuntimeError, match="archive format marker is missing|safe fresh file path"):
+        initialize_active_archive_root(tmp_path)
+
+    assert not external.exists()
+
+
+def test_active_bootstrap_rebuilds_derived_only_root_without_format_marker(tmp_path: Path) -> None:
+    """A derived-only residue is rebuildable evidence, not durable lineage."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    (tmp_path / "index.db").touch()
+    initialize_active_archive_root(tmp_path)
+
+    assert (tmp_path / ".polylogue-format.json").is_file()
+    assert all((tmp_path / f"{tier}.db").is_file() for tier in ("source", "user", "audit"))
+
+
 # ---------------------------------------------------------------------------
 # Tier-initialization telemetry (polylogue-l218h / WS-A bootstrap sizing)
 # ---------------------------------------------------------------------------
