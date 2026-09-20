@@ -823,9 +823,8 @@ class RawAuthorityVerdict(PolylogueStrEnum):
     Phase 2 of the raw-authority redesign: this is the single small vocabulary
     that downstream consumers (blob-GC invariant checks, operator surfaces)
     should read instead of reaching into the fragmented multi-table
-    bookkeeping (``raw_authority_blockers``/``raw_authority_censuses``/
-    ``raw_authority_census_plans``/``raw_authority_post_plans``/
-    ``raw_authority_parser_census``/``raw_membership_census``). It is derived
+    bookkeeping (``raw_authority_blockers``/``raw_authority_parser_census``/
+    ``raw_membership_census``). It is derived
     -- via :func:`polylogue.archive.raw_authority_verdict.derive_raw_authority_verdict`
     -- from the existing, already-proven per-raw evidence
     (:class:`polylogue.archive.revision_authority.HistoricalRevisionDecision`),

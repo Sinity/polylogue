@@ -3764,83 +3764,6 @@ def test_raw_source_refusal_is_retryable_and_does_not_starve_sibling(
     assert admitted == ["healthy-raw"]
 
 
-def test_startup_raw_census_recovery_pages_named_ids_under_coordinator(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Startup recovery forwards only bounded, durable census IDs to the writer."""
-    from polylogue.daemon import cli as daemon_cli
-
-    pages = {
-        0: (("census-a", 3),),
-        3: (("census-b", 7),),
-        7: (),
-    }
-    discoveries: list[tuple[int, int]] = []
-    recoveries: list[tuple[str, tuple[str, ...], Path]] = []
-
-    def discover(root: Path, *, after_sequence: int, limit: int) -> tuple[tuple[str, int], ...]:
-        assert root == tmp_path
-        discoveries.append((after_sequence, limit))
-        return pages[after_sequence]
-
-    def recover(config: Config, *, census_ids: Sequence[str]) -> None:
-        recoveries.append(("startup.raw_authority_censuses", tuple(census_ids), config.archive_root))
-
-    class Coordinator:
-        async def run_sync(self, actor: str, function: object, config: Config, **kwargs: object) -> None:
-            assert function is recover
-            census_ids = cast(Sequence[str], kwargs["census_ids"])
-            recover(config, census_ids=census_ids)
-            recoveries[-1] = (actor, recoveries[-1][1], recoveries[-1][2])
-
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.unfinished_materialization_census_ids", discover)
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.recover_materialization_censuses", recover)
-
-    asyncio.run(
-        daemon_cli._run_startup_raw_census_recovery(
-            cast(DaemonWriteCoordinator, Coordinator()),
-            tmp_path,
-        )
-    )
-
-    assert discoveries == [(0, 128), (3, 128), (7, 128)]
-    assert recoveries == [
-        ("startup.raw_authority_censuses", ("census-a",), tmp_path),
-        ("startup.raw_authority_censuses", ("census-b",), tmp_path),
-    ]
-
-
-def test_startup_raw_census_recovery_failure_is_restartable_by_named_page(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A failed startup recovery leaves the same named page for the next boot."""
-    from polylogue.daemon import cli as daemon_cli
-
-    monkeypatch.setattr(
-        "polylogue.maintenance.raw_authority.unfinished_materialization_census_ids",
-        lambda _root, *, after_sequence, limit: (("census-retry", 11),) if after_sequence == 0 else (),
-    )
-    calls = 0
-    recovered_ids: list[tuple[str, ...]] = []
-
-    class Coordinator:
-        async def run_sync(self, _actor: str, _function: object, _config: Config, **kwargs: object) -> None:
-            nonlocal calls
-            calls += 1
-            recovered_ids.append(tuple(cast(Sequence[str], kwargs["census_ids"])))
-            if calls == 1:
-                raise RuntimeError("writer unavailable")
-
-    coordinator = cast(DaemonWriteCoordinator, Coordinator())
-    with pytest.raises(RuntimeError, match="writer unavailable"):
-        asyncio.run(daemon_cli._run_startup_raw_census_recovery(coordinator, tmp_path))
-    asyncio.run(daemon_cli._run_startup_raw_census_recovery(coordinator, tmp_path))
-
-    assert recovered_ids == [("census-retry",), ("census-retry",)]
-
-
 def test_startup_drain_recovers_valid_recovery_receipt_and_acknowledges_after_publish(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -4026,9 +3949,6 @@ def _daemon_startup_stubs(
     async def _noop() -> None:
         return None
 
-    async def _noop_raw_census_recovery(*_args: object, **_kwargs: object) -> None:
-        return None
-
     async def _noop_fts(*_args: object, **_kwargs: object) -> object:
         return SimpleNamespace(failed=0)
 
@@ -4037,7 +3957,6 @@ def _daemon_startup_stubs(
     stack.enter_context(
         patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", lambda _root: tmp_path / "embeddings.db")
     )
-    stack.enter_context(patch.object(daemon_cli, "_run_startup_raw_census_recovery", _noop_raw_census_recovery))
     stack.enter_context(
         patch(
             "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",

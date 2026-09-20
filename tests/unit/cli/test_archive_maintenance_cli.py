@@ -22,12 +22,10 @@ from polylogue.cli.commands.maintenance._migrate_tier import (
     MigrateTierSuccessPayload,
 )
 from polylogue.core.enums import Provider
-from polylogue.core.json import json_document
 from polylogue.daemon.backup import backup_archive
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.raw_authority import RawReplayPlan, record_raw_authority_census
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_init import (
@@ -46,130 +44,23 @@ from tests.infra.live_ingest import write_index_session
 _ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
 
 
-def test_raw_authority_census_cli_resolves_receipt_handle(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    root = cli_workspace["archive_root"]
-    receipt = record_raw_authority_census(
-        root,
-        (),
-        selected_plan_ids=set(),
-        executable_plan_ids=set(),
-        mode="dry_run",
-        quiescent=True,
-        scope={"source_family": "codex"},
-        residual={},
-    )
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "raw-authority-census",
-            receipt.query_handle,
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert payload["query_handle"] == receipt.query_handle
-    assert payload["census"]["census_id"] == receipt.census_id
-
-
-def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    root = cli_workspace["archive_root"]
-    raw_ids = tuple(f"raw-{index:05d}" for index in range(2_000))
-    plan = RawReplayPlan(
-        "raw-replay:cli-oversized",
-        "b" * 64,
-        raw_ids,
-        ("codex:oversized",),
-        json_document({"raw_ids": list(raw_ids)}),
-        json_document({"raw_ids": list(raw_ids)}),
-        json_document({"raw_ids": list(raw_ids)}),
-    )
-    receipt = record_raw_authority_census(
-        root,
-        (plan,),
-        selected_plan_ids=set(),
-        executable_plan_ids={plan.plan_id},
-        mode="dry_run",
-        quiescent=True,
-        scope={"test": "cli-oversized"},
-        residual={},
-    )
-
-    census_result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "raw-authority-census",
-            receipt.query_handle,
-            "--limit",
-            "1",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-    assert census_result.exit_code == 0
-    assert len(census_result.output) < 8_000
-    census_payload = json.loads(census_result.stdout)
-    item = census_payload["plans"][0]
-    assert item["plan"]["input_raw_count"] == 2_000
-    assert "raw-01999" not in census_result.output
-
-    detail_result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "raw-authority-detail",
-            item["detail_query_handle"],
-            "--chunk-chars",
-            "256",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-    assert detail_result.exit_code == 0
-    detail_payload = json.loads(detail_result.stdout)
-    assert len(detail_payload["chunk"]) <= 256
-    assert detail_payload["next_query_handle"] is not None
-
-
 def _seed_raw_authority_blocker(
     archive_root: Path,
     *,
     blocker_id: str,
     plan_id: str = "raw-replay:cli-test-plan",
-    census_id: str = "raw-authority-census:cli-test",
+    observed_pass_id: str = "raw-authority-frontier-pass:cli-test",
     frontier: bool = False,
     judgment_assertion_id: str | None = None,
-    reason: str = "immutable source/index preconditions changed after the census",
+    reason: str = "immutable source/index preconditions changed after the inspection pass",
 ) -> None:
     """Directly seed one real, unresolved ``raw_authority_blockers`` row.
 
-    Mirrors the full production shape (census -> plan -> blocker, plus one
-    real ``raw_sessions`` row so a non-frontier resolution can genuinely
-    replan it) with hand-built minimal rows rather than driving the full
-    census/reject-stale workflow (see
-    ``tests/unit/storage/test_raw_authority_ledger.py`` for that heavier
-    path) -- sufficient to exercise ``BlockerResolveActuator.prepare``'s real
-    read against ``source.db`` and, for non-frontier blockers,
+    Mirrors the production shape (blocker row plus one real ``raw_sessions``
+    row so a non-frontier resolution can genuinely replan it) with hand-built
+    minimal rows rather than driving a full frontier inspection -- sufficient
+    to exercise ``BlockerResolveActuator.prepare``'s real read against
+    ``source.db`` and, for non-frontier blockers,
     ``resolve_raw_authority_blocker``'s real replan.
 
     ``frontier`` alone seeds a ``frontier_obligation``-kind blocker (missing
@@ -198,35 +89,9 @@ def _seed_raw_authority_blocker(
     observed_json = json.dumps({"judgment_assertion_id": judgment_assertion_id}) if judgment_assertion_id else "{}"
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
-        next_sequence_no = int(
-            conn.execute("SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM raw_authority_censuses").fetchone()[0]
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_authority_censuses (
-                census_id, sequence_no, scope_json, residual_json, parser_fingerprint,
-                mode, lifecycle_status, quiescent, inventory_digest, residual_digest,
-                plan_count, post_inventory_digest, post_residual_json, post_residual_digest,
-                post_plan_count, postflight_at_ms, executable_plan_count, residual_plan_count,
-                predecessor_census_id, fixed_point, created_at_ms, completed_at_ms
-            ) VALUES (?, ?, '{}', '{}', 'cli-test-fp', 'apply', 'completed', 1, ?, ?, 1,
-                      ?, '{}', ?, 0, 1000, 1, 0, NULL, 0, 1000, 1000)
-            """,
-            (census_id, next_sequence_no, "a" * 64, "b" * 64, "c" * 64, "d" * 64),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_authority_plans (
-                plan_id, input_digest, input_raw_ids_json, logical_keys_json,
-                authority_witness_json, source_preconditions_json, index_preconditions_json,
-                created_at_ms
-            ) VALUES (?, ?, ?, '[]', ?, '{}', '{}', 1000)
-            """,
-            (plan_id, input_digest, json.dumps([raw_id]), json.dumps({"schema": witness_schema})),
-        )
-        # polylogue-5dzj9: the blocker is keyed on the plan's content address
-        # and carries the plan snapshot itself -- that snapshot, not a join
-        # into raw_authority_plans, is what every reader now resolves against.
+        # The blocker is keyed on the plan's content address and carries the
+        # plan snapshot itself: that snapshot, not a join into a plan ledger,
+        # is what every reader resolves against.
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
@@ -237,7 +102,7 @@ def _seed_raw_authority_blocker(
             (
                 blocker_id,
                 input_digest,
-                census_id,
+                observed_pass_id,
                 reason,
                 json.dumps(
                     {
@@ -391,7 +256,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         root,
         blocker_id="blocker-frontier",
         plan_id="raw-replay:frontier-plan",
-        census_id="raw-authority-census:frontier-test",
+        observed_pass_id="raw-authority-frontier-pass:frontier-test",
         frontier=True,
         judgment_assertion_id="judgment:frontier-conflict",
         reason="conflicting canonical authority",
@@ -400,7 +265,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         root,
         blocker_id="blocker-obligation",
         plan_id="raw-replay:obligation-plan",
-        census_id="raw-authority-census:obligation-test",
+        observed_pass_id="raw-authority-frontier-pass:obligation-test",
         frontier=True,
         reason="missing bytes require reacquisition",
     )
@@ -461,7 +326,7 @@ def test_raw_authority_blockers_cli_paginates_past_the_limit(
             root,
             blocker_id=f"blocker-page-{index}",
             plan_id=f"raw-replay:page-plan-{index}",
-            census_id=f"raw-authority-census:page-{index}",
+            observed_pass_id=f"raw-authority-frontier-pass:page-{index}",
         )
 
     first = cli_runner.invoke(
@@ -2052,7 +1917,8 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     assert payload["plan_count"] == 0
     assert payload["executable_plan_count"] == 0
     assert payload["state_counts"] == {}
-    assert payload["query_handle"].startswith("polylogue://raw-authority-census/")
+    assert payload["pass_id"].startswith("raw-authority-frontier-pass:")
+    assert "query_handle" not in payload
 
     help_result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"])
     assert help_result.exit_code == 0

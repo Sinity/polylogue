@@ -38,7 +38,7 @@ class _TierStatus(TypedDict):
 class _RawMaterializationStatus(TypedDict):
     available: bool
     raw_authority_parser_census: _AvailableStatus
-    raw_authority_frontier: object
+    raw_authority_blocker_count: int
 
 
 class _SchemaOriginStatus(TypedDict):
@@ -230,7 +230,7 @@ def test_direct_status_keeps_source_ops_and_embeddings_on_the_pinned_snapshot(tm
     assert payload["schema_drift"]["origins"][0]["total"] == 1
     readiness = payload["raw_materialization_readiness"]
     assert readiness["raw_authority_parser_census"]["available"] is True
-    assert readiness["raw_authority_frontier"] is None
+    assert readiness["raw_authority_blocker_count"] == 0
 
 
 def test_embedding_status_preserves_supplied_key_without_guessing_missing_settings(tmp_path: Path) -> None:

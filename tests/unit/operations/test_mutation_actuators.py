@@ -1140,14 +1140,13 @@ def _seed_raw_authority_blocker(
     *,
     blocker_id: str,
     plan_id: str,
-    census_id: str,
+    observed_pass_id: str,
     frontier: bool = False,
     judgment_assertion_id: str | None = None,
-    reason: str = "immutable source/index preconditions changed after the census",
+    reason: str = "immutable source/index preconditions changed after the inspection pass",
 ) -> None:
-    """Seed one real, unresolved ``raw_authority_blockers`` row (plus the plan/census
-    rows it references and one real ``raw_sessions`` row so a non-frontier
-    resolution can genuinely replan it).
+    """Seed one real, unresolved ``raw_authority_blockers`` row plus the one
+    real ``raw_sessions`` row a non-frontier resolution needs to replan it.
 
     ``frontier`` alone seeds a ``frontier_obligation``-kind blocker (missing
     bytes / unresolved provenance / corrupt -- no judgment assertion
@@ -1175,35 +1174,9 @@ def _seed_raw_authority_blocker(
     observed_json = json.dumps({"judgment_assertion_id": judgment_assertion_id}) if judgment_assertion_id else "{}"
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
-        next_sequence_no = int(
-            conn.execute("SELECT COALESCE(MAX(sequence_no), 0) + 1 FROM raw_authority_censuses").fetchone()[0]
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_authority_censuses (
-                census_id, sequence_no, scope_json, residual_json, parser_fingerprint,
-                mode, lifecycle_status, quiescent, inventory_digest, residual_digest,
-                plan_count, post_inventory_digest, post_residual_json, post_residual_digest,
-                post_plan_count, postflight_at_ms, executable_plan_count, residual_plan_count,
-                predecessor_census_id, fixed_point, created_at_ms, completed_at_ms
-            ) VALUES (?, ?, '{}', '{}', 'actuator-test-fp', 'apply', 'completed', 1, ?, ?, 1,
-                      ?, '{}', ?, 0, 1000, 1, 0, NULL, 0, 1000, 1000)
-            """,
-            (census_id, next_sequence_no, "a" * 64, "b" * 64, "c" * 64, "d" * 64),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_authority_plans (
-                plan_id, input_digest, input_raw_ids_json, logical_keys_json,
-                authority_witness_json, source_preconditions_json, index_preconditions_json,
-                created_at_ms
-            ) VALUES (?, ?, ?, '[]', ?, '{}', '{}', 1000)
-            """,
-            (plan_id, input_digest, json.dumps([raw_id]), json.dumps({"schema": witness_schema})),
-        )
-        # polylogue-5dzj9: the blocker is keyed on the plan's content address
-        # and carries the plan snapshot itself -- that snapshot, not a join
-        # into raw_authority_plans, is what every reader now resolves against.
+        # The blocker is keyed on the plan's content address and carries the
+        # plan snapshot itself: that snapshot, not a join into a plan ledger,
+        # is what every reader resolves against.
         conn.execute(
             """
             INSERT INTO raw_authority_blockers (
@@ -1214,7 +1187,7 @@ def _seed_raw_authority_blocker(
             (
                 blocker_id,
                 input_digest,
-                census_id,
+                observed_pass_id,
                 reason,
                 json.dumps(
                     {
@@ -1543,7 +1516,7 @@ class TestBlockerResolveActuator:
             archive_root,
             blocker_id="blocker-prepare",
             plan_id="raw-replay:prepare-plan",
-            census_id="raw-authority-census:prepare",
+            observed_pass_id="raw-authority-frontier-pass:prepare",
         )
 
         actuator = BlockerResolveActuator()
@@ -1581,7 +1554,7 @@ class TestBlockerResolveActuator:
             archive_root,
             blocker_id="blocker-execute",
             plan_id="raw-replay:execute-plan",
-            census_id="raw-authority-census:execute",
+            observed_pass_id="raw-authority-frontier-pass:execute",
         )
 
         actuator = BlockerResolveActuator()
@@ -1614,7 +1587,7 @@ class TestBlockerResolveActuator:
             archive_root,
             blocker_id="blocker-ac4-contrast",
             plan_id="raw-replay:ac4-contrast-plan",
-            census_id="raw-authority-census:ac4-contrast",
+            observed_pass_id="raw-authority-frontier-pass:ac4-contrast",
         )
 
         actuator = BlockerResolveActuator()
@@ -1640,7 +1613,7 @@ class TestBlockerResolveActuator:
             archive_root,
             blocker_id="blocker-stale",
             plan_id="raw-replay:stale-plan",
-            census_id="raw-authority-census:stale",
+            observed_pass_id="raw-authority-frontier-pass:stale",
         )
 
         actuator = BlockerResolveActuator()
@@ -1669,7 +1642,7 @@ class TestBlockerResolveActuator:
             archive_root,
             blocker_id="blocker-frontier",
             plan_id="raw-replay:frontier-plan",
-            census_id="raw-authority-census:frontier",
+            observed_pass_id="raw-authority-frontier-pass:frontier",
             frontier=True,
             judgment_assertion_id="judgment:frontier-conflict",
             reason="conflicting canonical authority",
@@ -1695,7 +1668,7 @@ class TestBlockerResolveActuator:
             archive_root,
             blocker_id="blocker-obligation",
             plan_id="raw-replay:obligation-plan",
-            census_id="raw-authority-census:obligation",
+            observed_pass_id="raw-authority-frontier-pass:obligation",
             frontier=True,
             reason="missing bytes require reacquisition",
         )
@@ -1739,7 +1712,7 @@ class TestListUnresolvedRawAuthorityBlockersPagination:
                 archive_root,
                 blocker_id=f"blocker-page-{index}",
                 plan_id=f"raw-replay:page-plan-{index}",
-                census_id=f"raw-authority-census:page-{index}",
+                observed_pass_id=f"raw-authority-frontier-pass:page-{index}",
             )
 
         first_page = list_unresolved_raw_authority_blockers(archive_root, limit=2, offset=0)

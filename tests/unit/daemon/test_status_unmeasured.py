@@ -48,7 +48,6 @@ def _patch_healthy_collectors(
     )
     healthy_raw = status_module.RawMaterializationReadiness(
         available=True,
-        raw_authority_frontier={"lifecycle_status": "completed"},
         raw_authority_parser_census={"available": True},
     )
     frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
