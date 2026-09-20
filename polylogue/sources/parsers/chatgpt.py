@@ -6,6 +6,7 @@ import re
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from types import MappingProxyType
 
 from pydantic import ValidationError
 
@@ -1254,6 +1255,10 @@ def _tool_role_result_blocks(
 #   outcome could be derived. ``_node_status_outcome`` answers NOT_REPORTED
 #   there, which is the whole of what the record supports. ``branch_index``
 #   survives through ``_sibling_ordinals``.
+#
+# The machine-readable form of this register is ``CHATGPT_READ_KEYS`` /
+# ``CHATGPT_EXCLUDED_KEYS``, declared below next to
+# ``_CHATGPT_CONVERSATION_SETTING_KEYS`` because it reuses it.
 def extract_messages_from_mapping(
     mapping: Mapping[str, object],
     current_node: str | None = None,
@@ -2527,6 +2532,174 @@ _CHATGPT_CONVERSATION_SETTING_KEYS: tuple[str, ...] = (
     "safe_urls",
     "blocked_urls",
     "moderation_results",
+)
+
+
+#: The register above, as a structure the test suite can read (polylogue-9193q).
+#: The prose keeps the rationale; these two mappings are what makes the
+#: register load-bearing. ``tests/unit/sources/test_chatgpt_field_ledger.py``
+#: walks every key of every committed synthetic ChatGPT export and refuses any
+#: key that is in neither, so a new upstream field fails loudly instead of
+#: being dropped in silence (the original ~1.9 MB-per-export loss).
+#:
+#: Scopes are the positions a key can occupy in an export, not types:
+#: ``conversation`` is the top-level record, ``node`` a ``mapping`` entry,
+#: ``message`` the node's message envelope, and the two ``*.metadata`` scopes
+#: the free-form bags hanging off them.
+CHATGPT_READ_KEYS: Mapping[str, frozenset[str]] = MappingProxyType(
+    {
+        "conversation": frozenset(
+            {
+                "mapping",
+                "messages",
+                "current_node",
+                "title",
+                "name",
+                "create_time",
+                "update_time",
+                "id",
+                "uuid",
+                "conversation_id",
+                "shared_conversation_id",
+                "is_temporary",
+                "conversation_template_id",
+                "gizmo_id",
+                "default_model_slug",
+                *_CHATGPT_CONVERSATION_SETTING_KEYS,
+            }
+        ),
+        "node": frozenset({"id", "message", "parent", "children"}),
+        "message": frozenset(
+            {
+                "id",
+                "author",
+                "content",
+                "create_time",
+                "status",
+                "recipient",
+                "end_turn",
+                "weight",
+                "channel",
+                "metadata",
+            }
+        ),
+        "message.metadata": frozenset(
+            {
+                "attachments",
+                "model_slug",
+                "default_model_slug",
+                "thinking_effort",
+                "reasoning_effort",
+                "model_effort",
+                "durationMs",
+                "duration_ms",
+                "reasoning_start_time",
+                "reasoning_end_time",
+                "finished_duration_sec",
+                "user_context_message_data",
+                "canvas",
+                "content_references",
+                "citations",
+                "_cite_metadata",
+                "conversation_context_citation_metadata",
+                "inline_cot_expandable_content",
+                "search_queries",
+                "search_result_groups",
+                "selected_sources",
+                "image_results",
+                "async_task_type",
+                "async_task_id",
+                "async_task_title",
+                "aggregate_result",
+                "finish_details",
+                "command",
+                "args",
+                "reasoning_title",
+                "dalle",
+                "ada_visualizations",
+                "targeted_reply",
+                "targeted_reply_label",
+                "is_visually_hidden_from_conversation",
+                "jit_plugin_data",
+                "name",
+            }
+        ),
+        "author": frozenset({"role", "name", "metadata"}),
+        "author.metadata": frozenset({"real_author"}),
+    }
+)
+
+#: Scope -> key -> why this parser deliberately does not read it. The reasons
+#: are the register's, compressed to one line; the register above carries the
+#: measured occurrence counts they rest on.
+CHATGPT_EXCLUDED_KEYS: Mapping[str, Mapping[str, str]] = MappingProxyType(
+    {
+        "conversation": MappingProxyType(
+            {
+                "memory_scope": (
+                    "an account setting stamped onto every conversation; it names which memory store "
+                    "the account had enabled, not anything this conversation did"
+                ),
+                "owner": (
+                    "null in every acquired export, and provider account identity is out of scope for "
+                    "session content evidence -- the decision claude/common.py records for claude.ai `account`"
+                ),
+            }
+        ),
+        "message": MappingProxyType(
+            {
+                "update_time": (
+                    "null on the overwhelming majority of messages; where stated it times an edit whose "
+                    "before-state the export does not carry, and `messages` models no per-message revision axis"
+                ),
+            }
+        ),
+        "message.metadata": MappingProxyType(
+            {
+                "request_id": (
+                    "the provider's correlation token for one server-side run; no tier carries a ChatGPT "
+                    "request id to join against, and the grouping it expresses is the conversation tree"
+                ),
+                "search_display_string": (
+                    "one constant render string in every occurrence; the queries it labels are already read "
+                    "as `search_queries` and the results projected from `search_result_groups`"
+                ),
+                "initial_text": (
+                    "the UI status line shown before a reasoning run; its elapsed time is the same "
+                    "measurement `_extract_generation_timings` reads, in prose"
+                ),
+                "finished_text": (
+                    "the UI status line shown after a reasoning run; its elapsed time is the same "
+                    "measurement `_extract_generation_timings` reads, in prose"
+                ),
+            }
+        ),
+        "author.metadata": MappingProxyType(
+            {
+                "sonicberry_model_id": (
+                    "a provider-internal routing label for the web tool; it names neither content, a source, "
+                    "nor an outcome -- only which internal variant served a call"
+                ),
+                "sonicberry_source": (
+                    "a provider-internal routing label for the web tool; it names neither content, a source, "
+                    "nor an outcome -- only which internal variant served a call"
+                ),
+                "is_system_initiated_conversation": (
+                    "restates for one message what the conversation's own first turn already shows"
+                ),
+            }
+        ),
+    }
+)
+
+#: The scopes both registers are keyed by, so a walker cannot invent one.
+CHATGPT_FIELD_SCOPES: tuple[str, ...] = (
+    "conversation",
+    "node",
+    "message",
+    "message.metadata",
+    "author",
+    "author.metadata",
 )
 
 

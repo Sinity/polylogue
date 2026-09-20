@@ -1,0 +1,121 @@
+{
+  "async_status": "synthetic-async_status",
+  "blocked_urls": [],
+  "context_scopes": [],
+  "conversation_id": "field-census-v1",
+  "conversation_origin": "synthetic-conversation_origin",
+  "conversation_template_id": "synthetic-conversation_template_id",
+  "create_time": 1.0,
+  "current_node": "node-1",
+  "default_model_slug": "synthetic-default_model_slug",
+  "disabled_tool_ids": [],
+  "gizmo_id": "synthetic-gizmo_id",
+  "gizmo_type": "synthetic-gizmo_type",
+  "id": "field-census-v1",
+  "is_archived": false,
+  "is_do_not_remember": false,
+  "is_read_only": false,
+  "is_starred": false,
+  "is_study_mode": false,
+  "is_temporary": false,
+  "mapping": {
+    "node-1": {
+      "children": [],
+      "id": "node-1",
+      "message": {
+        "author": {
+          "metadata": {
+            "is_system_initiated_conversation": false,
+            "real_author": "synthetic-real_author",
+            "sonicberry_model_id": "synthetic-sonicberry_model_id",
+            "sonicberry_source": "synthetic-sonicberry_source"
+          },
+          "name": "synthetic-name",
+          "role": "assistant"
+        },
+        "channel": "synthetic-channel",
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "Synthetic assistant turn."
+          ]
+        },
+        "create_time": 1.0,
+        "end_turn": false,
+        "id": "node-1",
+        "metadata": {
+          "_cite_metadata": [],
+          "ada_visualizations": [],
+          "aggregate_result": {},
+          "args": {},
+          "async_task_id": "synthetic-async_task_id",
+          "async_task_title": "synthetic-async_task_title",
+          "async_task_type": "synthetic-async_task_type",
+          "attachments": [],
+          "canvas": {},
+          "citations": [],
+          "command": "synthetic-command",
+          "content_references": [],
+          "conversation_context_citation_metadata": [],
+          "dalle": {},
+          "default_model_slug": "synthetic-conversation-default-slug",
+          "durationMs": 1.0,
+          "duration_ms": 1.0,
+          "finish_details": {
+            "type": "max_tokens"
+          },
+          "finished_duration_sec": 1.0,
+          "finished_text": "synthetic-finished_text",
+          "image_results": [],
+          "initial_text": "synthetic-initial_text",
+          "inline_cot_expandable_content": [],
+          "is_visually_hidden_from_conversation": false,
+          "jit_plugin_data": {},
+          "model_effort": "synthetic-model_effort",
+          "name": "synthetic-name",
+          "reasoning_effort": "synthetic-reasoning_effort",
+          "reasoning_end_time": 1.0,
+          "reasoning_start_time": 1.0,
+          "reasoning_title": "synthetic-reasoning_title",
+          "request_id": "synthetic-request_id",
+          "search_display_string": "synthetic-search_display_string",
+          "search_queries": [],
+          "search_result_groups": [],
+          "selected_sources": [],
+          "targeted_reply": {
+            "text": "the earlier line the user quoted"
+          },
+          "targeted_reply_label": "Replying to",
+          "thinking_effort": "synthetic-thinking_effort",
+          "user_context_message_data": {}
+        },
+        "recipient": "synthetic-recipient",
+        "status": "synthetic-status",
+        "update_time": 1.0,
+        "weight": 1.0
+      },
+      "parent": "root"
+    },
+    "root": {
+      "children": [
+        "node-1"
+      ],
+      "id": "root",
+      "message": null,
+      "parent": null
+    }
+  },
+  "memory_scope": "synthetic-memory_scope",
+  "messages": [],
+  "moderation_results": [],
+  "name": "synthetic-name",
+  "owner": "synthetic-owner",
+  "plugin_ids": [],
+  "safe_urls": [],
+  "shared_conversation_id": "synthetic-shared_conversation_id",
+  "sugar_item_id": "synthetic-sugar_item_id",
+  "title": "Field census",
+  "update_time": 1.0,
+  "uuid": "synthetic-uuid",
+  "voice": "synthetic-voice"
+}
