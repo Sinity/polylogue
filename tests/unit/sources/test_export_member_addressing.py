@@ -370,6 +370,32 @@ def test_replay_uses_structural_digest_when_serialization_changes() -> None:
     assert resolution.payload_bytes == candidate.payload_bytes
 
 
+def test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash(tmp_path: Path) -> None:
+    """A declared value identity is authoritative, even if bytes collide.
+
+    Anti-vacuity: the mutation sets ``content_identity`` to the candidate's
+    byte hash.  Treating the two digests as interchangeable would accept a
+    payload whose provider value is not the recorded value.
+    """
+    zip_path = tmp_path / "collision.zip"
+    recorded_path = f"{zip_path}:conversations.json"
+    payload = dumps_bytes(_session("kept"))
+    _write_member(zip_path, [_META, _session("kept")])
+
+    recovered, error = zip_reacquisition_payload(
+        {
+            **_row(recorded_path, payload=payload, source_index=0),
+            "content_identity": hashlib.sha256(payload).hexdigest(),
+            "addressing_mode": MemberAddressingMode.ELEMENT_OF_CONTAINER.value,
+        },
+        source_path=recorded_path,
+        zip_payload_cache={},
+    )
+
+    assert recovered is None
+    assert error == "content_identity:unmatched"
+
+
 @pytest.mark.parametrize(
     ("left", "right", "equal"),
     [
