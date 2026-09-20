@@ -3366,6 +3366,24 @@ def daemon_status_payload(
 
     halted_units = halted_unit_status()
 
+    # Keep direct/one-shot callers on the same authority vocabulary as the
+    # cached HTTP/daemon snapshot. This is metadata only; it never rebuilds a
+    # rich snapshot and a missing frame is explicitly reported as such.
+    try:
+        from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
+
+        status_snapshot = snapshot_state_for_metrics()
+    except Exception as exc:  # pragma: no cover - defensive import boundary
+        status_snapshot = {
+            "state": "unavailable",
+            "age_s": None,
+            "captured_at": None,
+            "frame": None,
+            "current_frame": None,
+            "frame_changed": None,
+            "refresh_error": f"status snapshot metadata unavailable: {exc}",
+        }
+
     return json_document(
         {
             # A daemon holding a halted unit is not ok, whatever the rest of
@@ -3376,6 +3394,10 @@ def daemon_status_payload(
                 and status.raw_failure_lifecycle_available
                 and status.raw_failure_lifecycle_state == "healthy"
                 and not halted_units
+                # A stale cached frame is advisory evidence only. Direct
+                # status remains usable when no daemon snapshot exists, but a
+                # known stale snapshot must not certify a green answer.
+                and status_snapshot.get("state") != "stale"
             ),
             "halted_units": halted_units,
             "services": supervised_service_states(),
@@ -3385,6 +3407,7 @@ def daemon_status_payload(
             "periodic_loops": periodic_loop_payload()["loops"],
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
+            "status_snapshot": status_snapshot,
             "daemon_lifecycle": status.daemon_lifecycle,
             "checked_at": status.checked_at,
             "component_state": status.component_state.model_dump(),

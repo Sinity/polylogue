@@ -57,10 +57,16 @@ class StatusSnapshot:
     captured_monotonic: float
     captured_at: str
     refresh_error: str | None = None
+    # Identity of the active archive generation at capture time.  Age alone
+    # cannot tell a reader that the daemon switched to a new index generation;
+    # a last-good payload from the old generation must then be advisory.
+    frame: str | None = None
 
     def with_metadata(self) -> JSONDocument:
         age_s = max(0.0, time.monotonic() - self.captured_monotonic)
-        state = "fresh" if age_s <= STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "stale"
+        current_frame = _status_frame()
+        frame_changed = current_frame != self.frame
+        state = "stale" if frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "fresh"
         base_payload: dict[str, object] = dict(self.payload)
         base_payload.setdefault("component_readiness", _minimal_component_readiness(base_payload))
         payload: dict[str, object] = normalize_raw_frontier_status_payload(
@@ -74,6 +80,9 @@ class StatusSnapshot:
             "state": state,
             "captured_at": self.captured_at,
             "age_s": round(age_s, 3),
+            "frame": self.frame,
+            "current_frame": current_frame,
+            "frame_changed": frame_changed,
             "refresh_error": self.refresh_error,
             "state_evidence": _status_snapshot_state_evidence(
                 state=state,
@@ -83,6 +92,23 @@ class StatusSnapshot:
         }
         payload["daemon_write_coordinator"] = _daemon_write_coordinator_payload()
         return json_document(payload)
+
+
+def _status_frame() -> str | None:
+    """Return a cheap identity for the active index generation.
+
+    This deliberately performs metadata inspection only.  A missing or
+    unreadable path returns ``None`` and therefore cannot make an old frame
+    look current; the snapshot remains age-bounded and its detail is marked
+    unavailable by the owning component collectors.
+    """
+
+    try:
+        path = resolve_active_index_path(archive_root())
+        stat = path.stat()
+    except Exception:
+        return None
+    return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
 
 
 def _status_snapshot_state_evidence(
@@ -443,6 +469,7 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
             captured_monotonic=time.monotonic(),
             captured_at=captured_at,
             refresh_error=refresh_error,
+            frame=_status_frame(),
         )
         with _SNAPSHOT_LOCK:
             _SNAPSHOT = snapshot
@@ -477,9 +504,15 @@ def snapshot_state_for_metrics() -> dict[str, Any]:
     if snapshot is None:
         return {"age_s": -1.0, "state": "missing", "refresh_error": ""}
     age_s = max(0.0, time.monotonic() - snapshot.captured_monotonic)
+    current_frame = _status_frame()
+    frame_changed = current_frame != snapshot.frame
     return {
         "age_s": round(age_s, 3),
-        "state": "fresh" if age_s <= STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "stale",
+        "state": "stale" if frame_changed or age_s > STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S else "fresh",
+        "captured_at": snapshot.captured_at,
+        "frame": snapshot.frame,
+        "current_frame": current_frame,
+        "frame_changed": frame_changed,
         "refresh_error": snapshot.refresh_error or "",
     }
 
