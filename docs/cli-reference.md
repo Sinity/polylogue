@@ -481,6 +481,9 @@ Options:
   --body TEXT                     Replacement body for --supersede.
   --json                          Shortcut for --format json.
   --format [text|json]            Output format (default: text).
+  --expect-evidence-digest TEXT   Evidence digest read for the candidate,
+                                  required when its evidence moved under a
+                                  reused id.
   --help                          Show this message and exit.
 ```
 

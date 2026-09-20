@@ -14,7 +14,7 @@ import json
 import sqlite3
 import time
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from enum import StrEnum
@@ -879,6 +879,36 @@ _OBLIGATION_STATES = {
 }
 
 
+def _superseded_evidence_digest(existing: object, evidence_digest: str) -> str | None:
+    """Return the digest a pending candidate carried before this refresh.
+
+    ``None`` means the candidate is new, or its evidence is byte-identical to
+    what it already carried -- the dedup case polylogue-rjtv exists to serve,
+    which must stay a silent in-place update. A non-``None`` result is the
+    evidence an operator may already have read under this same assertion id,
+    and the approval boundary refuses to land on top of it unsighted
+    (polylogue-irtix D).
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ASSERTION_EVIDENCE_DIGEST_KEY,
+        ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY,
+    )
+
+    if existing is None:
+        return None
+    value = getattr(existing, "value", None)
+    if not isinstance(value, Mapping):
+        return None
+    prior = value.get(ASSERTION_EVIDENCE_DIGEST_KEY)
+    if isinstance(prior, str) and prior and prior != evidence_digest:
+        return prior
+    carried = value.get(ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY)
+    if isinstance(carried, str) and carried and carried != evidence_digest:
+        return carried
+    return None
+
+
 def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *, now_ms: int) -> tuple[str, bool]:
     """Persist the conflict as a non-authoritative candidate for operator judgment.
 
@@ -896,7 +926,12 @@ def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *
     same conflict resurfaces after a prior disposition.
     """
     from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
-    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ASSERTION_EVIDENCE_DIGEST_KEY,
+        ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY,
+        read_assertion_envelope,
+        upsert_assertion,
+    )
 
     root = _archive_root(config)
     with closing(sqlite3.connect(root / "user.db")) as conn, conn:
@@ -918,6 +953,20 @@ def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *
         existing = read_assertion_envelope(conn, assertion_id)
         if existing is not None and existing.status is not AssertionStatus.CANDIDATE:
             return existing.assertion_id, False
+        superseded_evidence_digest = _superseded_evidence_digest(existing, item.evidence_digest)
+        value: dict[str, object] = {
+            "schema": "polylogue.raw-authority-judgment-request.v1",
+            "plan_id": item.plan_id,
+            "state": item.state.value,
+            "actuator": item.actuator.value,
+            "raw_id": item.raw_id,
+            "logical_source_key": item.logical_source_key,
+            ASSERTION_EVIDENCE_DIGEST_KEY: item.evidence_digest,
+            "reason": item.reason,
+            "supported_dispositions": ["retain_canonical_authority"],
+        }
+        if superseded_evidence_digest is not None:
+            value[ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY] = superseded_evidence_digest
         upsert_assertion(
             conn,
             assertion_id=assertion_id,
@@ -925,17 +974,7 @@ def _record_judgment_candidate(config: Config, item: RawAuthorityFrontierItem, *
             target_ref=f"session:{item.session_id}" if item.session_id is not None else f"raw:{item.raw_id}",
             key=item.plan_id,
             kind=AssertionKind.JUDGMENT,
-            value={
-                "schema": "polylogue.raw-authority-judgment-request.v1",
-                "plan_id": item.plan_id,
-                "state": item.state.value,
-                "actuator": item.actuator.value,
-                "raw_id": item.raw_id,
-                "logical_source_key": item.logical_source_key,
-                "evidence_digest": item.evidence_digest,
-                "reason": item.reason,
-                "supported_dispositions": ["retain_canonical_authority"],
-            },
+            value=value,
             body_text=item.reason,
             author_ref="insight:raw-authority-frontier@v1",
             author_kind="detector",

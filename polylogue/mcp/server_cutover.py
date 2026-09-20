@@ -2794,6 +2794,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                         item_reason = item.get("reason")
                         item_replacement_kind = item.get("replacement_kind")
                         item_replacement_body_text = item.get("replacement_body_text")
+                        item_expected_digest = item.get("expected_evidence_digest")
                         return ArchiveAssertionBulkJudgmentItemEnvelope(
                             candidate_ref=item_candidate_ref,
                             decision=item_decision,
@@ -2805,6 +2806,9 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                             if isinstance(item_replacement_body_text, str)
                             else None,
                             replacement_value=item.get("replacement_value"),
+                            expected_evidence_digest=(
+                                item_expected_digest if isinstance(item_expected_digest, str) else None
+                            ),
                         )
 
                     try:

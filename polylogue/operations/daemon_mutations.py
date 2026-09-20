@@ -780,6 +780,11 @@ def mutation_judgment_record(
                         replacement_kind=(
                             None if item.get("replacement_kind") is None else str(item["replacement_kind"])
                         ),
+                        expected_evidence_digest=(
+                            None
+                            if item.get("expected_evidence_digest") is None
+                            else str(item["expected_evidence_digest"])
+                        ),
                     )
                     for item in reviews
                 ),

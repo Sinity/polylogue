@@ -1523,6 +1523,7 @@ def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monk
             replacement_kind: str | AssertionKind | None = None,
             replacement_body_text: str | None = None,
             replacement_value: object | None = None,
+            expected_evidence_digest: str | None = None,
             now_ms: int | None = None,
         ) -> ArchiveAssertionJudgmentEnvelope:
             nonlocal calls
@@ -1539,6 +1540,7 @@ def test_bulk_judgment_rolls_back_on_unexpected_batch_error(tmp_path: Path, monk
                 replacement_kind=replacement_kind,
                 replacement_body_text=replacement_body_text,
                 replacement_value=replacement_value,
+                expected_evidence_digest=expected_evidence_digest,
                 now_ms=now_ms,
             )
 
