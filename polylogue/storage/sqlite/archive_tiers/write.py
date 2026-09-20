@@ -6106,6 +6106,32 @@ _SESSION_EVENTS_REDUNDANT_TYPES = frozenset(
 )
 
 
+def _last_agent_policy_values(
+    conn: sqlite3.Connection, session_id: str
+) -> tuple[str | None, str | None, str | None] | None:
+    """Return the policy tuple of the session's highest-position stored row.
+
+    polylogue-cuxz.11: ``session_agent_policies`` records a value-change
+    interval, so an append must compare against what is already stored rather
+    than starting a fresh run. A full replace clears the session's rows first
+    (``_clear_session_projection_rows``), so this correctly returns ``None``
+    there and the first observation is always retained.
+    """
+    row = conn.execute(
+        """
+        SELECT approval_policy, sandbox_policy, network_policy
+        FROM session_agent_policies
+        WHERE session_id = ?
+        ORDER BY position DESC
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return (row[0], row[1], row[2])
+
+
 def _write_session_events(
     conn: sqlite3.Connection,
     session_id: str,
@@ -6137,6 +6163,14 @@ def _write_session_events(
     position = event_position_offset
     session_event_rows: list[tuple[object, ...]] = []
     agent_policy_rows: list[tuple[object, ...]] = []
+    # polylogue-cuxz.11: the Codex wire restates the whole policy on every
+    # turn_context, so a row per observation made this table a change-log of
+    # non-changes -- 402,869 rows carrying 3,053 distinct facts across 3,031
+    # sessions, 99.3% of which never changed policy at all. Only a genuine
+    # value change is retained; `position` still marks where the retained
+    # value took effect, so a row is the START of an interval that runs until
+    # the next row.
+    last_agent_policy = _last_agent_policy_values(conn, session_id)
     provider_usage_rows: list[tuple[object, ...]] = []
     for event in events:
         source_message_provider_id = event.source_message_provider_id
@@ -6183,17 +6217,29 @@ def _write_session_events(
                 ),
             )
         if event.event_type == "agent_policy":
-            agent_policy_rows.append(
-                (
-                    session_id,
-                    source_message_id,
-                    position,
-                    _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
-                    _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
-                    _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
-                    to_epoch_ms(event.timestamp, numeric_unit="seconds"),
-                ),
+            # Every field keeps its named producer: approval/sandbox/network
+            # all come from this payload, and ``source_message_id`` is the
+            # resolved message the observation was attached to (its partial
+            # index and prefix-delete clear path live in
+            # ``clear_session_agent_policies_source_message_sql``). Nothing is
+            # dropped for having been constant in one census; what is dropped
+            # is the restatement of an unchanged value.
+            policy_values = (
+                _sqlite_text(_payload_string(event.payload, "approval", "approval_policy")),
+                _sqlite_text(_payload_string(event.payload, "sandbox", "sandbox_policy")),
+                _sqlite_text(_payload_string(event.payload, "network", "network_policy")),
             )
+            if policy_values != last_agent_policy:
+                last_agent_policy = policy_values
+                agent_policy_rows.append(
+                    (
+                        session_id,
+                        source_message_id,
+                        position,
+                        *policy_values,
+                        to_epoch_ms(event.timestamp, numeric_unit="seconds"),
+                    ),
+                )
         elif event.event_type in {"token_count", "message_usage"}:
             # polylogue-1pzmq: an event whose declared provider message id
             # resolves to no row here used to be dropped outright. The
