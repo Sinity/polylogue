@@ -141,6 +141,7 @@ class StatusComponentRegistry:
         self._lock = threading.Lock()
         self._pending: dict[str, _Attempt] = {}
         self._good: dict[str, _Good] = {}
+        self._fingerprint_errors: dict[str, str] = {}
 
     @property
     def specs(self) -> tuple[StatusComponentSpec, ...]:
@@ -164,6 +165,23 @@ class StatusComponentRegistry:
                 attempt = self._pending.get(spec.name)
                 good = self._good.get(spec.name)
                 fp = self._safe_fingerprint(spec)
+                fingerprint_error = self._fingerprint_errors.pop(spec.name, None)
+                if fingerprint_error is not None:
+                    # An unreadable identity invalidates the cache. Serving a
+                    # last-good value would make an unknown generation look
+                    # current to a compact status adapter.
+                    results[spec.name] = ComponentSnapshot(
+                        name=spec.name,
+                        scope=spec.scope,
+                        state="unavailable",
+                        value=None,
+                        captured_at=_now_iso(),
+                        age_s=max(0.0, monotonic() - good.captured_monotonic) if good else 0.0,
+                        deadline_s=spec.deadline_s,
+                        error=f"fingerprint unavailable: {fingerprint_error}",
+                        last_good_at=good.snapshot.captured_at if good else None,
+                    )
+                    continue
                 fp_changed = fp is not None and good is not None and good.fingerprint not in (None, fp)
 
                 if attempt is not None and not attempt.done.is_set():
@@ -192,7 +210,24 @@ class StatusComponentRegistry:
                 remaining = max(0.0, min(_POLL_STEP_S, deadline_mono - monotonic()))
                 if attempt.done.wait(timeout=remaining):
                     with self._lock:
-                        results[name] = self._finalize_locked(spec, attempt, self._safe_fingerprint(spec))
+                        fp = self._safe_fingerprint(spec)
+                        fingerprint_error = self._fingerprint_errors.pop(spec.name, None)
+                        if fingerprint_error is not None:
+                            del self._pending[name]
+                            good = self._good.get(name)
+                            results[name] = ComponentSnapshot(
+                                name=spec.name,
+                                scope=spec.scope,
+                                state="unavailable",
+                                value=None,
+                                captured_at=_now_iso(),
+                                age_s=max(0.0, monotonic() - good.captured_monotonic) if good else 0.0,
+                                deadline_s=spec.deadline_s,
+                                error=f"fingerprint unavailable: {fingerprint_error}",
+                                last_good_at=good.snapshot.captured_at if good else None,
+                            )
+                        else:
+                            results[name] = self._finalize_locked(spec, attempt, fp)
                     del waiting[name]
                 elif monotonic() >= deadline_mono:
                     with self._lock:
@@ -219,6 +254,7 @@ class StatusComponentRegistry:
         with self._lock:
             self._pending.clear()
             self._good.clear()
+            self._fingerprint_errors.clear()
 
     # -- internals -----------------------------------------------------
 
@@ -232,7 +268,8 @@ class StatusComponentRegistry:
             return None
         try:
             return spec.fingerprint()
-        except Exception:
+        except Exception as exc:
+            self._fingerprint_errors[spec.name] = f"{type(exc).__name__}: {exc}"
             return None
 
     def _start_attempt_locked(self, spec: StatusComponentSpec) -> _Attempt:
@@ -274,7 +311,11 @@ class StatusComponentRegistry:
             name=spec.name,
             scope=spec.scope,
             state=state,
-            value=good.snapshot.value if good is not None else None,
+            # An absent source is not a stale reading. Retaining a previous
+            # value here makes a failed optional service look measured to an
+            # adapter that forgets to inspect ``state``. Degraded collection
+            # keeps last-good evidence for diagnostics; unavailable does not.
+            value=(good.snapshot.value if good is not None and state != "unavailable" else None),
             captured_at=now_iso,
             age_s=0.0,
             deadline_s=spec.deadline_s,

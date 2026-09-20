@@ -8,7 +8,7 @@ from typing import TypedDict, cast
 
 import pytest
 
-from polylogue.operations.daemon_status import produce_direct_status
+from polylogue.operations.daemon_status import _sqlite_maintenance, produce_direct_status
 from polylogue.operations.operation_context import open_operation_read, prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -61,6 +61,7 @@ class _EmbeddingStatus(TypedDict):
 
 
 class _StatusPayload(TypedDict):
+    ok: bool
     archive_stats: _ArchiveStats
     raw_materialization_readiness: _RawMaterializationStatus
     raw_replay_backlog: _AvailableStatus
@@ -93,6 +94,38 @@ def test_direct_status_uses_the_pinned_archive_and_retains_legacy_sections(tmp_p
         "operation_attempts": 0,
     }
     assert {"archive_tiers", "convergence", "schema_drift", "raw_frontier_integrity"} <= set(payload)
+
+
+def test_direct_status_marks_missing_declared_relation_unavailable(tmp_path: Path) -> None:
+    """A missing source table is not a measured empty count."""
+
+    bootstrap_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "audit.db") as audit_conn:
+        audit_conn.execute("DROP TABLE operation_attempts")
+        audit_conn.commit()
+
+    with open_operation_read(tmp_path) as pinned:
+        payload = cast(_StatusPayload, produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000))
+
+    audit_tier = payload["archive_tiers"]["audit"]
+    assert payload["ok"] is False
+    assert audit_tier["table_counts"]["operation_attempts"] is None
+    precision = cast(dict[str, str], audit_tier["table_count_precision"])
+    assert precision["operation_attempts"] == "missing"
+
+
+def test_sqlite_maintenance_does_not_turn_absent_tier_into_zero(tmp_path: Path) -> None:
+    """Maintenance metadata is explicitly unavailable when a tier is absent."""
+
+    db = tmp_path / "index.db"
+    with sqlite3.connect(db) as conn:
+        maintenance = _sqlite_maintenance(conn)
+
+    source = cast(dict[str, object], maintenance["tiers"])["source"]
+    assert isinstance(source, dict)
+    assert source["sqlite_stat1_rows"] is None
+    assert source["planner_stats_present"] is None
+    assert source["state"] == "unavailable"
 
 
 def test_direct_status_keeps_source_ops_and_embeddings_on_the_pinned_snapshot(tmp_path: Path) -> None:
