@@ -32,25 +32,19 @@ nix flake check
 AgentCTL owns scratch placement and cleanup for declared verification jobs.
 Foreground commands use pytest's ordinary temporary-directory behavior.
 
-### The host pytest slot
+### Managed pytest pools
 
-pytest is the heaviest thing this checkout runs and several agent sessions
-share one workstation, so `devtools test` and the pytest step of
-`devtools verify` run only inside the host's single-slot `pytest` pool
-(agentctl group parallelism 1).
+The operation owns pytest admission. `.agentctl/project.toml` declares
+`pytest_focused` in `pytest-quick`, `verify_affected` in `pytest`, and
+`verify_all` in `pytest-heavy`; follow those mappings on the current
+candidate. A job ID, principal, or operation name is not slot ownership.
 
-- Ownership is the pool: a job the runtime placed in `agentctl-pytest.slice`
-  (`sinnixd-pueue-pytest.slice` on older hosts), or one whose environment
-  says `AGENTCTL_POOL=pytest` (`SINNIXD_QUEUE_POOL` on older hosts), runs
-  pytest in place and streams its output. A job id, principal or operation
-  name is never ownership: a lane queues like everything else.
-- Every other caller submits the declared `pytest_focused` operation,
+- A workstation focused run submits the declared `pytest_focused` operation,
   `agentctl job start <checkout> pytest_focused --workspace <checkout> --
-  <launch file>`, waits for the job, reports the exit code the runtime
-  recorded, and prints the captured log path under
-  `.cache/verify/pytest-slot-<pid>.log`. Watch it with `agentctl job list
-  --active` or `agentctl job logs <id>`; a killed waiter cancels its job with
-  `agentctl job cancel <id>`.
+  <launch file>`, waits for the runtime's exit code, and prints the captured
+  log path under `.cache/verify/pytest-slot-<pid>.log`. Watch it with
+  `agentctl job list --active` or `agentctl job logs <id>`; a killed waiter
+  cancels its job with `agentctl job cancel <id>`.
 - The `agentctl` client inherits only what the runtime needs (`HOME`, `PATH`,
   the XDG and session variables); the managed pytest environment travels in
   the launch file the job consumes and deletes.
