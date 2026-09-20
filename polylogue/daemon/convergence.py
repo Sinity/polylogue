@@ -18,7 +18,7 @@ import asyncio
 import contextlib
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from functools import partial
@@ -1496,22 +1496,6 @@ class DaemonConverger:
         results = {session_id: self._session_states[session_id] for session_id in ids}
         self._evict_converged_sessions(ids)
         return results, batch_stage_times
-
-    def converge_all(
-        self,
-        files: Iterable[Path],
-    ) -> dict[Path, FileState]:
-        """Converge all files. Returns state map."""
-        results: dict[Path, FileState] = {}
-        for path in files:
-            results[path] = self.converge_file(path)
-        return results
-
-    def pending_files(self) -> Iterator[Path]:
-        """Yield files that haven't fully converged."""
-        for path, state in self._file_states.items():
-            if not state.converged:
-                yield path
 
     def summary(self) -> dict[str, int]:
         """Return counts of files by convergence state."""

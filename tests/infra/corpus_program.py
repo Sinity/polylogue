@@ -919,7 +919,8 @@ class ProductionCorpusRuntime:
                 await backend.close()
 
         parse_result = asyncio.run(parse())
-        states = DaemonConverger(make_default_convergence_stages(self.archive_root / "index.db")).converge_all(paths)
+        converger = DaemonConverger(make_default_convergence_stages(self.archive_root / "index.db"))
+        states = {path: converger.converge_file(path) for path in paths}
         result = {"parse": parse_result, "convergence": states}
         self.last_results.append(result)
         return result
