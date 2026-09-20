@@ -2084,9 +2084,16 @@ def _status_component_metadata(snapshots: Mapping[str, ComponentSnapshot]) -> li
     copying rich detail into compact CLI/MCP/HTTP responses while preserving
     state, age, deadline, and last-good authority uniformly.
     """
-    return [
-        {key: value for key, value in snapshot.to_dict().items() if key != "value"} for snapshot in snapshots.values()
-    ]
+    from polylogue.daemon.services import status_component_publisher
+
+    metadata: list[dict[str, object]] = []
+    for snapshot in snapshots.values():
+        item = {key: value for key, value in snapshot.to_dict().items() if key != "value"}
+        publisher = status_component_publisher(snapshot.name)
+        if publisher is not None:
+            item["publisher"] = publisher
+        metadata.append(item)
+    return metadata
 
 
 def _convergence_debt_from_snapshot(snapshot: ComponentSnapshot) -> ConvergenceDebtSummary:
@@ -2511,8 +2518,8 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
         return {
             "available": False,
             "reason": "excluded_from_bounded_status_snapshot",
-            "candidate_count": 0,
-            "total_blob_bytes": 0,
+            "candidate_count": None,
+            "total_blob_bytes": None,
             "top_raw_rows": [],
             "origin_summary": [],
             "source_path_summary": [],
@@ -2525,8 +2532,8 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
         return {
             "available": False,
             "reason": str(exc),
-            "candidate_count": 0,
-            "total_blob_bytes": 0,
+            "candidate_count": None,
+            "total_blob_bytes": None,
             "top_raw_rows": [],
             "origin_summary": [],
             "source_path_summary": [],
@@ -2908,7 +2915,10 @@ def build_daemon_status(
     # call.  Its ``value`` is either ``None`` or a *previous* good value, so
     # serving it -- or the model default -- as a current measurement is the
     # refusal-rendered-as-a-positive-claim defect (polylogue-bu47u AC1).
-    unmeasured_states = {"timed_out", "unavailable", "degraded"}
+    # Stale/refreshing snapshots are advisory only. A generation fingerprint
+    # can change while the prior collector is still in flight; promoting that
+    # value would certify readiness for a frame that is no longer authoritative.
+    unmeasured_states = {"stale", "refreshing", "timed_out", "unavailable", "degraded"}
 
     def _v(name: str, default: Any, *, unmeasured: Any = _UNMEASURED_UNSET) -> Any:
         """Return the component's collected value.
@@ -3298,7 +3308,9 @@ def daemon_status_payload(
             ]
         ).collect()["archive_debt"]
         archive_debt = (
-            debt_snapshot.value if debt_snapshot.value is not None else _excluded_archive_debt_status_summary()
+            debt_snapshot.value
+            if debt_snapshot.state == "fresh" and debt_snapshot.value is not None
+            else _excluded_archive_debt_status_summary()
         )
     else:
         archive_debt = _excluded_archive_debt_status_summary()
@@ -3329,7 +3341,7 @@ def daemon_status_payload(
             ).collect()["assertion_candidate_queue"]
         assertion_candidate_queue = (
             queue_snapshot.value
-            if queue_snapshot.value is not None
+            if queue_snapshot.state == "fresh" and queue_snapshot.value is not None
             else {
                 "mode": "assertion-candidate-queue-health",
                 "state": "unavailable",
@@ -3468,7 +3480,8 @@ def assertion_candidate_queue_status_summary(*, config: Config | None = None) ->
         return {
             "mode": "assertion-candidate-queue-health",
             "state": "unavailable",
-            "pending_count": 0,
+            # A failed queue read is not an empty queue.
+            "pending_count": None,
             "caveats": [f"queue health unavailable: {exc}"],
         }
 

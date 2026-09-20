@@ -669,21 +669,30 @@ def _components(
     components["embeddings"] = component_from_embedding_payload(embedding_status).to_dict()
     has_user = _attached_connection(index_conn, "user_tier") is not None
     has_assertions = has_user and _table_exists(index_conn, "assertions", schema="user_tier")
-    assertion_counts = (
-        index_conn.execute(
+    if has_assertions:
+        assertion_counts = index_conn.execute(
             "SELECT COUNT(*), COUNT(DISTINCT target_ref), "
             "COALESCE(SUM(status IS NULL OR status IN ('active', 'candidate')), 0) FROM user_tier.assertions"
         ).fetchone()
-        if has_assertions
-        else (0, 0, 0)
-    )
-    components["assertions"] = component_from_assertion_substrate(
-        table_exists=has_assertions,
-        assertion_count=int(assertion_counts[0]),
-        target_count=int(assertion_counts[1]),
-        active_count=int(assertion_counts[2]),
-        overlay_audit=audit_user_overlay_storage(index_conn, schema="user_tier").to_dict() if has_assertions else None,
-    ).to_dict()
+        components["assertions"] = component_from_assertion_substrate(
+            table_exists=True,
+            assertion_count=int(assertion_counts[0]),
+            target_count=int(assertion_counts[1]),
+            active_count=int(assertion_counts[2]),
+            overlay_audit=audit_user_overlay_storage(index_conn, schema="user_tier").to_dict(),
+        ).to_dict()
+    else:
+        # Missing user tier/table is an unavailable assertion substrate, not
+        # a measured empty one. Passing three zeroes here let a source-table
+        # failure masquerade as a clean archive.
+        components["assertions"] = ComponentReadiness(
+            component="assertions",
+            scope="user",
+            state=CapabilityReadinessState.UNKNOWN,
+            summary="assertions table unavailable",
+            counts={},
+            caveats=("assertions_table_unavailable",),
+        ).to_dict()
     if archive_readiness.get("checked") is False:
         reason = str(archive_readiness.get("reason") or "archive_readiness_unchecked")
         components["transforms"] = ComponentReadiness(
@@ -922,7 +931,7 @@ def _status_ok(components: Mapping[str, Mapping[str, object]], raw_failures: Map
         state = str(readiness.get("state") or "unknown")
         if state in {"blocked", "poisoned", "stale", "degraded"}:
             return False
-        if state == "unknown" and name in required_known:
+        if state == "unknown" and (name in required_known or name in required_missing):
             return False
         if state == "missing" and name in required_missing:
             return False
