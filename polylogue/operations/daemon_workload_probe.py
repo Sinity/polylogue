@@ -110,8 +110,6 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "attachment_refs",
         "paste_spans",
         "session_tags",
-        "session_work_events",
-        "session_phases",
         "session_profiles",
         "actions",
     ),
@@ -1458,9 +1456,7 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             ),
             "messages_fts_ready": messages_fts_ready,
             "profile_rows_ready": counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0,
-            "profile_counts_ready": (
-                counts["profile_work_event_count_mismatch"] == 0 and counts["profile_phase_count_mismatch"] == 0
-            ),
+            "profile_counts_ready": True,
         }
         surface_readiness = _archive_surface_readiness(
             counts,
@@ -1603,8 +1599,6 @@ def _archive_derived_counts(
             """,
             )
         ),
-        "work_event_row_count": _readiness_count(conn, "session_work_events", exact=exact_counts),
-        "phase_row_count": _readiness_count(conn, "session_phases", exact=exact_counts),
         "thread_count": _readiness_count(conn, "threads", exact=exact_counts),
         "thread_session_count": _readiness_count(conn, "thread_sessions", exact=exact_counts),
         "session_tag_count": _readiness_count(conn, "session_tags", exact=exact_counts),
@@ -1613,30 +1607,6 @@ def _archive_derived_counts(
         else count(_presence_count(conn, "actions")),
         "action_count_exact": exact_counts,
         "cost_profile_count": count(_cost_bearing_profile_count(conn)),
-        "profile_work_event_count_mismatch": count(
-            _scalar_int(
-                conn,
-                """
-            SELECT COUNT(*)
-            FROM session_profiles AS p
-            WHERE p.work_event_count != (
-                SELECT COUNT(*) FROM session_work_events AS e WHERE e.session_id = p.session_id
-            )
-            """,
-            )
-        ),
-        "profile_phase_count_mismatch": count(
-            _scalar_int(
-                conn,
-                """
-            SELECT COUNT(*)
-            FROM session_profiles AS p
-            WHERE p.phase_count != (
-                SELECT COUNT(*) FROM session_phases AS ph WHERE ph.session_id = p.session_id
-            )
-            """,
-            )
-        ),
     }
     if refusals:
         first = refusals[0]
@@ -1735,27 +1705,14 @@ def _archive_surface_readiness(
     if counts["messages_fts_exact_counts"] and counts["text_block_count"] != counts["messages_fts_count"]:
         search_blockers.append("messages_fts_row_mismatch")
 
-    profile_ready = (
-        counts["missing_profile_row_count"] == 0
-        and counts["orphan_profile_row_count"] == 0
-        and counts["profile_work_event_count_mismatch"] == 0
-        and counts["profile_phase_count_mismatch"] == 0
-    )
+    profile_ready = counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0
     profile_blockers: list[str] = []
     if counts["missing_profile_row_count"]:
         profile_blockers.append("missing_profile_rows")
     if counts["orphan_profile_row_count"]:
         profile_blockers.append("orphan_profile_rows")
-    if counts["profile_work_event_count_mismatch"]:
-        profile_blockers.append("profile_work_event_count_mismatch")
-    if counts["profile_phase_count_mismatch"]:
-        profile_blockers.append("profile_phase_count_mismatch")
-    work_events_blockers: list[str] = []
-    phases_blockers: list[str] = []
     thread_blockers: list[str] = []
     latency_blockers: list[str] = []
-    work_events_ready = True
-    phases_ready = True
     thread_ready = True
     latency_ready = True
 
@@ -1799,20 +1756,6 @@ def _archive_surface_readiness(
                 "profile_row_count": counts["profile_row_count"],
                 "missing_profile_row_count": counts["missing_profile_row_count"],
                 "orphan_profile_row_count": counts["orphan_profile_row_count"],
-            },
-        ),
-        "timeline_work_events": surface(
-            ready=work_events_ready,
-            blockers=work_events_blockers,
-            evidence={
-                "work_event_row_count": counts["work_event_row_count"],
-            },
-        ),
-        "timeline_phases": surface(
-            ready=phases_ready,
-            blockers=phases_blockers,
-            evidence={
-                "phase_row_count": counts["phase_row_count"],
             },
         ),
         "threads": surface(

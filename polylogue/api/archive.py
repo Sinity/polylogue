@@ -1403,17 +1403,11 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                     insight_status.missing_profile_row_count,
                     insight_status.stale_profile_row_count,
                     insight_status.orphan_profile_row_count,
-                    insight_status.stale_work_event_inference_count,
-                    insight_status.orphan_work_event_inference_count,
-                    insight_status.stale_phase_inference_count,
-                    insight_status.orphan_phase_inference_count,
                     insight_status.stale_thread_count,
                     insight_status.orphan_thread_count,
                 )
             ) and (
                 insight_status.profile_row_count == insight_status.total_sessions
-                and insight_status.work_event_inference_count == insight_status.expected_work_event_inference_count
-                and insight_status.phase_count == insight_status.expected_phase_count
                 and insight_status.thread_count == insight_status.root_threads
             )
             checks.append(
@@ -2719,33 +2713,6 @@ class _ArchiveInsightExportOperations:
                 session_date_since=getattr(query, "session_date_since", None),
                 session_date_until=getattr(query, "session_date_until", None),
                 tier=str(getattr(query, "tier", "merged")),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_session_work_event_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_session_work_event_insights(
-                session_id=getattr(query, "session_id", None),
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                heuristic_label=getattr(query, "heuristic_label", None),
-                query=getattr(query, "query", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_session_phase_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_session_phase_insights(
-                session_id=getattr(query, "session_id", None),
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                kind=getattr(query, "kind", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
                 limit=getattr(query, "limit", None),
                 offset=int(getattr(query, "offset", 0)),
             )

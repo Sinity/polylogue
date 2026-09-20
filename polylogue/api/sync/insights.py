@@ -13,14 +13,10 @@ from polylogue.analysis.archive import (
     CostRollupInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
-    SessionPhaseInsight,
-    SessionPhaseInsightQuery,
     SessionProfileInsight,
     SessionProfileInsightQuery,
     SessionTagRollupInsight,
     SessionTagRollupQuery,
-    SessionWorkEventInsight,
-    SessionWorkEventInsightQuery,
     ThreadInsight,
     ThreadInsightQuery,
     UsageTimelineInsight,
@@ -64,24 +60,6 @@ class SyncInsightQueriesMixin:
         query: SessionTagRollupQuery | None = None,
     ) -> list[SessionTagRollupInsight]:
         return run_coroutine_sync(self._facade.list_session_tag_rollup_insights(query))
-
-    def get_session_work_event_insights(self, session_id: str) -> list[SessionWorkEventInsight]:
-        return run_coroutine_sync(self._facade.get_session_work_event_insights(session_id))
-
-    def list_session_work_event_insights(
-        self,
-        query: SessionWorkEventInsightQuery | None = None,
-    ) -> list[SessionWorkEventInsight]:
-        return run_coroutine_sync(self._facade.list_session_work_event_insights(query))
-
-    def get_session_phase_insights(self, session_id: str) -> list[SessionPhaseInsight]:
-        return run_coroutine_sync(self._facade.get_session_phase_insights(session_id))
-
-    def list_session_phase_insights(
-        self,
-        query: SessionPhaseInsightQuery | None = None,
-    ) -> list[SessionPhaseInsight]:
-        return run_coroutine_sync(self._facade.list_session_phase_insights(query))
 
     def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
         return run_coroutine_sync(self._facade.get_thread_insight(thread_id))

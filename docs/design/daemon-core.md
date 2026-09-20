@@ -299,9 +299,8 @@ retry hints and carry no correctness authority.
 ### The aggregate families
 
 There is one materialized aggregate family, keyed by `session_id`: the session
-partition — `session_profiles` plus the `session_latency_profiles`,
-`session_work_events` and `session_phases` rows written in the same
-replacement. Its binding is `session_profiles.input_content_hash`, a digest over
+partition — `session_profiles` plus the `session_latency_profiles` rows
+written in the same replacement. Its binding is `session_profiles.input_content_hash`, a digest over
 the session-row and message projections declared in
 `storage/derived/session/input_binding.py`; its recipe version is
 `SESSION_INPUT_RECIPE_VERSION`. Inspection compares that digest and the

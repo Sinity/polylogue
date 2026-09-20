@@ -1,8 +1,9 @@
 """Unit tests for shared DDL-generation helpers (archive_tiers/common.py).
 
-order_check() is prepared for polylogue-cuxz.10 (13,743 ended<started rows in
-session_phases/session_work_events) but not yet wired into any table's DDL —
-see the docstring on order_check for why. These tests pin the SQL shape it
+order_check() is prepared for polylogue-cuxz.10 but not yet wired into any
+table's DDL — see the docstring on order_check for why (the 13,743
+ended<started rows that motivated it lived in the two relations
+polylogue-cuxz.7 deleted). These tests pin the SQL shape it
 generates so it is ready to drop into a CREATE TABLE the moment it's needed,
 and verify the generated CHECK actually enforces (or deliberately permits)
 the intended rows via a real SQLite connection.

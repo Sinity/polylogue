@@ -1538,14 +1538,6 @@ def _archive_readiness_counts(
         "missing_profile_row_count": insight_status.missing_profile_row_count,
         "stale_profile_row_count": insight_status.stale_profile_row_count,
         "orphan_profile_row_count": insight_status.orphan_profile_row_count,
-        "work_event_row_count": insight_status.work_event_inference_count,
-        "expected_work_event_row_count": insight_status.expected_work_event_inference_count,
-        "stale_work_event_row_count": insight_status.stale_work_event_inference_count,
-        "orphan_work_event_row_count": insight_status.orphan_work_event_inference_count,
-        "phase_row_count": insight_status.phase_inference_count,
-        "expected_phase_row_count": insight_status.expected_phase_inference_count,
-        "stale_phase_row_count": insight_status.stale_phase_inference_count,
-        "orphan_phase_row_count": insight_status.orphan_phase_inference_count,
         "thread_count": insight_status.thread_count,
         "root_thread_count": insight_status.root_threads,
         "stale_thread_count": insight_status.stale_thread_count,
@@ -1605,20 +1597,6 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
         profile_blockers.append("missing_profile_rows")
     profile_blockers.extend(present_blockers("stale_profile_row_count", "orphan_profile_row_count"))
 
-    work_blockers = present_blockers(
-        "missing_work_event_row_count",
-        "stale_work_event_row_count",
-        "orphan_work_event_row_count",
-    )
-    work_blockers.extend(
-        mismatch_blocker("work_event_row_count", "expected_work_event_row_count", "work_event_row_mismatch")
-    )
-    phase_blockers = present_blockers(
-        "missing_phase_row_count",
-        "stale_phase_row_count",
-        "orphan_phase_row_count",
-    )
-    phase_blockers.extend(mismatch_blocker("phase_row_count", "expected_phase_row_count", "phase_row_mismatch"))
     thread_blockers = present_blockers(
         "missing_thread_row_count",
         "stale_thread_count",
@@ -1677,28 +1655,6 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
                 "missing_row_count": count("missing_profile_row_count"),
                 "stale_profile_row_count": count("stale_profile_row_count"),
                 "orphan_profile_row_count": count("orphan_profile_row_count"),
-            },
-        ),
-        "timeline_work_events": surface(
-            ready=not work_blockers,
-            blockers=work_blockers,
-            evidence={
-                "work_event_row_count": count("work_event_row_count"),
-                "expected_work_event_row_count": count("expected_work_event_row_count", count("work_event_row_count")),
-                "missing_row_count": count("missing_work_event_row_count"),
-                "stale_work_event_row_count": count("stale_work_event_row_count"),
-                "orphan_work_event_row_count": count("orphan_work_event_row_count"),
-            },
-        ),
-        "timeline_phases": surface(
-            ready=not phase_blockers,
-            blockers=phase_blockers,
-            evidence={
-                "phase_row_count": count("phase_row_count"),
-                "expected_phase_row_count": count("expected_phase_row_count", count("phase_row_count")),
-                "missing_row_count": count("missing_phase_row_count"),
-                "stale_phase_row_count": count("stale_phase_row_count"),
-                "orphan_phase_row_count": count("orphan_phase_row_count"),
             },
         ),
         "threads": surface(

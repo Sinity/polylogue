@@ -130,8 +130,6 @@ READ_BY_ID_EMPTY_METHODS: frozenset[str] = frozenset(
         "get_messages_paginated",  # special: raises SessionNotFoundError
         "read_transcript_window",  # the bound window over the same read; same refusal
         "get_session_stats",
-        "get_session_work_event_insights",
-        "get_session_phase_insights",
         "get_session_tree",
         "get_raw_artifacts_for_session",
         "bulk_get_messages",
@@ -165,8 +163,6 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_session_latency_profile_insights",
         "find_stuck_session_latency_profile_insights",
         "list_session_tag_rollup_insights",
-        "list_session_work_event_insights",
-        "list_session_phase_insights",
         "list_thread_insights",
         "list_archive_coverage_insights",
         "list_tool_usage_insights",
@@ -731,8 +727,6 @@ EMPTY_ARCHIVE_LIST_METHODS: tuple[str, ...] = (
     "list_session_latency_profile_insights",
     "find_stuck_session_latency_profile_insights",
     "list_session_tag_rollup_insights",
-    "list_session_work_event_insights",
-    "list_session_phase_insights",
     "list_thread_insights",
     "list_archive_coverage_insights",
     "list_tool_usage_insights",
@@ -853,7 +847,7 @@ async def test_health_check_warns_when_session_insight_row_counts_do_not_match(t
             write_index_session(store, session)
         _materialize_run_projection(tmp_path / "index.db")
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute("UPDATE session_profiles SET work_event_count = work_event_count + 1")
+            conn.execute("DELETE FROM session_latency_profiles")
 
         report = await archive.health_check()
 
@@ -4866,7 +4860,7 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
     from polylogue.core.enums import BlockType
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs, upsert_session_work_event
+    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 
     archive = _archive(tmp_path)
     codex = ParsedSession(
@@ -4933,14 +4927,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
                 "UPDATE session_profiles SET total_duration_ms = 60000, wall_duration_ms = 60000 WHERE session_id = ?",
                 (codex_id,),
             )
-            upsert_session_work_event(
-                conn,
-                session_id=codex_id,
-                position=0,
-                work_event_type="implementation",
-                summary="Implemented coverage",
-                confidence=0.8,
-            )
             conn.commit()
 
         provider_rows = await archive.list_archive_coverage_insights(
@@ -4976,7 +4962,6 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
         assert day.total_duration_ms == 60000
         assert day.total_wall_duration_ms == 60000
         assert day.total_words == 5
-        assert day.work_event_breakdown == {"implementation": 1}
         assert day.repos_active == ("polylogue",)
         assert day.origin_breakdown == {Origin.CODEX_SESSION.value: 1}
         assert day.provenance is not None
@@ -5211,98 +5196,6 @@ async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path, 
         await archive.close()
 
 
-async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Path) -> None:
-    """Work-event and phase insight facade methods read rows."""
-    import sqlite3
-
-    from polylogue.analysis.archive import SessionPhaseInsightQuery, SessionWorkEventInsightQuery
-    from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import BlockType
-    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.write import upsert_session_phase, upsert_session_work_event
-
-    archive = _archive(tmp_path)
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="api-timeline-v1",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="timeline target")],
-            )
-        ],
-    )
-    try:
-        with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = write_index_session(archive_db, session)
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            upsert_session_work_event(
-                conn,
-                session_id=session_id,
-                position=0,
-                work_event_type="implementation",
-                summary="Implemented timeline reads",
-                confidence=0.82,
-                start_index=0,
-                end_index=1,
-                started_at_ms=1_770_000_060_000,
-                ended_at_ms=1_770_000_120_000,
-                duration_ms=60_000,
-                file_paths=("polylogue/api/insights.py",),
-                tools_used=("apply_patch",),
-                evidence={"canonical_session_date": "2026-02-02"},
-            )
-            upsert_session_phase(
-                conn,
-                session_id=session_id,
-                position=0,
-                start_index=0,
-                end_index=1,
-                started_at_ms=1_770_000_060_000,
-                ended_at_ms=1_770_000_120_000,
-                duration_ms=60_000,
-                tool_counts={"apply_patch": 1},
-                word_count=2,
-                evidence={"canonical_session_date": "2026-02-02"},
-                inference={"evidence": ("edited archive path",)},
-            )
-
-        events = await archive.get_session_work_event_insights(session_id)
-        filtered_events = await archive.list_session_work_event_insights(
-            SessionWorkEventInsightQuery(
-                origin="codex-session",
-                heuristic_label="implementation",
-                since="2026-02-02T02:40:30Z",
-                limit=10,
-            )
-        )
-        phases = await archive.get_session_phase_insights(session_id)
-        filtered_phases = await archive.list_session_phase_insights(
-            SessionPhaseInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
-        )
-
-        assert len(events) == 1
-        assert events == filtered_events
-        assert events[0].session_id == session_id
-        assert events[0].origin == Origin.CODEX_SESSION.value
-        assert events[0].provenance.materializer_version == 5
-        assert events[0].inference.heuristic_label == "implementation"
-        assert events[0].evidence.file_paths == ("polylogue/api/insights.py",)
-        assert len(phases) == 1
-        assert phases == filtered_phases
-        assert phases[0].session_id == session_id
-        assert phases[0].origin == Origin.CODEX_SESSION.value
-        assert phases[0].provenance.materializer_version == 5
-        assert phases[0].evidence.tool_counts == {"apply_patch": 1}
-        assert phases[0].semantic_tier == "evidence"
-        assert phases[0].inference is None
-        assert phases[0].inference_provenance is None
-    finally:
-        await archive.close()
-
-
 async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None:
     """Thread facade methods project thread rows."""
     import sqlite3
@@ -5367,10 +5260,10 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
                 INSERT INTO session_profiles (
                     session_id, workflow_shape, workflow_shape_confidence,
                     terminal_state, terminal_state_confidence, duration_ms,
-                    substantive_count, work_event_count, phase_count,
+                    substantive_count,
                     evidence_payload_json
                 ) VALUES (?, 'agentic_loop', 0.91, 'question_left', 0.88, 180000,
-                          2, 0, 0, ?)
+                          2, ?)
                 """,
                 (
                     parent_id,
@@ -5774,11 +5667,11 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
                 INSERT INTO session_profiles (
                     session_id, workflow_shape, workflow_shape_confidence,
                     terminal_state, terminal_state_confidence, total_duration_ms,
-                    substantive_count, attachment_count, work_event_count,
-                    phase_count, tool_calls_per_minute, evidence_payload_json,
+                    substantive_count, attachment_count,
+                    tool_calls_per_minute, evidence_payload_json,
                     inference_payload_json
                 ) VALUES (?, 'implementation', 0.82, 'completed', 0.91, 120000,
-                          1, 0, 2, 1, 3.5, ?, ?)
+                          1, 0, 3.5, ?, ?)
                 """,
                 (
                     session_id,
@@ -5794,8 +5687,6 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
                     ),
                     json.dumps(
                         {
-                            "work_event_count": 2,
-                            "phase_count": 1,
                             "workflow_shape": "implementation",
                         }
                     ),
@@ -5826,8 +5717,6 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert merged.evidence.total_duration_ms == 120000
         assert merged.evidence.canonical_session_date == "2026-02-02"
         assert merged.inference is not None
-        assert merged.inference.work_event_count == 2
-        assert merged.inference.phase_count == 1
         assert merged.inference.workflow_shape == "implementation"
         assert merged.inference.terminal_state == "completed"
         assert merged.enrichment is None
@@ -5838,55 +5727,6 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert inference_only.evidence is None
         assert inference_only.inference is not None
         assert missing is None
-    finally:
-        await archive.close()
-
-
-async def test_archive_tiers_api_hydrates_unknown_temporal_provenance_without_marker(tmp_path: Path) -> None:
-    """The public async facade preserves row-level temporal provenance."""
-
-    archive = _archive(tmp_path)
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="api-temporal-provenance",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="timeless API event")],
-            )
-        ],
-    )
-    try:
-        with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = write_index_session(archive_db, session)
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute(
-                """
-                INSERT INTO session_work_events (
-                    session_id, position, work_event_type, summary,
-                    input_high_water_mark, input_high_water_mark_source
-                ) VALUES (?, 0, 'implementation', 'timeless API event', ?, 'provider_ts')
-                """,
-                (session_id, "2026-08-04T09:30:00Z"),
-            )
-            conn.execute(
-                """
-                INSERT INTO session_phases (
-                    session_id, position, input_high_water_mark, input_high_water_mark_source
-                ) VALUES (?, 0, ?, 'provider_ts')
-                """,
-                (session_id, "2026-08-04T09:30:00Z"),
-            )
-            conn.commit()
-
-        work_event = (await archive.get_session_work_event_insights(session_id))[0]
-        phase = (await archive.get_session_phase_insights(session_id))[0]
-
-        for insight in (work_event, phase):
-            assert insight.provenance.materialized_at is None
-            assert insight.provenance.input_high_water_mark_source == "provider_ts"
-            assert insight.provenance.time_confidence == "recorded"
     finally:
         await archive.close()
 
@@ -5930,45 +5770,12 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
             first_id = write_index_session(archive_db, first)
             write_index_session(archive_db, second)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute(
-                """
-                INSERT INTO session_profiles (
-                    session_id, work_event_count, phase_count
-                ) VALUES (?, 1, 1)
-                """,
-                (first_id,),
-            )
-            conn.execute(
-                """
-                INSERT INTO session_work_events (
-                    session_id, position, work_event_type, summary, confidence,
-                    start_index, end_index
-                ) VALUES (?, 0, 'implementation', 'built it', 0.8, 0, 0)
-                """,
-                (first_id,),
-            )
-            conn.execute(
-                """
-                INSERT INTO session_phases (
-                    session_id, position, start_index, end_index
-                ) VALUES (?, 0, 0, 0)
-                """,
-                (first_id,),
-            )
+            conn.execute("INSERT INTO session_profiles (session_id) VALUES (?)", (first_id,))
         status = await archive.get_session_insight_status()
 
         assert status.total_sessions == 2
         assert status.profile_row_count == 1
         assert status.missing_profile_row_count == 1
-        assert status.work_event_inference_count == 1
-        assert status.expected_work_event_inference_count == 1
-        # The profile row above is inserted by hand, so it carries no input
-        # binding. Binding-based inspection (#4849) therefore reports its
-        # inference rows stale, which is the honest reading of a row that
-        # cannot prove which inputs produced it -- not a count of zero.
-        assert status.stale_work_event_inference_count == 1
-        assert status.phase_count == 1
-        assert status.expected_phase_count == 1
         assert status.thread_count == 2
         assert status.root_threads == 2
         assert status.tag_rollup_count == 0

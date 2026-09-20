@@ -39,7 +39,6 @@ def _thread_payload(thread: Thread) -> ThreadPayload:
         "total_cost_usd": thread.total_cost_usd,
         "dominant_repo": thread.dominant_repo,
         "origin_breakdown": dict(thread.origin_breakdown),
-        "work_event_breakdown": dict(thread.work_event_breakdown),
         "confidence": thread.confidence,
         "support_level": thread.support_level,
         "support_signals": list(thread.support_signals),
@@ -61,7 +60,6 @@ def _thread_from_mapping(payload: Mapping[str, object]) -> Thread:
         total_cost_usd=coerce_float(payload.get("total_cost_usd"), 0.0),
         dominant_repo=optional_string(payload.get("dominant_repo")),
         origin_breakdown=string_int_mapping(payload.get("origin_breakdown")),
-        work_event_breakdown=string_int_mapping(payload.get("work_event_breakdown")),
         confidence=coerce_float(payload.get("confidence"), 0.0),
         support_level=optional_string(payload.get("support_level")) or "weak",
         support_signals=string_sequence(payload.get("support_signals")),
@@ -119,7 +117,6 @@ class Thread:
     total_cost_usd: float
     dominant_repo: str | None
     origin_breakdown: dict[str, int]
-    work_event_breakdown: dict[str, int]
     confidence: float
     support_level: str
     support_signals: tuple[str, ...]
@@ -262,14 +259,9 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[Thread]:
 
         repo_counter: Counter[str] = Counter()
         origin_counter: Counter[str] = Counter()
-        work_event_counter: Counter[str] = Counter()
         for profile in thread_profiles:
             repo_counter.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
             origin_counter.update((profile.origin,))
-            work_event_counter.update(
-                event.heuristic_label.value if hasattr(event.heuristic_label, "value") else str(event.heuristic_label)
-                for event in profile.work_events
-            )
         dominant_repo = repo_counter.most_common(1)[0][0] if repo_counter else None
         member_depths = _member_depths(children, root.session_id)
         member_evidence = _thread_member_evidence(
@@ -299,7 +291,6 @@ def build_session_threads(profiles: Iterable[SessionProfile]) -> list[Thread]:
                 total_cost_usd=sum(profile.total_cost_usd for profile in thread_profiles),
                 dominant_repo=dominant_repo,
                 origin_breakdown=dict(origin_counter),
-                work_event_breakdown=dict(work_event_counter),
                 confidence=_thread_confidence(session_count=len(thread_ids)),
                 support_level=_thread_support_level(session_count=len(thread_ids)),
                 support_signals=support_signals,

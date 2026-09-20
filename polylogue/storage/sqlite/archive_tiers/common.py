@@ -77,8 +77,8 @@ def order_check(later: str, earlier: str, *, nullable: bool = True) -> str:
     where a NOT NULL column is unexpectedly NULL.
 
     Not currently applied to any table. See polylogue-cuxz.10: the archive's
-    inverted-range defect (session_phases/session_work_events, 13,743 rows,
-    ~99% chatgpt-export) lives entirely in tables a sibling bead deletes
+    inverted-range defect (13,743 rows, ~99% chatgpt-export) lived entirely in
+    ``session_phases``/``session_work_events``, which polylogue-cuxz.7 deleted
     outright, so no CHECK is warranted there. The other same-row order
     candidates found while measuring that bead (session_profiles,
     session_latency_profiles, threads: first_message_at/last_message_at)

@@ -123,8 +123,7 @@ writer_modules:
         - tier: user
           durability: durable
           interruption: atomic
-      entrypoints:
-        [upsert_session_phase, upsert_session_tag, upsert_session_work_event]
+      entrypoints: [upsert_session_tag]
       twin_write_contract: session-tag-assertion-mirror
     - path: polylogue/storage/sqlite/archive_tiers/embedding_write.py
       surfaces:

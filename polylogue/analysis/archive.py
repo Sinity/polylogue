@@ -19,12 +19,8 @@ from polylogue.analysis.archive_models import (
     SessionEvidencePayload,
     SessionInferencePayload,
     SessionLatencyProfilePayload,
-    SessionPhaseEvidencePayload,
-    SessionPhaseInferencePayload,
     ThreadPayload,
     WeekSessionSummaryPayload,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
 )
 from polylogue.analysis.objective_posture import structural_objective_posture
 from polylogue.analysis.temporal_source import (
@@ -48,9 +44,7 @@ from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZ
 
 if TYPE_CHECKING:
     from polylogue.storage.runtime import (
-        SessionPhaseRecord,
         SessionProfileRecord,
-        SessionWorkEventRecord,
         ThreadRecord,
     )
 
@@ -98,20 +92,6 @@ class SessionWindowInsightQuery(OriginSearchInsightQuery):
     sort: str = "source"
 
 
-class SessionTimelineWindowInsightQuery(OriginTimeWindowInsightQuery):
-    session_id: str | None = None
-    session_date_since: str | None = None
-    session_date_until: str | None = None
-
-
-class SearchableSessionTimelineInsightQuery(SessionTimelineWindowInsightQuery):
-    query: str | None = None
-
-    @property
-    def wants_search(self) -> bool:
-        return bool(self.query)
-
-
 class SessionProfileInsightQuery(SessionWindowInsightQuery):
     tier: str = "merged"
     workflow_shape: str | None = None
@@ -125,14 +105,6 @@ class SessionLatencyProfileInsightQuery(OriginTimeWindowInsightQuery):
     only_stuck: bool = False
     tag: str | None = None
     repo: str | None = None
-
-
-class SessionWorkEventInsightQuery(SearchableSessionTimelineInsightQuery):
-    heuristic_label: str | None = None
-
-
-class SessionPhaseInsightQuery(SessionTimelineWindowInsightQuery):
-    pass
 
 
 class ThreadInsightQuery(SearchableTimeWindowInsightQuery):
@@ -354,58 +326,6 @@ class SessionLatencyProfileInsight(ArchiveInsightModel):
         )
 
 
-class SessionWorkEventInsight(ArchiveInsightModel):
-    contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    insight_kind: str = "session_work_event"
-    semantic_tier: str = "inference"
-    event_id: str
-    session_id: str
-    origin: str
-    event_index: int
-    provenance: ArchiveInsightProvenance
-    inference_provenance: ArchiveInferenceProvenance
-    evidence: WorkEventEvidencePayload
-    inference: WorkEventInferencePayload
-
-    @classmethod
-    def from_record(cls, record: SessionWorkEventRecord) -> SessionWorkEventInsight:
-        return cls(
-            event_id=record.event_id,
-            session_id=record.session_id,
-            origin=source_name_to_origin(record.source_name),
-            event_index=record.event_index,
-            provenance=_record_provenance(record),
-            inference_provenance=_record_inference_provenance(record),
-            evidence=record.evidence_payload,
-            inference=record.inference_payload,
-        )
-
-
-class SessionPhaseInsight(ArchiveInsightModel):
-    contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    insight_kind: str = "session_phase"
-    semantic_tier: str = "evidence"
-    phase_id: str
-    session_id: str
-    origin: str
-    phase_index: int
-    provenance: ArchiveInsightProvenance
-    inference_provenance: ArchiveInferenceProvenance | None = None
-    evidence: SessionPhaseEvidencePayload
-    inference: SessionPhaseInferencePayload | None = None
-
-    @classmethod
-    def from_record(cls, record: SessionPhaseRecord) -> SessionPhaseInsight:
-        return cls(
-            phase_id=record.phase_id,
-            session_id=record.session_id,
-            origin=source_name_to_origin(record.source_name),
-            phase_index=record.phase_index,
-            provenance=_record_provenance(record),
-            evidence=record.evidence_payload,
-        )
-
-
 class ThreadInsight(ArchiveInsightModel):
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
     insight_kind: str = "thread"
@@ -493,7 +413,6 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     total_sessions_with_thinking: int = 0
     tool_use_percentage: float | None = None
     thinking_percentage: float | None = None
-    work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     repos_active: tuple[str, ...] = ()
     origin_breakdown: dict[str, int] = Field(default_factory=dict)
     provenance: ArchiveInsightProvenance | None = None
@@ -697,19 +616,11 @@ __all__ = [
     "SessionLatencyProfileInsight",
     "SessionLatencyProfileInsightQuery",
     "SessionLatencyProfilePayload",
-    "SessionPhaseEvidencePayload",
-    "SessionPhaseInferencePayload",
-    "SessionPhaseInsight",
-    "SessionPhaseInsightQuery",
     "SessionProfileInsight",
     "SessionProfileInsightQuery",
     "SessionTagRollupInsight",
     "SessionTagRollupQuery",
-    "SessionWorkEventInsight",
-    "SessionWorkEventInsightQuery",
     "WeekSessionSummaryInsight",
-    "WorkEventEvidencePayload",
-    "WorkEventInferencePayload",
     "ThreadInsight",
     "ThreadInsightQuery",
     "date_from_iso",

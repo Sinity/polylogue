@@ -225,6 +225,58 @@ def compute_tool_active_duration_ms(session_events: Sequence[SessionEvent]) -> i
     return total_ms
 
 
+#: Idle gap that separates one engagement interval from the next. A session's
+#: engaged duration is the sum of its intervals, so a five-minute-plus pause is
+#: idle time and not engagement. This is the same threshold the retired
+#: ``session_phases`` segmentation used, kept because ``engaged_duration_ms``
+#: is a published profile field and its value must not move (polylogue-cuxz.7).
+ENGAGEMENT_GAP_MS = 300_000
+
+
+def compute_engaged_duration_ms(
+    message_timestamps: Sequence[datetime],
+    session_event_timestamps: Sequence[datetime],
+) -> int:
+    """Sum the timestamped engagement intervals of one session.
+
+    ``message_timestamps`` arrives in message traversal order, which is not
+    chronological order once a message was edited or regenerated: a ChatGPT
+    sibling variant can carry a timestamp days away from the position the
+    parent/children flattening assigned it. An interval is therefore bounded by
+    the min/max of the timestamps that fall inside it, not by the first and last
+    one walked, and the gap test compares absolute distance.
+
+    Sessions whose messages carry no timestamps (codex pre-Dec-2025, hermes
+    per-request dumps -- about 30% of the archive) fall back to their session
+    events, which are already chronological.
+    """
+    total = 0
+    interval_min: datetime | None = None
+    interval_max: datetime | None = None
+    previous: datetime | None = None
+    for timestamp in message_timestamps:
+        if previous is not None and abs((timestamp - previous).total_seconds() * 1000) > ENGAGEMENT_GAP_MS:
+            total += _gap_ms(interval_min, interval_max)
+            interval_min = None
+            interval_max = None
+        interval_min = timestamp if interval_min is None else min(interval_min, timestamp)
+        interval_max = timestamp if interval_max is None else max(interval_max, timestamp)
+        previous = timestamp
+    if previous is not None:
+        return total + _gap_ms(interval_min, interval_max)
+
+    ordered = sorted(session_event_timestamps)
+    if not ordered:
+        return 0
+    interval_start = previous = ordered[0]
+    for timestamp in ordered[1:]:
+        if (timestamp - previous).total_seconds() * 1000 > ENGAGEMENT_GAP_MS:
+            total += _gap_ms(interval_start, previous)
+            interval_start = timestamp
+        previous = timestamp
+    return total + _gap_ms(interval_start, previous)
+
+
 def _provider_tool_latencies(
     session_events: Sequence[SessionEvent],
     *,
@@ -315,9 +367,11 @@ def compute_session_latency_profile(
 
 
 __all__ = [
+    "ENGAGEMENT_GAP_MS",
     "SessionTimingFacts",
     "SessionLatencyProfileFacts",
     "compute_session_latency_profile",
+    "compute_engaged_duration_ms",
     "compute_session_timing",
     "compute_tool_active_duration_ms",
 ]

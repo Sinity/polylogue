@@ -168,11 +168,6 @@ def _indexable_row_count(conn: sqlite3.Connection) -> int:
 
 
 _ARCHIVE_MESSAGE_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
-_SESSION_WORK_EVENT_FTS_TRIGGERS = (
-    "session_work_events_fts_ai",
-    "session_work_events_fts_ad",
-    "session_work_events_fts_au",
-)
 
 
 def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
@@ -180,8 +175,6 @@ def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
     expected: list[str] = []
     if table_exists(conn, "blocks") and table_exists(conn, "messages_fts"):
         expected.extend(_ARCHIVE_MESSAGE_FTS_TRIGGERS)
-    if all(table_exists(conn, table_name) for table_name in ("session_work_events", "session_work_events_fts")):
-        expected.extend(_SESSION_WORK_EVENT_FTS_TRIGGERS)
     return tuple(expected)
 
 

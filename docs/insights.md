@@ -11,8 +11,6 @@ Operational readiness, audit, and export stay under `polylogue ops insights`.
 | Insight Type | CLI Command | Description |
 |-------------|-------------|-------------|
 | Session Profiles | `analyze insights profiles` | Per-session evidence, inference, and probabilistic enrichment: repos, tools, costs, durations, message counts, workflow shape, terminal state, summaries |
-| Work Events | `analyze insights work-events` | File-level operations detected within sessions |
-| Work Phases | `analyze insights phases` | Time-gap session intervals for navigation and rough timeline shape |
 | Work Threads | `analyze insights threads` | Multi-session groupings by repo and work continuity |
 | Session Latency Profiles | API / MCP | Per-session response/tool latency aggregates and stuck-tool counts |
 | Tag Rollups | `analyze insights tags` | Tag usage across sessions |
@@ -138,42 +136,6 @@ MCP exposes three readers over these same rows:
 `session_latency_profile(session_id)`,
 `tool_call_latency_distribution(since, until, provider, tool_category)`, and
 `find_stuck_sessions(since, limit)`.
-
-## Work Events
-
-Message-range work segments derived from tool calls, message timing, and
-coarse text/action signals. These rows are useful for timeline navigation,
-file/tool context, and rough event grouping. The `heuristic_label` field is a
-weak event label such as `implementation`, `debugging`, `testing`, `research`,
-or `review`; it is not a durable workflow taxonomy and should not be treated
-as the session-level semantic contract. Use `workflow_shape` and
-`terminal_state` on session profiles when the question is about the whole
-session.
-
-```bash
-polylogue analyze insights work-events
-polylogue analyze insights work-events --heuristic-label implementation
-polylogue analyze insights work-events --session-id claude-ai:abc123
-```
-
-Each event has: start/end time, duration, file paths, tools used, a short
-summary, and the heuristic event label plus confidence/evidence. File/tool
-categories such as `file_read`, `file_edit`, or `shell` live on action/tool
-surfaces, not in `session_work_events.heuristic_label`.
-
-## Work Phases
-
-Sessions are segmented into time-gap phases for navigation and rough timeline
-shape. These are intervals, not intent labels.
-
-```bash
-polylogue analyze insights phases
-polylogue analyze insights phases --session-id claude-ai:abc123
-```
-
-Phase rows expose start/end time, message range, word count, and tool-count
-evidence. Intent labels such as planning or verification belong on work-event
-heuristics, not on phase intervals.
 
 ## Work Threads
 

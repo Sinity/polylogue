@@ -78,11 +78,9 @@ class InsightCertifiedCounts:
     """Certified derived outputs, deliberately distinct from physical writes."""
 
     profiles: int
-    work_events: int
-    phases: int
 
     def __post_init__(self) -> None:
-        if min(self.profiles, self.work_events, self.phases) < 0:
+        if self.profiles < 0:
             raise ValueError("certified insight counts cannot be negative")
 
 

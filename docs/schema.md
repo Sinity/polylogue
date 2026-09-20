@@ -87,8 +87,7 @@ compact indexed `action_pairs` and `delegation_facts` relations, query-time
 `attachment_refs`, `attachment_native_ids`), `paste_spans`, the cost table
 `session_model_usage`, the auto-tag side of
 `session_tags`, and the insight
-read models (`session_profiles`, `session_work_events`, `session_phases`,
-`session_latency_profiles`), whose freshness the converger derives from the
+read models (`session_profiles`, `session_latency_profiles`), whose freshness the converger derives from the
 owning session's sort key and content hash.
 
 ### `embeddings.db` — vectors (rebuildable, expensive)
@@ -255,7 +254,6 @@ tokenizer (no porter stemmer in this SQLite build):
 | Virtual table | Indexes |
 |---------------|---------|
 | `messages_fts` | Block `search_text` (text + tool name + command/path), contentless (`content=''`, `contentless_delete=1`) |
-| `session_work_events_fts` | Work-event search text |
 
 `messages_fts` is kept in sync with `blocks` by the `messages_fts_ai/ad/au`
 triggers. During bulk ingest these triggers are suspended for performance and

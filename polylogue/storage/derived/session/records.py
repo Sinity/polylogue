@@ -47,8 +47,6 @@ class SessionProfileRecord(BaseModel):
     message_count: int = 0
     substantive_count: int = 0
     attachment_count: int = 0
-    work_event_count: int = 0
-    phase_count: int = 0
     word_count: int = 0
     tool_use_count: int = 0
     thinking_count: int = 0
@@ -169,7 +167,6 @@ class ThreadRecord(BaseModel):
     total_messages: int = 0
     total_cost_usd: float = 0.0
     wall_duration_ms: int = 0
-    work_event_breakdown: dict[str, int] | None = None
     payload: ThreadPayload
     search_text: str
 

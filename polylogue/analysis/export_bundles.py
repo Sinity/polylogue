@@ -12,10 +12,8 @@ from typing import Literal, Protocol
 from polylogue.analysis.archive import (
     ArchiveCoverageInsight,
     ArchiveInsightUnavailableError,
-    SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
-    SessionWorkEventInsight,
     ThreadInsight,
 )
 from polylogue.analysis.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
@@ -30,16 +28,12 @@ InsightExportFormat = Literal["jsonl"]
 INSIGHT_EXPORT_BUNDLE_VERSION = 1
 DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_profiles",
-    "session_work_events",
-    "session_phases",
     "threads",
     "session_tag_rollups",
     "archive_coverage",
 )
 _INSIGHT_MODEL_BY_NAME: dict[str, type[ArchiveInsightModel]] = {
     "session_profiles": SessionProfileInsight,
-    "session_work_events": SessionWorkEventInsight,
-    "session_phases": SessionPhaseInsight,
     "threads": ThreadInsight,
     "session_tag_rollups": SessionTagRollupInsight,
     "archive_coverage": ArchiveCoverageInsight,

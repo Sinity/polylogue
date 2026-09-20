@@ -11,7 +11,6 @@ import aiosqlite
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists_sync
 from polylogue.core.sqlite_introspection import table_exists_async as _table_exists_async
-from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 from polylogue.storage.fts.sql import (
     BLOCKS_FTS_TRIGGER_DDL,
     FTS_IDENTITY_REBUILD_SQL,
@@ -22,7 +21,6 @@ from polylogue.storage.fts.sql import (
     FTS_MESSAGES_TABLE_SQL,
     FTS_REBUILD_SQL,
     FTS_TRIGGER_DDL,
-    SESSION_WORK_EVENT_FTS_TRIGGER_DDL,
     IndexedMessage,
     chunked,
     excess_message_rows_sql,
@@ -84,19 +82,13 @@ async def _message_trigger_names_for_async(conn: aiosqlite.Connection) -> tuple[
     return _BLOCKS_FTS_TRIGGER_NAMES
 
 
-_SESSION_WORK_EVENT_FTS_TRIGGER_NAMES = (
-    "session_work_events_fts_ai",
-    "session_work_events_fts_ad",
-    "session_work_events_fts_au",
-)
-
 _BLOCKS_FTS_TRIGGER_NAMES = (
     "messages_fts_ai",
     "messages_fts_ad",
     "messages_fts_au",
 )
 
-_FTS_TRIGGER_NAMES = _BLOCKS_FTS_TRIGGER_NAMES + _SESSION_WORK_EVENT_FTS_TRIGGER_NAMES
+_FTS_TRIGGER_NAMES = _BLOCKS_FTS_TRIGGER_NAMES
 
 FTS_TRIGGER_NAMES = _FTS_TRIGGER_NAMES
 """Canonical FTS trigger set for all archive and insight search surfaces."""
@@ -148,7 +140,6 @@ class FtsInvariantSnapshot:
 
     messages: FtsSurfaceInvariant
     retired_action_surface: FtsSurfaceInvariant
-    session_work_events: FtsSurfaceInvariant
 
     @property
     def ready(self) -> bool:
@@ -156,7 +147,7 @@ class FtsInvariantSnapshot:
 
     @property
     def surfaces(self) -> tuple[FtsSurfaceInvariant, ...]:
-        return (self.messages, self.retired_action_surface, self.session_work_events)
+        return (self.messages, self.retired_action_surface)
 
 
 def _triggers_present_sync(conn: sqlite3.Connection, names: tuple[str, ...]) -> bool:
@@ -184,7 +175,6 @@ async def _triggers_present_async(conn: aiosqlite.Connection, names: tuple[str, 
 # source of truth. Aliases below preserve backward compatibility with code that
 # references the private _*_TRIGGER_DDL names.
 _BLOCKS_FTS_TRIGGER_DDL = BLOCKS_FTS_TRIGGER_DDL
-_SESSION_WORK_EVENT_FTS_TRIGGER_DDL = SESSION_WORK_EVENT_FTS_TRIGGER_DDL
 _FTS_TRIGGER_DDL = FTS_TRIGGER_DDL
 
 
@@ -297,8 +287,6 @@ def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tup
     ddl: list[str] = []
     if _table_exists_sync(conn, "blocks") and _table_exists_sync(conn, "messages_fts"):
         ddl.extend(_BLOCKS_FTS_TRIGGER_DDL)
-    if _table_exists_sync(conn, "session_work_events") and _table_exists_sync(conn, "session_work_events_fts"):
-        ddl.extend(_SESSION_WORK_EVENT_FTS_TRIGGER_DDL)
     return tuple(ddl)
 
 
@@ -306,10 +294,6 @@ async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connectio
     ddl: list[str] = []
     if await _table_exists_async(conn, "blocks") and await _table_exists_async(conn, "messages_fts"):
         ddl.extend(_BLOCKS_FTS_TRIGGER_DDL)
-    if await _table_exists_async(conn, "session_work_events") and await _table_exists_async(
-        conn, "session_work_events_fts"
-    ):
-        ddl.extend(_SESSION_WORK_EVENT_FTS_TRIGGER_DDL)
     return tuple(ddl)
 
 
@@ -355,7 +339,6 @@ def rebuild_fts_index_sync(
     else:
         rebuild_messages_fts_content_sync(conn)
         rebuild_messages_fts_identity_sync(conn)
-    _rebuild_session_work_events_fts_sync(conn)
 
 
 def reset_message_fts_index_sync(conn: sqlite3.Connection) -> None:
@@ -386,8 +369,7 @@ def _blocks_content_hash_available_sync(conn: sqlite3.Connection) -> bool:
     hand-rolled ``blocks`` table (a handful of TEXT columns, no
     ``content_hash``) rather than the full archive schema -- the identity
     ledger is additive there: skip populating it rather than erroring, the
-    same accommodation already made for other optional derived surfaces
-    (``session_work_events_fts`` existence checks above).
+    same accommodation already made for other optional derived surfaces.
     """
     return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)").fetchall())
 
@@ -492,25 +474,6 @@ def reconcile_message_fts_rows_once_sync(conn: sqlite3.Connection) -> tuple[int,
     if _blocks_content_hash_available_sync(conn):
         conn.execute(repair_all_message_identity_rows_sql())
     return inserted, deleted
-
-
-def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
-    """Rebuild only the durable session-insight FTS projections."""
-    replace_fts_triggers_sync(conn)
-    _rebuild_session_work_events_fts_sync(conn)
-
-
-def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
-    if not (_table_exists_sync(conn, "session_work_events") and _table_exists_sync(conn, "session_work_events_fts")):
-        return
-    conn.execute("DELETE FROM session_work_events_fts")
-    conn.execute(
-        f"""
-        INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
-        SELECT event_id, session_id, work_event_type, {pl_fold_sql_expr("search_text")}
-        FROM session_work_events
-        """
-    )
 
 
 async def rebuild_fts_index_async(
@@ -779,7 +742,6 @@ def _fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsh
     return FtsInvariantSnapshot(
         messages=message_surface,
         retired_action_surface=_absent_optional_surface("retired_action_surface"),
-        session_work_events=_optional_session_work_events_fts_invariant_sync(conn),
     )
 
 
@@ -792,38 +754,6 @@ def _absent_optional_surface(name: str) -> FtsSurfaceInvariant:
         indexed_rows=0,
         triggers_present=False,
     )
-
-
-def _optional_session_work_events_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvariant:
-    if not _table_exists_sync(conn, "session_work_events_fts"):
-        return _absent_optional_surface("session_work_events_fts")
-    return _trigger_invariant_sync(
-        conn,
-        name="session_work_events_fts",
-        source_table_name="session_work_events",
-        table_name="session_work_events_fts",
-        source_sql="SELECT COUNT(*) FROM session_work_events",
-        indexed_sql="SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts",
-        trigger_names=_SESSION_WORK_EVENT_FTS_TRIGGER_NAMES,
-        missing_sql="""
-            SELECT COUNT(*)
-            FROM session_work_events AS swe
-            LEFT JOIN session_work_events_fts AS f ON f.event_id = swe.event_id
-            WHERE f.event_id IS NULL
-        """,
-        excess_sql="""
-            SELECT COUNT(DISTINCT f.event_id)
-            FROM session_work_events_fts AS f
-            LEFT JOIN session_work_events AS swe ON swe.event_id = f.event_id
-            WHERE swe.event_id IS NULL
-        """,
-        duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts",
-    )
-
-
-def session_work_events_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvariant:
-    """Return the exact work-event FTS invariant without rescanning messages."""
-    return _optional_session_work_events_fts_invariant_sync(conn)
 
 
 def _messages_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvariant:
@@ -877,7 +807,6 @@ __all__ = [
     "rebuild_fts_index_sync",
     "rebuild_messages_fts_content_sync",
     "rebuild_messages_fts_identity_sync",
-    "rebuild_session_insight_fts_sync",
     "repair_fts_index_async",
     "repair_fts_index_sync",
     "repair_message_fts_index_sync",
@@ -887,7 +816,6 @@ __all__ = [
     "restore_message_fts_triggers_sync",
     "replace_fts_triggers_sync",
     "restore_fts_triggers_sync",
-    "session_work_events_fts_invariant_sync",
     "suspend_message_fts_triggers_sync",
     "suspend_fts_triggers_sync",
 ]

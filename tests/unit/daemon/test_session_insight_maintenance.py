@@ -99,7 +99,7 @@ async def test_converge_part_preserves_exact_targets_and_complete_owner_receipts
                 "already_satisfied",
                 "input:a",
                 "output:a",
-                SelectedSessionCounts(1, 2, 3),
+                SelectedSessionCounts(1),
                 False,
             ),
             SelectedSessionOutcome(
@@ -107,7 +107,7 @@ async def test_converge_part_preserves_exact_targets_and_complete_owner_receipts
                 "published",
                 "input:b",
                 "output:b",
-                SelectedSessionCounts(1, 5, 8),
+                SelectedSessionCounts(1),
                 True,
             ),
         )
@@ -131,8 +131,7 @@ async def test_converge_part_preserves_exact_targets_and_complete_owner_receipts
         ("session:b", "published"),
     ]
     assert receipt.targets[0].certified_counts.profiles == 1
-    assert receipt.targets[1].certified_counts.work_events == 5
-    assert receipt.targets[1].certified_counts.phases == 8
+    assert receipt.targets[1].certified_counts.profiles == 1
     assert receipt.targets[0].publication_known_committed is False
     assert receipt.targets[1].publication_known_committed is True
 
@@ -148,7 +147,7 @@ async def test_converge_part_returns_only_the_owner_unattempted_suffix() -> None
                 "published",
                 "input:a",
                 "output:a",
-                SelectedSessionCounts(1, 0, 0),
+                SelectedSessionCounts(1),
                 True,
             ),
         )
@@ -177,7 +176,7 @@ async def test_converge_ingest_sessions_uses_fresh_generation_and_accepted_recip
                 "published",
                 "input:a",
                 "output:a",
-                SelectedSessionCounts(1, 2, 3),
+                SelectedSessionCounts(1),
                 True,
             ),
         )
@@ -213,7 +212,7 @@ async def test_converge_part_refuses_owner_outcome_for_a_different_sealed_target
                 "published",
                 "input:other",
                 "output:other",
-                SelectedSessionCounts(1, 0, 0),
+                SelectedSessionCounts(1),
                 True,
             ),
         )

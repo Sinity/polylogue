@@ -116,8 +116,6 @@ class SessionMaterializationFacts:
 
     profile: FactRow | None
     latency_profiles: tuple[FactRow, ...]
-    work_events: tuple[FactRow, ...]
-    phases: tuple[FactRow, ...]
     threads: tuple[FactRow, ...]
     thread_sessions: tuple[FactRow, ...]
     table_counts: tuple[tuple[str, int], ...]
@@ -468,8 +466,6 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
     required_insight_models = frozenset(
         {
             "session_profile_rows",
-            "session_work_events",
-            "session_phases",
             "threads",
             "session_tag_rollups",
         }
@@ -483,8 +479,6 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
             "archive_sessions",
             "search",
             "session_profiles",
-            "timeline_work_events",
-            "timeline_phases",
             "threads",
             "tool_usage",
             "latency_profiles",
@@ -887,7 +881,7 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
             SELECT session_id, logical_session_id, materializer_version,
                    source_updated_at, source_sort_key, input_high_water_mark,
                    input_high_water_mark_source, input_row_count, source_name,
-                   title, message_count, work_event_count, phase_count,
+                   title, message_count,
                    word_count, tool_use_count, thinking_count,
                    total_duration_ms, workflow_shape, terminal_state,
                    evidence_payload_json, inference_payload_json,
@@ -907,32 +901,6 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
             """,
             (session_id,),
         ).fetchall()
-        work_events = conn.execute(
-            """
-            SELECT session_id, position, work_event_type, summary, confidence,
-                   start_index, end_index, started_at_ms, ended_at_ms,
-                   duration_ms, file_paths_json, tools_used_json,
-                   input_high_water_mark, input_high_water_mark_source,
-                   evidence_json, inference_json, search_text
-            FROM session_work_events
-            WHERE session_id = ?
-            ORDER BY position
-            """,
-            (session_id,),
-        ).fetchall()
-        phases = conn.execute(
-            """
-            SELECT session_id, position, start_index, end_index,
-                   started_at_ms, ended_at_ms, duration_ms,
-                   tool_counts_json, word_count,
-                   input_high_water_mark, input_high_water_mark_source,
-                   evidence_json, inference_json, search_text
-            FROM session_phases
-            WHERE session_id = ?
-            ORDER BY position
-            """,
-            (session_id,),
-        ).fetchall()
         threads = conn.execute(
             """
             SELECT t.thread_id, t.materializer_version,
@@ -941,7 +909,7 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
                    t.start_time, t.end_time, t.dominant_repo,
                    t.session_ids_json, t.session_count, t.depth, t.branch_count,
                    t.total_messages, t.total_cost_usd, t.wall_duration_ms,
-                   t.work_event_breakdown_json, t.payload_json, t.search_text
+                   t.payload_json, t.search_text
             FROM threads AS t
             JOIN thread_sessions AS ts ON ts.thread_id = t.thread_id
             WHERE ts.session_id = ?
@@ -964,8 +932,6 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
             "blocks",
             "session_profiles",
             "session_latency_profiles",
-            "session_work_events",
-            "session_phases",
             "threads",
             "thread_sessions",
         )
@@ -975,8 +941,6 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
     return SessionMaterializationFacts(
         profile=None if profile_row is None else cast(FactRow, tuple(profile_row)),
         latency_profiles=_fact_rows(latency_profiles),
-        work_events=_fact_rows(work_events),
-        phases=_fact_rows(phases),
         threads=_fact_rows(threads),
         thread_sessions=_fact_rows(thread_sessions),
         table_counts=table_counts,

@@ -102,8 +102,6 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         message_count=int(_row_int(row, "message_count", 0) or 0),
         substantive_count=int(_row_int(row, "substantive_count", 0) or 0),
         attachment_count=int(_row_int(row, "attachment_count", 0) or 0),
-        work_event_count=int(_row_int(row, "work_event_count", 0) or 0),
-        phase_count=int(_row_int(row, "phase_count", 0) or 0),
         word_count=int(_row_int(row, "word_count", 0) or 0),
         tool_use_count=int(_row_int(row, "tool_use_count", 0) or 0),
         thinking_count=int(_row_int(row, "thinking_count", 0) or 0),

@@ -146,8 +146,6 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
     "derived_views": (
         ("index", "session_profiles"),
         ("index", "session_latency_profiles"),
-        ("index", "session_work_events"),
-        ("index", "session_phases"),
         ("index", "threads"),
         ("index", "thread_sessions"),
         ("index", "session_tags"),
@@ -165,7 +163,6 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
 NON_COMPARABLE_RELATIONS: Mapping[str, str] = {
     "index.messages_fts": "compared through public search projections",
     "index.messages_fts_identity": "compared through indexed block identity projections",
-    "index.session_work_events_fts": "compared through public work-event projections",
     "index.query_unit_frame_state": "cursor invalidation is route history, not archive state",
     "source.raw_revision_applications": "attempt receipt ids and timestamps are run-local",
 }
@@ -353,8 +350,6 @@ def _capture_public_projections(
                     (f"tree:{session_id}", _freeze_public(archive.get_session_tree(session_id))),
                     (f"profile:{session_id}", _freeze_public(archive.get_session_profile_insight(session_id))),
                     (f"latency:{session_id}", _freeze_public(archive.get_session_latency_profile_insight(session_id))),
-                    (f"work-events:{session_id}", _freeze_public(archive.get_session_work_event_insights(session_id))),
-                    (f"phases:{session_id}", _freeze_public(archive.get_session_phase_insights(session_id))),
                 )
             )
         values.extend(

@@ -67,13 +67,6 @@ def _row_to_day_session_summary_record(row: sqlite3.Row) -> DaySessionSummaryRec
         total_wall_duration_ms=int(_row_int(row, "total_wall_duration_ms", 0) or 0),
         total_messages=int(_row_int(row, "total_messages", 0) or 0),
         total_words=int(_row_int(row, "total_words", 0) or 0),
-        work_event_breakdown=_json_int_dict(
-            _parse_json(
-                row["work_event_breakdown_json"],
-                field="work_event_breakdown_json",
-                record_id=f"{row['source_name']}:{row['day']}",
-            )
-        ),
         repos_active=_json_text_tuple(_parse_json(_row_text(row, "repos_active_json"))),
         payload=DaySessionSummaryPayload.model_validate(
             _parse_json(

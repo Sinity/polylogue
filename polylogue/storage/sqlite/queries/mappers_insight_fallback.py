@@ -12,14 +12,7 @@ from polylogue.analysis.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
-    SessionPhaseEvidencePayload,
-    SessionPhaseInferencePayload,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
 )
-from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
-from polylogue.archive.session.provenance import date_provenance as _date_provenance
-from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.storage.sqlite.queries.mappers_support import _parse_json, _row_get
 
@@ -102,8 +95,6 @@ def session_profile_inference_from_fallback(
     return SessionInferencePayload.model_validate(
         {
             "repo_names": _row_text_tuple(row, "repo_names_json", fallback_payload, fallback_key="repo_names"),
-            "work_event_count": _row_int(row, "work_event_count", fallback_payload, fallback_key="work_event_count"),
-            "phase_count": _row_int(row, "phase_count", fallback_payload, fallback_key="phase_count"),
             "engaged_duration_ms": _row_int(
                 row,
                 "engaged_duration_ms",
@@ -117,8 +108,6 @@ def session_profile_inference_from_fallback(
             or "session_total_fallback",
             "repo_inference_strength": _fallback_text(fallback_payload.get("repo_inference_strength")) or "weak",
             "auto_tags": _row_text_tuple(row, "auto_tags_json", fallback_payload, fallback_key="auto_tags"),
-            "work_events": _fallback_work_event_documents(fallback_payload.get("work_events")),
-            "phases": _fallback_phase_documents(fallback_payload.get("phases")),
         }
     )
 
@@ -146,96 +135,6 @@ def session_profile_enrichment_from_fallback(
                 "touched_paths": len(repo_paths),
                 "repo_names": len(repo_names),
             },
-        }
-    )
-
-
-def session_work_event_evidence_from_fallback(
-    row: sqlite3.Row,
-    fallback_payload: FallbackPayload,
-) -> WorkEventEvidencePayload:
-    start_time = _row_text(row, "start_time") or _fallback_text(fallback_payload.get("start_time"))
-    end_time = _row_text(row, "end_time") or _fallback_text(fallback_payload.get("end_time"))
-    canonical_session_date = _row_text(row, "canonical_session_date") or _fallback_text(
-        fallback_payload.get("canonical_session_date")
-    )
-    return WorkEventEvidencePayload.model_validate(
-        {
-            "start_index": _row_int(row, "start_index", fallback_payload, fallback_key="start_index"),
-            "end_index": _row_int(row, "end_index", fallback_payload, fallback_key="end_index"),
-            "start_time": start_time,
-            "end_time": end_time,
-            "canonical_session_date": canonical_session_date,
-            "timing_provenance": _range_timing_provenance(start_time, end_time),
-            "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-            "duration_ms": _row_int(row, "duration_ms", fallback_payload, fallback_key="duration_ms"),
-            "file_paths": _row_text_tuple(row, "file_paths_json", fallback_payload, fallback_key="file_paths"),
-            "tools_used": _row_text_tuple(row, "tools_used_json", fallback_payload, fallback_key="tools_used"),
-        }
-    )
-
-
-def session_work_event_inference_from_fallback(
-    row: sqlite3.Row,
-    fallback_payload: FallbackPayload,
-) -> WorkEventInferencePayload:
-    return WorkEventInferencePayload.model_validate(
-        {
-            "heuristic_label": _row_text(row, "heuristic_label") or "",
-            "summary": _row_text(row, "summary") or "",
-            "confidence": _row_float(row, "confidence", fallback_payload, fallback_key="confidence"),
-            "evidence": _fallback_text_tuple(fallback_payload.get("evidence")),
-        }
-    )
-
-
-def session_phase_evidence_from_fallback(
-    row: sqlite3.Row,
-    fallback_payload: FallbackPayload,
-) -> SessionPhaseEvidencePayload:
-    start_time = _row_text(row, "start_time") or _fallback_text(fallback_payload.get("start_time"))
-    end_time = _row_text(row, "end_time") or _fallback_text(fallback_payload.get("end_time"))
-    canonical_session_date = _row_text(row, "canonical_session_date") or _fallback_text(
-        fallback_payload.get("canonical_session_date")
-    )
-    return SessionPhaseEvidencePayload.model_validate(
-        {
-            "start_time": start_time,
-            "end_time": end_time,
-            "canonical_session_date": canonical_session_date,
-            "timing_provenance": _range_timing_provenance(start_time, end_time),
-            "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-            "message_range": (
-                _row_int(row, "start_index", fallback_payload, fallback_key="start_index"),
-                _row_int(row, "end_index", fallback_payload, fallback_key="end_index"),
-            ),
-            "duration_ms": _row_int(row, "duration_ms", fallback_payload, fallback_key="duration_ms"),
-            "phase_idle_threshold_ms": _row_int(
-                row,
-                "phase_idle_threshold_ms",
-                fallback_payload,
-                fallback_key="phase_idle_threshold_ms",
-                default=300_000,
-            ),
-            "tool_counts": _row_int_dict(row, "tool_counts_json", fallback_payload, fallback_key="tool_counts"),
-            "word_count": _row_int(row, "word_count", fallback_payload, fallback_key="word_count"),
-        }
-    )
-
-
-def session_phase_inference_from_fallback(
-    row: sqlite3.Row,
-    fallback_payload: FallbackPayload,
-) -> SessionPhaseInferencePayload:
-    return SessionPhaseInferencePayload.model_validate(
-        {
-            "confidence": _row_float(row, "confidence", fallback_payload, fallback_key="confidence"),
-            "evidence": _row_text_tuple(
-                row,
-                "evidence_reasons_json",
-                fallback_payload,
-                fallback_key="evidence",
-            ),
         }
     )
 
@@ -369,72 +268,10 @@ def _fallback_bool(value: JSONValue | bytes | bytearray) -> bool:
     return bool(value)
 
 
-def _fallback_work_event_documents(
-    value: JSONValue | list[JSONValue] | tuple[JSONValue, ...],
-) -> tuple[WorkEventDocument, ...]:
-    documents: list[WorkEventDocument] = []
-    for item in _fallback_dict_tuple(value):
-        start_time = _fallback_text(item.get("start_time"))
-        end_time = _fallback_text(item.get("end_time"))
-        canonical_session_date = _fallback_text(item.get("canonical_session_date"))
-        documents.append(
-            {
-                "heuristic_label": _fallback_text(item.get("heuristic_label")) or "session",
-                "start_index": _fallback_int(item.get("start_index")),
-                "end_index": _fallback_int(item.get("end_index")),
-                "start_time": start_time,
-                "end_time": end_time,
-                "canonical_session_date": canonical_session_date,
-                "timing_provenance": _range_timing_provenance(start_time, end_time),
-                "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-                "duration_ms": _fallback_int(item.get("duration_ms")),
-                "confidence": _fallback_float(item.get("confidence")),
-                "evidence": list(_fallback_text_tuple(item.get("evidence"))),
-                "file_paths": list(_fallback_text_tuple(item.get("file_paths"))),
-                "tools_used": list(_fallback_text_tuple(item.get("tools_used"))),
-                "summary": _fallback_text(item.get("summary")) or "",
-            }
-        )
-    return tuple(documents)
-
-
-def _fallback_phase_documents(
-    value: JSONValue | list[JSONValue] | tuple[JSONValue, ...],
-) -> tuple[SessionPhaseDocument, ...]:
-    documents: list[SessionPhaseDocument] = []
-    for item in _fallback_dict_tuple(value):
-        start_index = _fallback_int(item.get("start_index"))
-        end_index = _fallback_int(item.get("end_index"))
-        start_time = _fallback_text(item.get("start_time"))
-        end_time = _fallback_text(item.get("end_time"))
-        canonical_session_date = _fallback_text(item.get("canonical_session_date"))
-        documents.append(
-            {
-                "start_time": start_time,
-                "end_time": end_time,
-                "canonical_session_date": canonical_session_date,
-                "timing_provenance": _range_timing_provenance(start_time, end_time),
-                "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-                "message_range": [start_index, end_index],
-                "duration_ms": _fallback_int(item.get("duration_ms")),
-                "phase_idle_threshold_ms": _fallback_int(item.get("phase_idle_threshold_ms"), 300_000),
-                "tool_counts": _fallback_int_dict(item.get("tool_counts")),
-                "word_count": _fallback_int(item.get("word_count")),
-                "confidence": _fallback_float(item.get("confidence")),
-                "evidence": list(_fallback_text_tuple(item.get("evidence"))),
-            }
-        )
-    return tuple(documents)
-
-
 __all__ = [
     "parse_fallback_payload_dict",
     "parse_payload_model",
-    "session_phase_evidence_from_fallback",
-    "session_phase_inference_from_fallback",
     "session_profile_enrichment_from_fallback",
     "session_profile_evidence_from_fallback",
     "session_profile_inference_from_fallback",
-    "session_work_event_evidence_from_fallback",
-    "session_work_event_inference_from_fallback",
 ]

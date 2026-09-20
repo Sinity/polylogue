@@ -541,17 +541,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
         )
         conn.execute(
             """
-            INSERT INTO session_profiles (
-                session_id, work_event_count, phase_count
-            ) VALUES ('codex-session:native-1', 1, 0)
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO session_work_events (
-                session_id, position, work_event_type, summary, confidence,
-                start_index, end_index
-            ) VALUES ('codex-session:native-1', 0, 'implementation', 'built it', 0.8, 0, 0)
+            INSERT INTO session_profiles (session_id) VALUES ('codex-session:native-1')
             """
         )
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
@@ -633,7 +623,6 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["counts"]["messages_fts_exact_counts"] is False
     assert readiness["counts"]["profile_row_count"] == 1
     assert readiness["counts"]["missing_profile_row_count"] == 1
-    assert readiness["counts"]["work_event_row_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["action_count"] == 0
     assert readiness["counts"]["action_count_exact"] is False
@@ -669,8 +658,6 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert surfaces["search"]["evidence"]["messages_fts_exact_counts"] is False
     assert surfaces["session_profiles"]["ready"] is False
     assert "missing_profile_rows" in surfaces["session_profiles"]["blockers"]
-    assert surfaces["timeline_work_events"]["ready"] is True
-    assert surfaces["timeline_work_events"]["blockers"] == []
     assert surfaces["tag_rollups"]["ready"] is True
     assert surfaces["tag_rollups"]["evidence"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
     assert surfaces["tool_usage"]["ready"] is True
@@ -713,7 +700,7 @@ def test_daemon_workload_probe_reports_layout_ready_for_complete_archive(tmp_pat
             "schema_mismatch_count": 0,
             "missing_backup_required_count": 0,
             "derived_readiness_checked": True,
-            "derived_surface_count": 11,
+            "derived_surface_count": 9,
             "blocked_surface_count": 0,
             "user_overlay_checked": True,
             "user_overlay_orphan_session_references": 0,

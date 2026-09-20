@@ -291,18 +291,14 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
                 search_text TEXT
             );
             CREATE TABLE session_profiles (
-                session_id TEXT PRIMARY KEY,
-                work_event_count INTEGER NOT NULL,
-                phase_count INTEGER NOT NULL
+                session_id TEXT PRIMARY KEY
             );
             CREATE TABLE session_profiles_fts (session_id TEXT NOT NULL);
-            CREATE TABLE session_work_events (session_id TEXT NOT NULL);
             CREATE TABLE threads (thread_id TEXT PRIMARY KEY);
 
             INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
             VALUES ('root', NULL, 1000, 1775001600000);
-            INSERT INTO session_profiles (session_id, work_event_count, phase_count)
-            VALUES ('root', 0, 0);
+            INSERT INTO session_profiles (session_id) VALUES ('root');
             INSERT INTO session_profiles_fts (session_id) VALUES ('root'), ('root');
             INSERT INTO threads (thread_id) VALUES ('root');
             """
@@ -316,8 +312,7 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
     assert sync_status.root_threads == sync_status.thread_count == 1
     assert sync_status.stale_profile_row_count == 0
     # profile_merged_fts_* fields are present on the struct but not yet
-    # populated by any readiness descriptor (the merged-fts index is now
-    # tracked via session_work_event_fts). #944 follow-up wires the descriptor.
+    # populated by any readiness descriptor. #944 follow-up wires it.
     assert sync_status.profile_merged_fts_duplicate_count == 0  # not yet populated
 
 

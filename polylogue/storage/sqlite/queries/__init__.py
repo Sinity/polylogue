@@ -10,8 +10,6 @@ from polylogue.storage.sqlite.queries import (
     session_insight_profile_writes,
     session_insight_summary_queries,
     session_insight_thread_queries,
-    session_insight_timeline_reads,
-    session_insight_timeline_writes,
     sessions,
     stats,
     work_evidence,
@@ -28,8 +26,6 @@ __all__ = [
     "session_insight_profile_writes",
     "session_insight_summary_queries",
     "session_insight_thread_queries",
-    "session_insight_timeline_reads",
-    "session_insight_timeline_writes",
     "stats",
     "work_evidence",
 ]

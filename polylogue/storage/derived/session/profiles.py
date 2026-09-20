@@ -15,26 +15,10 @@ from polylogue.analysis.confidence import ConfidenceBand, from_signals
 from polylogue.analysis.fallback import FallbackReason
 from polylogue.analysis.objective_posture import structural_objective_posture
 from polylogue.analysis.temporal_source import classify_profile_hwm_source
-from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.session.documents import (
-    SessionPhaseDocument,
     SessionProfileDocument,
-    WorkEventDocument,
 )
-from polylogue.archive.session.extraction import WorkEvent, WorkEventPayload
-from polylogue.archive.session.models import SessionPhasePayload
-from polylogue.archive.session.provenance import date_provenance as _date_provenance
-from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.archive.session.session_profile import SessionAnalysis, SessionProfile
-from polylogue.core.payload_coercion import (
-    coerce_float,
-    coerce_int,
-    int_pair,
-    optional_date,
-    optional_datetime,
-    string_int_mapping,
-    string_sequence,
-)
 from polylogue.core.types import SessionId
 from polylogue.storage.derived.session.storage import _epoch_ms_or_none
 from polylogue.storage.runtime import (
@@ -80,8 +64,6 @@ def profile_inference_search_text(profile: SessionProfile) -> str:
         profile.terminal_state,
         *profile.repo_names,
         *profile.auto_tags,
-        *(event.summary for event in profile.work_events),
-        *(event.heuristic_label.value for event in profile.work_events),
     ]
     search_text = " \n".join(part.strip() for part in parts if part and str(part).strip())
     return search_text or profile.session_id
@@ -168,7 +150,6 @@ def session_enrichment_payload(
         + (0.15 if analysis is not None and analysis.facts.actions else 0.0)
         + (0.15 if profile.file_paths_touched else 0.0)
         + (0.15 if profile.repo_names else 0.0)
-        + (0.1 if profile.work_events else 0.0)
         + (0.05 if blockers_val else 0.0),
     )
     from polylogue.archive.session.runtime import _clean_topic_text
@@ -298,8 +279,6 @@ def profile_inference_payload(profile: SessionProfile) -> SessionInferencePayloa
         inferred_topic=profile.inferred_topic,
         inferred_topic_source=profile.inferred_topic_source,
         repo_names=profile.repo_names,
-        work_event_count=len(profile.work_events),
-        phase_count=len(profile.phases),
         engaged_duration_ms=profile.engaged_duration_ms,
         engaged_minutes=round(profile.engaged_duration_ms / 60_000.0, 4),
         tool_active_duration_ms=profile.tool_active_duration_ms,
@@ -314,19 +293,7 @@ def profile_inference_payload(profile: SessionProfile) -> SessionInferencePayloa
         engaged_duration_source=engaged_duration_source(profile),
         repo_inference_strength=repo_inference_strength(profile),
         auto_tags=profile.auto_tags,
-        work_events=tuple(_work_event_document(event.to_dict()) for event in profile.work_events),
-        phases=tuple(_phase_document(_phase_payload_from_phase(phase)) for phase in profile.phases),
-        fallback_reasons=profile_inference_fallback_reasons(profile),
     )
-
-
-def profile_inference_fallback_reasons(profile: SessionProfile) -> tuple[FallbackReason, ...]:
-    reasons: list[FallbackReason] = []
-    if not profile.work_events and not profile.phases:
-        reasons.append(FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES)
-    elif profile.work_events and all(event_fallback(event) for event in profile.work_events):
-        reasons.append(FallbackReason.ALL_WORK_EVENTS_WEAK)
-    return tuple(reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -374,8 +341,6 @@ def build_session_profile_record(
         message_count=profile.message_count,
         substantive_count=profile.substantive_count,
         attachment_count=profile.attachment_count,
-        work_event_count=len(profile.work_events),
-        phase_count=len(profile.phases),
         word_count=profile.word_count,
         tool_use_count=profile.tool_use_count,
         thinking_count=profile.thinking_count,
@@ -472,8 +437,6 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "terminal_state_method": record.terminal_state_method,
         "cost_is_estimated": record.cost_is_estimated,
         "compaction_count": record.evidence_payload.compaction_count,
-        "work_events": [_work_event_payload(event) for event in record.inference_payload.work_events],
-        "phases": [_phase_payload(phase) for phase in record.inference_payload.phases],
         "thread_id": None,
         "continuation_depth": 0,
         "timestamped_message_count": record.evidence_payload.timestamped_message_count,
@@ -503,92 +466,6 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
     return SessionProfile.from_dict(merged_payload)
 
 
-def _phase_document(payload: SessionPhasePayload) -> SessionPhaseDocument:
-    start_time = payload["start_time"]
-    end_time = payload["end_time"]
-    canonical_session_date = payload["canonical_session_date"]
-    return {
-        "start_time": start_time,
-        "end_time": end_time,
-        "canonical_session_date": canonical_session_date,
-        "timing_provenance": _range_timing_provenance(start_time, end_time),
-        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-        "message_range": list(payload["message_range"]),
-        "duration_ms": payload["duration_ms"],
-        "phase_idle_threshold_ms": payload.get("phase_idle_threshold_ms", 300_000),
-        "tool_counts": dict(payload["tool_counts"]),
-        "word_count": payload["word_count"],
-        "confidence": payload["confidence"],
-        "evidence": list(payload["evidence"]),
-    }
-
-
-def _phase_payload_from_phase(phase: SessionPhase) -> SessionPhasePayload:
-    start_time = phase.start_time.isoformat() if phase.start_time else None
-    end_time = phase.end_time.isoformat() if phase.end_time else None
-    canonical_session_date = phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
-    return {
-        "start_time": start_time,
-        "end_time": end_time,
-        "canonical_session_date": canonical_session_date,
-        "timing_provenance": _range_timing_provenance(start_time, end_time),
-        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-        "message_range": list(phase.message_range),
-        "duration_ms": phase.duration_ms,
-        "phase_idle_threshold_ms": phase.phase_idle_threshold_ms,
-        "tool_counts": dict(phase.tool_counts),
-        "word_count": phase.word_count,
-        "confidence": phase.confidence,
-        "evidence": list(phase.evidence),
-    }
-
-
-def _phase_from_payload_mapping(payload: SessionPhaseDocument | dict[str, object]) -> SessionPhase:
-    return SessionPhase(
-        start_time=optional_datetime(payload.get("start_time")),
-        end_time=optional_datetime(payload.get("end_time")),
-        canonical_session_date=optional_date(payload.get("canonical_session_date")),
-        message_range=int_pair(payload.get("message_range")),
-        duration_ms=coerce_int(payload.get("duration_ms"), 0),
-        phase_idle_threshold_ms=coerce_int(payload.get("phase_idle_threshold_ms"), 300_000),
-        tool_counts=string_int_mapping(payload.get("tool_counts")),
-        word_count=coerce_int(payload.get("word_count"), 0),
-        confidence=coerce_float(payload.get("confidence"), 0.0),
-        evidence=string_sequence(payload.get("evidence")),
-    )
-
-
-def _work_event_document(payload: WorkEventPayload) -> WorkEventDocument:
-    start_time = payload["start_time"]
-    end_time = payload["end_time"]
-    canonical_session_date = payload["canonical_session_date"]
-    return {
-        "heuristic_label": payload["heuristic_label"],
-        "start_index": payload["start_index"],
-        "end_index": payload["end_index"],
-        "start_time": start_time,
-        "end_time": end_time,
-        "canonical_session_date": canonical_session_date,
-        "timing_provenance": _range_timing_provenance(start_time, end_time),
-        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-        "duration_ms": payload["duration_ms"],
-        "confidence": payload["confidence"],
-        "evidence": list(payload["evidence"]),
-        "file_paths": list(payload["file_paths"]),
-        "tools_used": list(payload["tools_used"]),
-        "summary": payload["summary"],
-    }
-
-
-def _phase_payload(payload: SessionPhaseDocument | dict[str, object]) -> SessionPhasePayload:
-    return _phase_payload_from_phase(_phase_from_payload_mapping(payload))
-
-
-def _work_event_payload(payload: WorkEventDocument | dict[str, object]) -> WorkEventPayload:
-    event = WorkEvent.from_dict(payload)
-    return event.to_dict()
-
-
 # ---------------------------------------------------------------------------
 # Signal/support helpers (merged from session_insight_row_signal_support)
 # ---------------------------------------------------------------------------
@@ -596,11 +473,6 @@ def _work_event_payload(payload: WorkEventDocument | dict[str, object]) -> WorkE
 
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
-
-
-def event_summary(event: WorkEvent) -> str:
-    summary = str(event.summary or "").strip()
-    return summary or event.heuristic_label.value
 
 
 def support_level(
@@ -614,47 +486,15 @@ def support_level(
     return from_signals(confidence, support_signals=support_signals, fallback=fallback)
 
 
-def event_support_signals(event: WorkEvent) -> tuple[str, ...]:
-    signals = [str(item) for item in event.evidence if str(item).strip()]
-    if event.file_paths:
-        signals.append("touched_paths")
-    if event.tools_used:
-        signals.append("tool_calls")
-    if event.start_time and event.end_time:
-        signals.append("timestamped_range")
-    elif event.start_time or event.end_time:
-        signals.append("partial_timestamp_range")
-    elif event.canonical_session_date:
-        signals.append("date_only_range")
-    return tuple(dict.fromkeys(signals))
-
-
-def event_fallback(event: WorkEvent) -> bool:
-    weak_markers = {"weak_signal", "no_tools", "shell_default"}
-    return not event.evidence or bool(set(event.evidence) & weak_markers)
-
-
-def phase_support_signals(phase: SessionPhase) -> tuple[str, ...]:
-    signals = [str(item) for item in phase.evidence if str(item).strip()]
-    if phase.tool_counts:
-        signals.append("tool_counts")
-    if phase.start_time and phase.end_time:
-        signals.append("timestamped_range")
-    elif phase.start_time or phase.end_time:
-        signals.append("partial_timestamp_range")
-    elif phase.canonical_session_date:
-        signals.append("date_only_range")
-    if phase.word_count > 0:
-        signals.append("word_count")
-    return tuple(dict.fromkeys(signals))
-
-
-def phase_fallback(phase: SessionPhase) -> bool:
-    return not phase.tool_counts
-
-
 def engaged_duration_source(profile: SessionProfile) -> str:
-    return "phase_sum" if any(int(phase.duration_ms or 0) > 0 for phase in profile.phases) else "unknown"
+    """Name the evidence behind ``engaged_duration_ms``, or ``unknown``.
+
+    ``engagement_intervals`` means the value is the sum of the session's
+    timestamped engagement intervals (``compute_engaged_duration_ms``). A zero
+    total means no interval had two timestamps to bound it, which is not the
+    same claim as "the session took no time".
+    """
+    return "engagement_intervals" if profile.engaged_duration_ms > 0 else "unknown"
 
 
 def repo_inference_strength(profile: SessionProfile) -> ConfidenceBand:
@@ -681,20 +521,15 @@ def profile_support_signals(profile: SessionProfile) -> tuple[str, ...]:
         signals.append("touched_paths")
     if profile.repo_names:
         signals.append("repo_names")
-    if profile.work_events:
-        signals.append("work_events")
-    if profile.phases:
-        signals.append("phases")
-    if engaged_duration_source(profile) == "phase_sum":
-        signals.append("phase_duration_sum")
+    if engaged_duration_source(profile) == "engagement_intervals":
+        signals.append("engagement_intervals")
     return tuple(signals)
 
 
 def profile_support_level(profile: SessionProfile) -> ConfidenceBand:
     signals = profile_support_signals(profile)
-    work_confidence = max((float(event.confidence or 0.0) for event in profile.work_events), default=0.0)
-    fallback = engaged_duration_source(profile) != "phase_sum" and not profile.work_events and not profile.phases
-    return support_level(work_confidence, support_signals=signals, fallback=fallback)
+    fallback = engaged_duration_source(profile) != "engagement_intervals"
+    return support_level(0.0, support_signals=signals, fallback=fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -793,8 +628,6 @@ def enrichment_support_signals(
         signals.append("touched_paths")
     if profile.repo_names:
         signals.append("repo_names")
-    if profile.work_events:
-        signals.append("heuristic_work_events")
     if bands.assistant_turns:
         signals.append("assistant_outcome_text")
     return tuple(signals)
@@ -808,17 +641,11 @@ __all__ = [
     "engaged_duration_source",
     "enrichment_fallback_reasons",
     "enrichment_support_signals",
-    "event_fallback",
-    "event_summary",
-    "event_support_signals",
     "hydrate_session_profile",
     "now_iso",
-    "phase_fallback",
-    "phase_support_signals",
     "profile_enrichment_search_text",
     "profile_evidence_payload",
     "profile_evidence_search_text",
-    "profile_inference_fallback_reasons",
     "profile_inference_payload",
     "profile_inference_search_text",
     "profile_search_text",

@@ -32,14 +32,10 @@ from polylogue.analysis.archive import (
     CostRollupInsightQuery,
     SessionCostInsight,
     SessionCostInsightQuery,
-    SessionPhaseInsight,
-    SessionPhaseInsightQuery,
     SessionProfileInsight,
     SessionProfileInsightQuery,
     SessionTagRollupInsight,
     SessionTagRollupQuery,
-    SessionWorkEventInsight,
-    SessionWorkEventInsightQuery,
     ThreadInsight,
     ThreadInsightQuery,
     UsageTimelineInsight,
@@ -394,71 +390,6 @@ register(
             InsightField("tool_s", _nested_ms_as_seconds("evidence", "tool_duration_ms", "0"), group=1),
             InsightField("tpm", _nested("evidence", "tool_calls_per_minute", "-"), group=1),
             InsightField("prov", _nested("evidence", "timing_provenance", "-"), group=1),
-            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
-        ),
-    )
-)
-
-register(
-    InsightType(
-        name="session_work_events",
-        display_name="Work Events",
-        json_key="session_work_events",
-        item_model=SessionWorkEventInsight,
-        empty_message="No work events matched.",
-        query_model=SessionWorkEventInsightQuery,
-        operations_method_name="list_session_work_event_insights",
-        cli_command_name="work-events",
-        cli_help="List durable work-event insights.",
-        cli_options=(
-            CliOption("session_id", ("--session-id",), help="Only events from one session"),
-            CliOption(
-                "session_date_since",
-                ("--session-date-since",),
-                help="Only events whose canonical session date is on/after this date",
-            ),
-            CliOption(
-                "session_date_until",
-                ("--session-date-until",),
-                help="Only events whose canonical session date is on/before this date",
-            ),
-            CliOption(
-                "heuristic_label",
-                ("--heuristic-label",),
-                help="Only this weak heuristic work-event label",
-            ),
-            _QUERY_OPTION,
-        ),
-        fields=(
-            InsightField("", _id_with_origin("event_id"), group=0),
-            InsightField("label", _nested("inference", "heuristic_label"), group=0),
-            InsightField("conv", _attr("session_id"), group=0),
-            InsightField("start", _nested("evidence", "start_time"), group=1),
-            InsightField("end", _nested("evidence", "end_time"), group=1),
-            InsightField("duration_ms", _nested("evidence", "duration_ms", "0"), group=1),
-            InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
-        ),
-    )
-)
-
-register(
-    InsightType(
-        name="session_phases",
-        display_name="Session Phases",
-        json_key="session_phases",
-        item_model=SessionPhaseInsight,
-        empty_message="No session phases matched.",
-        query_model=SessionPhaseInsightQuery,
-        operations_method_name="list_session_phase_insights",
-        cli_command_name="phases",
-        cli_help="List durable session-phase insights.",
-        cli_options=(CliOption("session_id", ("--session-id",), help="Only phases from one session"),),
-        fields=(
-            InsightField("", _id_with_origin("phase_id"), group=0),
-            InsightField("phase", _attr("phase_index"), group=0),
-            InsightField("conv", _attr("session_id"), group=0),
-            InsightField("start", _nested("evidence", "start_time"), group=1),
-            InsightField("words", _nested("evidence", "word_count", "0"), group=1),
             InsightField("time", _nested("provenance", "time_confidence", "unknown"), group=1),
         ),
     )

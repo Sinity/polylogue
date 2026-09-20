@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from polylogue.archive.session.extraction import WorkEvent, WorkEventHeuristicLabel
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.archive.session.session_summaries import summarize_day, summarize_days, summarize_week, summarize_weeks
 
@@ -16,7 +15,6 @@ def _profile(
     canonical_session_date: date | None,
     repo_names: tuple[str, ...] = (),
     repo_paths: tuple[str, ...] = (),
-    work_events: tuple[WorkEvent, ...] = (),
     total_cost_usd: float = 0.0,
     total_duration_ms: int = 0,
     tool_active_duration_ms: int = 0,
@@ -46,26 +44,9 @@ def _profile(
         file_paths_touched=(),
         languages_detected=(),
         repo_names=repo_names,
-        work_events=work_events,
-        phases=(),
         first_message_at=first_message_at,
         canonical_session_date=canonical_session_date,
         wall_duration_ms=wall_duration_ms,
-    )
-
-
-def _work_event(heuristic_label: WorkEventHeuristicLabel, index: int) -> WorkEvent:
-    return WorkEvent(
-        heuristic_label=heuristic_label,
-        start_index=index,
-        end_index=index,
-        confidence=1.0,
-        evidence=(heuristic_label.value,),
-        file_paths=(),
-        tools_used=(heuristic_label.value,),
-        summary=f"{heuristic_label.value} event",
-        start_time=datetime(2026, 4, 23, 12, index),
-        end_time=datetime(2026, 4, 23, 12, index, 1),
     )
 
 
@@ -77,10 +58,6 @@ def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
         first_message_at=None,
         canonical_session_date=date(2026, 4, 23),
         repo_names=("polylogue",),
-        work_events=(
-            _work_event(WorkEventHeuristicLabel.TESTING, 0),
-            _work_event(WorkEventHeuristicLabel.RESEARCH, 1),
-        ),
         total_cost_usd=0.125,
         total_duration_ms=900,
         tool_active_duration_ms=600,
@@ -93,7 +70,6 @@ def test_summarize_day_aggregates_cost_duration_words_and_repos() -> None:
 
     assert summary.to_dict()["total_cost_usd"] == 0.125
     assert summary.total_tool_active_duration_ms == 600
-    assert summary.work_event_breakdown == {"testing": 1, "research": 1}
     assert summary.repos_active == ("polylogue",)
     assert summary.origins == {"claude-code-session": 1}
 

@@ -658,10 +658,6 @@ def _check_fts_readiness_medium() -> HealthAlert:
             if not isinstance(surface, Mapping) or surface.get("ready"):
                 continue
             broken.append(_fts_surface_detail(str(name), surface))
-        # The archive payload reports the work-event surface outside
-        # ``surfaces``; its readiness is exact and cheap (derived-table counts).
-        if not payload.get("session_work_events_ready", True) and "session_work_events_fts" not in surfaces:
-            broken.append("session_work_events_fts: not fresh")
         if broken:
             severity = HealthSeverity.ERROR
             message = "FTS invariant failed: " + "; ".join(broken)

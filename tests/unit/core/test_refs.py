@@ -64,8 +64,6 @@ def test_execution_context_requires_observed_shape_for_new_ids_and_marks_legacy_
         ("block:codex-session:demo:message-1:2", "block", "codex-session:demo:message-1", ("2",)),
         ("attachment:sha256:abc", "attachment", "sha256:abc", ()),
         ("paste_span:codex-session:demo:m1:0:4", "paste_span", "codex-session:demo:m1:0:4", ()),
-        ("work_event:codex-session:demo:work_event:1", "work_event", "codex-session:demo:work_event:1", ()),
-        ("phase:codex-session:demo:phase:1", "phase", "codex-session:demo:phase:1", ()),
         ("thread:codex-session:demo", "thread", "codex-session:demo", ()),
         ("file:polylogue/analysis/transforms.py", "file", "polylogue/analysis/transforms.py", ()),
         ("branch:feature/demo", "branch", "feature/demo", ()),

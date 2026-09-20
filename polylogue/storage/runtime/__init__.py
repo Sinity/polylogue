@@ -21,9 +21,7 @@ from polylogue.storage.derived.session.records import (
 from polylogue.storage.derived.timeline.records import (
     SessionContextSnapshotRecord,
     SessionObservedEventRecord,
-    SessionPhaseRecord,
     SessionRunRecord,
-    SessionWorkEventRecord,
 )
 from polylogue.storage.runtime.archive.records import (
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -99,12 +97,10 @@ __all__ = [
     "SESSION_INSIGHT_MATERIALIZER_VERSION",
     "SessionContextSnapshotRecord",
     "SessionObservedEventRecord",
-    "SessionPhaseRecord",
     "SessionRunRecord",
     "SessionLatencyProfileRecord",
     "SessionProfileRecord",
     "SessionTagRollupRecord",
-    "SessionWorkEventRecord",
     "ThreadRecord",
     "_json_array_or_none",
     "_json_or_none",

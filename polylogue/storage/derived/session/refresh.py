@@ -26,9 +26,7 @@ from polylogue.storage.derived.session.runtime import (
 from polylogue.storage.derived.session.threads import thread_root_id_async, thread_root_ids_async
 from polylogue.storage.runtime import (
     SessionLatencyProfileRecord,
-    SessionPhaseRecord,
     SessionProfileRecord,
-    SessionWorkEventRecord,
 )
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
@@ -68,8 +66,6 @@ class SessionInsightRefreshChunkObservation:
     max_estimated_session_messages: int
     hydrated_count: int
     profiles_written: int
-    work_events_written: int
-    phases_written: int
     load_ms: float
     hydrate_ms: float
     build_ms: float
@@ -84,8 +80,6 @@ class SessionInsightRefreshChunkObservation:
             "max_estimated_session_messages": self.max_estimated_session_messages,
             "hydrated_count": self.hydrated_count,
             "profiles_written": self.profiles_written,
-            "work_events_written": self.work_events_written,
-            "phases_written": self.phases_written,
             "load_ms": self.load_ms,
             "hydrate_ms": self.hydrate_ms,
             "build_ms": self.build_ms,
@@ -150,11 +144,6 @@ async def delete_session_insights_for_session_async(
     *,
     transaction_depth: int = 0,
 ) -> SessionInsightCounts:
-    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
-        replace_session_phases,
-        replace_session_work_events,
-    )
-
     cursor = await conn.execute(
         "SELECT * FROM session_profiles WHERE session_id = ?",
         (session_id,),
@@ -163,8 +152,6 @@ async def delete_session_insights_for_session_async(
     old_group = profile_provider_day(_row_to_session_profile_record(row)) if row else None
     await conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
     await conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,))
-    await replace_session_work_events(conn, session_id, [], transaction_depth)
-    await replace_session_phases(conn, session_id, [], transaction_depth)
     counts = _empty_refresh_counts()
     counts.add(
         profiles=1 if row is not None else 0,
@@ -206,10 +193,6 @@ async def _apply_session_insight_session_update_async(
         replace_session_latency_profile,
         replace_session_profile,
     )
-    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
-        replace_session_phases,
-        replace_session_work_events,
-    )
 
     old_profile_record = await (
         await conn.execute(
@@ -230,18 +213,6 @@ async def _apply_session_insight_session_update_async(
         )
         await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
         await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
-        await replace_session_work_events(
-            conn,
-            session_id,
-            record_bundle.work_event_records,
-            transaction_depth,
-        )
-        await replace_session_phases(
-            conn,
-            session_id,
-            record_bundle.phase_records,
-            transaction_depth,
-        )
         affected_groups = {
             group
             for group in (
@@ -253,7 +224,7 @@ async def _apply_session_insight_session_update_async(
             if group is not None
         }
         return _SessionInsightRefreshUpdate(
-            counts=SessionInsightCounts(profiles=1, work_events=0, phases=0),
+            counts=SessionInsightCounts(profiles=1),
             thread_root_id=thread_root_id,
             affected_groups=affected_groups,
         )
@@ -266,8 +237,6 @@ async def _apply_session_insight_session_update_async(
             "DELETE FROM session_repos WHERE session_id = ?",
             (session_id,),
         )
-        await replace_session_work_events(conn, session_id, [], transaction_depth)
-        await replace_session_phases(conn, session_id, [], transaction_depth)
         old_group = (
             profile_provider_day(_row_to_session_profile_record(old_profile_record)) if old_profile_record else None
         )
@@ -286,18 +255,6 @@ async def _apply_session_insight_session_update_async(
     )
     await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
     await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
-    await replace_session_work_events(
-        conn,
-        session_id,
-        record_bundle.work_event_records,
-        transaction_depth,
-    )
-    await replace_session_phases(
-        conn,
-        session_id,
-        record_bundle.phase_records,
-        transaction_depth,
-    )
     from polylogue.storage.derived.session.repo_observations import (
         RepoObservation,
         refresh_session_repos,
@@ -315,11 +272,7 @@ async def _apply_session_insight_session_update_async(
         if group is not None
     }
     return _SessionInsightRefreshUpdate(
-        counts=SessionInsightCounts(
-            profiles=1,
-            work_events=record_bundle.work_event_count,
-            phases=record_bundle.phase_count,
-        ),
+        counts=SessionInsightCounts(profiles=1),
         thread_root_id=thread_root_id,
         affected_groups=affected_groups,
     )
@@ -408,19 +361,13 @@ def _flatten_record_bundles(
 ) -> tuple[
     list[SessionProfileRecord],
     list[SessionLatencyProfileRecord],
-    list[SessionWorkEventRecord],
-    list[SessionPhaseRecord],
 ]:
     profile_records: list[SessionProfileRecord] = []
     latency_profile_records: list[SessionLatencyProfileRecord] = []
-    work_event_records: list[SessionWorkEventRecord] = []
-    phase_records: list[SessionPhaseRecord] = []
     for bundle in bundles:
         profile_records.append(bundle.profile_record)
         latency_profile_records.append(bundle.latency_profile_record)
-        work_event_records.extend(bundle.work_event_records)
-        phase_records.extend(bundle.phase_records)
-    return profile_records, latency_profile_records, work_event_records, phase_records
+    return profile_records, latency_profile_records
 
 
 def _refresh_chunk_observation(
@@ -428,8 +375,6 @@ def _refresh_chunk_observation(
     chunk: _SessionInsightRefreshChunk,
     hydrated_count: int,
     profiles_written: int,
-    work_events_written: int,
-    phases_written: int,
     load_ms: float,
     hydrate_ms: float,
     build_ms: float,
@@ -442,8 +387,6 @@ def _refresh_chunk_observation(
         max_estimated_session_messages=chunk.max_estimated_session_messages,
         hydrated_count=hydrated_count,
         profiles_written=profiles_written,
-        work_events_written=work_events_written,
-        phases_written=phases_written,
         load_ms=load_ms,
         hydrate_ms=hydrate_ms,
         build_ms=build_ms,
@@ -463,10 +406,6 @@ async def _apply_session_insight_session_updates_async(
     from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
         replace_session_latency_profiles_bulk,
         replace_session_profiles_bulk,
-    )
-    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
-        replace_session_phases_bulk,
-        replace_session_work_events_bulk,
     )
 
     counts = _empty_refresh_counts()
@@ -558,11 +497,7 @@ async def _apply_session_insight_session_updates_async(
             old_profile_record = old_profile_records.get(session_id)
             record_bundles.append(record_bundle)
 
-            counts.add(
-                profiles=1,
-                work_events=record_bundle.work_event_count,
-                phases=record_bundle.phase_count,
-            )
+            counts.add(profiles=1)
             affected_groups.update(
                 group
                 for group in (
@@ -580,8 +515,6 @@ async def _apply_session_insight_session_updates_async(
         (
             profile_records_to_write,
             latency_profile_records_to_write,
-            work_event_records_to_write,
-            phase_records_to_write,
         ) = _flatten_record_bundles(record_bundles)
         await replace_session_profiles_bulk(
             conn,
@@ -593,18 +526,6 @@ async def _apply_session_insight_session_updates_async(
             conn,
             chunk.session_ids,
             latency_profile_records_to_write,
-            transaction_depth,
-        )
-        await replace_session_work_events_bulk(
-            conn,
-            chunk.session_ids,
-            work_event_records_to_write,
-            transaction_depth,
-        )
-        await replace_session_phases_bulk(
-            conn,
-            chunk.session_ids,
-            phase_records_to_write,
             transaction_depth,
         )
         from polylogue.storage.derived.session.repo_observations import (
@@ -638,8 +559,6 @@ async def _apply_session_insight_session_updates_async(
                 chunk=chunk,
                 hydrated_count=len(hydrated_by_id),
                 profiles_written=len(profile_records_to_write),
-                work_events_written=len(work_event_records_to_write),
-                phases_written=len(phase_records_to_write),
                 load_ms=load_elapsed_ms,
                 hydrate_ms=hydrate_elapsed_ms,
                 build_ms=build_elapsed_ms,
@@ -656,8 +575,6 @@ async def _apply_session_insight_session_updates_async(
                 record_bundles,
                 profile_records_to_write,
                 latency_profile_records_to_write,
-                work_event_records_to_write,
-                phase_records_to_write,
                 hydrated_ids,
             )
             release_process_memory()

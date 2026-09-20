@@ -267,22 +267,6 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead",),
     ),
     OperationSpec(
-        name="query-session-work-events",
-        kind=OperationKind.QUERY,
-        description="Resolve durable session work-event insights from work-event rows and work-event FTS.",
-        surfaces=("insights", "facade", "mcp"),
-        previewable=True,
-        effects=("DbRead",),
-    ),
-    OperationSpec(
-        name="query-session-phases",
-        kind=OperationKind.QUERY,
-        description="Resolve durable session-phase insights from phase rows.",
-        surfaces=("insights", "facade", "mcp"),
-        previewable=True,
-        effects=("DbRead",),
-    ),
-    OperationSpec(
         name="query-threads",
         kind=OperationKind.QUERY,
         description="Resolve durable thread insights from thread rows and thread FTS.",

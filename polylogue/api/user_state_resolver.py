@@ -7,7 +7,7 @@ canonical ``identity_key`` used by recall packs and workspaces.
 
 The resolver returns the validated ``ResolvedTarget`` mapping or raises
 ``ValueError`` with a specific, surface-friendly message. Insight kinds
-(``session``, ``work_event``, ``thread``) are validated against the
+(``session``, ``thread``) are validated against the
 respective insight tables; ``block`` and ``attachment`` are validated
 against the archive substrate; ``paste_span`` is treated as an opaque
 block-derived identifier and only validated for non-empty ``target_id``.
@@ -29,7 +29,6 @@ from polylogue.core.user_state_targets import (
     TARGET_PASTE_SPAN,
     TARGET_SESSION,
     TARGET_THREAD,
-    TARGET_WORK_EVENT,
     identity_key,
     validate_target_kind,
 )
@@ -47,7 +46,6 @@ class ResolvedTarget(TypedDict, total=False):
 
 _INSIGHT_QUERIES: dict[str, str] = {
     TARGET_SESSION: "SELECT 1 FROM session_profiles WHERE session_id = ?",
-    TARGET_WORK_EVENT: "SELECT 1 FROM session_work_events WHERE event_id = ? AND session_id = ?",
     TARGET_THREAD: "SELECT 1 FROM threads WHERE thread_id = ?",
 }
 
@@ -205,26 +203,6 @@ async def resolve_insight_target(
                 TARGET_SESSION,
                 session_id=session_id,
                 target_id=session_id,
-            ),
-        }
-
-    if target_type == TARGET_WORK_EVENT:
-        if not target_id:
-            raise ValueError("work_event target requires target_id (event_id)")
-        if not _existence(
-            await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_WORK_EVENT], (target_id, session_id)),
-            subject=f"work_event {target_id!r}",
-        ):
-            raise ValueError(f"work_event {target_id!r} is not in session {session_id!r}")
-        return {
-            "target_type": TARGET_WORK_EVENT,
-            "target_id": target_id,
-            "session_id": session_id,
-            "message_id": None,
-            "identity_key": identity_key(
-                TARGET_WORK_EVENT,
-                session_id=session_id,
-                target_id=target_id,
             ),
         }
 

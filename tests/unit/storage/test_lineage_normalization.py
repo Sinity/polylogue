@@ -94,10 +94,10 @@ def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, m
         INSERT INTO session_profiles (
             session_id, materializer_version, materialized_at, source_updated_at,
             source_sort_key, input_content_hash, input_row_count, source_name,
-            message_count, work_event_count, phase_count
+            message_count
         )
         SELECT session_id, ?, '', datetime(updated_at_ms / 1000, 'unixepoch'),
-               CAST(sort_key_ms AS REAL) / 1000.0, ?, ?, origin, ?, 1, 1
+               CAST(sort_key_ms AS REAL) / 1000.0, ?, ?, origin, ?
         FROM sessions
         WHERE session_id = ?
         """,
@@ -108,12 +108,6 @@ def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, m
         " VALUES (?, ?, '', '')",
         (session_id, SESSION_INSIGHT_MATERIALIZER_VERSION),
     )
-    conn.execute(
-        "INSERT INTO session_work_events (session_id, position, work_event_type, summary)"
-        " VALUES (?, 0, 'edit', 'seeded')",
-        (session_id,),
-    )
-    conn.execute("INSERT INTO session_phases (session_id, position) VALUES (?, 0)", (session_id,))
 
 
 def _nonvalid_partitions(conn: sqlite3.Connection) -> list[str]:
@@ -782,7 +776,7 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
         "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
     ).fetchall()
     assert [row[0] for row in stored] == [2, 3]
-    for relation in ("session_profiles", "session_latency_profiles", "session_work_events", "session_phases"):
+    for relation in ("session_profiles", "session_latency_profiles"):
         retained = conn.execute(f"SELECT COUNT(*) FROM {relation} WHERE session_id = ?", (child_id,)).fetchone()[0]
         assert retained == 0, f"{relation} retained the pre-extraction projection"
     assert child_id in _nonvalid_partitions(conn)

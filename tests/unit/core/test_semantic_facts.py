@@ -8,20 +8,14 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.message.types import MessageType
 from polylogue.archive.models import Session as SessionModel
 from polylogue.archive.models import SessionSummary
-from polylogue.archive.phase.extraction import PHASE_IDLE_THRESHOLD_MS, SessionPhase
-from polylogue.archive.phase.extraction import extract_phases as phase_extract_phases
 from polylogue.archive.semantic.facts import (
-    SessionSemanticFacts,
     build_mcp_summary_semantic_facts,
     build_session_semantic_facts,
 )
 from polylogue.archive.semantic.pricing import harmonize_session_cost
 from polylogue.archive.semantic.timing import compute_session_latency_profile
-from polylogue.archive.session import extraction as work_event_extraction
-from polylogue.archive.session import runtime as session_profile_runtime
 from polylogue.archive.session.attribution import extract_attribution
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.session_profile import build_session_profile
@@ -196,8 +190,6 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.canonical_session_date is not None
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
     assert profile.engaged_duration_ms == profile.wall_duration_ms
-    assert profile.phases[0].phase_idle_threshold_ms == PHASE_IDLE_THRESHOLD_MS
-    assert profile.to_dict()["phases"][0]["phase_idle_threshold_ms"] == PHASE_IDLE_THRESHOLD_MS
     assert profile.wall_duration_ms == 240000
 
 
@@ -221,6 +213,41 @@ def test_build_session_profile_excludes_long_idle_gap_from_engaged_duration() ->
     assert profile.wall_duration_ms == 600_000
     assert profile.engaged_duration_ms == 0
     assert profile_inference_payload(profile).engaged_duration_source == "unknown"
+
+
+def test_build_session_profile_sums_engagement_intervals_across_an_idle_gap() -> None:
+    """Engaged duration is the sum of the intervals, never the wall span.
+
+    polylogue-cuxz.7 replaced the ``session_phases`` span table with
+    ``compute_engaged_duration_ms``; this pins the value the table used to
+    carry. Two two-minute clusters separated by a ten-minute pause: engaged is
+    240,000 ms, wall is 840,000 ms.
+
+    Anti-vacuity: return the wall span (or drop the gap test so the whole
+    session is one interval) and ``engaged_duration_ms`` becomes 840,000.
+    """
+    start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    session = make_conv(
+        id="conv-two-engagement-intervals",
+        origin=Provider.CODEX,
+        title="Two engagement intervals",
+        messages=MessageCollection(
+            messages=[
+                make_msg(id="u1", role="user", origin="codex", text="Start", timestamp=start),
+                make_msg(id="a1", role="assistant", origin="codex", text="Working", timestamp=start.replace(minute=2)),
+                make_msg(id="u2", role="user", origin="codex", text="Back", timestamp=start.replace(minute=12)),
+                make_msg(
+                    id="a2", role="assistant", origin="codex", text="Resuming", timestamp=start.replace(minute=14)
+                ),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.wall_duration_ms == 840_000
+    assert profile.engaged_duration_ms == 240_000
+    assert profile_inference_payload(profile).engaged_duration_source == "engagement_intervals"
 
 
 def test_build_session_profile_derives_terminal_state_from_stop_reason_refusal() -> None:
@@ -1057,93 +1084,6 @@ def test_build_session_semantic_facts_marks_missing_and_single_message_timestamp
     assert single_timestamp_facts.untimestamped_messages == 0
 
 
-def test_build_session_analysis_reuses_precomputed_phases(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _semantic_session()
-    original_extract_phases = phase_extract_phases
-    runtime_phase_calls = 0
-    work_event_phase_calls = 0
-
-    def counting_runtime_extract_phases(
-        conv: SessionModel,
-        *,
-        facts: SessionSemanticFacts | None = None,
-    ) -> list[SessionPhase]:
-        nonlocal runtime_phase_calls
-        runtime_phase_calls += 1
-        return original_extract_phases(conv, facts=facts)
-
-    def unexpected_work_event_extract_phases(
-        conv: SessionModel,
-        *,
-        facts: SessionSemanticFacts | None = None,
-    ) -> list[SessionPhase]:
-        nonlocal work_event_phase_calls
-        work_event_phase_calls += 1
-        raise AssertionError("work-event extraction should reuse precomputed phases")
-
-    monkeypatch.setattr(session_profile_runtime, "extract_phases", counting_runtime_extract_phases)
-    monkeypatch.setattr(work_event_extraction, "extract_phases", unexpected_work_event_extract_phases)
-
-    analysis = session_profile_runtime.build_session_analysis(session)
-
-    assert runtime_phase_calls == 1
-    assert work_event_phase_calls == 0
-    assert analysis.work_events
-    assert analysis.phases
-
-
-def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() -> None:
-    events = work_event_extraction.extract_work_events(_protocol_summary_session())
-
-    assert events
-    summary = events[0].summary
-    assert "<system-reminder>" not in summary
-    assert "skip this" not in summary
-    assert f"Please inspect {WORK_EVENT_SUMMARY_PATH}" in summary
-    assert "This trailing note should be truncated away" not in summary
-    assert len(summary) <= 200
-
-
-def test_extract_work_events_ignores_provider_user_runtime_protocol_text() -> None:
-    session = make_conv(
-        id="conv-work-event-runtime-user",
-        origin="claude-code",
-        title="Work Event Runtime User",
-        created_at=datetime(2026, 3, 23, 11, 0, tzinfo=timezone.utc),
-        updated_at=datetime(2026, 3, 23, 11, 5, tzinfo=timezone.utc),
-        messages=MessageCollection(
-            messages=[
-                make_msg(
-                    id="u-runtime",
-                    role="user",
-                    origin="claude-code",
-                    text="<local-command-stdout>pytest failed with traceback</local-command-stdout>",
-                    timestamp=datetime(2026, 3, 23, 11, 0, tzinfo=timezone.utc),
-                    material_origin=MaterialOrigin.RUNTIME_PROTOCOL,
-                ),
-                make_msg(
-                    id="u-authored",
-                    role="user",
-                    origin="claude-code",
-                    text="Plan the release evidence package.",
-                    timestamp=datetime(2026, 3, 23, 11, 1, tzinfo=timezone.utc),
-                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
-                ),
-            ]
-        ),
-    )
-
-    events = work_event_extraction.extract_work_events(session)
-
-    assert events
-    # Text keywords no longer drive labels (polylogue-ve9z); a no-tools
-    # session labels as SESSION. The real obligation stands: protocol text
-    # must not leak into the summary.
-    assert events[0].heuristic_label == work_event_extraction.WorkEventHeuristicLabel.SESSION
-    assert events[0].summary == "Plan the release evidence package."
-    assert "pytest failed" not in events[0].summary
-
-
 def test_extract_attribution_ignores_runtime_protocol_language_hints() -> None:
     session = make_conv(
         id="conv-attribution-runtime-user",
@@ -1690,47 +1630,6 @@ def test_build_session_profile_uses_session_level_git_context() -> None:
 
     assert profile.branch_names == ("feature/runtime-cleanup",)
     assert profile.repo_names == (EXPECTED_REPO_NAME,)
-
-
-def test_build_session_profile_ignores_context_dump_wrappers_for_work_event_intent() -> None:
-    session = make_conv(
-        id="conv-context-dump",
-        origin="codex",
-        messages=MessageCollection(
-            messages=[
-                make_msg(
-                    id="u0",
-                    role="user",
-                    origin="codex",
-                    text="<environment_context>\nerror: cached tool output\n</environment_context>",
-                    timestamp=datetime(2026, 3, 23, 9, 0, tzinfo=timezone.utc),
-                    message_type=MessageType.CONTEXT,
-                ),
-                make_msg(
-                    id="u1",
-                    role="user",
-                    origin="codex",
-                    text="Please plan the refactor and lay out the implementation strategy.",
-                    timestamp=datetime(2026, 3, 23, 9, 1, tzinfo=timezone.utc),
-                ),
-                make_msg(
-                    id="a1",
-                    role="assistant",
-                    origin="codex",
-                    text="I will plan the refactor in detail.",
-                    timestamp=datetime(2026, 3, 23, 9, 2, tzinfo=timezone.utc),
-                ),
-            ]
-        ),
-    )
-
-    profile = build_session_profile(session)
-
-    assert profile.work_events
-    # Keyword intent is gone (polylogue-ve9z); the surviving obligation is
-    # that context-dump wrapper text never drives the event summary.
-    assert profile.work_events[0].heuristic_label.value == "session"
-    assert "cached tool output" not in (profile.work_events[0].summary or "")
 
 
 def test_build_mcp_summary_semantic_facts_uses_canonical_summary_shape() -> None:

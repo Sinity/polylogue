@@ -138,7 +138,6 @@ _MATERIALIZER_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/storage/derived/session/threads.py",
     "polylogue/storage/derived/session/profiles.py",
     "polylogue/storage/derived/session/latency_profiles.py",
-    "polylogue/storage/derived/session/timeline_rows.py",
     "polylogue/storage/derived/session/aggregates.py",
     "polylogue/storage/runtime/store_constants.py",
 )

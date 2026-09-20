@@ -23,9 +23,7 @@ import polylogue.paths as _paths
 from polylogue.core.errors import DatabaseError
 from polylogue.storage.fts.pl_fold import pl_fold
 from polylogue.storage.runtime import (
-    SessionPhaseRecord,
     SessionProfileRecord,
-    SessionWorkEventRecord,
 )
 from polylogue.storage.sqlite.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.sqlite.async_sqlite_raw import SQLiteRawMixin
@@ -38,9 +36,6 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries import (
     session_insight_profile_writes as session_insight_profiles_q,
-)
-from polylogue.storage.sqlite.queries import (
-    session_insight_timeline_writes as session_insight_timelines_q,
 )
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, ensure_schema_async
@@ -538,34 +533,6 @@ class SQLiteBackend(
             await session_insight_profiles_q.replace_session_profile(
                 conn,
                 record,
-                self._transaction_depth,
-            )
-
-    async def replace_session_work_events(
-        self,
-        session_id: str,
-        records: list[SessionWorkEventRecord],
-    ) -> None:
-        """Replace durable work-event rows for one session."""
-        async with self._get_connection() as conn:
-            await session_insight_timelines_q.replace_session_work_events(
-                conn,
-                session_id,
-                records,
-                self._transaction_depth,
-            )
-
-    async def replace_session_phases(
-        self,
-        session_id: str,
-        records: list[SessionPhaseRecord],
-    ) -> None:
-        """Replace durable phase rows for one session."""
-        async with self._get_connection() as conn:
-            await session_insight_timelines_q.replace_session_phases(
-                conn,
-                session_id,
-                records,
                 self._transaction_depth,
             )
 

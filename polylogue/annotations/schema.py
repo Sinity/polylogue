@@ -736,7 +736,7 @@ SEED_ACTIVITY_SCHEMA = register_annotation_schema(
         title="Activity",
         description=(
             "Primary activity at an explicit session or structural segment grain. "
-            "The target ref declares the grain: session is session-level; phase/message/block are segment-level."
+            "The target ref declares the grain: session is session-level; message/block are segment-level."
         ),
         fields=(
             AnnotationField(
@@ -774,7 +774,7 @@ SEED_ACTIVITY_SCHEMA = register_annotation_schema(
                 description="Concise evidence-grounded rationale for the label or abstention.",
             ),
         ),
-        target_ref_kinds=("session", "phase", "message", "block"),
+        target_ref_kinds=("session", "message", "block"),
         abstain_field="abstain",
         evidence_policy="required",
         status="active",
@@ -853,7 +853,7 @@ SEED_GOAL_EVENT_SCHEMA = register_annotation_schema(
                 description="Concise evidence-grounded rationale for the label or abstention.",
             ),
         ),
-        target_ref_kinds=("message", "block", "work_event", "observed-event"),
+        target_ref_kinds=("message", "block", "observed-event"),
         abstain_field="abstain",
         evidence_policy="required",
         status="active",
@@ -924,7 +924,6 @@ SEED_OUTCOME_EVIDENCE_SCHEMA = register_annotation_schema(
         ),
         target_ref_kinds=(
             "session",
-            "work_event",
             "observed-event",
             "commit",
             "check-run",
@@ -997,7 +996,7 @@ SEED_KNOWLEDGE_ARTIFACT_SCHEMA = register_annotation_schema(
                 description="Concise evidence-grounded rationale for the label or abstention.",
             ),
         ),
-        target_ref_kinds=("session", "message", "block", "work_event", "assertion"),
+        target_ref_kinds=("session", "message", "block", "assertion"),
         abstain_field="abstain",
         evidence_policy="required",
         status="active",
@@ -1054,7 +1053,7 @@ SEED_REUSABILITY_SCHEMA = register_annotation_schema(
                 description="Concise evidence-grounded rationale for the label or abstention.",
             ),
         ),
-        target_ref_kinds=("session", "phase", "message", "block", "work_event", "assertion"),
+        target_ref_kinds=("session", "message", "block", "assertion"),
         abstain_field="abstain",
         evidence_policy="required",
         status="active",

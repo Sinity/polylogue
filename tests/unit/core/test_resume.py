@@ -136,7 +136,6 @@ async def test_resume_brief_composes_insights_and_related_sessions(cli_workspace
     assert brief.facts.message_count == 2
     assert "shell" in brief.facts.tool_categories
     assert brief.inferences.intent_summary == "System crashed, continue the resume command and run focused tests."
-    assert brief.inferences.work_events
     assert brief.inferences.thread is not None
     assert brief.inferences.thread.session_count == 2
     assert any(session.session_id == ROOT_ID for session in brief.related_sessions)

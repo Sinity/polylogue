@@ -227,11 +227,9 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                     for name in (
                         "engaged_duration_ms",
                         "engaged_minutes",
-                        "phase_count",
                         "terminal_state_confidence",
                         "tool_active_duration_ms",
                         "tool_active_minutes",
-                        "work_event_count",
                         "workflow_shape_confidence",
                     )
                 ),
@@ -271,105 +269,6 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
     ),
     RigorContract(
-        insight_name="session_work_events",
-        display_name="Work Events",
-        evidence_payload=("evidence",),
-        inference_payload=("inference",),
-        fallback_markers=(("inference", "fallback_inference"),),
-        confidence_field=("inference", "confidence"),
-        readiness_semantics=(
-            "Evidence payload describes the message-range and timing footprint "
-            "of the event. Inference payload carries heuristic label/summary; rows with "
-            "``inference.fallback_inference == True`` were emitted by the "
-            "heuristic fallback and should be treated as low-rigor."
-        ),
-        consumer_fields=(
-            "event_id",
-            "session_id",
-            "origin",
-            "event_index",
-            "evidence",
-            "inference",
-        ),
-        version_fields=(
-            RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
-            RigorVersionField(name="inference_version", current_version=SESSION_INFERENCE_VERSION),
-        ),
-        field_exemptions=(
-            *_true_zero_fields(
-                "Event index is an ordinal identity component, not an aggregate claim.",
-                "event_index",
-            ),
-            *_true_zero_paths(
-                "Event evidence counts, offsets, and durations are materialized archive measurements.",
-                ("evidence", "duration_ms"),
-                ("evidence", "end_index"),
-                ("evidence", "start_index"),
-            ),
-            *_true_zero_paths(
-                "Event inference confidence is an explicit heuristic output, never a missing-evidence sentinel.",
-                ("inference", "confidence"),
-            ),
-        ),
-        notes=(
-            "Structural-only activity labels (polylogue-ve9z, 2026-07-16): "
-            "``inference.heuristic_label`` is derived from action-category "
-            "(tool-use) evidence in archive/session/extraction.py::_classify_range. "
-            "Ranges without decisive action evidence use coarse defaults. "
-            "The deterministic session digest does not extract run state or "
-            "decision candidates from message prose. Those judgments require "
-            "a model-authored product or an explicit typed annotation."
-        ),
-    ),
-    RigorContract(
-        insight_name="session_phases",
-        display_name="Session Phases",
-        evidence_payload=("evidence",),
-        inference_payload=(),
-        fallback_markers=(),
-        confidence_field=(),
-        readiness_semantics=(
-            "Evidence payload describes the phase's message-range timing and "
-            "tool counts. Phases are deterministic time-gap intervals, not "
-            "intent labels or probabilistic workflow classifications; consumers "
-            "that need intent should use work-event heuristics or session-level "
-            "workflow fields."
-        ),
-        consumer_fields=(
-            "phase_id",
-            "session_id",
-            "origin",
-            "phase_index",
-            "evidence",
-        ),
-        version_fields=(
-            RigorVersionField(name="materializer_version", current_version=SESSION_INSIGHT_MATERIALIZER_VERSION),
-        ),
-        field_exemptions=(
-            *_true_zero_fields(
-                "Phase index is an ordinal identity component, not an aggregate claim.",
-                "phase_index",
-            ),
-            *_true_zero_paths(
-                "Phase evidence counts, offsets, and durations are materialized archive measurements.",
-                *(
-                    ("evidence", name)
-                    for name in (
-                        "duration_ms",
-                        "message_range",
-                        "phase_idle_threshold_ms",
-                        "tool_counts",
-                        "word_count",
-                    )
-                ),
-            ),
-            *_true_zero_paths(
-                "Phase inference confidence is an explicit heuristic output, never a missing-evidence sentinel.",
-                ("inference", "confidence"),
-            ),
-        ),
-    ),
-    RigorContract(
         insight_name="threads",
         display_name="Work Threads",
         evidence_payload=("thread",),
@@ -399,7 +298,6 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
                         "total_cost_usd",
                         "total_messages",
                         "wall_duration_ms",
-                        "work_event_breakdown",
                     )
                 ),
                 ("thread", "member_evidence", "confidence"),
@@ -445,16 +343,13 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         insight_name="archive_coverage",
         display_name="Archive Coverage",
         evidence_payload=(),
-        inference_payload=("work_event_breakdown",),
+        inference_payload=(),
         fallback_markers=(),
         confidence_field=(),
         readiness_semantics=(
             "Session/message/word/cost/duration counts and origin/repo breakdowns are "
-            "deterministic SQL aggregates over sessions, session_profiles, session_repos, "
-            "and session_work_events. ``work_event_breakdown`` is the one probabilistic "
-            "field: its keys are the heuristic ``work_event_type`` labels the session_work_events "
-            "materializer assigns (see that contract's fallback_inference marker), so it is an "
-            "aggregation over inferred labels, not raw evidence. ``provenance`` is only populated "
+            "deterministic SQL aggregates over sessions, session_profiles and session_repos. "
+            "``provenance`` is only populated "
             "for day/week grouping (never for the default origin grouping), so consumers must "
             "not assume a materialization timestamp/version is always present."
         ),
@@ -467,7 +362,6 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "total_cost_usd",
             "tool_use_percentage",
             "thinking_percentage",
-            "work_event_breakdown",
             "origin_breakdown",
             "repos_active",
         ),
@@ -521,7 +415,6 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "thinking_count",
             "total_sessions_with_tools",
             "total_sessions_with_thinking",
-            "work_event_breakdown",
             "origin_breakdown",
         ),
         notes=(

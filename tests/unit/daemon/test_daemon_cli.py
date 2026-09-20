@@ -2519,7 +2519,7 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
                 sqlite3.connect(archive_root / "index.db") as conn,
             ):
                 assert conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-                for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
+                for table in ("session_latency_profiles", "session_profiles"):
                     conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
                 conn.commit()
             assert not profile_exists()

@@ -118,17 +118,17 @@ def test_convergence_property_materialized_content_mutation_red_twin(tmp_path: P
     with sqlite3.connect(mutated.root / "index.db") as conn:
         cursor = conn.execute(
             """
-            UPDATE session_work_events
-            SET summary = summary || ' [materialized-content-mutation]'
-            WHERE event_id = (SELECT event_id FROM session_work_events ORDER BY event_id LIMIT 1)
+            UPDATE session_profiles
+            SET title = COALESCE(title, '') || ' [materialized-content-mutation]'
+            WHERE session_id = (SELECT session_id FROM session_profiles ORDER BY session_id LIMIT 1)
             """
         )
         if cursor.rowcount != 1:
-            raise AssertionError("materialized-content mutation did not change one work-event row")
+            raise AssertionError("materialized-content mutation did not change one profile row")
         conn.commit()
 
     with sqlite3.connect(mutated.root / "index.db") as conn:
-        observed = conn.execute("SELECT summary FROM session_work_events ORDER BY event_id LIMIT 1").fetchone()
+        observed = conn.execute("SELECT title FROM session_profiles ORDER BY session_id LIMIT 1").fetchone()
     assert observed is not None and "materialized-content-mutation" in str(observed[0])
 
 

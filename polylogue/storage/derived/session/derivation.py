@@ -141,10 +141,6 @@ class _StoredPartition:
     present: bool
     materializer_version: int | None
     input_binding: str | None
-    declared_work_events: int = 0
-    declared_phases: int = 0
-    stored_work_events: int = 0
-    stored_phases: int = 0
     latency_rows: int = 0
 
 
@@ -165,8 +161,6 @@ class SessionProfilePartFacts:
     input_binding: str | None
     output_binding: str | None
     profiles: int
-    work_events: int
-    phases: int
 
 
 #: The partition's sibling relations, read back per session. They are written
@@ -179,10 +173,6 @@ SELECT
     sp.session_id,
     sp.materializer_version,
     sp.input_content_hash,
-    sp.work_event_count,
-    sp.phase_count,
-    (SELECT COUNT(*) FROM session_work_events e WHERE e.session_id = sp.session_id),
-    (SELECT COUNT(*) FROM session_phases p WHERE p.session_id = sp.session_id),
     (SELECT COUNT(*) FROM session_latency_profiles l WHERE l.session_id = sp.session_id)
 FROM session_profiles sp
 WHERE sp.session_id IN ({placeholders})
@@ -209,11 +199,7 @@ def _partition_row(row: Sequence[object]) -> _StoredPartition:
         present=True,
         materializer_version=None if row[1] is None else _count(row[1]),
         input_binding=None if row[2] is None else str(row[2]),
-        declared_work_events=_count(row[3]),
-        declared_phases=_count(row[4]),
-        stored_work_events=_count(row[5]),
-        stored_phases=_count(row[6]),
-        latency_rows=_count(row[7]),
+        latency_rows=_count(row[3]),
     )
 
 
@@ -234,10 +220,6 @@ def _classify_partition(
     if stored.materializer_version != materializer_version:
         return _STALE
     if stored.input_binding is None or stored.input_binding != current_binding:
-        return _STALE
-    if stored.stored_work_events != stored.declared_work_events:
-        return _STALE
-    if stored.stored_phases != stored.declared_phases:
         return _STALE
     if stored.latency_rows != 1:
         return _STALE
@@ -263,8 +245,8 @@ def inspect_session_profiles(
 ) -> Mapping[str, str]:
     """Classify each session partition from its output relations and binding.
 
-    The partition is the family: the profile row plus the work events, phases
-    and latency profile written in the same replacement. It is valid only when
+    The partition is the family: the profile row plus the latency profile
+    written in the same replacement. It is valid only when
     every one of those exists as the profile declares, the profile was built by
     the current materializer, and its stored binding equals the digest
     recomputed now from the authoritative message projection.
@@ -652,14 +634,6 @@ class SessionProfileDerivation:
             profiles = _count(
                 conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
             )
-            work_events = _count(
-                conn.execute("SELECT COUNT(*) FROM session_work_events WHERE session_id = ?", (session_id,)).fetchone()[
-                    0
-                ]
-            )
-            phases = _count(
-                conn.execute("SELECT COUNT(*) FROM session_phases WHERE session_id = ?", (session_id,)).fetchone()[0]
-            )
             status = _classify_partition(
                 stored,
                 input_binding,
@@ -682,8 +656,6 @@ class SessionProfileDerivation:
             input_binding=input_binding,
             output_binding=stored.input_binding,
             profiles=profiles,
-            work_events=work_events,
-            phases=phases,
         )
 
     def selected_frame_is_current(self, frame: object) -> bool:

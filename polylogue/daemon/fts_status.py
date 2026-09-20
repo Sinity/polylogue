@@ -17,7 +17,6 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 class FTSReadiness(BaseModel):
     indexed_surface: str = "messages_fts"
     messages_ready: bool = False
-    session_work_events_ready: bool = False
     invariant_ready: bool = False
     # Counts have no honest zero default. A missing/corrupt source is not an
     # empty FTS relation, and the status route must carry that distinction.
@@ -90,29 +89,10 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])
-    event_source_exists = _table_exists(conn, "session_work_events")
-    event_exists = _table_exists(conn, "session_work_events_fts")
-    event_docsize_exists = _table_exists(conn, "session_work_events_fts_docsize")
-    from polylogue.operations.fts_derivation import fts_triggers_present as _triggers_present
-
-    event_triggers_present = event_exists and _triggers_present(
-        conn, ("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au")
-    )
-    if not event_source_exists:
-        event_ready = not event_exists
-    elif not event_exists or not event_docsize_exists:
-        event_ready = False
-    else:
-        event_source_rows = int(conn.execute("SELECT COUNT(*) FROM session_work_events").fetchone()[0] or 0)
-        event_indexed_rows = int(
-            conn.execute("SELECT COUNT(*) FROM session_work_events_fts_docsize").fetchone()[0] or 0
-        )
-        event_ready = event_triggers_present and event_source_rows == event_indexed_rows
     return {
         "indexed_surface": "messages_fts",
         "messages_ready": invariant_ready,
-        "session_work_events_ready": event_ready,
-        "invariant_ready": invariant_ready and event_ready,
+        "invariant_ready": invariant_ready,
         "message_indexed_count": block_indexed_rows,
         "message_indexable_count": block_source_rows,
         # source_rows == 0 means there is nothing to index -- a genuine,
@@ -149,15 +129,13 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
             error_detail=str(exc),
         )
         # The readiness query failed: nothing here was measured.  Every
-        # sibling key already reports the not-ready value; the work-events
-        # flag used to return True on this same path, publishing a positive
-        # readiness claim out of an exception handler (polylogue-bu47u).
-        # ``coverage_pct`` is unknown, not zero -- consumers render ``None``
-        # explicitly as "coverage unknown".
+        # sibling key already reports the not-ready value (polylogue-bu47u:
+        # a readiness flag must never return True out of an exception
+        # handler). ``coverage_pct`` is unknown, not zero -- consumers render
+        # ``None`` explicitly as "coverage unknown".
         return {
             "indexed_surface": "messages_fts",
             "messages_ready": False,
-            "session_work_events_ready": False,
             "invariant_ready": False,
             "coverage_pct": None,
             "coverage_exact": False,
@@ -173,7 +151,6 @@ def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object
     coverage_pct = round((messages.indexed_rows / messages.source_rows) * 100, 1) if messages.source_rows > 0 else None
     return {
         "messages_ready": messages.ready,
-        "session_work_events_ready": snapshot.session_work_events.ready,
         "invariant_ready": snapshot.ready,
         "message_indexed_count": messages.indexed_rows,
         "message_indexable_count": messages.source_rows,
@@ -226,7 +203,6 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
         )
         return {
             "messages_ready": False,
-            "session_work_events_ready": False,
             "invariant_ready": False,
             "coverage_pct": 0.0,
             "surfaces": {},

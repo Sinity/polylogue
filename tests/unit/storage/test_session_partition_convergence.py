@@ -1,6 +1,6 @@
 """Convergence laws for the session partition and the families derived from it.
 
-The session partition — profile, latency profile, work events, phases — is the
+The session partition — profile and latency profile — is the
 only aggregate family with an output relation of its own. Threads, tag rollups
 and provider/day rollups are query-time projections of that relation
 (``CREATE VIEW threads``, ``CREATE VIEW session_tag_rollups`` in
@@ -44,7 +44,7 @@ _MATERIALIZER_VERSION = SESSION_INSIGHT_MATERIALIZER_VERSION
 #: Relations one partition replacement writes. Convergence equality is stated
 #: over their whole contents, minus the columns that record when a row was
 #: built rather than what it says.
-_PARTITION_RELATIONS = ("session_profiles", "session_latency_profiles", "session_work_events", "session_phases")
+_PARTITION_RELATIONS = ("session_profiles", "session_latency_profiles")
 
 #: Wall-clock and build-order columns. They differ between two runs that
 #: produced identical semantics, so comparing them would make every convergence
@@ -197,31 +197,6 @@ def test_a_half_replaced_partition_is_stale(archive_root: Path) -> None:
         }
 
 
-def test_a_partition_missing_its_inferred_rows_is_stale(archive_root: Path) -> None:
-    """The same law for the count-bearing siblings, when the content has them."""
-    index_db = _index_db(archive_root)
-    session_id = _seed(index_db, "counted", messages=[("user", "run the thing"), ("assistant", "ran it")])
-    _converge_to_fixpoint(index_db)
-
-    with closing(_read_connection(index_db)) as conn:
-        declared = conn.execute(
-            "SELECT work_event_count, phase_count FROM session_profiles WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-    relation = "session_work_events" if declared[0] else "session_phases" if declared[1] else None
-    if relation is None:
-        pytest.skip("this session inferred no work events or phases to remove")
-
-    with write_lease("test.delete-inferred"), closing(_write_connection(index_db)) as conn:
-        conn.execute(f"DELETE FROM {relation} WHERE session_id = ?", (session_id,))
-        conn.commit()
-
-    with closing(_read_connection(index_db)) as conn:
-        assert inspect_session_profiles(conn, [session_id], materializer_version=_MATERIALIZER_VERSION) == {
-            session_id: "stale"
-        }
-
-
 def test_a_session_with_no_messages_converges_to_a_valid_empty_partition(archive_root: Path) -> None:
     """Valid-empty is a converged state, not work that was never done.
 
@@ -235,8 +210,10 @@ def test_a_session_with_no_messages_converges_to_a_valid_empty_partition(archive
     assert _pending(index_db) == []
     with closing(_read_connection(index_db)) as conn:
         assert (
-            conn.execute("SELECT COUNT(*) FROM session_work_events WHERE session_id = ?", (session_id,)).fetchone()[0]
-            == 0
+            conn.execute(
+                "SELECT COUNT(*) FROM session_latency_profiles WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            == 1
         )
 
 
@@ -768,67 +745,6 @@ def test_provider_usage_correction_makes_the_partition_stale(archive_root: Path)
             "SELECT primary_model_name FROM session_profiles WHERE session_id = ?", (session_id,)
         ).fetchone()
     assert after[0] == "provider-corrected-model"
-
-
-def test_expected_row_counts_cannot_certify_a_stale_partition(archive_root: Path) -> None:
-    """Work-event and phase readiness may not rest on the profile's own declaration.
-
-    ``expected_work_event_inference_count`` sums ``session_profiles.work_event_count``
-    and compares it to the stored work-event rows: both sides come from the
-    partition being judged, so a profile that is wrong about its inputs is
-    wrong on both and the comparison agrees with itself. Red before the
-    readiness gates took the value-complete inspection as their authority —
-    the two equalities below still hold after the mutation, and the readiness
-    flags must still be False.
-    """
-    from polylogue.storage.derived.derived_status import _session_insight_metrics
-
-    index_db = _index_db(archive_root)
-    session_id = _priced_session(index_db, "accounted")
-    _converge_to_fixpoint(index_db)
-
-    converged = _session_insight_metrics(_status(index_db))
-    assert converged["work_event_rows_ready"] is True
-    assert converged["phase_rows_ready"] is True
-
-    _mutate_role(index_db, session_id)
-
-    status = _status(index_db)
-    assert status.work_event_inference_count == status.expected_work_event_inference_count
-    assert status.phase_count == status.expected_phase_count
-    assert status.stale_profile_row_count == 1
-
-    mutated = _session_insight_metrics(status)
-    assert mutated["work_event_rows_ready"] is False
-    assert mutated["phase_rows_ready"] is False
-    assert mutated["profile_rows_ready"] is False
-
-
-def test_stale_work_event_and_phase_counts_are_reported_rather_than_defaulted(archive_root: Path) -> None:
-    """Anti-vacuity for the two counts the readiness gates compare to zero.
-
-    Both were snapshot fields no status descriptor emitted, so they read zero
-    on every archive and their ``== 0`` conjuncts could not fail. Red if either
-    stops being derived from the inspection's non-valid key set.
-    """
-    index_db = _index_db(archive_root)
-    session_id = _priced_session(index_db, "counted")
-    _converge_to_fixpoint(index_db)
-
-    converged = _status(index_db)
-    assert converged.stale_work_event_inference_count == 0
-    assert converged.stale_phase_inference_count == 0
-    assert converged.work_event_inference_count > 0, "the archive must have work-event rows to report stale"
-    assert converged.phase_count > 0, "the archive must have phase rows to report stale"
-
-    _mutate_role(index_db, session_id)
-
-    mutated = _status(index_db)
-    assert mutated.stale_work_event_inference_count == converged.work_event_inference_count
-    assert mutated.stale_phase_inference_count == converged.phase_count
-
-
-# ── Faults: a frame that moved, and a crash on either side of publication ─────
 
 
 def test_a_publication_whose_inputs_moved_is_refused_rather_than_stamped(archive_root: Path) -> None:

@@ -398,8 +398,8 @@ def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         assert [
             conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
-            for table in ("session_profiles", "session_work_events", "session_phases", "session_latency_profiles")
-        ] == [0, 0, 0, 0]
+            for table in ("session_profiles", "session_latency_profiles")
+        ] == [0, 0]
 
 
 @pytest.mark.parametrize("input_kind", ("attachment", "session_event"))
@@ -479,8 +479,8 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         assert [
             conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
-            for table in ("session_profiles", "session_work_events", "session_phases", "session_latency_profiles")
-        ] == [0, 0, 0, 0]
+            for table in ("session_profiles", "session_latency_profiles")
+        ] == [0, 0]
 
 
 def test_marker_recovery_retries_without_replacing_a_valid_index_partition(

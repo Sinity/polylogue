@@ -263,13 +263,6 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
                 profile_row_count=2,
                 profile_evidence_fts_count=2,
                 profile_evidence_fts_duplicate_count=0,
-                work_event_inference_count=2,
-                work_event_inference_fts_count=2,
-                work_event_inference_fts_duplicate_count=0,
-                phase_inference_count=2,
-                expected_phase_inference_count=2,
-                stale_work_event_inference_count=0,
-                stale_phase_inference_count=0,
                 profile_inference_fts_count=2,
                 profile_inference_fts_duplicate_count=0,
                 profile_enrichment_fts_count=2,
@@ -292,8 +285,10 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
     assert "pending 2" in str(stats.retrieval_bands["transcript_embeddings"]["detail"])
     assert stats.retrieval_bands["evidence_retrieval"]["ready"] is True
     assert stats.retrieval_bands["inference_retrieval"]["ready"] is True
-    assert stats.retrieval_bands["inference_retrieval"]["source_rows"] == 4
-    assert stats.retrieval_bands["inference_retrieval"]["materialized_rows"] == 4
+    # polylogue-cuxz.7: the inference band is now the profile rows alone; the
+    # work-event FTS contribution that used to double it is gone.
+    assert stats.retrieval_bands["inference_retrieval"]["source_rows"] == 2
+    assert stats.retrieval_bands["inference_retrieval"]["materialized_rows"] == 2
     assert "phase" not in str(stats.retrieval_bands["inference_retrieval"]["detail"])
     assert stats.retrieval_bands["enrichment_retrieval"]["ready"] is True
 
@@ -384,13 +379,6 @@ async def test_read_embedding_stats_async_does_not_derive_pending_from_session_r
             profile_row_count=0,
             profile_evidence_fts_count=0,
             profile_evidence_fts_duplicate_count=0,
-            work_event_inference_count=0,
-            work_event_inference_fts_count=0,
-            work_event_inference_fts_duplicate_count=0,
-            phase_inference_count=0,
-            expected_phase_inference_count=0,
-            stale_work_event_inference_count=0,
-            stale_phase_inference_count=0,
             profile_inference_fts_count=0,
             profile_inference_fts_duplicate_count=0,
             profile_enrichment_fts_count=0,

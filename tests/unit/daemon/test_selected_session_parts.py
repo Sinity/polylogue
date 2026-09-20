@@ -31,8 +31,6 @@ from polylogue.operations.session_profile_convergence import (
 from polylogue.storage.derived.session import derivation as session_derivation
 from polylogue.storage.derived.session.derivation import SessionProfilePartFacts, SessionProfileReplacement
 from tests.infra.convergence_harness import (
-    build_converged_archive,
-    rich_convergence_sources,
     seed_partial_convergence_archive,
     session_materialization_facts,
 )
@@ -189,48 +187,6 @@ async def test_selected_required_part_publishes_once_and_returns_full_uncapped_r
 
 
 @pytest.mark.asyncio
-async def test_selected_required_part_certifies_nonzero_work_event_and_phase_counts(tmp_path: Path) -> None:
-    """A receipt reports actual sibling rows from the real profile family.
-
-    Anti-vacuity: infer the receipt from a profile-only row or report fixed
-    zero sibling counts and accepted maintenance cannot certify its full
-    selected partition.
-    """
-    archive = await asyncio.to_thread(build_converged_archive, tmp_path / "archive", rich_convergence_sources())
-    rich_families = tuple(
-        (session_id, facts)
-        for session_id in archive.session_ids
-        if (facts := session_materialization_facts(archive.root / "index.db", session_id=session_id)).work_events
-        and facts.phases
-    )
-    assert rich_families
-    target_id, before = rich_families[0]
-    with sqlite3.connect(archive.root / "index.db") as conn:
-        for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
-            conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (target_id,))
-        conn.commit()
-
-    owner, compute, coordinator = await _owner_for(archive.root / "index.db", archive.root)
-    frame = make_session_profile_frame(archive.root / "index.db", archive_root=archive.root, scope=(target_id,))
-    try:
-        receipt = (
-            await owner.converge_selected(
-                frame,
-                targets=(SelectedSessionTarget(target_id, "required"),),
-                expected_generation=frame.source_revision,
-                expected_recipe=frame.recipe_version("session_profile"),
-                stop_requested=lambda: None,
-            )
-        )[0]
-        assert receipt.state == "published"
-        assert receipt.certified_counts.profiles == 1
-        assert receipt.certified_counts.work_events == len(before.work_events) > 0
-        assert receipt.certified_counts.phases == len(before.phases) > 0
-    finally:
-        await _shutdown(compute, coordinator)
-
-
-@pytest.mark.asyncio
 async def test_selected_excess_part_retires_only_the_sealed_orphan(tmp_path: Path) -> None:
     """An explicit excess target is certified absent without source discovery.
 
@@ -278,8 +234,6 @@ async def test_selected_excess_part_retires_only_the_sealed_orphan(tmp_path: Pat
         assert receipt.input_binding is None
         assert receipt.output_binding is None
         assert receipt.certified_counts.profiles == 0
-        assert receipt.certified_counts.work_events == 0
-        assert receipt.certified_counts.phases == 0
         assert receipt.publication_known_committed is True
         assert (
             session_materialization_facts(recovered.index_db, session_id=recovered.unrelated_session_id).profile is None
@@ -523,7 +477,7 @@ async def test_selected_marker_failure_preserves_committed_index_effect_and_retr
                         f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (recovered.target_session_id,)
                     ).fetchone()[0]
                 )
-                for table in ("session_profiles", "session_work_events", "session_phases")
+                for table in ("session_profiles",)
             )
         assert failed.certified_counts == type(failed.certified_counts)(*expected_counts)
         assert adapter.inspect(frame, (recovered.target_session_id,))[recovered.target_session_id] == "stale"

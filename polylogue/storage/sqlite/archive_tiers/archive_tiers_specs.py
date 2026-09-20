@@ -1631,63 +1631,6 @@ SESSION_TAGS_SPEC = _make_table_spec(
     table_constraints=("""PRIMARY KEY(session_id, tag, tag_source)""",),
 )
 
-SESSION_WORK_EVENTS_SPEC = _make_table_spec(
-    "session_work_events",
-    (
-        _raw_column(
-            "event_id",
-            """event_id           TEXT GENERATED ALWAYS AS (session_id || ':work_event:' || position) STORED UNIQUE""",
-        ),
-        _raw_column(
-            "session_id", """session_id         TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
-        ),
-        _raw_column("position", """position           INTEGER NOT NULL CHECK(position >= 0)"""),
-        _raw_column("work_event_type", """work_event_type    TEXT NOT NULL"""),
-        _raw_column("summary", """summary            TEXT NOT NULL"""),
-        _raw_column("confidence", """confidence         REAL NOT NULL DEFAULT 0.0 CHECK(confidence BETWEEN 0 AND 1)"""),
-        _raw_column("start_index", """start_index        INTEGER NOT NULL DEFAULT 0 CHECK(start_index >= 0)"""),
-        _raw_column("end_index", """end_index          INTEGER NOT NULL DEFAULT 0 CHECK(end_index >= start_index)"""),
-        _raw_column("started_at_ms", """started_at_ms      INTEGER"""),
-        _raw_column("ended_at_ms", """ended_at_ms        INTEGER"""),
-        _raw_column("duration_ms", """duration_ms        INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0)"""),
-        _raw_column("file_paths_json", """file_paths_json    TEXT NOT NULL DEFAULT '[]'"""),
-        _raw_column("tools_used_json", """tools_used_json    TEXT NOT NULL DEFAULT '[]'"""),
-        _raw_column("input_high_water_mark", """input_high_water_mark        TEXT"""),
-        _raw_column("input_high_water_mark_source", """input_high_water_mark_source TEXT"""),
-        _raw_column("evidence_json", """evidence_json      TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("inference_json", """inference_json     TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("search_text", """search_text        TEXT NOT NULL DEFAULT ''"""),
-    ),
-    table_constraints=("""PRIMARY KEY(session_id, position)""",),
-)
-
-SESSION_PHASES_SPEC = _make_table_spec(
-    "session_phases",
-    (
-        _raw_column(
-            "phase_id",
-            """phase_id        TEXT GENERATED ALWAYS AS (session_id || ':phase:' || position) STORED UNIQUE""",
-        ),
-        _raw_column(
-            "session_id", """session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
-        ),
-        _raw_column("position", """position        INTEGER NOT NULL CHECK(position >= 0)"""),
-        _raw_column("start_index", """start_index     INTEGER NOT NULL DEFAULT 0 CHECK(start_index >= 0)"""),
-        _raw_column("end_index", """end_index       INTEGER NOT NULL DEFAULT 0 CHECK(end_index >= start_index)"""),
-        _raw_column("started_at_ms", """started_at_ms   INTEGER"""),
-        _raw_column("ended_at_ms", """ended_at_ms     INTEGER"""),
-        _raw_column("duration_ms", """duration_ms     INTEGER NOT NULL DEFAULT 0 CHECK(duration_ms >= 0)"""),
-        _raw_column("tool_counts_json", """tool_counts_json TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("word_count", """word_count      INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0)"""),
-        _raw_column("input_high_water_mark", """input_high_water_mark        TEXT"""),
-        _raw_column("input_high_water_mark_source", """input_high_water_mark_source TEXT"""),
-        _raw_column("evidence_json", """evidence_json   TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("inference_json", """inference_json  TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("search_text", """search_text     TEXT NOT NULL DEFAULT ''"""),
-    ),
-    table_constraints=("""PRIMARY KEY(session_id, position)""",),
-)
-
 SESSION_LATENCY_PROFILES_SPEC = _make_table_spec(
     "session_latency_profiles",
     (
@@ -1780,13 +1723,6 @@ SESSION_PROFILES_SPEC = _make_table_spec(
         _raw_column(
             "attachment_count",
             """attachment_count                INTEGER NOT NULL DEFAULT 0 CHECK(attachment_count >= 0)""",
-        ),
-        _raw_column(
-            "work_event_count",
-            """work_event_count                INTEGER NOT NULL DEFAULT 0 CHECK(work_event_count >= 0)""",
-        ),
-        _raw_column(
-            "phase_count", """phase_count                     INTEGER NOT NULL DEFAULT 0 CHECK(phase_count >= 0)"""
         ),
         _raw_column(
             "word_count", """word_count                      INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0)"""
@@ -2209,8 +2145,6 @@ INDEX_TABLE_SPECS = {
     "session_model_usage": SESSION_MODEL_USAGE_SPEC,
     "session_provider_usage_events": SESSION_PROVIDER_USAGE_EVENTS_SPEC,
     "session_tags": SESSION_TAGS_SPEC,
-    "session_work_events": SESSION_WORK_EVENTS_SPEC,
-    "session_phases": SESSION_PHASES_SPEC,
     "session_latency_profiles": SESSION_LATENCY_PROFILES_SPEC,
     "session_profiles": SESSION_PROFILES_SPEC,
     "delegation_facts": DELEGATION_FACTS_SPEC,

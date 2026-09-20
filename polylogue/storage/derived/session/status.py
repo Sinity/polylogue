@@ -36,7 +36,7 @@ StatusCounts: TypeAlias = dict[str, int]
 # off a descriptor's query text, so it is declared once here and every gate
 # expands through it.
 _VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
-    "threads": ("session_profiles", "session_work_events"),
+    "threads": ("session_profiles",),
     "session_tag_rollups": ("session_profiles",),
     # The run projections are CTEs rather than relations, so their descriptors
     # point ``table_name`` at ``sessions`` to get past the presence gate (see
@@ -55,8 +55,6 @@ _VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
 _PARTITION_RELATION_KEYS: tuple[str, ...] = (
     "session_profiles",
     "session_latency_profiles",
-    "session_work_events",
-    "session_phases",
 )
 
 
@@ -212,10 +210,6 @@ class SessionInsightCountDescriptor:
 
 SESSION_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_profiles"
 SESSION_LATENCY_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_latency_profiles"
-SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
-SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
-SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
-SESSION_PHASE_COUNT_SQL = "SELECT COUNT(*) FROM session_phases"
 # polylogue-dab: session_runs/session_observed_events/session_context_snapshots
 # are no longer materialized tables; these are source-derived counts via
 # run_projection_relations.py's CTEs, not raw table scans.
@@ -302,43 +296,6 @@ ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_latency_profiles slp
     LEFT JOIN sessions c ON c.session_id = slp.session_id
-    WHERE c.session_id IS NULL
-"""
-#: Row accounting, never a freshness answer. Both sides come from
-#: ``session_profiles``, so a profile that is wrong about its own partition is
-#: wrong on both and the comparison agrees with itself. What decides whether a
-#: work-event or phase row is current is the value-complete inspection below,
-#: which recomputes the binding from ``sessions``/``messages``; these two exist
-#: only to report how many rows the built partitions declare.
-EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
-EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
-#: Rows belonging to a partition the value-complete inspection did not certify.
-#: The binding covers the whole partition, so a non-valid partition's work
-#: events and phases are exactly as uncertified as its profile row -- the same
-#: relation ``STALE_SESSION_LATENCY_PROFILE_COUNT_SQL`` states for the latency
-#: profile. Before this existed the two counts were snapshot fields no
-#: descriptor emitted, so they read zero on every archive and the readiness
-#: gates that compared them to zero could not fail.
-STALE_SESSION_WORK_EVENT_COUNT_SQL = """
-    SELECT COUNT(*)
-    FROM json_each(?) n
-    JOIN session_work_events swe ON swe.session_id = n.value
-"""
-STALE_SESSION_PHASE_COUNT_SQL = """
-    SELECT COUNT(*)
-    FROM json_each(?) n
-    JOIN session_phases sph ON sph.session_id = n.value
-"""
-ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
-    SELECT COUNT(*)
-    FROM session_work_events swe
-    LEFT JOIN sessions c ON c.session_id = swe.session_id
-    WHERE c.session_id IS NULL
-"""
-ORPHAN_SESSION_PHASE_COUNT_SQL = """
-    SELECT COUNT(*)
-    FROM session_phases sph
-    LEFT JOIN sessions c ON c.session_id = sph.session_id
     WHERE c.session_id IS NULL
 """
 STALE_THREAD_COUNT_SQL = """
@@ -449,22 +406,6 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_key="latency_profile_row_count",
         count_sql=SESSION_LATENCY_PROFILE_COUNT_SQL,
     ),
-    SessionInsightTableDescriptor(
-        key="session_work_events",
-        table_name="session_work_events",
-        count_key="work_event_inference_count",
-        count_sql=SESSION_WORK_EVENT_COUNT_SQL,
-    ),
-    SessionInsightTableDescriptor(
-        key="session_work_events_fts",
-        table_name="session_work_events_fts",
-    ),
-    SessionInsightTableDescriptor(
-        key="session_phases",
-        table_name="session_phases",
-        count_key="phase_inference_count",
-        count_sql=SESSION_PHASE_COUNT_SQL,
-    ),
     # polylogue-dab/itvd: session_runs/session_observed_events/session_context_snapshots
     # are source-derived CTE relations, not tables, so they can never appear in
     # sqlite_master. `table_name` here points at the always-present `sessions`
@@ -521,17 +462,7 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
     ),
 )
 
-_FTS_DESCRIPTORS: tuple[SessionInsightFtsDescriptor, ...] = (
-    SessionInsightFtsDescriptor(
-        table_key="session_work_events_fts",
-        table_name="session_work_events_fts",
-        count_key="work_event_inference_fts_count",
-        duplicate_count_key="work_event_inference_fts_duplicate_count",
-        source_count_key="work_event_inference_count",
-        distinct_sql=SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL,
-        duplicate_sql=SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL,
-    ),
-)
+_FTS_DESCRIPTORS: tuple[SessionInsightFtsDescriptor, ...] = ()
 
 _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     SessionInsightCountDescriptor(
@@ -563,42 +494,6 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="orphan_latency_profile_row_count",
         table_keys=("session_latency_profiles",),
         sql=ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL,
-        requires_freshness=True,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="expected_work_event_inference_count",
-        table_keys=("session_profiles",),
-        sql=EXPECTED_WORK_EVENT_COUNT_SQL,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="expected_phase_inference_count",
-        table_keys=("session_profiles",),
-        sql=EXPECTED_PHASE_COUNT_SQL,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="stale_work_event_inference_count",
-        table_keys=("session_work_events",),
-        sql=STALE_SESSION_WORK_EVENT_COUNT_SQL,
-        requires_freshness=True,
-        requires_inspection=True,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="stale_phase_inference_count",
-        table_keys=("session_phases",),
-        sql=STALE_SESSION_PHASE_COUNT_SQL,
-        requires_freshness=True,
-        requires_inspection=True,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="orphan_work_event_inference_count",
-        table_keys=("session_work_events",),
-        sql=ORPHAN_SESSION_WORK_EVENT_COUNT_SQL,
-        requires_freshness=True,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="orphan_phase_inference_count",
-        table_keys=("session_phases",),
-        sql=ORPHAN_SESSION_PHASE_COUNT_SQL,
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
