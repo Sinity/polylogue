@@ -34,6 +34,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -601,6 +602,8 @@ def _submit(
     receipt = _read_slot_result(log_path)
     returncode = _job_exit_status(view, receipt=receipt)
     launch_path.unlink(missing_ok=True)
+    if returncode == 0:
+        _telemetry_path(log_path).unlink(missing_ok=True)
     sys.stderr.write(f"  pytest slot released; output: {log_path}\n")
     sys.stderr.flush()
     return SlotOutcome(
@@ -659,6 +662,91 @@ def _progress_counts(environment: Mapping[str, str]) -> dict[str, Any]:
             counts["outcomes"] = outcomes
             counts["terminal_count"] = sum(outcomes.values())
     return counts
+
+
+class _ProgressSnapshot:
+    """Incrementally read pytest's append-only event ledger for telemetry."""
+
+    def __init__(self, environment: Mapping[str, str]) -> None:
+        self._environment = environment
+        self._offsets: dict[Path, int] = {}
+        self._outcomes: dict[str, int] = {}
+        self._bytes = 0
+        self._mutex = threading.Lock()
+
+    def __call__(self) -> dict[str, Any]:
+        with self._mutex:
+            counts: dict[str, Any] = {}
+            selection_path = self._environment.get("POLYLOGUE_PYTEST_SELECTION_PATH")
+            if selection_path:
+                try:
+                    selection = json.loads(Path(selection_path).read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    selection = None
+                if isinstance(selection, Mapping):
+                    for key in ("selected_count", "deselected_count"):
+                        value = selection.get(key)
+                        if isinstance(value, int) and not isinstance(value, bool):
+                            counts[key] = value
+            raw_dir = self._environment.get("POLYLOGUE_PYTEST_EVENTS_DIR")
+            raw_path = self._environment.get("POLYLOGUE_PYTEST_EVENTS_PATH")
+            paths = sorted(Path(raw_dir).glob("*.jsonl")) if raw_dir else ([Path(raw_path)] if raw_path else [])
+            for path in paths:
+                try:
+                    size = path.stat().st_size
+                    offset = self._offsets.get(path, 0)
+                    if size < offset:
+                        offset = 0
+                    with path.open("rb") as handle:
+                        handle.seek(offset)
+                        payload = handle.read()
+                    complete, _, _partial = payload.rpartition(b"\n")
+                    self._offsets[path] = offset + len(complete) + (1 if complete else 0)
+                    self._bytes += len(complete)
+                except OSError:
+                    continue
+                for line in complete.splitlines():
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(event, Mapping) and event.get("event") == "test_report":
+                        outcome = event.get("outcome")
+                        if isinstance(outcome, str):
+                            self._outcomes[outcome] = self._outcomes.get(outcome, 0) + 1
+            if self._outcomes:
+                counts["outcomes"] = dict(self._outcomes)
+                counts["terminal_count"] = sum(self._outcomes.values())
+            counts["event_bytes"] = self._bytes
+            return counts
+
+
+def _telemetry_path(log_path: Path) -> Path:
+    return log_path.with_suffix(".telemetry.json")
+
+
+def _persist_telemetry_seed(
+    path: Path,
+    *,
+    sizing: Mapping[str, Any] | None,
+    progress: _ProgressSnapshot,
+) -> None:
+    """Publish sizing before pytest starts, so a kill before first sample is diagnosable."""
+    document = {
+        "schema_version": 1,
+        "kind": "polylogue.pytest-slot-telemetry",
+        "status": "starting",
+        "sizing": dict(sizing) if sizing is not None else None,
+        "progress": progress(),
+        "memory": None,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, path)
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 def _sizing_note(sizing: Mapping[str, Any] | None) -> str | None:
@@ -744,7 +832,13 @@ def _write_interrupted_result(
 
 
 def _run_held(
-    argv: Sequence[str], *, cwd: str, env: Mapping[str, str], stdout: IO[Any] | None, on_exit: Callable[[], None]
+    argv: Sequence[str],
+    *,
+    cwd: str,
+    env: Mapping[str, str],
+    stdout: IO[Any] | None,
+    on_exit: Callable[[], None],
+    telemetry_path: Path | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Run pytest here, in its own process group so a signalled waiter takes it along.
 
@@ -758,8 +852,21 @@ def _run_held(
     if note is not None:
         sys.stderr.write(note + "\n")
         sys.stderr.flush()
+    progress = _ProgressSnapshot(env)
+    if telemetry_path is not None:
+        _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
     process = subprocess.Popen(command, cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout, process_group=0)
-    sampler = ProcessGroupMemorySampler(process.pid)
+    sampler = ProcessGroupMemorySampler(
+        process.pid,
+        snapshot_path=telemetry_path,
+        snapshot_context=lambda: {
+            "status": "running",
+            "pid": process.pid,
+            "process_group": process.pid,
+            "sizing": sizing,
+            "progress": progress(),
+        },
+    )
     sampler.start()
 
     def stop() -> None:
@@ -809,6 +916,7 @@ def run_pytest(
     """
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
     basetemp = scratch.with_name(scratch.name.removesuffix(".tmpdir"))
+    telemetry_path = scratch.parent / f"telemetry-{scratch.name}.json"
     sweep_stale_temp_trees(basetemp.parent)
     guard = guard_temp_trees(scratch, basetemp)
     keep = False
@@ -818,10 +926,18 @@ def run_pytest(
         if not keep:
             remove_temp_tree(scratch)
             remove_temp_tree(basetemp)
+            telemetry_path.unlink(missing_ok=True)
 
     try:
         if holds_pytest_slot(env):
-            returncode, receipt = _run_held(argv, cwd=cwd, env=contained, stdout=stdout, on_exit=dispose)
+            returncode, receipt = _run_held(
+                argv,
+                cwd=cwd,
+                env=contained,
+                stdout=stdout,
+                on_exit=dispose,
+                telemetry_path=telemetry_path,
+            )
             outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD, receipt=receipt)
         else:
             outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose)
@@ -847,6 +963,7 @@ def run_pytest_isolated(
     """
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
     basetemp = scratch.with_name(scratch.name.removesuffix(".tmpdir"))
+    telemetry_path = scratch.parent / f"telemetry-{scratch.name}.json"
     sweep_stale_temp_trees(basetemp.parent)
     guard = guard_temp_trees(scratch, basetemp)
     keep = False
@@ -856,9 +973,17 @@ def run_pytest_isolated(
         if not keep:
             remove_temp_tree(scratch)
             remove_temp_tree(basetemp)
+            telemetry_path.unlink(missing_ok=True)
 
     try:
-        returncode, receipt = _run_held(argv, cwd=cwd, env=contained, stdout=stdout, on_exit=dispose)
+        returncode, receipt = _run_held(
+            argv,
+            cwd=cwd,
+            env=contained,
+            stdout=stdout,
+            on_exit=dispose,
+            telemetry_path=telemetry_path,
+        )
         keep = returncode != 0
         return SlotOutcome(returncode=returncode, slot="isolated", receipt=receipt)
     finally:
@@ -892,6 +1017,8 @@ def _run_launch(launch_path: Path) -> int:
     child: subprocess.Popen[Any] | None = None
     sampler: ProcessGroupMemorySampler | None = None
     sizing: dict[str, Any] | None = None
+    progress = _ProgressSnapshot(environment)
+    telemetry_path = _telemetry_path(log_path)
     started = time.monotonic()
     terminating = False
 
@@ -917,7 +1044,7 @@ def _run_launch(launch_path: Path) -> int:
                 started=started,
                 signal_number=signal_number,
                 sizing=sizing,
-                memory=sampler.snapshot() if sampler is not None else None,
+                memory=sampler.persist() if sampler is not None else None,
             )
             _print_result(receipt)
         os._exit(128 + signal_number)
@@ -927,6 +1054,7 @@ def _run_launch(launch_path: Path) -> int:
     # can sit in this queue for hours, and what matters is the memory this job
     # may take when its workers start.
     command, sizing = resize_worker_argument(list(launch["argv"]))
+    _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
     note = _sizing_note(sizing)
     with open(log_path, "wb") as log:
         if note is not None:
@@ -941,7 +1069,17 @@ def _run_launch(launch_path: Path) -> int:
                 stderr=log,
                 start_new_session=True,
             )
-            sampler = ProcessGroupMemorySampler(child.pid)
+            sampler = ProcessGroupMemorySampler(
+                child.pid,
+                snapshot_path=telemetry_path,
+                snapshot_context=lambda: {
+                    "status": "running",
+                    "pid": child.pid,
+                    "process_group": child.pid,
+                    "sizing": sizing,
+                    "progress": progress(),
+                },
+            )
             sampler.start()
             returncode = child.wait()
         except OSError as exc:

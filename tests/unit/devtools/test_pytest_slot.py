@@ -770,6 +770,31 @@ def test_a_queued_run_publishes_its_result_document(tmp_path: Path, capsys: pyte
     assert published["memory"]["processes"], "the run's own processes are named"
 
 
+def test_a_failed_queued_run_keeps_sizing_telemetry_sidecar(tmp_path: Path) -> None:
+    """Launch sizing is durable even when the child prevents a final success receipt."""
+    log_path = tmp_path / "slot.log"
+    launch_path = tmp_path / "launch.json"
+    launch_path.write_text(
+        json.dumps(
+            {
+                "argv": [sys.executable, "-c", "raise SystemExit(1)", "-n", "8"],
+                "working_directory": str(tmp_path),
+                "environment": {"PATH": os.environ["PATH"]},
+                "log_path": str(log_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert pytest_slot.main([str(launch_path)]) == 1
+
+    telemetry = json.loads(log_path.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+    assert telemetry["kind"] == "polylogue.pytest-slot-telemetry"
+    assert telemetry["sizing"]["requested_workers"] == 8
+    assert telemetry["memory"]["process_group"] > 0
+    assert telemetry["memory"]["peak"]["pss_kib"] > 0
+
+
 def test_the_startup_sweep_reclaims_only_dead_owners(tmp_path: Path) -> None:
     """``tmp-<pid>-*`` trees survive exactly as long as their owning pid does.
 
