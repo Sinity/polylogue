@@ -1156,6 +1156,35 @@ def test_direct_export_outranks_browser_capture_siblings_regardless_of_growth() 
     assert result.ambiguous_raw_ids == ()
 
 
+def test_direct_export_survives_equal_frontier_dom_native_conflict() -> None:
+    """The DOM-authority guard must not silently drop a direct export.
+
+    `_dom_authority_when_native_is_unordered` partitions the group only into
+    `dom` and `native` members; a member with `browser_snapshot_fidelity is
+    None` is invisible to it. Consulted BEFORE `_direct_export_precedence`,
+    it therefore accepts the DOM head and quarantines the natives for a
+    group of {direct export, exactly one DOM, >=1 non-dominating native} at
+    an EQUAL dom/native frontier -- dropping the direct export from
+    accepted, equivalents AND ambiguous alike, contradicting the rule that a
+    direct export outranks every browser capture.
+
+    The existing direct-export test has dom/native frontiers of 1 vs 2
+    messages, so the guard bails out before this shape can fire.
+    """
+    direct = _revision("raw-direct", "real one", "real two", "real three")
+    dom = _browser_revision("raw-dom", "newer DOM", "2026-01-02T00:00:00Z", "dom")
+    native = _browser_revision("raw-native", "stale native", "2026-01-01T00:00:00Z", "native")
+
+    result = classify_membership_revisions([dom, native, direct])
+
+    assert result.accepted_raw_ids == ("raw-direct",)
+    assert result.equivalent_raw_ids == ("raw-dom", "raw-native")
+    assert result.ambiguous_raw_ids == ()
+    # The real damage is disappearance, not merely a different head: assert
+    # the direct export is accounted for somewhere no matter the tier.
+    assert "raw-direct" in set(result.accepted_raw_ids + result.equivalent_raw_ids + result.ambiguous_raw_ids)
+
+
 def test_equal_content_collapse_prefers_direct_export_over_browser_capture() -> None:
     """Equal content is not equal authority: a direct export must survive over
     a browser capture that happens to project to identical content, even

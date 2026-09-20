@@ -615,7 +615,20 @@ def _dom_authority_when_native_is_unordered(
     the generic frontier fallback (whose stable raw-id tie-break is unrelated
     to source authority). Mixed-frontier conflicts continue through the
     existing fallback, preserving its established fork rules.
+
+    Scoped to groups whose every member is browser-captured. This rule ranks
+    DOM against native only; it has nothing to say about a direct export
+    (``browser_snapshot_fidelity is None``), which outranks both. Because it
+    is consulted before ``_direct_export_precedence``, answering for a group
+    that contains a direct export would accept the DOM head and quarantine
+    the natives, dropping the direct export from accepted, equivalents AND
+    ambiguous alike -- silent disappearance of the authoritative revision.
+    Declining here hands such a group to the direct-export rule, or (when
+    that rule also declines, e.g. two direct exports) to the fallback, which
+    at least quarantines every representative rather than losing one.
     """
+    if any(item.browser_snapshot_fidelity is None for item in revisions):
+        return None
     dom = [item for item in revisions if item.browser_snapshot_fidelity == "dom"]
     native = [item for item in revisions if item.browser_snapshot_fidelity == "native"]
     if len(dom) != 1 or not native:
