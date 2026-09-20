@@ -1851,12 +1851,15 @@ def _logical_model_rollup_stats(conn: sqlite3.Connection, origin: str | None) ->
                    COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                    u.model_name AS model_name,
                    u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
-                   (l.src_session_id IS NOT NULL) AS is_prefix_delta
+                   EXISTS (
+                       SELECT 1
+                       FROM session_links l
+                       WHERE l.src_session_id = u.session_id
+                         AND l.inheritance = 'prefix-sharing'
+                   ) AS is_prefix_delta
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles p ON p.session_id = u.session_id
-            LEFT JOIN session_links l
-              ON l.src_session_id = u.session_id AND l.inheritance = 'prefix-sharing'
             {_where_origin(origin, table_alias="s")}
         ), logical_model AS (
             SELECT origin, logical_session_id, model_name,
@@ -1991,12 +1994,15 @@ def _pricing_lane_reports(
                        COALESCE(p.logical_session_id, u.session_id) AS logical_session_id,
                        COALESCE(NULLIF(TRIM(u.model_name), ''), '') AS model_name,
                        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
-                       (l.src_session_id IS NOT NULL) AS is_prefix_delta
+                       EXISTS (
+                           SELECT 1
+                           FROM session_links l
+                           WHERE l.src_session_id = u.session_id
+                             AND l.inheritance = 'prefix-sharing'
+                       ) AS is_prefix_delta
                 FROM session_model_usage u
                 JOIN sessions s ON s.session_id = u.session_id
                 LEFT JOIN session_profiles p ON p.session_id = u.session_id
-                LEFT JOIN session_links l
-                  ON l.src_session_id = u.session_id AND l.inheritance = 'prefix-sharing'
                 {_where_origin(origin, table_alias="s")}
             ), logical_model AS (
                 SELECT provenance, logical_session_id, model_name,
