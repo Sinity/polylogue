@@ -54,8 +54,11 @@ _MATERIALIZER_VERSION = SESSION_INSIGHT_MATERIALIZER_VERSION
 _OUTPUT_AFFECTING_MUTATIONS = (
     ("role", "'assistant'"),
     ("model_name", "'a-different-model'"),
-    ("input_tokens", "input_tokens + 4096"),
-    ("output_tokens", "output_tokens + 77"),
+    # COALESCE, not a bare sum: the builder leaves these NULL, and NULL + 4096
+    # is NULL -- a no-op mutation that made both parametrizations vacuous
+    # (they asserted "stale" against an archive nothing had changed).
+    ("input_tokens", "COALESCE(input_tokens, 0) + 4096"),
+    ("output_tokens", "COALESCE(output_tokens, 0) + 77"),
     ("word_count", "word_count + 13"),
     ("has_tool_use", "1 - has_tool_use"),
     # A member of the durable vocabulary: material_origin carries a CHECK, so a
@@ -178,7 +181,7 @@ def test_the_session_content_hash_is_not_the_binding(archive: tuple[Path, str]) 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         before = conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
 
-    _mutate(index_db, session_id, "input_tokens", "input_tokens + 4096")
+    _mutate(index_db, session_id, "input_tokens", "COALESCE(input_tokens, 0) + 4096")
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         after = conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
