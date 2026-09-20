@@ -742,6 +742,19 @@ class IndexGenerationStore:
         """Convenience constructor resolving ``archive_root`` into an :class:`ArchiveLocation` first."""
         return cls(ArchiveLocation.resolve(archive_root), repair_anchor=repair_anchor)
 
+    def _require_write_lease(self, purpose: str) -> None:
+        """Require archive-bound admission before mutating lifecycle state.
+
+        Generation metadata, transaction receipts, and candidate teardown are
+        part of the same archive publication as the candidate ``index.db``.
+        Keeping this check at the store boundary prevents a recovery or
+        checkpoint caller from bypassing the connection-level guard merely
+        because its particular mutation is a filesystem write.
+        """
+        from polylogue.storage.sqlite.write_lease import require_write_lease
+
+        require_write_lease(purpose, archive_root=self.archive_root)
+
     def create_transaction(
         self,
         *,
@@ -752,6 +765,7 @@ class IndexGenerationStore:
         consumed_evidence: dict[str, object] | None = None,
     ) -> IndexRebuildTransaction:
         """Create an inactive candidate and its resumable transaction record."""
+        self._require_write_lease("IndexGenerationStore.create_transaction")
         from polylogue.maintenance.candidate_capacity import require_candidate_capacity
 
         op_id = operation_id or str(uuid.uuid4())
@@ -808,6 +822,7 @@ class IndexGenerationStore:
         record, written with the same tmp+os.replace+fsync pattern as
         ``save_transaction``.
         """
+        self._require_write_lease(f"IndexGenerationStore.save_pass_receipt(operation={operation_id})")
         self._validate_lifecycle_id(operation_id, "operation")
         directory = self.transactions_root / f"{operation_id}.receipts"
         sequence = len(list(directory.glob("pass-*.json")))
@@ -818,6 +833,7 @@ class IndexGenerationStore:
 
     def save_transaction(self, transaction: IndexRebuildTransaction) -> IndexRebuildTransaction:
         """Atomically checkpoint a transaction after one bounded replay pass."""
+        self._require_write_lease(f"IndexGenerationStore.save_transaction(operation={transaction.operation_id})")
         now = int(time.time() * 1000)
         updated = IndexRebuildTransaction(
             **{
@@ -916,6 +932,7 @@ class IndexGenerationStore:
         ``discard_if_inactive`` themselves; a ``promoted`` generation is
         already the active index and must never be discarded here.
         """
+        self._require_write_lease(f"IndexGenerationStore.discard_transaction(operation={operation_id})")
         path = self._transaction_path(operation_id)
         if not path.exists():
             return False
@@ -1509,6 +1526,7 @@ class IndexGenerationStore:
         recovery.  A pointer mismatch means the swap never became visible, so
         the candidate can safely return to ``inactive``.
         """
+        self._require_write_lease(f"IndexGenerationStore.recover_promotion(generation={generation_id})")
         generation = self.load(generation_id)
         if generation.state != "promoting":
             return generation
@@ -1545,6 +1563,7 @@ class IndexGenerationStore:
 
     def complete_promotion_recovery(self, generation_id: str) -> IndexGeneration:
         """Record a pointer-swapped promotion as active after external validation."""
+        self._require_write_lease(f"IndexGenerationStore.complete_promotion_recovery(generation={generation_id})")
         generation = self.load(generation_id)
         if generation.state != "promoting":
             return generation

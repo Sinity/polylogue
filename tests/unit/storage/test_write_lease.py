@@ -150,6 +150,37 @@ def test_index_generation_bootstrap_requires_the_archive_bound_lease(
         store.promote(generation)
 
 
+def test_index_generation_lifecycle_receipts_and_recovery_require_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Filesystem-only generation mutations cannot bypass archive admission.
+
+    The connection guard cannot see JSON receipt writes or pointer-recovery
+    metadata.  Anti-vacuity: removing the store-bound check lets these routes
+    mutate an archive while the daemon's process-wide enforcement is armed.
+    """
+    from polylogue.storage.index_generation import IndexGenerationStore
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    store = IndexGenerationStore.for_archive_root(root)
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.create_transaction(source_snapshot="snapshot-unleased")
+
+    with arm_write_lease_enforcement(), write_lease("test.generation", archive_root=root):
+        generation = store.create(source_snapshot="snapshot-leased")
+
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.save_pass_receipt("operation", {"status": "running"})
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.discard_transaction("operation")
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.recover_promotion(generation.generation_id)
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        store.complete_promotion_recovery(generation.generation_id)
+
+
 def test_cold_generation_open_binds_to_the_declared_archive_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
