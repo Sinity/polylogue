@@ -188,9 +188,10 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
         left.get("x-polylogue-high-cardinality-keys") is True or right.get("x-polylogue-high-cardinality-keys") is True
     )
     if properties and (already_high_cardinality or should_collapse_observed_keys(properties.keys())):
-        additional = merge_observed_structure_schemas([additional, *map(_schema_object, properties.values())])
-        properties = {}
-        required = []
+        if not additional or already_high_cardinality:
+            additional = merge_observed_structure_schemas([additional, *map(_schema_object, properties.values())])
+            properties = {}
+            required = []
         merged["x-polylogue-high-cardinality-keys"] = True
         merged["x-polylogue-dynamic-keys"] = True
 
