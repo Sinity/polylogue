@@ -50,7 +50,6 @@ class RetainedRawRecord:
     member_name: str | None = None
     diagnostic: str | None = None
     member_count: int | None = None
-    member_name: str | None = None
 
 
 def iter_retained_source_records(

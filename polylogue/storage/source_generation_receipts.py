@@ -382,7 +382,16 @@ def _enumeration_complete(
     )
     if not is_container:
         return expected == len(members)
-    admitted_ordinals = {int(row[0]) for row in dispositions if str(row[2]) == "admitted"}
+    admitted_ordinals: set[int] = set()
+    admitted_rows: dict[int, tuple[object, ...]] = {}
+    for row in dispositions:
+        if str(row[2]) != "admitted":
+            continue
+        ordinal = _int_cell(row[0])
+        if ordinal is None:
+            return False
+        admitted_ordinals.add(ordinal)
+        admitted_rows[ordinal] = row
     non_admitted_ordinals = disposition_ordinals - admitted_ordinals
     if (
         (admitted_ordinals and admitted_ordinals != accepted_ordinals)
@@ -391,7 +400,6 @@ def _enumeration_complete(
         or accepted_ordinals | non_admitted_ordinals != set(range(expected))
     ):
         return False
-    admitted_rows = {int(row[0]): row for row in dispositions if str(row[2]) == "admitted"}
     member_payload = [
         (
             ordinal,
