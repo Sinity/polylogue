@@ -58,10 +58,18 @@ class Message(MessageRuntimeMixin, BaseModel):
     has_thinking: bool = False
     has_paste: bool = False
     paste_boundary_state: str | None = None
-    input_tokens: int | None = 0
-    output_tokens: int | None = 0
-    cache_read_tokens: int | None = 0
-    cache_write_tokens: int | None = 0
+    # polylogue-qgyuj: ``None`` means the provider reported no counter at this
+    # grain; ``0`` means it reported a measured zero. The default is ``None``
+    # (not ``0``) because a caller that omits these fields has supplied no
+    # measurement -- defaulting to ``0`` reintroduced, on the public output
+    # model, exactly the false measured-zero the storage/read path stopped
+    # writing. Every parser that carries no per-message counters (chatgpt,
+    # antigravity, grok, browser_capture) reaches this model through that
+    # omission, so the default decides what those origins report.
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     duration_ms: int = 0
     model_name: str | None = None
     # Provider-reported terminal signal for this assistant turn (storage:
