@@ -1577,6 +1577,35 @@ def test_seeded_archive_key_changes_with_derived_schema_identity(monkeypatch: py
     assert changed.archive_schema_id != baseline.archive_schema_id
 
 
+def test_seeded_archive_warm_cache_misses_when_derived_schema_closure_moves(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newly reachable derived-schema source selects a fresh fixture tree."""
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    original_closure = tuple(cast(Any, artifacts).derived_identity_source_closure())
+    bootstrap = Path("polylogue/storage/sqlite/archive_tiers/bootstrap.py").resolve()
+    assert bootstrap in {path.resolve() for path in original_closure}
+
+    first = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+
+    moved_closure_member = tmp_path / "derived_schema_closure" / "bootstrap.py"
+    monkeypatch.setattr(
+        artifacts,
+        "derived_identity_source_closure",
+        lambda: (*original_closure, moved_closure_member),
+    )
+
+    second = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+
+    assert second.root != first.root
+    assert second.manifest.key != first.manifest.key
+    assert len(tuple((cache_root / "artifacts").iterdir())) == 2
+
+
 def test_seeded_archive_key_ignores_ddl_reordering() -> None:
     """The schema component names the DDL, not the module text around it.
 
