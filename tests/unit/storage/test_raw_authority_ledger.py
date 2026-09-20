@@ -123,7 +123,8 @@ def test_frontier_plan_witness_carries_no_top_level_raw_id() -> None:
     plan = raw_reconciler_mod._plan(item)
 
     assert "raw_id" not in plan.authority_witness
-    assert plan.authority_witness["strategy_witness"]["item"]["raw_id"] == "primary-raw"
+    stored_witness = cast(dict[str, object], plan.authority_witness["strategy_witness"])
+    assert cast(dict[str, object], stored_witness["item"])["raw_id"] == "primary-raw"
     assert plan.input_raw_ids == ("primary-raw", "auxiliary-raw")
 
 
