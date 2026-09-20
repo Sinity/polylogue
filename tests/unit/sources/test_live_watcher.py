@@ -1803,6 +1803,72 @@ def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: P
     assert watcher._needs_work(f) is False
 
 
+def test_a_failed_tail_probe_records_the_deferral_instead_of_retrying_forever(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-dhkuu Finding A: an unreadable tail is still a recorded deferral.
+
+    The probe used to ``handle.read(remaining_bytes)`` in one call and catch
+    only ``OSError``. A ``MemoryError`` from an unterminated multi-GB tail
+    therefore escaped, and even the ``OSError`` branch returned without
+    calling ``record_deferred_append_cursor`` -- so the cursor kept its old
+    observation and the identical probe was re-attempted on every catch-up
+    pass, forever.
+
+    Anti-vacuity: restore ``except OSError: return True`` (a bare return that
+    records nothing) and ``record.byte_size`` below stays at the original
+    length, so the second ``_needs_work`` call re-probes.
+    """
+
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    f.write_bytes(original)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    f.write_bytes(original + (b"x" * 4096))
+
+    probes = 0
+
+    def _explode(*_args: object, **_kwargs: object) -> bool:
+        nonlocal probes
+        probes += 1
+        raise MemoryError("tail does not fit in memory")
+
+    monkeypatch.setattr(live_watcher, "_tail_begins_a_complete_record", _explode)
+
+    assert watcher._needs_work(f) is False
+    assert probes == 1
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    # The deferral was recorded despite the failed probe: the observed size
+    # advanced while the offset stayed put, which is the state the stat-match
+    # fast path skips.
+    assert record.byte_size == f.stat().st_size
+    assert record.byte_offset == len(original)
+
+    # The identical pass must now be a stat-only skip, not a second probe.
+    assert watcher._needs_work(f) is False
+    assert probes == 1
+
+
 def _backdate_cursor(tmp_path: Path, path: Path, *, now: datetime, seconds_ago: float) -> None:
     """Directly rewrite ``ingest_cursor.updated_at_ms`` into the past.
 

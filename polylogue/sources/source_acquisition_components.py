@@ -14,12 +14,13 @@ import ijson
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
-from polylogue.core.content_identity import payload_content_identity
+from polylogue.core.content_identity import bounded_payload_content_identity, payload_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.logging import get_logger
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionReceipt,
@@ -36,6 +37,8 @@ from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
 from .parsers.base import RawSessionData
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
+
+logger = get_logger(__name__)
 
 _ZIP_SNIFF_MEMBER_LIMIT = 64
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
@@ -268,6 +271,7 @@ def raw_data_record(
     blob_publication_receipt_id: str | None = None,
     addressing_mode: MemberAddressingMode | None = None,
     content_identity: str | None = None,
+    content_identity_skipped_reason: str | None = None,
 ) -> RawSessionData:
     return RawSessionData(
         raw_bytes=b"",
@@ -280,6 +284,7 @@ def raw_data_record(
         blob_publication_receipt_id=blob_publication_receipt_id,
         addressing_mode=addressing_mode,
         content_identity=content_identity,
+        content_identity_skipped_reason=content_identity_skipped_reason,
     )
 
 
@@ -536,9 +541,21 @@ def stream_preserved_zip_entry_raw_data(
             source_path=context.source_path,
         )
     # Read the already-published bytes to derive structural identity without
-    # weakening the bounded streaming publication route.
+    # weakening the bounded streaming publication route. The re-read is
+    # ceiling-bounded: an unbounded ``stored_handle.read()`` here threw away
+    # the bound the streaming publication had just honoured
+    # (polylogue-dhkuu Finding C).
     with context.blob_store.open(blob_hash) as stored_handle:
-        content_identity = payload_content_identity(stored_handle.read())
+        content_identity, identity_skipped = bounded_payload_content_identity(
+            stored_handle, size=blob_size, byte_digest=blob_hash
+        )
+    if identity_skipped is not None:
+        logger.warning(
+            "acquired member %s is %d bytes; structural content identity skipped (%s), byte digest used instead",
+            context.source_path,
+            blob_size,
+            identity_skipped,
+        )
     from polylogue.storage.blob_publication import publication_receipt_id
 
     publication_id = publication_receipt_id(context.blob_store, blob_hash)
@@ -549,6 +566,7 @@ def stream_preserved_zip_entry_raw_data(
         provider_hint=provider_hint,
         blob_size=blob_size,
         blob_publication_receipt_id=publication_id,
+        content_identity_skipped_reason=identity_skipped,
     )
     return raw_data_record(
         source_path=context.source_path,
@@ -560,6 +578,7 @@ def stream_preserved_zip_entry_raw_data(
         blob_publication_receipt_id=publication_id,
         addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
         content_identity=content_identity,
+        content_identity_skipped_reason=identity_skipped,
     )
 
 
