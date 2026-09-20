@@ -24,6 +24,7 @@ from polylogue.maintenance.receipt_fs import (
     read_optional_receipt,
 )
 from polylogue.storage.sqlite import migration_runner as _migration_runner
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.migration_runner import (
@@ -66,14 +67,12 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 
 DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
-    # v37 is the lowest source version whose numbered migration chain reproduces
-    # canonical SOURCE_DDL: below it the chain rebuilds source_items (v26-36),
-    # raw_sessions (v26-32), raw_hook_events and
-    # raw_failure_disposition_receipts (v26-28) to shapes canonical DDL no
-    # longer declares.
-    ArchiveTier.SOURCE: 37,
-    ArchiveTier.USER: 10,
-    ArchiveTier.AUDIT: 1,
+    # Numbering was reset for the marker-identified archive lineage.  A
+    # future train starts directly above this floor; historical chains are
+    # not a bridge into the new format.
+    ArchiveTier.SOURCE: ARCHIVE_FORMAT_FLOOR_VERSION,
+    ArchiveTier.USER: ARCHIVE_FORMAT_FLOOR_VERSION,
+    ArchiveTier.AUDIT: ARCHIVE_FORMAT_FLOOR_VERSION,
 }
 _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _DURABLE_TRAIN_MANIFEST_NAME_RE = re.compile(r"^(?P<tier>source|user|audit)-(?P<slot>\d{3,})\.json$")
@@ -2398,6 +2397,12 @@ def execute_durable_change_train(
     The caller-held lease must cover startup reconciliation and receipt creation so
     reused forward-version evidence cannot become stale between those operations.
     """
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import assert_archive_format_lineage
+
+    try:
+        assert_archive_format_lineage(archive_root)
+    except RuntimeError as exc:
+        raise DurableChangeTrainError(str(exc)) from exc
     forward_version_evidence: dict[ArchiveTier, _DurableForwardVersionEvidence] = {}
     reconcile_durable_change_train_startup(archive_root, live_evidence_cache=forward_version_evidence)
     tier_path = archive_root / f"{tier.value}.db"

@@ -215,7 +215,11 @@ def test_durable_evolution_rejects_deleted_or_modified_required_migrations(
 ) -> None:
     """Deleting or editing a required migration must remain independently visible."""
     monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
-    monkeypatch.setattr(verify_schema_manifest, "_render_schema_state", lambda _ref: _schema_state())
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_version=1 if ref == "base" else 2),
+    )
     change = verify_schema_manifest._MigrationChange(
         status,
         "polylogue/storage/sqlite/migrations/source/002_initial.sql",
@@ -230,6 +234,50 @@ def test_durable_evolution_rejects_deleted_or_modified_required_migrations(
     violations = verify_schema_manifest._durable_ddl_evolution_violations()
 
     assert any("source: required migration was" in violation for violation in violations)
+
+
+def test_durable_evolution_allows_predecessor_retirement_only_for_the_complete_v1_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reset marker's repository proof retires all old chains together.
+
+    Anti-vacuity: removing the reset exception reports each deleted predecessor
+    as a required migration; applying it to just one tier leaves this red.
+    """
+    old_versions = {ArchiveTier.SOURCE: 47, ArchiveTier.USER: 11, ArchiveTier.AUDIT: 3}
+    new_versions = dict.fromkeys(ArchiveTier, 1)
+    old_versions_by_tier = dict(new_versions)
+    old_versions_by_tier.update(old_versions)
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: verify_schema_manifest._SchemaState(
+            ddl=dict.fromkeys(ArchiveTier, "ddl"),
+            versions=old_versions_by_tier if ref == "base" else new_versions,
+        ),
+    )
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_migration_changes",
+        lambda _base, tier: (
+            (
+                verify_schema_manifest._MigrationChange(
+                    "D",
+                    f"polylogue/storage/sqlite/migrations/{tier.value}/002_predecessor.sql",
+                    "",
+                ),
+            )
+            if tier in old_versions
+            else ()
+        ),
+    )
+
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+    new_versions[ArchiveTier.SOURCE] = 2
+    violations = verify_schema_manifest._durable_ddl_evolution_violations()
+    assert any("source: required migration was deleted" in violation for violation in violations)
 
 
 def test_benign_ddl_registry_rejects_a_data_producing_create_table(monkeypatch: pytest.MonkeyPatch) -> None:
