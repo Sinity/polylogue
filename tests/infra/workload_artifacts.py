@@ -45,6 +45,7 @@ from polylogue.scenarios.workload import (
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.models import SyntheticArtifactFacts
 from polylogue.sources.origin_specs import (
+    derived_identity_source_closure,
     lowering_fingerprint,
     materializer_fingerprint,
     origin_specs,
@@ -895,12 +896,35 @@ def _archive_schema_id() -> str:
         digest.update(b"\0")
     digest.update(schema_identity.DERIVED_SCHEMA_META_DDL.encode())
     digest.update(b"\0")
+    digest.update(_derived_schema_closure_id().encode())
+    digest.update(b"\0")
     for derived_tier in (schema_identity.DerivedTier.INDEX, schema_identity.DerivedTier.OPS):
         digest.update(derived_tier.value.encode())
         digest.update(b"\0")
         digest.update(schema_identity.derived_schema_identity(derived_tier).encode())
         digest.update(b"\0")
     return f"archive-schema:sha256:{digest.hexdigest()}"
+
+
+def _derived_schema_closure_id() -> str:
+    """Identify the authoritative source closure behind derived identities.
+
+    ``derived_schema_identity`` fingerprints the semantic contents of this
+    closure. Include its member labels as well so a newly reachable source
+    invalidates a warm fixture cache even when that source happens not to
+    alter the normalized identity yet. The closure is queried from the same
+    declaration that computes the production identity; this must not grow a
+    second hand-maintained list of schema dependencies here.
+    """
+    members: list[str] = []
+    for path in derived_identity_source_closure():
+        resolved = path.resolve(strict=False)
+        try:
+            members.append(resolved.relative_to(_REPOSITORY_ROOT).as_posix())
+        except ValueError:
+            members.append(str(resolved))
+    payload = json.dumps(tuple(sorted(members)), separators=(",", ":"), ensure_ascii=True).encode()
+    return f"derived-schema-closure:sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
 _BUILD_ID: str | None = None
