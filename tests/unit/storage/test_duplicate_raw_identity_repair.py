@@ -21,9 +21,6 @@ from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
-from polylogue.storage.raw_authority import (
-    read_raw_authority_detail,
-)
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
@@ -158,26 +155,23 @@ def test_unified_frontier_census_plans_duplicate_alias_with_stable_evidence(tmp_
     assert duplicate.input_raw_ids == tuple(sorted((stale_raw_id, canonical_raw_id)))
     assert duplicate.plan_id == duplicate_again.plan_id
     assert duplicate.evidence_digest == duplicate_again.evidence_digest
-    assert duplicate.evidence_ref is not None
+    # An executable duplicate alias is not a blocking obligation, so no durable
+    # blocker is published for it and its evidence travels inline on the item.
+    assert duplicate.evidence_ref is None
     assert first.state_counts[RawAuthorityFrontierState.DUPLICATE_ALIAS.value] == 1
     assert first.executable_plan_count == 1
-
+    # Two passes over an unchanged frontier name the same content-addressed
+    # pass and write no rows: the inspection itself is not durable any more.
+    assert first.pass_id == second.pass_id
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        persisted = conn.execute(
-            """
-            SELECT p.input_raw_ids_json, p.authority_witness_json,
-                   p.source_preconditions_json, p.index_preconditions_json
-            FROM raw_authority_census_plans AS cp
-            JOIN raw_authority_plans AS p ON p.plan_id = cp.plan_id
-            WHERE cp.census_id = ? AND p.plan_id = ?
-            """,
-            (first.census_id, duplicate.plan_id),
-        ).fetchone()
-    assert persisted is not None
-    assert json.loads(persisted[0]) == sorted((stale_raw_id, canonical_raw_id))
-    assert json.loads(persisted[1])["actuator"] == RawAuthorityActuator.FOLD_DUPLICATE_ALIAS.value
-    assert json.loads(persisted[2])["blob_hash"]
-    assert json.loads(persisted[3])["accepted_content_hash"]
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0] == 0
+
+    # The plan's evidence now travels on the item itself rather than behind a
+    # census-detail handle: it is exactly the payload the surface serializes.
+    assert duplicate.input_raw_ids == tuple(sorted((stale_raw_id, canonical_raw_id)))
+    assert duplicate.strategy_witness["canonical_raw_id"] == canonical_raw_id
+    assert duplicate.source_preconditions["blob_hash"]
+    assert duplicate.index_preconditions["accepted_content_hash"]
 
 
 def test_duplicate_alias_census_uses_active_generation_not_shadow_index(tmp_path: Path) -> None:
@@ -229,12 +223,12 @@ def test_unified_frontier_census_prioritizes_missing_bytes_over_safe_actuation(t
     assert obligation[1] is None
     assert json.loads(obligation[2])["state"] == RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE.value
     readiness = raw_materialization_readiness_snapshot(tmp_path)
-    assert readiness["raw_authority_frontier_blocking_count"] == 1
+    assert readiness["raw_authority_blocker_count"] == 1
     assert raw_materialization_ready(readiness) is False
     refs = readiness["raw_authority_frontier_remediation_refs"]
     assert isinstance(refs, list) and refs[0]["plan_id"] == missing.plan_id
-    detail = read_raw_authority_detail(tmp_path, str(refs[0]["detail_query_handle"]))
-    assert missing.plan_id in str(detail["chunk"])
+    assert refs[0]["observed_pass_id"] == census.pass_id
+    assert missing.evidence_ref == refs[0]["blocker_id"]
 
     blob_path.parent.mkdir(parents=True, exist_ok=True)
     blob_path.write_bytes(b"wrong bytes at the expected content-addressed path")

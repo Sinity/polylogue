@@ -183,28 +183,16 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "Inspect and record the raw-authority frontier; plan application is daemon-owned.",
     ),
     _command(
-        "raw-authority-census",
-        "_raw_identity",
-        "raw_authority_census_command",
-        "Read a bounded page from a durable raw-authority census ledger.",
-    ),
-    _command(
-        "raw-authority-detail",
-        "_raw_identity",
-        "raw_authority_detail_command",
-        "Read a bounded chunk of a complete raw-authority ledger record.",
-    ),
-    _command(
         "raw-authority-blockers",
         "_raw_identity",
         "raw_authority_blockers_command",
-        "List unresolved raw-authority blockers (frontier-judgment vs stale-plan). Read-only.",
+        "List unresolved raw-authority blockers (frontier-judgment vs frontier-obligation). Read-only.",
     ),
     _command(
         "raw-authority-blocker-resolve",
         "_raw_identity",
         "raw_authority_blocker_resolve_command",
-        "Resolve one stale-plan blocker against current source evidence.",
+        "Resolve one durable frontier blocker against current source evidence.",
     ),
     _command(
         "operation-recovery",

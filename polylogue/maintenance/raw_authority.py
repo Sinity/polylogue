@@ -8,7 +8,7 @@ typed product operation rather than importing storage internals directly.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -16,7 +16,6 @@ from polylogue.config import Config, active_archive_root
 from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
-    from polylogue.storage.raw_authority import RawAuthorityCensusReceipt
     from polylogue.storage.raw_reconciler import RawAuthorityFrontierCensus
 
 
@@ -40,19 +39,6 @@ def finalize_codex_state_snapshots(config: Config) -> int:
     from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
 
     return resolve_retained_codex_state_receipts(config.archive_root)
-
-
-def auto_resolve_stale_plan_blockers(config: Config) -> int:
-    """Clear every unresolved stale-plan blocker automatically (polylogue-d7im).
-
-    See ``storage.raw_authority.auto_resolve_stale_plan_blockers`` for why
-    this is safe to run unattended: a stale-plan blocker requires no
-    judgment content. This explicit maintenance operation does not run
-    during ordinary address-scoped publication.
-    """
-    from polylogue.storage.raw_authority import auto_resolve_stale_plan_blockers as _auto_resolve
-
-    return _auto_resolve(config.archive_root)
 
 
 @contextlib.contextmanager
@@ -109,71 +95,6 @@ def archive_writer_rebuild_exclusion(archive_root: Path) -> Iterator[ArchiveWrit
         exclusion.release_if_safe()
 
 
-def unfinished_materialization_census_ids(
-    archive_root: Path, *, after_sequence: int = 0, limit: int = 128
-) -> tuple[tuple[str, int], ...]:
-    """Page named durable startup obligations, not the observation backlog."""
-    from polylogue.storage.raw_authority import unfinished_raw_authority_census_ids
-
-    return unfinished_raw_authority_census_ids(archive_root, after_sequence=after_sequence, limit=limit)
-
-
-def recover_materialization_censuses(
-    config: Config, *, census_ids: Sequence[str]
-) -> tuple[RawAuthorityCensusReceipt, ...]:
-    """Finish named crash-left ledger obligations without replaying source bytes.
-
-    Startup supplies durable census IDs. The canonical adapter checks their
-    exact component outputs; unrelated archive rows never enter this recovery.
-    Failed source/application evidence remains an explicit durable blocker.
-    """
-    from polylogue.operations.raw_observation_derivation import raw_observation_frame
-    from polylogue.storage.derived.raw import RawObservationDerivation
-    from polylogue.storage.raw_authority import (
-        build_raw_replay_plans,
-        finalize_raw_authority_census,
-        raw_authority_census_replay_plans,
-        recover_interrupted_raw_authority_censuses,
-    )
-
-    root = active_archive_root(config)
-    completed = []
-    with materialization_generation_lease(config) as index_db:
-        scopes = recover_interrupted_raw_authority_censuses(root, index_db_path=index_db, census_ids=census_ids)
-        adapter = RawObservationDerivation(root)
-        frame = raw_observation_frame(root)
-        for census_id, _scope in scopes:
-            plans = raw_authority_census_replay_plans(root, census_id)
-            components = []
-            for plan in plans:
-                states = adapter.inspect(frame, plan.input_raw_ids)
-                if any(state != "valid" for state in states.values()):
-                    components.append(plan.input_raw_ids)
-            post_plans = build_raw_replay_plans(root, components, index_db_path=index_db) if components else ()
-            completed.append(
-                finalize_raw_authority_census(
-                    root,
-                    census_id,
-                    post_plans=post_plans,
-                    post_residual={},
-                    interrupted=True,
-                )
-            )
-    return tuple(completed)
-
-
-def read_census(archive_root: Path, query_handle: str, *, limit: int, offset: int | None) -> JSONDocument:
-    from polylogue.storage.raw_authority import read_raw_authority_census
-
-    return read_raw_authority_census(archive_root, query_handle, limit=limit, offset=offset)
-
-
-def read_detail(archive_root: Path, query_handle: str, *, chunk_chars: int, offset: int | None) -> JSONDocument:
-    from polylogue.storage.raw_authority import read_raw_authority_detail
-
-    return read_raw_authority_detail(archive_root, query_handle, chunk_chars=chunk_chars, offset=offset)
-
-
 def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> JSONDocument:
     """Read-only, paginated inventory of unresolved raw-authority blockers (operator discovery surface).
 
@@ -193,8 +114,4 @@ __all__ = [
     "inspect_frontier",
     "list_blockers",
     "materialization_generation_lease",
-    "read_census",
-    "read_detail",
-    "recover_materialization_censuses",
-    "unfinished_materialization_census_ids",
 ]

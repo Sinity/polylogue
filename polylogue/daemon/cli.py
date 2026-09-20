@@ -148,30 +148,6 @@ _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_WHALE_B
 _SPOOL_PENDING_GRACE_SECONDS = 300
 
 
-async def _run_startup_raw_census_recovery(coordinator: DaemonWriteCoordinator, root: Path) -> None:
-    """Recover named unfinished replay receipts before starting acquisition."""
-    from polylogue.config import Config
-    from polylogue.maintenance.raw_authority import (
-        recover_materialization_censuses,
-        unfinished_materialization_census_ids,
-    )
-
-    after_sequence = 0
-    while True:
-        page = await asyncio.to_thread(
-            unfinished_materialization_census_ids, root, after_sequence=after_sequence, limit=128
-        )
-        if not page:
-            return
-        await coordinator.run_sync(
-            "startup.raw_authority_censuses",
-            recover_materialization_censuses,
-            Config(archive_root=root, render_root=root / "render", sources=[]),
-            census_ids=tuple(census_id for census_id, _sequence in page),
-        )
-        after_sequence = page[-1][1]
-
-
 async def _run_startup_embedding_lifecycle(coordinator: DaemonWriteCoordinator, archive_root_path: Path) -> Path:
     """Run embedding lifecycle recovery before any embedding maintenance starts."""
     return await coordinator.run_sync(
@@ -2731,7 +2707,6 @@ async def _run_daemon_services_under_active_writer_lease(
                 ),
                 lambda scope: make_fts_frame(fts_index, archive_root=archive_root_path, scope=scope),
             )
-            await _run_startup_raw_census_recovery(write_coordinator, archive_root_path)
             fts_startup = await fts_owner.converge()
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(

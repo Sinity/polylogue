@@ -79,7 +79,6 @@ def _complete_raw_materialization_readiness() -> status_module.RawMaterializatio
     """Return the complete source evidence required to isolate claim signals."""
     return status_module.RawMaterializationReadiness(
         available=True,
-        raw_authority_frontier={"lifecycle_status": "completed"},
         raw_authority_parser_census={"available": True},
     )
 
@@ -1935,9 +1934,8 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
             "polylogue.daemon.status._raw_materialization_readiness_info",
             return_value=status_module.RawMaterializationReadiness(
                 available=True,
-                raw_authority_frontier={"lifecycle_status": "completed"},
-                # Without an available census, readiness short-circuits to
-                # "source parser census unavailable" (#3903) and shadows the
+                # Without an available parser census, readiness short-circuits
+                # to "source parser census unavailable" (#3903) and shadows the
                 # broken-chain signal this test exists to assert.
                 raw_authority_parser_census={"available": True},
             ),

@@ -505,18 +505,6 @@ TARGET_RESOURCES: Final[tuple[MCPResourceDeclaration, ...]] = (
         required_capability=None,
         authority=_READ_ONLY_PROJECTION,
     ),
-    MCPResourceDeclaration(
-        uri_template="polylogue://raw-authority-census/{census_id}/{offset}",
-        object_kinds=("result-set",),
-        required_capability=None,
-        authority=_READ_ONLY_PROJECTION,
-    ),
-    MCPResourceDeclaration(
-        uri_template="polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}",
-        object_kinds=("result-set",),
-        required_capability=None,
-        authority=_READ_ONLY_PROJECTION,
-    ),
 )
 
 TARGET_PROMPTS: Final[tuple[MCPPromptDeclaration, ...]] = (

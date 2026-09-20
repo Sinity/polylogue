@@ -20,12 +20,6 @@ from polylogue.storage.archive_readiness import (
 )
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
-    RawReplayPlan,
-    RawReplayPlanOutcome,
-    RawReplayPlanStatus,
-    finalize_raw_authority_census,
-    record_raw_authority_census,
-    record_raw_replay_outcome,
 )
 from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -74,38 +68,19 @@ def test_probe_archive_tier_reports_schema_skew_without_opening_a_usable_reader(
     assert probe.version_status == "mismatch"
 
 
-def test_raw_materialization_readiness_requires_completed_frontier_census() -> None:
+def test_raw_materialization_readiness_requires_the_parser_census() -> None:
+    """The durable parser census, not a per-pass census row, gates the claim.
+
+    Anti-vacuity: the last assertion is the only True, and it differs from the
+    one above it solely by ``raw_authority_parser_census.available`` being the
+    boolean the projection writes rather than a truthy string. Re-adding a
+    retired census precondition would make it False.
+    """
     counters_green: dict[str, object] = {"available": True}
 
     assert raw_materialization_ready(counters_green) is False
-    assert (
-        raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "interrupted"}})
-        is False
-    )
-    assert (
-        raw_materialization_ready({**counters_green, "raw_authority_frontier": {"lifecycle_status": "completed"}})
-        is False
-    )
-    assert (
-        raw_materialization_ready(
-            {
-                **counters_green,
-                "raw_authority_frontier": {"lifecycle_status": "completed"},
-                "raw_authority_parser_census": {"available": "yes"},
-            }
-        )
-        is False
-    )
-    assert (
-        raw_materialization_ready(
-            {
-                **counters_green,
-                "raw_authority_frontier": {"lifecycle_status": "completed"},
-                "raw_authority_parser_census": {"available": True},
-            }
-        )
-        is True
-    )
+    assert raw_materialization_ready({**counters_green, "raw_authority_parser_census": {"available": "yes"}}) is False
+    assert raw_materialization_ready({**counters_green, "raw_authority_parser_census": {"available": True}}) is True
 
 
 def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path: Path) -> None:
@@ -351,93 +326,12 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
 def test_raw_materialization_readiness_rejects_unresolved_authority_blockers() -> None:
     readiness = {
         "available": True,
-        "raw_authority_frontier": {"lifecycle_status": "completed"},
+        "raw_authority_parser_census": {"available": True},
         "raw_authority_blocker_count": 1,
     }
 
     assert raw_materialization_ready(readiness) is False
-
-
-def test_readiness_uses_frontier_postflight_not_preapply_scope(tmp_path: Path) -> None:
-    """An applied repair must not remain blocked by its immutable preflight."""
-    initialize_active_archive_root(tmp_path)
-    plan = RawReplayPlan(
-        plan_id="raw-authority-frontier:" + "a" * 64,
-        input_digest="b" * 64,
-        input_raw_ids=("raw-1",),
-        logical_keys=("chatgpt-export:conversation-1",),
-        authority_witness={"schema": "polylogue.raw-authority-frontier-plan.v1"},
-        source_preconditions={},
-        index_preconditions={},
-    )
-    preview = record_raw_authority_census(
-        tmp_path,
-        (plan,),
-        selected_plan_ids=set(),
-        executable_plan_ids={plan.plan_id},
-        mode="dry_run",
-        quiescent=True,
-        scope={
-            "schema": "polylogue.raw-authority-frontier-scope.v1",
-            "state_counts": {"missing_source_bytes": 1},
-        },
-        residual={
-            "schema": "polylogue.raw-authority-frontier-residual.v1",
-            "state_counts": {"missing_source_bytes": 1},
-            "frontier_state_counts": {"missing_source_bytes": 1, "proven_current": 2},
-        },
-    )
-    dry_run_snapshot = raw_materialization_readiness_snapshot(tmp_path)
-    dry_run_frontier = cast(Mapping[str, object], dry_run_snapshot["raw_authority_frontier"])
-    assert dry_run_frontier["census_id"] == preview.census_id
-    assert dry_run_frontier["state_counts"] == {"missing_source_bytes": 1, "proven_current": 2}
-    assert dry_run_frontier["blocking_count"] == 1
-
-    receipt = record_raw_authority_census(
-        tmp_path,
-        (plan,),
-        selected_plan_ids={plan.plan_id},
-        executable_plan_ids={plan.plan_id},
-        mode="apply",
-        quiescent=True,
-        scope={
-            "schema": "polylogue.raw-authority-frontier-scope.v1",
-            "state_counts": {"missing_source_bytes": 1},
-        },
-        residual={
-            "schema": "polylogue.raw-authority-frontier-residual.v1",
-            "state_counts": {"missing_source_bytes": 1},
-            "frontier_state_counts": {"missing_source_bytes": 1, "proven_current": 2},
-        },
-    )
-    record_raw_replay_outcome(
-        tmp_path,
-        receipt.census_id,
-        RawReplayPlanOutcome(
-            plan_id=plan.plan_id,
-            input_raw_ids=plan.input_raw_ids,
-            status=RawReplayPlanStatus.EXECUTED,
-            reason="fixture repaired the exact plan",
-            next_action="none",
-        ),
-    )
-    finalize_raw_authority_census(
-        tmp_path,
-        receipt.census_id,
-        post_plans=(),
-        post_residual={
-            "schema": "polylogue.raw-authority-frontier-residual.v1",
-            "state_counts": {},
-            "frontier_state_counts": {"proven_current": 3},
-        },
-    )
-
-    snapshot = raw_materialization_readiness_snapshot(tmp_path)
-    frontier = cast(Mapping[str, object], snapshot["raw_authority_frontier"])
-
-    assert frontier["state_counts"] == {"proven_current": 3}
-    assert snapshot["raw_authority_frontier_blocking_count"] == 0
-    assert raw_materialization_ready(snapshot) is True
+    assert raw_materialization_ready({**readiness, "raw_authority_blocker_count": 0}) is True
 
 
 def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
@@ -1288,7 +1182,6 @@ def test_raw_materialization_ready_rejects_failed_debt_classifier() -> None:
     """
     clean = {
         "available": True,
-        "raw_authority_frontier": {"lifecycle_status": "completed"},
         "raw_authority_parser_census": {"available": True},
         "critical": 0,
         "warning": 0,

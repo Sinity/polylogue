@@ -29,10 +29,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
     BLOCKER_ORIGIN_FRONTIER_OBLIGATION,
     BLOCKER_ORIGIN_KEY,
-    RawAuthorityCensusReceipt,
     RawReplayPlan,
-    raw_authority_detail_query_handle,
-    record_raw_authority_census,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
@@ -188,10 +185,16 @@ class _StrategyOverride:
 
 @dataclass(frozen=True, slots=True)
 class RawAuthorityFrontierCensus:
-    """One persisted census over accepted heads plus terminal supersessions."""
+    """One inspection pass over accepted heads plus terminal supersessions.
 
-    census_id: str
-    query_handle: str
+    The pass itself is not durable. ``pass_id`` is a content address over the
+    inspected inventory, so two passes that observe the same frontier name the
+    same pass; the only rows this publishes are the durable obligations in
+    ``raw_authority_blockers``, which each item points at through
+    ``evidence_ref``.
+    """
+
+    pass_id: str
     inventory_digest: str
     plan_inventory_digest: str
     state_counts: JSONDocument
@@ -206,8 +209,7 @@ class RawAuthorityFrontierCensus:
         return json_document(
             {
                 "schema": "polylogue.raw-authority-frontier-census.v1",
-                "census_id": self.census_id,
-                "query_handle": self.query_handle,
+                "pass_id": self.pass_id,
                 "inventory_digest": self.inventory_digest,
                 "plan_inventory_digest": self.plan_inventory_digest,
                 "state_counts": self.state_counts,
@@ -1018,10 +1020,15 @@ def _apply_judgment_dispositions(
 
 def _reconcile_frontier_obligations(
     config: Config,
-    census_id: str,
+    pass_id: str,
     items: tuple[RawAuthorityFrontierItem, ...],
-) -> None:
-    """Publish current obligations and close only those disproven by a later census."""
+) -> dict[str, str]:
+    """Publish current obligations and close only those a later pass disproved.
+
+    Returns the durable blocker id published for each still-blocking plan, so
+    the caller can bind every blocking item to the row that now carries its
+    evidence.
+    """
     root = _archive_root(config)
     now = int(time.time() * 1000)
     blocking = tuple(item for item in items if item.state in _OBLIGATION_STATES)
@@ -1033,11 +1040,13 @@ def _reconcile_frontier_obligations(
     judgment_refs = {plan_id: result[0] for plan_id, result in judgment_results.items()}
     judged_plan_ids = {plan_id for plan_id, result in judgment_results.items() if result[1]}
     current_ids = {item.plan_id for item in blocking} - judged_plan_ids
+    published: dict[str, str] = {}
     with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         for item in blocking:
             if item.plan_id in judged_plan_ids:
                 continue
-            blocker_id = f"raw-authority-blocker:{_digest(['frontier', census_id, item.plan_id])}"
+            blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, item.plan_id])}"
+            published[item.plan_id] = blocker_id
             observed = {
                 "schema": "polylogue.raw-authority-frontier-obligation.v1",
                 # Writer-declared blocker class; automatic clearing selects on
@@ -1063,7 +1072,7 @@ def _reconcile_frontier_obligations(
                 (
                     blocker_id,
                     _plan(item).input_digest,
-                    census_id,
+                    pass_id,
                     item.reason,
                     _canonical_json(_plan(item).to_dict()),
                     _canonical_json(observed),
@@ -1097,14 +1106,15 @@ def _reconcile_frontier_obligations(
                             "reason": (
                                 "an accepted operator judgment acknowledged the retained conflict"
                                 if plan_id_text in judged_plan_ids
-                                else "a later complete frontier census disproved the prior blocking state"
+                                else "a later complete frontier pass disproved the prior blocking state"
                             ),
-                            "successor_census_id": census_id,
+                            "successor_pass_id": pass_id,
                         }
                     ),
                     blocker_id,
                 ),
             )
+    return published
 
 
 def _terminal_superseded_items(conn: sqlite3.Connection) -> list[RawAuthorityFrontierItem]:
@@ -1203,37 +1213,23 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
     )
 
 
-def _residual(state_counts: JSONDocument) -> JSONDocument:
-    residual_state_counts = {
-        state: count for state, count in state_counts.items() if state != RawAuthorityFrontierState.PROVEN_CURRENT.value
-    }
-    return json_document(
-        {
-            "schema": "polylogue.raw-authority-frontier-residual.v1",
-            # Retain the residual-only map for plan/retry semantics, but bind
-            # the complete postflight frontier too.  A readiness surface must
-            # be able to report healthy proven-current heads rather than
-            # presenting the residual as a full state inventory.
-            "state_counts": residual_state_counts,
-            "frontier_state_counts": state_counts,
-        }
-    )
-
-
 def inspect_raw_authority_frontier(config: Config) -> RawAuthorityFrontierCensus:
-    """Persist one complete accepted-frontier census without applying repairs.
+    """Inspect the complete accepted frontier and publish its durable obligations.
 
-    A census is not a read operation: publishing it also reconciles durable
-    frontier blockers and judgment obligations.  Offline callers therefore
-    need the same daemon exclusion boundary as an apply; daemon convergence is
-    admitted through its active write lease.
+    The inspection itself is not recorded: a pass that observes an unchanged
+    frontier writes nothing, and its ``pass_id`` is a content address over the
+    inspected inventory rather than a new ledger row (polylogue-6kur ruling
+    2026-09-15). What it does publish is durable -- every blocking item gets a
+    ``raw_authority_blockers`` row, and an obligation the current evidence
+    disproves is tombstoned -- so this is not a read operation: offline callers
+    need the same daemon exclusion boundary as an apply, and daemon convergence
+    is admitted through its active write lease.
     """
     from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 
     block_reason = offline_maintenance_block_reason(config, active=True, dry_run=False)
     if block_reason is not None:
         raise RuntimeError(block_reason)
-    root = _archive_root(config)
     all_items, accepted_head_count, terminal_superseded_count = _frontier_items(config)
     state_counts_counter = Counter(item.state.value for item in all_items)
     state_counts = json_document(dict(sorted(state_counts_counter.items())))
@@ -1241,58 +1237,14 @@ def inspect_raw_authority_frontier(config: Config) -> RawAuthorityFrontierCensus
     gap_items = tuple(item for item in all_items if item.state is not RawAuthorityFrontierState.PROVEN_CURRENT)
     plans = tuple(_plan(item) for item in gap_items)
     executable_ids = {item.plan_id for item in gap_items if item.executable}
-    with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as conn:
-        frontier_ledger_exists = conn.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'raw_authority_censuses'"
-        ).fetchone()
-    if frontier_ledger_exists is None:
-        inventory_digest = _digest([item.to_dict() for item in all_items])
-        plan_inventory_digest = _digest([plan.to_dict() for plan in plans])
-        return RawAuthorityFrontierCensus(
-            census_id=f"ephemeral:{inventory_digest[:32]}",
-            query_handle="raw-authority-frontier:ephemeral",
-            inventory_digest=inventory_digest,
-            plan_inventory_digest=plan_inventory_digest,
-            state_counts=state_counts,
-            accepted_head_count=accepted_head_count,
-            terminal_superseded_count=terminal_superseded_count,
-            plan_count=len(plans),
-            executable_plan_count=len(executable_ids),
-            items=all_items,
-        )
-    receipt: RawAuthorityCensusReceipt = record_raw_authority_census(
-        root,
-        plans,
-        selected_plan_ids=set(),
-        executable_plan_ids=executable_ids,
-        mode="dry_run",
-        quiescent=True,
-        scope={
-            "schema": "polylogue.raw-authority-frontier-scope.v1",
-            "accepted_head_count": accepted_head_count,
-            "terminal_superseded_count": terminal_superseded_count,
-            "inventory_digest": inventory_digest,
-            "state_counts": state_counts,
-        },
-        residual=_residual(state_counts),
-    )
-    _reconcile_frontier_obligations(config, receipt.census_id, all_items)
-    bound_items = tuple(
-        dataclasses.replace(
-            item,
-            evidence_ref=(
-                raw_authority_detail_query_handle(receipt.census_id, item.plan_id)
-                if item.state is not RawAuthorityFrontierState.PROVEN_CURRENT
-                else None
-            ),
-        )
-        for item in all_items
-    )
+    plan_inventory_digest = _digest([plan.to_dict() for plan in plans])
+    pass_id = f"raw-authority-frontier-pass:{inventory_digest}"
+    published = _reconcile_frontier_obligations(config, pass_id, all_items)
+    bound_items = tuple(dataclasses.replace(item, evidence_ref=published.get(item.plan_id)) for item in all_items)
     return RawAuthorityFrontierCensus(
-        census_id=receipt.census_id,
-        query_handle=receipt.query_handle,
+        pass_id=pass_id,
         inventory_digest=inventory_digest,
-        plan_inventory_digest=receipt.inventory_digest,
+        plan_inventory_digest=plan_inventory_digest,
         state_counts=state_counts,
         accepted_head_count=accepted_head_count,
         terminal_superseded_count=terminal_superseded_count,

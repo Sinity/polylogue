@@ -345,22 +345,6 @@
       ],
       "required_capability": null,
       "uri_template": "polylogue://origin/{name}/recent"
-    },
-    {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "object_kinds": [
-        "result-set"
-      ],
-      "required_capability": null,
-      "uri_template": "polylogue://raw-authority-census/{census_id}/{offset}"
-    },
-    {
-      "authority": "read-only object projection; resources never acquire instruction or mutation authority",
-      "object_kinds": [
-        "result-set"
-      ],
-      "required_capability": null,
-      "uri_template": "polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}"
     }
   ],
   "target_tools": [

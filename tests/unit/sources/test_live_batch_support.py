@@ -4492,7 +4492,7 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
     ``revision_authority='byte_proven'`` immediately, (b) the append's
     content is already visible in ``index.db`` (``sessions``/``messages``)
     before any convergence/reconciler pass has run, and (c) the heavier,
-    batch-oriented ``raw_authority_censuses`` bookkeeping table (owned by
+    batch-oriented ``raw_authority_blockers`` ledger (owned by
     ``RawAuthorityReconciler``, not this synchronous per-key classifier) has
     zero rows -- proving the reconciler was never invoked for this raw.
     """
@@ -4542,11 +4542,9 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
         assert append_row[1] == "byte_proven"
         assert append_row[2] is not None
         assert append_row[3] is None
-        # The heavy batch census/plan/blocker ledger belongs to the
-        # separate, async RawAuthorityReconciler (daemon convergence /
-        # offline backfill). A normal single-predecessor append must never
-        # touch it.
-        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0] == 0
+        # The durable frontier blocker ledger belongs to the separate, async
+        # RawAuthorityReconciler (daemon convergence / offline backfill). A
+        # normal single-predecessor append must never touch it.
         assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0] == 0
 
     with sqlite3.connect(index_db) as conn:
