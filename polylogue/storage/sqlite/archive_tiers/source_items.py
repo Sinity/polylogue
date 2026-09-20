@@ -37,6 +37,10 @@ class SourceItemMemberDisposition(StrEnum):
     UNSELECTED = "unselected"
 
 
+_MAX_MEMBER_IDENTITY_CHARS = 4096
+_MAX_MEMBER_DIAGNOSTIC_CHARS = 4080
+
+
 @dataclass(frozen=True, slots=True)
 class SourceItem:
     source_generation_id: str
@@ -573,6 +577,9 @@ def complete_source_item_enumeration(
         raise ValueError("source enumeration has missing or unexpected raw members")
     if any(row[2] is None for row in members):
         raise ValueError("source enumeration contains retired raw members")
+    is_zip_member = any(str(row[0]).startswith('["zip-v2"') for row in members)
+    if member_count is None and is_zip_member:
+        raise ValueError("ZIP source enumeration requires its central-directory denominator")
     if member_count is not None:
         if member_count < 0:
             raise ValueError("source member denominator must be non-negative")
@@ -601,13 +608,7 @@ def complete_source_item_enumeration(
         if accepted_ordinals & disposition_ordinals or accepted_ordinals | disposition_ordinals != set(member_ordinals):
             raise ValueError("source enumeration has overlapping or missing central-directory dispositions")
         member_payload = [(ordinal, "accepted", "", "") for ordinal in sorted(accepted_ordinals)] + [
-            (
-                int(row[0]),
-                str(row[1]),
-                str(row[2]),
-                str(row[3]),
-            )
-            for row in disposition_rows
+            (int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in disposition_rows
         ]
         member_digest = hashlib.sha256(
             json.dumps(member_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -662,22 +663,36 @@ def record_source_item_member_disposition(
         raise KeyError(f"unmanifested source item: {source_generation_id}/{source_item_id}")
     if item[0] is not None:
         raise ValueError("completed source enumeration cannot gain member dispositions")
+    admitted = conn.execute(
+        "SELECT 1 FROM source_item_raw_members m "
+        "JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
+        "WHERE m.source_generation_id=? AND m.source_item_id=? AND c.entry_ordinal=?",
+        (source_generation_id, source_item_id, entry_ordinal),
+    ).fetchone()
+    if admitted is not None:
+        raise ValueError("source member already has an admitted raw record")
     value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
-    bounded = bounded_diagnostic(diagnostic, max_len=4096)
+    # Central-directory names and admission explanations are attacker
+    # controlled. Keep both bounded before they reach the durable source
+    # tier; the diagnostic budget leaves room for the truncation marker used
+    # by bounded_diagnostic while the identity keeps its ordinal as the
+    # collision-free coordinate.
+    bounded_name = member_name[:_MAX_MEMBER_IDENTITY_CHARS]
+    bounded = bounded_diagnostic(diagnostic, max_len=_MAX_MEMBER_DIAGNOSTIC_CHARS) or ""
     row = conn.execute(
         "SELECT member_name, disposition, diagnostic, observed_at_ms FROM source_item_member_dispositions "
         "WHERE source_generation_id=? AND source_item_id=? AND entry_ordinal=?",
         (source_generation_id, source_item_id, entry_ordinal),
     ).fetchone()
     if row is not None:
-        if tuple(row[:3]) != (member_name, value, bounded):
+        if tuple(row[:3]) != (bounded_name, value, bounded):
             raise ValueError("source member disposition changed")
         return
     conn.execute(
         "INSERT INTO source_item_member_dispositions "
         "(source_generation_id, source_item_id, entry_ordinal, member_name, disposition, diagnostic, observed_at_ms) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (source_generation_id, source_item_id, entry_ordinal, member_name, value, bounded, observed_at_ms),
+        (source_generation_id, source_item_id, entry_ordinal, bounded_name, value, bounded, observed_at_ms),
     )
 
 
