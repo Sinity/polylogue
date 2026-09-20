@@ -27,6 +27,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from polylogue.core.content_identity import payload_content_identity
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
@@ -918,12 +919,12 @@ def _source_recoverability_proofs(
                         # prefix [0, end) and hashing the window can never
                         # match. Fall back to the full prefix when the window
                         # does not prove the blob.
-                        if payload is None or hashlib.sha256(payload).hexdigest() != blob_hash:
+                        if payload is None or not _payload_matches_reference(row, payload, blob_hash):
                             snapshot_payload, snapshot_error = _append_segment_payload(resolved, 0, end)
                             if (
                                 snapshot_error is None
                                 and snapshot_payload is not None
-                                and hashlib.sha256(snapshot_payload).hexdigest() == blob_hash
+                                and _payload_matches_reference(row, snapshot_payload, blob_hash)
                             ):
                                 payload, error = snapshot_payload, None
                 elif _legacy_append_without_window(row):
@@ -949,7 +950,7 @@ def _source_recoverability_proofs(
                             if (
                                 fallback_error is None
                                 and fallback_payload is not None
-                                and hashlib.sha256(fallback_payload).hexdigest() == blob_hash
+                                and _payload_matches_reference(row, fallback_payload, blob_hash)
                             ):
                                 payload, error = fallback_payload, fallback_error
                     else:
@@ -961,7 +962,7 @@ def _source_recoverability_proofs(
                             source_bytes_cache=source_bytes_cache,
                             decoded_payload_cache=decoded_payload_cache,
                         )
-            if error is None and payload is not None and hashlib.sha256(payload).hexdigest() == blob_hash:
+            if error is None and payload is not None and _payload_matches_reference(row, payload, blob_hash):
                 kind = (
                     "zip_reacquired_payload"
                     if ":" in resolved
@@ -987,6 +988,7 @@ def _source_recoverability_proofs(
                         "entry_ordinal": str(row.get("entry_ordinal")) if row.get("entry_ordinal") is not None else "",
                         "split_index": str(row.get("split_index")) if row.get("split_index") is not None else "",
                         "addressing_mode": str(row.get("addressing_mode") or ""),
+                        "content_identity": str(row.get("content_identity") or ""),
                         "revision_kind": str(row.get("revision_kind") or ""),
                         "append_start_offset": (
                             str(historical_append_start)
@@ -1021,6 +1023,27 @@ def _source_recoverability_proofs(
                     }
                 )
     return proofs
+
+
+def _payload_matches_reference(row: Mapping[str, object], payload: bytes, blob_hash: str) -> bool:
+    """Verify a replayed payload against its durable byte or value identity.
+
+    Container-member rows carry a structural identity because a provider may
+    reorder keys or normalize integral numbers while preserving the same
+    value. Direct and legacy rows have only the retained blob hash. The
+    structural check is deliberately selected from the row rather than from
+    the replay path, so backup evidence cannot accidentally bless a positional
+    or serialization-only match.
+    """
+    content_identity = row.get("content_identity")
+    if isinstance(content_identity, str) and len(content_identity) == 64:
+        try:
+            bytes.fromhex(content_identity)
+        except ValueError:
+            pass
+        else:
+            return payload_content_identity(payload) == content_identity.lower()
+    return hashlib.sha256(payload).hexdigest() == blob_hash
 
 
 def _recoverability_failure_kind(error: str) -> str:
@@ -1685,8 +1708,8 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                         source_bytes_cache=source_bytes_cache,
                         decoded_payload_cache=decoded_payload_cache,
                     )
-                payload_matches = (
-                    recovered_payload is not None and hashlib.sha256(recovered_payload).hexdigest() == blob_hash
+                payload_matches = recovered_payload is not None and _payload_matches_reference(
+                    proof, recovered_payload, blob_hash
                 )
                 if recovery_error is not None or not payload_matches:
                     reference_evidence_ok = False
