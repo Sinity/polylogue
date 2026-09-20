@@ -151,7 +151,10 @@ FAILED_READ_EXIT_CODE = outcome_exit_code(decide_outcome(matched=0, error="read_
 #: Remedies keyed by the operation-kernel failure code, so the operator is
 #: never told only *what* broke.
 _READ_FAILURE_REMEDIES: dict[str, str] = {
-    "daemon_required": "start the daemon with `polylogue run`, or re-run without --daemon-only",
+    # ``polylogue run`` is not a command: the daemon entry point is the
+    # ``polylogued`` console script. A remedy naming a verb that does not
+    # exist leaves the operator worse off than no remedy at all.
+    "daemon_required": "start the daemon with `polylogued run`",
     "daemon_transport_error": "the daemon connection dropped mid-read; check `polylogue ops status` and retry",
     # ``daemon_execution`` frames a deadline as the exception's own type name.
     "QueryTimeoutError": "the read hit its deadline; narrow the selection (--limit/--since) and retry",

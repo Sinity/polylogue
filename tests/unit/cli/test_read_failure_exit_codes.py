@@ -165,3 +165,58 @@ def test_a_machine_caller_still_gets_a_parseable_refusal(
     document = json.loads(capsys.readouterr().out)
     assert document["status"] == "error"
     assert "connection reset by peer" in document["message"]
+
+
+def test_the_daemon_remedy_names_a_command_that_exists() -> None:
+    """``polylogue run`` is not a verb; the daemon entry point is ``polylogued``.
+
+    polylogue-3eexy AC4 requires the daemon-absent refusal to name
+    ``polylogued run``.  At the reviewed head the remedy said "start the daemon
+    with `polylogue run`, or re-run without --daemon-only" -- a verb the CLI
+    does not define and a flag no command declares.
+
+    Anti-vacuity: restore either the ``polylogue run`` wording or the
+    ``--daemon-only`` clause and one of the assertions below goes red.
+    """
+
+    from polylogue.cli.click_app import cli
+
+    message = read_failure_message(OperationUnavailableError("daemon is unavailable for operation: cli.query"))
+
+    assert "`polylogued run`" in message
+    assert "--daemon-only" not in message
+    assert "run" not in cli.commands
+
+
+def test_a_daemon_absent_browse_is_refused_not_reported_as_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon that did not answer says nothing about what the archive holds.
+
+    polylogue-3eexy AC4.  ``_missing_archive_refusal`` renders browse mode over
+    an absent index as a *valid empty answer*.  Reaching that branch from a
+    ``daemon_required`` refusal made ``polylogue read --all`` print
+    ``outcome: empty (no_rows_in_scope)`` and exit 0 -- "no matches" for a read
+    that was never executed.  The direct-read fallback is all that hides this
+    today; with the fallback gone it is what the operator would see.
+
+    Anti-vacuity: drop the ``_is_daemon_unavailable`` guard from
+    ``archive_query`` and this exits 0 with an ``outcome: empty`` body instead
+    of the typed refusal -- verified by reverting the guard.
+    """
+
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    assert not (tmp_path / "index.db").exists()
+
+    with patch(
+        "polylogue.cli.operation_kernel.dispatch",
+        side_effect=OperationUnavailableError("daemon is unavailable for operation: cli.query"),
+    ):
+        result = CliRunner().invoke(cli, ["read", "--all"])
+
+    assert result.exit_code == FAILED_READ_EXIT_CODE, result.output
+    assert "outcome: empty" not in result.output
+    assert "polylogued run" in result.output
