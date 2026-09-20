@@ -281,6 +281,64 @@ def test_prepared_rows_match_identity_golden_fixture() -> None:
     ]
 
 
+def test_seeded_corpus_stores_identity_golden_fixture(tmp_path: Path) -> None:
+    """Freeze production-stored ids and session digests for the seeded corpus.
+
+    The corpus passes through parse-side preparation and the real SQLite writer;
+    the readback is deliberately a literal fixture, not a second identity
+    implementation.  It fails if canonical bytes drift (or if any fixture
+    value is corrupted), including for nested tool input and non-ASCII text.
+    """
+    conn = _connect(tmp_path / "seeded-identity.db")
+    try:
+        for session in _synthetic_sessions():
+            prepared = prepare_session_rows(session)
+            write_parsed_session_to_archive(
+                conn,
+                session,
+                content_hash=str(session_content_hash(session)),
+                prepared=prepared,
+            )
+
+        observed = {
+            "sessions": [
+                (str(row["session_id"]), cast(bytes, row["content_hash"]).hex())
+                for row in conn.execute("SELECT session_id, content_hash FROM sessions ORDER BY session_id")
+            ],
+            "messages": [
+                str(row["message_id"]) for row in conn.execute("SELECT message_id FROM messages ORDER BY message_id")
+            ],
+            "blocks": [str(row["block_id"]) for row in conn.execute("SELECT block_id FROM blocks ORDER BY block_id")],
+        }
+    finally:
+        conn.close()
+
+    assert observed == {
+        "sessions": [
+            ("codex-session:duplicate-native-ids", "4dd014e1d41e81b9b7bcf94889e199132fdd50df59e0c1eb60def5ab368e816e"),
+            ("codex-session:plain-text", "c2bc5d3f45adfab7b2b273bfa01082db06b2d327acf3f13529255fe917f0b817"),
+            ("codex-session:tool-use-and-thinking", "64aa4c29b79e8b1936f1e163b5a660310b4b2e0ace2427505a1c468e9d2dc298"),
+        ],
+        "messages": [
+            "codex-session:duplicate-native-ids:c:71b9c4bb640966a23595ee589a5e1a76.0",
+            "codex-session:duplicate-native-ids:c:f88028512715e01b32558cd5c33ef802.0",
+            "codex-session:plain-text:n:m0",
+            "codex-session:plain-text:n:m1",
+            "codex-session:tool-use-and-thinking:n:t0",
+            "codex-session:tool-use-and-thinking:n:t1",
+        ],
+        "blocks": [
+            "codex-session:duplicate-native-ids:c:71b9c4bb640966a23595ee589a5e1a76.0:0",
+            "codex-session:duplicate-native-ids:c:f88028512715e01b32558cd5c33ef802.0:0",
+            "codex-session:plain-text:n:m0:0",
+            "codex-session:plain-text:n:m1:0",
+            "codex-session:tool-use-and-thinking:n:t0:0",
+            "codex-session:tool-use-and-thinking:n:t0:1",
+            "codex-session:tool-use-and-thinking:n:t1:0",
+        ],
+    }
+
+
 def test_new_session_skips_field_path_union(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A proven-new session must not enter the reconciliation helper.
 
