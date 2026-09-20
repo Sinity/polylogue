@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -54,10 +55,18 @@ def test_tail_scan_never_reads_more_than_one_chunk_at_a_time(tmp_path: Path, mon
     path = tmp_path / "unterminated.jsonl"
     path.write_bytes(b"x" * (64 * 40))
 
+    # Read the bytes BEFORE patching: ``Path.read_bytes`` goes through
+    # ``Path.open``, so reading inside the replacement would recurse. The
+    # replacement also has to stay transparent for every OTHER path -- the
+    # test harness itself opens files through ``Path.open``.
+    payload = path.read_bytes()
     recorder: dict[str, _ReadRecorder] = {}
+    real_open = Path.open
 
-    def _recording_open(self: Path, *_args: object, **_kwargs: object) -> _ReadRecorder:
-        recorder["handle"] = _ReadRecorder(self.read_bytes())
+    def _recording_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self != path:
+            return real_open(self, *args, **kwargs)
+        recorder["handle"] = _ReadRecorder(payload)
         return recorder["handle"]
 
     monkeypatch.setattr(Path, "open", _recording_open)
