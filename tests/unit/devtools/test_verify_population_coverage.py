@@ -7,21 +7,27 @@ artifact kind is typed unsupported evidence; the gate creates nothing.
 
 from __future__ import annotations
 
+import json
+import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from devtools.parser_census import Census, build_census, source_denominator, write_census
 from devtools.verify_population_coverage import (
     COVERED,
     UNCOVERED,
     UNSUPPORTED_DECLARED,
     CoverageConstruct,
+    PopulationCoverageError,
+    census_constructs,
     declaration_constructs,
     evaluate_population_coverage,
     inventory_constructs,
     main,
+    resolve_census,
 )
 from polylogue.core.enums import Origin
 from polylogue.sources.origin_specs import ORIGIN_SPECS
@@ -335,3 +341,117 @@ def test_drive_applet_log_is_covered_by_its_declared_artifact_rule(tmp_path: Pat
     )
     without = _by_key(inventory_constructs(source_db, specs=stripped), "artifact-kind")
     assert without["aistudio-drive/metadata_document/recognized_unparsed"].status == UNCOVERED
+
+
+# ---------------------------------------------------------------------------
+# Census-backed population (polylogue-olw5e AC3)
+# ---------------------------------------------------------------------------
+
+
+def _census_of(corpus_root: Path) -> Census:
+    """A census over a two-origin synthetic corpus, through the real builder."""
+    claude = corpus_root / "claude-code"
+    chatgpt = corpus_root / "chatgpt"
+    claude.mkdir(parents=True)
+    chatgpt.mkdir(parents=True)
+    for source in sorted((FIXTURE_ROOT / "claude-code").glob("*.jsonl")):
+        shutil.copy(source, claude / source.name)
+    shutil.copy(
+        FIXTURE_ROOT / "chatgpt" / "native-conversation-v1.json",
+        chatgpt / "native-conversation-v1.json",
+    )
+    members, denominator = source_denominator([("claude-code", claude), ("chatgpt", chatgpt)])
+    return build_census(members, denominator, workers=1)
+
+
+def test_coverage_reads_the_recorded_denominator_from_a_census(tmp_path: Path) -> None:
+    """The real source population is evidence the census already recorded.
+
+    Anti-vacuity: the origin constructs below carry the census member counts,
+    so a reader that returned no constructs -- or one that ignored the census
+    and reported only the declarations -- leaves ``origins`` empty and the
+    count assertion red.
+    """
+    census = _census_of(tmp_path / "corpus")
+
+    constructs = census_constructs(census)
+
+    origins = _by_key(constructs, "origin")
+    assert "claude-code-session" in origins
+    assert origins["claude-code-session"].status == COVERED
+    recorded = sum(1 for member in census.members if member.origin == "claude-code-session")
+    assert recorded > 0
+    assert origins["claude-code-session"].count == recorded
+    assert sum(construct.count for construct in origins.values()) == len(census.members)
+    assert all(construct.status != UNCOVERED for construct in constructs), [
+        construct.to_dict() for construct in constructs if construct.status == UNCOVERED
+    ]
+
+
+def test_a_census_origin_without_a_declaration_is_uncovered(tmp_path: Path) -> None:
+    """A construct the census observed and nothing declares fails the gate.
+
+    Anti-vacuity: if the reader silently dropped members whose origin has no
+    ``OriginSpec``, this stays green while an undeclared population exists.
+    """
+    census = _census_of(tmp_path / "corpus")
+    undeclared = replace(census.members[0], origin="invented-origin")
+    census = replace(census, members=(undeclared, *census.members[1:]))
+
+    report = evaluate_population_coverage(None, census=census)
+
+    assert report.census_evaluated
+    assert not report.ok
+    # Both the origin token and the (origin, artifact kind) pair it carries
+    # lose their declaration, and both are reported.
+    assert [construct.key for construct in report.uncovered] == [
+        "invented-origin",
+        "invented-origin/session_document/",
+    ]
+
+
+def test_an_absent_or_bounded_census_is_refused_not_reported_as_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An unavailable measurement must never read as an empty uncovered set.
+
+    Anti-vacuity: returning an empty construct list instead of raising makes
+    the gate exit 0 here, which is exactly the failure this guards -- a
+    missing census reported as a fully covered population.
+    """
+    empty = tmp_path / "census"
+    empty.mkdir()
+    with pytest.raises(PopulationCoverageError, match="no census in"):
+        resolve_census(empty)
+    with pytest.raises(PopulationCoverageError, match="no census directory"):
+        resolve_census(tmp_path / "absent")
+
+    census = _census_of(tmp_path / "corpus")
+    write_census(replace(census, partial=True), empty / "census-20260920T000000Z.json")
+    with pytest.raises(PopulationCoverageError, match="bounded"):
+        resolve_census(empty)
+
+    assert main(["--census-dir", str(empty), "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["refusal"]["type"] == "PopulationCoverageError"
+
+
+def test_the_gate_reads_the_newest_census_in_the_directory(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``--census-dir`` selects the latest document, and says which one.
+
+    Anti-vacuity: a reader pinned to the first (or any fixed) document reports
+    the stale census's path, and the printed path assertion goes red.
+    """
+    directory = tmp_path / "census"
+    directory.mkdir()
+    census = _census_of(tmp_path / "corpus")
+    stale = replace(census, members=(replace(census.members[0], origin="invented-origin"),))
+    write_census(stale, directory / "census-20260101T000000Z.json")
+    newest = directory / "census-20260920T000000Z.json"
+    write_census(census, newest)
+
+    assert main(["--census-dir", str(directory)]) == 0
+    printed = capsys.readouterr().out
+    assert f"Census: read from {newest}" in printed
+    assert "PASS" in printed

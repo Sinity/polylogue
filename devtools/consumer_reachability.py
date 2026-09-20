@@ -17,6 +17,7 @@ from devtools import repo_root
 from devtools.production_reachability import (
     _CallGraph,
     _module_name,
+    _ParsedModule,
     _production_modules,
     _source_signature,
 )
@@ -187,20 +188,20 @@ def _console_script_modules(root: Path) -> tuple[str, ...]:
     return tuple(sorted({str(target).split(":", 1)[0] for target in scripts.values()}))
 
 
-def _import_reachable_modules(root: Path, entrypoints: tuple[str, ...]) -> frozenset[str]:
-    """Transitive module-import closure from the production entrypoints."""
+def _import_reachable_modules(entrypoints: tuple[str, ...], parsed: tuple[_ParsedModule, ...]) -> frozenset[str]:
+    """Transitive module-import closure from the production entrypoints.
+
+    ``parsed`` carries the modules the call graph already parsed. Re-reading
+    and re-``ast.parse``-ing the same 1,295 files for this second traversal
+    was the largest avoidable cost in the cold gate; the trees are identical
+    because both passes read the same files at the same revision.
+    """
     import ast
 
-    package_root = root / "polylogue"
-    modules: dict[str, Path] = {}
-    for path in package_root.rglob("*.py"):
-        modules[_module_name(path, root)] = path
+    modules: dict[str, Path] = {module.name: module.path for module in parsed}
     edges: dict[str, set[str]] = {}
-    for name, path in modules.items():
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            continue
+    for module in parsed:
+        name, path, tree = module.name, module.path, module.tree
         targets: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -274,11 +275,14 @@ def check(root: Path, *, base: str | None = None, head: str | None = None, waive
     )
     cached = _cached_reachability(root, entrypoints)
     if cached is None:
-        graph = _CallGraph(_production_modules(root.resolve(), _source_signature(production_root)))
-        reachable: set[str] = set()
-        for entrypoint in entrypoints:
-            reachable.update(graph.reachable_from(entrypoint))
-        reachable_modules = _import_reachable_modules(root, entrypoints)
+        parsed = _production_modules(root.resolve(), _source_signature(production_root))
+        graph = _CallGraph(parsed)
+        # One traversal over the union of the entrypoints. Walking them
+        # separately repeated the same component up to ten times (the
+        # entrypoint tuple also contains duplicates, since ``polylogue.cli``
+        # is both a named surface and a console-script target).
+        reachable: set[str] = set(graph.reachable_from_any(entrypoints))
+        reachable_modules = _import_reachable_modules(entrypoints, parsed)
         _store_reachability(root, entrypoints, reachable, reachable_modules)
     else:
         reachable, reachable_modules = cached
