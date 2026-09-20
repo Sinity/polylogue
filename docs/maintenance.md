@@ -362,88 +362,57 @@ A magnitude series that is flat and non-zero across many passes means
 convergence is running but not closing the gap; a series that rises means a
 writer is outpacing the index. Both are structural, not transient.
 
-### Inspecting a raw-authority census
+### Inspecting the raw-authority frontier
 
-Raw source-to-index convergence records an immutable census in `source.db`.
-Status and daemon receipts expose a bounded summary plus a URI such as
-`polylogue://raw-authority-census/census:42:.../0`. Resolve that same URI from
-the CLI without copying every plan into the status payload:
+`polylogue ops maintenance raw-authority-frontier` classifies every accepted
+frontier head and every terminal supersession in one pass:
 
 ```bash
-polylogue ops maintenance raw-authority-census \
-  'polylogue://raw-authority-census/census:42:.../0' \
-  --output-format json
+polylogue ops maintenance raw-authority-frontier --output-format json
 ```
 
-The response includes bounded before/postflight plan summaries, counts,
-digests, and a `detail_query_handle` for each plan. It deliberately does not
-inline raw-ID lists, witnesses, preconditions, application receipts, or blocker
-documents: one authority component may contain thousands of each.
-`next_query_handle` advances across the plan inventory. `--limit` is bounded to
-1–500; `--offset` can override the offset encoded in the URI.
+The pass is not recorded. Its `pass_id` is a content address over the
+inspected inventory, so two passes that observe the same frontier name the
+same pass and neither writes a row (polylogue-6kur ruling 2026-09-15 retired
+the per-pass census ledger, which re-recorded the entire pending plan set on
+every inspection). Each returned item carries its own state, actuator,
+reason, evidence digest, input raw IDs, preconditions and strategy witness,
+so a caller needs no separate detail handle to see a component's evidence.
 
-Resolve a census or plan detail handle as bounded canonical-JSON text chunks:
-
-```bash
-polylogue ops maintenance raw-authority-detail \
-  'polylogue://raw-authority-detail/census:42:.../raw-replay:.../current/0' \
-  --chunk-chars 16384 \
-  --output-format json
-```
-
-The first `current/0` read returns digest-bound continuation handles. If the
-underlying outcome or blocker changes between chunks, the old continuation
-fails closed; restart from the record's `current/0` handle.
-
-Concatenate `chunk` values by following `next_query_handle`, then verify the
-reconstructed document against `document_sha256`. The chunk size is bounded to
-256–65,536 characters. MCP clients resolve both census and detail URIs through
-their matching resource templates, so CLI and MCP expose the same complete but
-bounded ledger.
-
-Every receipt identifies its `mode` (`census`, `dry_run`, or `apply`), whether
-the parser census was `quiescent`, and its lifecycle. Apply receipts remain
-`planned` until every selected immutable plan has an outcome; startup recovery
-then validates exact source, application/membership, accepted-head, and session
-postconditions before marking an interrupted pass `executed`. Readiness never
-reports a `planned` row as the latest completed census and exposes its pending
-count separately. Finalization also proves that every retryable or
-carried-forward plan has the identical immutable ID in the postflight census;
-a partially applied component cannot be mislabeled as unchanged work.
+What the pass *does* publish is durable: every blocking item gets a
+`raw_authority_blockers` row, and an obligation that current evidence
+disproves is tombstoned in the same transaction. A blocking item's
+`evidence_ref` is the blocker ID that now carries its plan snapshot.
 
 Parser census itself advances through a bounded number of authority components
-per pass. If uncensused components remain, the pass persists a non-quiescent
-zero-plan census receipt and returns without replay; a later daemon tick resumes
-from the per-raw current-parser receipts. Immutable plans are published only
-after the complete transitive census is quiescent.
+per pass. Uncensused components remain pending and a later daemon tick resumes
+from the per-raw current-parser receipts.
 
-Raw-authority preview is the narrow exception to the generic read-only preview
-rule above: it may durably record source-tier parser/census observations so a
-moved-path component has one crash-safe identity across preview and apply. It
-never selects or applies an index replay plan.
+Raw-authority inspection is the narrow exception to the generic read-only
+preview rule above: it may durably record source-tier parser/census
+observations so a moved-path component has one crash-safe identity across
+inspections. It never selects or applies an index replay plan.
 
 A stale precondition or incomplete application receipt creates a durable,
 fail-closed blocker. List unresolved blockers before resolving one -- this is
 the read-only discovery surface for an operator who does not already know an
-exact `--blocker-id` (previously the only way to find one was page-walking
-`raw-authority-census`/`raw-authority-detail` or writing an ad hoc script
-against the live archive):
+exact `--blocker-id` (the alternative is an ad hoc script against the live
+archive):
 
 ```bash
 polylogue ops maintenance raw-authority-blockers --output-format json
 ```
 
-Each row's `kind` distinguishes `stale_plan` (replan against current
-source/index evidence is enough), `frontier_judgment` (requires an accepted
+Each row's `kind` distinguishes `frontier_judgment` (requires an accepted
 judgment assertion id plus `disposition=retain_canonical_authority`, per the
-conflicting-authority frontier), and `frontier_obligation` (the other
+conflicting-authority frontier) from `frontier_obligation` (the other
 frontier obligation states -- missing bytes, unresolved provenance, corrupt
 -- which resolve like an ordinary blocker: no judgment assertion is
 required). The listing is bounded to `--limit` (1-500, default 100) per
 call; if the response's `truncated` field is `true`, pass
-`--offset <next_offset>` to read the next page. After inspecting the census
-URI and current evidence, explicitly reopen replanning with a recorded
-rationale:
+`--offset <next_offset>` to read the next page. After inspecting the
+blocker's own plan snapshot and current evidence, explicitly reopen
+replanning with a recorded rationale:
 
 ```bash
 polylogue ops maintenance raw-authority-blocker-resolve \
@@ -466,8 +435,8 @@ and confirm.
 Routine raw-authority frontier application is daemon-owned. The daemon selects
 only executable proof-backed plans under the writer coordinator and validates
 the typed application receipt. `polylogue ops maintenance raw-authority-frontier`
-records an inspection census only; it has no manual plan selector or apply
-option.
+inspects only; it has no manual plan selector or apply option, and what it
+records is the durable blocker set, not a census row.
 
 ### `polylogue ops maintenance operation-recovery` - inspecting and adjudicating interrupted mutations
 
