@@ -14,6 +14,7 @@ import pytest
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.daemon_operations import DaemonOperationStack
+from tests.infra.pilot_scenarios import PilotScenario, pilot_scenarios, project_representation
 from tests.infra.source_builders import ProviderSourcePackage
 from tests.infra.workload_artifacts import SeededArchiveArtifact, SeededArchiveClone, SeededArchiveQueryLease
 
@@ -112,3 +113,19 @@ def test_pilot_facts_keep_provider_and_multiplicity_independent(
     assert sessions
     assert len(_provider_native_ids(package)) == 1
     assert all(len(session.messages) >= minimum_messages for session in sessions)
+
+
+@pytest.mark.parametrize("case", pilot_scenarios(), ids=lambda case: case.name)
+def test_compact_pilot_scenarios_keep_independent_facts_across_wire_shapes(case: PilotScenario) -> None:
+    """Wire-shape variation changes representation, never the authored truth."""
+
+    observed = tuple(project_representation(case, representation) for representation in case.representations)
+    assert observed == (case.expected,) * len(case.representations)
+
+
+def test_multiplicity_scenario_is_not_a_set_sum() -> None:
+    """The independent expectation catches the classic duplicate-collapse bug."""
+
+    case = next(case for case in pilot_scenarios() if case.name == "multiplicity-sensitive-sum")
+    collapsed = project_representation(case, {"amounts": sorted({2, 3})})
+    assert collapsed.weighted_total != case.expected.weighted_total
