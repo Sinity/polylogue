@@ -149,7 +149,12 @@ from polylogue.core.timestamp_authority import (
     session_evidence_timestamps,
 )
 from polylogue.core.timestamps import to_epoch_ms
-from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
+from polylogue.pipeline.ids import (
+    SessionRevisionProjection,
+    bound_session_content_hash,
+    session_content_hash,
+    session_revision_projection,
+)
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
@@ -385,10 +390,20 @@ def _write_parsed_precedence_result(
     prepared: PreparedRows | None = None,
     prepared_required: bool = False,
     prepared_write: PreparedSessionWrite | None = None,
+    content_hash: str | None = None,
 ) -> ArchiveRawParsedWriteResult:
     session = normalize_session_timestamps(session, fallback_timestamp=raw_revision_file_mtime(store, raw_id))
     session_id = str(make_session_id(session.source_name, session.provider_session_id))
-    content_hash = str(session_content_hash(session))
+    if content_hash is None:
+        content_hash = str(bound_session_content_hash(session) or session_content_hash(session))
+    else:
+        try:
+            supplied_hash = bytes.fromhex(content_hash)
+        except ValueError as exc:
+            raise ValueError("supplied session content_hash must be hexadecimal text") from exc
+        if len(supplied_hash) != 32:
+            raise ValueError("supplied session content_hash must be a SHA-256 digest")
+        content_hash = supplied_hash.hex()
     existing_row = (
         None
         if fresh_build
@@ -3012,6 +3027,8 @@ def apply_raw_revision_replay(
     )
     if len(aggregate_sessions) != 1:
         raise RuntimeError("one logical revision chain did not compose to exactly one session")
+    if prepared_aggregate_content_hash is None and prepared_aggregate_rows is not None:
+        prepared_aggregate_content_hash = prepared_aggregate_rows.session_content_hash
     aggregate_content_hash = (
         prepared_aggregate_content_hash
         if prepared_aggregate_content_hash is not None
@@ -3183,6 +3200,7 @@ def apply_raw_revision_replay(
                 prepared=resolved_prepared,
                 prepared_required=tip_raw_id in prepared_required_raw_ids or prepared_write is not None,
                 prepared_write=prepared_write,
+                content_hash=aggregate_content_hash.hex() if full_replace else None,
             )
             if stage_timings_s is not None:
                 key = f"{stage_timing_prefix}.index_parsed_write"
@@ -3669,6 +3687,7 @@ def apply_raw_membership_classification(
                     defer_fts_rebuild=not bulk_build,
                     prepared=(prepared_by_raw_id or {}).get(accepted_raw_id),
                     prepared_required=accepted_raw_id in prepared_required_raw_ids,
+                    content_hash=projections_by_raw_id[accepted_raw_id].session_hash.hex(),
                 )
                 if stage_timings_s is not None:
                     key = f"{stage_timing_prefix}.index_parsed_write"
@@ -4104,6 +4123,7 @@ def _index_parsed_for_retained_raw(
     prepared: PreparedRows | None = None,
     prepared_required: bool = False,
     prepared_write: PreparedSessionWrite | None = None,
+    content_hash: str | None = None,
 ) -> ArchiveRawParsedWriteResult:
     provider = Provider.from_string(session.source_name)
     # Retained replay no longer has the parser's RawSessionData descriptor;
@@ -4129,6 +4149,7 @@ def _index_parsed_for_retained_raw(
             prepared=prepared,
             prepared_required=prepared_required,
             prepared_write=prepared_write,
+            content_hash=content_hash,
         )
     except PreparedSessionWriteRefusedError:
         # A required prepared carrier moving is a retryable admission refusal,

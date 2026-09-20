@@ -20,6 +20,7 @@ from polylogue.pipeline.ids import (
     _normalize_for_hash,
     _session_hash_payload,
     attachment_identity_hash,
+    bound_session_content_hash,
     event_base_identity_hash,
     event_canonical_identity_hash,
     message_content_identity,
@@ -437,6 +438,28 @@ def test_session_revision_projection_session_hash_matches_session_content_hash()
     for session in (_golden_session(), _parsed_session("conv-2", "Empty", [], created_at=None, updated_at=None)):
         projection = session_revision_projection(session)
         assert projection.session_hash.hex() == session_content_hash(session)
+
+
+def test_session_revision_projection_uses_parse_bound_hash(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worker-bound digest is reused instead of rebuilding the session tree."""
+    session = _golden_session()
+    bound = session.model_copy(update={"content_hash": str(session_content_hash(session))})
+
+    def _unexpected_tree_hash(*args: object, **kwargs: object) -> str:
+        raise AssertionError("projection must use the parse-bound session hash")
+
+    monkeypatch.setattr("polylogue.pipeline.ids._session_tree_hash", _unexpected_tree_hash)
+    projection = session_revision_projection(bound)
+
+    assert projection.session_hash.hex() == bound.content_hash
+    assert bound_session_content_hash(bound) == bound.content_hash
+
+
+def test_invalid_parse_bound_hash_is_refused() -> None:
+    session = _golden_session().model_copy(update={"content_hash": "corrupt"})
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        bound_session_content_hash(session)
 
 
 def test_session_revision_projection_matches_independent_recomputation() -> None:

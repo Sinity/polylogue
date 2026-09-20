@@ -62,6 +62,7 @@ from polylogue.pipeline.ids import (
     MessageContentIdentity,
     MessageOwnerResolution,
     attachment_message_owner_key,
+    bound_session_content_hash,
     message_content_identities,
     message_owner_resolution,
 )
@@ -872,7 +873,6 @@ def prepare_session_write(
 ) -> PreparedSessionWrite:
     """Prepare the canonical pending write while its lineage evidence is pinned."""
     from polylogue.core.timestamp_authority import normalize_session_timestamps
-    from polylogue.pipeline.ids import session_content_hash as _session_content_hash
 
     normalized = normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp)
     origin = origin_from_provider(normalized.source_name)
@@ -895,7 +895,7 @@ def prepare_session_write(
     )
     rows = PreparedSessionRows(
         session_id=session_id,
-        session_content_hash=bytes.fromhex(_session_content_hash(normalized)),
+        session_content_hash=_prepared_session_content_hash(normalized),
         message_rows=tuple(
             _build_message_rows(
                 session_id,
@@ -946,8 +946,6 @@ def prepare_session_rows(
     any thread, including a parse-prefetch worker running well before (and
     concurrently with) any writer hold.
     """
-    from polylogue.pipeline.ids import session_content_hash as _compute_session_content_hash
-
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
     messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
@@ -969,12 +967,22 @@ def prepare_session_rows(
     )
     return PreparedSessionRows(
         session_id=session_id,
-        session_content_hash=bytes.fromhex(_compute_session_content_hash(session)),
+        session_content_hash=_prepared_session_content_hash(session),
         message_rows=tuple(message_rows),
         block_rows=tuple(block_rows),
         position_offset=position_offset,
         content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
     )
+
+
+def _prepared_session_content_hash(session: ParsedSession) -> bytes:
+    """Use the parse-bound digest, falling back for direct pure callers."""
+    bound = bound_session_content_hash(session)
+    if bound is not None:
+        return bytes.fromhex(bound)
+    from polylogue.pipeline.ids import session_content_hash
+
+    return bytes.fromhex(session_content_hash(session))
 
 
 def prepare_session_shard(directory: Path, sessions: Sequence[ParsedSession]) -> SessionShard:
@@ -1174,8 +1182,11 @@ def write_parsed_session_to_archive(
             if write_outcome is not None:
                 write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
             return session_id
+    bound_hash = bound_session_content_hash(session)
     input_content_hash = (
-        bytes.fromhex(content_hash) if content_hash is not None else _hash_bytes("session", origin.value, native_id)
+        bytes.fromhex(content_hash)
+        if content_hash is not None
+        else (bytes.fromhex(bound_hash) if bound_hash is not None else _hash_bytes("session", origin.value, native_id))
     )
     if prepared_write is not None:
         if (

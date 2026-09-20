@@ -123,6 +123,7 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
         "duration_ms": "provider timing measurement is owned by usage/cost derivation",
     },
     "ParsedSession": {
+        "content_hash": "parse-side validated identity carrier, not semantic session content",
         "provider_session_aliases": "parser-derived alternate session identifiers are retained as lookup metadata",
         "created_at_provenance": "timestamp authority provenance is independent metadata",
         "updated_at_provenance": "timestamp authority provenance is independent metadata",
@@ -166,6 +167,27 @@ def validate_semantic_hash_partition() -> None:
     owner_fields = _OWNER_MATCH_FIELDS["ParsedMessage"]
     if not owner_fields <= _HASHED_FIELDS["ParsedMessage"] or "position" in owner_fields:
         raise AssertionError("ParsedMessage owner partition must be a position-free semantic subset")
+
+
+def bound_session_content_hash(convo: ParsedSession) -> ContentHash | None:
+    """Return a validated parse-side session hash, when one was carried.
+
+    A bound hash is trusted only as a 32-byte hexadecimal digest.  The
+    semantic hash function remains available for callers that need to derive
+    or independently re-check identity.
+    """
+    value = getattr(convo, "content_hash", None)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("bound session content_hash must be hexadecimal SHA-256 text")
+    try:
+        digest = bytes.fromhex(value)
+    except ValueError as exc:
+        raise ValueError("bound session content_hash must be hexadecimal SHA-256 text") from exc
+    if len(digest) != 32:
+        raise ValueError("bound session content_hash must be a SHA-256 digest")
+    return ContentHash(digest.hex())
 
 
 def _hash_field_value(value: object) -> JSONValue:
@@ -1117,11 +1139,16 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     -- the *revision comparison* axes -- are content-only (polylogue-aggz).
     """
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
-    session_hash_hex = _session_tree_hash(
-        convo,
-        messages_payload=messages_payload,
-        attachments_payload=attachments_payload,
-        session_events_payload=session_events_payload,
+    bound_hash = bound_session_content_hash(convo)
+    session_hash_hex = (
+        bound_hash
+        if bound_hash is not None
+        else _session_tree_hash(
+            convo,
+            messages_payload=messages_payload,
+            attachments_payload=attachments_payload,
+            session_events_payload=session_events_payload,
+        )
     )
     message_content_counts: Counter[tuple[bytes, bytes]] = Counter()
     message_hashes: list[bytes] = []
