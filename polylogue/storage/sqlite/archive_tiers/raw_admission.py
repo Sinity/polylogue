@@ -340,6 +340,7 @@ class SourceItemAdmission:
     entry_ordinal: int | None = None
     split_index: int | None = None
     addressing_mode: str | None = None
+    member_name: str | None = None
 
 
 def execute_source_item_admission(
@@ -360,11 +361,11 @@ def execute_source_item_admission(
     try:
         if member.entry_ordinal is not None:
             overlap = conn.execute(
-                "SELECT 1 FROM source_item_member_dispositions "
+                "SELECT disposition FROM source_item_member_dispositions "
                 "WHERE source_generation_id=? AND source_item_id=? AND entry_ordinal=?",
                 (member.source_generation_id, member.source_item_id, member.entry_ordinal),
             ).fetchone()
-            if overlap is not None:
+            if overlap is not None and overlap[0] != "admitted":
                 raise ValueError("source member already has a non-admitted disposition")
         existing = conn.execute(
             "SELECT raw_id, raw_blob_hash FROM source_item_raw_members WHERE source_generation_id=? "
@@ -402,6 +403,21 @@ def execute_source_item_admission(
                 split_index=member.split_index,
                 addressing_mode=member.addressing_mode,
                 manage_transaction=False,
+            )
+            from polylogue.storage.sqlite.archive_tiers.source_items import (
+                SourceItemMemberDisposition,
+                record_source_item_member_disposition,
+            )
+
+            record_source_item_member_disposition(
+                conn,
+                source_generation_id=member.source_generation_id,
+                source_item_id=member.source_item_id,
+                entry_ordinal=member.entry_ordinal,
+                member_name=member.member_name or f"entry-{member.entry_ordinal}",
+                disposition=SourceItemMemberDisposition.ADMITTED,
+                diagnostic="",
+                observed_at_ms=0,
             )
         consume_blob_publication_receipt(conn, plan.request.blob_publication_receipt_id, plan.request.blob_hash)
     except BaseException:

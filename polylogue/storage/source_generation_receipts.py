@@ -237,6 +237,7 @@ def source_generation_receipt(
         member_dispositions = tuple(
             SourceGenerationMemberDisposition(int(row[0]), str(row[1]), str(row[2]), str(row[3]))
             for row in disposition_rows
+            if row[2] != "admitted"
         )
         enumeration_complete = _enumeration_complete(
             source_conn, source_generation_id, item, member_rows, disposition_rows
@@ -381,14 +382,31 @@ def _enumeration_complete(
     )
     if not is_container:
         return expected == len(members)
-    all_ordinals = accepted_ordinals | disposition_ordinals
-    if len(all_ordinals) != expected or all_ordinals != set(range(expected)):
+    admitted_ordinals = {int(row[0]) for row in dispositions if str(row[2]) == "admitted"}
+    non_admitted_ordinals = disposition_ordinals - admitted_ordinals
+    if (
+        (admitted_ordinals and admitted_ordinals != accepted_ordinals)
+        or accepted_ordinals & non_admitted_ordinals
+        or len(accepted_ordinals | non_admitted_ordinals) != expected
+        or accepted_ordinals | non_admitted_ordinals != set(range(expected))
+    ):
         return False
-    member_payload = [(ordinal, "accepted", "", "") for ordinal in sorted(accepted_ordinals)]
+    admitted_rows = {int(row[0]): row for row in dispositions if str(row[2]) == "admitted"}
+    member_payload = [
+        (
+            ordinal,
+            "admitted" if ordinal in admitted_rows else "accepted",
+            str(admitted_rows[ordinal][1]) if ordinal in admitted_rows else "",
+            str(admitted_rows[ordinal][3]) if ordinal in admitted_rows else "",
+        )
+        for ordinal in sorted(accepted_ordinals)
+    ]
     for row in dispositions:
         ordinal = _int_cell(row[0])
         if ordinal is None:
             return False
+        if str(row[2]) == "admitted":
+            continue
         member_payload.append((ordinal, str(row[1]), str(row[2]), str(row[3])))
     actual_member_digest = hashlib.sha256(
         json.dumps(member_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

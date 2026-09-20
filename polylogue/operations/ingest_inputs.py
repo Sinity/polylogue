@@ -173,6 +173,7 @@ def enumerate_ingest_input(
                 retained.entry_ordinal,
                 retained.split_index,
                 retained.data.addressing_mode.value if retained.data.addressing_mode is not None else None,
+                retained.member_name,
             ),
             retained.member_count,
         )

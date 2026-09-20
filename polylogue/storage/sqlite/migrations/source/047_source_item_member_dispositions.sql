@@ -12,7 +12,7 @@ CREATE TABLE source_item_member_dispositions (
     source_item_id TEXT NOT NULL,
     entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal >= 0),
     member_name TEXT NOT NULL CHECK(length(trim(member_name)) > 0),
-    disposition TEXT NOT NULL CHECK(disposition IN ('refused', 'unselected')),
+    disposition TEXT NOT NULL CHECK(disposition IN ('admitted', 'refused', 'unselected')),
     diagnostic TEXT NOT NULL DEFAULT '' CHECK(length(diagnostic) <= 4096),
     observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),
     PRIMARY KEY(source_generation_id, source_item_id, entry_ordinal),
@@ -52,7 +52,7 @@ WITH member_counts AS (
         SELECT source_generation_id, source_item_id,
                SUM(disposition = 'refused') AS refused,
                SUM(disposition = 'unselected') AS unselected,
-               COUNT(*) AS total
+               SUM(disposition IN ('refused','unselected')) AS total
           FROM source_item_member_dispositions
          GROUP BY source_generation_id, source_item_id
       ) md ON md.source_generation_id = si.source_generation_id AND md.source_item_id = si.source_item_id
