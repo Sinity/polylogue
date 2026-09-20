@@ -117,6 +117,13 @@ def raw_materialization_unmeasured_reason(readiness: Mapping[str, Any] | object 
     because that module is inside the derived-schema identity closure: the
     predicate it mirrors is unchanged, and classifying its output is a
     claim-publication concern, not a storage one.
+
+    It no longer asks whether a frontier census row exists. That row came from
+    the retired per-pass census ledger (polylogue-6kur ruling 2026-09-15), and
+    nothing on the daemon route ever wrote one, so the condition marked every
+    production archive permanently indeterminate. An unresolved frontier
+    obligation is a durable blocker row and refutes
+    ``raw_materialization_ready`` directly instead.
     """
     payload: Mapping[str, Any] | None
     if readiness is None:
@@ -134,9 +141,6 @@ def raw_materialization_unmeasured_reason(readiness: Mapping[str, Any] | object 
     parser_census = payload.get("raw_authority_parser_census")
     if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
         return "source parser census not measured"
-    frontier = payload.get("raw_authority_frontier")
-    if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
-        return "raw authority frontier inspection not completed"
     return None
 
 

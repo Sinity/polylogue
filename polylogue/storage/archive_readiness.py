@@ -26,7 +26,7 @@ from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
 from polylogue.storage.derived.session.status import session_insight_status_sync
-from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_detail_query_handle
+from polylogue.storage.raw_authority import parser_census_logical_keys
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -188,9 +188,12 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     parser_census = readiness.get("raw_authority_parser_census")
     if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
         return False
-    frontier = readiness.get("raw_authority_frontier")
-    if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
-        return False
+    # The retired census ledger used to contribute a "was a frontier pass ever
+    # completed" precondition plus its own per-pass residual counts. The
+    # durable successor is the unresolved-blocker set below: every frontier
+    # inspection publishes one blocker per blocking item and tombstones the
+    # ones current evidence disproves, so a non-zero count is the refutation
+    # those census counts stood in for.
     blocking_keys = (
         "critical",
         "warning",
@@ -202,9 +205,7 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "lost_source_evidence_count",
         "unchecked",
         "affected_unchecked",
-        "raw_authority_frontier_blocking_count",
         "raw_authority_blocker_count",
-        "raw_authority_pending_census_count",
         "raw_authority_parser_census_incomplete_count",
     )
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
@@ -354,143 +355,48 @@ def _pinned_authority_frontier_projection(
     source_schema: str,
     index_conn: sqlite3.Connection,
 ) -> dict[str, object]:
-    """Read the durable authority census/frontier through a pinned source alias."""
+    """Read the durable frontier obligations through a pinned source alias.
 
-    unavailable: dict[str, object] = {
-        "raw_authority_census": None,
-        "raw_authority_frontier": None,
-        "raw_authority_frontier_blocking_count": 0,
-        "raw_authority_frontier_remediation_refs": [],
-        "raw_authority_blocker_count": 0,
-        "raw_authority_pending_census_count": 0,
-    }
-    if not _table_columns(index_conn, source_schema, "raw_authority_censuses"):
-        return unavailable
-
-    pending_count = int(
+    The per-pass census ledger this used to read is retired (polylogue-6kur
+    ruling 2026-09-15): an inspection pass records nothing, so the durable
+    answer to "is the accepted frontier authorized?" is the unresolved-blocker
+    set, which every pass publishes and tombstones.
+    """
+    if not _table_columns(index_conn, source_schema, "raw_authority_blockers"):
+        return {
+            "raw_authority_frontier_remediation_refs": [],
+            "raw_authority_blocker_count": 0,
+        }
+    blocker_count = int(
         conn.execute(
-            f"SELECT COUNT(*) FROM {source_schema}.raw_authority_censuses WHERE lifecycle_status = 'planned'"
+            f"SELECT COUNT(*) FROM {source_schema}.raw_authority_blockers WHERE resolved_at_ms IS NULL"
         ).fetchone()[0]
     )
-    authority_census: dict[str, object] | None = None
-    census_row = conn.execute(
-        f"""
-        SELECT census_id, sequence_no, inventory_digest, residual_digest,
-               plan_count, post_inventory_digest, post_residual_digest,
-               post_plan_count, executable_plan_count, residual_plan_count,
-               predecessor_census_id, mode, lifecycle_status, quiescent,
-               fixed_point, completed_at_ms
-        FROM {source_schema}.raw_authority_censuses
-        WHERE lifecycle_status IN ('completed', 'interrupted')
-        ORDER BY sequence_no DESC LIMIT 1
-        """
-    ).fetchone()
-    if census_row is not None:
-        authority_census = {
-            "census_id": str(census_row["census_id"]),
-            "sequence_no": int(census_row["sequence_no"]),
-            "inventory_digest": str(census_row["inventory_digest"]),
-            "residual_digest": str(census_row["residual_digest"]),
-            "plan_count": int(census_row["plan_count"]),
-            "post_inventory_digest": str(census_row["post_inventory_digest"]),
-            "post_residual_digest": str(census_row["post_residual_digest"]),
-            "post_plan_count": int(census_row["post_plan_count"]),
-            "executable_plan_count": int(census_row["executable_plan_count"]),
-            "residual_plan_count": int(census_row["residual_plan_count"]),
-            "predecessor_census_id": census_row["predecessor_census_id"],
-            "mode": str(census_row["mode"]),
-            "lifecycle_status": str(census_row["lifecycle_status"]),
-            "quiescent": bool(census_row["quiescent"]),
-            "fixed_point": bool(census_row["fixed_point"]),
-            "completed_at_ms": int(census_row["completed_at_ms"]),
-            "pending_census_count": pending_count,
-            "query_handle": f"polylogue://raw-authority-census/{census_row['census_id']}/0",
-        }
-
-    frontier: dict[str, object] | None = None
-    frontier_blocking_count = 0
-    frontier_row = conn.execute(
-        f"""
-        SELECT census_id, sequence_no, inventory_digest, residual_digest,
-               plan_count, executable_plan_count, residual_plan_count,
-               lifecycle_status, completed_at_ms, scope_json, post_residual_json
-        FROM {source_schema}.raw_authority_censuses
-        WHERE lifecycle_status IN ('completed', 'interrupted')
-          AND json_extract(scope_json, '$.schema') = 'polylogue.raw-authority-frontier-scope.v1'
-        ORDER BY sequence_no DESC LIMIT 1
-        """
-    ).fetchone()
-    if frontier_row is not None:
-        scope = json.loads(str(frontier_row["scope_json"]))
-        post_residual = json.loads(str(frontier_row["post_residual_json"] or "{}"))
-        postflight_states = post_residual.get("frontier_state_counts")
-        postflight_residual_states = post_residual.get("state_counts")
-        scope_states = scope.get("state_counts")
-        state_counts_source = postflight_states if isinstance(postflight_states, Mapping) else scope_states
-        state_counts = {str(key): int(value) for key, value in dict(state_counts_source or {}).items()}
-        blocking_states = {
-            str(key): int(value)
-            for key, value in dict(
-                postflight_residual_states if isinstance(postflight_residual_states, Mapping) else state_counts
-            ).items()
-        }
-        frontier_blocking_count = sum(
-            count for state, count in blocking_states.items() if state not in {"proven_current", "superseded"}
+    remediation_refs = [
+        {"blocker_id": str(blocker_id), "plan_id": str(plan_id), "observed_pass_id": _text_or_none(observed_pass_id)}
+        for blocker_id, plan_id, observed_pass_id in conn.execute(
+            f"""
+            SELECT b.blocker_id,
+                   json_extract(b.expected_json, '$.plan_id'),
+                   b.observed_pass_id
+            FROM {source_schema}.raw_authority_blockers b
+            WHERE b.resolved_at_ms IS NULL
+              AND json_extract(b.expected_json, '$.authority_witness.schema') =
+                  'polylogue.raw-authority-frontier-plan.v1'
+            ORDER BY b.created_at_ms, b.blocker_id
+            LIMIT 16
+            """
         )
-        frontier = {
-            "census_id": str(frontier_row["census_id"]),
-            "sequence_no": int(frontier_row["sequence_no"]),
-            "inventory_digest": str(scope.get("inventory_digest") or ""),
-            "plan_inventory_digest": str(frontier_row["inventory_digest"]),
-            "residual_digest": str(frontier_row["residual_digest"]),
-            "plan_count": int(frontier_row["plan_count"]),
-            "executable_plan_count": int(frontier_row["executable_plan_count"]),
-            "residual_plan_count": int(frontier_row["residual_plan_count"]),
-            "state_counts": state_counts,
-            "blocking_count": frontier_blocking_count,
-            "lifecycle_status": str(frontier_row["lifecycle_status"]),
-            "completed_at_ms": int(frontier_row["completed_at_ms"]),
-            "query_handle": f"polylogue://raw-authority-census/{frontier_row['census_id']}/0",
-        }
-
-    blocker_count = 0
-    remediation_refs: list[dict[str, object]] = []
-    if _table_columns(index_conn, source_schema, "raw_authority_blockers"):
-        blocker_count = int(
-            conn.execute(
-                f"SELECT COUNT(*) FROM {source_schema}.raw_authority_blockers WHERE resolved_at_ms IS NULL"
-            ).fetchone()[0]
-        )
-        remediation_refs = [
-            {
-                "blocker_id": str(blocker_id),
-                "plan_id": str(plan_id),
-                "detail_query_handle": (
-                    None if census_id is None else raw_authority_detail_query_handle(str(census_id), str(plan_id))
-                ),
-            }
-            for blocker_id, plan_id, census_id in conn.execute(
-                f"""
-                SELECT b.blocker_id,
-                       json_extract(b.expected_json, '$.plan_id'),
-                       b.observed_pass_id
-                FROM {source_schema}.raw_authority_blockers b
-                WHERE b.resolved_at_ms IS NULL
-                  AND json_extract(b.expected_json, '$.authority_witness.schema') =
-                      'polylogue.raw-authority-frontier-plan.v1'
-                ORDER BY b.created_at_ms, b.blocker_id
-                LIMIT 16
-                """
-            )
-        ]
+    ]
     return {
-        "raw_authority_census": authority_census,
-        "raw_authority_frontier": frontier,
-        "raw_authority_frontier_blocking_count": frontier_blocking_count,
         "raw_authority_frontier_remediation_refs": remediation_refs,
         "raw_authority_blocker_count": blocker_count,
-        "raw_authority_pending_census_count": pending_count,
     }
+
+
+def _text_or_none(value: object) -> str | None:
+    """Normalize a nullable durable text column for a read payload."""
+    return None if value is None else str(value)
 
 
 def raw_materialization_readiness_from_pinned_index(
@@ -689,11 +595,6 @@ def _raw_materialization_readiness_from_pinned_index(
         "raw_authority_parser_census": parser_census,
         "raw_authority_parser_census_incomplete_count": _safe_int(parser_census["incomplete_count"]),
         "raw_authority_parser_census_incomplete_blob_bytes": _safe_int(parser_census["incomplete_blob_bytes"]),
-        "raw_authority_ledger_counts": {
-            "unresolved_blockers": _safe_int(authority_projection["raw_authority_blocker_count"]),
-            "pending_censuses": _safe_int(authority_projection["raw_authority_pending_census_count"]),
-            "parser_census_incomplete": _safe_int(parser_census["incomplete_count"]),
-        },
     }
 
 
@@ -841,11 +742,7 @@ def raw_materialization_readiness_snapshot(
                 )
             lost_source_evidence_count = _missing_source_raw_session_count(conn)
             lost_source_evidence_samples = _missing_source_raw_session_samples(conn)
-            authority_census: dict[str, object] | None = None
-            authority_frontier: dict[str, object] | None = None
-            authority_frontier_blocking_count = 0
             authority_frontier_remediation_refs: list[dict[str, object]] = []
-            authority_pending_census_count = 0
             parser_census_available = False
             parser_census_complete_count = 0
             parser_census_incomplete_count = 0
@@ -966,107 +863,6 @@ def raw_materialization_readiness_snapshot(
                         key=lambda item: (-incomplete_origin_bytes[item[0]], -item[1], item[0]),
                     )[:16]
                 ]
-            if _table_columns(conn, "source", "raw_authority_censuses"):
-                authority_pending_census_count = int(
-                    conn.execute(
-                        """
-                        SELECT COUNT(*) FROM source.raw_authority_censuses
-                        WHERE lifecycle_status = 'planned'
-                        """
-                    ).fetchone()[0]
-                )
-                census_row = conn.execute(
-                    """
-                    SELECT census_id, sequence_no, inventory_digest, residual_digest,
-                           plan_count, post_inventory_digest, post_residual_digest,
-                           post_plan_count, executable_plan_count, residual_plan_count,
-                           predecessor_census_id, mode, lifecycle_status, quiescent,
-                           fixed_point, completed_at_ms
-                    FROM source.raw_authority_censuses
-                    WHERE lifecycle_status IN ('completed', 'interrupted')
-                    ORDER BY sequence_no DESC LIMIT 1
-                    """
-                ).fetchone()
-                if census_row is not None:
-                    authority_census = {
-                        "census_id": str(census_row["census_id"]),
-                        "sequence_no": int(census_row["sequence_no"]),
-                        "inventory_digest": str(census_row["inventory_digest"]),
-                        "residual_digest": str(census_row["residual_digest"]),
-                        "plan_count": int(census_row["plan_count"]),
-                        "post_inventory_digest": str(census_row["post_inventory_digest"]),
-                        "post_residual_digest": str(census_row["post_residual_digest"]),
-                        "post_plan_count": int(census_row["post_plan_count"]),
-                        "executable_plan_count": int(census_row["executable_plan_count"]),
-                        "residual_plan_count": int(census_row["residual_plan_count"]),
-                        "predecessor_census_id": census_row["predecessor_census_id"],
-                        "mode": str(census_row["mode"]),
-                        "lifecycle_status": str(census_row["lifecycle_status"]),
-                        "quiescent": bool(census_row["quiescent"]),
-                        "fixed_point": bool(census_row["fixed_point"]),
-                        "completed_at_ms": int(census_row["completed_at_ms"]),
-                        "pending_census_count": authority_pending_census_count,
-                        "query_handle": (f"polylogue://raw-authority-census/{census_row['census_id']}/0"),
-                    }
-                frontier_row = conn.execute(
-                    """
-                    SELECT census_id, sequence_no, inventory_digest, residual_digest,
-                           plan_count, executable_plan_count, residual_plan_count,
-                           lifecycle_status, completed_at_ms, scope_json,
-                           post_residual_json
-                    FROM source.raw_authority_censuses
-                    WHERE lifecycle_status IN ('completed', 'interrupted')
-                      AND json_extract(scope_json, '$.schema') =
-                          'polylogue.raw-authority-frontier-scope.v1'
-                    ORDER BY sequence_no DESC LIMIT 1
-                    """
-                ).fetchone()
-                if frontier_row is not None:
-                    import json
-
-                    frontier_scope = json.loads(str(frontier_row["scope_json"]))
-                    # An apply census records its pre-application scope for
-                    # auditability, then publishes the actual frontier in the
-                    # postflight residual.  Readiness must reflect that
-                    # terminal state rather than keep an already repaired plan
-                    # blocking until some later inspection happens to run.
-                    frontier_post_residual = json.loads(str(frontier_row["post_residual_json"] or "{}"))
-                    postflight_state_counts = frontier_post_residual.get("frontier_state_counts")
-                    postflight_residual_state_counts = frontier_post_residual.get("state_counts")
-                    scope_state_counts = frontier_scope.get("state_counts")
-                    frontier_state_counts_source = (
-                        postflight_state_counts if isinstance(postflight_state_counts, Mapping) else scope_state_counts
-                    )
-                    frontier_state_counts = {
-                        str(key): int(value) for key, value in dict(frontier_state_counts_source or {}).items()
-                    }
-                    blocking_state_counts = {
-                        str(key): int(value)
-                        for key, value in dict(
-                            postflight_residual_state_counts
-                            if isinstance(postflight_residual_state_counts, Mapping)
-                            else frontier_state_counts
-                        ).items()
-                    }
-                    nonblocking_states = {"proven_current", "superseded"}
-                    authority_frontier_blocking_count = sum(
-                        count for state, count in blocking_state_counts.items() if state not in nonblocking_states
-                    )
-                    authority_frontier = {
-                        "census_id": str(frontier_row["census_id"]),
-                        "sequence_no": int(frontier_row["sequence_no"]),
-                        "inventory_digest": str(frontier_scope.get("inventory_digest") or ""),
-                        "plan_inventory_digest": str(frontier_row["inventory_digest"]),
-                        "residual_digest": str(frontier_row["residual_digest"]),
-                        "plan_count": int(frontier_row["plan_count"]),
-                        "executable_plan_count": int(frontier_row["executable_plan_count"]),
-                        "residual_plan_count": int(frontier_row["residual_plan_count"]),
-                        "state_counts": frontier_state_counts,
-                        "blocking_count": authority_frontier_blocking_count,
-                        "lifecycle_status": str(frontier_row["lifecycle_status"]),
-                        "completed_at_ms": int(frontier_row["completed_at_ms"]),
-                        "query_handle": (f"polylogue://raw-authority-census/{frontier_row['census_id']}/0"),
-                    }
             authority_blocker_count = 0
             if _table_columns(conn, "source", "raw_authority_blockers"):
                 authority_blocker_count = int(
@@ -1078,13 +874,9 @@ def raw_materialization_readiness_snapshot(
                     {
                         "blocker_id": str(blocker_id),
                         "plan_id": str(plan_id),
-                        "detail_query_handle": (
-                            None
-                            if census_id is None
-                            else raw_authority_detail_query_handle(str(census_id), str(plan_id))
-                        ),
+                        "observed_pass_id": _text_or_none(observed_pass_id),
                     }
-                    for blocker_id, plan_id, census_id in conn.execute(
+                    for blocker_id, plan_id, observed_pass_id in conn.execute(
                         """
                         SELECT b.blocker_id,
                                json_extract(b.expected_json, '$.plan_id'),
@@ -1157,12 +949,8 @@ def raw_materialization_readiness_snapshot(
         "lost_source_evidence_samples": lost_source_evidence_samples,
         "category_counts": category_counts,
         "source_family_counts": {str(item["origin"]): int(item["count"] or 0) for item in family_rows},
-        "raw_authority_census": authority_census,
-        "raw_authority_frontier": authority_frontier,
-        "raw_authority_frontier_blocking_count": authority_frontier_blocking_count,
         "raw_authority_frontier_remediation_refs": authority_frontier_remediation_refs,
         "raw_authority_blocker_count": authority_blocker_count,
-        "raw_authority_pending_census_count": authority_pending_census_count,
         "raw_authority_parser_census": {
             "available": parser_census_available,
             "complete_count": parser_census_complete_count,
@@ -1174,11 +962,6 @@ def raw_materialization_readiness_snapshot(
         },
         "raw_authority_parser_census_incomplete_count": parser_census_incomplete_count,
         "raw_authority_parser_census_incomplete_blob_bytes": parser_census_incomplete_blob_bytes,
-        "raw_authority_ledger_counts": {
-            "unresolved_blockers": authority_blocker_count,
-            "pending_censuses": authority_pending_census_count,
-            "parser_census_incomplete": parser_census_incomplete_count,
-        },
     }
 
 

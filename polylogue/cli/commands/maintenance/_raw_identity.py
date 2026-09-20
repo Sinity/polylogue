@@ -52,94 +52,11 @@ def raw_authority_frontier_command(
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
     click.echo(
-        f"Frontier {payload['census_id']}: accepted={payload['accepted_head_count']} "
+        f"Frontier {payload['pass_id']}: accepted={payload['accepted_head_count']} "
         f"plans={payload['plan_count']} executable={payload['executable_plan_count']}"
     )
     click.echo(f"States: {json.dumps(payload['state_counts'], sort_keys=True)}")
-    click.echo(f"Details: {payload['query_handle']}")
-
-
-@click.command("raw-authority-census")
-@click.argument("query_handle")
-@click.option("--limit", type=click.IntRange(1, 500), default=100, show_default=True)
-@click.option("--offset", type=click.IntRange(min=0), default=None)
-@click.option(
-    "--output-format",
-    "output_format",
-    type=click.Choice(["plain", "json"]),
-    default="plain",
-    show_default=True,
-)
-@click.pass_obj
-def raw_authority_census_command(
-    env: AppEnv,
-    query_handle: str,
-    limit: int,
-    offset: int | None,
-    output_format: str,
-) -> None:
-    """Read a bounded page from a durable raw-authority census ledger."""
-    try:
-        payload = raw_authority.read_census(env.config.archive_root, query_handle, limit=limit, offset=offset)
-    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    census = payload["census"]
-    if not isinstance(census, dict):
-        raise click.ClickException("invalid raw authority census payload")
-    click.echo(
-        f"Census {census['census_id']}: plans={census['plan_count']} "
-        f"executable={census['executable_plan_count']} residual={census['residual_plan_count']} "
-        f"fixed_point={str(census['fixed_point']).lower()}"
-    )
-    for item in payload["plans"] if isinstance(payload["plans"], list) else []:
-        if isinstance(item, dict):
-            plan = item.get("plan")
-            plan_id = plan.get("plan_id") if isinstance(plan, dict) else "unknown"
-            click.echo(f"  {item.get('ordinal')} {item.get('outcome_status')} {plan_id}")
-    next_handle = payload.get("next_query_handle")
-    if next_handle is not None:
-        click.echo(f"Next: {next_handle}")
-
-
-@click.command("raw-authority-detail")
-@click.argument("query_handle")
-@click.option("--chunk-chars", type=click.IntRange(256, 65_536), default=16_384, show_default=True)
-@click.option("--offset", type=click.IntRange(min=0), default=None)
-@click.option(
-    "--output-format",
-    "output_format",
-    type=click.Choice(["plain", "json"]),
-    default="plain",
-    show_default=True,
-)
-@click.pass_obj
-def raw_authority_detail_command(
-    env: AppEnv,
-    query_handle: str,
-    chunk_chars: int,
-    offset: int | None,
-    output_format: str,
-) -> None:
-    """Read one bounded chunk of a complete census or plan document."""
-    try:
-        payload = raw_authority.read_detail(
-            env.config.archive_root,
-            query_handle,
-            chunk_chars=chunk_chars,
-            offset=offset,
-        )
-    except (FileNotFoundError, KeyError, RuntimeError, ValueError) as exc:
-        raise click.ClickException(str(exc)) from exc
-    if output_format == "json":
-        click.echo(json.dumps(payload, indent=2, sort_keys=True))
-        return
-    click.echo(str(payload["chunk"]), nl=False)
-    next_handle = payload.get("next_query_handle")
-    if next_handle is not None:
-        click.echo(f"\nNext: {next_handle}")
+    click.echo("Blocking items are published as durable blockers; list them with raw-authority-blockers.")
 
 
 @click.command("raw-authority-blockers")
@@ -156,14 +73,12 @@ def raw_authority_detail_command(
 def raw_authority_blockers_command(env: AppEnv, limit: int, offset: int, output_format: str) -> None:
     """List unresolved raw-authority blockers (read-only operator discovery surface).
 
-    Distinguishes ``stale_plan`` blockers (replan against current evidence),
-    ``frontier_judgment`` blockers (require an accepted judgment assertion +
-    disposition), and ``frontier_obligation`` blockers (other frontier
-    obligation states -- missing bytes, unresolved provenance, corrupt --
-    that resolve without a judgment assertion) so an operator can find a
-    ``--blocker-id`` for ``raw-authority-blocker-resolve`` without
-    page-walking ``raw-authority-census``/``raw-authority-detail`` or writing
-    an ad hoc script against the live archive.
+    Distinguishes ``frontier_judgment`` blockers (require an accepted judgment
+    assertion + disposition) from ``frontier_obligation`` blockers (other
+    frontier obligation states -- missing bytes, unresolved provenance,
+    corrupt -- that resolve without a judgment assertion) so an operator can
+    find a ``--blocker-id`` for ``raw-authority-blocker-resolve`` without
+    writing an ad hoc script against the live archive.
 
     Bounded to ``--limit`` (1-500) per call. If ``truncated`` is true in the
     output, pass ``--offset <next_offset>`` to read the next page.
@@ -182,7 +97,9 @@ def raw_authority_blockers_command(env: AppEnv, limit: int, offset: int, output_
     for item in blockers:
         if not isinstance(item, dict):
             continue
-        click.echo(f"{item['blocker_id']}  kind={item['kind']}  plan={item['plan_id']}  census={item['census_id']}")
+        click.echo(
+            f"{item['blocker_id']}  kind={item['kind']}  plan={item['plan_id']}  observed_in={item['observed_pass_id']}"
+        )
         click.echo(f"  reason: {item['reason']}")
     click.echo(f"({payload['returned_count']} of {payload['total_count']} unresolved)")
     if payload.get("truncated"):
@@ -221,7 +138,7 @@ def raw_authority_blocker_resolve_command(
     confirmed: bool,
     output_format: str,
 ) -> None:
-    """Resolve one stale-plan blocker after replanning current evidence.
+    """Resolve one durable frontier blocker against current evidence.
 
     Routed through ``OperationExecutor``/``BlockerResolveActuator`` (t46.9
     phase 3): PREPARE previews the exact blocker target, EXECUTE requires a

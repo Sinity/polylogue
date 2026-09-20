@@ -365,41 +365,6 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
         except Exception as exc:
             return _exception_to_error_json("resource.readiness", exc)
 
-    @mcp.resource("polylogue://raw-authority-census/{census_id}/{offset}")
-    def raw_authority_census_resource(census_id: str, offset: str) -> str:
-        """Resolve one bounded page from a durable raw-authority ledger."""
-        try:
-            from polylogue.storage.raw_authority import read_raw_authority_census
-
-            root = mcp_archive_root(hooks.get_config())
-            handle = f"polylogue://raw-authority-census/{census_id}/{offset}"
-            return hooks.json_payload(MCPRootPayload(root=read_raw_authority_census(root, handle)))
-        except KeyError:
-            return hooks.error_json(f"Raw authority census not found: {census_id}", code="not_found")
-        except (FileNotFoundError, RuntimeError, ValueError) as exc:
-            return _exception_to_error_json("resource.raw-authority-census", exc)
-        except Exception as exc:
-            return _exception_to_error_json("resource.raw-authority-census", exc)
-
-    @mcp.resource("polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}")
-    def raw_authority_detail_resource(census_id: str, record_id: str, revision: str, offset: str) -> str:
-        """Resolve one bounded chunk from a complete census or plan document."""
-        try:
-            from polylogue.storage.raw_authority import read_raw_authority_detail
-
-            root = mcp_archive_root(hooks.get_config())
-            handle = f"polylogue://raw-authority-detail/{census_id}/{record_id}/{revision}/{offset}"
-            return hooks.json_payload(MCPRootPayload(root=read_raw_authority_detail(root, handle)))
-        except KeyError:
-            return hooks.error_json(
-                f"Raw authority detail not found: {census_id}/{record_id}",
-                code="not_found",
-            )
-        except (FileNotFoundError, RuntimeError, ValueError) as exc:
-            return _exception_to_error_json("resource.raw-authority-detail", exc)
-        except Exception as exc:
-            return _exception_to_error_json("resource.raw-authority-detail", exc)
-
 
 class _ResourceRecorder:
     """Stands in for ``MCPServer`` to capture what registration declares.
