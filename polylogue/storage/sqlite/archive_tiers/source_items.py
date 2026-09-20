@@ -30,6 +30,13 @@ class AcquisitionDisposition(StrEnum):
     UNKNOWN_BLOCKING = "unknown_blocking"
 
 
+class SourceItemMemberDisposition(StrEnum):
+    """A central-directory member that was not admitted as raw evidence."""
+
+    REFUSED = "refused"
+    UNSELECTED = "unselected"
+
+
 @dataclass(frozen=True, slots=True)
 class SourceItem:
     source_generation_id: str
@@ -81,6 +88,17 @@ class RetainedSourceGeneration:
     source_generation_id: str
     enumeration_fingerprint: str
     inputs: tuple[RetainedSourceInput, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SourceItemMemberDispositionRecord:
+    source_generation_id: str
+    source_item_id: str
+    entry_ordinal: int
+    member_name: str
+    disposition: SourceItemMemberDisposition
+    diagnostic: str
+    observed_at_ms: int
 
 
 def retained_source_generation(conn: sqlite3.Connection, source_generation_id: str) -> RetainedSourceGeneration:
@@ -522,6 +540,8 @@ def complete_source_item_enumeration(
     enumeration_fingerprint: str,
     record_coordinates: tuple[str, ...],
     enumerated_at_ms: int,
+    member_ordinals: tuple[int, ...] | None = None,
+    member_count: int | None = None,
 ) -> str:
     """Record exhausted decoder evidence, atomically with its final admission.
 
@@ -535,7 +555,8 @@ def complete_source_item_enumeration(
     if len(set(record_coordinates)) != len(record_coordinates) or any(not c.strip() for c in record_coordinates):
         raise ValueError("enumeration coordinates must be distinct and nonempty")
     item = conn.execute(
-        "SELECT enumeration_fingerprint, enumerated_record_count, enumeration_digest, enumerated_at_ms "
+        "SELECT enumeration_fingerprint, enumerated_record_count, enumeration_digest, enumerated_at_ms, "
+        "enumerated_member_count, enumeration_member_digest "
         "FROM source_items WHERE source_generation_id=? AND source_item_id=?",
         (source_generation_id, source_item_id),
     ).fetchone()
@@ -552,21 +573,112 @@ def complete_source_item_enumeration(
         raise ValueError("source enumeration has missing or unexpected raw members")
     if any(row[2] is None for row in members):
         raise ValueError("source enumeration contains retired raw members")
+    if member_count is not None:
+        if member_count < 0:
+            raise ValueError("source member denominator must be non-negative")
+        if member_ordinals is None:
+            raise ValueError("source member denominator requires central-directory ordinals")
+        if len(set(member_ordinals)) != len(member_ordinals) or any(value < 0 for value in member_ordinals):
+            raise ValueError("source member ordinals must be distinct and non-negative")
+        if len(member_ordinals) != member_count or set(member_ordinals) != set(range(member_count)):
+            raise ValueError("source enumeration has missing or unexpected central-directory members")
+        disposition_rows = list(
+            conn.execute(
+                "SELECT entry_ordinal, member_name, disposition, diagnostic FROM source_item_member_dispositions "
+                "WHERE source_generation_id=? AND source_item_id=? ORDER BY entry_ordinal",
+                (source_generation_id, source_item_id),
+            )
+        )
+        accepted_ordinals: set[int] = set()
+        for row in conn.execute(
+            "SELECT DISTINCT c.entry_ordinal FROM source_item_raw_members m "
+            "JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
+            "WHERE m.source_generation_id=? AND m.source_item_id=? AND m.raw_id IS NOT NULL",
+            (source_generation_id, source_item_id),
+        ):
+            accepted_ordinals.add(int(row[0]))
+        disposition_ordinals = {int(row[0]) for row in disposition_rows}
+        if accepted_ordinals & disposition_ordinals or accepted_ordinals | disposition_ordinals != set(member_ordinals):
+            raise ValueError("source enumeration has overlapping or missing central-directory dispositions")
+        member_payload = [(ordinal, "accepted", "", "") for ordinal in sorted(accepted_ordinals)] + [
+            (
+                int(row[0]),
+                str(row[1]),
+                str(row[2]),
+                str(row[3]),
+            )
+            for row in disposition_rows
+        ]
+        member_digest = hashlib.sha256(
+            json.dumps(member_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    else:
+        # Non-container inputs predate the physical-member denominator. Their
+        # one record is also their one physical member; preserve that route's
+        # established source-43 digest while making the new columns complete.
+        member_count = len(members)
+        member_digest = hashlib.sha256(
+            json.dumps(tuple(range(member_count)), separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
     digest = hashlib.sha256(
         json.dumps([(row[0], row[1].hex()) for row in members], ensure_ascii=False, separators=(",", ":")).encode(
             "utf-8"
         )
     ).hexdigest()
     if item[3] is not None:
-        if tuple(item[1:3]) != (len(members), digest):
+        if tuple(item[1:3]) != (len(members), digest) or item[4:] != (member_count, member_digest):
             raise ValueError("completed source enumeration changed")
         return digest
     conn.execute(
-        "UPDATE source_items SET enumerated_record_count=?, enumeration_digest=?, enumerated_at_ms=? "
+        "UPDATE source_items SET enumerated_record_count=?, enumeration_digest=?, enumerated_at_ms=?, "
+        "enumerated_member_count=?, enumeration_member_digest=? "
         "WHERE source_generation_id=? AND source_item_id=?",
-        (len(members), digest, enumerated_at_ms, source_generation_id, source_item_id),
+        (len(members), digest, enumerated_at_ms, member_count, member_digest, source_generation_id, source_item_id),
     )
     return digest
+
+
+def record_source_item_member_disposition(
+    conn: sqlite3.Connection,
+    *,
+    source_generation_id: str,
+    source_item_id: str,
+    entry_ordinal: int,
+    member_name: str,
+    disposition: SourceItemMemberDisposition,
+    diagnostic: str,
+    observed_at_ms: int,
+) -> None:
+    """Persist one refused/unselected central-directory member idempotently."""
+    if entry_ordinal < 0:
+        raise ValueError("source member ordinal must be non-negative")
+    if not member_name.strip():
+        raise ValueError("source member name must be non-empty")
+    item = conn.execute(
+        "SELECT enumerated_at_ms FROM source_items WHERE source_generation_id=? AND source_item_id=?",
+        (source_generation_id, source_item_id),
+    ).fetchone()
+    if item is None:
+        raise KeyError(f"unmanifested source item: {source_generation_id}/{source_item_id}")
+    if item[0] is not None:
+        raise ValueError("completed source enumeration cannot gain member dispositions")
+    value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
+    bounded = bounded_diagnostic(diagnostic, max_len=4096)
+    row = conn.execute(
+        "SELECT member_name, disposition, diagnostic, observed_at_ms FROM source_item_member_dispositions "
+        "WHERE source_generation_id=? AND source_item_id=? AND entry_ordinal=?",
+        (source_generation_id, source_item_id, entry_ordinal),
+    ).fetchone()
+    if row is not None:
+        if tuple(row[:3]) != (member_name, value, bounded):
+            raise ValueError("source member disposition changed")
+        return
+    conn.execute(
+        "INSERT INTO source_item_member_dispositions "
+        "(source_generation_id, source_item_id, entry_ordinal, member_name, disposition, diagnostic, observed_at_ms) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (source_generation_id, source_item_id, entry_ordinal, member_name, value, bounded, observed_at_ms),
+    )
 
 
 def source_generation_census(conn: sqlite3.Connection, source_generation_id: str) -> dict[str, int | bool]:
@@ -585,6 +697,8 @@ def source_generation_census(conn: sqlite3.Connection, source_generation_id: str
 
 __all__ = [
     "AcquisitionDisposition",
+    "SourceItemMemberDisposition",
+    "SourceItemMemberDispositionRecord",
     "SourceItem",
     "FrozenSourceInput",
     "FrozenSourceManifest",
@@ -593,6 +707,7 @@ __all__ = [
     "validate_frozen_source_manifest",
     "publish_frozen_source_manifest",
     "record_source_item_raw_member",
+    "record_source_item_member_disposition",
     "seal_source_generation",
     "source_generation_census",
     "source_item_id",

@@ -36,6 +36,8 @@ class SourceGenerationBlocker(StrEnum):
 
     GENERATION_MISSING = "generation_missing"
     ENUMERATION_INCOMPLETE = "enumeration_incomplete"
+    MEMBER_REFUSED = "member_refused"
+    MEMBER_UNSELECTED = "member_unselected"
     RETIRED_MEMBER = "retired_member"
     PARSER_CENSUS_MISSING = "parser_census_missing"
     PARSER_CENSUS_MISMATCH = "parser_census_mismatch"
@@ -104,11 +106,25 @@ class SourceGenerationItemReceipt:
     logical_coordinate: str
     enumeration_complete: bool
     blockers: tuple[SourceGenerationBlocker, ...]
+    member_dispositions: tuple[SourceGenerationMemberDisposition, ...]
     raws: tuple[SourceGenerationRawReceipt, ...]
 
     @property
     def complete(self) -> bool:
-        return self.enumeration_complete and not self.blockers and all(raw.complete for raw in self.raws)
+        return (
+            self.enumeration_complete
+            and not self.blockers
+            and not self.member_dispositions
+            and all(raw.complete for raw in self.raws)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SourceGenerationMemberDisposition:
+    entry_ordinal: int
+    member_name: str
+    disposition: str
+    diagnostic: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,7 +200,8 @@ def source_generation_receipt(
     item_rows = source_conn.execute(
         """
         SELECT source_item_id, logical_coordinate, enumeration_fingerprint,
-               enumerated_record_count, enumeration_digest, enumerated_at_ms
+               enumerated_record_count, enumeration_digest, enumerated_at_ms,
+               enumerated_member_count, enumeration_member_digest
         FROM main.source_items
         WHERE source_generation_id = ?
         ORDER BY logical_coordinate, source_item_id
@@ -212,12 +229,27 @@ def source_generation_receipt(
         retired_coordinates.extend(
             SourceGenerationRetiredCoordinate(item_id, coordinate, str(row[0])) for row in retired
         )
-        enumeration_complete = _enumeration_complete(item, member_rows)
+        disposition_rows = source_conn.execute(
+            "SELECT entry_ordinal, member_name, disposition, diagnostic FROM main.source_item_member_dispositions "
+            "WHERE source_generation_id=? AND source_item_id=? ORDER BY entry_ordinal",
+            (source_generation_id, item_id),
+        ).fetchall()
+        member_dispositions = tuple(
+            SourceGenerationMemberDisposition(int(row[0]), str(row[1]), str(row[2]), str(row[3]))
+            for row in disposition_rows
+        )
+        enumeration_complete = _enumeration_complete(
+            source_conn, source_generation_id, item, member_rows, disposition_rows
+        )
         item_blockers: list[SourceGenerationBlocker] = []
         if not enumeration_complete:
             item_blockers.append(SourceGenerationBlocker.ENUMERATION_INCOMPLETE)
         if retired:
             item_blockers.append(SourceGenerationBlocker.RETIRED_MEMBER)
+        if any(row[2] == "refused" for row in disposition_rows):
+            item_blockers.append(SourceGenerationBlocker.MEMBER_REFUSED)
+        if any(row[2] == "unselected" for row in disposition_rows):
+            item_blockers.append(SourceGenerationBlocker.MEMBER_UNSELECTED)
 
         # Source-43 record members are the receipt denominator.  In
         # particular, do not turn a legacy item-level ``source_items.raw_id``
@@ -231,6 +263,7 @@ def source_generation_receipt(
                 logical_coordinate=coordinate,
                 enumeration_complete=enumeration_complete,
                 blockers=tuple(item_blockers),
+                member_dispositions=member_dispositions,
                 raws=raws,
             )
         )
@@ -288,12 +321,24 @@ def source_generation_receipt(
     )
 
 
-def _enumeration_complete(item: tuple[object, ...], members: list[tuple[object, ...]]) -> bool:
-    fingerprint, record_count, digest, enumerated_at_ms = item[2:]
+def _enumeration_complete(
+    source_conn: sqlite3.Connection,
+    source_generation_id: str,
+    item: tuple[object, ...],
+    members: list[tuple[object, ...]],
+    dispositions: list[tuple[object, ...]],
+) -> bool:
+    fingerprint, record_count, digest, enumerated_at_ms, member_count, member_digest = item[2:]
     if fingerprint is None or record_count is None or digest is None or enumerated_at_ms is None:
         return False
     record_count_value = _int_cell(record_count)
-    if record_count_value is None or _int_cell(enumerated_at_ms) is None or record_count_value != len(members):
+    if (
+        record_count_value is None
+        or _int_cell(enumerated_at_ms) is None
+        or record_count_value != len(members)
+        or _int_cell(member_count) is None
+        or member_digest is None
+    ):
         return False
     payload: list[tuple[str, str]] = []
     for row in members:
@@ -302,7 +347,42 @@ def _enumeration_complete(item: tuple[object, ...], members: list[tuple[object, 
             return False
         payload.append((str(row[0]), blob_hash.hex()))
     actual = hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-    return str(digest) == actual
+    if str(digest) != actual:
+        return False
+    expected = _int_cell(member_count)
+    if expected is None:
+        return False
+    disposition_values = {_int_cell(row[0]) for row in dispositions}
+    if None in disposition_values or len(disposition_values) != len(dispositions):
+        return False
+    disposition_ordinals = {value for value in disposition_values if value is not None}
+    # The compact receipt row omits the generation/item ids; recover them from
+    # the stable logical coordinate and decoder fingerprint.
+    accepted_values = {
+        _int_cell(row[0])
+        for row in source_conn.execute(
+            "SELECT DISTINCT c.entry_ordinal FROM main.source_item_raw_members m "
+            "JOIN main.raw_container_coordinates c ON c.raw_id=m.raw_id "
+            "WHERE m.source_generation_id=? AND m.source_item_id=? AND m.raw_id IS NOT NULL",
+            (source_generation_id, str(item[0])),
+        )
+    }
+    if None in accepted_values:
+        return False
+    accepted_ordinals = {value for value in accepted_values if value is not None}
+    all_ordinals = accepted_ordinals | disposition_ordinals
+    if len(all_ordinals) != expected or all_ordinals != set(range(expected)):
+        return False
+    member_payload = [(ordinal, "accepted", "", "") for ordinal in sorted(accepted_ordinals)]
+    for row in dispositions:
+        ordinal = _int_cell(row[0])
+        if ordinal is None:
+            return False
+        member_payload.append((ordinal, str(row[1]), str(row[2]), str(row[3])))
+    actual_member_digest = hashlib.sha256(
+        json.dumps(member_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return str(member_digest) == actual_member_digest
 
 
 def _raw_receipt(

@@ -157,6 +157,8 @@ class ZipAdmission:
 
         for info in entries:
             if info.is_dir():
+                if on_unselected is not None:
+                    on_unselected(info, "member is a directory")
                 continue
             name = info.filename
             lower_name = name.lower()
