@@ -262,6 +262,89 @@ def test_attachment_gate_requires_provenance_for_unavailable_refs(
     assert check.evidence["refs_unavailable_without_provenance"] == 0
 
 
+def test_attachment_gate_contradicts_an_acquired_claim_with_no_bytes(
+    corpus_fidelity_archive: SeededArchiveArtifact,
+    tmp_path: Path,
+) -> None:
+    """An 'acquired' row whose blob the store lacks blocks instead of passing.
+
+    polylogue-o0uw5: the 2026-09-14 pre-wipe census found 1240 of 1446
+    ``acquired`` attachment hashes with no bytes in the blob store, and this
+    gate reported that archive as "all attachment references are acquired".
+    ``acquisition_status`` is a claim; the store is the evidence.
+
+    Anti-vacuity: drop ``blob_present=store.exists`` and go back to trusting
+    the status (or remove ``contradicted``/``unverifiable`` from
+    ``blocking_count``) and the first two phases go green with
+    ``refs_acquired == 2``. The third phase writes real bytes for one of the
+    two and asserts it is counted with bytes and no longer blocking, so
+    "report everything acquired as contradicted" also fails.
+    """
+    from polylogue.storage.blob_store import BlobStore
+
+    root = _clone(corpus_fidelity_archive, tmp_path / "acquired-without-bytes")
+    session_id = _first_session_id(root)
+    payload = b"attachment bytes the store never kept"
+    absent_hash = hashlib.sha256(payload).digest()
+    with _connect(root / "index.db") as conn:
+        message_row = conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? LIMIT 1", (session_id,)
+        ).fetchone()
+        assert message_row is not None
+        message_id = str(message_row[0])
+        conn.execute(
+            "INSERT INTO attachments(attachment_id, acquisition_status, blob_hash) VALUES ('att-no-bytes', 'acquired', ?)",
+            (absent_hash,),
+        )
+        # An acquisition claim with no identity at all cannot be checked
+        # against anything; it must not count as a verified one.
+        conn.execute(
+            "INSERT INTO attachments(attachment_id, acquisition_status) VALUES ('att-no-identity', 'acquired')"
+        )
+        conn.execute(
+            """
+            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
+            VALUES ('att-no-bytes', ?, ?, 0, 'drive')
+            """,
+            (session_id, message_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
+            VALUES ('att-no-identity', ?, ?, 1, 'drive')
+            """,
+            (session_id, message_id),
+        )
+
+    report, check = _check(root, "corpus-attachment-fidelity")
+
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["refs_acquired"] == 2
+    assert check.evidence["refs_acquired_with_bytes"] == 0
+    assert check.evidence["refs_acquired_contradicted"] == 1
+    assert check.evidence["refs_acquired_unverifiable"] == 1
+    assert check.count == 2
+
+    # Restoring the bytes corroborates exactly one of the two claims; the
+    # identity-less claim stays unverifiable and keeps the gate red.
+    BlobStore(root / "blob").write_from_bytes(payload)
+    report, check = _check(root, "corpus-attachment-fidelity")
+    assert report.blocking
+    assert check.evidence["refs_acquired_with_bytes"] == 1
+    assert check.evidence["refs_acquired_contradicted"] == 0
+    assert check.evidence["refs_acquired_unverifiable"] == 1
+
+    with _connect(root / "index.db") as conn:
+        conn.execute("DELETE FROM attachment_refs WHERE attachment_id = 'att-no-identity'")
+        conn.execute("DELETE FROM attachments WHERE attachment_id = 'att-no-identity'")
+    report, check = _check(root, "corpus-attachment-fidelity")
+    assert not report.blocking
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["refs_acquired"] == 1
+    assert check.evidence["refs_acquired_with_bytes"] == 1
+
+
 def test_revision_gate_catches_smaller_index_than_best_recorded_revision(
     corpus_fidelity_archive: SeededArchiveArtifact,
     tmp_path: Path,
