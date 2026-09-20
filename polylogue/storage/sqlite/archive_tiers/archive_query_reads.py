@@ -998,9 +998,12 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
         "observed-event": {
             "kind": f"COALESCE(NULLIF({row_alias}.kind, ''), 'unknown')",
             "delivery_state": f"COALESCE(NULLIF({row_alias}.delivery_state, ''), 'unknown')",
-            "tool": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.tool_name'), ''), 'unknown')",
-            "handler": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.handler_kind'), ''), 'unknown')",
-            "status": f"COALESCE(NULLIF(json_extract({row_alias}.payload_json, '$.status'), ''), 'unknown')",
+            # polylogue-dab.1: typed relation columns; these used to be
+            # json_extract-ed out of a payload_json bundle built from the very
+            # same columns one line earlier in the relation SQL.
+            "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
+            "handler": f"COALESCE(NULLIF({row_alias}.handler_kind, ''), 'unknown')",
+            "status": f"COALESCE(NULLIF({row_alias}.status, ''), 'unknown')",
         },
         "delegation": {
             "basis": (f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
@@ -1069,9 +1072,9 @@ def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> 
             "observed-event": {
                 "kind": f"{row_alias}.kind",
                 "delivery_state": f"{row_alias}.delivery_state",
-                "tool": f"json_extract({row_alias}.payload_json, '$.tool_name')",
-                "handler": f"json_extract({row_alias}.payload_json, '$.handler_kind')",
-                "status": f"json_extract({row_alias}.payload_json, '$.status')",
+                "tool": f"{row_alias}.tool_name",
+                "handler": f"{row_alias}.handler_kind",
+                "status": f"{row_alias}.status",
             },
             "delegation": {
                 "mapping_state": f"{row_alias}.mapping_state",
@@ -1824,23 +1827,11 @@ def _observed_event_field_predicate_clause(
     if field in {"kind", "delivery_state"}:
         return _in_or_equals_clause(f"{event_alias}.{field}", predicate.values)
     if field == "tool":
-        return _in_or_equals_clause(
-            f"json_extract({event_alias}.payload_json, '$.tool_name')",
-            predicate.values,
-            lower=True,
-        )
+        return _in_or_equals_clause(f"{event_alias}.tool_name", predicate.values, lower=True)
     if field == "handler":
-        return _in_or_equals_clause(
-            f"json_extract({event_alias}.payload_json, '$.handler_kind')",
-            predicate.values,
-            lower=True,
-        )
+        return _in_or_equals_clause(f"{event_alias}.handler_kind", predicate.values, lower=True)
     if field == "status":
-        return _in_or_equals_clause(
-            f"json_extract({event_alias}.payload_json, '$.status')",
-            predicate.values,
-            lower=True,
-        )
+        return _in_or_equals_clause(f"{event_alias}.status", predicate.values, lower=True)
     if field == "summary":
         return _like_clause(f"{event_alias}.summary", predicate.values)
     if field in {"subject", "subject_ref"}:

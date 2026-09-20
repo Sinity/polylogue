@@ -214,7 +214,6 @@ WITH source_runs AS (
                 ELSE 'session_start'
             END AS context_snapshot_ref,
         trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.git_branch, '')) AS search_text,
-        NULL AS payload_json,
         1 AS materializer_version,
         '' AS materialized_at
     FROM sessions s0
@@ -251,7 +250,14 @@ WITH session_started_base AS (
         'session:' || s0.session_id AS subject_ref,
         json_array('session:' || s0.session_id) AS object_refs_json,
         json_array(s0.session_id) AS evidence_refs_json,
-        json_object('origin', s0.origin, 'native_id', s0.native_id) AS payload_json,
+        -- polylogue-dab.1: the five typed tool columns replace the former
+        -- `payload_json` bundle. A session_started row has no tool, and the
+        -- origin/native_id the old bundle carried had no reader at all.
+        NULL AS tool_name,
+        NULL AS tool_id,
+        NULL AS command,
+        NULL AS handler_kind,
+        NULL AS status,
         trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '') || ' ' || COALESCE(s0.origin, '')) AS search_text,
         NULL AS subject_message_id,
         NULL AS tool_use_position,
@@ -330,13 +336,15 @@ source_observed_events AS (
         'message:' || subject_message_id AS subject_ref,
         object_refs_json,
         evidence_refs_json,
-        json_object(
-            'tool_name', tool_name,
-            'tool_id', tool_id,
-            'command', command,
-            'handler_kind', handler_kind,
-            'status', status
-        ) AS payload_json,
+        -- polylogue-dab.1: `tool_finished_base` already computes these as
+        -- typed columns; they used to be bundled into a `payload_json`
+        -- json_object here only for every reader to json_extract them back
+        -- out one field at a time.
+        tool_name,
+        tool_id,
+        command,
+        handler_kind,
+        status,
         search_text,
         subject_message_id,
         tool_use_position,
@@ -387,7 +395,6 @@ WITH source_context_snapshots AS (
         json_array(s0.session_id) AS evidence_refs_json,
         json_object('source', 'archive-session') AS metadata_json,
         trim(COALESCE(s0.title, '') || ' ' || COALESCE(s0.native_id, '')) AS search_text,
-        NULL AS payload_json,
         1 AS materializer_version,
         '' AS materialized_at
     FROM sessions s0
@@ -436,7 +443,6 @@ source_compaction_snapshots AS (
             END
         ) AS metadata_json,
         'compaction' AS search_text,
-        NULL AS payload_json,
         1 AS materializer_version,
         '' AS materialized_at
     FROM session_events se
@@ -492,8 +498,11 @@ def projected_run_from_row(row: RowLike) -> ProjectedRun:
 def observed_event_from_row(row: RowLike) -> ObservedEvent:
     """Hydrate ObservedEvent from row.
 
-    The materialized cache path (payload_json deserialization) was removed
-    in polylogue-dab. Always use source-derived construction.
+    The materialized cache path was removed in polylogue-dab, and
+    polylogue-dab.1 removed the last `payload_json` round trip: tool_name,
+    tool_id, command, handler_kind and status are read straight off the typed
+    columns the relation already computes, instead of being packed into a
+    json_object and json_extract-ed back out.
     """
     # Regression guard: ensure no stray materialized rows slipped through
     if str(row["row_source"]) == "materialized":
@@ -501,7 +510,6 @@ def observed_event_from_row(row: RowLike) -> ObservedEvent:
             "Unexpected materialized row in observed_event_from_row; "
             "session_observed_events table should not be populated after polylogue-dab."
         )
-    payload = json.loads(str(row["payload_json"] or "{}"))
     subject_ref = row["subject_ref"]
     return ObservedEvent(
         event_ref=ObjectRef.parse(str(row["event_ref"])),
@@ -512,11 +520,11 @@ def observed_event_from_row(row: RowLike) -> ObservedEvent:
         subject_ref=ObjectRef.parse(str(subject_ref)) if subject_ref is not None else None,
         object_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["object_refs_json"])),
         evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
-        tool_name=str(payload["tool_name"]) if payload.get("tool_name") is not None else None,
-        tool_id=str(payload["tool_id"]) if payload.get("tool_id") is not None else None,
-        command=str(payload["command"]) if payload.get("command") is not None else None,
-        handler_kind=str(payload["handler_kind"]) if payload.get("handler_kind") is not None else None,
-        status=str(payload["status"]) if payload.get("status") is not None else None,
+        tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
+        tool_id=str(row["tool_id"]) if row["tool_id"] is not None else None,
+        command=str(row["command"]) if row["command"] is not None else None,
+        handler_kind=str(row["handler_kind"]) if row["handler_kind"] is not None else None,
+        status=str(row["status"]) if row["status"] is not None else None,
     )
 
 

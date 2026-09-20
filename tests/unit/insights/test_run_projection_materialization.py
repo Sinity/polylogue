@@ -267,3 +267,88 @@ async def test_continuation_session_resume_boundary_read_through_source(tmp_path
 
         main_runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
         assert main_runs[0].run.context_snapshot_ref == source_snapshots[0].snapshot.snapshot_ref
+
+
+async def test_run_projection_relations_expose_typed_columns_not_a_payload_bundle(tmp_path: Path) -> None:
+    """The three relations carry typed columns, with no payload_json round trip.
+
+    polylogue-dab.1: `tool_finished_base` already computes tool_name, tool_id,
+    command, handler_kind and status as typed columns. The relation used to
+    bundle those same five values into a `json_object(...) AS payload_json`,
+    and every consumer -- the ObservedEvent hydrator, the query-unit aggregate
+    and filter lowering, and the coordination proof payload -- then
+    json_extract-ed them back out one field at a time. The run and
+    context-snapshot relations carried a `payload_json` column that no reader
+    ever touched at all.
+
+    Anti-vacuity: restoring `json_object(...) AS payload_json` to any of the
+    three relations makes the column assertions fail, and reverting
+    `observed_event_from_row` to `json.loads(row["payload_json"])` makes the
+    hydration assertions fail with a missing-column error rather than a wrong
+    value.
+    """
+    import sqlite3 as _sqlite3
+
+    from polylogue.storage.sqlite.run_projection_relations import (
+        context_snapshot_relation_sql,
+        observed_event_relation_sql,
+        run_relation_sql,
+    )
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    (
+        SessionBuilder(db_path, "typed-columns")
+        .provider("claude-code")
+        .title("typed run projection columns")
+        .add_message(
+            "m-tool",
+            role="assistant",
+            text="Ran a command.",
+            blocks=[
+                {"type": "tool_use", "id": "tool-1", "name": "Bash", "tool_input": {"command": "pytest -k runs"}},
+                {"type": "tool_result", "tool_id": "tool-1", "text": "passed", "tool_result_exit_code": 0},
+            ],
+        )
+        .save()
+    )
+    session_id = "claude-code-session:ext-typed-columns"
+
+    conn = _sqlite3.connect(db_path)
+    conn.row_factory = _sqlite3.Row
+    try:
+        for relation_sql, name in (
+            (run_relation_sql(), "runs"),
+            (observed_event_relation_sql(source_where="1"), "observed_events"),
+            (context_snapshot_relation_sql(), "context_snapshots"),
+        ):
+            cursor = conn.execute(f"{relation_sql} SELECT * FROM {name} LIMIT 0")
+            columns = [description[0] for description in cursor.description]
+            assert "payload_json" not in columns, f"{name} still carries a payload_json bundle: {columns}"
+
+        cursor = conn.execute(
+            f"{observed_event_relation_sql(source_where='1')}"
+            " SELECT tool_name, tool_id, command, handler_kind, status"
+            " FROM observed_events WHERE kind = 'tool_finished'"
+        )
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    assert len(rows) == 1
+    assert rows[0]["tool_name"] == "Bash"
+    assert rows[0]["status"] == "ok"
+
+    async with aiosqlite.connect(db_path) as aconn:
+        aconn.row_factory = sqlite3.Row
+        events = await list_observed_events(
+            aconn,
+            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
+        )
+
+    assert len(events) == 1
+    event = events[0].event
+    assert event.tool_name == "Bash"
+    assert event.tool_id == "tool-1"
+    assert event.status == "ok"
+    assert event.handler_kind is not None
