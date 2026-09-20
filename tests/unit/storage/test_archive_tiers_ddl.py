@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -278,6 +279,18 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
 
 
 def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Path) -> None:
+    """The `actions` view and `delegation_facts` stay indexed, seekable relations.
+
+    polylogue-a7xr.22: `delegations` was a zero-join rename of
+    `delegation_facts` and is gone. The delegation half of this law now names
+    the table the read sites actually use; the `actions` half still guards a
+    real view (a tool_use/tool_result join) against acquiring a WITH/WINDOW
+    body that would defeat predicate pushdown.
+
+    Anti-vacuity: reintroducing any rename-only view over `delegation_facts`
+    makes `test_no_rename_only_view_over_delegation_facts` fail; giving
+    `actions` a CTE or window body makes this one fail.
+    """
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
 
@@ -291,23 +304,45 @@ def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Pat
     delegation_plan = " | ".join(
         str(row["detail"])
         for row in conn.execute(
-            "EXPLAIN QUERY PLAN SELECT * FROM delegations WHERE parent_session_id = ? AND mapping_state = ?",
+            "EXPLAIN QUERY PLAN SELECT * FROM delegation_facts WHERE parent_session_id = ? AND mapping_state = ?",
             ("codex-session:parent", "resolved"),
         ).fetchall()
     )
     view_sql = {
         row["name"]: row["sql"]
-        for row in conn.execute(
-            "SELECT name, sql FROM sqlite_schema WHERE name IN ('actions', 'delegations')"
-        ).fetchall()
+        for row in conn.execute("SELECT name, sql FROM sqlite_schema WHERE name IN ('actions')").fetchall()
     }
 
     assert "USING INDEX" in action_plan.upper()
     assert "USING INDEX" in delegation_plan.upper()
     assert "WINDOW" not in view_sql["actions"].upper()
     assert "WITH" not in view_sql["actions"].upper()
-    assert "WINDOW" not in view_sql["delegations"].upper()
-    assert "WITH" not in view_sql["delegations"].upper()
+
+
+def test_no_rename_only_view_over_delegation_facts(tmp_path: Path) -> None:
+    """No view may exist that only re-selects `delegation_facts` columns.
+
+    polylogue-a7xr.22 deleted `delegations`, which was exactly that: 28 of the
+    table's 29 columns, no join, no rename, no computed column. AC2 of the bead
+    forbids replacing it with another rename.
+
+    Anti-vacuity: re-adding `CREATE VIEW delegations AS SELECT <cols> FROM
+    delegation_facts` to INDEX_DDL makes this test fail.
+    """
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    assert conn.execute("SELECT 1 FROM sqlite_schema WHERE type='view' AND name='delegations'").fetchone() is None
+
+    for (name,) in conn.execute("SELECT name FROM sqlite_schema WHERE type='view'").fetchall():
+        body = str(
+            conn.execute("SELECT sql FROM sqlite_schema WHERE type='view' AND name = ?", (name,)).fetchone()[0]
+        ).upper()
+        if "DELEGATION_FACTS" not in body:
+            continue
+        assert "JOIN" in body or "WHERE" in body or "WITH" in body, (
+            f"view {name} reads delegation_facts without joining, filtering or computing anything"
+        )
 
 
 def test_action_pairs_does_not_materialize_text_copies(tmp_path: Path) -> None:
@@ -1132,3 +1167,130 @@ def test_index_fresh_init_and_converged_live_archive_agree_schema_wise(tmp_path:
             conn.close()
 
     assert _schema_ddl(fresh_path) == _schema_ddl(converged_path)
+
+
+def test_threads_view_declares_no_unconditional_null_column(tmp_path: Path) -> None:
+    """The `threads` view must not alias a bare NULL literal as an output column.
+
+    polylogue-cuxz.12: it carried `NULL AS dominant_repo_id`, a column that was
+    NULL on all 9,914 live rows because nothing could ever produce a value for
+    it -- no writer, no reader, no hydration, no intended identity join. A
+    column structurally incapable of carrying a value is a lie in the read
+    model, not a placeholder. `dominant_repo` (the repo name, chosen by member
+    count) remains the real repository attribution.
+
+    Scoped to `threads` on purpose. `delegation_facts_source` legitimately
+    writes `NULL AS <col>` in individual UNION branches where the other branch
+    supplies the value, so an archive-wide form check would be wrong.
+
+    Anti-vacuity: restoring `NULL AS dominant_repo_id` to the `threads` view
+    makes both assertions below fail.
+    """
+    import re
+
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    thread_columns = [str(row["name"]) for row in conn.execute("PRAGMA table_info(threads)").fetchall()]
+    assert "dominant_repo_id" not in thread_columns
+    assert "dominant_repo" in thread_columns, "the real repository attribution must survive"
+
+    body = str(conn.execute("SELECT sql FROM sqlite_schema WHERE type='view' AND name='threads'").fetchone()[0])
+    # sqlite_schema stores the CREATE text verbatim, comments included.
+    body = re.sub(r"--[^\n]*", "", body)
+    nulls = re.findall(r"(?<![\w.])NULL\s+AS\s+(\w+)", body, flags=re.IGNORECASE)
+    assert nulls == [], f"threads view aliases bare NULL literals as columns: {nulls}"
+
+
+def test_embeddings_tier_tables_render_from_specs(tmp_path: Path) -> None:
+    """Every embeddings CREATE TABLE renders from a spec, or states its reason.
+
+    polylogue-a7xr.27: the index tier was the only spec-driven tier; the
+    embeddings tier now matches it, so adding a column touches the spec and
+    the tier's lifecycle delta only. `message_embeddings` is the one stated
+    exception: `USING vec0(...)` is an extension-defined virtual-table
+    declaration, not a column list a TableColumnSpec can render.
+
+    Anti-vacuity: hand-writing a column list back into any of the five
+    `CREATE TABLE` statements in archive_tiers/embeddings.py makes the
+    body-rendering assertion below fail, because that table's spec body will
+    no longer be a substring of the DDL.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import EMBEDDINGS_TABLE_SPECS
+    from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION, EMBEDDINGS_DDL
+
+    created = re.findall(r"CREATE (?:VIRTUAL )?TABLE IF NOT EXISTS (\w+)", EMBEDDINGS_DDL)
+    assert set(created) == {"message_embeddings", *EMBEDDINGS_TABLE_SPECS}
+
+    for name, spec in EMBEDDINGS_TABLE_SPECS.items():
+        assert spec.ddl_body in EMBEDDINGS_DDL, f"{name} does not render from its spec"
+
+    # The spec-local dimension constant and the tier's exported one are the
+    # same number; the CHECK below is what binds them.
+    assert f"CHECK(dimension = {EMBEDDING_DIMENSION})" in EMBEDDINGS_DDL
+
+
+def test_embeddings_vocabularies_generate_their_check_from_the_python_owner(tmp_path: Path) -> None:
+    """The two closed embeddings vocabularies accept exactly their declared members.
+
+    polylogue-3szyi: `embedding_failures.lifecycle_state` and
+    `embedding_derivation_state.attempt_state` were hand-typed
+    `CHECK(col IN (...))` lists with no generator tie -- the first had a
+    matching `Literal` (`EmbeddingFailureState`) that the DDL simply did not
+    use, the second had no Python owner at all. Both now generate from
+    `archive_tiers/types.py`.
+
+    Anti-vacuity: detaching either CHECK from its owner (writing the literal
+    list back into the spec) leaves this test green only while the two agree;
+    adding a member to the Literal without the generator tie makes the
+    accept-every-member loop fail on the new value, and widening the SQL list
+    beyond the Literal makes the reject-a-non-member assertion fail.
+    """
+    from typing import get_args
+
+    from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import EMBEDDINGS_TABLE_SPECS
+    from polylogue.storage.sqlite.archive_tiers.types import EmbeddingAttemptState, EmbeddingFailureState
+
+    conn = _connect(tmp_path / "vocab.db")
+    try:
+        conn.execute(
+            f"CREATE TABLE embedding_derivation_state ("
+            f"{EMBEDDINGS_TABLE_SPECS['embedding_derivation_state'].ddl_body}) STRICT"
+        )
+        conn.execute(
+            f"CREATE TABLE embedding_failures ({EMBEDDINGS_TABLE_SPECS['embedding_failures'].ddl_body}) STRICT"
+        )
+
+        for index, state in enumerate(get_args(EmbeddingAttemptState)):
+            conn.execute(
+                "INSERT INTO embedding_derivation_state ("
+                "session_id, generation, derivation_key, source_hash, recipe_hash,"
+                " output_contract_hash, attempt_state, updated_at_ms)"
+                " VALUES (?, 1, zeroblob(32), zeroblob(32), zeroblob(32), zeroblob(32), ?, 0)",
+                (f"s-{index}", state),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO embedding_derivation_state ("
+                "session_id, generation, derivation_key, source_hash, recipe_hash,"
+                " output_contract_hash, attempt_state, updated_at_ms)"
+                " VALUES ('s-bad', 1, zeroblob(32), zeroblob(32), zeroblob(32), zeroblob(32), 'in_flight', 0)"
+            )
+
+        for index, state in enumerate(get_args(EmbeddingFailureState)):
+            conn.execute(
+                "INSERT INTO embedding_failures ("
+                "failure_id, session_id, origin, provider, model, error_class, error_message,"
+                " retryable, lifecycle_state, created_at_ms, updated_at_ms)"
+                " VALUES (?, 's', 'codex-session', 'p', 'm', 'c', 'e', 0, ?, 0, 0)",
+                (f"f-{index}", state),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO embedding_failures ("
+                "failure_id, session_id, origin, provider, model, error_class, error_message,"
+                " retryable, lifecycle_state, created_at_ms, updated_at_ms)"
+                " VALUES ('f-bad', 's', 'codex-session', 'p', 'm', 'c', 'e', 0, 'abandoned', 0, 0)"
+            )
+    finally:
+        conn.close()

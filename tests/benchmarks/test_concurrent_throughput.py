@@ -84,7 +84,11 @@ def _fts_search(db_path: Path, query: str, limit: int = 20) -> int:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
     try:
         rows = conn.execute(
-            "SELECT block_id FROM messages_fts WHERE messages_fts MATCH ? LIMIT ?",
+            # messages_fts is contentless and declares only the indexed `text`
+            # column (polylogue-wohv); identity comes from the blocks rowid join.
+            "SELECT b.block_id FROM messages_fts"
+            " JOIN blocks AS b ON b.rowid = messages_fts.rowid"
+            " WHERE messages_fts MATCH ? LIMIT ?",
             (query, limit),
         ).fetchall()
         return len(rows)

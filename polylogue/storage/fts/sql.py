@@ -17,12 +17,20 @@ from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
 # them identical.
 FTS_UNICODE_TOKENIZER = "unicode61 remove_diacritics 2"
 
+# polylogue-wohv: the table declares ONLY the indexed `text` column. It
+# previously also declared block_id/message_id/session_id/block_type
+# UNINDEXED, which a contentless table (content='') discards at insert --
+# SQLite stores nothing for them and `SELECT block_id FROM messages_fts`
+# returns NULL even though the INSERT supplied a value. Every reader already
+# resolves identity by joining `blocks` on rowid (search/query_builders.py,
+# search/runtime.py, archive_tiers/archive.py) or by the
+# `messages_fts_identity` ledger below, so the four columns bought nothing
+# and the DDL implied a retrievability the storage mode forbids. Do NOT add
+# `contentless_unindexed=1` to persist them instead: the blocks join is
+# needed for display fields regardless, so persisting would only grow the
+# index.
 FTS_MESSAGES_TABLE_SQL = f"""
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-        block_id UNINDEXED,
-        message_id UNINDEXED,
-        session_id UNINDEXED,
-        block_type UNINDEXED,
         text,
         content='',
         contentless_delete=1,
@@ -42,10 +50,10 @@ FTS_MESSAGES_IDENTITY_RECIPE_ID = "messages_fts.v1:unicode61-remove_diacritics2+
 
 # polylogue-1xc.12: rowid-keyed shadow ledger binding each `messages_fts`
 # rowid to the block_id it was populated from. `messages_fts` is a
-# CONTENTLESS FTS5 table (content=''): UNINDEXED columns such as `block_id`
-# are write-only and never retrievable by a later SELECT (verified
-# empirically -- `SELECT block_id FROM messages_fts` returns NULL even
-# though the INSERT supplied a value). SQLite reuses freed rowids (deleting
+# CONTENTLESS FTS5 table (content=''), so it cannot carry identity itself:
+# an UNINDEXED column there would be write-only and never retrievable by a
+# later SELECT, which is why polylogue-wohv removed the four that used to be
+# declared. SQLite reuses freed rowids (deleting
 # the highest-rowid block then inserting a new one commonly gets the SAME
 # rowid back -- exactly what a full-session-replace does), so a bare rowid
 # cannot prove which block a `messages_fts` row currently represents. Count-
@@ -118,8 +126,8 @@ _FTS_BULK_GUARD_NOT_SET = (
 BLOCKS_FTS_TRIGGER_DDL = [
     f"""CREATE TRIGGER IF NOT EXISTS messages_fts_ai
        AFTER INSERT ON blocks WHEN new.search_text != '' AND {_FTS_BULK_GUARD_NOT_SET} BEGIN
-           INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-           VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")});
+           INSERT INTO messages_fts(rowid, text)
+           VALUES (new.rowid, {pl_fold_sql_expr("new.search_text")});
            INSERT OR REPLACE INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
            VALUES (new.rowid, new.block_id, new.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}');
        END""",
@@ -132,8 +140,8 @@ BLOCKS_FTS_TRIGGER_DDL = [
        AFTER UPDATE ON blocks WHEN {_FTS_BULK_GUARD_NOT_SET} BEGIN
            DELETE FROM messages_fts WHERE rowid = old.rowid;
            DELETE FROM messages_fts_identity WHERE rowid = old.rowid;
-           INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-           SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, {pl_fold_sql_expr("new.search_text")}
+           INSERT INTO messages_fts(rowid, text)
+           SELECT new.rowid, {pl_fold_sql_expr("new.search_text")}
            WHERE new.search_text != '';
            INSERT OR REPLACE INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
            SELECT new.rowid, new.block_id, new.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
@@ -201,8 +209,8 @@ def insert_session_rows_sql(chunk_size: int) -> str:
             SELECT DISTINCT session_id
             FROM raw_target_sessions
         )
-        INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, {pl_fold_sql_expr("b.search_text")}
+        INSERT INTO messages_fts (rowid, text)
+        SELECT b.rowid, {pl_fold_sql_expr("b.search_text")}
         FROM blocks AS b
         JOIN target_sessions AS target
           ON target.session_id = b.session_id
@@ -212,8 +220,8 @@ def insert_session_rows_sql(chunk_size: int) -> str:
 
 def insert_all_message_rows_sql() -> str:
     return f"""
-        INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
+        INSERT INTO messages_fts (rowid, text)
+        SELECT rowid, {pl_fold_sql_expr("search_text")}
         FROM blocks
         WHERE search_text != ''
     """
@@ -221,22 +229,22 @@ def insert_all_message_rows_sql() -> str:
 
 def insert_missing_message_rows_sql() -> str:
     return f"""
-        WITH missing(rowid, block_id, message_id, session_id, block_type, search_text) AS (
-            SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, b.search_text
+        WITH missing(rowid, search_text) AS (
+            SELECT b.rowid, b.search_text
             FROM blocks AS b
             LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
             WHERE d.id IS NULL AND b.search_text != ''
         )
-        INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
+        INSERT INTO messages_fts (rowid, text)
+        SELECT rowid, {pl_fold_sql_expr("search_text")}
         FROM missing
     """
 
 
 def insert_missing_message_rows_range_sql() -> str:
     return f"""
-        WITH missing(rowid, block_id, message_id, session_id, block_type, search_text) AS (
-            SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type, b.search_text
+        WITH missing(rowid, search_text) AS (
+            SELECT b.rowid, b.search_text
             FROM blocks AS b
             LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
             WHERE d.id IS NULL
@@ -244,8 +252,8 @@ def insert_missing_message_rows_range_sql() -> str:
               AND b.rowid > ?
               AND b.rowid <= ?
         )
-        INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
+        INSERT INTO messages_fts (rowid, text)
+        SELECT rowid, {pl_fold_sql_expr("search_text")}
         FROM missing
     """
 

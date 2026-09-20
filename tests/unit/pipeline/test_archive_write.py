@@ -374,6 +374,87 @@ async def test_projects_agent_policy_event_into_typed_columns(async_backend: SQL
     assert row["source_message_id"] == f"{session_id}:n:msg-1"
 
 
+def _agent_policy_event(index: int, *, approval: str, sandbox: str, network: str) -> ParsedSessionEvent:
+    return ParsedSessionEvent(
+        event_type="agent_policy",
+        timestamp=f"2024-01-01T00:00:{index:02d}Z",
+        payload={"approval": approval, "sandbox": sandbox, "network": network},
+        source_message_provider_id=f"msg-{index}",
+    )
+
+
+async def test_agent_policies_store_value_change_intervals_not_restatements(
+    async_backend: SQLiteBackend,
+) -> None:
+    """Only a genuine policy change gets a row; restatements are suppressed.
+
+    polylogue-cuxz.11: the Codex wire restates the whole policy on every
+    turn_context, which made ``session_agent_policies`` a change-log of
+    non-changes -- 402,869 live rows carrying 3,053 distinct facts, with
+    99.3% of the 3,031 sessions never changing policy at all. Here six
+    observations carry two distinct values, so two rows survive, and each
+    retained row keeps its own ``position``, ``source_message_id``,
+    ``observed_at_ms`` and every policy field (nothing is dropped for having
+    been constant).
+
+    Anti-vacuity: removing the ``policy_values != last_agent_policy`` guard in
+    ``_write_session_events`` writes all six rows and the row-count and
+    position assertions below fail.
+    """
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="conv-policy-intervals",
+        title="Agent policy intervals",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"msg-{index}",
+                role=Role.USER,
+                text=f"turn {index}",
+                timestamp=f"2024-01-01T00:00:{index:02d}Z",
+            )
+            for index in range(6)
+        ],
+        session_events=[
+            _agent_policy_event(0, approval="on-request", sandbox="read-only", network="restricted"),
+            _agent_policy_event(1, approval="on-request", sandbox="read-only", network="restricted"),
+            _agent_policy_event(2, approval="on-request", sandbox="read-only", network="restricted"),
+            _agent_policy_event(3, approval="never", sandbox="workspace-write", network="enabled"),
+            _agent_policy_event(4, approval="never", sandbox="workspace-write", network="enabled"),
+            _agent_policy_event(5, approval="never", sandbox="workspace-write", network="enabled"),
+        ],
+    )
+
+    session_id = await ingest_session(session, async_backend)
+
+    async with async_backend.connection() as conn:
+        rows = await (
+            await conn.execute(
+                """
+                SELECT position, approval_policy, sandbox_policy, network_policy,
+                       source_message_id, observed_at_ms
+                FROM session_agent_policies
+                WHERE session_id = ?
+                ORDER BY position
+                """,
+                (session_id,),
+            )
+        ).fetchall()
+
+    assert [(row["approval_policy"], row["sandbox_policy"], row["network_policy"]) for row in rows] == [
+        ("on-request", "read-only", "restricted"),
+        ("never", "workspace-write", "enabled"),
+    ]
+    # The interval starts where the value changed, not at every restatement.
+    assert [row["position"] for row in rows] == [0, 3]
+    assert [row["source_message_id"] for row in rows] == [
+        f"{session_id}:n:msg-0",
+        f"{session_id}:n:msg-3",
+    ]
+    assert all(row["observed_at_ms"] is not None for row in rows)
+
+
 # ---------------------------------------------------------------------------
 # Message / block / attachment structure
 # ---------------------------------------------------------------------------

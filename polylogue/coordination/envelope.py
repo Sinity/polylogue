@@ -2382,7 +2382,7 @@ def _archive_proof_rows(
     rows = conn.execute(
         f"""
         {observed_event_relation_sql(source_where="1")}
-        SELECT e.event_ref, e.session_id, e.kind, e.summary, e.evidence_refs_json, e.payload_json
+        SELECT e.event_ref, e.session_id, e.kind, e.summary, e.evidence_refs_json, e.status
         FROM observed_events e
         {where}
         ORDER BY COALESCE(e.source_updated_at, e.materialized_at) DESC, e.position
@@ -2481,8 +2481,12 @@ def _activity_payload_from_row(row: sqlite3.Row) -> CoordinationActivityEpisodeP
 
 
 def _proof_payload_from_row(row: sqlite3.Row) -> CoordinationProofRefPayload:
-    payload = _json_dict(row["payload_json"])
-    status = _str_or_none(payload.get("status") or payload.get("outcome") or payload.get("exit_code"))
+    # polylogue-dab.1: the relation carries a typed `status` column. It used
+    # to be packed into a `payload_json` bundle and read back out here; the
+    # `outcome`/`exit_code` fallbacks this line also tried were never present
+    # in that bundle, which only ever held tool_name/tool_id/command/
+    # handler_kind/status.
+    status = _str_or_none(row["status"])
     return CoordinationProofRefPayload(
         ref=str(row["event_ref"]),
         session_id=str(row["session_id"]),

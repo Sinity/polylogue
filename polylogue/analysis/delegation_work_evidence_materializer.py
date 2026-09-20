@@ -1,4 +1,4 @@
-"""Materialize the canonical delegation view into the generic work graph."""
+"""Materialize the canonical delegation facts into the generic work graph."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ _SNAPSHOT_ROW_SEPARATOR = b"\x1e"
 
 
 def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
-    """Return a content-derived snapshot for the current delegation view.
+    """Return a content-derived snapshot for the current delegation facts.
 
     Digested incrementally: the cursor is iterated row by row and each row is
     folded into one SHA-256, so peak memory is one row rather than the whole
@@ -47,12 +47,18 @@ def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
     byte_count = 0
     with sqlite_connection(index_db) as conn:
         # ``SELECT *`` deliberately: the digest must stay as sensitive as the
-        # whole view, and a hand-kept column list would silently stop tracking
-        # a column added to the view later -- freshness would go blind exactly
-        # where a new field carries new evidence. The view's own definition
+        # whole relation, and a hand-kept column list would silently stop
+        # tracking a column added later -- freshness would go blind exactly
+        # where a new field carries new evidence. The table's own declaration
         # fixes the column order, so the digest is stable across runs, and a
-        # genuine view change correctly forces one re-materialization.
-        cursor = conn.execute("SELECT * FROM delegations ORDER BY parent_session_id, child_session_id")
+        # genuine schema change correctly forces one re-materialization.
+        # polylogue-a7xr.22: reads ``delegation_facts`` (the rename-only
+        # ``delegations`` view is gone). ``delegation_id`` is the primary key
+        # and is content-derived (``COALESCE(instruction_tool_use_block_id,
+        # parent || ':' || child)``), so ordering by it is both a total order
+        # -- the previous parent/child ordering left ties free to permute
+        # between runs -- and deterministic across rebuilds.
+        cursor = conn.execute("SELECT * FROM delegation_facts ORDER BY delegation_id")
         for row in cursor:
             row_count += 1
             if row_count > MAX_DELEGATION_SNAPSHOT_ROWS:

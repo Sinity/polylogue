@@ -141,10 +141,6 @@ def _create_schema(root: Path) -> None:
             CREATE INDEX blocks_message_id_idx ON blocks(message_id);
             CREATE VIRTUAL TABLE messages_fts
                 USING fts5(
-                    block_id UNINDEXED,
-                    message_id UNINDEXED,
-                    session_id UNINDEXED,
-                    block_type UNINDEXED,
                     text,
                     content='',
                     contentless_delete=1
@@ -269,9 +265,8 @@ def _seed_searchable(
             (1, "block-1", "message-1", "session-1", "searchable fixture text", b"a" * 32),
         )
         conn.execute(
-            "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
-            "VALUES (?, ?, ?, ?, 'text', ?)",
-            (1, "block-1", "message-1", "session-1", "searchable fixture text"),
+            "INSERT INTO messages_fts(rowid, text) VALUES (?, ?)",
+            (1, "searchable fixture text"),
         )
         conn.execute(
             "INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id) VALUES (?, ?, ?, ?)",
@@ -304,9 +299,8 @@ def _seed_stage(root: Path, source: Path, stage: str) -> None:
         )
         if stage == "searchable":
             conn.execute(
-                "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
-                "VALUES (?, ?, ?, ?, 'text', ?)",
-                (2, "block-stage", "message-stage", "session-stage", "stage fixture text"),
+                "INSERT INTO messages_fts(rowid, text) VALUES (?, ?)",
+                (2, "stage fixture text"),
             )
             conn.execute(
                 "INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id) VALUES (?, ?, ?, ?)",

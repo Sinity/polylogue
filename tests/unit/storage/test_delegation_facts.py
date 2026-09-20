@@ -1,13 +1,17 @@
-"""polylogue-y964 / polylogue-4c27: the `delegations` view composes a
+"""polylogue-y964 / polylogue-4c27: `delegation_facts` composes a
 parent-dispatched subagent attempt from the PARENT's own dispatch actions
 (`actions` rows, semantic_type='subagent'), corroborated against resolved
 children via canonical `session_links` (child in `src_session_id`, parent in
 `resolved_dst_session_id` -- see ``_resolve_outbound_session_links``,
-``storage/sqlite/archive_tiers/write.py``). The prior shipped view aliased
-these backwards; these fixtures use the canonical direction throughout and
-would fail against that reversed view. Model identity is separated into
+``storage/sqlite/archive_tiers/write.py``). An earlier shipped projection
+aliased these backwards; these fixtures use the canonical direction throughout
+and would fail against that reversed shape. Model identity is separated into
 dispatch-turn / requested / child-observed / session-dominant-fallback
-columns rather than one "orchestrator model"."""
+columns rather than one "orchestrator model".
+
+polylogue-a7xr.22: these read `delegation_facts` directly. The rename-only
+`delegations` view they used to query is gone; the public query-unit token
+`delegations` is unaffected."""
 
 from __future__ import annotations
 
@@ -267,7 +271,7 @@ def test_delegation_resolves_with_canonical_child_to_parent_direction(tmp_path: 
         parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
-    row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
     assert row is not None
     # The load-bearing direction assertion: parent_session_id must be the
     # session that DISPATCHED (has the Task action), not the one that was
@@ -320,7 +324,9 @@ def test_delegation_result_status_error_when_dispatch_action_reports_error(tmp_p
         parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
-    row = conn.execute("SELECT result_status FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    row = conn.execute(
+        "SELECT result_status FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)
+    ).fetchone()
     assert row["result_status"] == "error"
 
 
@@ -340,7 +346,7 @@ def test_delegation_unresolved_when_dispatch_has_no_child_link(tmp_path: Path) -
     )
     # No session_links row at all -- the dispatch never produced a resolvable child.
 
-    rows = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchall()
+    rows = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchall()
     assert len(rows) == 1
     assert rows[0]["mapping_state"] == "unresolved"
     assert rows[0]["child_session_id"] is None
@@ -363,7 +369,7 @@ def test_delegation_fresh_spawned_child_with_null_branch_point_resolves(tmp_path
         parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
-    row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
     assert row is not None
     assert row["mapping_state"] == "resolved"
     assert row["child_session_id"] == child_id
@@ -415,7 +421,8 @@ def test_delegation_two_dispatches_in_one_message_no_fanout(tmp_path: Path) -> N
     )
 
     rows = conn.execute(
-        "SELECT * FROM delegations WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id", (parent_id,)
+        "SELECT * FROM delegation_facts WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id",
+        (parent_id,),
     ).fetchall()
     assert len(rows) == 2
     assert {row["mapping_state"] for row in rows} == {"resolved"}
@@ -460,7 +467,8 @@ def test_delegation_dispatch_without_matching_content_stays_unresolved(tmp_path:
         parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
     rows = conn.execute(
-        "SELECT * FROM delegations WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id", (parent_id,)
+        "SELECT * FROM delegation_facts WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id",
+        (parent_id,),
     ).fetchall()
     assert len(rows) == 2
     states = {row["instruction_payload"]: row["mapping_state"] for row in rows}
@@ -488,7 +496,7 @@ def test_delegation_edge_only_when_no_dispatch_action(tmp_path: Path) -> None:
         parent_session_id=parent_id,
     )
 
-    row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
     assert row is not None
     assert row["mapping_state"] == "edge_only"
     assert row["child_session_id"] == child_id
@@ -511,7 +519,7 @@ def test_delegation_quarantined_link_surfaces_as_quarantined_state(tmp_path: Pat
         status="quarantined",
     )
 
-    rows = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchall()
+    rows = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchall()
     assert len(rows) == 1
     assert rows[0]["mapping_state"] == "quarantined"
     assert rows[0]["instruction_payload"] is None
@@ -532,7 +540,7 @@ def test_delegation_excludes_non_subagent_link_types(tmp_path: Path) -> None:
         link_type="continuation",
     )
 
-    rows = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchall()
+    rows = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchall()
     assert rows == []
 
 
@@ -571,7 +579,7 @@ def test_delegation_separates_dispatch_requested_and_child_observed_model_identi
         parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
-    row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
     assert row is not None
     # Four genuinely distinct identities, none silently collapsed together:
     assert row["dispatch_turn_model"] == "claude-sonnet-4-6"
@@ -599,7 +607,9 @@ def test_delegation_requested_model_unknown_when_not_recorded(tmp_path: Path) ->
         tool_id="task-1",
         tool_input='{"prompt": "no explicit route"}',
     )
-    row = conn.execute("SELECT requested_model FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    row = conn.execute(
+        "SELECT requested_model FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)
+    ).fetchone()
     assert row["requested_model"] is None
 
 
@@ -653,7 +663,7 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
     )
     conn.commit()
 
-    row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
+    row = conn.execute("SELECT * FROM delegation_facts WHERE parent_session_id = ?", (parent_id,)).fetchone()
     assert row is not None
     assert row["parent_session_id"] == parent_id
     assert row["child_session_id"] == child_id

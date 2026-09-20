@@ -68,7 +68,7 @@ def test_incremental_fts_repair_deletes_via_block_rowid(test_conn: sqlite3.Conne
     assert "FROM blocks" in message_delete_sql
     message_insert_sql = " ".join(insert_session_rows_sql(1).split())
     assert "SELECT DISTINCT session_id FROM raw_target_sessions" in message_insert_sql
-    assert "INSERT INTO messages_fts (rowid, block_id, message_id, session_id, block_type, text)" in message_insert_sql
+    assert "INSERT INTO messages_fts (rowid, text)" in message_insert_sql
 
     plan = "\n".join(
         row[3]

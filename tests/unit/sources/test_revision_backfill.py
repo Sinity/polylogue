@@ -1943,17 +1943,12 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
         assert conn.execute("SELECT message_count, raw_id FROM sessions").fetchone() == (2, newest_raw_id)
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        row = conn.execute(
-            "SELECT rowid, block_id, message_id, session_id, block_type FROM blocks ORDER BY rowid LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT rowid FROM blocks ORDER BY rowid LIMIT 1").fetchone()
         assert row is not None
         conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (row[0],))
         conn.execute(
-            """
-            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-            VALUES (?, ?, ?, ?, ?, 'stale-only-token')
-            """,
-            row,
+            "INSERT INTO messages_fts(rowid, text) VALUES (?, 'stale-only-token')",
+            (row[0],),
         )
         conn.commit()
         assert conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'stale' ").fetchone()[0] == 1

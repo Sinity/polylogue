@@ -3797,7 +3797,7 @@ class TestSearchQueryContracts:
             ), [tuple(row) for row in delegation_blocks]
             assert (
                 conn.execute(
-                    "SELECT COUNT(*) FROM delegations WHERE parent_session_id = ?",
+                    "SELECT COUNT(*) FROM delegation_facts WHERE parent_session_id = ?",
                     (parent_id,),
                 ).fetchone()[0]
                 == 1

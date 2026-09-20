@@ -71,9 +71,9 @@ def test_search_results_monotonic_under_concurrent_writes(workspace_env: dict[st
         with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as rconn:
             while not stop_flag.is_set():
                 try:
-                    # messages_fts is contentless (content=''), so the UNINDEXED
-                    # columns are not retrievable directly; resolve message_id via
-                    # the blocks rowid join, mirroring the production search path.
+                    # messages_fts is contentless (content='') and declares only
+                    # the indexed `text` column; resolve message_id via the blocks
+                    # rowid join, mirroring the production search path.
                     rows = rconn.execute(
                         """
                         SELECT b.message_id

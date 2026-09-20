@@ -6488,7 +6488,7 @@ class ArchiveStore:
             f"""
             SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
                    b.search_text AS fallback_text,
-                   snippet(messages_fts, 4, '[', ']', '...', 12) AS snippet,
+                   snippet(messages_fts, 0, '[', ']', '...', 12) AS snippet,
                    rank
             FROM messages_fts
             JOIN blocks b ON b.rowid = messages_fts.rowid

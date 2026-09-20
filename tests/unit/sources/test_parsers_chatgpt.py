@@ -1104,11 +1104,10 @@ def test_chatgpt_thoughts_node_produces_nonempty_thinking_text_end_to_end(test_d
         ).fetchone()
         assert stored_text is not None
         assert thought_text in stored_text[0]
-        # messages_fts is a CONTENTLESS FTS5 table (content=''): its own
-        # UNINDEXED columns (session_id included) are write-only and never
-        # retrievable by SELECT (see FTS_MESSAGES_IDENTITY_TABLE_SQL's
-        # docstring in polylogue/storage/fts/sql.py) -- the rowid-to-block_id
-        # identity ledger is the real way to resolve a MATCH hit's identity.
+        # messages_fts is a CONTENTLESS FTS5 table (content='') declaring only
+        # the indexed `text` column (see FTS_MESSAGES_TABLE_SQL in
+        # polylogue/storage/fts/sql.py) -- the rowid-to-block_id identity
+        # ledger is the way to resolve a MATCH hit's identity.
         fts_hit = conn.execute(
             """
             SELECT b.session_id

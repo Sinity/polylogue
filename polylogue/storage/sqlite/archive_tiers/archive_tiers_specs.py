@@ -53,7 +53,12 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     literal_check,
     nullable_check,
 )
-from polylogue.storage.sqlite.archive_tiers.types import DelegationMappingState, DelegationResultStatus
+from polylogue.storage.sqlite.archive_tiers.types import (
+    DelegationMappingState,
+    DelegationResultStatus,
+    EmbeddingAttemptState,
+    EmbeddingFailureState,
+)
 
 _TOOL_COMMAND_SQL = sql_coalesced_json_extract("tool_input", TOOL_COMMAND_INPUT_KEYS)
 _TOOL_PATH_SQL = sql_coalesced_json_extract("tool_input", TOOL_PATH_INPUT_KEYS)
@@ -1844,7 +1849,7 @@ SESSION_PROFILES_SPEC = _make_table_spec(
             "primary_model_name",
             """-- 1vpm.1: dominant model by assistant output-token share + its canonical
     -- family (anthropic/openai/deepseek/...) -- the enabling primitive for
-    -- the `delegations` view's orchestrator/subagent model identity.
+    -- `delegation_facts`' orchestrator/subagent model identity.
     primary_model_name              TEXT""",
         ),
         _raw_column("primary_model_family", """primary_model_family            TEXT"""),
@@ -1991,6 +1996,152 @@ WORK_EVIDENCE_EDGES_SPEC = _make_table_spec(
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Embeddings tier (polylogue-a7xr.27)
+#
+# The index tier renders every CREATE TABLE from a TableColumnSpec; the
+# embeddings tier now does too. Its five STRICT tables are declared here so a
+# column addition touches the spec and the tier's lifecycle delta only, and so
+# its two closed vocabularies generate their CHECK from the Python owner
+# (polylogue-3szyi) instead of a hand-typed value list. The vec0 virtual table
+# `message_embeddings` stays hand-written in embeddings.py: `USING vec0(...)`
+# is an extension-defined declaration, not a column list TableColumnSpec can
+# render.
+#
+# `_EMBEDDING_DIMENSION` is duplicated from archive_tiers/embeddings.py rather
+# than imported, because embeddings.py imports this module for its DDL bodies
+# and the reverse import would be a cycle. The constant is fixed by the
+# `dimension = N` CHECK below, which the DDL-parity test compares against
+# embeddings.EMBEDDING_DIMENSION.
+_EMBEDDING_DIMENSION = 1024
+
+MESSAGE_EMBEDDINGS_META_SPEC = _make_table_spec(
+    "message_embeddings_meta",
+    (
+        _raw_column(
+            "vector_derivation_hash",
+            """vector_derivation_hash BLOB PRIMARY KEY CHECK(length(vector_derivation_hash) = 32)""",
+        ),
+        _raw_column("model", """model                  TEXT NOT NULL"""),
+        _raw_column(
+            "dimension", f"""dimension              INTEGER NOT NULL CHECK(dimension = {_EMBEDDING_DIMENSION})"""
+        ),
+        _raw_column("embedded_at_ms", """embedded_at_ms         INTEGER"""),
+        _raw_column("recipe_hash", """recipe_hash            BLOB NOT NULL CHECK(length(recipe_hash) = 32)"""),
+        _raw_column(
+            "output_contract_hash",
+            """output_contract_hash   BLOB NOT NULL CHECK(length(output_contract_hash) = 32)""",
+        ),
+    ),
+)
+
+MESSAGE_EMBEDDING_REFS_SPEC = _make_table_spec(
+    "message_embedding_refs",
+    (
+        _raw_column("message_id", """message_id             TEXT PRIMARY KEY"""),
+        _raw_column("session_id", """session_id             TEXT NOT NULL"""),
+        _raw_column("origin", """origin                 TEXT NOT NULL"""),
+        # The exact canonical message semantic identity. A vector address is
+        # text/request-only and may be reused, but a ref is current only when
+        # it also names the current message content identity.
+        _raw_column(
+            "message_content_hash",
+            """message_content_hash   BLOB
+                                   CHECK(message_content_hash IS NULL OR length(message_content_hash) = 32)""",
+        ),
+        _raw_column(
+            "vector_derivation_hash",
+            """vector_derivation_hash BLOB NOT NULL CHECK(length(vector_derivation_hash) = 32)""",
+        ),
+        _raw_column("embedded_at_ms", """embedded_at_ms         INTEGER"""),
+    ),
+)
+
+EMBEDDING_STATUS_SPEC = _make_table_spec(
+    "embedding_status",
+    (
+        _raw_column("session_id", """session_id             TEXT PRIMARY KEY"""),
+        _raw_column("origin", """origin                 TEXT NOT NULL DEFAULT ''"""),
+        _raw_column(
+            "message_count_embedded",
+            """message_count_embedded INTEGER NOT NULL DEFAULT 0 CHECK(message_count_embedded >= 0)""",
+        ),
+        _raw_column("last_embedded_at_ms", """last_embedded_at_ms    INTEGER"""),
+        _raw_column(
+            "needs_reindex", """needs_reindex          INTEGER NOT NULL DEFAULT 0 CHECK(needs_reindex IN (0, 1))"""
+        ),
+        _raw_column("error_message", """error_message          TEXT"""),
+    ),
+)
+
+EMBEDDING_DERIVATION_STATE_SPEC = _make_table_spec(
+    "embedding_derivation_state",
+    (
+        _raw_column("session_id", """session_id             TEXT PRIMARY KEY"""),
+        _raw_column("origin", """origin                 TEXT NOT NULL DEFAULT ''"""),
+        _raw_column("generation", """generation             INTEGER NOT NULL CHECK(generation >= 1)"""),
+        _raw_column("derivation_key", """derivation_key         BLOB NOT NULL CHECK(length(derivation_key) = 32)"""),
+        _raw_column("source_hash", """source_hash            BLOB NOT NULL CHECK(length(source_hash) = 32)"""),
+        _raw_column("recipe_hash", """recipe_hash            BLOB NOT NULL CHECK(length(recipe_hash) = 32)"""),
+        _raw_column(
+            "output_contract_hash",
+            """output_contract_hash   BLOB NOT NULL CHECK(length(output_contract_hash) = 32)""",
+        ),
+        _raw_column(
+            "attempt_state",
+            f"""attempt_state          TEXT NOT NULL
+                                   CHECK ({literal_check("attempt_state", *get_args(EmbeddingAttemptState))})""",
+        ),
+        _raw_column("message_count", """message_count          INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0)"""),
+        _raw_column("updated_at_ms", """updated_at_ms          INTEGER NOT NULL CHECK(updated_at_ms >= 0)"""),
+    ),
+)
+
+EMBEDDING_FAILURES_SPEC = _make_table_spec(
+    "embedding_failures",
+    (
+        _raw_column("failure_id", """failure_id             TEXT PRIMARY KEY"""),
+        _raw_column("session_id", """session_id             TEXT NOT NULL"""),
+        _raw_column("origin", """origin                 TEXT NOT NULL"""),
+        _raw_column("message_refs_json", """message_refs_json      TEXT NOT NULL DEFAULT '[]'"""),
+        _raw_column("provider", """provider               TEXT NOT NULL"""),
+        _raw_column("model", """model                  TEXT NOT NULL"""),
+        _raw_column("error_class", """error_class            TEXT NOT NULL"""),
+        _raw_column("error_message", """error_message          TEXT NOT NULL"""),
+        _raw_column("retryable", """retryable              INTEGER NOT NULL CHECK(retryable IN (0, 1))"""),
+        _raw_column(
+            "lifecycle_state",
+            f"""lifecycle_state        TEXT NOT NULL
+                                   CHECK ({literal_check("lifecycle_state", *get_args(EmbeddingFailureState))})""",
+        ),
+        _raw_column("created_at_ms", """created_at_ms          INTEGER NOT NULL"""),
+        _raw_column("updated_at_ms", """updated_at_ms          INTEGER NOT NULL"""),
+        _raw_column("resolved_at_ms", """resolved_at_ms         INTEGER"""),
+        _raw_column("resolution_action", """resolution_action      TEXT"""),
+        _raw_column("resolution_note", """resolution_note        TEXT"""),
+        _raw_column("superseded_by", """superseded_by          TEXT"""),
+        _raw_column("generation", """generation             INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0)"""),
+        _raw_column(
+            "derivation_key",
+            """derivation_key         BLOB CHECK(derivation_key IS NULL OR length(derivation_key) = 32)""",
+        ),
+        _raw_column(
+            "source_hash", """source_hash            BLOB CHECK(source_hash IS NULL OR length(source_hash) = 32)"""
+        ),
+        _raw_column(
+            "recipe_hash", """recipe_hash            BLOB CHECK(recipe_hash IS NULL OR length(recipe_hash) = 32)"""
+        ),
+    ),
+)
+
+EMBEDDINGS_TABLE_SPECS = {
+    "message_embeddings_meta": MESSAGE_EMBEDDINGS_META_SPEC,
+    "message_embedding_refs": MESSAGE_EMBEDDING_REFS_SPEC,
+    "embedding_status": EMBEDDING_STATUS_SPEC,
+    "embedding_derivation_state": EMBEDDING_DERIVATION_STATE_SPEC,
+    "embedding_failures": EMBEDDING_FAILURES_SPEC,
+}
+
 INDEX_TABLE_SPECS = {
     "query_unit_frame_state": QUERY_UNIT_FRAME_STATE_SPEC,
     "raw_revision_applications": RAW_REVISION_APPLICATIONS_SPEC,
@@ -2032,4 +2183,5 @@ TABLE_SPECS = {
     "messages": MESSAGES_SPEC,
     "blocks": BLOCKS_SPEC,
     **INDEX_TABLE_SPECS,
+    **EMBEDDINGS_TABLE_SPECS,
 }

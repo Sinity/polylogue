@@ -159,7 +159,7 @@ class SessionProfile:
     # share, and its canonical vendor family (anthropic/openai/deepseek/...)
     # via archive.semantic.pricing.canonical_model_family. polylogue-4c27:
     # this is a session-level aggregate fallback, explicitly excluded from
-    # the `delegations` view's per-turn dispatch/requested/child-observed
+    # `delegation_facts`' per-turn dispatch/requested/child-observed
     # model identity -- see that view's DDL comment.
     primary_model_name: str | None = None
     primary_model_family: str | None = None

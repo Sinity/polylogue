@@ -38,7 +38,7 @@ def build_ranked_session_search_query(
         return None
 
     snippet_sql = (
-        ", b.search_text AS fallback_text, snippet(messages_fts, 4, '[', ']', '...', 24) AS snippet"
+        ", b.search_text AS fallback_text, snippet(messages_fts, 0, '[', ']', '...', 24) AS snippet"
         if include_snippet
         else ""
     )
@@ -100,7 +100,7 @@ def build_ranked_action_search_query(
     if fts_query is None:
         return None
 
-    snippet_sql = ", snippet(messages_fts, 4, '[', ']', '...', 24) AS snippet" if include_snippet else ""
+    snippet_sql = ", snippet(messages_fts, 0, '[', ']', '...', 24) AS snippet" if include_snippet else ""
     sql = f"""
         WITH candidate_hits AS (
             SELECT

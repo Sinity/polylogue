@@ -198,7 +198,7 @@ def test_delegation_snapshot_refuses_row_ceiling_on_the_freshness_probe(
     """The freshness probe is bounded, not just the materialize path.
 
     Anti-vacuity: restoring the unbounded
-    ``SELECT * FROM delegations ... .fetchall()`` snapshot makes
+    ``SELECT * FROM delegation_facts ... .fetchall()`` snapshot makes
     ``delegation_work_evidence_materialization_needed`` return a bool for an
     over-ceiling population instead of raising, and this test goes red.
     """

@@ -475,7 +475,28 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # now carries no provider-named table. SEMANTIC_REPARSE: the rows exist only in
 # the acquired export, so they are recomputed from it rather than copied
 # across.
-INDEX_SCHEMA_VERSION = 100
+# polylogue-wohv: v101 removes the four UNINDEXED columns
+# (block_id/message_id/session_id/block_type) from the contentless
+# ``messages_fts`` declaration and from every INSERT that fed them. A
+# contentless FTS5 table discards UNINDEXED values at insert, so the columns
+# stored nothing and no reader could read them back; every consumer already
+# joins ``blocks`` on rowid or uses ``messages_fts_identity``. INDEX_ONLY: the
+# indexed column set, tokenizer and rowid binding are unchanged, so the search
+# index is rebuilt with identical content and no parsed row is re-derived.
+# polylogue-a7xr.22: v102 drops the `delegations` view. It selected 28 of
+# `delegation_facts`' 29 columns with no join, no rename and no computed
+# column -- its only effect was hiding the `delegation_id` primary key. All
+# six SQL read sites now read the table. METADATA_ONLY: no stored row and no
+# derived value changes; the removed object was a pure projection of a table
+# that stays exactly as it is.
+# polylogue-cuxz.12: v103 drops the `threads` view's `dominant_repo_id`
+# column. It was the literal `NULL AS dominant_repo_id` with no writer, no
+# reader, no hydration and no intended identity join -- the disposition
+# projection already carried it as PURGE with exactly that evidence, so this
+# executes a decision that was already recorded. `dominant_repo` keeps the
+# real repository attribution. METADATA_ONLY: the column carried no value on
+# any row, so no stored row and no derived value changes.
+INDEX_SCHEMA_VERSION = 103
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1052,8 +1073,13 @@ WITH RECURSIVE members AS (
     FROM repo_counts r
     GROUP BY thread_id
 )
+-- polylogue-cuxz.12: `dominant_repo_id` was `NULL AS dominant_repo_id` -- a
+-- column that was NULL on every one of the 9,914 live rows because nothing
+-- ever produced a value for it, with no writer, no reader, no hydration and
+-- no intended identity join. It was dropped in INDEX_SCHEMA_VERSION 103;
+-- `dominant_repo` below (the repo NAME, chosen by member count in
+-- `repo_json`) is and stays the authoritative repository attribution.
 SELECT g.thread_id,
-       NULL AS dominant_repo_id,
        CASE WHEN g.min_materializer_version = g.materializer_version THEN g.materializer_version ELSE NULL END
            AS materializer_version,
        NULLIF(g.materialized_at, '') AS materialized_at,
@@ -1754,15 +1780,14 @@ WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session
     DELETE FROM delegation_refresh_scope;
 END;
 
-CREATE VIEW IF NOT EXISTS delegations AS
-SELECT
-    parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance,
-    branch_point_message_id, instruction_message_id, instruction_tool_use_block_id, instruction_payload,
-    dispatch_turn_model, requested_model, artifact_block_id, artifact_text, result_is_error, result_exit_code,
-    result_status, parent_origin, parent_session_dominant_model, parent_session_dominant_model_family,
-    parent_terminal_state, child_session_dominant_model, child_session_dominant_model_family, child_cost_usd,
-    child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state
-FROM delegation_facts;
+-- polylogue-a7xr.22: the `delegations` view was dropped in
+-- INDEX_SCHEMA_VERSION 102. It was `SELECT <28 of delegation_facts' 29
+-- columns> FROM delegation_facts` -- zero joins, zero renames, zero computed
+-- columns; the only difference from the table was that it hid the
+-- `delegation_id` primary key. Every read site now reads `delegation_facts`
+-- directly. The PUBLIC query-unit token is still `delegations`
+-- (archive/query/metadata.py); that name is grammar vocabulary and is
+-- unrelated to the SQL object this removed.
 
 CREATE VIEW IF NOT EXISTS session_tag_rollups AS
 WITH tag_members AS (

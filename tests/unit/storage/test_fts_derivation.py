@@ -196,10 +196,7 @@ def test_global_residue_key_deletes_only_docsize_proven_orphans(test_conn: sqlit
     """Anti-vacuity: restoring ``DELETE FROM messages_fts`` removes the live sibling too."""
     _live_session, live_rowid = _seed_session(test_conn, "live")
     adapter = _adapter(test_db)
-    test_conn.execute(
-        "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
-        "VALUES (999999, 'orphan:block', 'orphan:message', 'orphan:session', 'text', 'orphan')"
-    )
+    test_conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (999999, 'orphan')")
     test_conn.execute(
         "INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id) VALUES (999999, 'orphan:block', ?, ?)",
         (b"o" * 32, adapter.recipe_id),
@@ -220,9 +217,8 @@ def test_global_orphan_discovery_uses_exists_not_an_unbounded_rowid_collection(
     """Anti-vacuity: selecting orphan IDs during discovery grows with all residue."""
     for rowid in range(900_000, 900_256):
         test_conn.execute(
-            "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
-            "VALUES (?, ?, 'orphan:message', 'orphan:session', 'text', 'orphan')",
-            (rowid, f"orphan:{rowid}"),
+            "INSERT INTO messages_fts(rowid, text) VALUES (?, 'orphan')",
+            (rowid,),
         )
     test_conn.commit()
     statements: list[str] = []
@@ -290,10 +286,7 @@ def test_orphan_retirement_succeeds_despite_poisoned_session(
     """Anti-vacuity: a global readiness check misreports successful orphan cleanup."""
     session_id, rowid = _seed_session(test_conn)
     test_conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
-    test_conn.execute(
-        "INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text) "
-        "VALUES (999999, 'orphan:block', 'orphan:message', 'orphan:session', 'text', 'orphan')"
-    )
+    test_conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (999999, 'orphan')")
     test_conn.commit()
     adapter = _adapter(test_db)
     compute = adapter.compute

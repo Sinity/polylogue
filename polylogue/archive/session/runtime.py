@@ -30,7 +30,7 @@ def _primary_model(cost_summary: SessionCostSummary) -> tuple[str | None, str | 
     dominant model by assistant output-token share, and its canonical
     family. This is a session-level aggregate, not a per-turn claim --
     polylogue-4c27 explicitly excludes it from dispatch-turn/requested/
-    child-observed model identity in the `delegations` view; it remains the
+    child-observed model identity in `delegation_facts`; it remains the
     named fallback (`parent_session_dominant_model`/
     `child_session_dominant_model`) for when no finer-grained attribution is
     available. Reuses the per-model tally cost_compute already builds -- no

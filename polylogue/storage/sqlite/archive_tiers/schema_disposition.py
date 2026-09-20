@@ -290,13 +290,6 @@ def _object_decision(obj: object) -> SchemaDisposition:
         owner = "durable excision authority"
         bead = "1sb32"
         evidence = "audit-backed excision evidence is sole authority; source keeps only non-resurrection identity"
-    elif tier == "index" and table_name == "threads" and name == "dominant_repo_id":
-        disposition = "PURGE"
-        owner = "thread repository projection"
-        bead = "polylogue-20eld"
-        evidence = (
-            "no production writer, reader, hydration, or intended identity join; dominant_repo remains authoritative"
-        )
     elif tier == "index" and object_type == "table" and table_name == "action_pairs":
         disposition = "KEEP"
         owner = "indexed action read model"

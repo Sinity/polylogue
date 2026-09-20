@@ -36,10 +36,26 @@ class ArchiveTier(StrEnum):
 # narrowing is visible in code instead of only in the CHECK clause text.
 ProvenRevisionAuthority = Literal["byte_proven", "quarantined"]
 
+# polylogue-3szyi: the two closed vocabularies of the embeddings tier.
+# `embedding_failures.lifecycle_state` and `embedding_derivation_state.
+# attempt_state` used to be hand-written `CHECK(col IN (...))` value lists in
+# archive_tiers/embeddings.py with no generator tie. `EmbeddingFailureState`
+# already existed as a `Literal` in archive_tiers/embedding_write.py and is
+# the declaration owner; `EmbeddingAttemptState` is new because the attempt
+# vocabulary had no Python owner at all -- its four values were bare string
+# literals at a dozen call sites in the same module. Both live here rather
+# than in `embedding_write.py` so the DDL declaration
+# (archive_tiers_specs.py) and the writer can share one owner without an
+# archive-tier import cycle, the same reason the delegation literals above do.
+EmbeddingFailureState = Literal["retryable", "terminal", "acknowledged", "superseded", "resolved"]
+EmbeddingAttemptState = Literal["pending", "succeeded", "failed_retryable", "failed_terminal"]
+
 
 __all__ = [
     "ArchiveTier",
     "DelegationMappingState",
     "DelegationResultStatus",
+    "EmbeddingAttemptState",
+    "EmbeddingFailureState",
     "ProvenRevisionAuthority",
 ]

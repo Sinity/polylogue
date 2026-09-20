@@ -5248,8 +5248,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         normalized_ref: str,
         object_ref: ObjectRef,
     ) -> PublicRefResolutionPayload:
-        """Resolve a ``delegation:`` ref against the polylogue-y964 `delegations`
-        view. Two id shapes share one lookup: action-observed refs carry an
+        """Resolve a ``delegation:`` ref against the polylogue-y964
+        `delegation_facts` relation. Two id shapes share one lookup: action-observed refs carry an
         ``instruction_tool_use_block_id`` verbatim; non-action refs carry the
         deterministic ``edge:<parent>::<child>`` relation identity (no
         parent-side dispatch action exists to key off for edge_only,

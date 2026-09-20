@@ -128,7 +128,7 @@ def _search_archive_blocks(
                 s.title AS title,
                 COALESCE(m.occurred_at_ms, s.sort_key_ms, s.updated_at_ms, s.created_at_ms) / 1000.0 AS sort_key,
                 b.search_text AS fallback_text,
-                snippet(messages_fts, 4, '[', ']', '...', 24) AS snippet,
+                snippet(messages_fts, 0, '[', ']', '...', 24) AS snippet,
                 bm25(messages_fts) AS relevance
             FROM messages_fts
             JOIN blocks AS b ON b.rowid = messages_fts.rowid
