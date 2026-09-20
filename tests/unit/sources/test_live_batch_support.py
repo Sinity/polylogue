@@ -8710,3 +8710,52 @@ def test_a_deferred_append_records_deferred_debt_not_only_a_failed_receipt_count
             "SELECT target_id, status FROM convergence_debt WHERE stage = 'live_ingest_deferred'"
         ).fetchall()
     assert rows == [(str(path), "deferred")]
+
+
+def test_a_deferred_pass_reports_deferral_as_its_own_count_not_as_failures(
+    tmp_path: Path,
+) -> None:
+    """A deferral is bounded backpressure; the receipt must not call it failed.
+
+    ``failed_file_count`` is what daemon status and catch-up status show the
+    operator, and it used to include every deferred path while
+    ``LiveBatchMetrics`` reported the deferral nowhere at all
+    (polylogue-3r36h).
+
+    Anti-vacuity: fold ``len(deferred_paths)`` back into the receipt's
+    ``failed_file_count``, or drop ``deferred_file_count`` from
+    ``LiveBatchMetrics.to_payload``, and this is red.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "deferred-count.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"deferred-count"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    processor, cursor = _live_processor(tmp_path, root, source_name="codex")
+    assert asyncio.run(processor.ingest_files([path], emit_event=False)).succeeded_file_count == 1
+
+    with path.open("ab") as handle:
+        handle.write(b'{"type":"response_item","payload":{"type":"message","id":"message-1"')
+
+    deferred = asyncio.run(processor.ingest_files([path], emit_event=False))
+
+    assert deferred.deferred_paths == (str(path),)
+    assert deferred.deferred_file_count == 1
+    assert deferred.failed_file_count == 0
+    assert deferred.to_payload()["deferred_file_count"] == 1
+    assert deferred.to_payload()["failed_file_count"] == 0
+
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        payloads = [
+            json.loads(row[0])
+            for row in conn.execute(
+                "SELECT payload_json FROM daemon_stage_events WHERE stage = 'completed' ORDER BY observed_at_ms"
+            ).fetchall()
+        ]
+    assert payloads, "no completed stage event recorded"
+    final = payloads[-1]
+    assert final["deferred_file_count"] == 1
+    assert final.get("failed_file_count", 0) == 0

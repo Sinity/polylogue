@@ -1372,6 +1372,17 @@ class LiveBatchProcessor:
             append_file_count=append_file_count,
             full_file_count=len(full_paths),
         )
+        if deferred_paths:
+            # polylogue-3r36h: a deferral is bounded backpressure ("no new
+            # authority-relevant append this pass"), not a failure. Folding it
+            # into ``failed_file_count`` is what daemon status and catch-up
+            # status then report to the operator as failed files. Report the
+            # count in its own unit instead; the retry projection and the
+            # ``live_ingest_deferred`` convergence-debt rows are unchanged.
+            summary_stage_payload = {
+                **(summary_stage_payload or {}),
+                "deferred_file_count": len(deferred_paths),
+            }
         # The ingest-attempt receipt has separate units for parsed raw files
         # and materialized sessions.  Count the actual session identities
         # touched by this batch; using ``succeeded_file_count`` here would
@@ -1384,7 +1395,7 @@ class LiveBatchProcessor:
             attempt_id,
             phase="cursor_update",
             succeeded_file_count=len(succeeded_paths),
-            failed_file_count=len(failed_paths) + len(deferred_paths),
+            failed_file_count=len(failed_paths),
             materialized_count=materialized_session_count,
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1488,7 +1499,7 @@ class LiveBatchProcessor:
             needed_file_count=metrics.needed_file_count,
             skipped_file_count=metrics.skipped_file_count,
             succeeded_file_count=len(succeeded_paths),
-            failed_file_count=len(failed_paths) + len(deferred_paths),
+            failed_file_count=len(failed_paths),
             input_bytes=input_bytes,
             ingested_bytes=metrics.ingested_bytes,
             failed_bytes=metrics.failed_bytes,
