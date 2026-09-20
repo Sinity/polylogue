@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from devtools.parser_census import Census, ParserCensusError, census_dir, latest_census, load_census
 from polylogue.archive.artifact_taxonomy.models import ArtifactKind
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.sources import origin_from_provider
@@ -82,6 +83,10 @@ class PopulationCoverageReport:
     archive_root: str | None
     inventory_evaluated: bool
     constructs: tuple[CoverageConstruct, ...]
+    #: Whether a parser census supplied the real source denominator. The
+    #: report says so explicitly, so "no uncovered constructs" is never read
+    #: as evidence about a population nothing looked at.
+    census_evaluated: bool = False
 
     @property
     def uncovered(self) -> tuple[CoverageConstruct, ...]:
@@ -99,6 +104,7 @@ class PopulationCoverageReport:
             "ok": self.ok,
             "archive_root": self.archive_root,
             "inventory_evaluated": self.inventory_evaluated,
+            "census_evaluated": self.census_evaluated,
             "summary": counts,
             "constructs": [construct.to_dict() for construct in self.constructs],
         }
@@ -144,6 +150,30 @@ def declaration_constructs(
     return tuple(out)
 
 
+def _origin_construct(
+    by_origin: dict[str, OriginSpec],
+    manifest: CapabilityManifest,
+    origin: str,
+    count: int,
+) -> CoverageConstruct:
+    """Classify one observed origin token against the declarations.
+
+    Shared by every evidence source so an archive inventory and a parser
+    census cannot drift into two coverage policies for the same token.
+    """
+    spec = by_origin.get(origin)
+    if spec is None:
+        return CoverageConstruct("origin", origin, UNCOVERED, "no OriginSpec", "none", count)
+    witness = _matrix_witness(manifest, origin)
+    if spec.lifecycle == "executable" and witness is not None and witness[0] == COVERED:
+        return CoverageConstruct("origin", origin, COVERED, ";".join(spec.parser_paths), witness[1], count)
+    if witness is not None and witness[0] == UNSUPPORTED_DECLARED:
+        return CoverageConstruct(
+            "origin", origin, UNSUPPORTED_DECLARED, f"lifecycle:{spec.lifecycle}", witness[1], count
+        )
+    return CoverageConstruct("origin", origin, UNCOVERED, f"lifecycle:{spec.lifecycle}", "no matrix witness", count)
+
+
 def inventory_constructs(
     source_db: Path,
     *,
@@ -163,28 +193,7 @@ def inventory_constructs(
     conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
     try:
         for origin, count in conn.execute("SELECT origin, COUNT(*) FROM raw_sessions GROUP BY origin"):
-            origin = str(origin)
-            spec = by_origin.get(origin)
-            if spec is None:
-                out.append(CoverageConstruct("origin", origin, UNCOVERED, "no OriginSpec", "none", int(count)))
-                continue
-            witness = _matrix_witness(manifest, origin)
-            if spec.lifecycle == "executable" and witness is not None and witness[0] == COVERED:
-                out.append(
-                    CoverageConstruct("origin", origin, COVERED, ";".join(spec.parser_paths), witness[1], int(count))
-                )
-            elif witness is not None and witness[0] == UNSUPPORTED_DECLARED:
-                out.append(
-                    CoverageConstruct(
-                        "origin", origin, UNSUPPORTED_DECLARED, f"lifecycle:{spec.lifecycle}", witness[1], int(count)
-                    )
-                )
-            else:
-                out.append(
-                    CoverageConstruct(
-                        "origin", origin, UNCOVERED, f"lifecycle:{spec.lifecycle}", "no matrix witness", int(count)
-                    )
-                )
+            out.append(_origin_construct(by_origin, manifest, str(origin), int(count)))
 
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)")}
         if "detected_provider" in columns:
@@ -477,11 +486,85 @@ def _artifact_construct(
     return CoverageConstruct("artifact-kind", key, UNCOVERED, "no artifact rule for origin", "none", count)
 
 
+class PopulationCoverageError(ValueError):
+    """A requested evidence source is unavailable or unusable.
+
+    Raised rather than returning a report, so an absent census can never be
+    reported as an inventory with nothing uncovered in it.
+    """
+
+
+def census_constructs(
+    census: Census,
+    *,
+    specs: Sequence[OriginSpec] = ORIGIN_SPECS,
+    manifest: CapabilityManifest | None = None,
+) -> tuple[CoverageConstruct, ...]:
+    """Classify every origin and artifact kind a parser census recorded.
+
+    The census is the recorded evidence of the real accepted source
+    denominator (``devtools bench parser-census``), so the coverage route
+    reads it instead of walking that denominator again. Whether a member
+    parsed is the census diff's question, not this gate's: a member is
+    counted for its origin and artifact kind regardless of outcome, because
+    an undeclared construct is undeclared whether or not the parser
+    succeeded on it.
+    """
+    manifest = manifest if manifest is not None else load_manifest()
+    by_origin = _spec_by_origin(specs)
+    origin_counts: dict[str, int] = {}
+    artifact_counts: dict[tuple[str, str], int] = {}
+    for member in census.members:
+        origin_counts[member.origin] = origin_counts.get(member.origin, 0) + 1
+        if member.artifact_kind is not None:
+            key = (member.origin, member.artifact_kind)
+            artifact_counts[key] = artifact_counts.get(key, 0) + 1
+    out = [_origin_construct(by_origin, manifest, origin, count) for origin, count in sorted(origin_counts.items())]
+    # No support_status travels with a census member, so the empty token never
+    # takes the ``unsupported_parseable`` short circuit: a census-observed
+    # kind must be covered by a declared artifact rule or a matrix witness.
+    out.extend(
+        _artifact_construct(by_origin, manifest, origin, kind, "", count)
+        for (origin, kind), count in sorted(artifact_counts.items())
+    )
+    return tuple(out)
+
+
+def resolve_census(directory: Path | None, *, document: Path | None = None) -> tuple[Census, Path]:
+    """Load the newest census, or refuse with the reason it is unusable.
+
+    Every failure is typed. The alternative -- returning "no constructs" --
+    would let an unavailable measurement read as a clean population.
+    """
+    if document is not None:
+        path = document
+        if not path.is_file():
+            raise PopulationCoverageError(f"no census document at {path}")
+    else:
+        resolved = census_dir(directory)
+        if not resolved.is_dir():
+            raise PopulationCoverageError(f"no census directory at {resolved}; run devtools bench parser-census")
+        found = latest_census(resolved)
+        if found is None:
+            raise PopulationCoverageError(f"no census in {resolved}; run devtools bench parser-census")
+        path = found
+    try:
+        census = load_census(path)
+    except ParserCensusError as exc:
+        raise PopulationCoverageError(str(exc)) from exc
+    if census.partial:
+        raise PopulationCoverageError(
+            f"census at {path} is a bounded (--limit) run; it does not describe the whole denominator"
+        )
+    return census, path
+
+
 def evaluate_population_coverage(
     archive_root: Path | None,
     *,
     specs: Sequence[OriginSpec] = ORIGIN_SPECS,
     manifest: CapabilityManifest | None = None,
+    census: Census | None = None,
 ) -> PopulationCoverageReport:
     manifest = manifest if manifest is not None else load_manifest()
     constructs = list(declaration_constructs(specs=specs, manifest=manifest))
@@ -489,9 +572,12 @@ def evaluate_population_coverage(
     evaluated = source_db is not None and source_db.is_file()
     if evaluated and source_db is not None:
         constructs.extend(inventory_constructs(source_db, specs=specs, manifest=manifest))
+    if census is not None:
+        constructs.extend(census_constructs(census, specs=specs, manifest=manifest))
     return PopulationCoverageReport(
         archive_root=str(archive_root) if archive_root is not None else None,
         inventory_evaluated=evaluated,
+        census_evaluated=census is not None,
         constructs=tuple(constructs),
     )
 
@@ -506,15 +592,44 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="evaluate the source inventory at this archive root; declarations alone are checked without it",
     )
+    parser.add_argument(
+        "--census-dir",
+        type=Path,
+        default=None,
+        dest="census_directory",
+        help="evaluate the recorded source denominator from the newest census in this directory",
+    )
+    parser.add_argument(
+        "--census",
+        type=Path,
+        default=None,
+        dest="census_document",
+        help="evaluate this exact census document instead of the newest one",
+    )
     parser.add_argument("--json", action="store_true", dest="as_json")
     args = parser.parse_args(argv)
-    report = evaluate_population_coverage(args.archive_root)
+    census: Census | None = None
+    census_path: Path | None = None
+    if args.census_directory is not None or args.census_document is not None:
+        try:
+            census, census_path = resolve_census(args.census_directory, document=args.census_document)
+        except PopulationCoverageError as exc:
+            payload = {"ok": False, "refusal": {"type": type(exc).__name__, "message": str(exc)}}
+            if args.as_json:
+                print(json.dumps(payload, sort_keys=True))
+            else:
+                print(f"Population coverage: REFUSED: {exc}")
+            return 1
+    report = evaluate_population_coverage(args.archive_root, census=census)
     if args.as_json:
         print(json.dumps(report.to_dict(), sort_keys=True))
     else:
         print(f"Population coverage: {'PASS' if report.ok else 'FAIL'}")
         print(
             f"Inventory: {'evaluated at ' + str(report.archive_root) if report.inventory_evaluated else 'not evaluated (no source.db)'}"
+        )
+        print(
+            f"Census: {'read from ' + str(census_path) if census_path is not None else 'not evaluated (none requested)'}"
         )
         summary: dict[str, int] = {}
         for construct in report.constructs:
@@ -531,11 +646,14 @@ __all__ = [
     "UNCOVERED",
     "UNSUPPORTED_DECLARED",
     "CoverageConstruct",
+    "PopulationCoverageError",
     "PopulationCoverageReport",
+    "census_constructs",
     "declaration_constructs",
     "evaluate_population_coverage",
     "inventory_constructs",
     "main",
+    "resolve_census",
 ]
 
 
