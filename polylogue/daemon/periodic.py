@@ -42,10 +42,10 @@ DEFAULT_JITTER_RATIO = 0.1
 
 OnError = Literal["record", "propagate"]
 
-#: How long a gated loop waits for the watcher's initial catch-up before
+#: How long a gated loop waits for watcher registration before
 #: proceeding without having observed it. One value, because every gated loop
 #: waits on the same gate.
-CATCH_UP_GATE_TIMEOUT_SECONDS = 1800.0
+WATCHER_REGISTRATION_TIMEOUT_SECONDS = 1800.0
 
 
 @dataclass(slots=True)
@@ -98,7 +98,7 @@ class PeriodicGate:
     """A startup gate that reports who it is blocking.
 
     The old call sites awaited a bare :class:`asyncio.Event`, so a daemon whose
-    catch-up never completed showed nothing at all: no loop named itself as
+    registration never completed showed nothing at all: no loop named itself as
     waiting, and the absence of ticks looked like an idle archive.
     """
 
@@ -121,10 +121,10 @@ class PeriodicGate:
             return True
         except TimeoutError:
             emit(
-                "daemon.catch_up_gate.timeout",
+                "daemon.watcher_registered.timeout",
                 level=WARNING,
                 outcome="unmeasured",
-                reason="catch_up_gate_not_released",
+                reason="watcher_registration_not_observed",
                 loop=waiter,
                 timeout_ms=round(self.timeout_s * 1000, 3),
             )
@@ -263,9 +263,9 @@ class PeriodicRunner:
             state.wakeups += 1
 
 
-def catch_up_gate(event: asyncio.Event | None) -> PeriodicGate:
-    """Wrap the watcher's catch-up event so waiting loops name themselves."""
-    return PeriodicGate(name="catch_up_complete", event=event, timeout_s=CATCH_UP_GATE_TIMEOUT_SECONDS)
+def watcher_registered_gate(event: asyncio.Event | None) -> PeriodicGate:
+    """Wrap the watcher's registration event so waiting loops name themselves."""
+    return PeriodicGate(name="watcher_registered", event=event, timeout_s=WATCHER_REGISTRATION_TIMEOUT_SECONDS)
 
 
 def _resolve(interval_s: float | Callable[[], float]) -> float:
@@ -295,12 +295,12 @@ def periodic_loop_payload() -> dict[str, object]:
 
 
 __all__ = [
-    "CATCH_UP_GATE_TIMEOUT_SECONDS",
+    "WATCHER_REGISTRATION_TIMEOUT_SECONDS",
     "DEFAULT_JITTER_RATIO",
     "PeriodicGate",
     "PeriodicLoopState",
     "PeriodicRunner",
-    "catch_up_gate",
+    "watcher_registered_gate",
     "daemon_periodic_runner",
     "periodic_loop_payload",
     "reset_daemon_periodic_runner",

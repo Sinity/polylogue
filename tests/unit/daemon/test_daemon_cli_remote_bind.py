@@ -56,7 +56,6 @@ def test_non_loopback_bind_without_allow_remote_refuses(api_host: str) -> None:
         _run(
             run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -84,7 +83,6 @@ def test_non_loopback_bind_with_allow_remote_and_allow_no_auth_refuses(
         _run(
             run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -134,7 +132,6 @@ def test_non_loopback_bind_with_allow_remote_and_no_explicit_token_auto_mints(
         _run(
             run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -168,7 +165,6 @@ def test_api_and_browser_capture_same_socket_refuses(api_host: str, receiver_hos
         _run(
             run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=True,
                 browser_capture_host=receiver_host,
@@ -213,7 +209,6 @@ def test_loopback_bind_passes_remote_check() -> None:
             _run(
                 run_daemon_services(
                     sources=(),
-                    debounce_s=1.0,
                     enable_watch=False,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -256,7 +251,6 @@ def test_api_disabled_skips_remote_check() -> None:
             _run(
                 run_daemon_services(
                     sources=(),
-                    debounce_s=1.0,
                     enable_watch=False,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -318,8 +312,6 @@ auth_token = "browser-secret"
 allowed_origins = "https://workbench.example"
 spool_path = "{spool}"
 
-[daemon.watch]
-debounce_s = 0.25
 """.strip(),
         encoding="utf-8",
     )
@@ -344,4 +336,3 @@ debounce_s = 0.25
     assert recorded["browser_capture_auth_token"] == "browser-secret"
     assert recorded["browser_capture_extra_origins"] == ("https://workbench.example",)
     assert recorded["browser_capture_spool_path"] == spool
-    assert recorded["debounce_s"] == 0.25

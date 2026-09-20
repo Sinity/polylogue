@@ -934,7 +934,7 @@ def run_judgment_automation_sweep_once(
 
 async def periodic_judgment_automation_sweep(
     *,
-    catch_up_complete: asyncio.Event | None = None,
+    watcher_registered: asyncio.Event | None = None,
     archive_root_path: Path | None = None,
 ) -> None:
     """Periodically run one bounded judgment-automation sweep.
@@ -947,11 +947,11 @@ async def periodic_judgment_automation_sweep(
     effect on the *next* tick without a daemon restart, the same as
     ``_periodic_db_optimize``'s self-gating pattern.
     """
-    from polylogue.daemon.cli import _await_catch_up_gate
+    from polylogue.daemon.cli import _await_watcher_registration
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.paths import archive_root, data_home
 
-    await _await_catch_up_gate(catch_up_complete, loop_name="judgment automation sweep")
+    await _await_watcher_registration(watcher_registered, loop_name="judgment automation sweep")
     coordinator = daemon_write_coordinator()
     last_valid_root: Path | None = archive_root_path
 

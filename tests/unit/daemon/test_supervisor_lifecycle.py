@@ -68,12 +68,12 @@ def test_a_service_cannot_be_started_twice() -> None:
 
 
 def test_starting_before_a_dependency_is_refused() -> None:
-    """``watcher_ready_bridge`` declares ``watcher`` as its dependency."""
+    """``watcher_registered_bridge`` declares ``watcher`` as its dependency."""
 
     async def scenario() -> None:
         supervisor = _supervisor()
         with pytest.raises(ServiceDependencyError, match="watcher"):
-            supervisor.start("watcher_ready_bridge", _forever)
+            supervisor.start("watcher_registered_bridge", _forever)
         await supervisor.shutdown()
 
     asyncio.run(scenario())
