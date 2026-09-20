@@ -120,10 +120,15 @@ class _CallGraph:
             parts = name.split(".")
             for end in range(1, len(parts)):
                 descendants.setdefault(".".join(parts[:end]), set()).add(name)
-        self._descendants = descendants
+        # Freeze once, here. ``descendants_of`` is called tens of thousands of
+        # times during edge indexing and its result is only ever read; copying
+        # the set into a fresh frozenset on every call was pure allocation.
+        self._descendants: dict[str, frozenset[str]] = {
+            prefix: frozenset(names) for prefix, names in descendants.items()
+        }
 
     def descendants_of(self, prefix: str) -> frozenset[str]:
-        return frozenset(self._descendants.get(prefix, ()))
+        return self._descendants.get(prefix, frozenset())
 
     def has_descendants(self, prefix: str) -> bool:
         return prefix in self._descendants
@@ -173,12 +178,14 @@ class _CallGraph:
         local_classes = {
             node.name: f"{module.name}.{node.name}" for node in module.tree.body if isinstance(node, ast.ClassDef)
         }
+        is_package = module.path.name == "__init__.py"
         for function in tuple(node for node in self.nodes.values() if node.module == module.name):
+            scan = _scan_function_body(function.node)
             bindings = {
                 **module_imports,
                 **local_functions,
                 **local_classes,
-                **_imports_from_nodes(function.node.body, module.name, is_package=module.path.name == "__init__.py"),
+                **_imports_from_nodes(function.node.body, module.name, is_package=is_package),
             }
             shadowed = _shadowed_names(function.node)
             for name in shadowed:
@@ -191,34 +198,41 @@ class _CallGraph:
             # object is a class or the call is hidden behind a constructor.
             # Keep this production-only: test seam edges remain call-based so
             # importing a symbol cannot satisfy ``test_symbol_not_called``.
-            local_imports = _imports_in_function(
-                function.node, module.name, is_package=module.path.name == "__init__.py"
-            )
+            local_imports = _imports_from_nodes(scan.imports, module.name, is_package=is_package)
             targets: set[str] = (
                 imported_targets(local_imports, expand_nodes=False) if module.name.startswith("polylogue.") else set()
             )
-            for call in _calls_in_function(function.node):
+            for call in scan.calls:
                 target = _resolve_call_target(call.func, bindings, self.nodes, self.has_descendants)
                 if target is not None:
                     targets.add(target)
             self.edges[function.qualified_name] = frozenset(targets)
 
     def reachable_from(self, root: str) -> frozenset[str]:
+        return self.reachable_from_any((root,))
+
+    def reachable_from_any(self, roots: Iterable[str]) -> frozenset[str]:
+        """Reachable set of the union of ``roots``, in one traversal.
+
+        Reachability distributes over union, so walking every root with one
+        shared ``seen`` set yields exactly ``union(reachable_from(r))`` while
+        visiting each node once instead of once per root. Consumer
+        reachability asks this of ten overlapping entrypoints, nearly all of
+        which reach the same component.
+        """
         seen: set[str] = set()
+        pending: deque[str] = deque()
         # Consumer-reachability declares entrypoints by module (for example a
         # console script's ``module:function`` target is normalized to its
         # module). Seed that module's top-level functions so traversal follows
         # the callable production routes exported by the declared entrypoint.
-        pending = deque(
-            [
-                root,
-                *(
-                    node.qualified_name
-                    for node in self.nodes.values()
-                    if node.module == root and node.qualified_name.count(".") == root.count(".") + 1
-                ),
-            ]
-        )
+        seeds = tuple(dict.fromkeys(roots))
+        seed_depth = {root: root.count(".") + 1 for root in seeds}
+        pending.extend(seeds)
+        for node in self.nodes.values():
+            expected = seed_depth.get(node.module)
+            if expected is not None and node.qualified_name.count(".") == expected:
+                pending.append(node.qualified_name)
         while pending:
             current = pending.popleft()
             if current in seen:
@@ -281,40 +295,65 @@ def _imports_from_nodes(nodes: Iterable[ast.AST], module: str, *, is_package: bo
     return bindings
 
 
+class _BodyScanner(ast.NodeVisitor):
+    """One walk of a function body, collecting its imports and its calls.
+
+    Imports and calls used to be gathered by two structurally identical
+    visitors, so every function body was walked twice. The traversal rule is
+    the same for both facts — descend statements of the root callable, never
+    into a nested callable or class — so the two collections come from one
+    pass. Anything that changes the rule must change it for both.
+    """
+
+    def __init__(self, root: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.root = root
+        self.imports: list[ast.AST] = []
+        self.calls: list[ast.Call] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node is self.root:
+            # A function's decorators, annotations, defaults, and type
+            # parameters execute in the defining scope, not when the
+            # function body runs.  The reachability contract describes the
+            # production route executed by the callable, so scan only its
+            # statements.  Nested callable bodies are intentionally skipped.
+            for statement in node.body:
+                self.visit(statement)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if node is self.root:
+            for statement in node.body:
+                self.visit(statement)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.imports.append(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.imports.append(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self.calls.append(node)
+        self.generic_visit(node)
+
+
+def _scan_function_body(function: ast.FunctionDef | ast.AsyncFunctionDef) -> _BodyScanner:
+    scanner = _BodyScanner(function)
+    scanner.visit(function)
+    return scanner
+
+
 def _imports_in_function(
     function: ast.FunctionDef | ast.AsyncFunctionDef, module: str, *, is_package: bool = False
 ) -> dict[str, str]:
     """Return imports executed by a function, including conditional imports."""
 
-    class ImportScanner(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.nodes: list[ast.AST] = []
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if node is function:
-                for statement in node.body:
-                    self.visit(statement)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            if node is function:
-                for statement in node.body:
-                    self.visit(statement)
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            del node
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            del node
-
-        def visit_Import(self, node: ast.Import) -> None:
-            self.nodes.append(node)
-
-        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            self.nodes.append(node)
-
-    scanner = ImportScanner()
-    scanner.visit(function)
-    return _imports_from_nodes(scanner.nodes, module, is_package=is_package)
+    return _imports_from_nodes(_scan_function_body(function).imports, module, is_package=is_package)
 
 
 def _attribute_parts(node: ast.AST) -> tuple[str, ...] | None:
@@ -374,76 +413,48 @@ def _test_fixture_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> fro
     )
 
 
+class _ShadowScanner(ast.NodeVisitor):
+    """Names a function rebinds locally, so an import binding cannot win."""
+
+    def __init__(self, root: ast.FunctionDef | ast.AsyncFunctionDef, names: set[str]) -> None:
+        self.root = root
+        self.names = names
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+        else:
+            self.names.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if node is self.root:
+            self.generic_visit(node)
+        else:
+            self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+
+
 def _shadowed_names(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     names = {argument.arg for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs)}
     if function.args.vararg is not None:
         names.add(function.args.vararg.arg)
     if function.args.kwarg is not None:
         names.add(function.args.kwarg.arg)
-
-    class ShadowScanner(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if node is function:
-                self.generic_visit(node)
-            else:
-                names.add(node.name)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            if node is function:
-                self.generic_visit(node)
-            else:
-                names.add(node.name)
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            return
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            names.add(node.name)
-
-        def visit_Name(self, node: ast.Name) -> None:
-            if isinstance(node.ctx, ast.Store):
-                names.add(node.id)
-
-    scanner = ShadowScanner()
-    scanner.visit(function)
+    _ShadowScanner(function, names).visit(function)
     return names
 
 
-class _CallScanner(ast.NodeVisitor):
-    def __init__(self, root: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        self.root = root
-        self.calls: list[ast.Call] = []
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        if node is self.root:
-            # A function's decorators, annotations, defaults, and type
-            # parameters execute in the defining scope, not when the
-            # function body runs.  The reachability contract describes the
-            # production route executed by the callable, so scan only its
-            # statements.  Nested callable bodies are intentionally skipped.
-            for statement in node.body:
-                self.visit(statement)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        if node is self.root:
-            for statement in node.body:
-                self.visit(statement)
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        return
-
-    def visit_Call(self, node: ast.Call) -> None:
-        self.calls.append(node)
-        self.generic_visit(node)
-
-
 def _calls_in_function(function: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[ast.Call, ...]:
-    scanner = _CallScanner(function)
-    scanner.visit(function)
-    return tuple(scanner.calls)
+    return tuple(_scan_function_body(function).calls)
 
 
 @lru_cache(maxsize=8)

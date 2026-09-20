@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
-from devtools.production_reachability import ProductionSeamSpec, check_production_seam
+from devtools.production_reachability import (
+    ProductionSeamSpec,
+    _CallGraph,
+    _calls_in_function,
+    _imports_from_nodes,
+    _imports_in_function,
+    _parse_modules,
+    _scan_function_body,
+    check_production_seam,
+)
 
 _FIXTURE_ROOT = Path(__file__).parents[2] / "fixtures" / "production_reachability"
 
@@ -191,3 +201,62 @@ def test_package_initializer_relative_import_is_resolved() -> None:
     )
 
     assert report.ok, report.to_json()
+
+
+def test_union_traversal_matches_walking_each_root_separately() -> None:
+    """``reachable_from_any`` is the union, not the first root's component.
+
+    Consumer reachability walks ten overlapping entrypoints; doing it in one
+    traversal is only sound if reachability distributes over union.
+
+    Anti-vacuity: seeding only the first root (or dropping the per-root
+    top-level function seeding) loses ``nestedpkg.child.child_route``, which
+    nothing in ``routes`` reaches, and the equality below goes red.
+    """
+    graph = _CallGraph(_parse_modules(_FIXTURE_ROOT, (_FIXTURE_ROOT,)))
+    roots = ("routes", "nestedpkg")
+
+    union = graph.reachable_from_any(roots)
+
+    assert union == graph.reachable_from("routes") | graph.reachable_from("nestedpkg")
+    assert "routes.live_helper" in union
+    assert "nestedpkg.child.child_route" in union
+    assert "nestedpkg.child.child_route" not in graph.reachable_from("routes")
+    # A repeated root must not change the answer -- the real entrypoint tuple
+    # names ``polylogue.cli`` twice.
+    assert graph.reachable_from_any(("routes", "nestedpkg", "routes")) == union
+
+
+def test_one_body_scan_collects_calls_and_imports_without_entering_nested_scopes() -> None:
+    """Imports and calls come from a single walk with one traversal rule.
+
+    Anti-vacuity: if ``_BodyScanner`` descended into the nested function, the
+    lambda, or the class body, ``dead_helper`` would appear among the calls
+    and ``json``/``os``/``sys`` would appear among the imports. If the merged
+    scanner lost either collection, one of the two assertions is empty.
+    """
+    module = ast.parse(
+        "def route():\n"
+        "    import subprocess\n"
+        "    if route:\n"
+        "        from pathlib import Path\n"
+        "    live_helper()\n"
+        "    def nested():\n"
+        "        import os\n"
+        "        return dead_helper()\n"
+        "    handler = lambda: dead_helper()\n"
+        "    class Inner:\n"
+        "        import sys\n"
+        "        def method(self):\n"
+        "            return dead_helper()\n"
+        "    return nested, handler, Inner\n"
+    )
+    function = module.body[0]
+    assert isinstance(function, ast.FunctionDef)
+
+    scan = _scan_function_body(function)
+
+    assert [call.func.id for call in scan.calls if isinstance(call.func, ast.Name)] == ["live_helper"]
+    assert sorted(_imports_in_function(function, "fixture")) == ["Path", "subprocess"]
+    assert tuple(scan.calls) == _calls_in_function(function)
+    assert _imports_from_nodes(scan.imports, "fixture") == _imports_in_function(function, "fixture")
