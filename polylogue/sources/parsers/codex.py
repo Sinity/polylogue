@@ -1325,6 +1325,40 @@ _CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE = "codex_replacement_context"
 # reconstruction authority; the omission event below carries enough typed
 # evidence to make the decision visible to readers.
 _CODEX_REPLACEMENT_CONTEXT_MAX_CHARS = 256 * 1024
+
+
+class _CodexInstructionRevisions:
+    """Distinct instruction revisions, in first-seen order.
+
+    ``turn_context`` re-declares the session prompt on every turn, so a
+    rollout with T turns over R distinct revisions asks "have I seen this
+    one?" T times.  A list scan makes that O(T*R) string comparisons over
+    values that are routinely tens of kilobytes (AGENTS.md-style prompts);
+    membership through the set is one hash.  The ordered list is kept because
+    the revision number carried on the emitted event is a value's 1-based
+    first-seen position, which a set alone cannot state.
+    """
+
+    __slots__ = ("_order", "_seen")
+
+    def __init__(self) -> None:
+        self._order: list[str] = []
+        self._seen: set[str] = set()
+
+    def __contains__(self, value: object) -> bool:
+        return value in self._seen
+
+    def __len__(self) -> int:
+        return len(self._order)
+
+    def add(self, value: str) -> None:
+        self._order.append(value)
+        self._seen.add(value)
+
+    def values(self) -> tuple[str, ...]:
+        return tuple(self._order)
+
+
 # polylogue-ro922: the per-value cap above bounds one context, not their
 # number. One compacted session is untrusted input and may declare an
 # unbounded count of distinct small replacement texts, each of which would
@@ -3813,8 +3847,8 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     # that filled the session's own slot. Conserving these is what keeps a
     # session whose system prompt was edited mid-run from storing only the
     # prompt it started with.
-    changed_user_instructions: list[str] = []
-    changed_developer_instructions: list[str] = []
+    changed_user_instructions = _CodexInstructionRevisions()
+    changed_developer_instructions = _CodexInstructionRevisions()
     # Text values Codex re-embeds rather than emits on the live stream. Each is
     # registered here as it is met and resolved once, after the last event, so
     # only a value the session retains nowhere else is stored again.
@@ -3908,7 +3942,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                             # this value.  Keep a digest-only event instead of
                             # allowing one repeated compaction snapshot to
                             # turn the derived index into a transcript copy.
-                            digest = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
+                            digest = hashlib.sha256(content_text.encode("utf-8", errors="surrogatepass")).hexdigest()
                             omission_key = (id(compaction_event), digest)
                             omission = pending_replacement_omissions.get(omission_key)
                             if omission is None:
@@ -3938,7 +3972,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                             omission = pending_replacement_omissions.get(ceiling_key)
                             if omission is None:
                                 hasher = hashlib.sha256()
-                                hasher.update(content_text.encode("utf-8"))
+                                hasher.update(content_text.encode("utf-8", errors="surrogatepass"))
                                 pending_replacement_omissions[ceiling_key] = _CodexReplacementContextOmission(
                                     insert_at=insert_at,
                                     timestamp=timestamp,
@@ -3952,7 +3986,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                                     running_digest=hasher,
                                 )
                             elif omission.running_digest is not None:
-                                omission.running_digest.update(content_text.encode("utf-8"))
+                                omission.running_digest.update(content_text.encode("utf-8", errors="surrogatepass"))
                                 omission.occurrences += 1
                                 omission.content_chars += len(content_text)
                                 omission.content_sha256 = omission.running_digest.hexdigest()
@@ -4104,7 +4138,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     elif user_instructions != session_instructions and (
                         user_instructions not in changed_user_instructions
                     ):
-                        changed_user_instructions.append(user_instructions)
+                        changed_user_instructions.add(user_instructions)
                         session_events.append(
                             _codex_instructions_changed_event(
                                 kind="user_instructions",
@@ -4127,7 +4161,7 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     elif developer_instructions != session_developer_instructions and (
                         developer_instructions not in changed_developer_instructions
                     ):
-                        changed_developer_instructions.append(developer_instructions)
+                        changed_developer_instructions.add(developer_instructions)
                         session_events.append(
                             _codex_instructions_changed_event(
                                 kind="developer_instructions",
