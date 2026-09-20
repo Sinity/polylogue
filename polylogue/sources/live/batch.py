@@ -4309,7 +4309,7 @@ class LiveBatchProcessor:
             member_raw_ids = list(
                 archive.raw_membership_raw_ids(
                     logical_source_key,
-                    include_complete_raw_id=source_raw_id if allow_current_complete_raw else None,
+                    include_complete_raw_ids=frozenset({source_raw_id}) if allow_current_complete_raw else frozenset(),
                 )
             )
             for extra_raw_id in extra_member_raw_ids:

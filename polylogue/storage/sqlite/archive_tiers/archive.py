@@ -2234,9 +2234,9 @@ class ArchiveStore:
         self,
         logical_source_key: str,
         *,
-        include_complete_raw_id: str | None = None,
+        include_complete_raw_ids: frozenset[str] = frozenset(),
     ) -> tuple[str, ...]:
-        return raw_membership_raw_ids(self, logical_source_key, include_complete_raw_id=include_complete_raw_id)
+        return raw_membership_raw_ids(self, logical_source_key, include_complete_raw_ids=include_complete_raw_ids)
 
     def raw_revision_acquired_at_ms(self, raw_id: str) -> int:
         return raw_revision_acquired_at_ms(self, raw_id)
