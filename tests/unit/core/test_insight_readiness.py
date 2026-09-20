@@ -10,6 +10,7 @@ from polylogue.analysis.readiness import (
     InsightReadinessEntry,
     InsightReadinessQuery,
     InsightReadinessReport,
+    known_insight_readiness_names,
 )
 from polylogue.api import Polylogue
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -218,3 +219,120 @@ async def test_permanently_absent_storage_artifact_reports_absent(cli_workspace:
     assert runs.storage_artifacts[0].present is False
     # The surface is still reported; only its legacy cache table is absent.
     assert runs.table_present
+
+
+@pytest.mark.asyncio
+async def test_provider_usage_rollup_is_a_reported_readiness_surface(cli_workspace: dict[str, Path]) -> None:
+    """polylogue-ix65t: the readiness report must inspect the provider rollup.
+
+    ``session_model_usage`` is refreshed per session by the insight rebuild
+    (``derived/session/rebuild._refresh_provider_usage_rollup``), but it was
+    absent from ``analysis.readiness._SPECS`` and from the status descriptors,
+    so the report named every other derived relation and claimed completeness
+    while this one was never inspected at all.
+
+    Concrete input: an archive whose rollup rows were dropped (the
+    polylogue-f2qv.5 shape -- written once at ingest, never revisited) reports
+    ``session_model_usage`` as incomplete; after a rebuild it reports
+    complete.
+
+    Anti-vacuity: remove ``InsightReadinessSpec("session_model_usage", ...)``
+    from ``_SPECS`` and ``_entry_by_name`` raises ``StopIteration``; drop the
+    ``missing_provider_usage_row_count`` descriptor from
+    ``derived/session/status.py`` and the pre-rebuild ``incomplete``
+    assertion goes red.
+    """
+    import sqlite3
+
+    db_path = cli_workspace["db_path"]
+    (
+        SessionBuilder(db_path, "provider-usage-root")
+        .provider("codex")
+        .title("Provider Usage Root")
+        .created_at("2026-04-01T09:00:00+00:00")
+        .updated_at("2026-04-01T09:10:00+00:00")
+        .add_message(
+            "u1",
+            role="user",
+            text="How much did this cost?",
+            timestamp="2026-04-01T09:00:00+00:00",
+        )
+        .add_message(
+            "a1",
+            role="assistant",
+            text="Here is the rollup.",
+            timestamp="2026-04-01T09:05:00+00:00",
+            model_name="gpt-5-codex",
+            input_tokens=100,
+            output_tokens=20,
+        )
+        .save()
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM session_model_usage")
+        conn.commit()
+
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    before = _entry_by_name(await archive.insight_readiness_report(), "session_model_usage")
+
+    assert before.table_present
+    assert before.expected_row_count == 1
+    assert before.row_count == 0
+    assert before.missing_count == 1
+    assert before.incomplete
+
+    await _rebuild(db_path)
+
+    after = _entry_by_name(await archive.insight_readiness_report(), "session_model_usage")
+
+    assert after.row_count == 1
+    assert after.missing_count == 0
+    assert not after.incomplete
+    assert not after.diverged
+
+
+@pytest.mark.asyncio
+async def test_every_declared_readiness_target_reaches_the_report(cli_workspace: dict[str, Path]) -> None:
+    """polylogue-ix65t: the declaration list and the entry producer cannot drift.
+
+    ``_insight_readiness_entry`` used to return ``None`` for a name it had no
+    spec for, and ``insight_readiness_report`` filtered those out -- so a
+    declared insight with no backing status spec vanished from the report with
+    no signal.  That is the mechanism by which an insight type stays
+    un-inspected, and it is what kept ``session_model_usage`` invisible.
+
+    Anti-vacuity: add an ``InsightReadinessSpec`` with no matching entry in
+    ``ArchiveStore._insight_readiness_entry`` and this goes red -- either on
+    the set comparison (if the producer still returns ``None``) or on the
+    refusal it now raises instead.
+    """
+
+    db_path = cli_workspace["db_path"]
+    _seed_readiness_sessions(db_path)
+
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    report = await archive.insight_readiness_report()
+
+    assert {insight.insight_name for insight in report.insights} == set(known_insight_readiness_names())
+
+
+@pytest.mark.asyncio
+async def test_a_readiness_target_with_no_status_spec_is_refused(cli_workspace: dict[str, Path]) -> None:
+    """An undeclared spec must raise, not silently drop out of the report.
+
+    Anti-vacuity: restore ``return None`` in
+    ``ArchiveStore._insight_readiness_entry`` and this goes red -- the call
+    returns ``None`` instead of raising.
+    """
+
+    from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore.open_existing(cli_workspace["archive_root"], read_only=True) as store:
+        with pytest.raises(RuntimeError, match="no status-backed spec"):
+            store._insight_readiness_entry(
+                "session_not_a_real_insight",
+                status=SessionInsightStatusSnapshot(),
+                total_sessions=0,
+            )

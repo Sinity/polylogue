@@ -110,6 +110,10 @@ _SPECS: tuple[InsightReadinessSpec, ...] = (
     InsightReadinessSpec("session_context_snapshots", "Context Snapshots"),
     InsightReadinessSpec("threads", "Threads"),
     InsightReadinessSpec("session_tag_rollups", "Session Tag Rollups"),
+    # polylogue-ix65t: the provider token/cost rollup is refreshed per session
+    # by the insight rebuild but was absent from this list, so the readiness
+    # report claimed completeness while never inspecting it.
+    InsightReadinessSpec("session_model_usage", "Provider Usage"),
     InsightReadinessSpec("archive_coverage", "Archive Coverage"),
 )
 
@@ -126,6 +130,8 @@ _ALIASES = {
     "context-snapshots": "session_context_snapshots",
     "threads": "threads",
     "tags": "session_tag_rollups",
+    "provider-usage": "session_model_usage",
+    "provider_usage": "session_model_usage",
     "coverage": "archive_coverage",
 }
 

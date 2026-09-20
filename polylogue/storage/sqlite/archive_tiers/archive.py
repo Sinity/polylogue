@@ -6181,6 +6181,20 @@ class ArchiveStore:
                 0,
                 ("session_tags",),
             ),
+            # polylogue-ix65t: the provider token/cost rollup. Orphans cannot
+            # accumulate -- ``session_model_usage.session_id`` is an ON DELETE
+            # CASCADE reference -- so the readable signal is coverage: a
+            # (session, model) pair named by persisted evidence with no rollup
+            # row is a rollup the rebuild has not refreshed.
+            "session_model_usage": (
+                "session_model_usage",
+                status.provider_usage_row_count,
+                status.expected_provider_usage_row_count,
+                status.missing_provider_usage_row_count,
+                0,
+                0,
+                ("session_model_usage", "session_provider_usage_events"),
+            ),
             "archive_coverage": (
                 "sessions",
                 total_sessions,
@@ -6193,7 +6207,13 @@ class ArchiveStore:
         }
         spec = specs.get(name)
         if spec is None:
-            return None
+            # Every name reaching here is a declared readiness target
+            # (``known_insight_readiness_names`` / ``normalize_...`` refuses
+            # anything else), so a missing spec means the declaration list and
+            # this producer have drifted. Returning None dropped the insight
+            # from the report silently -- the exact failure polylogue-ix65t
+            # names -- so it is refused instead.
+            raise RuntimeError(f"declared insight readiness target has no status-backed spec: {name}")
         (
             table_name,
             row_count,
