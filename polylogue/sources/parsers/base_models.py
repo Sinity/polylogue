@@ -620,6 +620,11 @@ class ParsedSession(BaseModel):
     # producer evidence.
     created_at_provenance: str = Field(default="unknown", exclude=True, repr=False)
     updated_at_provenance: str = Field(default="unknown", exclude=True, repr=False)
+    # Parse-side identity carrier.  The ingest worker binds this after all
+    # parser and timestamp normalization is complete so downstream writers can
+    # validate and publish the source-bound digest without hashing the tree a
+    # second time.  It is excluded from payloads and semantic identity.
+    content_hash: str | None = Field(default=None, exclude=True, repr=False)
     messages: list[ParsedMessage]
     # Parser-only admission proof. It is excluded from serialized payloads and
     # content hashes, but the storage writer validates it before lowering.

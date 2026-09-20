@@ -885,10 +885,12 @@ def _materialize_parsed_sessions(
             fallback_timestamp=context.fallback_timestamp,
         )
         try:
+            content_hash = str(session_content_hash(normalized_convo))
+            normalized_convo = normalized_convo.model_copy(update={"content_hash": content_hash})
             session_payloads.append(
                 SessionWritePayload(
                     session_id=str(make_session_id(normalized_convo.source_name, normalized_convo.provider_session_id)),
-                    content_hash=str(session_content_hash(normalized_convo)),
+                    content_hash=content_hash,
                     parsed_session=normalized_convo,
                     message_count=len(normalized_convo.messages),
                     attachment_count=len(normalized_convo.attachments),

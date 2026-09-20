@@ -24,11 +24,13 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.pipeline import ids as pipeline_ids
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
@@ -208,6 +210,75 @@ def test_valid_prepared_rows_are_used_verbatim_without_rebuilding(
         assert ("tool_use", "Bash") in [tuple(row) for row in stored_blocks]
     finally:
         conn.close()
+
+
+def test_parse_bound_hash_is_carried_into_prepared_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prepared rows consume the worker's digest without a second tree hash."""
+    session = _synthetic_sessions()[0]
+    expected = str(session_content_hash(session))
+    bound = session.model_copy(update={"content_hash": expected})
+
+    def _boom(*args: object, **kwargs: object) -> str:
+        raise AssertionError("prepared rows must use the parse-bound hash")
+
+    monkeypatch.setattr(pipeline_ids, "session_content_hash", _boom)
+    prepared = prepare_session_rows(bound)
+
+    assert prepared.session_content_hash.hex() == expected
+
+
+def test_writer_accepts_parse_bound_hash_without_recomputing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bound hash is sufficient for the writer's prepared-row admission."""
+    session = _synthetic_sessions()[0]
+    bound = session.model_copy(update={"content_hash": str(session_content_hash(session))})
+    prepared = prepare_session_rows(bound)
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise AssertionError("writer must not rebuild prepared rows")
+
+    monkeypatch.setattr(archive_tier_write, "_build_message_rows", _boom)
+    monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
+    conn = _connect(tmp_path / "bound.db")
+    try:
+        session_id = write_parsed_session_to_archive(conn, bound, prepared=prepared)
+        assert conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_prepared_rows_match_identity_golden_fixture() -> None:
+    """Freeze the prepared session/message/block identities for a fixed tree."""
+    session = _synthetic_sessions()[1]
+    prepared = prepare_session_rows(session)
+
+    assert prepared.session_id == "codex-session:tool-use-and-thinking"
+    assert prepared.session_content_hash.hex() == "64aa4c29b79e8b1936f1e163b5a660310b4b2e0ace2427505a1c468e9d2dc298"
+    assert [(row[0], row[1], cast(bytes, row[30]).hex()) for row in prepared.message_rows] == [
+        (
+            "codex-session:tool-use-and-thinking",
+            "t0",
+            "698f50caf1c2bd550f05e569d6e35f456efcae723563c3d075251ba2ecd4a445",
+        ),
+        (
+            "codex-session:tool-use-and-thinking",
+            "t1",
+            "901c34a4203c0d3e2a38b3a6c9331105b6dff6f1199b331f2ebb82452105d78c",
+        ),
+    ]
+    assert [(row[0], cast(bytes, row[-1]).hex()) for row in prepared.block_rows] == [
+        (
+            "codex-session:tool-use-and-thinking:n:t0",
+            "fe379f72e342a10bc02ffa074034323b87118b6a74bfc474cb3196c9e9cba039",
+        ),
+        (
+            "codex-session:tool-use-and-thinking:n:t0",
+            "9c941f49d308dcdf951a4d31ceabedc2b367bee3c7c2355604d3f6e8b60a565c",
+        ),
+        (
+            "codex-session:tool-use-and-thinking:n:t1",
+            "fc2514fe847eba2a6c7a6cbbff179087d85c0fa8d80a974afaa3808ee95d6f51",
+        ),
+    ]
 
 
 def test_new_session_skips_field_path_union(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
