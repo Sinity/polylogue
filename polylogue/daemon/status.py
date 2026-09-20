@@ -340,17 +340,17 @@ class EmbeddingReadiness(BaseModel):
     embedding_config_enabled: bool = False
     embedding_has_voyage_key: bool = False
     embedding_model: str = ""
-    embedding_dimension: int = 0
-    embedding_status: str = "empty"
-    embedding_freshness_status: str = "empty"
+    embedding_dimension: int | None = None
+    embedding_status: str = "unavailable"
+    embedding_freshness_status: str = "unavailable"
     embedding_retrieval_ready: bool = False
-    embedding_pending_count: int = 0
+    embedding_pending_count: int | None = None
     embedding_pending_message_count: int | None = None
     embedding_pending_message_count_exact: bool = False
-    embedding_stale_count: int = 0
-    embedding_coverage_percent: float = 0.0
-    embedding_failure_count: int = 0
-    embedding_estimated_cost_usd: float = 0.0
+    embedding_stale_count: int | None = None
+    embedding_coverage_percent: float | None = None
+    embedding_failure_count: int | None = None
+    embedding_estimated_cost_usd: float | None = None
     embedding_latest_catchup_run: dict[str, object] | None = None
     embedding_latest_material_catchup_run: dict[str, object] | None = None
 
@@ -457,8 +457,10 @@ class ArchiveTierStatus(BaseModel):
     inode: int | None = None
     stable_id: str = ""
     exists: bool = False
-    size_bytes: int = 0
-    wal_size_bytes: int = 0
+    # ``None`` means the tier metadata was not readable (including a missing
+    # tier).  A failed probe must never look like a measured empty file.
+    size_bytes: int | None = None
+    wal_size_bytes: int | None = None
     user_version: int | None = None
     expected_user_version: int | None = None
     version_status: Literal["ok", "missing", "mismatch", "invalid"] = "missing"
@@ -640,12 +642,12 @@ class DaemonStatus(BaseModel):
     catchup: CatchupStatus = Field(default_factory=CatchupStatus)
     convergence: ConvergenceDebtSummary = Field(default_factory=ConvergenceDebtSummary)
     cursor_lag: CursorLagSummary = Field(default_factory=CursorLagSummary)
-    db_size_bytes: int = 0
-    wal_size_bytes: int = 0
+    db_size_bytes: int | None = None
+    wal_size_bytes: int | None = None
     #: ``None`` when the blob-store walk was not performed (the compact path
     #: never performs it) -- never a fabricated zero.
     blob_dir_size_bytes: int | None = None
-    disk_free_bytes: int = 0
+    disk_free_bytes: int | None = None
     fts_readiness: FTSReadiness = Field(default_factory=FTSReadiness)
     insight_freshness: InsightFreshness = Field(default_factory=InsightFreshness)
     embedding_readiness: EmbeddingReadiness = Field(default_factory=EmbeddingReadiness)
@@ -1222,6 +1224,11 @@ def _safe_float(value: object, *, default: float = 0.0) -> float:
     """Coerce value to float, returning default on failure."""
     coerced = _row_float(value)
     return default if coerced is None else coerced
+
+
+def _optional_float(value: object) -> float | None:
+    """Coerce a measured float while preserving unavailable as ``None``."""
+    return _row_float(value)
 
 
 def _gil_enabled() -> bool:
@@ -2084,9 +2091,16 @@ def _status_component_metadata(snapshots: Mapping[str, ComponentSnapshot]) -> li
     copying rich detail into compact CLI/MCP/HTTP responses while preserving
     state, age, deadline, and last-good authority uniformly.
     """
-    return [
-        {key: value for key, value in snapshot.to_dict().items() if key != "value"} for snapshot in snapshots.values()
-    ]
+    from polylogue.daemon.services import status_component_publisher
+
+    metadata: list[dict[str, object]] = []
+    for snapshot in snapshots.values():
+        item = {key: value for key, value in snapshot.to_dict().items() if key != "value"}
+        publisher = status_component_publisher(snapshot.name)
+        if publisher is not None:
+            item["publisher"] = publisher
+        metadata.append(item)
+    return metadata
 
 
 def _convergence_debt_from_snapshot(snapshot: ComponentSnapshot) -> ConvergenceDebtSummary:
@@ -2511,8 +2525,8 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
         return {
             "available": False,
             "reason": "excluded_from_bounded_status_snapshot",
-            "candidate_count": 0,
-            "total_blob_bytes": 0,
+            "candidate_count": None,
+            "total_blob_bytes": None,
             "top_raw_rows": [],
             "origin_summary": [],
             "source_path_summary": [],
@@ -2525,8 +2539,8 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
         return {
             "available": False,
             "reason": str(exc),
-            "candidate_count": 0,
-            "total_blob_bytes": 0,
+            "candidate_count": None,
+            "total_blob_bytes": None,
             "top_raw_rows": [],
             "origin_summary": [],
             "source_path_summary": [],
@@ -2908,7 +2922,10 @@ def build_daemon_status(
     # call.  Its ``value`` is either ``None`` or a *previous* good value, so
     # serving it -- or the model default -- as a current measurement is the
     # refusal-rendered-as-a-positive-claim defect (polylogue-bu47u AC1).
-    unmeasured_states = {"timed_out", "unavailable", "degraded"}
+    # Stale/refreshing snapshots are advisory only. A generation fingerprint
+    # can change while the prior collector is still in flight; promoting that
+    # value would certify readiness for a frame that is no longer authoritative.
+    unmeasured_states = {"stale", "refreshing", "timed_out", "unavailable", "degraded"}
 
     def _v(name: str, default: Any, *, unmeasured: Any = _UNMEASURED_UNSET) -> Any:
         """Return the component's collected value.
@@ -3086,19 +3103,19 @@ def build_daemon_status(
         embedding_config_enabled=bool(embedding_info.get("embedding_config_enabled", False)),
         embedding_has_voyage_key=bool(embedding_info.get("embedding_has_voyage_key", False)),
         embedding_model=str(embedding_info.get("embedding_model", "")),
-        embedding_dimension=_safe_int(embedding_info.get("embedding_dimension", 0)),
-        embedding_status=str(embedding_info.get("embedding_status", "empty")),
-        embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "empty")),
+        embedding_dimension=_optional_int(embedding_info.get("embedding_dimension")),
+        embedding_status=str(embedding_info.get("embedding_status", "unavailable")),
+        embedding_freshness_status=str(embedding_info.get("embedding_freshness_status", "unavailable")),
         embedding_retrieval_ready=bool(embedding_info.get("embedding_retrieval_ready", False)),
-        embedding_pending_count=_safe_int(embedding_info.get("embedding_pending_count", 0)),
+        embedding_pending_count=_optional_int(embedding_info.get("embedding_pending_count")),
         embedding_pending_message_count_exact=bool(embedding_info.get("embedding_pending_message_count_exact", False)),
         embedding_pending_message_count=_safe_int(embedding_info.get("embedding_pending_message_count", 0))
         if bool(embedding_info.get("embedding_pending_message_count_exact", False))
         else None,
-        embedding_stale_count=_safe_int(embedding_info.get("embedding_stale_count", 0)),
-        embedding_coverage_percent=_safe_float(embedding_info.get("embedding_coverage_percent")),
-        embedding_failure_count=_safe_int(embedding_info.get("embedding_failure_count", 0)),
-        embedding_estimated_cost_usd=_safe_float(embedding_info.get("embedding_estimated_cost_usd")),
+        embedding_stale_count=_optional_int(embedding_info.get("embedding_stale_count")),
+        embedding_coverage_percent=_optional_float(embedding_info.get("embedding_coverage_percent")),
+        embedding_failure_count=_optional_int(embedding_info.get("embedding_failure_count")),
+        embedding_estimated_cost_usd=_optional_float(embedding_info.get("embedding_estimated_cost_usd")),
         embedding_latest_catchup_run=cast(
             dict[str, object] | None,
             embedding_info.get("embedding_latest_catchup_run"),
@@ -3150,10 +3167,10 @@ def build_daemon_status(
         catchup=catchup,
         convergence=convergence,
         cursor_lag=cursor_lag,
-        db_size_bytes=_safe_int(db_info.get("db_size_bytes", 0)),
-        wal_size_bytes=_safe_int(db_info.get("wal_size_bytes", 0)),
+        db_size_bytes=_optional_int(db_info.get("db_size_bytes")),
+        wal_size_bytes=_optional_int(db_info.get("wal_size_bytes")),
         blob_dir_size_bytes=_v("blob_size", None, unmeasured=None),
-        disk_free_bytes=_safe_int(db_info.get("disk_free_bytes", 0)),
+        disk_free_bytes=_optional_int(db_info.get("disk_free_bytes")),
         fts_readiness=fts_readiness,
         insight_freshness=insight_freshness,
         embedding_readiness=embedding_readiness,
@@ -3298,7 +3315,9 @@ def daemon_status_payload(
             ]
         ).collect()["archive_debt"]
         archive_debt = (
-            debt_snapshot.value if debt_snapshot.value is not None else _excluded_archive_debt_status_summary()
+            debt_snapshot.value
+            if debt_snapshot.state == "fresh" and debt_snapshot.value is not None
+            else _excluded_archive_debt_status_summary()
         )
     else:
         archive_debt = _excluded_archive_debt_status_summary()
@@ -3329,7 +3348,7 @@ def daemon_status_payload(
             ).collect()["assertion_candidate_queue"]
         assertion_candidate_queue = (
             queue_snapshot.value
-            if queue_snapshot.value is not None
+            if queue_snapshot.state == "fresh" and queue_snapshot.value is not None
             else {
                 "mode": "assertion-candidate-queue-health",
                 "state": "unavailable",
@@ -3347,6 +3366,24 @@ def daemon_status_payload(
 
     halted_units = halted_unit_status()
 
+    # Keep direct/one-shot callers on the same authority vocabulary as the
+    # cached HTTP/daemon snapshot. This is metadata only; it never rebuilds a
+    # rich snapshot and a missing frame is explicitly reported as such.
+    try:
+        from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
+
+        status_snapshot = snapshot_state_for_metrics()
+    except Exception as exc:  # pragma: no cover - defensive import boundary
+        status_snapshot = {
+            "state": "unavailable",
+            "age_s": None,
+            "captured_at": None,
+            "frame": None,
+            "current_frame": None,
+            "frame_changed": None,
+            "refresh_error": f"status snapshot metadata unavailable: {exc}",
+        }
+
     return json_document(
         {
             # A daemon holding a halted unit is not ok, whatever the rest of
@@ -3357,6 +3394,10 @@ def daemon_status_payload(
                 and status.raw_failure_lifecycle_available
                 and status.raw_failure_lifecycle_state == "healthy"
                 and not halted_units
+                # A stale cached frame is advisory evidence only. Direct
+                # status remains usable when no daemon snapshot exists, but a
+                # known stale snapshot must not certify a green answer.
+                and status_snapshot.get("state") != "stale"
             ),
             "halted_units": halted_units,
             "services": supervised_service_states(),
@@ -3366,6 +3407,7 @@ def daemon_status_payload(
             "periodic_loops": periodic_loop_payload()["loops"],
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
+            "status_snapshot": status_snapshot,
             "daemon_lifecycle": status.daemon_lifecycle,
             "checked_at": status.checked_at,
             "component_state": status.component_state.model_dump(),
@@ -3468,7 +3510,8 @@ def assertion_candidate_queue_status_summary(*, config: Config | None = None) ->
         return {
             "mode": "assertion-candidate-queue-health",
             "state": "unavailable",
-            "pending_count": 0,
+            # A failed queue read is not an empty queue.
+            "pending_count": None,
             "caveats": [f"queue health unavailable: {exc}"],
         }
 

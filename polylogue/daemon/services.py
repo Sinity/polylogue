@@ -35,6 +35,8 @@ __all__ = [
     "UnknownServiceError",
     "capability_tokens",
     "select_service_specs",
+    "status_component_publisher",
+    "status_component_publishers",
     "service_spec",
     "service_specs",
 ]
@@ -473,6 +475,46 @@ def service_spec(name: str) -> DaemonServiceSpec:
         return _BY_NAME[name]
     except KeyError as exc:
         raise UnknownServiceError(f"no daemon service named {name!r} is declared") from exc
+
+
+# Status facts are observations published by domain services, not an
+# unowned monitoring collector. Keep this declaration beside the lifecycle
+# registry so an observation cannot silently acquire a second scheduler or a
+# surface-local producer. Values are service *owners* (the stable publisher
+# identity), rather than presentation-layer module names.
+_STATUS_COMPONENT_PUBLISHERS: Mapping[str, str] = {
+    "sinex_publication": "daemon.convergence",
+    "db_size": "daemon.storage",
+    "blob_size": "daemon.blobs",
+    "archive_storage": "daemon.storage",
+    "fts_readiness": "daemon.fts",
+    "insight_freshness": "daemon.convergence",
+    "session_summary": "daemon.convergence",
+    "raw_materialization": "daemon.raw_observation_owner",
+    "raw_replay_backlog": "daemon.raw_observation_owner",
+    "live_cursor": "daemon.intake",
+    "live_ingest_attempts": "daemon.intake",
+    "convergence": "daemon.convergence",
+    "cursor_lag": "daemon.convergence",
+    "raw_failures": "daemon.raw_observation_owner",
+    "blob_publication_reservations": "daemon.blobs",
+    "embedding_readiness": "daemon.embeddings",
+    "health": "daemon.health",
+    "assertion_candidate_queue": "daemon.judgment",
+    "status_snapshot": "daemon.status",
+}
+
+
+def status_component_publishers() -> Mapping[str, str]:
+    """Return the immutable status-observation publisher declaration."""
+
+    return _STATUS_COMPONENT_PUBLISHERS
+
+
+def status_component_publisher(name: str) -> str | None:
+    """Return the lifecycle owner for a status component, if declared."""
+
+    return _STATUS_COMPONENT_PUBLISHERS.get(name)
 
 
 def capability_tokens(capabilities: Iterable[ServiceCapability]) -> frozenset[ServiceCapability]:

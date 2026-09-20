@@ -86,6 +86,16 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def _format_optional_count(value: Any) -> str:
+    """Render a count without turning an unreadable probe into ``0``."""
+    if value is None:
+        return "unavailable"
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return "unavailable"
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value) if value is not None else default
@@ -462,11 +472,14 @@ def _render_direct_status_payload(env: AppEnv, status: dict[str, Any], *, compac
     # instead of through polylogued -- and stops short of claiming liveness
     # the CLI never probed (polylogue-2d8oq).
     env.ui.console.print("  [dim]Daemon idle for this read; start it with `polylogued run` to resume ingestion.[/dim]")
-    env.ui.console.print(f"  Sessions: {_safe_int(status.get('total_sessions')):,}")
-    env.ui.console.print(f"  Messages: {_safe_int(status.get('total_messages')):,}")
-    source_tier = status.get("archive_tiers", {}).get("source", {})
-    if source_tier.get("exists"):
-        env.ui.console.print(f"  Raw records: {_safe_int(source_tier.get('table_counts', {}).get('raw_sessions')):,}")
+    env.ui.console.print(f"  Sessions: {_format_optional_count(status.get('total_sessions'))}")
+    env.ui.console.print(f"  Messages: {_format_optional_count(status.get('total_messages'))}")
+    archive_tiers = status.get("archive_tiers")
+    source_tier = archive_tiers.get("source", {}) if isinstance(archive_tiers, dict) else {}
+    if isinstance(source_tier, dict) and source_tier.get("exists"):
+        counts = source_tier.get("table_counts")
+        raw_count = counts.get("raw_sessions") if isinstance(counts, dict) else None
+        env.ui.console.print(f"  Raw records: {_format_optional_count(raw_count)}")
     _render_ingest_workload(env, status.get("ingest_workload", {}))
     convergence = status.get("convergence", {})
     if isinstance(convergence, dict):
@@ -930,7 +943,14 @@ def _render_raw_replay_backlog(env: AppEnv, backlog: dict[str, Any]) -> None:
 
 def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> None:
     """Render bounded embedding readiness in direct SQLite fallback status."""
-    if int(payload.get("total_sessions", 0) or 0) <= 0:
+    total_sessions_value = payload.get("total_sessions")
+    if total_sessions_value is None or payload.get("status") == "unavailable":
+        next_action = payload.get("next_action")
+        reason = next_action.get("reason") if isinstance(next_action, dict) else None
+        suffix = f" — {reason}" if reason else ""
+        env.ui.console.print(f"  Embeddings: [yellow]unavailable{suffix}[/yellow]")
+        return
+    if int(total_sessions_value or 0) <= 0:
         return
 
     status = str(payload.get("status", "unknown"))
@@ -941,28 +961,29 @@ def _render_direct_embedding_status(env: AppEnv, payload: dict[str, Any]) -> Non
         return
     freshness = str(payload.get("freshness_status", status))
     retrieval_ready = bool(payload.get("retrieval_ready", False))
-    embedded_messages = int(payload.get("embedded_messages", 0) or 0)
-    embedded_sessions = int(payload.get("embedded_sessions", 0) or 0)
-    total_sessions = int(payload.get("total_sessions", 0) or 0)
-    pending_sessions = int(payload.get("pending_sessions", 0) or 0)
-    coverage = float(payload.get("embedding_coverage_percent", 0.0) or 0.0)
-    stale_messages = int(payload.get("stale_messages", 0) or 0)
-    failure_count = int(payload.get("failure_count", 0) or 0)
+    embedded_messages = _format_optional_count(payload.get("embedded_messages"))
+    embedded_sessions = _format_optional_count(payload.get("embedded_sessions"))
+    total_sessions = _format_optional_count(payload.get("total_sessions"))
+    pending_sessions = _format_optional_count(payload.get("pending_sessions"))
+    coverage_value = payload.get("embedding_coverage_percent")
+    coverage = "unknown" if coverage_value is None else f"{float(coverage_value):.1f}%"
+    stale_messages = _format_optional_count(payload.get("stale_messages"))
+    failure_count = _format_optional_count(payload.get("failure_count"))
 
-    color = "green" if retrieval_ready and freshness != "stale" else "yellow" if embedded_messages else "dim"
+    color = "green" if retrieval_ready and freshness != "stale" else "yellow" if embedded_messages != "0" else "dim"
     ready_text = "ready" if retrieval_ready else "not ready"
     line = (
         f"  Embeddings: [{color}]{status}/{freshness}, {ready_text}; "
-        f"{embedded_messages:,} msgs, {embedded_sessions:,}/{total_sessions:,} convs "
-        f"({coverage:.1f}%), {pending_sessions:,} pending convs"
+        f"{embedded_messages} msgs, {embedded_sessions}/{total_sessions} convs "
+        f"({coverage}), {pending_sessions} pending convs"
     )
-    if stale_messages:
-        line += f", {stale_messages:,} stale msgs"
+    if stale_messages != "0":
+        line += f", {stale_messages} stale msgs"
     line += f"[/{color}]"
     env.ui.console.print(line)
 
-    if failure_count:
-        env.ui.console.print(f"  Embedding failures: [yellow]{failure_count:,}[/yellow]")
+    if failure_count != "0":
+        env.ui.console.print(f"  Embedding failures: [yellow]{failure_count}[/yellow]")
 
     latest = payload.get("latest_catchup_run")
     if isinstance(latest, dict):
