@@ -39,6 +39,7 @@ from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
     archive_tier_paths,
+    assert_archive_format_authority,
     sign_verification_receipt,
 )
 from polylogue.storage.blob_integrity import (
@@ -64,6 +65,11 @@ _BLOB_REFERENCE_EVIDENCE_FILE = "blob-reference-evidence.json"
 _SOURCE_DECLARED_ABSENT_FILE = "source-declared-absent.json"
 _SOURCE_DECLARED_ABSENT_FORMAT = "polylogue-source-declared-absent-v1"
 _SOURCE_DECLARED_ABSENT_AUTHORITY = "polylogue-2x6xu"
+_ARCHIVE_AUTHORITY_FILES = (
+    ".polylogue-format.json",
+    ".maintenance-state/durable-change-trains/.bootstrap",
+    ".maintenance-state/durable-change-trains/.bootstrap.pending",
+)
 _SNAPSHOT_LOCK_ATTEMPTS = 5
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _RECOVERABILITY_FAILURE_KINDS = frozenset(
@@ -1216,6 +1222,7 @@ def _write_manifest(
     warnings: list[str],
     archive_root_source_identity: dict[str, object],
     tier_source_fingerprints: dict[str, dict[str, object]],
+    archive_authority_files: list[str],
     blob_reference_debt: BlobReferenceDebtReport | None = None,
     source_generation_id: str | None = None,
 ) -> None:
@@ -1233,6 +1240,7 @@ def _write_manifest(
         "blob_reference_evidence_file": _BLOB_REFERENCE_EVIDENCE_FILE,
         "archive_root_source_identity": archive_root_source_identity,
         "tier_source_fingerprints": tier_source_fingerprints,
+        "archive_authority_files": archive_authority_files,
         "warnings": warnings,
         "source_generation_id": source_generation_id,
     }
@@ -1357,8 +1365,31 @@ def _backup_archive(
         else:
             blob_count = 0
             blob_size = 0
+
+    # The format marker and fresh-bootstrap receipts are archive authority,
+    # not rebuildable cache.  Preserve them whenever present so a restored
+    # durable subset can pass the same lineage admission as the live root.
+    archive_authority_files: list[str] = []
+    for relative_name in _ARCHIVE_AUTHORITY_FILES:
+        source = root / relative_name
+        if not (source.exists() or source.is_symlink()):
+            continue
+        if relative_name == ".polylogue-format.json":
+            durable_tiers = {"source", "user", "audit"}
+            durable_names = {f"{tier}.db" for tier in durable_tiers}
+            if not durable_tiers.issubset(included_tiers) or not all((root / name).is_file() for name in durable_names):
+                # A partial/adoption backup cannot carry a completed marker:
+                # restoring it without every durable leaf would make startup
+                # reject the otherwise valid receipt-backed recovery path.
+                continue
+        _require_regular_backup_artifact(source, backup_root=root, label="archive authority")
+        destination = backup_root / relative_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        archive_authority_files.append(relative_name)
     if blob_count:
         backed_up_files.append(str(backup_root / "blob"))
+    backed_up_files.extend(str(backup_root / name) for name in archive_authority_files)
 
     omitted = [f"{tier}.db" for tier in omitted_tiers]
     _write_manifest(
@@ -1373,6 +1404,7 @@ def _backup_archive(
         warnings=warnings,
         archive_root_source_identity=_archive_root_source_identity(root),
         tier_source_fingerprints=tier_source_fingerprints,
+        archive_authority_files=archive_authority_files,
         blob_reference_debt=blob_reference_debt,
         source_generation_id=source_generation_id,
     )
@@ -1503,6 +1535,18 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             _require_regular_backup_artifact(tier_path, backup_root=restored, label="backup tier")
             _reject_sqlite_sidecars(tier_path)
             tier_integrity[name.removesuffix(".db")] = _sqlite_integrity_ok(tier_path)
+        authority_files = manifest.get("archive_authority_files", [])
+        if not isinstance(authority_files, list) or any(
+            not isinstance(item, str) or item not in _ARCHIVE_AUTHORITY_FILES for item in authority_files
+        ):
+            raise RuntimeError("backup manifest has invalid archive authority file declarations")
+        for relative_name in authority_files:
+            authority_path = restored / relative_name
+            _require_regular_backup_artifact(authority_path, backup_root=restored, label="backup archive authority")
+        if ".polylogue-format.json" in authority_files and all(
+            (restored / f"{tier}.db").is_file() for tier in ("source", "user", "audit")
+        ):
+            assert_archive_format_authority(restored)
         omitted_absent = all(
             not (restored / name).exists() and not (restored / name).is_symlink() for name in omitted_tiers
         )

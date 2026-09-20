@@ -44,6 +44,13 @@ def archive_tier_paths(root: Path) -> dict[str, Path]:
     return {spec.tier.value: root / spec.filename for spec in ARCHIVE_TIER_SPECS.values()}
 
 
+def assert_archive_format_authority(root: Path) -> None:
+    """Validate a copied format marker through the storage-owned lineage gate."""
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import assert_archive_format_lineage
+
+    assert_archive_format_lineage(root)
+
+
 def tier_attestation_id(live_tier_path: Path) -> str:
     """Return the stable local identity for one resolved durable tier."""
     canonical = str(live_tier_path.expanduser().resolve(strict=False)).encode("utf-8")
@@ -179,6 +186,7 @@ __all__ = [
     "ATTESTATION_FORMAT",
     "BackupAttestationError",
     "VERIFICATION_RECEIPT_FORMAT",
+    "assert_archive_format_authority",
     "archive_tier_paths",
     "attestation_key_path",
     "load_attestation_key",

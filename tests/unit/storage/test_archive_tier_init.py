@@ -45,9 +45,10 @@ def test_initialize_archive_tier_files_creates_all_tiers(
             assert conn.execute("SELECT COUNT(*) FROM initialized").fetchone()[0] == 1
         finally:
             conn.close()
+    assert (tmp_path / ".polylogue-format.json").is_file()
 
 
-def test_initialize_archive_tier_files_backs_up_replaceable_targets(
+def test_initialize_archive_tier_files_refuses_to_replace_durable_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -55,18 +56,15 @@ def test_initialize_archive_tier_files_backs_up_replaceable_targets(
         (tmp_path / spec.filename).write_text(f"existing {spec.tier.value} target", encoding="utf-8")
     monkeypatch.setattr(archive_init, "initialize_archive_database", _fake_initialize_archive_database)
 
-    result = initialize_archive_tier_files(
-        archive_root=tmp_path,
-        replace_existing=True,
-    )
+    with pytest.raises(ArchiveInitBlockedError, match="fresh format floor cannot replace durable evidence"):
+        initialize_archive_tier_files(
+            archive_root=tmp_path,
+            replace_existing=True,
+        )
 
-    assert (tmp_path / "source.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing source target"
-    assert (tmp_path / "embeddings.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing embeddings target"
-    assert (tmp_path / "user.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing user target"
-    assert (tmp_path / "audit.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing audit target"
-    assert not (tmp_path / "index.db.pre-archive-init.bak").exists()
-    assert not (tmp_path / "ops.db.pre-archive-init.bak").exists()
-    assert {tier.initialized for tier in result.tier_results} == {True}
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
+        path = tmp_path / ARCHIVE_TIER_SPECS[tier].filename
+        assert path.read_text(encoding="utf-8") == f"existing {tier.value} target"
 
 
 def test_initialize_archive_tier_files_refuses_blocked_plan(tmp_path: Path) -> None:
@@ -74,6 +72,52 @@ def test_initialize_archive_tier_files_refuses_blocked_plan(tmp_path: Path) -> N
 
     with pytest.raises(ArchiveInitBlockedError, match="source target already exists"):
         initialize_archive_tier_files(archive_root=tmp_path)
+
+
+def test_initialize_archive_tier_files_does_not_mutate_a_partial_marked_root(tmp_path: Path) -> None:
+    """A marker beside missing durable tiers is diagnosed before replacement."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "source.db"
+    user = tmp_path / "user.db"
+    audit = tmp_path / "audit.db"
+    source.unlink()
+    user.unlink()
+    audit.unlink()
+    index_before = (tmp_path / "index.db").read_bytes()
+    ops_before = (tmp_path / "ops.db").read_bytes()
+
+    with pytest.raises(RuntimeError, match="missing durable tier"):
+        initialize_archive_tier_files(archive_root=tmp_path, replace_existing=True)
+
+    assert (tmp_path / "index.db").read_bytes() == index_before
+    assert (tmp_path / "ops.db").read_bytes() == ops_before
+
+
+def test_active_bootstrap_refuses_dangling_durable_symlink(tmp_path: Path) -> None:
+    """Fresh creation must not let SQLite follow a durable symlink target."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    source = tmp_path / "source.db"
+    external = tmp_path / "outside.db"
+    source.symlink_to(external)
+
+    with pytest.raises(RuntimeError, match="archive format marker is missing|safe fresh file path"):
+        initialize_active_archive_root(tmp_path)
+
+    assert not external.exists()
+
+
+def test_active_bootstrap_rebuilds_derived_only_root_without_format_marker(tmp_path: Path) -> None:
+    """A derived-only residue is rebuildable evidence, not durable lineage."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    (tmp_path / "index.db").touch()
+    initialize_active_archive_root(tmp_path)
+
+    assert (tmp_path / ".polylogue-format.json").is_file()
+    assert all((tmp_path / f"{tier}.db").is_file() for tier in ("source", "user", "audit"))
 
 
 # ---------------------------------------------------------------------------

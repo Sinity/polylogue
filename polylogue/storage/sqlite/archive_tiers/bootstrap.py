@@ -22,8 +22,11 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
-from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+# Kept locally so schema metadata can import the bootstrap module while the
+# migration runner is still importing the archive-tier package.
+DURABLE_MIGRATION_TIERS = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
 
 DurabilityClass = Literal["irreplaceable", "rebuildable", "expensive_rebuild", "human", "disposable"]
 
@@ -699,6 +702,22 @@ def initialize_archive_database(
     elif inactive_destination is not None:
         raise ArchiveTupleError("inactive_destination does not match an archive tuple candidate path")
     if allow_create:
+        # Fresh bootstrap must not follow a pre-existing durable pathname out
+        # of the archive root.  ``Path.exists()`` misses dangling symlinks,
+        # so inspect the directory entry before SQLite gets a chance to
+        # create or follow it.  Derived tuple destinations are validated by
+        # their capability above and are intentionally not subject to the
+        # active-root durable containment rule.
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            metadata = None
+        if (
+            metadata is not None
+            and tier in DURABLE_MIGRATION_TIERS
+            and (path.is_symlink() or not path.is_file() or metadata.st_nlink != 1)
+        ):
+            raise RuntimeError(f"durable tier is not a safe fresh file path; refusing initialization: {path}")
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(path)
         if page_size is not None:
@@ -778,6 +797,11 @@ def _initialize_active_archive_root(root: Path) -> None:
         OwnedArchiveLocation,
         assert_owns_archive_location,
     )
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import (
+        archive_format_marker_path,
+        assert_archive_format_lineage,
+        record_fresh_archive_format,
+    )
     from polylogue.storage.sqlite.durable_change_train import (
         _durable_train_manifest_paths,
         _record_fresh_durable_bootstrap,
@@ -830,6 +854,36 @@ def _initialize_active_archive_root(root: Path) -> None:
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()
 
+        # ``user_version == 1`` now belongs to a new format lineage.  Admit an
+        # established root only through its marker before any tier initializer
+        # gets a writable connection.  A historical v1 file therefore cannot
+        # be restamped into apparent compatibility.
+        format_marker = archive_format_marker_path(root)
+        # A pending intent is the authenticated recovery authority for a
+        # partially-created fresh archive.  Validate it before enforcing the
+        # completed format marker, otherwise a crash between the first tier
+        # and marker publication becomes unrecoverable.
+        if has_pending_bootstrap:
+            _validate_fresh_durable_bootstrap_intent(root)
+            if has_durable_train_state:
+                raise RuntimeError(
+                    "fresh durable bootstrap intent conflicts with durable train state; "
+                    "refusing to guess which authority is current"
+                )
+        any_durable_tier_exists = any(
+            (root / archive_tier_spec(tier).filename).exists() or (root / archive_tier_spec(tier).filename).is_symlink()
+            for tier in DURABLE_MIGRATION_TIERS
+        )
+        missing_audit_with_recovery_receipt = (
+            pending_audit_adoption and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
+        )
+        if any_durable_tier_exists and not (
+            (has_pending_bootstrap and not has_bootstrap_marker) or missing_audit_with_recovery_receipt
+        ):
+            assert_archive_format_lineage(root)
+        elif format_marker.exists() and not any_durable_tier_exists:
+            raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
+
         def classify_paths() -> tuple[bool, bool]:
             durable_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
             adoption = (
@@ -843,13 +897,6 @@ def _initialize_active_archive_root(root: Path) -> None:
             return durable_exists, adoption
 
         durable_tier_exists, pre_marker_adoption = classify_paths()
-        if has_pending_bootstrap:
-            _validate_fresh_durable_bootstrap_intent(root)
-            if has_durable_train_state:
-                raise RuntimeError(
-                    "fresh durable bootstrap intent conflicts with durable train state; "
-                    "refusing to guess which authority is current"
-                )
         fresh_durable_bootstrap = (
             not durable_tier_exists
             and not has_durable_train_state
@@ -895,7 +942,7 @@ def _initialize_active_archive_root(root: Path) -> None:
                 "established archive is missing audit.db; use maintenance migrate-tier audit "
                 "--adopt-established-audit with a verified full_evidence backup"
             )
-        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
+        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption and not format_marker.exists():
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         location = ArchiveLocation.resolve(root)
@@ -909,6 +956,7 @@ def _initialize_active_archive_root(root: Path) -> None:
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)
+            record_fresh_archive_format(root)
         elif pre_marker_adoption:
             from polylogue.storage.sqlite.durable_change_train import _adopt_pre_marker_durable_bootstrap
 
@@ -947,8 +995,14 @@ def initialize_active_archive_root(root: Path) -> None:
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
     """Reconcile persisted durable trains without executing migration SQL."""
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
     from polylogue.storage.sqlite.durable_change_train import reconcile_durable_change_train_startup
 
+    # This lineage starts at the canonical floor. It has no predecessor train
+    # to reconcile during ordinary bootstrap; explicit future upgrades keep
+    # using the migration engine.
+    if archive_format_marker_path(root).is_file():
+        return ()
     return reconcile_durable_change_train_startup(root)
 
 
