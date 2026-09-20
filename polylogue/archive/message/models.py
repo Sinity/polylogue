@@ -58,10 +58,10 @@ class Message(MessageRuntimeMixin, BaseModel):
     has_thinking: bool = False
     has_paste: bool = False
     paste_boundary_state: str | None = None
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
+    input_tokens: int | None = 0
+    output_tokens: int | None = 0
+    cache_read_tokens: int | None = 0
+    cache_write_tokens: int | None = 0
     duration_ms: int = 0
     model_name: str | None = None
     # Provider-reported terminal signal for this assistant turn (storage:

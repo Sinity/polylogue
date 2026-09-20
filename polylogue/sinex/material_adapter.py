@@ -351,12 +351,12 @@ def _usage_inputs(messages: Sequence[ParsedMessage], session: ParsedSession) -> 
             "cache_read": message.cache_read_tokens,
             "cache_write": message.cache_write_tokens,
         }
-        has_tokens = any(value != 0 for value in token_values.values())
+        has_tokens = any(value is not None and value != 0 for value in token_values.values())
         if model_name is None and not has_tokens:
             continue
         key = str(model_name or "unknown")
         for name, value in token_values.items():
-            totals[key][name] += max(0, value)
+            totals[key][name] += max(0, value) if value is not None else 0
     cost_usd = _number(session.reported_cost_usd)
     if not totals and cost_usd is not None:
         totals["unknown"]

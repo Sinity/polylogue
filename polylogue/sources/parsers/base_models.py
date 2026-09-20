@@ -385,10 +385,10 @@ class ParsedMessage(BaseModel):
     # cost estimation downstream. Were previously dropped on the parser floor,
     # leaving 2.5M rows with input_tokens=output_tokens=0 and dead cost
     # rollups across the entire archive.
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     model_name: str | None = None
     model_effort: str | None = None
     duration_ms: int | None = None

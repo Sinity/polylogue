@@ -382,13 +382,14 @@ def _get_message_token_counts(message: object) -> object | None:
     if harmonized is not None:
         result: object | None = getattr(harmonized, "tokens", None)
         return result
-    input_tokens = int(getattr(message, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(message, "output_tokens", 0) or 0)
-    cache_read_tokens = int(getattr(message, "cache_read_tokens", 0) or 0)
-    cache_write_tokens = int(getattr(message, "cache_write_tokens", 0) or 0)
-    if input_tokens or output_tokens or cache_read_tokens or cache_write_tokens:
+    raw_counts = tuple(
+        getattr(message, name, None)
+        for name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
+    )
+    if any(value is not None for value in raw_counts):
         from polylogue.archive.semantic.pricing import CostUsagePayload
 
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = (int(value or 0) for value in raw_counts)
         return CostUsagePayload(
             input_tokens=input_tokens,
             output_tokens=output_tokens,

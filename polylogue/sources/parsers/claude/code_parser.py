@@ -1195,6 +1195,13 @@ def _safe_int(value: object) -> int:
         return 0
 
 
+def _optional_safe_int(value: object) -> int | None:
+    """Parse an explicitly present message counter without inventing zero."""
+    if value is None:
+        return None
+    return _safe_int(value)
+
+
 _HOOK_OUTCOME_EVENT_TYPE = "claude_hook_outcome"
 
 
@@ -2480,10 +2487,10 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             position=acc.message_position,
             variant_index=0,
             is_active_path=True,
-            input_tokens=_safe_int(msg_usage.get("input_tokens")),
-            output_tokens=_safe_int(msg_usage.get("output_tokens")),
-            cache_read_tokens=_safe_int(msg_usage.get("cache_read_input_tokens")),
-            cache_write_tokens=_safe_int(msg_usage.get("cache_creation_input_tokens")),
+            input_tokens=_optional_safe_int(msg_usage.get("input_tokens")),
+            output_tokens=_optional_safe_int(msg_usage.get("output_tokens")),
+            cache_read_tokens=_optional_safe_int(msg_usage.get("cache_read_input_tokens")),
+            cache_write_tokens=_optional_safe_int(msg_usage.get("cache_creation_input_tokens")),
             model_name=msg_model,
             model_effort=msg_effort,
             duration_ms=msg_duration_ms,

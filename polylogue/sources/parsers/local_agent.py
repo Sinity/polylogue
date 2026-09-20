@@ -652,22 +652,24 @@ def _non_negative_int(value: object) -> int | None:
     return None
 
 
-def _token_usage_fields(record: JSONDocument) -> dict[str, int]:
+def _token_usage_fields(record: JSONDocument) -> dict[str, int | None]:
     usage = json_document(record.get("usage")) or json_document(record.get("tokens")) or record
     gemini_wire_fields = {"input", "output", "cached", "thoughts", "tool"}
     if any(key in usage for key in gemini_wire_fields):
-        input_with_cached = _first_non_negative_int(usage, "input") or 0
-        cache_read_tokens = _first_non_negative_int(usage, "cached") or 0
+        input_with_cached = _first_non_negative_int(usage, "input")
+        cache_read_tokens = _first_non_negative_int(usage, "cached")
         return {
-            "input_tokens": max(input_with_cached - cache_read_tokens, 0),
-            "output_tokens": _first_non_negative_int(usage, "output") or 0,
+            "input_tokens": (
+                max(input_with_cached - (cache_read_tokens or 0), 0) if input_with_cached is not None else None
+            ),
+            "output_tokens": _first_non_negative_int(usage, "output"),
             "cache_read_tokens": cache_read_tokens,
-            "cache_write_tokens": 0,
-            "reasoning_output_tokens": _first_non_negative_int(usage, "thoughts") or 0,
-            "tool_output_tokens": _first_non_negative_int(usage, "tool") or 0,
-            "total_tokens": _first_non_negative_int(usage, "total") or 0,
+            "cache_write_tokens": None,
+            "reasoning_output_tokens": _first_non_negative_int(usage, "thoughts"),
+            "tool_output_tokens": _first_non_negative_int(usage, "tool"),
+            "total_tokens": _first_non_negative_int(usage, "total"),
         }
-    input_tokens = _first_non_negative_int(usage, "input_tokens", "prompt_tokens") or 0
+    input_tokens = _first_non_negative_int(usage, "input_tokens", "prompt_tokens")
     explicit_output = _first_non_negative_int(
         usage,
         "output_tokens",
@@ -676,21 +678,19 @@ def _token_usage_fields(record: JSONDocument) -> dict[str, int]:
         "total_tokens",
         "total",
     )
-    output_tokens = explicit_output or 0
     return {
         "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_read_tokens": _first_non_negative_int(usage, "cache_read_tokens", "cache_read_input_tokens") or 0,
+        "output_tokens": explicit_output,
+        "cache_read_tokens": _first_non_negative_int(usage, "cache_read_tokens", "cache_read_input_tokens"),
         "cache_write_tokens": _first_non_negative_int(
             usage,
             "cache_write_tokens",
             "cache_creation_input_tokens",
             "cache_write_input_tokens",
-        )
-        or 0,
-        "reasoning_output_tokens": 0,
-        "tool_output_tokens": 0,
-        "total_tokens": _first_non_negative_int(usage, "total_tokens", "total") or 0,
+        ),
+        "reasoning_output_tokens": None,
+        "tool_output_tokens": None,
+        "total_tokens": _first_non_negative_int(usage, "total_tokens", "total"),
     }
 
 
@@ -707,7 +707,7 @@ def _reports_wire_tokens(record: JSONDocument) -> bool:
     """Whether the record carries token counts of its own."""
     if not (json_document(record.get("usage")) or json_document(record.get("tokens"))):
         return False
-    return any(_token_usage_fields(record).values())
+    return any(value is not None for value in _token_usage_fields(record).values())
 
 
 def _gemini_message_usage_event(item: object, message: ParsedMessage) -> ParsedSessionEvent | None:

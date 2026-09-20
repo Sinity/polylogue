@@ -512,7 +512,7 @@ def _turn_context_payload(payload: dict[str, object]) -> dict[str, object]:
     return payload
 
 
-def _token_usage(record: dict[str, object]) -> dict[str, int]:
+def _token_usage(record: dict[str, object]) -> dict[str, int | None]:
     """Extract per-message usage as disjoint additive pricing lanes.
 
     Codex input includes cache reads, while message pricing bills fresh input
@@ -521,27 +521,24 @@ def _token_usage(record: dict[str, object]) -> dict[str, int]:
     ``_provider_usage_disjoint_lanes``.
     """
     usage = _dict_record(record.get("usage")) or _dict_record(record.get("tokens")) or record
-    input_with_cached = _int_value(usage.get("input_tokens") or usage.get("inputTokenCount"))
+    input_value = _optional_int_field(usage, "input_tokens", "inputTokenCount")
     explicit_uncached_input = _optional_int_field(usage, "uncached_input_tokens", "uncachedInputTokens")
-    cache_read_tokens = _int_value(
-        usage.get("cache_read_tokens")
-        or usage.get("cache_read_input_tokens")
-        or usage.get("cached_input_tokens")
-        or usage.get("cached_tokens")
+    cache_read_tokens = _optional_int_field(
+        usage, "cache_read_tokens", "cache_read_input_tokens", "cached_input_tokens", "cached_tokens"
+    )
+    output_tokens = _optional_int_field(usage, "output_tokens", "outputTokenCount")
+    cache_write_tokens = _optional_int_field(
+        usage, "cache_write_tokens", "cache_creation_input_tokens", "cache_write_input_tokens"
     )
     return {
         "input_tokens": (
             explicit_uncached_input
             if explicit_uncached_input is not None
-            else max(input_with_cached - cache_read_tokens, 0)
+            else (max(input_value - (cache_read_tokens or 0), 0) if input_value is not None else None)
         ),
-        "output_tokens": _int_value(usage.get("output_tokens") or usage.get("outputTokenCount")),
+        "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
-        "cache_write_tokens": _int_value(
-            usage.get("cache_write_tokens")
-            or usage.get("cache_creation_input_tokens")
-            or usage.get("cache_write_input_tokens")
-        ),
+        "cache_write_tokens": cache_write_tokens,
     }
 
 

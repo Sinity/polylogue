@@ -7637,7 +7637,8 @@ def _summary_order_by(*, sample: bool, sort: str | None, reverse: bool) -> str:
     if sort == "tokens":
         return f"""
             ORDER BY (
-                SELECT COALESCE(SUM(m.input_tokens + m.output_tokens + m.cache_read_tokens + m.cache_write_tokens), 0)
+                SELECT COALESCE(SUM(COALESCE(m.input_tokens, 0) + COALESCE(m.output_tokens, 0)
+                    + COALESCE(m.cache_read_tokens, 0) + COALESCE(m.cache_write_tokens, 0)), 0)
                 FROM messages m
                 WHERE m.session_id = s.session_id
             ) {direction}, s.sort_key_ms {direction}, s.session_id {direction}
