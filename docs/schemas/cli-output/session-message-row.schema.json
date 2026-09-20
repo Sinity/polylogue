@@ -174,14 +174,28 @@
       "type": "integer"
     },
     "cache_read_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": 0,
-      "title": "Cache Read Tokens",
-      "type": "integer"
+      "title": "Cache Read Tokens"
     },
     "cache_write_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": 0,
-      "title": "Cache Write Tokens",
-      "type": "integer"
+      "title": "Cache Write Tokens"
     },
     "content_blocks": {
       "items": {
@@ -221,9 +235,16 @@
       "type": "string"
     },
     "input_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": 0,
-      "title": "Input Tokens",
-      "type": "integer"
+      "title": "Input Tokens"
     },
     "is_active_leaf": {
       "default": false,
@@ -265,9 +286,16 @@
       "title": "Model Name"
     },
     "output_tokens": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": 0,
-      "title": "Output Tokens",
-      "type": "integer"
+      "title": "Output Tokens"
     },
     "parent_id": {
       "anyOf": [
