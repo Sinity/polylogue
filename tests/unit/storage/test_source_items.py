@@ -159,16 +159,6 @@ def test_zip_member_disposition_completes_full_denominator_and_retry_is_idempote
         conn,
         source_generation_id="frozen",
         source_item_id=item,
-        entry_ordinal=0,
-        member_name="record.jsonl",
-        disposition=SourceItemMemberDisposition.ADMITTED,
-        diagnostic="",
-        observed_at_ms=2,
-    )
-    record_source_item_member_disposition(
-        conn,
-        source_generation_id="frozen",
-        source_item_id=item,
         entry_ordinal=1,
         member_name="skipped.html",
         disposition=SourceItemMemberDisposition.UNSELECTED,

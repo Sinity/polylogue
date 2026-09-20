@@ -162,7 +162,6 @@ def iter_retained_source_records(
                     ordinal,
                     split,
                     member_count=len(entries),
-                    member_name=entry.filename,
                 )
     for ordinal, member_name, disposition, diagnostic in dispositions:
         if on_member_disposition is None:

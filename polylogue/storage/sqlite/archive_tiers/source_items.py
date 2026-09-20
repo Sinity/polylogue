@@ -31,9 +31,8 @@ class AcquisitionDisposition(StrEnum):
 
 
 class SourceItemMemberDisposition(StrEnum):
-    """The durable disposition of one retained central-directory member."""
+    """A central-directory member that was not admitted as raw evidence."""
 
-    ADMITTED = "admitted"
     REFUSED = "refused"
     UNSELECTED = "unselected"
 
@@ -606,24 +605,11 @@ def complete_source_item_enumeration(
         ):
             accepted_ordinals.add(int(row[0]))
         disposition_ordinals = {int(row[0]) for row in disposition_rows}
-        admitted_disposition_ordinals = {int(row[0]) for row in disposition_rows if row[2] == "admitted"}
-        non_admitted_ordinals = disposition_ordinals - admitted_disposition_ordinals
-        if (
-            (admitted_disposition_ordinals and admitted_disposition_ordinals != accepted_ordinals)
-            or accepted_ordinals & non_admitted_ordinals
-            or accepted_ordinals | non_admitted_ordinals != set(member_ordinals)
-        ):
+        if accepted_ordinals & disposition_ordinals or accepted_ordinals | disposition_ordinals != set(member_ordinals):
             raise ValueError("source enumeration has overlapping or missing central-directory dispositions")
-        admitted_rows = {int(row[0]): row for row in disposition_rows if row[2] == "admitted"}
-        member_payload = [
-            (
-                ordinal,
-                str(admitted_rows[ordinal][2]) if ordinal in admitted_rows else "accepted",
-                str(admitted_rows[ordinal][1]) if ordinal in admitted_rows else "",
-                str(admitted_rows[ordinal][3]) if ordinal in admitted_rows else "",
-            )
-            for ordinal in sorted(accepted_ordinals)
-        ] + [(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in disposition_rows if row[2] != "admitted"]
+        member_payload = [(ordinal, "accepted", "", "") for ordinal in sorted(accepted_ordinals)] + [
+            (int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in disposition_rows
+        ]
         member_digest = hashlib.sha256(
             json.dumps(member_payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -677,15 +663,15 @@ def record_source_item_member_disposition(
         raise KeyError(f"unmanifested source item: {source_generation_id}/{source_item_id}")
     if item[0] is not None:
         raise ValueError("completed source enumeration cannot gain member dispositions")
-    value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     admitted = conn.execute(
         "SELECT 1 FROM source_item_raw_members m "
         "JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
         "WHERE m.source_generation_id=? AND m.source_item_id=? AND c.entry_ordinal=?",
         (source_generation_id, source_item_id, entry_ordinal),
     ).fetchone()
-    if admitted is not None and value != SourceItemMemberDisposition.ADMITTED.value:
+    if admitted is not None:
         raise ValueError("source member already has an admitted raw record")
+    value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     # Central-directory names and admission explanations are attacker
     # controlled. Keep both bounded before they reach the durable source
     # tier; the diagnostic budget leaves room for the truncation marker used
