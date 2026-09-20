@@ -88,6 +88,13 @@ _PARSER_FINGERPRINT = "live-batched-v3"
 # the same checkpoints end the pass with ``WriteHoldBudgetError``.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
+# polylogue-dhkuu: the probe's own working set, independent of how much tail
+# it is allowed to scan. The scan looks only for the first b"\n", so it never
+# needs the tail resident: a single ``handle.read(remaining_bytes)`` sized the
+# allocation by the *input* instead, and an unterminated multi-GB tail then
+# raised ``MemoryError`` -- which ``except OSError`` does not catch -- before
+# any deferral was recorded, so every catch-up pass re-attempted it forever.
+_INCOMPLETE_APPEND_PROBE_CHUNK_BYTES = 1024 * 1024
 # polylogue-2qrx: minimum age a deferred incomplete-tail observation must
 # reach (``cursor.updated_at`` unchanged, i.e. the stat-match fast path kept
 # firing) before escalating to an unbounded full-tail probe. An ordinary
@@ -848,12 +855,17 @@ class LiveWatcher:
         remaining_bytes = stat.st_size - start_offset
         bytes_to_probe = remaining_bytes if probe_bytes is None else min(remaining_bytes, probe_bytes)
         try:
-            with path.open("rb") as handle:
-                handle.seek(start_offset)
-                payload = handle.read(bytes_to_probe)
-        except OSError:
-            return True
-        if b"\n" in payload:
+            found_newline = _tail_begins_a_complete_record(path, start_offset=start_offset, scan_bytes=bytes_to_probe)
+        except (OSError, MemoryError):
+            # The probe could not be performed at all. That proves nothing
+            # about the tail, but it is still a deferral, and it must be
+            # RECORDED: returning True without recording left the cursor in
+            # its previous state, so the next catch-up pass re-attempted the
+            # identical probe against the identical stat, forever
+            # (polylogue-dhkuu Finding A). Fall through to the deferral
+            # record below.
+            found_newline = False
+        if found_newline:
             return False
         # The bounded probe can prove that no complete record begins at the
         # cursor, even when the unfinished record exceeds the probe budget.
@@ -1567,6 +1579,31 @@ def _cursor_db_path(polylogue: ArchiveRootOwner) -> Path:
     the watcher before its first mutable cursor operation.
     """
     return Path(polylogue.archive_root) / "ops.db"
+
+
+def _tail_begins_a_complete_record(path: Path, *, start_offset: int, scan_bytes: int) -> bool:
+    """Return whether a b"\n" occurs within ``scan_bytes`` past ``start_offset``.
+
+    The question is the position of the first newline, so the scan reads
+    fixed-size chunks and stops at the first one that contains it. Sizing a
+    single ``read()`` by the outstanding tail instead made the reader's
+    working set a function of its untrusted input: an unterminated multi-GB
+    record raised ``MemoryError`` (not an ``OSError``) and the caller's
+    handler never recorded the deferral, so the attempt repeated on every
+    catch-up pass (polylogue-dhkuu Finding A).
+    """
+
+    remaining = scan_bytes
+    with path.open("rb") as handle:
+        handle.seek(start_offset)
+        while remaining > 0:
+            chunk = handle.read(min(remaining, _INCOMPLETE_APPEND_PROBE_CHUNK_BYTES))
+            if not chunk:
+                return False
+            if b"\n" in chunk:
+                return True
+            remaining -= len(chunk)
+    return False
 
 
 def _cursor_age_exceeds(cursor: CursorRecord, min_age_s: float) -> bool:

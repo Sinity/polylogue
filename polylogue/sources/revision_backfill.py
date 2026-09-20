@@ -3093,15 +3093,11 @@ def backfill_historical_revision_evidence(
             # boundary in the production replay route; callers cannot publish
             # a permanently unindexed generation by forgetting a helper.
             archive.restore_deferred_secondary_indexes()
-            from polylogue.storage.fts.fts_lifecycle import (
-                rebuild_command_trigram_index_sync,
-                rebuild_fts_index_sync,
-            )
+            from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
             from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
             from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 
             rebuild_fts_index_sync(archive._conn)
-            rebuild_command_trigram_index_sync(archive._conn)
             rebuild_all_action_pairs_sync(archive._conn)
             rebuild_all_delegation_facts_sync(archive._conn)
             # The candidate's identity describes the completed reader shape,

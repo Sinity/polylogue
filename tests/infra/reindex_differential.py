@@ -173,7 +173,7 @@ def compared_table_census() -> tuple[str, ...]:
     """Return all ordinary current-DDL index tables with a declared policy."""
     tables = frozenset(_CREATE_TABLE.findall(INDEX_DDL))
     virtual_tables = frozenset(_CREATE_VIRTUAL_TABLE.findall(INDEX_DDL))
-    if virtual_tables != {"messages_fts", "blocks_command_trigram", "session_work_events_fts"}:
+    if virtual_tables != {"messages_fts", "session_work_events_fts"}:
         raise AssertionError(f"unclassified virtual index tables: {sorted(virtual_tables)}")
     classified = set(_VOLATILE_COLUMNS) | set(_NON_COMPARABLE_TABLES)
     if missing := tables - classified:

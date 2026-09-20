@@ -55,7 +55,7 @@ class TestColumnSpecReordering:
         # Generated columns should not appear in writable columns
         assert generated_cols.isdisjoint(writable_cols)
         # Expected GENERATED columns in blocks
-        assert generated_cols == {"block_id", "tool_command", "tool_path", "search_text", "tool_detail_text"}
+        assert generated_cols == {"block_id", "tool_command", "tool_path", "search_text"}
 
     def test_block_query_projection_uses_canonical_table_columns(self) -> None:
         """The compact block SELECT must name only declared storage columns.

@@ -223,9 +223,9 @@ class TestFtsAutomergeConfiguration:
 
         Anti-vacuity: this goes red if any FTS5 virtual table declared by the
         tier DDL is left untuned -- which is exactly what a hand-maintained
-        surface list produced (``blocks_command_trigram`` was omitted and so
-        kept FTS5's default automerge on the live-ingest writer). Declaring a
-        new FTS5 surface must now move the tuned set with no edit here.
+        surface list produced, keeping FTS5's default automerge on the
+        live-ingest writer. Declaring a new FTS5 surface must now move the
+        tuned set with no edit here.
         """
         from polylogue.daemon.fts_automerge import configure_fts_automerge_sync
         from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync
@@ -245,8 +245,6 @@ class TestFtsAutomergeConfiguration:
                 ).fetchall()
             }
             assert declared, "fixture declared no FTS5 surfaces -- test would be vacuous"
-            # The specific surface the hand-maintained list had already dropped.
-            assert "blocks_command_trigram" in declared
 
             configured = configure_fts_automerge_sync(conn)
             assert declared <= set(configured), f"untuned FTS5 surfaces: {declared - set(configured)}"

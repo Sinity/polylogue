@@ -1354,39 +1354,13 @@ def _check_fts_parity(
             "worst_sessions": worst_sessions,
         }
 
-        if table_exists(conn, "blocks") and table_exists(conn, "blocks_command_trigram_docsize"):
-            # blocks_command_trigram is an external-content FTS5 table
-            # (content='blocks'): a bare, MATCH-less ``SELECT rowid FROM
-            # blocks_command_trigram`` reads through to the content table's
-            # rowids regardless of whether that rowid was ever indexed --
-            # verified locally, an fts5 'delete' command removes the row from
-            # ``blocks_command_trigram_docsize`` but a plain unfiltered
-            # select against the virtual table itself still returns it. The
-            # docsize shadow table (same convention messages_fts_docsize
-            # uses above) is what actually reflects indexed state.
-            row = conn.execute(
-                """
-                SELECT
-                    COUNT(*) FILTER (WHERE b.block_type = 'tool_use' AND b.tool_detail_text != ' '),
-                    COUNT(d.id) FILTER (WHERE b.block_type = 'tool_use' AND b.tool_detail_text != ' ')
-                FROM blocks AS b
-                LEFT JOIN blocks_command_trigram_docsize AS d ON d.id = b.rowid
-                """
-            ).fetchone()
-            texpected, tindexed = int(row[0] or 0), int(row[1] or 0)
-            tgap = texpected - tindexed
-            evidence["blocks_command_trigram"] = {"expected": texpected, "indexed": tindexed, "gap": tgap}
-            if tgap:
-                problems.append(f"blocks_command_trigram gap={tgap}")
-        else:
-            evidence["blocks_command_trigram"] = None
     except sqlite3.Error as exc:
         return _error_check("fts-parity", f"could not read index.db: {exc}", exc=exc)
     finally:
         conn.close()
 
     status = OutcomeStatus.ERROR if problems else OutcomeStatus.OK
-    summary = "; ".join(problems) if problems else "messages_fts and blocks_command_trigram exactly in sync"
+    summary = "; ".join(problems) if problems else "messages_fts exactly in sync"
     return ArchiveVerificationCheck(
         name="fts-parity",
         status=status,

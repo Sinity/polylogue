@@ -27,6 +27,12 @@ TerminalOutcomeState = Literal["ok", "empty", "degraded", "error"]
 #: Reason recorded when a scope completed and simply holds no rows.
 NO_ROWS_IN_SCOPE = "no_rows_in_scope"
 
+#: Reason substituted for a gap whose producer named no reason. A blank
+#: reason still means the answer was shaped by a gap, so it must stay a gap:
+#: dropping it is how an errored part used to compose into an authoritative
+#: ``ok`` (polylogue-xvwpi).
+UNNAMED_GAP = "unnamed_gap"
+
 
 class OutcomeEnvelope(BaseModel):
     """The terminal outcome of one operation, decided at the operation boundary."""
@@ -63,7 +69,7 @@ def decide_outcome(
     type exists to prevent.
     """
 
-    gaps = tuple(dict.fromkeys(reason for reason in degraded if reason))
+    gaps = tuple(dict.fromkeys(str(reason) if reason else UNNAMED_GAP for reason in degraded))
     payload = dict(detail or {})
     if gaps:
         payload.setdefault("gaps", list(gaps))
@@ -82,15 +88,31 @@ def combine_outcomes(outcomes: Sequence[OutcomeEnvelope], *, empty_reason: str =
     A composite answer is only as honest as its worst part: one errored part
     makes the whole answer degraded, because the caller received real data for
     the other parts alongside a named gap.
+
+    Two ways a composite used to launder a gap into ``ok``, both closed here
+    (polylogue-xvwpi):
+
+    * a part whose state was ``error``/``degraded`` but whose ``reason`` was
+      ``None`` or blank contributed nothing, so a composite of one unnamed
+      error and one ``ok`` part composed to ``ok``. An unnamed gap is still a
+      gap; it is labelled :data:`UNNAMED_GAP`.
+    * a nested composite carries its subordinate gap names in
+      ``detail["gaps"]`` while its own ``reason`` holds only the first of
+      them. Re-combining kept the first and discarded the rest, so a
+      two-level envelope named fewer gaps than it actually had.
     """
 
     if not outcomes:
         return OutcomeEnvelope(state="empty", reason=empty_reason)
-    gaps = tuple(
-        dict.fromkeys(
-            entry.reason or entry.state for entry in outcomes if entry.state in {"error", "degraded"} and entry.reason
-        )
-    )
+    collected: list[str] = []
+    for entry in outcomes:
+        if entry.state not in {"error", "degraded"}:
+            continue
+        collected.append(entry.reason or UNNAMED_GAP)
+        nested = entry.detail.get("gaps")
+        if isinstance(nested, Sequence) and not isinstance(nested, str | bytes):
+            collected.extend(str(gap) if gap else UNNAMED_GAP for gap in nested)
+    gaps = tuple(dict.fromkeys(collected))
     if gaps:
         return OutcomeEnvelope(state="degraded", reason=gaps[0], detail={"gaps": list(gaps)})
     if all(entry.state == "empty" for entry in outcomes):
@@ -156,6 +178,7 @@ def render_outcome_line(outcome: OutcomeEnvelope) -> str | None:
 __all__ = [
     "NO_ROWS_IN_SCOPE",
     "OUTCOME_EXIT_CODES",
+    "UNNAMED_GAP",
     "OutcomeEnvelope",
     "TerminalOutcomeState",
     "combine_outcomes",

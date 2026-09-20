@@ -767,7 +767,6 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
         raise AssertionError("archive-wide derived rebuild must not run for one raw component")
 
     monkeypatch.setattr(fts_lifecycle_mod, "rebuild_fts_index_sync", fail_archive_wide_rebuild)
-    monkeypatch.setattr(fts_lifecycle_mod, "rebuild_command_trigram_index_sync", fail_archive_wide_rebuild)
     monkeypatch.setattr(action_pairs_mod, "rebuild_all_action_pairs_sync", fail_archive_wide_rebuild)
     monkeypatch.setattr(delegation_facts_mod, "rebuild_all_delegation_facts_sync", fail_archive_wide_rebuild)
 

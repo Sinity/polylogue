@@ -14,6 +14,7 @@ from __future__ import annotations
 from decimal import Decimal
 from hashlib import sha256
 from math import isfinite
+from typing import IO
 
 from polylogue.core.text_identity import nfc
 
@@ -92,6 +93,50 @@ def structural_content_identity(value: object) -> str:
     return sha256(b"".join(out)).hexdigest()
 
 
+#: Byte ceiling above which structural identity is not computed.
+#:
+#: Structural identity must decode the whole payload and build a full list of
+#: encoded fragments before hashing, so its peak working set is several
+#: multiples of the member. The bounded streaming acquisition route already
+#: published the bytes without ever holding them; re-reading the stored blob
+#: whole to derive identity threw that away, and a crafted export member
+#: decompressing to several GB inside the 1000:1 ZIP ratio limit killed the
+#: process with ``MemoryError`` after the streaming path had done its job
+#: correctly (polylogue-dhkuu Finding C).
+#:
+#: The ceiling is deliberately far above any member in the measured corpus
+#: (6,966 distinct ZIP-backed blobs): it bounds the pathological case without
+#: changing the identity of any ordinary member.
+STRUCTURAL_IDENTITY_MAX_BYTES = 256 * 1024 * 1024
+
+#: Recorded when :data:`STRUCTURAL_IDENTITY_MAX_BYTES` forced the byte digest.
+#: A skipped structural identity is NOT silently equivalent to a computed one:
+#: two serializations of the same value share a structural identity but not a
+#: byte digest, so a consumer comparing identities must know which it holds.
+CONTENT_IDENTITY_SKIPPED_OVERSIZE = "payload_exceeds_structural_identity_ceiling"
+
+
+def bounded_payload_content_identity(
+    handle: IO[bytes],
+    *,
+    size: int,
+    byte_digest: str,
+    ceiling: int = STRUCTURAL_IDENTITY_MAX_BYTES,
+) -> tuple[str, str | None]:
+    """Return ``(identity, skipped_reason)`` without an unbounded re-read.
+
+    ``byte_digest`` is the SHA-256 the streaming publication already computed
+    over the same bytes -- the value :func:`payload_content_identity` returns
+    for opaque (non-JSON) payloads. Above ``ceiling`` it is reused as the
+    identity and the reason is returned so the caller can record the skip;
+    the payload is never read.
+    """
+
+    if size > ceiling:
+        return byte_digest, CONTENT_IDENTITY_SKIPPED_OVERSIZE
+    return payload_content_identity(handle.read(size)), None
+
+
 def payload_content_identity(payload: bytes) -> str:
     """Return structural identity for JSON bytes, or byte identity otherwise.
 
@@ -114,4 +159,11 @@ def structurally_equal(left: object, right: object) -> bool:
     return structural_content_identity(left) == structural_content_identity(right)
 
 
-__all__ = ["payload_content_identity", "structural_content_identity", "structurally_equal"]
+__all__ = [
+    "CONTENT_IDENTITY_SKIPPED_OVERSIZE",
+    "STRUCTURAL_IDENTITY_MAX_BYTES",
+    "bounded_payload_content_identity",
+    "payload_content_identity",
+    "structural_content_identity",
+    "structurally_equal",
+]

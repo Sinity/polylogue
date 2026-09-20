@@ -126,7 +126,6 @@ def compose_append_revision_chain(
     session_id: str = "revision-chain",
     revision_count: int = 4,
     messages_per_revision: int = 2,
-    with_self_describing_identity: bool = True,
 ) -> ComposedSources:
     """N growing revisions of one logical session sharing a single archive id.
 
@@ -139,12 +138,16 @@ def compose_append_revision_chain(
     non-adversarial archive-level shape a per-record generator cannot
     express: it is a property of a *sequence* of writes, not one record.
 
-    ``with_self_describing_identity`` toggles whether every revision embeds
-    an explicit stable identity marker in its metadata (mirroring providers
-    whose wire format repeats a conversation id inside every record) versus
-    relying purely on the archive computing identity from session id/native
-    id alone (mirroring providers where identity is positional/filename-only
-    and no revision self-describes as "the same conversation").
+    A ``with_self_describing_identity`` flag used to sit here, meant to
+    separate providers whose wire format repeats a conversation id inside
+    every record from providers whose identity is filename/positional only.
+    It was removed under polylogue-vlel3 because it could not express that
+    axis: this composer emits post-parse ``Session`` objects, never
+    ``raw_payloads``, so its only effect was adding a ``source_identity`` key
+    to ``Session.metadata`` -- a key no production route reads and that the
+    raw admission route never sees. Proving the axis needs a composer that
+    emits wire bytes; the flag was not that composer, and the only test it
+    ever had compared two composed metadata dicts.
     """
     if revision_count < 1:
         raise ValueError("revision_count must be >= 1")
@@ -163,8 +166,6 @@ def compose_append_revision_chain(
             for i in range(1, message_count + 1)
         ]
         metadata: dict[str, object] = {"revision_index": revision_index}
-        if with_self_describing_identity:
-            metadata["source_identity"] = session_id
         revisions.append(
             make_conv(
                 id=session_id,
@@ -177,13 +178,9 @@ def compose_append_revision_chain(
     return ComposedSources(
         name=session_id,
         shape="append-revision-chain",
-        description=(
-            f"{revision_count} growing revisions of session {session_id!r}, "
-            f"{'with' if with_self_describing_identity else 'without'} a self-describing "
-            "identity marker in metadata."
-        ),
+        description=f"{revision_count} growing revisions of session {session_id!r}.",
         sessions=tuple(revisions),
-        metadata={"revision_count": revision_count, "with_self_describing_identity": with_self_describing_identity},
+        metadata={"revision_count": revision_count},
     )
 
 

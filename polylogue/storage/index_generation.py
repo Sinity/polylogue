@@ -318,7 +318,7 @@ class IndexRebuildTransaction:
     owner_host: str | None = None
     heartbeat_at_ms: int | None = None
     # polylogue-v6i3: set once a RESUMED pass has explicitly emptied this
-    # generation's messages_fts/blocks_command_trigram (defensive idempotent
+    # generation's messages_fts (defensive idempotent
     # bookkeeping -- a fresh generation starts empty by construction and never
     # needs this, but a resumed pass makes "derived stores are empty" an
     # explicit, code-verified invariant instead of an assumption inherited

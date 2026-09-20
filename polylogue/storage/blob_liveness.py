@@ -59,6 +59,12 @@ BLOB_OWNERS: tuple[BlobOwner, ...] = (
     BlobOwner("source", "material_observations", blob_column="blob_hash"),
     # Frozen inputs remain live before any decoder has admitted a raw record.
     BlobOwner("source", "source_items", blob_column="blob_hash"),
+    # polylogue-8v4rm: an acquired attachment reference states, durably, that
+    # these exact bytes were fetched and stored -- the source tier's own claim,
+    # independent of whether a derived message ever linked them. Without this
+    # owner the only liveness surface for those bytes was ``index.attachments``,
+    # so a rebuildable tier decided whether durable bytes survived.
+    BlobOwner("source", "source_attachments", blob_column="blob_hash"),
     BlobOwner("index", "attachments", blob_column="blob_hash"),
     BlobOwner("source", "raw_sessions", ref_type="raw_payload", referent_column="raw_id"),
     BlobOwner("source", "raw_sessions", ref_type="attachment", referent_column="raw_id"),

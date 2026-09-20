@@ -2,9 +2,8 @@
 throughout replay, one archive-wide repopulate at readiness.
 
 Background: a whale offline rebuild measured a 3h+ stall doing per-session
-FTS/trigram maintenance one session at a time, where an ARCHIVE-WIDE
-``messages_fts`` + ``blocks_command_trigram``
-delete-all took 28.7s (bead polylogue-v6i3). ``write_parsed_session_to_
+FTS maintenance one session at a time, where an ARCHIVE-WIDE
+``messages_fts`` delete-all took 28.7s (bead polylogue-v6i3). ``write_parsed_session_to_
 archive(..., bulk_build=True)`` -- the offline rebuild path's mode, layered
 on top of the existing ``bulk_fts`` guard-gated bulk FTS mode (#3152) --
 skips ALL per-session maintenance of these two derived surfaces (not just
@@ -12,9 +11,8 @@ the whale prefix-reextract cascade #3152 already handles) and defers
 everything to one archive-wide repopulate the caller runs once at readiness
 (``maintenance/rebuild_index.py``'s ``_repopulate_bulk_build_derived_state``).
 
-These tests prove: (a) ``bulk_build=True`` writes leave ``messages_fts`` /
-``blocks_command_trigram`` empty for the written session, where mode-off
-leaves them populated; (b) the readiness repopulate produces byte-identical
+These tests prove: (a) ``bulk_build=True`` writes leave ``messages_fts``
+empty for the written session, where mode-off leaves it populated; (b) the readiness repopulate produces byte-identical
 content to trickle-mode population of the same corpus, including a
 prefix-sharing lineage cascade; (c) the guard row never leaks past an
 exception; (d) skipping one readiness surface makes the parity comparison
@@ -41,7 +39,7 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.sqlite_export import logical_export_bytes
-from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
+from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
@@ -173,21 +171,20 @@ def _stable_finished_table_digests(path: Path) -> dict[str, str]:
                 "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
             )
             if not str(sql).lstrip().upper().startswith("CREATE VIRTUAL TABLE")
-            and not str(name).startswith(("messages_fts_", "blocks_command_trigram_"))
+            and not str(name).startswith("messages_fts_")
         )
     return _logical_table_digests(path, tables=tables)
 
 
-def _finished_output_snapshot(path: Path) -> tuple[dict[str, str], list[tuple[object, ...]], list[tuple[object, ...]]]:
+def _finished_output_snapshot(path: Path) -> tuple[dict[str, str], list[tuple[object, ...]]]:
     """The completed archive product, not FTS5's implementation tables."""
     with sqlite3.connect(path) as conn:
-        return _stable_finished_table_digests(path), _fts_rows(conn), _trigram_rows(conn)
+        return _stable_finished_table_digests(path), _fts_rows(conn)
 
 
 def _finish_bulk_build(conn: sqlite3.Connection, *, checkpoint: bool = True) -> None:
     """Run the same reader-shape boundary the cold replay owns."""
     rebuild_fts_index_sync(conn)
-    rebuild_command_trigram_index_sync(conn)
     rebuild_all_action_pairs_sync(conn)
     rebuild_all_delegation_facts_sync(conn)
     if checkpoint:
@@ -208,11 +205,10 @@ def _canonical_rows_digest(rows: list[tuple[object, ...]]) -> str:
 
 
 def _finished_output_digests(path: Path) -> dict[str, str]:
-    table_digests, fts_rows, trigram_rows = _finished_output_snapshot(path)
+    table_digests, fts_rows = _finished_output_snapshot(path)
     return {
         **table_digests,
         "messages_fts": _canonical_rows_digest(fts_rows),
-        "blocks_command_trigram": _canonical_rows_digest(trigram_rows),
     }
 
 
@@ -245,7 +241,7 @@ def _write_fresh_shard_arm(conn: sqlite3.Connection, directory: Path, sessions: 
 def _lineage_scenario(conn: sqlite3.Connection, *, bulk_fts: bool, bulk_build: bool) -> tuple[str, str]:
     """A prefix-sharing child+parent pair, mirroring
     ``test_bulk_fts_prefix_reextract.py``'s partial-tail scenario, extended
-    with tool_use/tool_result pairs so action_pairs/trigram content exists
+    with tool_use/tool_result pairs so action_pairs content exists
     to compare, not just messages_fts."""
     child = ParsedSession(
         source_name=Provider.CODEX,
@@ -302,18 +298,6 @@ def _fts_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
     return sorted(tuple(row) for row in rows)
 
 
-def _trigram_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
-    rows = conn.execute(
-        """
-        SELECT b.block_id, t.tool_detail_text
-        FROM blocks_command_trigram AS t
-        JOIN blocks AS b ON b.rowid = t.rowid
-        ORDER BY b.block_id
-        """
-    ).fetchall()
-    return sorted(tuple(row) for row in rows)
-
-
 def _action_pair_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
     rows = conn.execute(
         """
@@ -331,7 +315,6 @@ def test_bulk_build_write_leaves_derived_surfaces_empty(tmp_path: Path) -> None:
     session_id = write_parsed_session_to_archive(conn, _session("solo"), bulk_fts=True, bulk_build=True)
 
     assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
     # The guard row must never leak past the write it protected.
     assert (
@@ -348,13 +331,12 @@ def test_bulk_build_write_leaves_derived_surfaces_empty(tmp_path: Path) -> None:
 
 
 def test_bulk_build_off_matches_todays_per_session_population(tmp_path: Path) -> None:
-    """Without bulk_build, the same session write populates both FTS surfaces
+    """Without bulk_build, the same session write populates the FTS surface
     immediately. The action-pairs view is available in either mode."""
     conn = _connect(tmp_path / "index.db")
     session_id = write_parsed_session_to_archive(conn, _session("solo"))
 
     assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
-    assert conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0] > 0
     assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] > 0
     conn.close()
 
@@ -366,7 +348,6 @@ def test_bulk_build_readiness_repopulate_matches_trickle_mode(tmp_path: Path) ->
     conn_trickle = _connect(tmp_path / "trickle.db")
     _build_corpus(conn_trickle, bulk_build=False)
     fts_trickle = _fts_rows(conn_trickle)
-    trigram_trickle = _trigram_rows(conn_trickle)
     action_pairs_trickle = _action_pair_rows(conn_trickle)
     conn_trickle.close()
 
@@ -379,19 +360,15 @@ def test_bulk_build_readiness_repopulate_matches_trickle_mode(tmp_path: Path) ->
     assert conn_bulk.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
 
     rebuild_fts_index_sync(conn_bulk)
-    rebuild_command_trigram_index_sync(conn_bulk)
     rebuild_all_action_pairs_sync(conn_bulk)
     conn_bulk.commit()
 
     fts_bulk = _fts_rows(conn_bulk)
-    trigram_bulk = _trigram_rows(conn_bulk)
     action_pairs_bulk = _action_pair_rows(conn_bulk)
 
     assert fts_bulk == fts_trickle
-    assert trigram_bulk == trigram_trickle
     assert action_pairs_bulk == action_pairs_trickle
     assert fts_bulk, "corpus produced no messages_fts rows -- comparison would be vacuous"
-    assert trigram_bulk, "corpus produced no trigram rows -- comparison would be vacuous"
     assert action_pairs_bulk, "corpus produced no action_pairs rows -- comparison would be vacuous"
     conn_bulk.close()
 
@@ -555,7 +532,6 @@ def test_fresh_shard_finished_output_comparison_rejects_missing_finalization_or_
     retained.close()
     expected = _finished_output_snapshot(retained_path)
     assert expected[1], "retained control produced no logical FTS rows"
-    assert expected[2], "retained control produced no logical trigram rows"
 
     fresh_path = tmp_path / "fresh-shard.db"
     fresh = _connect(fresh_path)
@@ -729,7 +705,7 @@ def test_bulk_build_anti_vacuity_repopulate_is_load_bearing(tmp_path: Path) -> N
     conn_bulk = _connect(tmp_path / "bulk.db")
     _build_corpus(conn_bulk, bulk_build=True)
     # Deliberately DO NOT call rebuild_fts_index_sync here.
-    rebuild_command_trigram_index_sync(conn_bulk)
+    rebuild_all_action_pairs_sync(conn_bulk)
     conn_bulk.commit()
 
     fts_bulk = _fts_rows(conn_bulk)

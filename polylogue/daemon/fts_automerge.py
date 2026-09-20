@@ -42,8 +42,8 @@ def _fts_surfaces(conn: sqlite3.Connection) -> tuple[str, ...]:
     Derived, never hand-listed: the tier DDL that declares an FTS5 surface is
     the sole owner of this set, so a newly declared surface is tuned by this
     module the moment it exists. A hand-maintained copy here previously
-    omitted ``blocks_command_trigram``, leaving it on FTS5's default automerge
-    and paying unbounded inline merges on the live-ingest writer.
+    omitted a declared surface, leaving it on FTS5's default automerge and
+    paying unbounded inline merges on the live-ingest writer.
     """
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE '%USING fts5%' COLLATE NOCASE ORDER BY name"

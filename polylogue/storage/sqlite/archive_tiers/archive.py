@@ -151,7 +151,6 @@ from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
     delete_session_rows_sql,
-    trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -349,6 +348,28 @@ from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
 
 logger = get_logger(__name__)
+
+
+def _decode_session_id_set(value: object) -> set[str]:
+    """Decode one aggregate's distinct session ids from a JSON array.
+
+    ``session_id`` is ``origin || ':' || native_id`` and ``native_id`` comes
+    straight from provider JSON with no character restriction, so a
+    comma-bearing provider conversation id used to split into fragments when
+    these aggregates concatenated with ``GROUP_CONCAT(DISTINCT ...)`` and the
+    reader split on ``","``. The result was a wrong distinct-session count.
+    SQLite refuses ``group_concat(DISTINCT x, <sep>)`` ("DISTINCT aggregates
+    must have exactly one argument"), so the aggregates emit a typed JSON
+    array instead of any delimiter that a native id could contain
+    (polylogue-3sic0).
+    """
+
+    if value is None:
+        return set()
+    decoded = json.loads(value) if isinstance(value, str | bytes) else value
+    if not isinstance(decoded, list):
+        return set()
+    return {str(entry) for entry in decoded if entry is not None and str(entry)}
 
 
 @dataclass(slots=True)
@@ -1224,7 +1245,7 @@ class ArchiveStore:
         """Make an owned cold-built generation publishable.
 
         One ``CREATE INDEX`` pass for the whole build instead of index
-        maintenance on every inserted row, one FTS/trigram repopulate instead
+        maintenance on every inserted row, one FTS repopulate instead
         of per-session trigger work, then the constraint check the build ran
         without. Everything here is idempotent, so an interrupted readiness
         pass is simply re-run on the same never-promoted generation.
@@ -1233,7 +1254,6 @@ class ArchiveStore:
         if self._owned_inactive_generation is None:
             raise RuntimeError("a readiness pass is only meaningful for an owned inactive generation")
         from polylogue.storage.fts.fts_lifecycle import (
-            rebuild_command_trigram_index_sync,
             rebuild_fts_index_sync,
             rebuild_session_insight_fts_sync,
         )
@@ -1243,7 +1263,6 @@ class ArchiveStore:
         self._deferred_secondary_indexes = ()
         self._conn.commit()
         rebuild_fts_index_sync(self._conn)
-        rebuild_command_trigram_index_sync(self._conn)
         rebuild_session_insight_fts_sync(self._conn)
         self._conn.commit()
         violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
@@ -3287,7 +3306,7 @@ class ArchiveStore:
                    ) AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
                    MAX(s.sort_key_ms) AS source_sort_key,
-                   GROUP_CONCAT(DISTINCT u.session_id) AS session_ids
+                   json_group_array(DISTINCT u.session_id) AS session_ids
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
@@ -3318,7 +3337,7 @@ class ArchiveStore:
                    CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' ELSE 'unknown' END AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
                    MAX(s.sort_key_ms) AS source_sort_key,
-                   GROUP_CONCAT(DISTINCT s.session_id) AS session_ids
+                   json_group_array(DISTINCT s.session_id) AS session_ids
             FROM sessions s
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             LEFT JOIN session_model_usage u ON u.session_id = s.session_id
@@ -3358,7 +3377,7 @@ class ArchiveStore:
                     normalized_model=normalized_model,
                 ),
             )
-            session_ids = {session_id for session_id in str(row["session_ids"] or "").split(",") if session_id}
+            session_ids = _decode_session_id_set(row["session_ids"])
             new_session_ids = session_ids - entry.session_ids
             entry.session_ids.update(session_ids)
             effective_session_count = len(new_session_ids) if session_ids else session_count
@@ -3561,7 +3580,7 @@ class ArchiveStore:
                        COALESCE(SUM(e.last_total_tokens), 0) AS total_tokens,
                        COALESCE(SUM(e.last_reasoning_output_tokens), 0) AS reasoning_output_tokens,
                        MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key,
-                       GROUP_CONCAT(DISTINCT e.session_id) AS session_ids
+                       json_group_array(DISTINCT e.session_id) AS session_ids
                 FROM session_provider_usage_events e
                 JOIN sessions s ON s.session_id = e.session_id
                 WHERE {where_clause}
@@ -3583,7 +3602,7 @@ class ArchiveStore:
                 ),
             )
             item.event_count += int(row["event_count"] or 0)
-            event_session_ids = {session_id for session_id in str(row["session_ids"] or "").split(",") if session_id}
+            event_session_ids = _decode_session_id_set(row["session_ids"])
             item.event_session_ids.update(event_session_ids)
             item.event_session_count = len(item.event_session_ids)
             item.usage = item.usage.plus(
@@ -3632,7 +3651,7 @@ class ArchiveStore:
                    COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
                    CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS cost_provenance,
                    MAX(s.sort_key_ms) AS source_sort_key,
-                   GROUP_CONCAT(DISTINCT u.session_id) AS session_ids
+                   json_group_array(DISTINCT u.session_id) AS session_ids
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             WHERE {where_clause}
@@ -3663,9 +3682,7 @@ class ArchiveStore:
                     int(row["cache_write_tokens"] or 0),
                 )
             provenance = str(row["cost_provenance"] or "unknown")
-            item.cost_session_ids.update(
-                session_id for session_id in str(row["session_ids"] or "").split(",") if session_id
-            )
+            item.cost_session_ids.update(_decode_session_id_set(row["session_ids"]))
             item.cost_provenance_counts[provenance] = item.cost_provenance_counts.get(provenance, 0) + int(
                 row["session_count"] or 0
             )
@@ -5624,29 +5641,6 @@ class ArchiveStore:
         finally:
             user_conn.close()
 
-    def _trigram_trigger_is_guarded(self, conn: sqlite3.Connection) -> bool:
-        """Whether the live ``blocks_command_trigram_ad`` trigger honors the
-        bulk-write guard (CodeRabbit #3263 P1).
-
-        ``CREATE TRIGGER IF NOT EXISTS`` (index.py's additive-DDL convention)
-        never replaces an already-created same-name trigger, so an archive
-        last rebuilt before the guard clause was added to this trigger (#3259)
-        keeps its old, ungated body forever -- reopening it does not upgrade
-        it. Setting ``FTS_BULK_SESSION_WRITE_GUARD`` and relying on the guard
-        to suppress that trigger during the block cascade below would be a
-        silent no-op on such an archive: the old trigger fires anyway and
-        reissues an FTS5 ``'delete'`` command for a trigram row this method's
-        own explicit pre-delete already removed, which raises "database disk
-        image is malformed" and rolls back the whole batch. Checked once per
-        call (cheap: one indexed sqlite_master lookup) rather than assumed
-        from ``INDEX_SCHEMA_VERSION`` alone, since the guard clause landed
-        without its own version bump (additive/inert until this method).
-        """
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'blocks_command_trigram_ad'"
-        ).fetchone()
-        return row is not None and row["sql"] is not None and "derived_refresh_guard" in row["sql"]
-
     def delete_sessions(
         self,
         session_ids: tuple[str, ...],
@@ -5667,18 +5661,17 @@ class ArchiveStore:
         *entire session's* ``action_pairs`` via two window-function scans and
         re-derives ``delegation_facts``. Live incident 2026-07-21: deleting 91
         sessions ran 3h, 375GB reads, zero commit, before being killed.
-        ``messages_fts``/``blocks_command_trigram`` are external-content FTS5
-        tables with no FK cascade at all, so those triggers would fire and
-        maintain per-row postings unless suppressed the same way.
+        ``messages_fts`` is a contentless FTS5 table with no FK cascade at
+        all, so those triggers would fire and maintain per-row postings unless
+        suppressed the same way.
 
         This mirrors ``_bulk_fts_session_guard``'s delete-then-guard-then-
-        mutate shape (``write.py``): explicit session-scoped FTS/identity/
-        trigram deletes run first (while ``blocks`` rows still exist -- the
-        trigram table needs the OLD text to locate its postings), then BOTH
+        mutate shape (``write.py``): explicit session-scoped FTS/identity
+        deletes run first (while ``blocks`` rows still exist), then BOTH
         ``derived_refresh_guard`` rows are set for the whole batch --
         ``'session-write'`` (suppresses ``blocks_action_pairs_a{i,d,u}`` and
         the ``delegation_facts`` triggers) and ``'fts-bulk-session-write'``
-        (suppresses the ``messages_fts``/``blocks_command_trigram`` trigger
+        (suppresses the ``messages_fts`` trigger
         BODIES, redundant here since those rows are already gone, but kept for
         parity with the guard contract and defense-in-depth against any block
         row that slips past the explicit pre-delete). ``action_pairs``/
@@ -5708,31 +5701,20 @@ class ArchiveStore:
         conn = sqlite3.connect(self.index_db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        trigram_guarded = self._trigram_trigger_is_guarded(conn)
         deleted = 0
         deleted_session_ids: list[str] = []
         try:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 for session_id in resolved_session_ids:
-                    # Must run before the blocks rows are removed below --
-                    # external-content FTS5 deletion needs the OLD text/rowid
-                    # mapping to locate the postings to remove. Only safe to
-                    # do explicitly when the live trigger will honor the
-                    # guard below; on an archive whose trigger predates it,
-                    # skip this and let that same (ungated) trigger clean up
-                    # trigram rows per-block during the cascade delete, same
-                    # as before this method existed.
+                    # Must run before the blocks rows are removed below.
                     conn.execute(delete_session_rows_sql(1), (session_id,))
                     conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-                    if trigram_guarded:
-                        conn.execute(trigram_delete_session_rows_sql(), (session_id,))
                 conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-                if trigram_guarded:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                        (FTS_BULK_SESSION_WRITE_GUARD,),
-                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+                    (FTS_BULK_SESSION_WRITE_GUARD,),
+                )
                 try:
                     for session_id in resolved_session_ids:
                         conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
@@ -5751,11 +5733,10 @@ class ArchiveStore:
                             deleted_session_ids.append(session_id)
                 finally:
                     conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-                    if trigram_guarded:
-                        conn.execute(
-                            "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-                            (FTS_BULK_SESSION_WRITE_GUARD,),
-                        )
+                    conn.execute(
+                        "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                        (FTS_BULK_SESSION_WRITE_GUARD,),
+                    )
                 ArchiveWriteGateway(self.index_db_path).commit_write_sync(
                     write_operation,
                     {

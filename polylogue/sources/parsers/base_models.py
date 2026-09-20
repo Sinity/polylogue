@@ -777,6 +777,12 @@ class RawSessionData(BaseModel):
     # Structural value identity for container members.  This is the replay
     # authority; source_index remains only a coordinate hint.
     content_identity: str | None = None
+    # Set when a declared ceiling forced ``content_identity`` to fall back to
+    # the payload's byte digest instead of its structural identity
+    # (polylogue-dhkuu Finding C). A skipped structural identity is not
+    # silently equivalent to a computed one, so the reason travels with the
+    # record rather than being dropped.
+    content_identity_skipped_reason: str | None = Field(default=None, exclude=True)
     file_mtime: str | None = None
     provider_hint: Provider | None = None
     blob_hash: str | None = None

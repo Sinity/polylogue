@@ -44,14 +44,6 @@ def test_revision_chain_all_revisions_share_one_archive_session_id() -> None:
     assert ids == {"chain-abc"}
 
 
-def test_revision_chain_self_describing_identity_toggle() -> None:
-    with_identity = compose_append_revision_chain(session_id="rc", with_self_describing_identity=True)
-    without_identity = compose_append_revision_chain(session_id="rc", with_self_describing_identity=False)
-
-    assert all(session.metadata.get("source_identity") == "rc" for session in with_identity.sessions)
-    assert all("source_identity" not in session.metadata for session in without_identity.sessions)
-
-
 def test_revision_chain_rejects_degenerate_parameters() -> None:
     with pytest.raises(ValueError):
         compose_append_revision_chain(revision_count=0)

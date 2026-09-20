@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from polylogue.surfaces.outcome import (
     OUTCOME_EXIT_CODES,
+    UNNAMED_GAP,
     OutcomeEnvelope,
     TerminalOutcomeState,
     combine_outcomes,
@@ -89,6 +90,72 @@ class TestOutcomeDecision:
 
     def test_combine_of_all_empty_stays_empty(self) -> None:
         assert combine_outcomes([decide_outcome(matched=0), decide_outcome(matched=0)]).state == "empty"
+
+    def test_unnamed_error_part_cannot_compose_into_ok(self) -> None:
+        """An error part with no reason still shapes the answer (polylogue-xvwpi).
+
+        Anti-vacuity: restore the ``and entry.reason`` filter in
+        ``combine_outcomes`` and this composite reads ``ok`` again.
+        """
+
+        parts = [decide_outcome(matched=2), OutcomeEnvelope(state="error", reason=None)]
+        combined = combine_outcomes(parts)
+        assert combined.state == "degraded"
+        assert combined.reason == UNNAMED_GAP
+        assert combined.detail["gaps"] == [UNNAMED_GAP]
+
+    def test_unnamed_degraded_part_cannot_compose_into_empty(self) -> None:
+        """A blank-reason degraded part outranks a genuinely empty sibling."""
+
+        parts = [decide_outcome(matched=0), OutcomeEnvelope(state="degraded", reason="")]
+        assert combine_outcomes(parts).state == "degraded"
+
+    def test_blank_gap_reason_still_degrades_a_single_operation(self) -> None:
+        """A caller that knows it has a gap but cannot name it is still degraded.
+
+        Anti-vacuity: restore ``if reason`` filtering in ``decide_outcome``
+        and this returns ``empty``.
+        """
+
+        outcome = decide_outcome(matched=0, degraded=("",))
+        assert outcome.state == "degraded"
+        assert outcome.detail["gaps"] == [UNNAMED_GAP]
+
+    def test_nesting_a_composite_keeps_every_subordinate_gap(self) -> None:
+        """Re-combining a composite must not drop the gaps past the first.
+
+        Anti-vacuity: stop extending from ``entry.detail['gaps']`` and the
+        outer envelope names one gap where the inner named two.
+        """
+
+        inner = combine_outcomes(
+            [
+                decide_outcome(matched=0, error="insight_unavailable:timeline"),
+                decide_outcome(matched=0, degraded=("lane_unavailable:semantic",)),
+            ]
+        )
+        assert inner.detail["gaps"] == ["insight_unavailable:timeline", "lane_unavailable:semantic"]
+        outer = combine_outcomes([inner, decide_outcome(matched=4)])
+        assert outer.state == "degraded"
+        assert outer.detail["gaps"] == [
+            "insight_unavailable:timeline",
+            "lane_unavailable:semantic",
+        ]
+
+    def test_optional_unavailable_part_beside_a_real_empty_scope(self) -> None:
+        """An optional component that could not be read is a gap, not an empty scope.
+
+        The sibling scope really did complete with zero rows; the composite
+        must still refuse to call the whole answer authoritative.
+        """
+
+        parts = [
+            decide_outcome(matched=0),
+            decide_outcome(matched=0, degraded=("component_unavailable:embeddings",)),
+        ]
+        combined = combine_outcomes(parts)
+        assert combined.state == "degraded"
+        assert not combined.rows_are_authoritative
 
     def test_truncated_lineage_page_is_degraded(self) -> None:
         outcome = lineage_page_outcome(matched=4, complete=False, truncation_reason="dangling_branch_point")

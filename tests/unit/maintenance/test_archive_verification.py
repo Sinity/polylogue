@@ -1147,39 +1147,6 @@ def test_excess_fts_row_trips_message_fts_parity(tmp_path: Path) -> None:
     assert check.evidence["messages_fts"]["excess_rows"] == 1
 
 
-def test_missing_trigram_row_trips_trigram_parity(tmp_path: Path) -> None:
-    _seed_coherent_archive(tmp_path)
-    conn = _connect(tmp_path / "index.db")
-    try:
-        conn.execute(
-            """
-            INSERT INTO blocks(message_id, session_id, position, block_type, tool_name, tool_input, tool_id)
-            VALUES ('codex-session:session:0.1', 'codex-session:session', 1, 'tool_use', 'Bash',
-                    '{"command": "ls -la"}', 'tool-1')
-            """
-        )
-        conn.commit()
-        # Simulate drift: the trigram shadow row is gone (as if the trigger
-        # never fired, e.g. a schema regression removing it) while the source
-        # block remains -- delete via the fts5 'delete' command form so the
-        # shadow tables stay internally consistent, then never re-add it.
-        row = conn.execute("SELECT rowid, tool_detail_text FROM blocks WHERE block_type = 'tool_use'").fetchone()
-        conn.execute(
-            "INSERT INTO blocks_command_trigram(blocks_command_trigram, rowid, tool_detail_text) VALUES ('delete', ?, ?)",
-            (row[0], row[1]),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    report = verify_archive(tmp_path, checks=("fts-parity",))
-
-    check = _check(report, "fts-parity")
-    assert check.status is OutcomeStatus.ERROR
-    assert "blocks_command_trigram gap" in check.summary
-    assert check.evidence["blocks_command_trigram"]["gap"] == 1
-
-
 def test_dangling_resolved_dst_trips_lineage_sanity(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")

@@ -34,16 +34,7 @@ class _SameVersionSchemaVariant:
     transformation: str = "remove_fts_bulk_guard"
 
 
-_INDEX_SAME_VERSION_SCHEMA_VARIANTS = (
-    _SameVersionSchemaVariant(
-        introduced_version=63,
-        object_names=(
-            ("trigger", "blocks_command_trigram_ai"),
-            ("trigger", "blocks_command_trigram_ad"),
-            ("trigger", "blocks_command_trigram_au"),
-        ),
-    ),
-)
+_INDEX_SAME_VERSION_SCHEMA_VARIANTS: tuple[_SameVersionSchemaVariant, ...] = ()
 
 
 def _sql(value: str | None) -> str:

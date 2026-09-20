@@ -47,7 +47,6 @@ from polylogue.storage.sqlite.schema_bootstrap import (
 from polylogue.storage.sqlite.schema_manifest import (
     MESSAGE_FTS_DEGRADABLE_OBJECTS,
     canonical_schema_manifest,
-    schema_manifest_diff,
     schema_manifest_diff_is_message_fts_only,
 )
 from tests.infra.live_ingest import write_index_session
@@ -65,13 +64,6 @@ _CANONICAL_FTS_TRIGGERS = frozenset(
         "session_work_events_fts_ai",
         "session_work_events_fts_ad",
         "session_work_events_fts_au",
-        # ohbx: blocks_command_trigram is a narrower-purpose substring-lookup
-        # index (not a message-search freshness surface tracked by
-        # fts_trigger_state), but it's still a real FTS-backing trigger set
-        # that belongs in this exhaustive schema inventory.
-        "blocks_command_trigram_ai",
-        "blocks_command_trigram_ad",
-        "blocks_command_trigram_au",
     }
 )
 
@@ -192,33 +184,6 @@ def test_existing_archive_repairs_runtime_indexes_before_manifest_validation(tmp
 
     with sqlite3.connect(index_db) as conn:
         assert any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
-
-
-def test_same_version_trigram_trigger_variants_are_accepted() -> None:
-    """The v63 lifecycle rule preserves ungated triggers until rebuild."""
-    expected = canonical_schema_manifest(ArchiveTier.INDEX)
-    variant_names = {
-        "blocks_command_trigram_ai",
-        "blocks_command_trigram_ad",
-        "blocks_command_trigram_au",
-    }
-    guards = (
-        " and not exists (select 1 from derived_refresh_guard where guard_name = 'fts_bulk_session_write')",
-        " when not exists (select 1 from derived_refresh_guard where guard_name = 'fts_bulk_session_write')",
-    )
-    variant_objects = tuple(
-        (kind, name, sql.replace(guards[0], "").replace(guards[1], "")) if name in variant_names else (kind, name, sql)
-        for kind, name, sql in expected.objects
-    )
-    actual = expected.__class__(expected.tier, expected.version, variant_objects, "")
-    assert schema_manifest_diff(expected, actual)["wrong_definition"] == []
-
-    unrelated_objects = tuple(
-        (kind, name, sql + " changed") if name == "blocks_command_trigram_ai" else (kind, name, sql)
-        for kind, name, sql in expected.objects
-    )
-    unrelated = expected.__class__(expected.tier, expected.version, unrelated_objects, "")
-    assert schema_manifest_diff(expected, unrelated)["wrong_definition"]
 
 
 def test_read_only_archive_open_rejects_runtime_index_drift(tmp_path: Path) -> None:
