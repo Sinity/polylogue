@@ -299,3 +299,131 @@ def test_resolve_block_anchor_missing_when_nothing_matches(tmp_path: Path) -> No
         assert resolution.state == "missing"
     finally:
         conn.close()
+
+
+def test_resolve_block_anchor_relocated_lineage_in_composed_child_view(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        parent = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="anchor-lineage-parent",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="inherited evidence")],
+                ),
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.ASSISTANT,
+                    material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="branch point")],
+                ),
+            ],
+        )
+        parent_id = write_parsed_session_to_archive(conn, parent)
+        child = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="anchor-lineage-child",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m3",
+                    role=Role.ASSISTANT,
+                    material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="child tail")],
+                )
+            ],
+        )
+        child_id = write_parsed_session_to_archive(conn, child)
+        anchor = _anchor_for(conn, parent_id, "m1", 0)
+        branch_point = conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? AND native_id = 'm1'",
+            (parent_id,),
+        ).fetchone()
+        assert branch_point is not None
+        conn.execute(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                resolved_dst_session_id, branch_point_message_id, inheritance,
+                status, confidence, evidence_json, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 1.0, '[]', 0)
+            """,
+            (
+                child_id,
+                parent_id.split(":", 1)[0],
+                "anchor-lineage-parent",
+                "fork",
+                parent_id,
+                str(branch_point["message_id"]),
+                "prefix-sharing",
+            ),
+        )
+        conn.commit()
+
+        # The anchor names the child's read view, while the physical block is
+        # retained by the parent. Resolution must cite the composing edge.
+        child_anchor = BlockAnchor(
+            session_id=child_id,
+            message_id=anchor.message_id,
+            content_hash_hex=anchor.content_hash_hex,
+        )
+        resolution = resolve_block_anchor(conn, child_anchor)
+        assert resolution.state == "relocated_lineage"
+        assert resolution.resolved_message_id == anchor.message_id
+        assert resolution.resolved_position == 0
+        assert f"{child_id} -> {parent_id}" in resolution.detail
+        assert "inheritance=prefix-sharing" in resolution.detail
+    finally:
+        conn.close()
+
+
+def test_resolve_block_anchor_quarantined_edge_precedes_lineage_search(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="anchor-quarantined",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="quarantined evidence")],
+                )
+            ],
+        )
+        other = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="anchor-quarantined-parent",
+            messages=[],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        parent_id = write_parsed_session_to_archive(conn, other)
+        anchor = _anchor_for(conn, session_id, "m1", 0)
+        conn.execute(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                resolved_dst_session_id, inheritance, status,
+                confidence, evidence_json, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, 'quarantined', 1.0, '[]', 0)
+            """,
+            (
+                session_id,
+                parent_id.split(":", 1)[0],
+                "anchor-quarantined-parent",
+                "fork",
+                parent_id,
+                "prefix-sharing",
+            ),
+        )
+        conn.commit()
+
+        resolution = resolve_block_anchor(conn, anchor)
+        assert resolution.state == "quarantined"
+        assert resolution.resolved_message_id is None
+        assert f"{session_id} -> {parent_id}" in resolution.detail
+    finally:
+        conn.close()
