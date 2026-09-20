@@ -1,4 +1,12 @@
-"""Behavioral proof for the terminal candidate-capture command."""
+"""Behavioral proof for the terminal candidate-capture command.
+
+``polylogue note`` writes a durable ``user.db`` assertion row, so it lowers to
+the declared ``mutation.assertion.candidate.capture`` operation and the daemon
+is its sole writer (polylogue-gjwto / polylogue-r29bv criterion 2). Every
+capture below therefore runs against a real daemon stack; the refusal when no
+daemon answers is pinned by
+``test_terminal_note_refuses_without_a_daemon``.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +14,7 @@ import asyncio
 import json
 import os
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +30,14 @@ from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 
+@pytest.fixture
+def note_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Path]]:
+    """The ordinary CLI workspace, plus the daemon the capture now requires."""
+
+    with cli_daemon_archive(cli_workspace["archive_root"], monkeypatch):
+        yield cli_workspace
+
+
 def _capture(cli_workspace: dict[str, Path], args: list[str], *, input: str | bytes | None = None) -> dict[str, object]:
     result = CliRunner().invoke(
         cli,
@@ -32,8 +49,8 @@ def _capture(cli_workspace: dict[str, Path], args: list[str], *, input: str | by
     return cast(dict[str, object], json.loads(result.output))
 
 
-def test_terminal_note_writes_one_unanchored_candidate_to_user_tier(cli_workspace: dict[str, Path]) -> None:
-    payload = _capture(cli_workspace, ["WAL contention was the real cause"])
+def test_terminal_note_writes_one_unanchored_candidate_to_user_tier(note_workspace: dict[str, Path]) -> None:
+    payload = _capture(note_workspace, ["WAL contention was the real cause"])
 
     assert payload["kind"] == "note"
     assert payload["status"] == "candidate"
@@ -45,16 +62,16 @@ def test_terminal_note_writes_one_unanchored_candidate_to_user_tier(cli_workspac
     }
 
 
-def test_terminal_note_preserves_anchor_scope_and_kind_choices(cli_workspace: dict[str, Path]) -> None:
+def test_terminal_note_preserves_anchor_scope_and_kind_choices(note_workspace: dict[str, Path]) -> None:
     session = (
-        SessionBuilder(cli_workspace["db_path"], "terminal-note-anchor")
+        SessionBuilder(note_workspace["db_path"], "terminal-note-anchor")
         .provider("codex")
         .working_directories([str(Path.cwd())])
     )
     session.save()
     session_ref = f"session:{session.native_session_id()}"
     payload = _capture(
-        cli_workspace,
+        note_workspace,
         [
             "capture this lesson",
             "--ref",
@@ -83,7 +100,7 @@ def test_terminal_note_preserves_anchor_scope_and_kind_choices(cli_workspace: di
     }
 
 
-def test_terminal_note_kind_options_all_land_as_candidates(cli_workspace: dict[str, Path]) -> None:
+def test_terminal_note_kind_options_all_land_as_candidates(note_workspace: dict[str, Path]) -> None:
     expected = {
         "note": AssertionKind.NOTE,
         "claim": AssertionKind.DECISION,
@@ -94,13 +111,13 @@ def test_terminal_note_kind_options_all_land_as_candidates(cli_workspace: dict[s
         "prompt_eval": AssertionKind.PROMPT_EVAL,
     }
     for option, assertion_kind in expected.items():
-        payload = _capture(cli_workspace, [f"{option} capture", "--kind", option])
+        payload = _capture(note_workspace, [f"{option} capture", "--kind", option])
         assert payload["kind"] == assertion_kind.value
         assert payload["status"] == AssertionStatus.CANDIDATE.value
 
 
 def test_terminal_note_highlight_and_prompt_eval_reach_the_judgment_queue(
-    cli_workspace: dict[str, Path],
+    note_workspace: dict[str, Path],
 ) -> None:
     """Anti-vacuity: HIGHLIGHT/PROMPT_EVAL had a schema slot and a user_audit
     surface entry but no production writer (polylogue-37t.1). Capturing
@@ -109,11 +126,11 @@ def test_terminal_note_highlight_and_prompt_eval_reach_the_judgment_queue(
     writer at all.
     """
 
-    highlight = _capture(cli_workspace, ["a highlight worth keeping", "--kind", "highlight"])
-    prompt_eval = _capture(cli_workspace, ["an eval definition candidate", "--kind", "prompt_eval"])
+    highlight = _capture(note_workspace, ["a highlight worth keeping", "--kind", "highlight"])
+    prompt_eval = _capture(note_workspace, ["an eval definition candidate", "--kind", "prompt_eval"])
 
     async def read() -> list[str]:
-        async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
+        async with Polylogue(archive_root=note_workspace["archive_root"]) as poly:
             reviews = await poly.list_assertion_candidate_reviews()
             return [review.candidate.assertion_id for review in reviews.items]
 
@@ -122,8 +139,8 @@ def test_terminal_note_highlight_and_prompt_eval_reach_the_judgment_queue(
     assert prompt_eval["assertion_id"] in review_ids
 
 
-def test_terminal_note_reads_bounded_stdin(cli_workspace: dict[str, Path]) -> None:
-    payload = _capture(cli_workspace, ["--stdin", "--kind", "lesson"], input="lesson from a diff")
+def test_terminal_note_reads_bounded_stdin(note_workspace: dict[str, Path]) -> None:
+    payload = _capture(note_workspace, ["--stdin", "--kind", "lesson"], input="lesson from a diff")
     assert payload["body_text"] == "lesson from a diff"
     assert payload["kind"] == "lesson"
 
@@ -132,13 +149,13 @@ def test_terminal_note_reads_bounded_stdin(cli_workspace: dict[str, Path]) -> No
     assert "stdin note exceeds" in oversized.output
 
 
-def test_terminal_note_last_resolves_the_latest_session_for_current_cwd(cli_workspace: dict[str, Path]) -> None:
-    repo_root = cli_workspace["archive_root"].parent / "repo"
+def test_terminal_note_last_resolves_the_latest_session_for_current_cwd(note_workspace: dict[str, Path]) -> None:
+    repo_root = note_workspace["archive_root"].parent / "repo"
     nested_cwd = repo_root / "nested" / "terminal"
     nested_cwd.mkdir(parents=True)
     (repo_root / ".git").mkdir()
     session = (
-        SessionBuilder(cli_workspace["db_path"], "terminal-note-last")
+        SessionBuilder(note_workspace["db_path"], "terminal-note-last")
         .provider("codex")
         .working_directories([str(repo_root)])
     )
@@ -147,14 +164,32 @@ def test_terminal_note_last_resolves_the_latest_session_for_current_cwd(cli_work
     previous_cwd = Path.cwd()
     try:
         os.chdir(nested_cwd)
-        payload = _capture(cli_workspace, ["anchor to last", "--ref", "last"])
+        payload = _capture(note_workspace, ["anchor to last", "--ref", "last"])
     finally:
         os.chdir(previous_cwd)
     assert payload["target_ref"] == f"session:{session.native_session_id()}"
     assert payload["evidence_refs"] == [f"session:{session.native_session_id()}"]
 
 
-def test_terminal_note_rejects_non_session_refs(cli_workspace: dict[str, Path]) -> None:
+def test_terminal_note_refuses_without_a_daemon(cli_workspace: dict[str, Path]) -> None:
+    """No daemon means no capture, not a second writer in the CLI process.
+
+    Anti-vacuity: restore ``Polylogue.capture_assertion_candidate`` behind this
+    command and the assertion row lands with no daemon at all, so the empty
+    ``assertions`` table below goes red. That is the defect polylogue-gjwto
+    names: the write entered through ``polylogue/api`` and the
+    mutation-authority layering rule could not see it.
+    """
+
+    result = CliRunner().invoke(cli, ["--plain", "note", "a capture with no writer"])
+
+    assert result.exit_code == 1, result.output
+    assert "daemon is unavailable" in result.output
+    with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone()[0] == 0
+
+
+def test_terminal_note_rejects_non_session_refs(note_workspace: dict[str, Path]) -> None:
     result = CliRunner().invoke(
         cli,
         ["--plain", "note", "not an anchor", "--ref", "repo:polylogue"],
@@ -164,7 +199,7 @@ def test_terminal_note_rejects_non_session_refs(cli_workspace: dict[str, Path]) 
     assert "--ref must be a session" in result.output
 
 
-def test_terminal_note_reports_a_missing_session_anchor_without_a_traceback(cli_workspace: dict[str, Path]) -> None:
+def test_terminal_note_reports_a_missing_session_anchor_without_a_traceback(note_workspace: dict[str, Path]) -> None:
     """A real root invocation turns storage lookup failure into CLI feedback."""
 
     result = CliRunner().invoke(
@@ -177,11 +212,11 @@ def test_terminal_note_reports_a_missing_session_anchor_without_a_traceback(cli_
     assert "Traceback" not in result.output
 
 
-def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(cli_workspace: dict[str, Path]) -> None:
-    payload = _capture(cli_workspace, ["candidate stays pending"])
+def test_terminal_note_is_visible_to_the_real_pending_candidate_reader(note_workspace: dict[str, Path]) -> None:
+    payload = _capture(note_workspace, ["candidate stays pending"])
 
     async def read() -> tuple[AssertionCandidateReviewListPayload, list[str], list[str]]:
-        async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
+        async with Polylogue(archive_root=note_workspace["archive_root"]) as poly:
             reviews = await poly.list_assertion_candidate_reviews()
             before_judgment = await poly.list_blackboard_notes()
             await poly.judge_assertion_candidate(
@@ -226,8 +261,8 @@ def test_terminal_note_idempotency_survives_root_judgment_canary_route(
         _canary_lifecycle({"archive_root": stack.archive_root, "db_path": stack.archive_root / "index.db"})
 
 
-def _canary_lifecycle(cli_workspace: dict[str, Path]) -> None:
-    session = SessionBuilder(cli_workspace["db_path"], "terminal-note-canary").provider("codex")
+def _canary_lifecycle(note_workspace: dict[str, Path]) -> None:
+    session = SessionBuilder(note_workspace["db_path"], "terminal-note-canary").provider("codex")
     session.save()
     session_ref = f"session:{session.native_session_id()}"
     key = "mrxt-operator-canary"
@@ -241,8 +276,8 @@ def _canary_lifecycle(cli_workspace: dict[str, Path]) -> None:
         key,
     ]
 
-    first = _capture(cli_workspace, capture_args)
-    before_judgment_retry = _capture(cli_workspace, capture_args)
+    first = _capture(note_workspace, capture_args)
+    before_judgment_retry = _capture(note_workspace, capture_args)
     assert before_judgment_retry["assertion_id"] == first["assertion_id"]
     candidate_ref = f"assertion:{first['assertion_id']}"
 
@@ -270,7 +305,7 @@ def _canary_lifecycle(cli_workspace: dict[str, Path]) -> None:
     resulting_ref = item["result"]["judgment"]["resulting_assertion_ref"]
     assert resulting_ref.startswith("assertion:")
 
-    after_judgment_retry = _capture(cli_workspace, capture_args)
+    after_judgment_retry = _capture(note_workspace, capture_args)
     assert after_judgment_retry["assertion_id"] == first["assertion_id"]
     assert after_judgment_retry["status"] == "accepted"
 
@@ -297,7 +332,7 @@ def _canary_lifecycle(cli_workspace: dict[str, Path]) -> None:
     async def verify_surfaces() -> tuple[
         AssertionCandidateReviewListPayload, PublicRefResolutionPayload, PublicRefResolutionPayload
     ]:
-        async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
+        async with Polylogue(archive_root=note_workspace["archive_root"]) as poly:
             reviews = await poly.list_assertion_candidate_reviews(
                 target_ref=session_ref,
                 statuses=("accepted",),
@@ -315,7 +350,7 @@ def _canary_lifecycle(cli_workspace: dict[str, Path]) -> None:
     assert candidate_resolution.resolved is True
     assert result_resolution.resolved is True
 
-    with sqlite3.connect(cli_workspace["archive_root"] / "user.db") as conn:
+    with sqlite3.connect(note_workspace["archive_root"] / "user.db") as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """

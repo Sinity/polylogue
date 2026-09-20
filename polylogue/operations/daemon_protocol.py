@@ -234,6 +234,38 @@ class AnnotationSaveRequest(_OperationPayload):
         return self
 
 
+class AssertionCandidateCaptureRequest(_OperationPayload):
+    """One terminal assertion captured as a private, non-injected candidate.
+
+    ``cwd`` travels on the wire because ``--ref last`` resolves the caller's
+    repository, and the handler runs in the daemon: falling back to the
+    executing process's own working directory would silently resolve the
+    daemon's cwd instead of the operator's.
+    """
+
+    body_text: str = Field(min_length=1)
+    #: The canonical :class:`~polylogue.core.enums.AssertionKind` value, not
+    #: the surface's capture vocabulary: ``polylogue note --kind claim`` and
+    #: MCP's ``kind`` field are adapter spellings that each surface resolves
+    #: before it lowers, so the operation contract carries one vocabulary.
+    kind: str = Field(min_length=1, max_length=64)
+    refs: list[str] = Field(default_factory=list, max_length=64)
+    scope_refs: list[str] = Field(default_factory=list, max_length=64)
+    cwd: str | None = None
+    author_ref: str = Field(default="user:local", min_length=1, max_length=512)
+    author_kind: str = Field(default="user", min_length=1, max_length=64)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=240)
+    ttl_seconds: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def nonblank_body_and_refs(self) -> AssertionCandidateCaptureRequest:
+        if not self.body_text.strip():
+            raise ValueError("note text cannot be empty")
+        if any(not value.strip() for value in (*self.refs, *self.scope_refs)):
+            raise ValueError("refs must be nonempty")
+        return self
+
+
 class UserSettingSetRequest(_OperationPayload):
     """Insert-or-update one typed ``user_settings`` row under daemon authority.
 
@@ -1008,6 +1040,21 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=AnnotationSaveRequest,
         result_model=MutationResult,
         handler="mutation_annotation_save",
+    ),
+    DaemonOperationSpec(
+        "mutation.assertion.candidate.capture",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.capture_assertion_candidate",
+        deadline_s=120.0,
+        max_body_bytes=1024 * 1024,
+        request_contract="mutation.assertion.candidate.capture.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="AssertionCandidateCaptureRequest",
+        result_type="MutationResult",
+        request_model=AssertionCandidateCaptureRequest,
+        result_model=MutationResult,
+        handler="mutation_assertion_candidate_capture",
     ),
     DaemonOperationSpec(
         "mutation.user.setting.set",

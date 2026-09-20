@@ -711,6 +711,85 @@ def mutation_annotation_save(
     return _execute_user_state_mutations(request, context, audit, build)
 
 
+def mutation_assertion_candidate_capture(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Capture one terminal assertion candidate under the daemon's writer.
+
+    ``polylogue note`` reached ``user.db`` through
+    ``Polylogue.capture_assertion_candidate``, which opened a writable
+    ``ArchiveStore`` in the CLI process (polylogue-gjwto / polylogue-r29bv
+    criterion 2). The actuator cycle is unchanged; the assertion id is minted
+    here because the operation, not the adapter, owns the durable identity.
+    """
+    import hashlib
+    import uuid
+
+    from polylogue.core.enums import AssertionKind
+    from polylogue.core.refs import normalize_object_ref_text
+    from polylogue.operations.mutation_actuators import (
+        CaptureAssertionCandidateActuator,
+        CaptureAssertionCandidateArgs,
+    )
+    from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
+    from polylogue.surfaces.payloads import AssertionClaimPayload
+
+    assert context.runtime is not None
+    payload = request.payload
+    author_ref = str(payload.get("author_ref") or "user:local")
+    raw_idempotency_key = payload.get("idempotency_key")
+    idempotency_key = None if raw_idempotency_key is None else str(raw_idempotency_key)
+    if idempotency_key is None:
+        assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
+    else:
+        identity = hashlib.sha256(
+            f"{normalize_object_ref_text(author_ref)}\0{idempotency_key.strip()}".encode(errors="surrogatepass")
+        ).hexdigest()
+        assertion_id = f"assertion-terminal-note:{identity}"
+
+    raw_cwd = payload.get("cwd")
+    ttl_seconds = payload.get("ttl_seconds")
+    executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    actuator = CaptureAssertionCandidateActuator()
+    binding = runtime_operation_binding(actuator)
+    with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
+        args = CaptureAssertionCandidateArgs(
+            archive=archive,
+            body_text=str(payload["body_text"]),
+            kind=AssertionKind.from_string(str(payload["kind"])),
+            refs=tuple(str(ref) for ref in cast(list[str], payload.get("refs") or [])),
+            scope_refs=tuple(str(ref) for ref in cast(list[str], payload.get("scope_refs") or [])),
+            cwd=None if raw_cwd is None else Path(str(raw_cwd)),
+            author_ref=author_ref,
+            author_kind=str(payload.get("author_kind") or "user"),
+            idempotency_key=idempotency_key,
+            assertion_id=assertion_id,
+            ttl_seconds=None if ttl_seconds is None else int(cast(int, ttl_seconds)),
+        )
+        preview = executor.prepare_bound_for_archive(
+            binding, args, context.principal, archive_root=context.archive_root
+        )
+        authorization = executor.authorize_bound(
+            binding, preview, context.principal, confirmation_strength="bound_token"
+        )
+        receipt = executor.execute_bound(binding, preview, authorization, args)
+    if receipt.status in {"blocked", "unknown"}:
+        raise ValueError(receipt.detail or f"{actuator.operation} did not apply")
+    envelope = receipt.domain_receipt["envelope"]
+    assert isinstance(envelope, ArchiveAssertionEnvelope)
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if receipt.affected_count else "no-effect",
+        "affected_count": receipt.affected_count,
+        "result": AssertionClaimPayload.from_envelope(envelope).model_dump(mode="json"),
+    }
+
+
 def mutation_user_setting_set(
     request: DaemonOperationRequest,
     context: OperationContext,
