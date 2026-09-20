@@ -1728,6 +1728,53 @@ async def _refresh_provider_usage_rollup_async(conn: aiosqlite.Connection, sessi
     return int(result)
 
 
+def _stamp_refreshed_usage_bindings(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
+    """Record that this rebuild reconciled these sessions' canonical rollups.
+
+    Without this, every session a bulk rebuild just reconciled would still
+    report MISSING to the usage-rollup derivation, and the first recurring
+    pass after a build would reconcile the whole archive a second time for no
+    change. The stamp is written inside the rebuild's own transaction, so it
+    is never a claim about rows that did not commit.
+    """
+    from polylogue.storage.derived.session.usage_rollup import (
+        session_usage_rollup_recipe_version,
+        stamp_session_usage_rollup_binding,
+    )
+
+    if not session_ids:
+        return
+    recipe_version = session_usage_rollup_recipe_version()
+    for session_id, binding in session_input_bindings(conn, tuple(session_ids)).items():
+        stamp_session_usage_rollup_binding(
+            conn,
+            session_id,
+            input_binding=binding,
+            recipe_version=recipe_version,
+        )
+
+
+async def _stamp_refreshed_usage_bindings_async(conn: aiosqlite.Connection, session_ids: Sequence[str]) -> None:
+    """Async sibling of :func:`_stamp_refreshed_usage_bindings`."""
+    from polylogue.storage.derived.session.usage_rollup import session_usage_rollup_recipe_version
+
+    if not session_ids:
+        return
+    recipe_version = session_usage_rollup_recipe_version()
+    bindings = await session_input_bindings_async(conn, tuple(session_ids))
+    for session_id, binding in bindings.items():
+        await conn.execute(
+            """
+            INSERT INTO session_usage_rollup_bindings (session_id, input_binding, recipe_version)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                input_binding  = excluded.input_binding,
+                recipe_version = excluded.recipe_version
+            """,
+            (session_id, binding, recipe_version),
+        )
+
+
 def _count_record_bundles(
     bundles: Sequence[SessionInsightRecordBundle],
 ) -> tuple[int, int, int]:
@@ -2082,6 +2129,7 @@ def rebuild_session_insights_sync(
         t0 = time.perf_counter()
         for session_id in chunk:
             _refresh_provider_usage_rollup(conn, session_id)
+        _stamp_refreshed_usage_bindings(conn, chunk)
         add_timing("refresh_provider_usage_rollup", t0)
         if chunk_degraded_ids and not chunk_full_ids:
             t0 = time.perf_counter()
@@ -2365,6 +2413,7 @@ async def rebuild_session_insights_async(
         chunk = chunk_info.session_ids
         for session_id in chunk:
             await _refresh_provider_usage_rollup_async(conn, session_id)
+        await _stamp_refreshed_usage_bindings_async(conn, chunk)
         chunk_degraded_ids = tuple(session_id for session_id in chunk if session_id in heavy_session_ids)
         chunk_full_ids = tuple(session_id for session_id in chunk if session_id not in heavy_session_ids)
         if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:

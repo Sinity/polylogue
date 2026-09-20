@@ -503,7 +503,16 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # rebuild helpers and one verification gap check. INDEX-ONLY: no reader
 # regresses because no reader existed; the derived identity moves and an
 # existing index tier meets it as a typed ``SchemaSkew``.
-INDEX_SCHEMA_VERSION = 104
+# polylogue-bp12n.1: v105 adds `session_usage_rollup_bindings`. The canonical
+# `session_model_usage` rollup used to be refreshed and committed inside the
+# session-profile publisher, which altered the publisher's own premise and
+# guaranteed that the first profile computation for any session with a stale
+# rollup was doomed. The reconciliation is now its own derivation, ordered
+# before profile preparation, and this table is the input binding its output
+# relation cannot carry. ADDITIVE_DERIVED: no stored row of any existing
+# relation changes and no parsed row is re-derived; an archive opened without
+# the table reports every rollup MISSING and reconciles it once.
+INDEX_SCHEMA_VERSION = 105
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
@@ -1235,6 +1244,16 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
 
 CREATE TABLE IF NOT EXISTS session_provider_usage_events (
     {TABLE_SPECS["session_provider_usage_events"].ddl_body}
+) STRICT;
+
+-- polylogue-bp12n.1: the usage rollup's input binding. session_model_usage
+-- is reconciled from messages/session_provider_usage_events/sessions by
+-- storage/derived/session/usage_rollup.py before a session profile is
+-- prepared, so the reconciliation needs an authority of its own: totals
+-- cannot say which input values they summed. Absence of a row is MISSING,
+-- which is also how a session with no usage at all stays representable.
+CREATE TABLE IF NOT EXISTS session_usage_rollup_bindings (
+    {TABLE_SPECS["session_usage_rollup_bindings"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_session_provider_usage_events_session

@@ -19,6 +19,11 @@ from polylogue.storage.derived.session.summary import (
     SESSION_SUMMARY_RECIPE_VERSION,
     SessionSummaryDerivation,
 )
+from polylogue.storage.derived.session.usage_rollup import (
+    SESSION_USAGE_ROLLUP_DOMAIN,
+    SessionUsageRollupDerivation,
+    session_usage_rollup_recipe_version,
+)
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
@@ -26,6 +31,7 @@ __all__ = [
     "make_session_profile_derivation",
     "make_session_profile_frame",
     "make_session_summary_derivation",
+    "make_session_usage_rollup_derivation",
 ]
 
 
@@ -78,6 +84,53 @@ def make_session_summary_derivation(
     )
 
 
+def _hot_session_quiet_key(
+    read_connection: Callable[[], sqlite3.Connection],
+    *,
+    archive_root: Path,
+    now: Callable[[], float],
+) -> Callable[[object, str], bool]:
+    """Defer a session whose source file is still being written.
+
+    Shared by the profile and its usage-rollup prerequisite so the two agree
+    about a hot session. If only one of them deferred, the other would churn
+    on every pass while the pair could never converge.
+    """
+
+    def quiet_key(frame: object, session_id: str) -> bool:
+        del frame
+        conn = read_connection()
+        try:
+            return session_id in _archive_hot_insight_session_ids(
+                conn,
+                (session_id,),
+                now=now(),
+                archive_root=archive_root,
+            )
+        finally:
+            conn.close()
+
+    return quiet_key
+
+
+def make_session_usage_rollup_derivation(
+    index_db_path: Path,
+    *,
+    archive_root: Path,
+    now: Callable[[], float],
+) -> SessionUsageRollupDerivation:
+    """Build the canonical usage reconciliation that precedes profile preparation."""
+    del index_db_path
+    read_connection, write_connection, generation_binding = _session_derivation_connections(archive_root)
+    return SessionUsageRollupDerivation(
+        read_connection,
+        write_connection,
+        session_scope=_session_scope,
+        quiet_key=_hot_session_quiet_key(read_connection, archive_root=archive_root, now=now),
+        generation_binding=generation_binding,
+    )
+
+
 def make_session_profile_derivation(
     index_db_path: Path,
     *,
@@ -92,18 +145,7 @@ def make_session_profile_derivation(
 
     read_connection, write_connection, generation_binding = _session_derivation_connections(archive_root)
 
-    def quiet_key(frame: object, session_id: str) -> bool:
-        del frame
-        conn = read_connection()
-        try:
-            return session_id in _archive_hot_insight_session_ids(
-                conn,
-                (session_id,),
-                now=now(),
-                archive_root=archive_root,
-            )
-        finally:
-            conn.close()
+    quiet_key = _hot_session_quiet_key(read_connection, archive_root=archive_root, now=now)
 
     user_db = archive_root / "user.db"
 
@@ -145,6 +187,7 @@ def make_session_profile_frame(
         source_revision=f"index-generation:{resolve_active_index_path(archive_root).resolve()}",
         recipe_versions={
             SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
+            SESSION_USAGE_ROLLUP_DOMAIN: session_usage_rollup_recipe_version(),
             SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
         },
         scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),

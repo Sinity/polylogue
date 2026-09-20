@@ -232,6 +232,12 @@
     ]
   },
   {
+    "file": "polylogue/storage/derived/session/usage_rollup.py",
+    "tiers": [
+      "index"
+    ]
+  },
+  {
     "file": "polylogue/storage/embeddings/derivation.py",
     "tiers": [
       "embeddings"

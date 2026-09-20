@@ -36,6 +36,10 @@ from polylogue.storage.derived.session.summary import (
     SESSION_SUMMARY_RECIPE_VERSION,
     SessionSummaryDerivation,
 )
+from polylogue.storage.derived.session.usage_rollup import (
+    SESSION_USAGE_ROLLUP_DOMAIN,
+    SessionUsageRollupDerivation,
+)
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -50,8 +54,11 @@ _MATERIALIZER_VERSION = SESSION_INSIGHT_MATERIALIZER_VERSION
 _OUTPUT_AFFECTING_MUTATIONS = (
     ("role", "'assistant'"),
     ("model_name", "'a-different-model'"),
-    ("input_tokens", "input_tokens + 4096"),
-    ("output_tokens", "output_tokens + 77"),
+    # COALESCE, not a bare sum: the builder leaves these NULL, and NULL + 4096
+    # is NULL -- a no-op mutation that made both parametrizations vacuous
+    # (they asserted "stale" against an archive nothing had changed).
+    ("input_tokens", "COALESCE(input_tokens, 0) + 4096"),
+    ("output_tokens", "COALESCE(output_tokens, 0) + 77"),
     ("word_count", "word_count + 13"),
     ("has_tool_use", "1 - has_tool_use"),
     # A member of the durable vocabulary: material_origin carries a CHECK, so a
@@ -84,6 +91,20 @@ def _write_connection(index_db: Path) -> sqlite3.Connection:
     conn = open_connection(index_db)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _usage_rollup(index_db: Path, session_id: str, *, quiet: bool = False) -> SessionUsageRollupDerivation:
+    """The profile's canonical-usage prerequisite, built over the same archive.
+
+    The profile derivation names this domain's key in ``prerequisite_keys``, so
+    a registry without it leaves every profile blocked rather than converged.
+    """
+    return SessionUsageRollupDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        session_scope=lambda _frame: [session_id],
+        quiet_key=(lambda _frame, _key: True) if quiet else None,
+    )
 
 
 def _materialize(index_db: Path, session_id: str) -> bool:
@@ -160,7 +181,7 @@ def test_the_session_content_hash_is_not_the_binding(archive: tuple[Path, str]) 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         before = conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
 
-    _mutate(index_db, session_id, "input_tokens", "input_tokens + 4096")
+    _mutate(index_db, session_id, "input_tokens", "COALESCE(input_tokens, 0) + 4096")
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         after = conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
@@ -296,7 +317,7 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
     them. A mismatch here would only show up in production, where the kernel
     would treat every key as missing and republish the archive on every pass.
     """
-    from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, converge
+    from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, converge
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
 
     index_db, session_id = archive
@@ -320,16 +341,25 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
         lambda: _write_connection(index_db),
         session_scope=lambda _frame: [session_id],
     )
-    registry = DerivationRegistry([summary, adapter])
+    registry = DerivationRegistry([summary, _usage_rollup(index_db, session_id), adapter])
 
     first = converge(registry, frame)
-    assert first.done == 1, first.outcomes
+    # The canonical usage rollup and the profile both converge in this one
+    # pass, in that order: the profile names the rollup's key as a concrete
+    # prerequisite, so the kernel reconciles usage first and the profile is
+    # then prepared from settled values and published on its first attempt.
+    assert first.done == 2, first.outcomes
+    assert [outcome.key.domain for outcome in first.by_outcome(Outcome.DONE)] == [
+        SESSION_USAGE_ROLLUP_DOMAIN,
+        SESSION_PROFILE_DOMAIN,
+    ]
+    assert not first.by_outcome(Outcome.PENDING), first.outcomes
     assert _status(index_db, session_id) == "valid"
 
     assert converge(registry, frame).wrote_nothing
 
     _mutate(index_db, session_id, "role", "'assistant'")
-    assert converge(registry, frame).done == 2
+    assert converge(registry, frame).done == 3
     assert _status(index_db, session_id) == "valid"
 
 
@@ -614,10 +644,17 @@ def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path,
         lambda: _write_connection(index_db),
         session_scope=lambda _frame: [session_id],
     )
-    report = converge(DerivationRegistry([summary, adapter]), frame)
+    report = converge(
+        DerivationRegistry([summary, _usage_rollup(index_db, session_id, quiet=True), adapter]),
+        frame,
+    )
 
     assert report.done == 0
-    assert report.by_outcome(Outcome.PENDING)[0].reason is PendingReason.QUIET
+    reasons = {outcome.key.domain: outcome.reason for outcome in report.by_outcome(Outcome.PENDING)}
+    assert reasons[SESSION_USAGE_ROLLUP_DOMAIN] is PendingReason.QUIET
+    # The profile reads the deferred rollup, so it defers with it rather than
+    # publishing a partition prepared from an unreconciled canonical usage.
+    assert reasons[SESSION_PROFILE_DOMAIN] is PendingReason.BLOCKED
     assert _status(index_db, session_id) == "missing"
 
 

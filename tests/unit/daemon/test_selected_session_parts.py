@@ -26,6 +26,7 @@ from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,
     make_session_profile_frame,
     make_session_summary_derivation,
+    make_session_usage_rollup_derivation,
 )
 from polylogue.storage.derived.session import derivation as session_derivation
 from polylogue.storage.derived.session.derivation import SessionProfilePartFacts, SessionProfileReplacement
@@ -62,7 +63,11 @@ def _converger_for(index_db: Path, archive_root: Path, adapter: object) -> Daemo
     """Keep selected-profile tests on the production summary/profile graph."""
     return DaemonConverger(
         (),
-        derivations=(make_session_summary_derivation(index_db, archive_root=archive_root), adapter),
+        derivations=(
+            make_session_summary_derivation(index_db, archive_root=archive_root),
+            make_session_usage_rollup_derivation(index_db, archive_root=archive_root, now=lambda: 0.0),
+            adapter,
+        ),
     )
 
 
@@ -86,7 +91,9 @@ def test_session_inspection_cannot_certify_a_partition_from_mixed_commits(
         recovered.index_db, archive_root=recovered.root, scope=(recovered.target_session_id,)
     )
     converger = _converger_for(recovered.index_db, recovered.root, adapter)
-    assert converger.converge_derivations(frame).done == 1
+    # Two: this session's canonical usage rollup, then the profile prepared
+    # from it. The rollup is the profile's declared prerequisite key.
+    assert converger.converge_derivations(frame).done == 2
     with sqlite3.connect(recovered.index_db) as conn:
         title = conn.execute(
             "SELECT title FROM sessions WHERE session_id = ?", (recovered.target_session_id,)
