@@ -174,6 +174,7 @@ def _judge(
     inject: bool,
     replacement_body_text: str | None = None,
     replacement_kind: str | None = None,
+    expected_evidence_digest: str | None = None,
 ) -> AssertionBulkJudgmentPayload:
     """Apply a review batch through the daemon's write authority.
 
@@ -200,6 +201,7 @@ def _judge(
                     "inject": inject,
                     "replacement_body_text": replacement_body_text,
                     "replacement_kind": replacement_kind,
+                    "expected_evidence_digest": expected_evidence_digest,
                 }
                 for ref in refs
             ],
@@ -340,6 +342,12 @@ def _render_queue_health(payload: AssertionCandidateQueueHealthPayload, output_f
     default=None,
     help="Output format (default: text).",
 )
+@click.option(
+    "--expect-evidence-digest",
+    "expected_evidence_digest",
+    default=None,
+    help="Evidence digest read for the candidate, required when its evidence moved under a reused id.",
+)
 @click.pass_obj
 def judge_command(
     env: AppEnv,
@@ -363,6 +371,7 @@ def judge_command(
     replacement_kind: str | None,
     replacement_body_text: str | None,
     output_format: str | None,
+    expected_evidence_digest: str | None,
 ) -> None:
     """Review and judge assertions through the sole public operator lifecycle."""
 
@@ -405,6 +414,7 @@ def judge_command(
             inject=inject if decision in {"accept", "supersede"} else False,
             replacement_kind=replacement_kind if decision == "supersede" else None,
             replacement_body_text=replacement_body_text if decision == "supersede" else None,
+            expected_evidence_digest=expected_evidence_digest,
         )
         _emit_bulk_result(bulk_payload, decision, output_format)
         return

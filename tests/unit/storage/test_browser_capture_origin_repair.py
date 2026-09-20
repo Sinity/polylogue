@@ -34,7 +34,11 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
     record_revision_application_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
-from polylogue.storage.sqlite.archive_tiers.user_write import mark_assertion_status
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    AssertionEvidenceConflictError,
+    judge_assertion_candidate,
+    mark_assertion_status,
+)
 
 
 def _config(root: Path) -> Config:
@@ -958,6 +962,124 @@ def test_repeat_census_of_same_pending_conflict_reuses_one_judgment_candidate(tm
     # The single surviving row reflects the LATEST cycle's plan, not stale
     # evidence from the first.
     assert json.loads(rows[0]["value_json"])["plan_id"] == "raw-authority-frontier:cycle-two"
+
+
+def _judgment_conflict_item(
+    plan_suffix: str,
+    *,
+    evidence_digest: str,
+) -> RawAuthorityFrontierItem:
+    return RawAuthorityFrontierItem(
+        state=RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
+        actuator=RawAuthorityActuator.REQUEST_JUDGMENT,
+        raw_id="raw-irtix-shared",
+        logical_source_key="unknown:irtix-conflict",
+        session_id="chatgpt-export:irtix-conflict",
+        reason="byte-proven browser rekey requires no retained membership census",
+        evidence_digest=evidence_digest,
+        input_raw_ids=("raw-irtix-shared",),
+        source_preconditions={},
+        index_preconditions={},
+        strategy_witness={"kind": "browser_conflict"},
+        plan_id=f"raw-authority-frontier:{plan_suffix}",
+    )
+
+
+def test_approving_a_candidate_whose_evidence_moved_is_refused(tmp_path: Path) -> None:
+    """polylogue-irtix D: reusing one assertion id must not let an approval
+    land on evidence the reviewer never read.
+
+    The in-place refresh that keeps the review queue deduped (polylogue-rjtv)
+    rewrites the pending candidate's evidence under the same assertion id, so
+    an operator who read cycle one can accept cycle two's claim. The approval
+    boundary now refuses until the reviewer names the digest they read.
+
+    Anti-vacuity: deleting the ``_refuse_approval_on_moved_evidence`` call in
+    ``_judge_assertion_candidate_in_transaction`` makes the unsighted accept
+    succeed and the ``pytest.raises`` red; dropping the
+    ``superseded_evidence_digest`` the reconciler records makes the same
+    assertion red because the boundary has nothing to compare.
+    """
+    initialize_active_archive_root(tmp_path)
+    config = _config(tmp_path)
+
+    first_id, _ = _record_judgment_candidate(
+        config, _judgment_conflict_item("cycle-one", evidence_digest="digest-read-by-operator"), now_ms=1000
+    )
+    second_id, _ = _record_judgment_candidate(
+        config, _judgment_conflict_item("cycle-two", evidence_digest="digest-rewritten-underneath"), now_ms=2000
+    )
+    assert second_id == first_id
+
+    with closing(sqlite3.connect(tmp_path / "user.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        with pytest.raises(AssertionEvidenceConflictError) as refusal:
+            judge_assertion_candidate(
+                conn,
+                candidate_ref=f"assertion:{first_id}",
+                decision="accept",
+                actor_ref="user:local",
+                now_ms=3000,
+            )
+        assert refusal.value.read_digest == "digest-read-by-operator"
+        assert refusal.value.current_digest == "digest-rewritten-underneath"
+        assert "digest-read-by-operator" in str(refusal.value)
+        assert "digest-rewritten-underneath" in str(refusal.value)
+
+        status = conn.execute("SELECT status FROM assertions WHERE assertion_id = ?", (first_id,)).fetchone()["status"]
+        assert status == AssertionStatus.CANDIDATE.value
+
+        judged = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{first_id}",
+            decision="accept",
+            actor_ref="user:local",
+            expected_evidence_digest="digest-rewritten-underneath",
+            now_ms=4000,
+        )
+        assert judged.candidate.status is AssertionStatus.ACCEPTED
+
+
+def test_unchanged_evidence_refresh_stays_deduped_and_approvable(tmp_path: Path) -> None:
+    """polylogue-irtix D companion: the dedup fix itself is not reverted.
+
+    Two census cycles over byte-identical evidence still update one
+    assertion id, and that candidate is still approvable without the reviewer
+    naming a digest -- nothing moved under it.
+
+    Anti-vacuity: minting a second candidate per cycle makes the row-count
+    assertion red; gating every candidate regardless of whether its evidence
+    actually moved makes the unsighted accept red.
+    """
+    initialize_active_archive_root(tmp_path)
+    config = _config(tmp_path)
+
+    first_id, _ = _record_judgment_candidate(
+        config, _judgment_conflict_item("cycle-one", evidence_digest="digest-stable"), now_ms=1000
+    )
+    second_id, _ = _record_judgment_candidate(
+        config, _judgment_conflict_item("cycle-two", evidence_digest="digest-stable"), now_ms=2000
+    )
+    assert second_id == first_id
+
+    with closing(sqlite3.connect(tmp_path / "user.db")) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT assertion_id, value_json FROM assertions WHERE kind = 'judgment' AND status = 'candidate'"
+        ).fetchall()
+        assert len(rows) == 1
+        value = json.loads(rows[0]["value_json"])
+        assert value["plan_id"] == "raw-authority-frontier:cycle-two"
+        assert "superseded_evidence_digest" not in value
+
+        judged = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{first_id}",
+            decision="accept",
+            actor_ref="user:local",
+            now_ms=3000,
+        )
+        assert judged.candidate.status is AssertionStatus.ACCEPTED
 
 
 def test_inspect_conflicts_membership_precondition_evidence(tmp_path: Path) -> None:

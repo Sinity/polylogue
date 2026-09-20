@@ -1453,8 +1453,32 @@ def _like_clause(
     return (f"({joined})" if len(clauses) > 1 else joined), [f"%{value}%" for value in normalized]
 
 
+def _boolean_flag_clause(column: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
+    """Lower a 0/1 flag column predicate from the DSL's boolean value tokens."""
+
+    normalized = {value.strip().lower() for value in predicate.values if value.strip()}
+    if not normalized:
+        return "", []
+    truthy = normalized & {"1", "true", "yes", "y", "on"}
+    falsy = normalized & {"0", "false", "no", "n", "off"}
+    if truthy and falsy:
+        return f"{column} IN (0, 1)", []
+    if truthy:
+        return f"{column} = 1", []
+    if falsy:
+        return f"{column} = 0", []
+    return "0=1", []
+
+
 def _message_field_predicate_clause(message_alias: str, predicate: QueryFieldPredicate) -> tuple[str, list[object]]:
     field = predicate.bound_field_name(context="lowering message predicates")
+    if field == "has_paste":
+        # Message grain on purpose. The session-scoped sibling lowers to
+        # ``sessions.paste_count > 0`` (queries/filter_builder.py), which is a
+        # materialized aggregate and can lag a direct message write; a reader
+        # that needs the paste-bearing MESSAGES has to read
+        # ``messages.has_paste`` itself (polylogue-q54dt).
+        return _boolean_flag_clause(f"{message_alias}.has_paste", predicate)
     if field == "role":
         return _in_or_equals_clause(f"{message_alias}.role", predicate.values, lower=True)
     if field == "type":

@@ -43,6 +43,40 @@ ASSERTION_DEFAULT_AUTHOR_KIND: Final = "user"
 ASSERTION_DEFAULT_AUTHOR_REF: Final = "user:local"
 ASSERTION_DEFAULT_CONTEXT_POLICY: Final[dict[str, JSONValue]] = AssertionContextPolicy.default().as_json_document()
 
+#: Key under which a judgment-request candidate carries the digest of the
+#: evidence it was minted from. Detectors that refresh a pending candidate in
+#: place (``storage/raw_reconciler._record_judgment_candidate``) rewrite this
+#: value under the same assertion id.
+ASSERTION_EVIDENCE_DIGEST_KEY: Final = "evidence_digest"
+#: Key the refreshing detector writes when that rewrite actually changed the
+#: evidence, naming the digest the candidate carried before the refresh.
+ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY: Final = "superseded_evidence_digest"
+
+
+class AssertionEvidenceConflictError(ValueError):
+    """Refuse an approval whose candidate's evidence moved under its id.
+
+    ``_upsert_or_refresh_judgment_candidate`` deliberately reuses one
+    ``assertion_id`` per unresolved conflict so repeated census cycles cannot
+    spam the review queue (polylogue-rjtv). The residual that dedup leaves is
+    that an operator who read candidate X can approve an X whose evidence was
+    rewritten in between. Accepting or superseding such a candidate is refused
+    until the reviewer names the digest they actually read
+    (``expected_evidence_digest``), so an approval can never land on evidence
+    nobody saw (polylogue-irtix D).
+    """
+
+    def __init__(self, *, candidate_ref: str, read_digest: str | None, current_digest: str | None) -> None:
+        self.candidate_ref = candidate_ref
+        self.read_digest = read_digest
+        self.current_digest = current_digest
+        super().__init__(
+            f"candidate evidence changed under a reused assertion id: {candidate_ref} "
+            f"was minted from evidence_digest {read_digest!r} and now carries {current_digest!r}; "
+            f"re-read the candidate and approve with expected_evidence_digest={current_digest!r}"
+        )
+
+
 JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE: Final = "run:judgment-automation-receipt-outbox"
 JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_TARGET: Final = "run:judgment-automation"
 
@@ -493,6 +527,10 @@ class ArchiveAssertionBulkJudgmentItemEnvelope:
     replacement_kind: str | AssertionKind | None = None
     replacement_body_text: str | None = None
     replacement_value: object | None = None
+    #: Evidence digest the reviewer actually read, when the candidate records
+    #: that its evidence was rewritten under a reused assertion id
+    #: (polylogue-irtix D).
+    expected_evidence_digest: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1963,6 +2001,52 @@ def read_latest_candidate_judgment(
     return _latest_candidate_judgment(conn, _assertion_id_from_ref(candidate_assertion_id))
 
 
+def _candidate_evidence_digests(candidate: ArchiveAssertionEnvelope) -> tuple[str | None, str | None]:
+    """Return ``(digest the candidate was minted from, digest it carries now)``.
+
+    Both are ``None`` for every candidate family that does not record an
+    evidence digest at all, which leaves those candidates approvable exactly
+    as before.
+    """
+
+    value = candidate.value
+    if not isinstance(value, Mapping):
+        return (None, None)
+    current = value.get(ASSERTION_EVIDENCE_DIGEST_KEY)
+    superseded = value.get(ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY)
+    return (
+        str(superseded) if isinstance(superseded, str) and superseded else None,
+        str(current) if isinstance(current, str) and current else None,
+    )
+
+
+def _refuse_approval_on_moved_evidence(
+    candidate: ArchiveAssertionEnvelope,
+    *,
+    candidate_ref: str,
+    expected_evidence_digest: str | None,
+) -> None:
+    """Refuse an approval whose evidence was rewritten under a reused id.
+
+    Only candidates that actually recorded a superseded digest are gated, so
+    the in-place refresh that keeps the review queue deduped (polylogue-rjtv)
+    is untouched for the unchanged-evidence case it exists to serve. A
+    reviewer who has re-read the candidate clears the gate by naming the
+    digest they read (polylogue-irtix D).
+    """
+
+    read_digest, current_digest = _candidate_evidence_digests(candidate)
+    if read_digest is None or read_digest == current_digest:
+        return
+    if expected_evidence_digest is not None and expected_evidence_digest == current_digest:
+        return
+    raise AssertionEvidenceConflictError(
+        candidate_ref=candidate_ref,
+        read_digest=read_digest,
+        current_digest=current_digest,
+    )
+
+
 def judge_assertion_candidate(
     conn: sqlite3.Connection,
     *,
@@ -1974,6 +2058,7 @@ def judge_assertion_candidate(
     replacement_kind: str | AssertionKind | None = None,
     replacement_body_text: str | None = None,
     replacement_value: object | None = None,
+    expected_evidence_digest: str | None = None,
     now_ms: int | None = None,
 ) -> ArchiveAssertionJudgmentEnvelope:
     """Record an explicit operator judgment for one candidate assertion."""
@@ -1989,6 +2074,7 @@ def judge_assertion_candidate(
             replacement_kind=replacement_kind,
             replacement_body_text=replacement_body_text,
             replacement_value=replacement_value,
+            expected_evidence_digest=expected_evidence_digest,
             now_ms=now_ms,
         )
 
@@ -2004,6 +2090,7 @@ def _judge_assertion_candidate_in_transaction(
     replacement_kind: str | AssertionKind | None,
     replacement_body_text: str | None,
     replacement_value: object | None,
+    expected_evidence_digest: str | None,
     now_ms: int | None,
 ) -> ArchiveAssertionJudgmentEnvelope:
     normalized_decision = decision.strip().lower()
@@ -2041,6 +2128,12 @@ def _judge_assertion_candidate_in_transaction(
                 outcome="idempotent",
             )
         raise ValueError(f"candidate assertion has a conflicting prior judgment: {candidate_ref}")
+    if normalized_decision in {"accept", "supersede"}:
+        _refuse_approval_on_moved_evidence(
+            candidate,
+            candidate_ref=f"assertion:{candidate_id}",
+            expected_evidence_digest=expected_evidence_digest,
+        )
 
     timestamp = now_ms if now_ms is not None else _now_ms()
     resulting_assertion: ArchiveAssertionEnvelope | None = None
@@ -2183,6 +2276,7 @@ def _judge_assertion_candidates_in_transaction(
                     replacement_kind=item.replacement_kind,
                     replacement_body_text=item.replacement_body_text,
                     replacement_value=item.replacement_value,
+                    expected_evidence_digest=item.expected_evidence_digest,
                     now_ms=now_ms,
                 )
             except (TypeError, ValueError) as exc:
@@ -2224,6 +2318,7 @@ def _same_bulk_judgment_input(
         left.replacement_kind,
         left.replacement_body_text,
         left.replacement_value,
+        left.expected_evidence_digest,
     ) == (
         right.decision,
         right.reason,
@@ -2232,6 +2327,7 @@ def _same_bulk_judgment_input(
         right.replacement_kind,
         right.replacement_body_text,
         right.replacement_value,
+        right.expected_evidence_digest,
     )
 
 
@@ -2643,6 +2739,9 @@ __all__ = [
     "ASSERTION_DEFAULT_CONTEXT_POLICY",
     "ASSERTION_DEFAULT_STATUS",
     "ASSERTION_DEFAULT_VISIBILITY",
+    "ASSERTION_EVIDENCE_DIGEST_KEY",
+    "ASSERTION_SUPERSEDED_EVIDENCE_DIGEST_KEY",
+    "AssertionEvidenceConflictError",
     "JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_SCOPE",
     "JUDGMENT_AUTOMATION_RECEIPT_OUTBOX_TARGET",
     "ArchiveAnnotationEnvelope",

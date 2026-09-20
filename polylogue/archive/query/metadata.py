@@ -357,6 +357,7 @@ _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS = {
     "is_error",
     "exit_code",
     "followup_class",
+    "has_paste",
 }
 _MESSAGE_STRUCTURAL_FIELDS = {
     "role",
@@ -374,6 +375,7 @@ _MESSAGE_STRUCTURAL_FIELDS = {
     "cache_write_tokens",
     "duration_ms",
     "time",
+    "has_paste",
 }
 _ACTION_STRUCTURAL_FIELDS = {
     "tool",
@@ -570,6 +572,11 @@ _COMMON_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
         "cache_write_tokens >= 1000",
     ),
     "duration_ms": _field_info("duration_ms", "Duration predicate in milliseconds.", "duration_ms >= 1000"),
+    "has_paste": _field_info(
+        "has_paste",
+        "Message-grain paste evidence flag, read from the message row rather than the owning session's aggregate.",
+        "has_paste:true",
+    ),
 }
 
 _ASSERTION_STRUCTURAL_FIELD_INFO: dict[str, StructuralQueryFieldInfo] = {
