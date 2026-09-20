@@ -101,6 +101,10 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.query_verbs:mark_verb",
         renderers=("polylogue.cli.query_verbs:mark_verb",),
     ),
+    "mutation.user.setting.set": CliOperationBinding(
+        lowering="polylogue.cli.commands.setting:setting_set_command",
+        renderers=("polylogue.cli.commands.setting:setting_set_command",),
+    ),
     "mutation.judgment.record": CliOperationBinding(
         lowering="polylogue.cli.commands.compare:compare_command",
         renderers=(

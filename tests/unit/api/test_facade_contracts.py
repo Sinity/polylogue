@@ -328,7 +328,6 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         # tests/unit/api/test_settings_surface.py.
         "get_setting",
         "list_settings",
-        "set_setting",
         "emit_decision",
         "get_effective_context",
         "list_command_shape_usage",

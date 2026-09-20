@@ -711,6 +711,62 @@ def mutation_annotation_save(
     return _execute_user_state_mutations(request, context, audit, build)
 
 
+def mutation_user_setting_set(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Insert-or-update one durable ``user_settings`` row under the daemon's writer.
+
+    ``polylogue setting set`` used to reach ``user.db`` through
+    ``Polylogue.set_setting``, which opened a writable ``ArchiveStore`` in the
+    CLI process (polylogue-gjwto / polylogue-r29bv). The actuator cycle is
+    unchanged; what moves is which process holds the write authority, and the
+    ``user_settings`` envelope is lowered to JSON here because the wire result
+    cannot carry a dataclass.
+    """
+    from polylogue.operations.mutation_actuators import SetUserSettingActuator, SetUserSettingArgs
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
+
+    assert context.runtime is not None
+    payload = request.payload
+    executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    actuator = SetUserSettingActuator()
+    binding = runtime_operation_binding(actuator)
+    with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
+        args = SetUserSettingArgs(
+            archive=archive,
+            setting_key=str(payload["setting_key"]),
+            value=payload.get("value"),
+            author_ref=str(payload.get("author_ref") or "user:local"),
+        )
+        preview = executor.prepare_bound_for_archive(
+            binding, args, context.principal, archive_root=context.archive_root
+        )
+        authorization = executor.authorize_bound(
+            binding, preview, context.principal, confirmation_strength="bound_token"
+        )
+        receipt = executor.execute_bound(binding, preview, authorization, args)
+    if receipt.status in {"blocked", "unknown"}:
+        raise ValueError(receipt.detail or f"{actuator.operation} did not apply")
+    envelope = receipt.domain_receipt["envelope"]
+    assert isinstance(envelope, ArchiveUserSettingEnvelope)
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if receipt.affected_count else "no-effect",
+        "affected_count": receipt.affected_count,
+        "result": {
+            "setting_key": envelope.setting_key,
+            "value": envelope.value,
+            "updated_at_ms": envelope.updated_at_ms,
+            "author_ref": envelope.author_ref,
+        },
+    }
+
+
 def mutation_judgment_record(
     request: DaemonOperationRequest,
     context: OperationContext,

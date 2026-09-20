@@ -8622,35 +8622,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         return _archive_list_settings(self.config)
 
-    async def set_setting(
-        self,
-        setting_key: str,
-        value: object,
-        *,
-        author_ref: str = "user:local",
-    ) -> ArchiveUserSettingEnvelope:
-        """Insert-or-update one typed ``user_settings`` row.
-
-        Raises :class:`ValueError` for an unknown ``setting_key`` or a
-        value the key's validator rejects (see
-        :mod:`polylogue.storage.sqlite.archive_tiers.user_settings_write`).
-
-        polylogue-r29bv: this used to open ``user.db`` and write it directly,
-        with no preview, no authorization record and no audit row -- the one
-        durable tier the archive cannot rebuild, mutated outside the
-        actuator/executor cycle every other user-tier write goes through.
-        """
-
-        from polylogue.operations.mutation_actuators import SetUserSettingActuator, SetUserSettingArgs
-
-        receipt, _plan = self._execute_facade_mutation(
-            SetUserSettingActuator(),
-            lambda archive: SetUserSettingArgs(
-                archive=archive,
-                setting_key=setting_key,
-                value=value,
-                author_ref=author_ref,
-            ),
-            capability="archive.set_setting",
-        )
-        return cast("ArchiveUserSettingEnvelope", receipt.domain_receipt["envelope"])
+    # ``set_setting`` is deliberately absent: ``user_settings`` is a durable
+    # ``user.db`` tier and the daemon is its sole writer, so the write is the
+    # declared ``mutation.user.setting.set`` operation rather than a facade
+    # method that opens a writable store in whatever process holds the surface
+    # (polylogue-gjwto / polylogue-r29bv). The reads above stay here.
