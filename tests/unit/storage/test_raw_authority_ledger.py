@@ -94,6 +94,39 @@ def _frontier_test_item(
     )
 
 
+def test_frontier_plan_witness_carries_no_top_level_raw_id() -> None:
+    """A frontier plan's authority witness never hoists a single raw id.
+
+    The witness describes a whole component, so a top-level ``raw_id`` would
+    make two plans over the same component disagree depending on which raw
+    happened to be named. The blocker row stores this witness verbatim in
+    ``expected_json``, so the shape is what a resolution later reads back.
+
+    Anti-vacuity: re-adding ``raw_id`` at the top level of the witness that
+    ``_plan`` builds fails this; the nested ``strategy_witness.item.raw_id``
+    asserted below proves the raw id is still reachable where it belongs.
+    """
+    strategy_witness = json_document(
+        {
+            "schema": "polylogue.raw-authority-strategy-witness.v1",
+            "kind": "browser_origin",
+            "item": {"raw_id": "primary-raw"},
+        }
+    )
+    item = _frontier_test_item(
+        raw_id="primary-raw",
+        plan_id="raw-authority-frontier:witness-shape",
+        input_raw_ids=("primary-raw", "auxiliary-raw"),
+        strategy_witness=strategy_witness,
+    )
+
+    plan = raw_reconciler_mod._plan(item)
+
+    assert "raw_id" not in plan.authority_witness
+    assert plan.authority_witness["strategy_witness"]["item"]["raw_id"] == "primary-raw"
+    assert plan.input_raw_ids == ("primary-raw", "auxiliary-raw")
+
+
 def _write_codex_raw(
     root: Path,
     *,
