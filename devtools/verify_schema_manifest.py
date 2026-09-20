@@ -225,8 +225,13 @@ def _migration_version(path: str, tier: ArchiveTier) -> int | None:
     return int(match.group("version")) if match else None
 
 
-def _migration_integrity_violations(base: str, tier: ArchiveTier) -> list[str]:
-    """Reject deletion or modification of an existing durable SQL migration."""
+def _migration_integrity_violations(
+    base: str,
+    tier: ArchiveTier,
+    *,
+    allow_predecessor_retirement: bool = False,
+) -> list[str]:
+    """Reject mutation of durable SQL, except a complete lineage reset's retirement."""
     violations: list[str] = []
     for change in _migration_changes(base, tier):
         if not (change.old_path.endswith(".sql") or change.new_path.endswith(".sql")):
@@ -234,7 +239,7 @@ def _migration_integrity_violations(base: str, tier: ArchiveTier) -> list[str]:
         if change.status.startswith("A"):
             if _migration_version(change.new_path, tier) is None:
                 violations.append(f"{tier.value}: added migration has an invalid numbered name: {change.new_path}")
-        elif change.status.startswith("D"):
+        elif change.status.startswith("D") and not allow_predecessor_retirement:
             violations.append(f"{tier.value}: required migration was deleted: {change.old_path}")
         elif change.status.startswith(("M", "R", "C")):
             violations.append(f"{tier.value}: required migration was modified: {change.old_path}")
@@ -319,9 +324,14 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
         and current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION
         for tier in _DURABLE_TIERS
     )
+    retire_predecessor_chain = all(
+        current.versions.get(tier) == ARCHIVE_FORMAT_FLOOR_VERSION for tier in _DURABLE_TIERS
+    )
 
     for tier in _DURABLE_TIERS:
-        violations.extend(_migration_integrity_violations(base, tier))
+        violations.extend(
+            _migration_integrity_violations(base, tier, allow_predecessor_retirement=retire_predecessor_chain)
+        )
         old_version = previous.versions.get(tier)
         new_version = current.versions.get(tier)
         old_ddl = previous.ddl.get(tier)

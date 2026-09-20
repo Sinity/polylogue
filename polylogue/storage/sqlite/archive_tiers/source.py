@@ -893,10 +893,9 @@ CREATE TABLE IF NOT EXISTS excised_content (
 ) STRICT;
 
 -- polylogue-byw3y: durable verification-receipt cache so a census does not
--- re-hash every accepted frontier blob from scratch on every daemon
--- restart. See migrations/source/017_verified_blob_receipts.sql for the
--- full rationale and the safety invariant (a receipt is trusted only when
--- its fingerprint matches the blob's CURRENT stat() exactly).
+-- re-hash every accepted frontier blob from scratch on every daemon restart.
+-- A receipt is trusted only when its fingerprint matches the blob's CURRENT
+-- stat() exactly.
 CREATE TABLE IF NOT EXISTS verified_blob_receipts (
     blob_hash        BLOB NOT NULL CHECK(length(blob_hash) = 32),
     st_dev           INTEGER NOT NULL,

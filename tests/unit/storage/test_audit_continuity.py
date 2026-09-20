@@ -10,28 +10,14 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceInput, FrozenSourceManifest
 from polylogue.storage.sqlite.audit_continuity import (
-    AUDIT_CONTINUITY_GENESIS_HEAD_SHA256,
     AuditContinuityCoordinator,
     AuditContinuityError,
     AuditMutation,
     audit_semantic_sha256,
 )
-
-
-def test_genesis_head_is_shared_by_fresh_ddl_and_additive_migrations() -> None:
-    migration_paths = (
-        Path("polylogue/storage/sqlite/migrations/audit/002_audit_continuity_head.sql"),
-        Path("polylogue/storage/sqlite/migrations/source/032_audit_continuity_control.sql"),
-    )
-
-    assert AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 in AUDIT_DDL
-    assert AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 in SOURCE_DDL
-    assert all(AUDIT_CONTINUITY_GENESIS_HEAD_SHA256 in path.read_text(encoding="utf-8") for path in migration_paths)
 
 
 def _mutation(number: int) -> AuditMutation:
@@ -356,79 +342,6 @@ def test_rebind_rejects_a_stale_in_place_image_before_blessing_it(tmp_path: Path
             mutation_id="rebind:stale-image",
             now_ms=1,
             evidence={"audit_image_sha256": expected_image_sha256},
-        )
-
-
-def test_populated_precontinuity_audit_is_bound_before_normal_coordination(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
-    with sqlite3.connect(tmp_path / "audit.db") as audit:
-        audit.execute(
-            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('legacy:archive', 1, 1)"
-        )
-        audit.execute("DROP TABLE audit_continuity_head")
-        audit.execute("PRAGMA user_version = 1")
-        audit.executescript(Path("polylogue/storage/sqlite/migrations/audit/002_audit_continuity_head.sql").read_text())
-        audit.execute("PRAGMA user_version = 2")
-        audit.commit()
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        source.execute("DROP TABLE audit_continuity_control")
-        source.execute("PRAGMA user_version = 31")
-        source.executescript(
-            Path("polylogue/storage/sqlite/migrations/source/032_audit_continuity_control.sql").read_text()
-        )
-        source.execute("PRAGMA user_version = 32")
-        source.commit()
-    expected = audit_semantic_sha256(tmp_path / "audit.db")
-    coordinator = AuditContinuityCoordinator(tmp_path)
-
-    with pytest.raises(AuditContinuityError, match="post-migration binding"):
-        coordinator.is_available()
-    coordinator.bind_precontinuity_audit(
-        mutation_id=f"precontinuity-audit:{expected}", now_ms=1, audit_semantic_sha256=expected
-    )
-
-    assert coordinator.is_available()
-    with sqlite3.connect(tmp_path / "source.db") as source, sqlite3.connect(tmp_path / "audit.db") as audit:
-        assert (
-            source.execute(
-                "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control"
-            ).fetchone()
-            == audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head").fetchone()
-        )
-
-
-def test_precontinuity_binding_rejects_a_substituted_genesis_audit_image(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
-    with sqlite3.connect(tmp_path / "audit.db") as audit:
-        audit.execute(
-            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('legacy:archive', 1, 1)"
-        )
-        audit.execute("DROP TABLE audit_continuity_head")
-        audit.execute("PRAGMA user_version = 1")
-        audit.executescript(Path("polylogue/storage/sqlite/migrations/audit/002_audit_continuity_head.sql").read_text())
-        audit.execute("PRAGMA user_version = 2")
-        audit.commit()
-    expected = audit_semantic_sha256(tmp_path / "audit.db")
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        source.execute("DROP TABLE audit_continuity_control")
-        source.execute("PRAGMA user_version = 31")
-        source.executescript(
-            Path("polylogue/storage/sqlite/migrations/source/032_audit_continuity_control.sql").read_text()
-        )
-        source.execute("PRAGMA user_version = 32")
-        source.commit()
-    replacement_root = tmp_path / "replacement"
-    initialize_active_archive_root(replacement_root)
-    with sqlite3.connect(replacement_root / "audit.db") as audit:
-        audit.execute(
-            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('substituted:archive', 1, 1)"
-        )
-        audit.commit()
-    (replacement_root / "audit.db").replace(tmp_path / "audit.db")
-
-    with pytest.raises(AuditContinuityError, match="differs from its authenticated migration evidence"):
-        AuditContinuityCoordinator(tmp_path).bind_precontinuity_audit(
-            mutation_id=f"precontinuity-audit:{expected}", now_ms=1, audit_semantic_sha256=expected
         )
 
 

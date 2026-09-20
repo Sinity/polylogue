@@ -251,21 +251,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   workspace/settings state that is not an epistemic assertion. Existing v3
   user tiers migrate additively after a verified backup manifest; fresh user
   tiers create the table directly.
-- Source schema version 3 drops `pending_blob_refs` (polylogue-v7e0). The
-  table backed a blob-GC lease mechanism (`acquire_blob_leases`/
-  `release_operation_leases`) that a race-window audit found no production
-  ingest caller ever populated — the table was provably empty in every real
-  deployment (zero writers anywhere in the write path) — see "GC concurrency
-  model" below for the current, lease-free contract. Existing v2 source
-  tiers migrate via
-  `storage/sqlite/migrations/source/003_drop_pending_blob_refs.sql` after a
-  verified backup manifest; fresh source tiers never create the table.
-- Source schema version 4 adds `blob_publication_reservations`, an exact
-  filesystem-publication boundary rather than the removed late write-effects
-  lease. Rows are keyed by per-publication receipt ID and indexed by content
-  hash, so concurrent publishers of identical bytes remain independent.
-  Existing v3 tiers migrate additively through
-  `004_blob_publication_reservations.sql` after a verified backup manifest.
+- The current fresh source lineage has no `pending_blob_refs` table. That table backed a blob-GC lease mechanism (`acquire_blob_leases`/`release_operation_leases`) with no production ingest writer. See "GC concurrency model" below for the current lease-free contract. Historical source lineages are refused at archive admission before writes rather than migrated through retired predecessor steps.
+- Fresh source tiers create `blob_publication_reservations` as the exact filesystem-publication boundary. Rows are keyed by per-publication receipt ID and indexed by content hash, so concurrent publishers of identical bytes remain independent.
 - Index schema version 43 adds `messages_fts_identity`, a rowid-keyed shadow
   ledger binding each `messages_fts` rowid to the `block_id` it was populated
   from (polylogue-1xc.12). `messages_fts` is a contentless FTS5 table

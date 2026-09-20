@@ -357,8 +357,8 @@ async def save_raw_session(
             revision.append_end_offset,
             revision.acquisition_generation,
             revision.authority.value,
-            # revision_authority_evidence (migration 017) is never computed at
-            # initial-write time -- it is only ever populated later by a
+            # revision_authority_evidence is never computed at initial-write
+            # time -- it is only ever populated later by a
             # dedicated, explicitly operator-invoked maintenance actuator
             # historical reconciliation tooling re-verifying the raw
             # against still-present live source bytes. This is `INSERT OR
