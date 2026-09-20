@@ -21,6 +21,7 @@ from typing_extensions import TypedDict
 
 from polylogue.archive.message.roles import Role, normalize_role
 from polylogue.config import Source
+from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Origin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value
 from polylogue.sources import decoders as decoders_module
@@ -798,21 +799,26 @@ def test_iter_source_sessions_with_raw_assigns_source_indexes_for_multi_session_
     tmp_path: Path,
 ) -> None:
     archive_path = tmp_path / "multi.zip"
+    payloads = [
+        {"id": "c1", "messages": [{"id": "m1", "role": "user", "text": "Q1"}]},
+        {"id": "c2", "messages": [{"id": "m2", "role": "user", "text": "Q2"}]},
+    ]
     with zipfile.ZipFile(archive_path, "w") as zf:
-        zf.writestr(
-            "data.json",
-            json.dumps(
-                [
-                    {"id": "c1", "messages": [{"id": "m1", "role": "user", "text": "Q1"}]},
-                    {"id": "c2", "messages": [{"id": "m2", "role": "user", "text": "Q2"}]},
-                ]
-            ),
-        )
+        zf.writestr("data.json", json.dumps(payloads))
 
     results = list(iter_source_sessions_with_raw(Source(name="test", path=archive_path)))
 
     assert len(results) == 2
-    assert [raw_data.source_index for raw_data, _ in results if raw_data is not None] == [0, 1]
+    raw_records = [raw_data for raw_data, _ in results if raw_data is not None]
+    assert [raw_data.source_index for raw_data in raw_records] == [0, 1]
+    modes: list[str] = []
+    for raw_data in raw_records:
+        assert raw_data.addressing_mode is not None
+        modes.append(raw_data.addressing_mode.value)
+    assert modes == ["element_of_container", "element_of_container"]
+    assert [raw_data.content_identity for raw_data in raw_records] == [
+        structural_content_identity(payload) for payload in payloads
+    ]
 
 
 def test_iter_source_sessions_with_raw_tracks_unicode_decode_failures_contract(
