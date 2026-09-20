@@ -196,6 +196,27 @@ def test_pointer_target_outside_the_root_is_refused(tmp_path: Path) -> None:
         measure_archive_capacity(root)
 
 
+def test_dangling_pointer_target_is_refused_before_capacity_projection(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    missing = root / GENERATIONS_DIRNAME / "gen-missing" / "index.db"
+    (root / ACTIVE_POINTER_FILENAME).write_text(str(missing.absolute()), encoding="utf-8")
+
+    with pytest.raises(ArchiveCapacityError, match="active pointer target"):
+        measure_archive_capacity(root)
+
+
+def test_root_blob_symlink_escape_is_refused(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    outside = tmp_path / "outside"
+    _dense(outside / "blob" / "ab" / ("c" * 62), 4 * 1024 * 1024)
+    (root / "blob").symlink_to(outside / "blob", target_is_directory=True)
+
+    with pytest.raises(ArchiveCapacityError, match="blob store symlink escapes"):
+        measure_archive_capacity(root)
+
+
 def test_missing_archive_root_is_refused(tmp_path: Path) -> None:
     with pytest.raises(ArchiveCapacityError, match="archive root is not a directory"):
         measure_archive_capacity(tmp_path / "absent")

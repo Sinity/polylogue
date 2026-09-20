@@ -406,7 +406,14 @@ def _iter_tree(root: Path, *, label: str) -> Iterator[os.stat_result]:
                 pending.append((Path(entry.path), (metadata.st_dev, metadata.st_ino)))
 
 
-def _measure_path(accumulator: _Accumulator, path: Path, *, label: str, follow_root_link: bool = False) -> None:
+def _measure_path(
+    accumulator: _Accumulator,
+    path: Path,
+    *,
+    label: str,
+    follow_root_link: bool = False,
+    allowed_link_root: Path | None = None,
+) -> None:
     """Charge ``path`` (and its tree, when a directory) to ``accumulator``.
 
     ``follow_root_link`` admits the symlink-farm archive root, whose tier
@@ -422,8 +429,13 @@ def _measure_path(accumulator: _Accumulator, path: Path, *, label: str, follow_r
             return
         try:
             target = path.resolve(strict=True)
-        except (OSError, RuntimeError):
-            return
+        except (OSError, RuntimeError) as exc:
+            raise ArchiveCapacityError(f"cannot resolve {label} symlink: {path}") from exc
+        if allowed_link_root is not None:
+            try:
+                target.relative_to(allowed_link_root)
+            except ValueError as exc:
+                raise ArchiveCapacityError(f"{label} symlink escapes the physical archive: {path} -> {target}") from exc
         _measure_path(accumulator, target, label=label)
         return
     accumulator.add(metadata)
@@ -432,11 +444,29 @@ def _measure_path(accumulator: _Accumulator, path: Path, *, label: str, follow_r
             accumulator.add(child)
 
 
-def _measure_database(accumulator: _Accumulator, path: Path, *, label: str) -> None:
+def _measure_database(
+    accumulator: _Accumulator,
+    path: Path,
+    *,
+    label: str,
+    allowed_link_root: Path | None = None,
+) -> None:
     """Charge one SQLite tier and its WAL/shm/journal sidecars."""
-    _measure_path(accumulator, path, label=label, follow_root_link=True)
+    _measure_path(
+        accumulator,
+        path,
+        label=label,
+        follow_root_link=True,
+        allowed_link_root=allowed_link_root,
+    )
     for suffix in _SQLITE_SIDECAR_SUFFIXES:
-        _measure_path(accumulator, path.with_name(path.name + suffix), label=f"{label} sidecar")
+        _measure_path(
+            accumulator,
+            path.with_name(path.name + suffix),
+            label=f"{label} sidecar",
+            follow_root_link=True,
+            allowed_link_root=allowed_link_root,
+        )
 
 
 def _checked_generations_root(root: Path, *, label: str) -> Path:
@@ -469,6 +499,22 @@ def _generation_roots(configured: Path, location: ArchiveLocation) -> tuple[Path
     if target.absolute() == configured.absolute():
         return (configured,)
     return (configured, target)
+
+
+def _physical_archive_root(location: ArchiveLocation) -> Path:
+    """Return the authenticated physical root for root-level symlink checks.
+
+    A promoted index normally resolves below ``.index-generations`` while a
+    symlink-farm archive resolves the same way from a different configured
+    root.  In both cases the parent of that hidden directory is the physical
+    archive root.  Before generations exist, the active index's parent is the
+    only honest root available.
+    """
+    active = location.active_index_path.resolve(strict=False)
+    for ancestor in (active, *active.parents):
+        if ancestor.name == GENERATIONS_DIRNAME:
+            return ancestor.parent
+    return active.parent
 
 
 def _generations_available_bytes(archive_root: Path, generations_root: Path) -> int:
@@ -524,6 +570,19 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
     # filesystem.
     generation_roots = _generation_roots(configured_generations_root, location)
     store_generations_root = generation_roots[-1]
+    physical_root = _physical_archive_root(location)
+
+    # A pointer names a required active index.  ArchiveLocation validates its
+    # topology and containment, but intentionally permits a dangling target so
+    # callers can inspect identity. Capacity preflight must fail closed before
+    # a build allocates against an archive whose active evidence is absent.
+    if location.active_pointer is not None:
+        try:
+            active_metadata = location.active_index_path.stat()
+        except OSError as exc:
+            raise ArchiveCapacityError(f"cannot inspect active pointer target: {location.active_index_path}") from exc
+        if not stat.S_ISREG(active_metadata.st_mode):
+            raise ArchiveCapacityError(f"active pointer target is not a regular file: {location.active_index_path}")
 
     seen: set[tuple[int, int]] = set()
     accumulators = {name: _Accumulator(name, seen) for name in POPULATION_NAMES}
@@ -534,18 +593,48 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
     # promotion symlink, or a pre-generation index. The pointer target is the
     # index, and is charged whether or not it sits under the generations root,
     # so a stub can never stand in for it.
+    # The conventional root index may be an explicit split-root symlink even
+    # before a pointer exists; keep charging that configured path while the
+    # authenticated pointer target is checked above.
     _measure_database(accumulators["index_root"], root / "index.db", label="root index")
-    _measure_database(accumulators["index_generations"], location.active_index_path, label="active index")
+    _measure_database(
+        accumulators["index_generations"],
+        location.active_index_path,
+        label="active index",
+        allowed_link_root=physical_root,
+    )
     _measure_path(
         accumulators["rebuild_transactions"], root / REBUILD_TRANSACTIONS_DIRNAME, label="rebuild transactions"
     )
     for filename in _DURABLE_TIER_FILENAMES:
-        _measure_database(accumulators["durable_tiers"], root / filename, label=f"durable tier {filename}")
+        _measure_database(
+            accumulators["durable_tiers"],
+            root / filename,
+            label=f"durable tier {filename}",
+            allowed_link_root=physical_root,
+        )
     for filename in _DERIVED_TIER_FILENAMES:
-        _measure_database(accumulators["derived_tiers"], root / filename, label=f"derived tier {filename}")
-    _measure_path(accumulators["blob"], root / _BLOB_DIRNAME, label="blob store", follow_root_link=True)
+        _measure_database(
+            accumulators["derived_tiers"],
+            root / filename,
+            label=f"derived tier {filename}",
+            allowed_link_root=physical_root,
+        )
+    _measure_path(
+        accumulators["blob"],
+        root / _BLOB_DIRNAME,
+        label="blob store",
+        follow_root_link=True,
+        allowed_link_root=physical_root,
+    )
     for dirname in _SPOOL_DIRNAMES:
-        _measure_path(accumulators["spools"], root / dirname, label=f"spool {dirname}", follow_root_link=True)
+        _measure_path(
+            accumulators["spools"],
+            root / dirname,
+            label=f"spool {dirname}",
+            follow_root_link=True,
+            allowed_link_root=physical_root,
+        )
     _measure_path(
         accumulators["maintenance_receipts"],
         root / MAINTENANCE_STATE_DIRNAME,
