@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
@@ -1005,6 +1006,55 @@ def test_backup_reanchors_dead_root_before_zip_member_replay(
     assert len(proofs) == 1
     assert proofs[0]["kind"] == "zip_reacquired_payload"
     assert proofs[0]["source_path"] == f"{zip_path}:conversation.json"
+    assert unproven == []
+
+
+def test_backup_proves_zip_member_by_structural_identity_after_reserialization(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A harmless provider rewrite remains recoverable without byte equality."""
+    archive_root = workspace_env["archive_root"]
+    zip_path = archive_root / "inbox" / "structural.zip"
+    zip_path.parent.mkdir()
+    expected = {"id": "kept", "ordinal": 1, "mapping": {"node": {"message": {"author": {"role": "user"}}}}}
+    current = {"mapping": expected["mapping"], "ordinal": 1.0, "id": expected["id"]}
+    other = {"id": "other", "mapping": {"node": {"message": {"author": {"role": "user"}}}}}
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversations.json", json.dumps([current, other], separators=(",", ":")))
+    blob_hash = hashlib.sha256(dumps_bytes(expected)).digest()
+    content_identity = structural_content_identity(expected)
+    source_path = f"{zip_path}:conversations.json"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, 'chatgpt-export', 'chatgpt', ?, 0, ?, ?, 1, 'passed')""",
+            ("structural-zip", source_path, blob_hash, len(dumps_bytes(expected))),
+        )
+        conn.execute(
+            """INSERT INTO raw_container_coordinates (
+                raw_id, coordinate_format, entry_ordinal, split_index,
+                addressing_mode, content_identity
+            ) VALUES (?, 'zip-v2', 0, 0, 'element_of_container', ?)""",
+            ("structural-zip", content_identity),
+        )
+        assert (
+            conn.execute("SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id='structural-zip'").fetchone()[0]
+            == blob_hash.hex()
+        )
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+        immutable=False,
+    )
+
+    assert len(proofs) == 1, (proofs, unproven)
+    assert proofs[0]["kind"] == "zip_reacquired_payload"
+    assert proofs[0]["content_identity"] == content_identity
     assert unproven == []
 
 
