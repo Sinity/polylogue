@@ -667,6 +667,10 @@ class PreparedSessionRows:
     session_content_hash: bytes
     message_rows: tuple[tuple[object, ...], ...]
     block_rows: tuple[tuple[object, ...], ...]
+    #: Content-derived fallback identities resolved while preparing the rows.
+    #: The writer may consume these only after validating that they still
+    #: match the carried row tuples and the input content hash.
+    content_identities: tuple[MessageContentIdentity, ...]
     position_offset: int = 0
     #: Per-digest content-occurrence counts already stored for this session,
     #: the append-side analogue of ``position_offset``. Empty for a
@@ -732,10 +736,49 @@ class PreparedSessionShardRows:
     session_content_hash: bytes
     schema: str
     entry: ShardSessionRows
+    #: The identity carrier extracted from the sealed shard manifest/rows.
+    content_identities: tuple[MessageContentIdentity, ...]
 
 
 #: What a caller may hand the writer instead of letting it build rows inline.
 PreparedRows = PreparedSessionRows | PreparedSessionShardRows
+
+
+def _validated_prepared_content_identities(
+    prepared: PreparedRows,
+    messages: Sequence[ParsedMessage],
+) -> tuple[MessageContentIdentity, ...]:
+    """Validate and return the parse-side identity carrier without hashing.
+
+    The tuple is source-bound by the prepared content hash admission gate. For
+    tuple rows, also check the two identity columns that will be inserted; a
+    changed or corrupted carrier must refuse rather than silently regenerate
+    identity on the writer.
+    """
+    identities = tuple(prepared.content_identities)
+    if len(identities) != len(messages):
+        raise PreparedSessionWriteRefusedError("prepared identity carrier does not cover the parsed messages")
+    for identity, occurrence in identities:
+        identity_value: object = identity
+        occurrence_value: object = occurrence
+        if (
+            not isinstance(identity_value, str)
+            or not identity_value
+            or not isinstance(occurrence_value, int)
+            or occurrence_value < 0
+        ):
+            raise PreparedSessionWriteRefusedError("prepared identity carrier has an invalid value")
+    if isinstance(prepared, PreparedSessionRows):
+        insert_columns = tuple(column.name for column in archive_tiers_specs.MESSAGES_SPEC.insert_columns)
+        try:
+            identity_index = insert_columns.index("content_identity")
+            occurrence_index = insert_columns.index("content_occurrence")
+        except ValueError as exc:
+            raise PreparedSessionWriteRefusedError("message row identity columns are missing") from exc
+        row_identities = tuple((row[identity_index], row[occurrence_index]) for row in prepared.message_rows)
+        if row_identities != identities:
+            raise PreparedSessionWriteRefusedError("prepared identity carrier disagrees with message rows")
+    return identities
 
 
 def _prepared_message_context(
@@ -914,6 +957,7 @@ def prepare_session_write(
                 content_identities=content_identities,
             )
         ),
+        content_identities=tuple(content_identities),
         position_offset=position_offset,
         content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
     )
@@ -970,6 +1014,7 @@ def prepare_session_rows(
         session_content_hash=_prepared_session_content_hash(session),
         message_rows=tuple(message_rows),
         block_rows=tuple(block_rows),
+        content_identities=tuple(content_identities),
         position_offset=position_offset,
         content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
     )
@@ -1007,6 +1052,7 @@ def bind_session_shard(schema: str, shard: SessionShard) -> dict[str, PreparedSe
             session_content_hash=entry.session_content_hash,
             schema=schema,
             entry=entry,
+            content_identities=entry.content_identities,
         )
         for entry in shard.sessions
     }
@@ -1218,21 +1264,6 @@ def write_parsed_session_to_archive(
     branch_point_content_address = context.branch_point_content_address
     lineage_inheritance = context.lineage_inheritance
     inherited_source_message_ids = dict(context.inherited_source_message_ids)
-    # polylogue-eqsri: one resolution of the batch's content-derived fallback
-    # identities, shared by every row builder and every id-recomputing helper
-    # below, so they cannot disagree with the ``messages.message_id``
-    # generated column or with each other.
-    content_identities = message_content_identities(
-        messages,
-        occurrence_offsets=_stored_content_occurrences(conn, session_id) if merge_append else None,
-    )
-    active_leaf_message_id = _active_leaf_message_id(
-        session_id,
-        messages,
-        session.active_leaf_message_provider_id,
-        duplicate_native_ids=duplicate_message_native_ids,
-        content_identities=content_identities,
-    )
     session_content_hash = input_content_hash
     # polylogue-623q: only reuse rows prepared off this thread when NONE of
     # the conditions that would make them wrong hold -- see ``prepared``'s
@@ -1241,8 +1272,10 @@ def write_parsed_session_to_archive(
     # from what ``prepare_session_rows`` saw (it returns ``messages``
     # unchanged in every other case, including "spawned-fresh" and no-parent).
     prepared_rows_to_use: PreparedRows | None = None
+    prepared_identity_carrier: PreparedRows | None = None
     if prepared_write is not None:
         prepared_rows_to_use = prepared_write.rows
+        prepared_identity_carrier = prepared_write.rows
     elif (
         prepared is not None
         and not merge_append
@@ -1250,6 +1283,27 @@ def write_parsed_session_to_archive(
         and prepared.session_content_hash == session_content_hash
     ):
         prepared_rows_to_use = prepared
+        prepared_identity_carrier = prepared
+    elif prepared is not None and merge_append and prepared.session_content_hash == session_content_hash:
+        # Append-frontier validation happens inside the write transaction. Use
+        # the carrier provisionally so a valid append avoids hashing; if the
+        # pinned frontier is stale, the branch below replaces it with a fresh
+        # identity tuple before any rows are published.
+        prepared_identity_carrier = prepared
+    if prepared_identity_carrier is not None:
+        content_identities = _validated_prepared_content_identities(prepared_identity_carrier, messages)
+    else:
+        content_identities = message_content_identities(
+            messages,
+            occurrence_offsets=_stored_content_occurrences(conn, session_id) if merge_append else None,
+        )
+    active_leaf_message_id = _active_leaf_message_id(
+        session_id,
+        messages,
+        session.active_leaf_message_provider_id,
+        duplicate_native_ids=duplicate_message_native_ids,
+        content_identities=content_identities,
+    )
     if prepared_required and (
         prepared_write is None and (prepared is None or (not merge_append and prepared_rows_to_use is None))
     ):
@@ -1425,6 +1479,25 @@ def write_parsed_session_to_archive(
                 elif prepared_required:
                     raise PreparedSessionWriteRefusedError(
                         "prepared replay append lowering no longer matches its pinned frontier"
+                    )
+                elif prepared_identity_carrier is not None:
+                    # The provisional carrier was pinned to a different
+                    # append frontier. Recompute only this rejected path so
+                    # the fallback rows and active leaf use the live offsets.
+                    content_identities = message_content_identities(
+                        messages,
+                        occurrence_offsets=dict(stored_content_occurrences),
+                    )
+                    active_leaf_message_id = _active_leaf_message_id(
+                        session_id,
+                        messages,
+                        session.active_leaf_message_provider_id,
+                        content_identities=content_identities,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                    )
+                    conn.execute(
+                        "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
+                        (active_leaf_message_id, session_id),
                     )
             else:
                 stale_attachment_ids = session_attachment_ids(conn, session_id)
