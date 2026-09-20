@@ -81,7 +81,10 @@ def iter_retained_source_records(
                 retained_blob=ArtifactIdentity(blob_hash, blob_size),
             )
         )
-        yield RetainedRawRecord('["physical-file-v1",0]', data, member_count=1)
+        # A plain source has no central directory. Its source-43 record is
+        # still enumerated and digested, but it must not be mistaken for a
+        # ZIP member ordinal by retained-member completeness checks.
+        yield RetainedRawRecord('["physical-file-v1",0]', data)
         return
 
     # Both channels are driven by attacker-controlled central-directory

@@ -358,6 +358,14 @@ def execute_source_item_admission(
         raise ValueError("source-item admission requires the caller's source transaction")
     conn.execute("SAVEPOINT source_item_raw_admission")
     try:
+        if member.entry_ordinal is not None:
+            overlap = conn.execute(
+                "SELECT 1 FROM source_item_member_dispositions "
+                "WHERE source_generation_id=? AND source_item_id=? AND entry_ordinal=?",
+                (member.source_generation_id, member.source_item_id, member.entry_ordinal),
+            ).fetchone()
+            if overlap is not None:
+                raise ValueError("source member already has a non-admitted disposition")
         existing = conn.execute(
             "SELECT raw_id, raw_blob_hash FROM source_item_raw_members WHERE source_generation_id=? "
             "AND source_item_id=? AND record_coordinate=?",

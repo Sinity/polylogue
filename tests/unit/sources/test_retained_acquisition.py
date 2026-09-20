@@ -151,6 +151,32 @@ def test_one_rejected_zip_member_does_not_abort_its_whole_input(tmp_path: Path) 
     ]
 
 
+def test_retained_zip_exposes_non_admitted_members_for_durable_publication(tmp_path: Path) -> None:
+    """The production caller can persist each skipped ordinal, not just a log count."""
+    original = tmp_path / "synthetic-export.zip"
+    _write_zip_with_pathological_member(original)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size = store.write_from_path(original)
+    published: list[tuple[int, str, str, str]] = []
+
+    records = list(
+        iter_retained_source_records(
+            source_path=str(original),
+            blob_hash=blob_hash,
+            blob_size=blob_size,
+            blob_store=store,
+            on_member_disposition=lambda ordinal, name, disposition, diagnostic: published.append(
+                (ordinal, name, disposition, diagnostic)
+            ),
+        )
+    )
+
+    assert [record.entry_ordinal for record in records] == [0, 2, 1]
+    assert len(published) == 1
+    assert published[0][:3] == (1, "bomb.jsonl", "refused")
+    assert "compression ratio" in published[0][3]
+
+
 _DECLARED_ASSET = "file-abc123XYZ.png"
 _PNG_BYTES = bytes.fromhex("89504e470d0a1a0a") + b"synthetic-asset-bytes"
 

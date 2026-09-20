@@ -370,6 +370,17 @@ def _enumeration_complete(
     if None in accepted_values:
         return False
     accepted_ordinals = {value for value in accepted_values if value is not None}
+    # Source-43 predates retained ZIP member accounting and uses a
+    # physical-file coordinate with the legacy numeric member digest. Do not
+    # reinterpret that non-container record as a missing ZIP ordinal. New ZIP
+    # records carry exact zip-v2 coordinates, and refused/unselected members
+    # have disposition rows, so this compatibility path cannot make an
+    # interrupted ZIP enumeration appear complete.
+    is_container = (
+        bool(dispositions) or any(str(row[0]).startswith('["zip-v2"') for row in members) or bool(accepted_ordinals)
+    )
+    if not is_container:
+        return expected == len(members)
     all_ordinals = accepted_ordinals | disposition_ordinals
     if len(all_ordinals) != expected or all_ordinals != set(range(expected)):
         return False
