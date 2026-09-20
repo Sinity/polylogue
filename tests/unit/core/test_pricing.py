@@ -437,11 +437,14 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     ).fetchone()
     conn.close()
 
+    # ``cache_write_tokens`` is None, not 0: this Codex payload reports no
+    # cache-write counter at all, and polylogue-qgyuj's nullable message-grain
+    # usage keeps that absence distinct from a measured zero.
     assert dict(message_usage) == {
         "input_tokens": 100,
         "output_tokens": 50,
         "cache_read_tokens": 2400,
-        "cache_write_tokens": 0,
+        "cache_write_tokens": None,
     }
     assert dict(event_usage) == {
         "total_input_tokens": 2500,
@@ -453,14 +456,19 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     assert completion_output + event_usage["total_reasoning_output_tokens"] == provider_total_usage["output_tokens"]
     # The model-cost tier keeps priced lanes additive: output is the provider's
     # inclusive total and reasoning stays event-tier evidence, never re-added.
-    assert dict(model_usage) == dict(message_usage)
+    # ``session_model_usage`` is the aggregate grain and deliberately keeps its
+    # NOT NULL DEFAULT 0 lanes, so the unreported cache-write counter reads 0
+    # there while the message grain keeps it unknown.
+    assert dict(model_usage) == {**dict(message_usage), "cache_write_tokens": 0}
 
     # Price the values that survived parser -> archive writer, not a second
     # hand-built representation of the corrected usage.
+    # Pricing treats an unreported counter as zero cost (``_coerce_int`` on
+    # the production route does the same); the stored value stays unknown.
     disjoint = _estimate_from_usage(
         origin="unknown-export",
         model_name="test-codex-like",
-        usage=CostUsagePayload(**dict(message_usage)),
+        usage=CostUsagePayload(**{key: value or 0 for key, value in dict(message_usage).items()}),
         provenance=("message_token_usage",),
     )
     # Pre-fix parser output: input stored inclusive of cache (the bug).

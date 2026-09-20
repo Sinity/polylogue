@@ -3432,12 +3432,11 @@ def _capture_session_projection_rows(conn: sqlite3.Connection, session_id: str) 
         (session_id,),
     ).fetchall()
     provider_usage_events = conn.execute(
-        "SELECT session_id, source_message_id, position, provider_event_type, model_name, "
-        "last_input_tokens, last_output_tokens, last_cached_input_tokens, last_cache_write_tokens, "
-        "last_reasoning_output_tokens, last_total_tokens, total_input_tokens, total_output_tokens, "
-        "total_cached_input_tokens, total_cache_write_tokens, total_reasoning_output_tokens, "
-        "total_tokens, occurred_at_ms FROM session_provider_usage_events WHERE session_id = ? "
-        "ORDER BY position",
+        # One column list for capture and restore: a hand-copied second list
+        # silently drops whatever the two disagree about (polylogue-1pzmq).
+        "SELECT "
+        + ", ".join(_PROVIDER_USAGE_EVENT_COLUMNS)
+        + " FROM session_provider_usage_events WHERE session_id = ? ORDER BY position",
         (session_id,),
     ).fetchall()
     return _CapturedProjections(
@@ -3567,6 +3566,15 @@ _PROVIDER_USAGE_EVENT_COLUMNS = (
     "total_reasoning_output_tokens",
     "total_tokens",
     "occurred_at_ms",
+    # polylogue-1pzmq: this list is both the capture SELECT and the restore
+    # INSERT, and the restore DELETEs the session's rows first -- so a column
+    # missing here is not merely unmerged, it is erased from rows that already
+    # held it. ``request_id`` was exactly that: written by the event writer,
+    # then nulled by the first carry-forward reconciliation.
+    "request_id",
+    "source_message_provider_id",
+    "source_message_resolution",
+    "finish_reason",
 )
 
 
@@ -3598,7 +3606,10 @@ def _merge_provider_usage_event_rows(
 ) -> tuple[object, ...]:
     """Keep the richer observation for one reconciled usage-event identity."""
     merged = list(incoming)
-    for index in (1, 4, 17):
+    # Nullable text/timestamp lanes: an acquisition that simply did not report
+    # one keeps the older observation. ``source_message_resolution`` is NOT
+    # NULL and states how *this* write resolved the id, so it is never merged.
+    for index in (1, 4, 17, 18, 19, 21):
         if merged[index] is None:
             merged[index] = existing[index]
     # Zero is a measured/omitted value in the wire shapes that reach this
@@ -6183,17 +6194,34 @@ def _write_session_events(
                     to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                 ),
             )
-        elif event.event_type in {"token_count", "message_usage"} and (
-            not event.source_message_provider_id or source_message_id is not None
-        ):
+        elif event.event_type in {"token_count", "message_usage"}:
+            # polylogue-1pzmq: an event whose declared provider message id
+            # resolves to no row here used to be dropped outright. The
+            # commonest cause is not a malformed export but a deliberate
+            # writer decision: a provider id duplicated within the session is
+            # excluded from ``by_native_id`` because those messages get
+            # content-derived ids, so every usage event attached to them
+            # vanished. The usage is still real evidence about this session;
+            # record it with its declared provider id and a typed statement of
+            # what the attribution actually is.
+            declared_provider_id = _sqlite_text(event.source_message_provider_id)
+            declared_provider_id = declared_provider_id.strip() if declared_provider_id else None
+            resolution = _provider_usage_source_resolution(
+                declared_provider_id,
+                source_message_id=source_message_id,
+                ambiguous_source_provider_ids=ambiguous_source_provider_ids,
+                duplicate_native_ids=duplicate_native_ids,
+            )
             row = _provider_usage_event_row(
                 session_id,
                 source_message_id,
                 position,
                 event,
                 provider_usage_baseline=provider_usage_baseline,
+                source_message_provider_id=declared_provider_id,
+                source_message_resolution=resolution,
             )
-            if _provider_usage_event_row_has_evidence(row):
+            if _provider_usage_event_has_evidence(event, row):
                 provider_usage_rows.append(row)
                 wrote_provider_usage_events = True
         position += 1
@@ -6233,9 +6261,33 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
         total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
-        occurred_at_ms, request_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        occurred_at_ms, request_id,
+        source_message_provider_id, source_message_resolution, finish_reason
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
+
+
+def _provider_usage_source_resolution(
+    declared_provider_id: str | None,
+    *,
+    source_message_id: str | None,
+    ambiguous_source_provider_ids: frozenset[str],
+    duplicate_native_ids: frozenset[str],
+) -> str:
+    """Classify how this usage event's provider message id resolved.
+
+    ``session`` is the absence of a claim (Codex's session-global
+    ``token_count``); ``ambiguous`` and ``unresolved`` are two different
+    failures to honour one -- the first because the id names more than one
+    message in this session, the second because it names none.
+    """
+    if declared_provider_id is None:
+        return "session"
+    if source_message_id is not None:
+        return "resolved"
+    if declared_provider_id in ambiguous_source_provider_ids or declared_provider_id in duplicate_native_ids:
+        return "ambiguous"
+    return "unresolved"
 
 
 def _provider_usage_event_row(
@@ -6245,6 +6297,8 @@ def _provider_usage_event_row(
     event: ParsedSessionEvent,
     *,
     provider_usage_baseline: Mapping[str, int] | None = None,
+    source_message_provider_id: str | None = None,
+    source_message_resolution: str = "session",
 ) -> tuple[object, ...]:
     last_usage = _payload_mapping(event.payload, "last_token_usage")
     total_usage = _payload_mapping(event.payload, "total_token_usage")
@@ -6283,21 +6337,55 @@ def _provider_usage_event_row(
         total_tokens,
         to_epoch_ms(event.timestamp, numeric_unit="seconds"),
         _sqlite_text(_payload_string(event.payload, "request_id")),
+        _sqlite_text(source_message_provider_id),
+        source_message_resolution,
+        _sqlite_text(_payload_string(event.payload, "finish_reason", "stop_reason")),
     )
 
 
-def _provider_usage_event_row_has_evidence(row: tuple[object, ...]) -> bool:
-    """Return whether the row carries any fact worth a ``session_provider_usage_events`` row.
+def _provider_usage_event_has_evidence(event: ParsedSessionEvent, row: tuple[object, ...]) -> bool:
+    """Return whether this event carries any fact worth a ``session_provider_usage_events`` row.
 
-    Numeric usage (``row[5:17]``) is the usual evidence, but it is not the
-    only kind: ``message_usage`` is in ``_SESSION_EVENTS_REDUNDANT_TYPES`` on
-    the premise that this typed row carries the whole payload, so a payload
-    whose only fact is the provider ``request_id`` (``row[18]``) must still
-    produce a row or the id is dropped on the floor.
+    ``message_usage``/``token_count`` are in ``_SESSION_EVENTS_REDUNDANT_TYPES``
+    on the premise that this typed row carries the whole payload, so anything
+    the payload states and this predicate does not recognise is dropped on the
+    floor -- which is how a Drive chunk reporting only ``finishReason``, and a
+    Claude turn reporting ``stop_reason`` beside an all-zero ``usage``, used to
+    disappear (polylogue-1pzmq).
+
+    Evidence is decided over the facts this row can actually HOLD, not over
+    the payload as a whole: writing a row for a fact with no column stores
+    nothing and only makes the loss harder to see. ``polylogue-664l`` dropped
+    the eight Hermes billing-provenance columns after a zero-reader audit, so
+    a billing-only payload still writes no row here.
+
+    Beyond the original "some token field is a non-zero int", two facts now
+    have columns and therefore count on their own:
+
+    - the provider correlation id (``request_id``);
+    - the provider's terminal signal (``finish_reason``/``stop_reason``) --
+      the fact this predicate used to destroy, because a Drive chunk that
+      reports only ``finishReason``, and a Claude turn that reports
+      ``stop_reason`` beside an all-zero ``usage``, both leave every token
+      field at zero.
+
+    ``model`` deliberately does not count: it names the subject of an
+    observation rather than being one.
+
+    A token field at zero is still not admitted on its own, and that is a
+    LIMIT, not a decision that unknown is zero: the parsers coerce absent
+    counters to ``0`` before this point (``hermes_state._usage_and_lifecycle_
+    events``, ``claude/code_parser._message_usage_event_payload``), so at this
+    grain a zero genuinely cannot be told from an absence. Representing
+    measured zero here needs those parsers to stop coercing and these columns
+    to become nullable -- the message-grain change polylogue-qgyuj made, not
+    yet made at usage-event grain.
     """
     if any(isinstance(value, int) and value for value in row[5:17]):
         return True
-    return bool(row[18])
+    return bool(_payload_string(event.payload, "request_id")) or bool(
+        _payload_string(event.payload, "finish_reason", "stop_reason")
+    )
 
 
 def _provider_usage_cumulative_baseline(
