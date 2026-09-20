@@ -20,14 +20,13 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.json import JSONValue
 from polylogue.core.types import SessionId
-from polylogue.storage.sqlite.archive_tiers import user_write
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER, user_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
     initialize_archive_tier,
 )
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_CLAIM_KINDS,
     ASSERTION_DEFAULT_AUTHOR_KIND,
@@ -237,7 +236,10 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
         assert _table_exists(conn, "context_deliveries")
         assert _table_exists(conn, "annotation_schemas")
         assert _table_exists(conn, "annotation_batches")
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+        # The durable user tier is stamped by the fresh floor
+        # (``ARCHIVE_FORMAT_FLOOR_VERSION``), not by the retired
+        # ``USER_SCHEMA_VERSION`` migration chain that #5275 removed.
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
     finally:
         conn.close()
 
