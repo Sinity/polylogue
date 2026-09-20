@@ -12,7 +12,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.daemon.periodic import catch_up_gate, daemon_periodic_runner
+from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
 from polylogue.logging import span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
@@ -25,7 +25,7 @@ BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS = BLOB_GC_INTERVAL_SECONDS
 BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH = BLOB_GC_MAX_BATCH
 
 
-async def periodic_blob_gc_check(*, catch_up_complete: asyncio.Event | None = None) -> None:
+async def periodic_blob_gc_check(*, watcher_registered: asyncio.Event | None = None) -> None:
     """Periodically reclaim one bounded batch of unreferenced, aged-out blobs."""
     from polylogue.paths import archive_root, source_db_path
 
@@ -76,14 +76,14 @@ async def periodic_blob_gc_check(*, catch_up_complete: asyncio.Event | None = No
         "blob_gc",
         once,
         interval_s=BLOB_GC_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         run_first=False,
         on_error="record",
         error_event=None,
     )
 
 
-async def periodic_blob_publication_reconciliation_check(*, catch_up_complete: asyncio.Event | None = None) -> None:
+async def periodic_blob_publication_reconciliation_check(*, watcher_registered: asyncio.Event | None = None) -> None:
     """Periodically clear only terminal publication reservations.
 
     The storage reconciler retains unreferenced reservations whose blob is
@@ -135,7 +135,7 @@ async def periodic_blob_publication_reconciliation_check(*, catch_up_complete: a
         "blob_publication_reconciliation",
         once,
         interval_s=BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS,
-        gate=catch_up_gate(catch_up_complete),
+        gate=watcher_registered_gate(watcher_registered),
         run_first=False,
         on_error="record",
         error_event=None,

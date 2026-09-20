@@ -1,11 +1,11 @@
-"""Tests for polylogue-5xxmc: catch-up gate observability + timeout.
+"""Tests for watcher registration gate observability + timeout.
 
 Covers two production mutations that would each defeat the fix independently:
 
-1. ``_await_catch_up_gate`` (``daemon/cli.py``) is the single helper every
-   ``catch_up_complete``-gated periodic maintenance loop now waits through
-   instead of a bare ``await catch_up_complete.wait()``. Before this bead a
-   watcher that never reached catch-up-complete (crash, hang, or the
+1. ``_await_watcher_registration`` (``daemon/cli.py``) is the single helper every
+   ``watcher_registered``-gated periodic maintenance loop now waits through
+   instead of a bare ``await watcher_registered.wait()``. Before this bead a
+   watcher that never registered (crash, hang, or the
    schema-preflight-blocked startup path) parked every gated loop on that
    ``Event.wait()`` forever, with zero journal signal.
 2. ``run_daemon_services`` now emits a loud ``ERROR`` event and a
@@ -28,18 +28,18 @@ from polylogue.sources.live import WatchSource
 
 
 def test_gate_noop_when_no_gate_given() -> None:
-    """Callers without a watcher (``catch_up_complete=None``) proceed as before.
+    """Callers without a watcher (``watcher_registered=None``) proceed as before.
 
-    Anti-vacuity: removing the ``catch_up_complete is None`` short-circuit in
-    ``_await_catch_up_gate`` makes this raise ``AttributeError`` on
+    Anti-vacuity: removing the ``watcher_registered is None`` short-circuit in
+    ``_await_watcher_registration`` makes this raise ``AttributeError`` on
     ``None.is_set()`` instead of returning.
     """
     from polylogue.daemon import cli as daemon_cli
 
     with capture() as records:
-        asyncio.run(daemon_cli._await_catch_up_gate(None, loop_name="unit-test-loop", timeout_s=0.01))
+        asyncio.run(daemon_cli._await_watcher_registration(None, loop_name="unit-test-loop", timeout_s=0.01))
 
-    assert [r for r in records if r["event"] == "daemon.catch_up_gate.timeout"] == []
+    assert [r for r in records if r["event"] == "daemon.watcher_registered.timeout"] == []
 
 
 def test_gate_returns_immediately_when_event_preset() -> None:
@@ -54,27 +54,27 @@ def test_gate_returns_immediately_when_event_preset() -> None:
     event.set()
 
     with capture() as records:
-        asyncio.run(daemon_cli._await_catch_up_gate(event, loop_name="unit-test-loop", timeout_s=5.0))
+        asyncio.run(daemon_cli._await_watcher_registration(event, loop_name="unit-test-loop", timeout_s=5.0))
 
-    assert [r for r in records if r["event"] == "daemon.catch_up_gate.timeout"] == []
+    assert [r for r in records if r["event"] == "daemon.watcher_registered.timeout"] == []
 
 
 def test_gate_times_out_and_warns_then_proceeds() -> None:
     """A gate that never releases must still let the loop proceed, once, loudly.
 
-    Anti-vacuity: reverting to the old bare ``await catch_up_complete.wait()``
+    Anti-vacuity: reverting to the old bare ``await watcher_registered.wait()``
     (no ``asyncio.wait_for``/timeout) makes this test hang until the pytest
     stall timeout instead of returning; removing the
-    ``daemon.catch_up_gate.timeout`` event makes the assertions below fail.
+    ``daemon.watcher_registered.timeout`` event makes the assertions below fail.
     """
     from polylogue.daemon import cli as daemon_cli
 
     event = asyncio.Event()  # never set
 
     with capture() as records:
-        asyncio.run(daemon_cli._await_catch_up_gate(event, loop_name="unit-test-loop", timeout_s=0.02))
+        asyncio.run(daemon_cli._await_watcher_registration(event, loop_name="unit-test-loop", timeout_s=0.02))
 
-    timeouts = [r for r in records if r["event"] == "daemon.catch_up_gate.timeout"]
+    timeouts = [r for r in records if r["event"] == "daemon.watcher_registered.timeout"]
     assert len(timeouts) == 1
     assert timeouts[0]["level"] == "warning"
     assert timeouts[0]["outcome"] == "unmeasured"
@@ -149,7 +149,6 @@ def test_run_daemon_services_schema_block_logs_parked_loops_and_emits_event() ->
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",

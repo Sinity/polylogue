@@ -215,7 +215,7 @@ async def test_a_blocked_loop_names_its_gate_and_an_idle_one_does_not() -> None:
     clock = _StepClock()
     runner = _runner(clock)
     event = asyncio.Event()
-    gate = PeriodicGate(name="catch_up_complete", event=event, timeout_s=30.0)
+    gate = PeriodicGate(name="watcher_registered", event=event, timeout_s=30.0)
     started = asyncio.Event()
 
     async def work() -> None:
@@ -225,7 +225,7 @@ async def test_a_blocked_loop_names_its_gate_and_an_idle_one_does_not() -> None:
     await asyncio.sleep(0)
     blocked = runner.state("convergence_check")
     assert blocked is not None
-    assert blocked.blocked_on == "catch_up_complete"
+    assert blocked.blocked_on == "watcher_registered"
     assert blocked.blocked_since is not None
     assert gate.waiting == {"convergence_check"}
     assert blocked.runs == 0

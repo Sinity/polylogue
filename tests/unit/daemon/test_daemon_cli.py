@@ -499,7 +499,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     assert terminals[-1]["error_type"] == "OperationalError"
 
 
-def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
+def test_periodic_drive_source_catchup_waits_for_watcher_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Remote Drive work cannot monopolize startup ahead of local sessions."""
@@ -515,7 +515,7 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
         raise asyncio.CancelledError
 
     async def exercise() -> None:
-        catch_up_complete = asyncio.Event()
+        watcher_registered = asyncio.Event()
         monkeypatch.setattr(
             daemon_cli,
             "_run_drive_source_catchup_safely",
@@ -524,12 +524,12 @@ def test_periodic_drive_source_catchup_waits_for_watcher_catch_up(
         task = asyncio.create_task(
             daemon_cli._periodic_drive_source_catchup(
                 session_profile_callback=_unused_session_profile_callback,
-                catch_up_complete=catch_up_complete,
+                watcher_registered=watcher_registered,
             )
         )
         await asyncio.sleep(0)
         assert calls == []
-        catch_up_complete.set()
+        watcher_registered.set()
         with pytest.raises(asyncio.CancelledError):
             await task
 
@@ -634,7 +634,7 @@ def test_periodic_wal_checkpoint_targets_archive_root_tiers(
     ]
 
 
-def test_periodic_convergence_check_waits_for_catch_up_complete(
+def test_periodic_convergence_check_waits_for_watcher_registration(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -661,7 +661,7 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
         return SimpleNamespace()
 
     async def exercise() -> None:
-        catch_up_complete = asyncio.Event()
+        watcher_registered = asyncio.Event()
         monkeypatch.setattr(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 60)
         monkeypatch.setattr(
             daemon_cli,
@@ -674,14 +674,14 @@ def test_periodic_convergence_check_waits_for_catch_up_complete(
             daemon_cli._periodic_convergence_check(
                 (),
                 fts_owner=cast(Any, SimpleNamespace(converge=fake_fts_converge)),
-                catch_up_complete=catch_up_complete,
+                watcher_registered=watcher_registered,
                 session_profile_callback=fake_session_profiles,
             )
         )
         await asyncio.sleep(0)
         assert drains == []
         assert profile_scopes == []
-        catch_up_complete.set()
+        watcher_registered.set()
         await asyncio.wait_for(drained.wait(), timeout=1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -776,7 +776,6 @@ class TestBrowserCaptureReceiverTokenAutoMint:
             asyncio.run(
                 daemon_cli.run_daemon_services(
                     sources=(),
-                    debounce_s=1.0,
                     enable_watch=False,
                     enable_browser_capture=True,
                     browser_capture_host="127.0.0.1",
@@ -1595,7 +1594,6 @@ def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(
             asyncio.run(
                 daemon_cli.run_daemon_services(
                     sources=(),
-                    debounce_s=1.0,
                     enable_watch=False,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -1644,7 +1642,6 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -1700,7 +1697,6 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
             asyncio.wait_for(
                 daemon_cli.run_daemon_services(
                     sources=(WatchSource(name="codex", root=archive_root_path),),
-                    debounce_s=1.0,
                     enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -1771,7 +1767,6 @@ def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -1850,7 +1845,6 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -1912,7 +1906,6 @@ def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, mo
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -1951,7 +1944,6 @@ def test_daemon_startup_creates_missing_archive_root_before_ownership(
             asyncio.run(
                 daemon_cli.run_daemon_services(
                     sources=(),
-                    debounce_s=1.0,
                     enable_watch=False,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -1983,7 +1975,6 @@ def test_run_daemon_services_checks_archive_identity_before_component_startup(tm
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -2303,7 +2294,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -2469,7 +2459,6 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
         task = asyncio.create_task(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="configured", root=source_root),),
-                debounce_s=0.01,
                 enable_watch=True,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -2710,7 +2699,7 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                 patch(
                     "polylogue.daemon.intake_adapters.DaemonIntakeService",
                     lambda dispatcher, **kwargs: DaemonIntakeService(
-                        dispatcher, budget=4096, idle_delay_s=60, **kwargs
+                        dispatcher, budget=4096, idle_delay_s=0.05, **kwargs
                     ),
                 )
             )
@@ -2719,7 +2708,6 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     sources=(
                         WatchSource(name=source_name, root=source_root, suffixes=(".json" if browser else ".jsonl",)),
                     ),
-                    debounce_s=0.01,
                     enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
@@ -2803,7 +2791,6 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
@@ -2868,7 +2855,6 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
@@ -3019,7 +3005,6 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         task = asyncio.create_task(
             daemon_cli.run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
@@ -3161,7 +3146,6 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
@@ -3267,18 +3251,18 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_legacy_scan(
     assert whale_calls == [(owner, discovery)]
 
 
-@pytest.mark.parametrize("catch_up_initially_complete", [False, True])
-def test_periodic_raw_materialization_respects_catch_up_gate(
+@pytest.mark.parametrize("watcher_initially_registered", [False, True])
+def test_periodic_raw_materialization_respects_watcher_registration_gate(
     monkeypatch: pytest.MonkeyPatch,
-    catch_up_initially_complete: bool,
+    watcher_initially_registered: bool,
 ) -> None:
-    """Canonical raw maintenance wakes only after the watcher catch-up gate."""
+    """Canonical raw maintenance wakes only after watcher registration."""
     from polylogue.daemon import cli as daemon_cli
 
     async def exercise() -> bool:
-        catch_up_complete = asyncio.Event()
-        if catch_up_initially_complete:
-            catch_up_complete.set()
+        watcher_registered = asyncio.Event()
+        if watcher_initially_registered:
+            watcher_registered.set()
         raw_intake_wakeup = asyncio.Event()
         whale_calls: list[tuple[object, object]] = []
         owner = object()
@@ -3291,17 +3275,17 @@ def test_periodic_raw_materialization_respects_catch_up_gate(
         monkeypatch.setattr(daemon_cli, "_maybe_run_raw_materialization_whale_pass", fake_whale)
         task = asyncio.create_task(
             daemon_cli._periodic_raw_materialization_convergence(
-                catch_up_complete=catch_up_complete,
+                watcher_registered=watcher_registered,
                 raw_observation_owner=owner,
                 raw_intake_wakeup=raw_intake_wakeup,
                 raw_intake_discovery=discovery,
             )
         )
         await asyncio.sleep(0)
-        if not catch_up_initially_complete:
+        if not watcher_initially_registered:
             assert whale_calls == []
             assert not raw_intake_wakeup.is_set()
-            catch_up_complete.set()
+            watcher_registered.set()
 
             async def stop_after_one_tick(seconds: float) -> None:
                 assert (
@@ -4164,7 +4148,6 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -4257,7 +4240,6 @@ def test_daemon_composition_gives_raw_whale_its_own_discovery_cursor(tmp_path: P
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=True,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
@@ -4305,7 +4287,6 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
         asyncio.run(
             daemon_cli.run_daemon_services(
                 sources=(),
-                debounce_s=1.0,
                 enable_watch=False,
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
