@@ -10,7 +10,7 @@ describes its current source and index state.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -146,7 +146,7 @@ class PreparedIngestCohort:
 
     logical_source_key: str
     blob_root: str
-    request_owned_complete_raw_ids: tuple[str, ...]
+    request_owned_complete_raw_ids: frozenset[str]
     selector_raw_ids: tuple[str, ...]
     member_bindings: tuple[RawDescriptorBinding, ...]
     existing_head: AcceptedHeadBinding
@@ -412,11 +412,17 @@ def publish_raw_census(writer_archive: Any, prepared: PreparedRawCensus) -> Cens
 def _selector_raw_ids(
     archive: Any,
     logical_source_key: str,
-    request_owned_complete_raw_ids: Sequence[str],
+    request_owned_complete_raw_ids: frozenset[str],
 ) -> tuple[str, ...]:
     selected: set[str] = set()
-    for raw_id in request_owned_complete_raw_ids:
-        selected.update(archive.raw_membership_raw_ids(logical_source_key, include_complete_raw_id=raw_id))
+    if request_owned_complete_raw_ids:
+        # One membership read for the whole request, not one per accepted raw.
+        # A request that accepted nothing still selects nothing: it owns no
+        # complete census to classify, so it must not pull established
+        # byte-proven members into a cohort it never proposed.
+        selected.update(
+            archive.raw_membership_raw_ids(logical_source_key, include_complete_raw_ids=request_owned_complete_raw_ids)
+        )
     selected.update(archive.raw_membership_retired_full_revision_siblings(logical_source_key))
     head_raw_id = archive.raw_revision_head_raw_id(logical_source_key)
     if head_raw_id is not None:
@@ -516,13 +522,13 @@ def prepare_ingest_cohort(
     reader_archive: Any,
     *,
     logical_source_key: str,
-    accepted_raw_ids: Sequence[str],
+    accepted_raw_ids: Collection[str],
     parser_fingerprint: str,
     parse_retained_raw: ParseRetainedRaw,
     acquired_at_ms: int,
 ) -> PreparedIngestCohort:
     """Prepare one exact live membership cohort without taking the writer."""
-    request_owned = tuple(dict.fromkeys(accepted_raw_ids))
+    request_owned = frozenset(accepted_raw_ids)
     convertible = tuple(reader_archive.convertible_full_revision_raw_ids(logical_source_key))
     selector = _selector_raw_ids(reader_archive, logical_source_key, request_owned)
     head = _head_binding(reader_archive, logical_source_key)

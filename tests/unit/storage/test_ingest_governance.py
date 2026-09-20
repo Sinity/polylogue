@@ -248,6 +248,72 @@ def test_prepared_cohort_revalidates_head_and_descriptor_before_writer_mutation(
         assert descriptor_result.reason == "raw descriptor, membership, or census changed"
 
 
+def test_membership_that_becomes_eligible_after_preparation_defers_publication(tmp_path: Path) -> None:
+    """Revalidation rereads current membership, and request ownership still bounds it.
+
+    Two facts at once: a request-owned raw whose complete census lands
+    between preparation and publication must be seen by revalidation, and a
+    complete, undecided member of the same logical key that the request never
+    accepted must stay quarantined in both reads.
+
+    Anti-vacuity: answer revalidation from the prepared cohort's own selector
+    snapshot instead of rereading current membership and the first assertion
+    goes green while a stale cohort publishes over evidence that moved; drop
+    request ownership from the membership read and the unaccepted member is
+    pulled into the selector by preparation itself.
+    """
+    bootstrap_archive_root(tmp_path)
+    logical_source_key = "codex-session:prepared-membership"
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first_raw, second_raw, late_raw, unaccepted_raw = _write_raws(archive, 4)
+        sessions = {
+            first_raw: _session("one"),
+            second_raw: _session("one", "two"),
+            late_raw: _session("one", "two", "three"),
+            unaccepted_raw: _session("one", "two", "three", "four"),
+        }
+        parse = _parse_from(sessions)
+        _publish_census(archive, first_raw, parse, at_ms=1)
+        _publish_census(archive, second_raw, parse, at_ms=2)
+        # Complete and undecided on the same logical key, but never accepted by
+        # this request: an unrelated quarantined candidate.
+        _publish_census(archive, unaccepted_raw, parse, at_ms=3)
+
+        accepted = (first_raw, second_raw, late_raw)
+        stale = prepare_ingest_cohort(
+            archive,
+            logical_source_key=logical_source_key,
+            accepted_raw_ids=accepted,
+            parser_fingerprint="prepared-test-parser",
+            parse_retained_raw=parse,
+            acquired_at_ms=4,
+        )
+        # late_raw carries no census yet, so it holds no membership row to select.
+        assert late_raw not in stale.selector_raw_ids
+        assert unaccepted_raw not in stale.selector_raw_ids
+        assert {first_raw, second_raw} <= set(stale.selector_raw_ids)
+
+        # The accepted raw becomes an eligible member after preparation.
+        _publish_census(archive, late_raw, parse, at_ms=5)
+
+        result = publish_ingest_cohort(archive, stale)
+        assert not result.published
+        assert result.reprepare_required
+        assert result.reason == "eligible membership selector changed"
+
+        fresh = prepare_ingest_cohort(
+            archive,
+            logical_source_key=logical_source_key,
+            accepted_raw_ids=accepted,
+            parser_fingerprint="prepared-test-parser",
+            parse_retained_raw=parse,
+            acquired_at_ms=6,
+        )
+        assert late_raw in fresh.selector_raw_ids
+        assert unaccepted_raw not in fresh.selector_raw_ids
+        assert publish_ingest_cohort(archive, fresh).published
+
+
 def test_read_only_compute_defers_attachment_publication_until_writer_revalidation(tmp_path: Path) -> None:
     """Read-only compute carries attachment evidence; only the writer publishes it.
 

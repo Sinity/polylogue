@@ -438,6 +438,9 @@ class IngestExecution:
         if initial.retired_coordinates:
             raise ValueError("accepted raw member was retired; it cannot be readmitted")
         raw_ids = tuple(sorted(set(initial.confirmed_raw_ids + initial.unresolved_raw_ids)))
+        # Built once for the whole request: every per-key cohort preparation
+        # and every publication revalidation reuses this exact ownership set.
+        owned_raw_ids = frozenset(raw_ids)
         uncensused = {raw.raw_id for item in initial.items for raw in item.raws if not raw.parser_complete}
         for raw_id in sorted(uncensused):
             for _attempt in range(3):
@@ -495,7 +498,7 @@ class IngestExecution:
                 return prepare_ingest_cohort(
                     pinned.archive,
                     logical_source_key=cohort_key,
-                    accepted_raw_ids=raw_ids,
+                    accepted_raw_ids=owned_raw_ids,
                     parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                     parse_retained_raw=parse_retained_raw_sessions,
                     acquired_at_ms=cohort_observed_at_ms,

@@ -2601,39 +2601,44 @@ def raw_membership_raw_ids(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
     *,
-    include_complete_raw_id: str | None = None,
+    include_complete_raw_ids: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
-    """Return byte-proven candidates plus the complete raw being classified.
+    """Return byte-proven candidates plus the complete raws being classified.
 
     A newly censused live snapshot has not received a membership decision
     yet, so it is deliberately quarantined until this classification
-    completes. Admit only that caller-owned complete census alongside
+    completes. Admit only those caller-owned complete censuses alongside
     established byte-proven evidence; do not reopen unrelated quarantined
     members from a prior failed or ambiguous replay.
+
+    The caller owns a whole request's accepted raws, so ownership is applied
+    once per logical source key rather than once per accepted raw: a request
+    accepting A raws across K keys costs K reads, not A*K. SQL still bounds
+    the read to this one logical source key -- whose undecided candidates are
+    bounded by the key itself -- and ownership is a Python set test, so no
+    variable-size bind list and no re-encoded accepted set ever reaches
+    SQLite. The read is always current: it is the mutable membership and
+    census evidence that publication revalidation must observe moving.
     """
     rows = (
         store._ensure_source_conn()
         .execute(
             """
-            SELECT m.raw_id
+            SELECT m.raw_id, m.revision_authority
             FROM raw_session_memberships AS m
             LEFT JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
             WHERE m.logical_source_key = ?
               AND (
                 m.revision_authority = 'byte_proven'
-                OR (
-                    m.raw_id = ?
-                    AND c.status = 'complete'
-                    AND m.decision IS NULL
-                )
+                OR (c.status = 'complete' AND m.decision IS NULL)
               )
             ORDER BY m.raw_id
             """,
-            (logical_source_key, include_complete_raw_id),
+            (logical_source_key,),
         )
         .fetchall()
     )
-    return tuple(str(row[0]) for row in rows)
+    return tuple(str(row[0]) for row in rows if row[1] == "byte_proven" or str(row[0]) in include_complete_raw_ids)
 
 
 def raw_revision_acquired_at_ms(store: RawRevisionGovernanceHost, raw_id: str) -> int:
