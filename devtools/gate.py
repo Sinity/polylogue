@@ -175,6 +175,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "root-topology",
+        "Verify no non-kernel module sits at the polylogue/ package root.",
+        "module",
+        ("devtools.verify_root_topology",),
+        label="gate root-topology",
+        in_quick=True,
+    ),
+    Gate(
         "timestamp-doctrine",
         "Verify durable-tier DDL never stores a timestamp column as TEXT.",
         "module",

@@ -11,6 +11,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
+    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
@@ -1463,6 +1464,136 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
     from polylogue.archive.revision_authority import RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
 
     assert "cross-route full revision governance" in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
+
+
+def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundary(
+    tmp_path: Path,
+) -> None:
+    """An unknown governance marker must refuse, not read back as success.
+
+    ``replace_raw_membership_census(..., retire_full_revision_governance=
+    True)`` nulls the raw's ``logical_source_key`` and quarantines it, so the
+    surviving ``raw_membership_census.detail`` marker is the ONLY thing that
+    still tells the 52l2 guard this identity has known ambiguous evidence. A
+    marker outside ``RETIRED_FULL_REVISION_GOVERNANCE_DETAILS`` is not a
+    harmless label: the guard's ``detail IN (...)`` query simply misses it and
+    a later-arriving sibling is accepted as an unconditional singleton
+    byte-proven baseline (polylogue-sze30 AC2).
+
+    Anti-vacuity: the second half of this test rewrites an accepted
+    retirement's detail to that same unrecognized marker and shows the third
+    raw IS then promoted alone -- so the refusal in the first half is
+    protecting a real outcome, not a spelling. Delete the write-boundary
+    check and the first half stops raising.
+    """
+    bootstrap_archive_root(tmp_path)
+
+    def parsed_solo(native_id: str, *texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id=native_id,
+            messages=[
+                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(texts)
+            ],
+        )
+
+    unrecognized = "cohort resolved by upkeep pass"
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raws = []
+        for label, payload in (("a", b"aaa-left"), ("b", b"bbb-right")):
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
+                ),
+            )
+            raws.append(raw_id)
+        raw_a, raw_b = raws
+
+        with pytest.raises(ValueError, match="recognized governance marker"):
+            archive.replace_raw_membership_census(
+                raw_a,
+                [parsed_solo("s1", "base", "left")],
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                censused_at_ms=0,
+                detail=unrecognized,
+                retire_full_revision_governance=True,
+            )
+
+        # The refusal happens before any mutation: the raw keeps its identity
+        # and is not silently quarantined by a half-applied retirement.
+        row = (
+            archive._ensure_source_conn()
+            .execute(
+                "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
+                (raw_a,),
+            )
+            .fetchone()
+        )
+        assert str(row[0]) == "chatgpt-export:s1"
+
+        # A census that leaves no membership row has no logical identity to be
+        # ambiguous about, so its detail stays free explanatory prose.
+        archive.replace_raw_membership_census(
+            raw_a,
+            [],
+            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            censused_at_ms=0,
+            detail=unrecognized,
+            retire_full_revision_governance=True,
+        )
+
+    # Now the hazard the refusal prevents, reached by rewriting an accepted
+    # retirement's marker to the unrecognized one.
+    bootstrap_archive_root(tmp_path / "hazard")
+    with ArchiveStore.open_existing(tmp_path / "hazard", read_only=False) as archive:
+        retired = []
+        for label, payload, tail in (("a", b"aaa-left", "left"), ("b", b"bbb-right", "right")):
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
+                ),
+            )
+            archive.replace_raw_membership_census(
+                raw_id,
+                [parsed_solo("s1", "base", tail)],
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                censused_at_ms=0,
+                detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                retire_full_revision_governance=True,
+            )
+            retired.append(raw_id)
+
+        raw_c = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+        )
+        archive.bind_raw_revision(
+            raw_c,
+            RawRevisionEnvelope(
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        # With the recognized marker the isolated third raw stays refused.
+        assert archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1").accepted_raw_ids == ()
+
+        conn = archive._ensure_source_conn()
+        with conn:
+            conn.executemany(
+                "UPDATE raw_membership_census SET detail = ? WHERE raw_id = ?",
+                [(unrecognized, raw_id) for raw_id in retired],
+            )
+        promoted = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
+
+    assert promoted.accepted_raw_ids == (raw_c,)
 
 
 def test_same_source_path_full_siblings_under_different_keys_are_not_independently_accepted(

@@ -152,3 +152,22 @@ Archive verification is composed from domain-owned declarations. Each owner supp
   provider evidence naming the delivery — never tool name plus temporal
   proximity. `ops.db` MCP call logs prove that a preparation tool ran; they are
   disposable and cannot prove delivery or successor use.
+
+### CI gate claims: one registry, no second declaration (polylogue-vijnq)
+- **Chosen**: the gate registry in `devtools/gate.py` is the only declaration
+  of what CI enforces, and `.github/workflows/verify.yml` runs
+  `devtools verify` as one step that enumerates it at run time. No file
+  restates a per-check `ci_gate` claim, so a claim and the real workflow step
+  cannot diverge — there is only one.
+- **Rejected**: restoring `check_test_quality_ci_claims`, the one genuine
+  check lost with the closure matrix in #3950. It reconciled a *second*
+  declaration (`ci_gate: true` in `docs/plans/test-closure-matrix.yaml`)
+  against the workflow. #3950 deleted that declaration, so the checker has
+  nothing left to reconcile; giving it an input again means reintroducing the
+  duplicate authority whose drift it was written to catch. This is a
+  deliberate accepted tradeoff of #3950, not an oversight.
+- **Constraint**: a future per-check claim outside `devtools/gate.py` re-opens
+  the divergence this decision closes. Declare it in the registry, or
+  reconcile it against the registry — not against workflow YAML, which
+  `devtools verify` classifies as metadata that selects no test
+  (`tests/unit/devtools/test_verify.py::test_metadata_only_changes_select_no_pytest_step`).

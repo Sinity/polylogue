@@ -39,6 +39,7 @@ from polylogue.core.enums import (
     ToolResultUnknownReason,
     TopologyEdgeStatus,
     WebConstructType,
+    sql_string_literal,
 )
 from polylogue.core.errors import DatabaseError
 from polylogue.core.json import loads
@@ -1199,6 +1200,13 @@ SESSION_AGENT_POLICIES_SPEC = _make_table_spec(
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
 )
 
+#: The ``session_links.inheritance`` vocabulary. Declared once here because
+#: both the column's membership CHECK and the branch-anchor table constraint
+#: below render from it; a second spelling is how the two drift apart.
+LINEAGE_PREFIX_SHARING = "prefix-sharing"
+LINEAGE_SPAWNED_FRESH = "spawned-fresh"
+LINEAGE_INHERITANCE_VALUES: tuple[str, ...] = (LINEAGE_PREFIX_SHARING, LINEAGE_SPAWNED_FRESH)
+
 SESSION_LINKS_SPEC = _make_table_spec(
     "session_links",
     (
@@ -1241,7 +1249,7 @@ SESSION_LINKS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "inheritance",
-            f"""inheritance             TEXT CHECK({literal_check("inheritance", "prefix-sharing", "spawned-fresh")} OR inheritance IS NULL)""",
+            f"""inheritance             TEXT CHECK({literal_check("inheritance", *LINEAGE_INHERITANCE_VALUES)} OR inheritance IS NULL)""",
         ),
         _raw_column(
             "status",
@@ -1277,7 +1285,24 @@ SESSION_LINKS_SPEC = _make_table_spec(
         _raw_column("observed_at_ms", """observed_at_ms          INTEGER NOT NULL"""),
         _raw_column("resolved_at_ms", """resolved_at_ms          INTEGER"""),
     ),
-    table_constraints=("""PRIMARY KEY(src_session_id, dst_origin, dst_native_id, link_type)""",),
+    table_constraints=(
+        """PRIMARY KEY(src_session_id, dst_origin, dst_native_id, link_type)""",
+        # polylogue-pkst: only a prefix-sharing child may carry a branch
+        # anchor. A ``spawned-fresh`` child references its parent without
+        # inheriting a prefix, and an undecided edge must not invent a
+        # divergence point it has no evidence for -- either combination is a
+        # contradiction a reader would compose from.
+        #
+        # Deliberately one-directional: a prefix-sharing edge with a NULL
+        # anchor stays legal, because ``_bind_asserted_branch_point``
+        # (archive_tiers/write.py) leaves the id NULL until the parent's
+        # message is actually in the archive. Requiring the anchor would
+        # reject a captured claim for a parent that has not arrived yet.
+        f"""CHECK(
+            inheritance IS {sql_string_literal(LINEAGE_PREFIX_SHARING)}
+            OR (branch_point_message_id IS NULL AND branch_point_content_address IS NULL)
+        )""",
+    ),
 )
 
 SESSION_WORKING_DIRS_SPEC = _make_table_spec(

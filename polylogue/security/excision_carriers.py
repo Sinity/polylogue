@@ -64,8 +64,10 @@ class CarrierReach(StrEnum):
     #: member is still live, and the receipt names it when it does.
     CONTAINER = "container"
     #: A retired schema object that only a migrated historical source tier
-    #: still carries. Fresh generations omit it; it holds derived bookkeeping
-    #: receipts, not acquired payload.
+    #: still carries. Fresh generations omit it, so it never appears in a
+    #: fresh tier's audit; it holds derived bookkeeping receipts or telemetry,
+    #: not acquired payload. Where a migrated tier does carry it,
+    #: ``apply_session_excision`` still deletes its rows by name.
     RETIRED = "retired"
 
 
@@ -100,8 +102,8 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
     ),
     SessionCarrier(
         "otlp_spans",
-        CarrierReach.EXCISED,
-        "span attributes/events are session-addressable telemetry with no raw row",
+        CarrierReach.RETIRED,
+        "retired inbound span storage (polylogue-enrpa); excised by name where a migrated tier still carries it",
     ),
     SessionCarrier(
         "source_items",

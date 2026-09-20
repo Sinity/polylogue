@@ -311,9 +311,10 @@ table with no declared reach makes `resolve_session_excision_target` raise
 `UnclassifiedSessionCarrierError` naming it, so a newly added evidence class
 is either covered or loudly refused — never silently exempt.
 
-**Telemetry spans.** `otlp_spans` carries the same `(origin,
-session_native_id)` key as hook evidence and no raw row; its
-attributes/events are deleted with the session.
+**Telemetry spans.** `otlp_spans` is `retired`: fresh source generations
+omit it entirely. Where a migrated historical tier still carries it, it holds
+the same `(origin, session_native_id)` key as hook evidence and no raw row,
+so the apply deletes its attributes/events with the session by name.
 
 **Container payloads.** One `source_items` row can be a container export
 covering many sessions, and it is a blob-liveness owner, so deleting the
