@@ -206,6 +206,25 @@ def test_observed_structure_collapses_cross_sample_key_cardinality() -> None:
     assert "ordinary-key-" not in str(forward)
 
 
+def test_observed_structure_merge_preserves_static_fields_with_dynamic_map() -> None:
+    """A dynamic map must not erase static fields when merged cardinality is wide."""
+    first_sample = {
+        **{f"ordinary-key-{index}": {"value": index} for index in range(128)},
+        "abcdefabcdefabcdefabcdef": {"value": "dynamic"},
+    }
+    second_sample = {f"ordinary-key-{index}": {"value": index} for index in range(128, 256)}
+
+    first_schema = observed_structure_schema(first_sample)
+    second_schema = observed_structure_schema(second_sample)
+    merged = merge_observed_structure_schemas([first_schema, second_schema])
+
+    expected_names = {f"ordinary-key-{index}" for index in range(256)}
+    assert set(schema_properties(merged)) == expected_names
+    assert merged.get("x-polylogue-high-cardinality-keys") is True
+    assert merged.get("x-polylogue-dynamic-keys") is True
+    assert "additionalProperties" in merged
+
+
 def _named_property_paths(schema: object, *, path: str = "$") -> set[str]:
     """Every property name reachable in a schema, including composite branches."""
     node = schema_node(schema)
