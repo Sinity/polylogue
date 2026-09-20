@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from itertools import permutations
+from typing import Literal
 
 import pytest
 
@@ -39,6 +40,26 @@ def _ordered_message_revision(raw_id: str, *id_text_pairs: tuple[str, str]) -> M
         ],
     )
     return MembershipRevision(raw_id, session_revision_projection(session))
+
+
+def _browser_revision(
+    raw_id: str,
+    text: str,
+    provider_updated_at: str | None,
+    fidelity: Literal["dom", "native"],
+    *,
+    provider_message_ids: frozenset[str] = frozenset({"m"}),
+) -> MembershipRevision:
+    """Build a browser-capture revision with explicit authority metadata."""
+    revision = _revision(raw_id, text)
+    return MembershipRevision(
+        revision.raw_id,
+        revision.projection,
+        provider_updated_at=provider_updated_at,
+        observed_at_ms=1,
+        browser_snapshot_fidelity=fidelity,
+        provider_message_ids=provider_message_ids,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -991,6 +1012,47 @@ def test_browser_native_snapshot_accepts_later_provider_revision_when_messages_r
 
     assert result.accepted_raw_ids == ("raw-old", "raw-new")
     assert result.ambiguous_raw_ids == ()
+
+
+def test_stale_native_snapshot_cannot_replace_newer_dom_at_equal_frontier() -> None:
+    """Changed native content needs a newer provider time to outrank DOM."""
+    dom = _browser_revision("raw-dom", "newer DOM", "2026-01-02T00:00:00Z", "dom")
+    native = _browser_revision("raw-native", "stale native", "2026-01-01T00:00:00Z", "native")
+
+    result = classify_membership_revisions([native, dom])
+
+    assert result.accepted_raw_ids == ("raw-dom",)
+    assert result.equivalent_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-native",)
+
+
+def test_newer_native_snapshot_can_supersede_dom_with_monotone_growth() -> None:
+    dom = _browser_revision("raw-dom", "prompt", "2026-01-01T00:00:00Z", "dom")
+    native_revision = _revision("raw-native", "prompt", "answer")
+    native = MembershipRevision(
+        native_revision.raw_id,
+        native_revision.projection,
+        provider_updated_at="2026-01-02T00:00:00Z",
+        observed_at_ms=2,
+        browser_snapshot_fidelity="native",
+        provider_message_ids=frozenset({"m", "answer"}),
+    )
+
+    result = classify_membership_revisions([native, dom])
+
+    assert result.accepted_raw_ids == ("raw-dom", "raw-native")
+    assert result.equivalent_raw_ids == ()
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_unknown_native_timestamp_does_not_authorize_dom_replacement() -> None:
+    dom = _browser_revision("raw-dom", "newer DOM", "2026-01-02T00:00:00Z", "dom")
+    native = _browser_revision("raw-native", "unknown-time native", None, "native")
+
+    result = classify_membership_revisions([native, dom])
+
+    assert result.accepted_raw_ids == ("raw-dom",)
+    assert result.ambiguous_raw_ids == ("raw-native",)
 
 
 def test_browser_native_snapshot_refuses_later_revision_that_loses_message_identity() -> None:

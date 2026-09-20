@@ -457,6 +457,14 @@ def classify_membership_revisions(
             tuple(sorted(equivalents)),
             (),
         )
+    dom_authority = _dom_authority_when_native_is_unordered(representatives)
+    if dom_authority is not None:
+        accepted, ambiguous = dom_authority
+        return MembershipClassification(
+            (accepted.raw_id,),
+            tuple(sorted(equivalents)),
+            tuple(sorted(item.raw_id for item in ambiguous)),
+        )
     direct_export = _direct_export_precedence(representatives)
     if direct_export is not None:
         accepted, browser_capture_raw_ids = direct_export
@@ -596,6 +604,33 @@ def _direct_export_precedence(
     return direct[0], tuple(item.raw_id for item in browser_sourced)
 
 
+def _dom_authority_when_native_is_unordered(
+    revisions: list[MembershipRevision],
+) -> tuple[MembershipRevision, tuple[MembershipRevision, ...]] | None:
+    """Keep an equal-frontier DOM head when native evidence is not time-ordered.
+
+    A browser-native capture is a fidelity upgrade only when its provider
+    timestamp proves that it follows the DOM capture. Without that proof, a
+    changed native snapshot must remain retained evidence rather than winning
+    the generic frontier fallback (whose stable raw-id tie-break is unrelated
+    to source authority). Mixed-frontier conflicts continue through the
+    existing fallback, preserving its established fork rules.
+    """
+    dom = [item for item in revisions if item.browser_snapshot_fidelity == "dom"]
+    native = [item for item in revisions if item.browser_snapshot_fidelity == "native"]
+    if len(dom) != 1 or not native:
+        return None
+    dom_revision = dom[0]
+    dom_frontier = _frontier(dom_revision.projection)
+    if any(_frontier(item.projection) != dom_frontier for item in native):
+        return None
+    # A provably newer native snapshot is handled by the ordered-browser path;
+    # this guard is only for stale or incomparable native evidence.
+    if any(_browser_snapshot_dominates(dom_revision, item) for item in native):
+        return None
+    return dom_revision, tuple(native)
+
+
 def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevision) -> bool:
     older_time = parse_timestamp(older.provider_updated_at)
     newer_time = parse_timestamp(newer.provider_updated_at)
@@ -604,7 +639,7 @@ def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevi
     if older.browser_snapshot_fidelity == "dom" and newer.browser_snapshot_fidelity == "native":
         older_frontier = _frontier(older.projection)
         newer_frontier = _frontier(newer.projection)
-        return all(
+        return newer_time.timestamp() > older_time.timestamp() and all(
             newer_count >= older_count for older_count, newer_count in zip(older_frontier, newer_frontier, strict=True)
         )
     if older.browser_snapshot_fidelity != newer.browser_snapshot_fidelity:
