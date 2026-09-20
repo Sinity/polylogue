@@ -178,10 +178,10 @@ def _non_negative_int_field(payload: JSONDocument, *keys: str) -> int | None:
     return None
 
 
-def _usage_fields(chunk_obj: JSONDocument, *, role: Role) -> dict[str, int]:
+def _usage_fields(chunk_obj: JSONDocument, *, role: Role) -> dict[str, int | None]:
     token_count = _non_negative_int_field(chunk_obj, "tokenCount", "token_count")
     if token_count is None:
-        return {"input_tokens": 0, "output_tokens": 0}
+        return {"input_tokens": None, "output_tokens": None}
     if role is Role.USER:
         return {"input_tokens": token_count, "output_tokens": 0}
     return {"input_tokens": 0, "output_tokens": token_count}
