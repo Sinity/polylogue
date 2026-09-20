@@ -93,6 +93,79 @@ def test_user_tier_initialization_is_idempotent(tmp_path: Path) -> None:
     assert "watched_query_baselines_result_set_query_match_update" in triggers
 
 
+def test_durable_user_tier_carries_every_assertion_status_forward(tmp_path: Path) -> None:
+    """Re-opening a populated ``user.db`` preserves every row and its status.
+
+    ``user.db`` is durable and irreplaceable, and the assertion table is never
+    rebuilt: the fresh floor re-runs ``CREATE TABLE IF NOT EXISTS`` over the
+    operator's existing database. This pins the carry-forward the table
+    depends on (polylogue-lbk1): no status is coerced, no row is dropped, and
+    the indexes, epoch triggers and readers still work afterwards.
+
+    Anti-vacuity: replace the declaration with a table-rebuild migration that
+    does not copy every row forward -- the shape this bead originally
+    proposed -- and the recovered status map loses rows; coerce an unwritten
+    or terminal status to ``active`` on the way back in and the map changes
+    value. Seeding every ``AssertionStatus`` member keeps the comparison from
+    passing on a subset.
+    """
+    db_path = tmp_path / "user.db"
+    statuses = tuple(AssertionStatus)
+    assert len(statuses) == 8
+
+    conn = connect_user_tier(db_path)
+    try:
+        for index, status in enumerate(statuses):
+            upsert_assertion(
+                conn,
+                assertion_id=f"a-{status.value}",
+                target_ref="session:s-carry",
+                kind=AssertionKind.NOTE,
+                body_text=f"carried {status.value}",
+                author_ref="user:operator",
+                author_kind="user",
+                status=status,
+                now_ms=1_700_000_000_000 + index,
+            )
+        # Assertion writers hand the transaction back to their caller's
+        # unit-of-work boundary (``_immediate_user_write_transaction``).
+        conn.commit()
+        before = {row.assertion_id: row.status for row in list_assertions_for_export(conn)}
+        epoch_before = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
+        indexes_before = {name for name in _sqlite_objects(conn, "index") if name.startswith("idx_assertions_")}
+        triggers_before = {name for name in _sqlite_objects(conn, "trigger") if "assertions" in name}
+    finally:
+        conn.close()
+
+    assert set(before.values()) == set(statuses)
+    assert indexes_before
+    assert triggers_before
+
+    # The fresh floor runs the user-tier DDL again over the durable database.
+    conn = connect_user_tier(db_path)
+    try:
+        after = {row.assertion_id: row.status for row in list_assertions_for_export(conn)}
+        assert {name for name in _sqlite_objects(conn, "index") if name.startswith("idx_assertions_")} == indexes_before
+        assert {name for name in _sqlite_objects(conn, "trigger") if "assertions" in name} == triggers_before
+
+        # Every reader still resolves each carried row by its own id.
+        for assertion_id, status in before.items():
+            envelope = read_assertion_envelope(conn, assertion_id)
+            assert envelope is not None
+            assert envelope.status == status
+        assert {row.assertion_id for row in list_assertions_for_target(conn, "session:s-carry")} == set(before)
+
+        # The epoch triggers still fire after re-initialization.
+        mark_assertion_status(conn, "a-deferred", status=AssertionStatus.REJECTED, now_ms=1_700_000_100_000)
+        conn.commit()
+        epoch_after = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
+        assert epoch_after > epoch_before
+    finally:
+        conn.close()
+
+    assert after == before
+
+
 def _insert_index_session(conn: sqlite3.Connection, native_id: str) -> str:
     conn.execute(
         "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
