@@ -10,6 +10,8 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal
 
+from polylogue.core.errors import PolylogueError
+
 AttachmentDisposition = Literal[
     "pending",
     "acquired",
@@ -22,6 +24,60 @@ AttachmentDisposition = Literal[
     "partial",
     "interrupted",
 ]
+
+
+#: Dispositions that state a settled outcome for a reference. ``pending`` is
+#: the only non-terminal one, so ``pending`` -> terminal is the single allowed
+#: progress transition (polylogue-8v4rm).
+TERMINAL_DISPOSITIONS: frozenset[str] = frozenset(
+    {
+        "acquired",
+        "duplicate",
+        "expired",
+        "access_denied",
+        "source_missing",
+        "malformed",
+        "policy_rejected",
+        "partial",
+        "interrupted",
+    }
+)
+
+#: Declared facts compared when the same reference is recorded twice. A replay
+#: that agrees on all of them is idempotent; one that disagrees is a conflict.
+_COMPARED_FIELDS: tuple[str, ...] = (
+    "origin",
+    "source_class",
+    "reachability",
+    "reference_count",
+    "payload_identity",
+    "blob_hash",
+    "byte_count",
+    "disposition",
+    "reason",
+    "evidence_ref",
+)
+
+
+class SourceAttachmentConflictError(PolylogueError):
+    """A second recording contradicts a settled attachment reference.
+
+    ``ON CONFLICT DO NOTHING`` used to swallow this: two different terminal
+    facts for one (generation, reference) silently kept whichever arrived
+    first, with no record that the archive had been told two incompatible
+    things (polylogue-8v4rm). Identical replay is still a no-op and
+    ``pending`` -> terminal is still allowed progress; anything else raises.
+    """
+
+    def __init__(self, *, reference_id: str, field: str, stored: object, offered: object) -> None:
+        super().__init__(
+            f"source attachment {reference_id!r} already recorded a different {field}: "
+            f"stored {stored!r}, offered {offered!r}"
+        )
+        self.reference_id = reference_id
+        self.field = field
+        self.stored = stored
+        self.offered = offered
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,33 +130,116 @@ def record_source_attachments(
                 raise ValueError("acquired attachment byte count does not match its bytes")
         elif not attachment.reason:
             raise ValueError("unavailable attachment requires an evidence-backed reason")
+        offered = {
+            "origin": attachment.origin,
+            "source_class": attachment.source_class,
+            "reachability": "current" if attachment.disposition == "acquired" else "unavailable",
+            "reference_count": attachment.reference_count,
+            "payload_identity": attachment.payload_identity,
+            "blob_hash": attachment.blob_hash,
+            "byte_count": attachment.byte_count,
+            "disposition": attachment.disposition,
+            "reason": attachment.reason,
+            "evidence_ref": attachment.evidence_ref,
+        }
+        # Select positionally and zip: the caller's ``row_factory`` is not
+        # this module's to assume, and a plain tuple row has no name lookup.
+        stored_row = conn.execute(
+            f"SELECT {', '.join(_COMPARED_FIELDS)} FROM source_attachments "
+            "WHERE source_generation_id = ? AND reference_id = ?",
+            (source_generation_id, attachment.reference_id),
+        ).fetchone()
+        if stored_row is not None:
+            stored = {
+                field: bytes(value) if isinstance(value, memoryview) else value
+                for field, value in zip(_COMPARED_FIELDS, tuple(stored_row), strict=True)
+            }
+            _apply_replay(
+                conn,
+                source_generation_id=source_generation_id,
+                reference_id=attachment.reference_id,
+                stored=stored,
+                offered=offered,
+                observed_at_ms=observed_at_ms,
+            )
+            continue
         conn.execute(
             """INSERT INTO source_attachments(
                 source_generation_id, reference_id, origin, source_class,
                 reachability, reference_count, payload_identity, blob_hash,
                 byte_count, disposition, reason, evidence_ref,
                 observed_at_ms, updated_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(source_generation_id, reference_id) DO NOTHING""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 source_generation_id,
                 attachment.reference_id,
-                attachment.origin,
-                attachment.source_class,
-                "current" if attachment.disposition == "acquired" else "unavailable",
-                attachment.reference_count,
-                attachment.payload_identity,
-                attachment.blob_hash,
-                attachment.byte_count,
-                attachment.disposition,
-                attachment.reason,
-                attachment.evidence_ref,
+                offered["origin"],
+                offered["source_class"],
+                offered["reachability"],
+                offered["reference_count"],
+                offered["payload_identity"],
+                offered["blob_hash"],
+                offered["byte_count"],
+                offered["disposition"],
+                offered["reason"],
+                offered["evidence_ref"],
                 observed_at_ms,
                 observed_at_ms,
             ),
         )
     if commit:
         conn.commit()
+
+
+def _apply_replay(
+    conn: sqlite3.Connection,
+    *,
+    source_generation_id: str,
+    reference_id: str,
+    stored: dict[str, object],
+    offered: dict[str, object],
+    observed_at_ms: int,
+) -> None:
+    """Resolve a second recording of one reference: no-op, progress, or conflict."""
+
+    differing = [field for field in _COMPARED_FIELDS if stored[field] != offered[field]]
+    if not differing:
+        return
+    stored_disposition = str(stored["disposition"])
+    offered_disposition = str(offered["disposition"])
+    progressing = stored_disposition == "pending" and offered_disposition in TERMINAL_DISPOSITIONS
+    if not progressing:
+        field = differing[0]
+        raise SourceAttachmentConflictError(
+            reference_id=reference_id,
+            field=field,
+            stored=stored[field],
+            offered=offered[field],
+        )
+    # A pending row carries no settled payload evidence, so the terminal fact
+    # replaces every declared column atomically with the rest of the batch.
+    conn.execute(
+        """UPDATE source_attachments
+           SET origin = ?, source_class = ?, reachability = ?, reference_count = ?,
+               payload_identity = ?, blob_hash = ?, byte_count = ?, disposition = ?,
+               reason = ?, evidence_ref = ?, updated_at_ms = ?
+           WHERE source_generation_id = ? AND reference_id = ?""",
+        (
+            offered["origin"],
+            offered["source_class"],
+            offered["reachability"],
+            offered["reference_count"],
+            offered["payload_identity"],
+            offered["blob_hash"],
+            offered["byte_count"],
+            offered["disposition"],
+            offered["reason"],
+            offered["evidence_ref"],
+            observed_at_ms,
+            source_generation_id,
+            reference_id,
+        ),
+    )
 
 
 def source_attachment_census(conn: sqlite3.Connection, source_generation_id: str) -> dict[str, object]:
@@ -138,4 +277,11 @@ def source_attachment_census(conn: sqlite3.Connection, source_generation_id: str
     }
 
 
-__all__ = ["AttachmentDisposition", "SourceAttachment", "record_source_attachments", "source_attachment_census"]
+__all__ = [
+    "TERMINAL_DISPOSITIONS",
+    "AttachmentDisposition",
+    "SourceAttachment",
+    "SourceAttachmentConflictError",
+    "record_source_attachments",
+    "source_attachment_census",
+]
