@@ -53,6 +53,14 @@ RETIRED_SOURCE_SCHEMA_OBJECTS: Final[frozenset[str]] = frozenset(
         "index:idx_raw_quarantine_group_dedup_receipts_representative",
         "table:raw_unknown_export_reclassification_receipts",
         "index:idx_raw_unknown_export_reclassification_receipts_reclassified_at",
+        # Inbound OTLP span storage (polylogue-enrpa). No production writer or
+        # reader ever existed for it: the outbound projection
+        # (``telemetry/otel_projection.py``) reads canonical query rows, and no
+        # inbound receiver route is reachable. Session excision still deletes
+        # the rows a migrated historical tier carries.
+        "table:otlp_spans",
+        "index:idx_otlp_spans_trace",
+        "index:idx_otlp_spans_session",
     }
 )
 
@@ -672,28 +680,6 @@ CREATE TABLE IF NOT EXISTS hook_event_carriers (
 
 CREATE INDEX IF NOT EXISTS idx_hook_event_carriers_event
 ON hook_event_carriers(hook_event_id, blob_hash);
-
-CREATE TABLE IF NOT EXISTS otlp_spans (
-    span_id           TEXT PRIMARY KEY,
-    trace_id          TEXT NOT NULL,
-    parent_span_id    TEXT,
-    origin            TEXT,
-    session_native_id TEXT,
-    name              TEXT NOT NULL,
-    kind              TEXT,
-    attributes_json   TEXT NOT NULL DEFAULT '{{}}',
-    events_json       TEXT NOT NULL DEFAULT '[]',
-    started_at_ms     INTEGER,
-    ended_at_ms       INTEGER,
-    received_at_ms    INTEGER NOT NULL
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_otlp_spans_trace
-ON otlp_spans(trace_id, started_at_ms DESC);
-
-CREATE INDEX IF NOT EXISTS idx_otlp_spans_session
-ON otlp_spans(origin, session_native_id, started_at_ms DESC)
-WHERE session_native_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS history_sidecars (
     sidecar_id      TEXT PRIMARY KEY,
