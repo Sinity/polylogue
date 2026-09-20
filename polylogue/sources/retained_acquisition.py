@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +46,10 @@ class RetainedRawRecord:
     raw_id: str | None = None
     entry_ordinal: int | None = None
     split_index: int | None = None
+    member_disposition: str | None = None
+    member_name: str | None = None
+    diagnostic: str | None = None
+    member_count: int | None = None
 
 
 def iter_retained_source_records(
@@ -54,6 +58,7 @@ def iter_retained_source_records(
     blob_hash: str,
     blob_size: int,
     blob_store: BlobStore,
+    on_member_disposition: Callable[[int, str, str, str], None] | None = None,
 ) -> Iterator[RetainedRawRecord]:
     """Use canonical bounded decoders over the exact retained physical blob.
 
@@ -76,7 +81,7 @@ def iter_retained_source_records(
                 retained_blob=ArtifactIdentity(blob_hash, blob_size),
             )
         )
-        yield RetainedRawRecord('["physical-file-v1",0]', data)
+        yield RetainedRawRecord('["physical-file-v1",0]', data, member_count=1)
         return
 
     # Both channels are driven by attacker-controlled central-directory
@@ -84,6 +89,7 @@ def iter_retained_source_records(
     # accumulating one string per member (and then joining them all).
     rejected = BoundedMemberReport()
     unselected = BoundedMemberReport()
+    dispositions: list[tuple[int, str, str, str]] = []
     with blob_store.open(blob_hash) as physical, zipfile.ZipFile(physical) as archive:
         entries = archive.infolist()
         ordinals = {id(entry): ordinal for ordinal, entry in enumerate(entries)}
@@ -108,12 +114,21 @@ def iter_retained_source_records(
         # tool-result sidecar from being dropped while enumeration still reports
         # itself complete (polylogue-ojxpn).
         allowed_path = is_declared_artifact_path if provider is Provider.UNKNOWN else None
+
+        def record_rejected(entry: zipfile.ZipInfo, reason: str) -> None:
+            rejected.record(reason)
+            dispositions.append((ordinals[id(entry)], entry.filename, "refused", reason))
+
+        def record_unselected(entry: zipfile.ZipInfo, reason: str) -> None:
+            unselected.record(f"{entry.filename}: {reason}")
+            dispositions.append((ordinals[id(entry)], entry.filename, "unselected", reason))
+
         validator = ZipEntryValidator(provider, cursor_state=None, zip_path=logical_path)
         for entry in validator.filter_entries(
             entries,
             allowed_path=allowed_path,
-            on_rejected=lambda _entry, reason: rejected.record(reason),
-            on_unselected=lambda entry, reason: unselected.record(f"{entry.filename}: {reason}"),
+            on_rejected=record_rejected,
+            on_unselected=record_unselected,
         ):
             ordinal = ordinals[id(entry)]
             # Under a residual UNKNOWN the container hint cannot name the family
@@ -143,7 +158,23 @@ def iter_retained_source_records(
                     ),
                     ordinal,
                     split,
+                    member_count=len(entries),
                 )
+    for ordinal, member_name, disposition, diagnostic in dispositions:
+        if on_member_disposition is None:
+            continue
+        record = RetainedRawRecord(
+            coordinate=json.dumps(["zip-member-v1", ordinal], separators=(",", ":")),
+            data=None,  # type: ignore[arg-type]  # disposition records carry no raw payload
+            entry_ordinal=ordinal,
+            member_disposition=disposition,
+            member_name=member_name,
+            diagnostic=diagnostic,
+            member_count=len(entries),
+        )
+        if on_member_disposition is not None:
+            on_member_disposition(ordinal, member_name, disposition, diagnostic)
+        yield record
     if rejected:
         emit(
             "sources.retained_zip.members_refused",

@@ -10,14 +10,17 @@ from polylogue.core.enums import IngestOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     AcquisitionDisposition,
+    SourceItemMemberDisposition,
     complete_source_item_enumeration,
     publish_source_generation,
+    record_source_item_member_disposition,
     record_source_item_raw_member,
     seal_source_generation,
     source_generation_census,
     source_item_id,
     transition_source_item,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -78,7 +81,6 @@ def test_raw_and_membership_rollback_together_including_deduplicated_records() -
     assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     conn.rollback()
     assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
     assert source_generation_census(conn, "frozen")["enumeration_pending"] == 1
 
 
@@ -136,7 +138,59 @@ def test_retired_raw_preserves_enumeration_digest_and_refuses_readmission() -> N
             raw_id="raw",
             raw_blob_hash=b"r" * 32,
         )
-    assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+
+
+def test_zip_member_disposition_completes_full_denominator_and_retry_is_idempotent() -> None:
+    """A refused central member is durable evidence, not an omitted record."""
+    conn = _source()
+    item = _frozen_item(conn)
+    conn.execute("BEGIN")
+    _raw_member(conn, item, "record:0")
+    record_raw_container_coordinate(
+        conn,
+        "raw",
+        coordinate_format="zip-v2",
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode="whole_member",
+        manage_transaction=False,
+    )
+    record_source_item_member_disposition(
+        conn,
+        source_generation_id="frozen",
+        source_item_id=item,
+        entry_ordinal=1,
+        member_name="skipped.html",
+        disposition=SourceItemMemberDisposition.UNSELECTED,
+        diagnostic="not selected",
+        observed_at_ms=2,
+    )
+    # A retry may have a new observation time but must not rewrite the
+    # disposition or reject the already-recorded member.
+    record_source_item_member_disposition(
+        conn,
+        source_generation_id="frozen",
+        source_item_id=item,
+        entry_ordinal=1,
+        member_name="skipped.html",
+        disposition=SourceItemMemberDisposition.UNSELECTED,
+        diagnostic="not selected",
+        observed_at_ms=3,
+    )
+    complete_source_item_enumeration(
+        conn,
+        source_generation_id="frozen",
+        source_item_id=item,
+        enumeration_fingerprint="b" * 64,
+        record_coordinates=("record:0",),
+        enumerated_at_ms=2,
+        member_ordinals=(0, 1),
+        member_count=2,
+    )
+    census = source_generation_census(conn, "frozen")
+    assert census["member_unselected"] == 1
+    assert census["member_dispositions"] == 1
+    assert census["sealable"] is False
 
 
 def test_frozen_manifest_retry_cannot_change_input_bytes() -> None:

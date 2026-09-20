@@ -10,7 +10,7 @@ from typing import Final
 
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 46
+SOURCE_SCHEMA_VERSION = 47
 
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
 # These objects may remain in a migrated historical source tier. Fresh source
@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS source_items (
     enumerated_record_count INTEGER CHECK(enumerated_record_count IS NULL OR enumerated_record_count >= 0),
     enumeration_digest TEXT CHECK(enumeration_digest IS NULL OR length(enumeration_digest) = 64),
     enumerated_at_ms INTEGER CHECK(enumerated_at_ms IS NULL OR enumerated_at_ms >= 0),
+    enumerated_member_count INTEGER CHECK(enumerated_member_count IS NULL OR enumerated_member_count >= 0),
+    enumeration_member_digest TEXT CHECK(enumeration_member_digest IS NULL OR length(enumeration_member_digest) = 64),
     PRIMARY KEY(source_generation_id, source_item_id),
     UNIQUE(source_generation_id, logical_coordinate, addressing_mode)
 ) STRICT;
@@ -188,6 +190,21 @@ CREATE TABLE IF NOT EXISTS source_item_raw_members (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_source_item_raw_members_raw ON source_item_raw_members(raw_id);
 
+CREATE TABLE IF NOT EXISTS source_item_member_dispositions (
+    source_generation_id TEXT NOT NULL,
+    source_item_id TEXT NOT NULL,
+    entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal >= 0),
+    member_name TEXT NOT NULL CHECK(length(trim(member_name)) > 0),
+    disposition TEXT NOT NULL CHECK(disposition IN ('refused', 'unselected')),
+    diagnostic TEXT NOT NULL DEFAULT '' CHECK(length(diagnostic) <= 4096),
+    observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),
+    PRIMARY KEY(source_generation_id, source_item_id, entry_ordinal),
+    FOREIGN KEY(source_generation_id, source_item_id)
+        REFERENCES source_items(source_generation_id, source_item_id) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_source_item_member_dispositions_item
+ON source_item_member_dispositions(source_generation_id, source_item_id);
+
 CREATE VIEW IF NOT EXISTS source_item_reconciliation AS
 WITH member_counts AS (
     SELECT source_generation_id, source_item_id,
@@ -204,11 +221,23 @@ WITH member_counts AS (
            SUM(si.enumeration_fingerprint IS NOT NULL AND (
                si.enumerated_record_count IS NULL OR si.enumeration_digest IS NULL OR si.enumerated_at_ms IS NULL
                OR si.enumerated_record_count != COALESCE(mc.records, 0)
+               OR si.enumerated_member_count IS NULL OR si.enumeration_member_digest IS NULL
            )) AS enumeration_pending,
            SUM(COALESCE(mc.records, 0) - COALESCE(mc.present, 0)) AS retired_raw_members,
+           SUM(COALESCE(md.refused, 0)) AS member_refused,
+           SUM(COALESCE(md.unselected, 0)) AS member_unselected,
+           SUM(COALESCE(md.total, 0)) AS member_dispositions,
            COUNT(DISTINCT si.source_item_id) AS distinct_items
       FROM source_items si LEFT JOIN member_counts mc
         ON mc.source_generation_id = si.source_generation_id AND mc.source_item_id = si.source_item_id
+      LEFT JOIN (
+        SELECT source_generation_id, source_item_id,
+               SUM(disposition = 'refused') AS refused,
+               SUM(disposition = 'unselected') AS unselected,
+               COUNT(*) AS total
+          FROM source_item_member_dispositions
+         GROUP BY source_generation_id, source_item_id
+      ) md ON md.source_generation_id = si.source_generation_id AND md.source_item_id = si.source_item_id
      GROUP BY si.source_generation_id
 ), raw_links AS (
     SELECT source_generation_id, raw_id FROM source_item_raw_members WHERE raw_id IS NOT NULL
@@ -231,6 +260,9 @@ SELECT g.source_generation_id, g.item_count AS manifest_items,
        COALESCE(i.admitted_without_raw, 0) AS admitted_without_raw,
        COALESCE(i.enumeration_pending, 0) AS enumeration_pending,
        COALESCE(i.retired_raw_members, 0) AS retired_raw_members,
+       COALESCE(i.member_refused, 0) AS member_refused,
+       COALESCE(i.member_unselected, 0) AS member_unselected,
+       COALESCE(i.member_dispositions, 0) AS member_dispositions,
        COALESCE(i.distinct_items, 0) AS distinct_items,
        COALESCE(r.linked_raw, 0) AS linked_raw,
        COALESCE(r.distinct_raw, 0) AS distinct_raw,
@@ -241,6 +273,7 @@ SELECT g.source_generation_id, g.item_count AS manifest_items,
         AND COALESCE(i.pending, 0) = 0
         AND COALESCE(i.unknown_blocking, 0) = 0
         AND COALESCE(i.enumeration_pending, 0) = 0
+        AND COALESCE(i.member_dispositions, 0) = 0
         AND COALESCE(i.retired_raw_members, 0) = 0
         AND COALESCE(i.admitted_without_raw, 0) = 0) AS sealable
   FROM source_generations g
