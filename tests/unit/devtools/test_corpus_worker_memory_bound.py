@@ -71,10 +71,10 @@ from typing import TypedDict
 import pytest
 
 from devtools.worker_memory import (
-    CONTROLLER_PEAK_MIB,
     CORPUS_MAX_WORKERS,
+    MEASURED_CHARGE,
     PYTEST_SLICE_MEMORY_HIGH_MIB,
-    WORKER_PEAK_MIB,
+    ChargeProfile,
     available_memory_mib,
     cgroup_available_mib,
     memory_bounded_worker_cap,
@@ -186,8 +186,13 @@ def _unbounded_cgroup(tmp_path: Path) -> CgroupPaths:
 
 
 def _peak_mib(workers: int) -> int:
-    """What a run of ``workers`` costs at peak, controller included."""
-    return workers * WORKER_PEAK_MIB + CONTROLLER_PEAK_MIB
+    """What a run of ``workers`` CHARGES its slice at peak, controller included.
+
+    The charge, not the anonymous footprint: ``memory.high`` accounts page
+    cache and slab too, and every budget these fixtures build is a cgroup
+    ceiling, so the two sides of every comparison below are the same quantity.
+    """
+    return int(MEASURED_CHARGE.charge_mib(workers))
 
 
 def _budget_for_width(workers: int) -> int:
@@ -752,3 +757,50 @@ def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monke
     assert outcome.receipt["sizing"]["workers"] == workers
     # The width it ran at fits the slice that would otherwise have killed it.
     assert current_mib + _peak_mib(workers) <= PYTEST_SLICE_HIGH_MIB
+
+
+def test_the_width_fits_the_whole_charge_not_only_anonymous_memory() -> None:
+    """``memory.high`` charges page cache and slab; the width must respect that.
+
+    A per-process sampler sees anonymous memory. The ceiling being divided is a
+    cgroup ceiling, which also accounts the page cache the suite's own scratch
+    SQLite writes fill and the slab behind them -- 1.93x the anonymous
+    footprint on the worker measured 2026-09-20 (anon 544 MiB, file 457 MiB,
+    slab 44 MiB, ``memory.current`` 1050 MiB). Sizing from anon alone chose a
+    width whose real charge overran the slice, which is what systemd-oomd
+    killed.
+
+    Anti-vacuity: divide the ceiling by the anonymous term alone -- the shipped
+    form, ``(budget - controller) // WORKER_PEAK_MIB`` over an anon constant --
+    and this profile answers one worker wider than its charge fits, so the
+    charge assertion below goes red.
+    """
+    profile = ChargeProfile(worker_anon_mib=700.0, worker_cache_mib=2850.0, controller_mib=1075.0)
+    budget = PYTEST_SLICE_HIGH_MIB
+
+    workers = width_within(budget, profile=profile)
+
+    assert workers == 3
+    assert profile.charge_mib(workers) <= budget
+    assert profile.charge_mib(workers + 1) > budget
+
+    # The anonymous-only model, in both of the forms it shipped in: the
+    # measured per-worker anon peak, and the 2263 MiB constant that stood in
+    # this module until 2026-09-20. Each picks a width whose real charge
+    # against the same ceiling is an overrun, and the wider it is the worse.
+    for anon_peak_mib in (profile.worker_anon_mib, 2263.0):
+        anon_only = max(1, int((budget - profile.controller_mib) // anon_peak_mib))
+        assert anon_only > workers
+        assert profile.charge_mib(anon_only) > budget
+
+
+def test_the_shipped_profile_is_the_charge_the_slice_accounts() -> None:
+    """The default width leaves margin under the declared ceiling, at the charge.
+
+    Anti-vacuity: drop ``worker_cache_mib`` from ``MEASURED_CHARGE`` (or set it
+    to zero) and the declared width rises to a number whose charge exceeds
+    ``PYTEST_SLICE_MEMORY_HIGH_MIB``, which the second assertion catches.
+    """
+    assert MEASURED_CHARGE.worker_cache_mib > 0, "page cache is part of what memory.high accounts"
+    assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS) <= PYTEST_SLICE_MEMORY_HIGH_MIB
+    assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS + 1) > PYTEST_SLICE_MEMORY_HIGH_MIB

@@ -60,7 +60,10 @@ Worker width is bounded by the pytest cgroup, never by host cores or by
 instantaneous host free memory: this suite is SQLite-IO bound, and admission
 under host pressure is already the pool's decision when the job starts. The
 default is `worker_memory.CORPUS_MAX_WORKERS`, derived as
-`(agentctl-pytest.slice MemoryHigh - controller peak) // worker peak`; the
+`(agentctl-pytest.slice MemoryHigh - controller charge) // worker charge`,
+where a worker's *charge* is its anonymous peak plus the page cache and slab
+`memory.high` accounts alongside it -- dividing that ceiling by an
+anonymous-RSS figure alone sizes the run past what the slice allows; the
 slice's ceiling is Sinnix's to set (`flake/data/runtime-defaults.nix`) and it
 already carries the safety margin, so nothing is discounted a second time
 here. A `POLYLOGUE_PYTEST_WORKERS` override above what the slice's *remaining*
