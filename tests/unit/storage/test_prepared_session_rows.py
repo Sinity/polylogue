@@ -23,6 +23,7 @@ prove:
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -38,6 +39,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionRows,
+    PreparedSessionWriteRefusedError,
     prepare_session_rows,
     prepare_session_write,
     read_archive_session_envelope,
@@ -242,6 +244,50 @@ def test_writer_accepts_parse_bound_hash_without_recomputing(tmp_path: Path, mon
     try:
         session_id = write_parsed_session_to_archive(conn, bound, prepared=prepared)
         assert conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def test_valid_identity_carrier_is_reused_without_writer_recomputation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A valid prepared carrier is the writer's identity source."""
+    session = _synthetic_sessions()[0]
+    prepared = prepare_session_rows(session)
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise AssertionError("writer must reuse the prepared identity carrier")
+
+    monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
+    conn = _connect(tmp_path / "carrier.db")
+    try:
+        write_parsed_session_to_archive(
+            conn,
+            session,
+            content_hash=str(session_content_hash(session)),
+            prepared=prepared,
+        )
+    finally:
+        conn.close()
+
+
+def test_corrupt_identity_carrier_is_refused(tmp_path: Path) -> None:
+    """A carrier disagreement is refused instead of regenerated on the writer."""
+    session = _synthetic_sessions()[0]
+    prepared = prepare_session_rows(session)
+    corrupt = replace(
+        prepared,
+        content_identities=(("corrupt-identity", 0), *prepared.content_identities[1:]),
+    )
+    conn = _connect(tmp_path / "corrupt-carrier.db")
+    try:
+        with pytest.raises(PreparedSessionWriteRefusedError, match="disagrees with message rows"):
+            write_parsed_session_to_archive(
+                conn,
+                session,
+                content_hash=str(session_content_hash(session)),
+                prepared=corrupt,
+            )
     finally:
         conn.close()
 

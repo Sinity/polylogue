@@ -249,6 +249,25 @@ def test_shard_copy_replaces_the_row_binding_loop(tmp_path: Path, monkeypatch: p
         conn.close()
 
 
+def test_shard_copy_reuses_carried_identities_without_writer_recomputation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete shard supplies every identity needed by the writer."""
+    sessions = _synthetic_sessions()[:2]
+    shard_path = prepare_session_shard(tmp_path / "shards", sessions).path
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise AssertionError("complete shard writes must not recompute identities")
+
+    monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _copy_from_shard(conn, sessions, shard_path)
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 4
+    finally:
+        conn.close()
+
+
 def test_shard_copy_preserves_search_text_and_fts(tmp_path: Path) -> None:
     """The copy feeds the same generated columns and FTS surfaces as an insert."""
     sessions = _synthetic_sessions()
