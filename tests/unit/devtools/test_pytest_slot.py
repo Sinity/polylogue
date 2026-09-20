@@ -962,9 +962,10 @@ def test_a_signalled_held_run_writes_its_receipt_inside_the_stop_budget(tmp_path
         env={"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/home/nobody")},
         stderr=subprocess.PIPE,
     )
+    stream = waiter.stderr
+    assert stream is not None
     try:
-        assert waiter.stderr is not None
-        assert waiter.stderr.readline().strip() == b"up", "the SIGTERM-ignoring child never started"
+        assert stream.readline().strip() == b"up", "the SIGTERM-ignoring child never started"
         waiter.send_signal(signal.SIGTERM)
         # Under half the unit's stop budget, and above the whole escalation
         # with room for the unwind: what is under test is that the reap left
@@ -983,6 +984,6 @@ def test_a_signalled_held_run_writes_its_receipt_inside_the_stop_budget(tmp_path
         if waiter.poll() is None:  # pragma: no cover - only on a stuck waiter
             waiter.kill()
             waiter.wait(timeout=30)
-        waiter.stderr.close()
+        stream.close()
 
     assert receipt.read_text() == "terminal", "the outer handler must reach its receipt work"
