@@ -715,8 +715,19 @@ class TestContentlessFTSDeclaresOnlyIndexedColumns:
             conn.commit()
 
             hits = conn.execute(
-                "SELECT b.block_id FROM messages_fts"
+                "SELECT b.block_id, snippet(messages_fts, 0, '[', ']', '...', 12) AS snippet"
+                " FROM messages_fts"
                 " JOIN blocks AS b ON b.rowid = messages_fts.rowid"
                 " WHERE messages_fts MATCH 'zarquon'"
             ).fetchall()
             assert len(hits) == 1, "production trigger must still index block search_text"
+            # `text` is column 0 now that the four UNINDEXED columns are gone.
+            # A stale ordinal raises sqlite3.InterfaceError ("column index out
+            # of range") at execute time, so simply reaching this line is the
+            # check that keeps the production snippet call sites in
+            # search/runtime.py, search/query_builders.py and
+            # archive_tiers/archive.py honest. The value itself is NULL
+            # because a contentless index cannot reconstruct the source text
+            # -- which is why every one of those readers selects
+            # `b.search_text AS fallback_text` beside it.
+            assert hits[0]["snippet"] is None
