@@ -351,6 +351,28 @@ from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_co
 logger = get_logger(__name__)
 
 
+def _decode_session_id_set(value: object) -> set[str]:
+    """Decode one aggregate's distinct session ids from a JSON array.
+
+    ``session_id`` is ``origin || ':' || native_id`` and ``native_id`` comes
+    straight from provider JSON with no character restriction, so a
+    comma-bearing provider conversation id used to split into fragments when
+    these aggregates concatenated with ``GROUP_CONCAT(DISTINCT ...)`` and the
+    reader split on ``","``. The result was a wrong distinct-session count.
+    SQLite refuses ``group_concat(DISTINCT x, <sep>)`` ("DISTINCT aggregates
+    must have exactly one argument"), so the aggregates emit a typed JSON
+    array instead of any delimiter that a native id could contain
+    (polylogue-3sic0).
+    """
+
+    if value is None:
+        return set()
+    decoded = json.loads(value) if isinstance(value, str | bytes) else value
+    if not isinstance(decoded, list):
+        return set()
+    return {str(entry) for entry in decoded if entry is not None and str(entry)}
+
+
 @dataclass(slots=True)
 class _UsageTimelineAccumulator:
     bucket: str
@@ -3287,7 +3309,7 @@ class ArchiveStore:
                    ) AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
                    MAX(s.sort_key_ms) AS source_sort_key,
-                   GROUP_CONCAT(DISTINCT u.session_id) AS session_ids
+                   json_group_array(DISTINCT u.session_id) AS session_ids
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
@@ -3318,7 +3340,7 @@ class ArchiveStore:
                    CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' ELSE 'unknown' END AS cost_provenance,
                    MAX(s.updated_at_ms) AS source_updated_at,
                    MAX(s.sort_key_ms) AS source_sort_key,
-                   GROUP_CONCAT(DISTINCT s.session_id) AS session_ids
+                   json_group_array(DISTINCT s.session_id) AS session_ids
             FROM sessions s
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             LEFT JOIN session_model_usage u ON u.session_id = s.session_id
@@ -3358,7 +3380,7 @@ class ArchiveStore:
                     normalized_model=normalized_model,
                 ),
             )
-            session_ids = {session_id for session_id in str(row["session_ids"] or "").split(",") if session_id}
+            session_ids = _decode_session_id_set(row["session_ids"])
             new_session_ids = session_ids - entry.session_ids
             entry.session_ids.update(session_ids)
             effective_session_count = len(new_session_ids) if session_ids else session_count
@@ -3561,7 +3583,7 @@ class ArchiveStore:
                        COALESCE(SUM(e.last_total_tokens), 0) AS total_tokens,
                        COALESCE(SUM(e.last_reasoning_output_tokens), 0) AS reasoning_output_tokens,
                        MAX(COALESCE(e.occurred_at_ms, s.sort_key_ms)) AS source_sort_key,
-                       GROUP_CONCAT(DISTINCT e.session_id) AS session_ids
+                       json_group_array(DISTINCT e.session_id) AS session_ids
                 FROM session_provider_usage_events e
                 JOIN sessions s ON s.session_id = e.session_id
                 WHERE {where_clause}
@@ -3583,7 +3605,7 @@ class ArchiveStore:
                 ),
             )
             item.event_count += int(row["event_count"] or 0)
-            event_session_ids = {session_id for session_id in str(row["session_ids"] or "").split(",") if session_id}
+            event_session_ids = _decode_session_id_set(row["session_ids"])
             item.event_session_ids.update(event_session_ids)
             item.event_session_count = len(item.event_session_ids)
             item.usage = item.usage.plus(
@@ -3632,7 +3654,7 @@ class ArchiveStore:
                    COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
                    CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported' WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' ELSE 'unknown' END AS cost_provenance,
                    MAX(s.sort_key_ms) AS source_sort_key,
-                   GROUP_CONCAT(DISTINCT u.session_id) AS session_ids
+                   json_group_array(DISTINCT u.session_id) AS session_ids
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             WHERE {where_clause}
@@ -3663,9 +3685,7 @@ class ArchiveStore:
                     int(row["cache_write_tokens"] or 0),
                 )
             provenance = str(row["cost_provenance"] or "unknown")
-            item.cost_session_ids.update(
-                session_id for session_id in str(row["session_ids"] or "").split(",") if session_id
-            )
+            item.cost_session_ids.update(_decode_session_id_set(row["session_ids"]))
             item.cost_provenance_counts[provenance] = item.cost_provenance_counts.get(provenance, 0) + int(
                 row["session_count"] or 0
             )
