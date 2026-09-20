@@ -11,7 +11,7 @@ import sqlite3
 from collections.abc import Mapping
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from polylogue.core.sqlite_introspection import relation_exists
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -240,8 +240,19 @@ def produce_direct_status(
             else ""
         ),
     ).to_dict()
+    # A declared relation whose count was missing or unreadable is an
+    # authority failure, not an empty relation. Keep the direct status verdict
+    # red even when the remaining readiness components happen to be green.
+    tier_count_unavailable = any(
+        info.get("exists") is True
+        and any(
+            precision != "exact"
+            for precision in cast(Mapping[str, object], info.get("table_count_precision", {})).values()
+        )
+        for info in tiers.values()
+    )
     payload: dict[str, object] = {
-        "ok": _status_ok(components, raw_failures),
+        "ok": _status_ok(components, raw_failures) and not tier_count_unavailable,
         "daemon_liveness": False,
         "archive_root": str(configured_root),
         "active_archive_root": str(active_root),
@@ -433,11 +444,21 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
         version = versions.get(tier.value) if exists else None
         expected = ARCHIVE_VERSION_BY_TIER[tier]
         identity_status: dict[str, object] | None = None
-        table_counts: dict[str, int] = {}
+        # Every declared relation gets an explicit value. ``None`` denotes
+        # missing/unreadable evidence; omitting a relation (or coercing a
+        # failed COUNT(*) to zero) makes a broken tier indistinguishable from
+        # a measured empty one.
+        table_counts: dict[str, int | None] = {}
         table_count_precision: dict[str, str] = {}
         if exists:
             for table in _TIER_STATUS_TABLES[tier.value]:
-                if not _table_exists(conn, table, schema=alias):
+                try:
+                    relation_present = _table_exists(conn, table, schema=alias)
+                except sqlite3.Error:
+                    relation_present = False
+                if not relation_present:
+                    table_counts[table] = None
+                    table_count_precision[table] = "missing"
                     continue
                 row: Any = None
                 # Keep a present but unreadable relation visible as
@@ -445,9 +466,12 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
                 # silently dropping a declared status member. COUNT(*) on a
                 # valid relation always returns one row, so ``None`` here is
                 # the typed unavailable marker.
-                with suppress(sqlite3.Error):
+                try:
                     row = conn.execute(f"SELECT COUNT(*) FROM {alias}.{table}").fetchone()
+                except sqlite3.Error:
+                    row = None
                 if row is None:
+                    table_counts[table] = None
                     table_count_precision[table] = "unavailable"
                     continue
                 table_counts[table] = int(str(row[0] or 0))
@@ -460,13 +484,16 @@ def _archive_tiers(archive: ArchiveStore, conn: sqlite3.Connection) -> dict[str,
 
                 derived_tier = DerivedTier(tier.value)
                 expected_identity = derived_schema_identity(derived_tier)
-                identity_row = (
-                    conn.execute(
-                        f"SELECT identity FROM {alias}.schema_identity WHERE tier = ?", (tier.value,)
-                    ).fetchone()
-                    if _table_exists(conn, "schema_identity", schema=alias)
-                    else None
-                )
+                try:
+                    identity_row = (
+                        conn.execute(
+                            f"SELECT identity FROM {alias}.schema_identity WHERE tier = ?", (tier.value,)
+                        ).fetchone()
+                        if _table_exists(conn, "schema_identity", schema=alias)
+                        else None
+                    )
+                except sqlite3.Error:
+                    identity_row = None
                 actual_identity = None if identity_row is None else str(identity_row[0])
                 identity_status = {
                     "status": "ok" if actual_identity == expected_identity else "mismatch",
@@ -853,22 +880,26 @@ def _sqlite_maintenance(conn: sqlite3.Connection) -> dict[str, object]:
             tiers[tier.value] = {
                 "exists": False,
                 "wal_bytes": None,
-                "sqlite_stat1_rows": 0,
-                "planner_stats_present": False,
+                "sqlite_stat1_rows": None,
+                "planner_stats_present": None,
+                "state": "unavailable",
             }
             continue
-        rows = (
-            int(conn.execute(f"SELECT COUNT(*) FROM {alias}.sqlite_stat1").fetchone()[0] or 0)
-            if _table_exists(conn, "sqlite_stat1", schema=alias)
-            else 0
-        )
+        rows: int | None = None
+        try:
+            if _table_exists(conn, "sqlite_stat1", schema=alias):
+                row = conn.execute(f"SELECT COUNT(*) FROM {alias}.sqlite_stat1").fetchone()
+                rows = None if row is None else int(row[0] or 0)
+        except sqlite3.Error:
+            rows = None
         if rows:
             with_planner_stats.append(tier.value)
         tiers[tier.value] = {
             "exists": True,
             "wal_bytes": None,
             "sqlite_stat1_rows": rows,
-            "planner_stats_present": rows > 0,
+            "planner_stats_present": None if rows is None else rows > 0,
+            "state": "fresh" if rows is not None else "unavailable",
             "wal_metadata": {
                 "state": "not_observed",
                 "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot",
