@@ -45,9 +45,10 @@ def test_initialize_archive_tier_files_creates_all_tiers(
             assert conn.execute("SELECT COUNT(*) FROM initialized").fetchone()[0] == 1
         finally:
             conn.close()
+    assert (tmp_path / ".polylogue-format.json").is_file()
 
 
-def test_initialize_archive_tier_files_backs_up_replaceable_targets(
+def test_initialize_archive_tier_files_refuses_to_replace_durable_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -55,18 +56,15 @@ def test_initialize_archive_tier_files_backs_up_replaceable_targets(
         (tmp_path / spec.filename).write_text(f"existing {spec.tier.value} target", encoding="utf-8")
     monkeypatch.setattr(archive_init, "initialize_archive_database", _fake_initialize_archive_database)
 
-    result = initialize_archive_tier_files(
-        archive_root=tmp_path,
-        replace_existing=True,
-    )
+    with pytest.raises(ArchiveInitBlockedError, match="fresh format floor cannot replace durable evidence"):
+        initialize_archive_tier_files(
+            archive_root=tmp_path,
+            replace_existing=True,
+        )
 
-    assert (tmp_path / "source.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing source target"
-    assert (tmp_path / "embeddings.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing embeddings target"
-    assert (tmp_path / "user.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing user target"
-    assert (tmp_path / "audit.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing audit target"
-    assert not (tmp_path / "index.db.pre-archive-init.bak").exists()
-    assert not (tmp_path / "ops.db.pre-archive-init.bak").exists()
-    assert {tier.initialized for tier in result.tier_results} == {True}
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT):
+        path = tmp_path / ARCHIVE_TIER_SPECS[tier].filename
+        assert path.read_text(encoding="utf-8") == f"existing {tier.value} target"
 
 
 def test_initialize_archive_tier_files_refuses_blocked_plan(tmp_path: Path) -> None:

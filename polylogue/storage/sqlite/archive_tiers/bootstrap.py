@@ -22,8 +22,11 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
-from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+# Kept locally so schema metadata can import the bootstrap module while the
+# migration runner is still importing the archive-tier package.
+DURABLE_MIGRATION_TIERS = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
 
 DurabilityClass = Literal["irreplaceable", "rebuildable", "expensive_rebuild", "human", "disposable"]
 
@@ -778,6 +781,11 @@ def _initialize_active_archive_root(root: Path) -> None:
         OwnedArchiveLocation,
         assert_owns_archive_location,
     )
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import (
+        archive_format_marker_path,
+        assert_archive_format_lineage,
+        record_fresh_archive_format,
+    )
     from polylogue.storage.sqlite.durable_change_train import (
         _durable_train_manifest_paths,
         _record_fresh_durable_bootstrap,
@@ -829,6 +837,17 @@ def _initialize_active_archive_root(root: Path) -> None:
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
         has_pending_bootstrap = pending_bootstrap_path.is_file()
+
+        # ``user_version == 1`` now belongs to a new format lineage.  Admit an
+        # established root only through its marker before any tier initializer
+        # gets a writable connection.  A historical v1 file therefore cannot
+        # be restamped into apparent compatibility.
+        format_marker = archive_format_marker_path(root)
+        any_tier_exists = any((root / spec.filename).exists() for spec in ARCHIVE_TIER_SPECS.values())
+        if any_tier_exists:
+            assert_archive_format_lineage(root)
+        elif format_marker.exists():
+            raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
 
         def classify_paths() -> tuple[bool, bool]:
             durable_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
@@ -895,7 +914,7 @@ def _initialize_active_archive_root(root: Path) -> None:
                 "established archive is missing audit.db; use maintenance migrate-tier audit "
                 "--adopt-established-audit with a verified full_evidence backup"
             )
-        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption:
+        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption and not format_marker.exists():
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         location = ArchiveLocation.resolve(root)
@@ -909,6 +928,7 @@ def _initialize_active_archive_root(root: Path) -> None:
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)
+            record_fresh_archive_format(root)
         elif pre_marker_adoption:
             from polylogue.storage.sqlite.durable_change_train import _adopt_pre_marker_durable_bootstrap
 
@@ -947,8 +967,14 @@ def initialize_active_archive_root(root: Path) -> None:
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
     """Reconcile persisted durable trains without executing migration SQL."""
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
     from polylogue.storage.sqlite.durable_change_train import reconcile_durable_change_train_startup
 
+    # This lineage starts at the canonical floor. It has no predecessor train
+    # to reconcile during ordinary bootstrap; explicit future upgrades keep
+    # using the migration engine.
+    if archive_format_marker_path(root).is_file():
+        return ()
     return reconcile_durable_change_train_startup(root)
 
 

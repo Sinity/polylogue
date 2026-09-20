@@ -17,6 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_plan import (
     ArchiveInitPlan,
     ArchiveTierPlan,
     build_archive_init_plan,
+    record_fresh_archive_format,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 
@@ -75,6 +76,7 @@ def initialize_archive_tier_files_from_plan(plan: ArchiveInitPlan) -> ArchiveIni
         tier_results = tuple(
             _initialize_tier(tier_plan, owner=owner, generation_rotated=generation_rotated) for tier_plan in plan.tiers
         )
+        record_fresh_archive_format(plan.archive_root)
     return ArchiveInitResult(
         tier_results=tier_results,
     )
