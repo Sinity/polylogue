@@ -193,6 +193,50 @@ def test_zip_member_disposition_completes_full_denominator_and_retry_is_idempote
     assert census["sealable"] is False
 
 
+def test_member_disposition_bounds_attacker_controlled_identity_and_reason() -> None:
+    conn = _source()
+    item = _frozen_item(conn)
+    conn.execute("BEGIN")
+    record_source_item_member_disposition(
+        conn,
+        source_generation_id="frozen",
+        source_item_id=item,
+        entry_ordinal=0,
+        member_name="n" * 20_000,
+        disposition=SourceItemMemberDisposition.REFUSED,
+        diagnostic="d" * 20_000,
+        observed_at_ms=2,
+    )
+    name, diagnostic = conn.execute("SELECT member_name, diagnostic FROM source_item_member_dispositions").fetchone()
+    assert len(name) <= 4096
+    assert len(diagnostic) <= 4096
+
+
+def test_zip_enumeration_without_member_denominator_stays_incomplete() -> None:
+    conn = _source()
+    item = _frozen_item(conn)
+    conn.execute("BEGIN")
+    _raw_member(conn, item, '["zip-v2",0,0,"whole_member"]')
+    record_raw_container_coordinate(
+        conn,
+        "raw",
+        coordinate_format="zip-v2",
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode="whole_member",
+        manage_transaction=False,
+    )
+    with pytest.raises(ValueError, match="central-directory denominator"):
+        complete_source_item_enumeration(
+            conn,
+            source_generation_id="frozen",
+            source_item_id=item,
+            enumeration_fingerprint="b" * 64,
+            record_coordinates=('["zip-v2",0,0,"whole_member"]',),
+            enumerated_at_ms=2,
+        )
+
+
 def test_frozen_manifest_retry_cannot_change_input_bytes() -> None:
     conn = _source()
     item = _frozen_item(conn)
