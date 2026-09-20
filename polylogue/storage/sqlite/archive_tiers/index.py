@@ -483,7 +483,13 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # joins ``blocks`` on rowid or uses ``messages_fts_identity``. INDEX_ONLY: the
 # indexed column set, tokenizer and rowid binding are unchanged, so the search
 # index is rebuilt with identical content and no parsed row is re-derived.
-INDEX_SCHEMA_VERSION = 101
+# polylogue-a7xr.22: v102 drops the `delegations` view. It selected 28 of
+# `delegation_facts`' 29 columns with no join, no rename and no computed
+# column -- its only effect was hiding the `delegation_id` primary key. All
+# six SQL read sites now read the table. METADATA_ONLY: no stored row and no
+# derived value changes; the removed object was a pure projection of a table
+# that stays exactly as it is.
+INDEX_SCHEMA_VERSION = 102
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1762,15 +1768,14 @@ WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session
     DELETE FROM delegation_refresh_scope;
 END;
 
-CREATE VIEW IF NOT EXISTS delegations AS
-SELECT
-    parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance,
-    branch_point_message_id, instruction_message_id, instruction_tool_use_block_id, instruction_payload,
-    dispatch_turn_model, requested_model, artifact_block_id, artifact_text, result_is_error, result_exit_code,
-    result_status, parent_origin, parent_session_dominant_model, parent_session_dominant_model_family,
-    parent_terminal_state, child_session_dominant_model, child_session_dominant_model_family, child_cost_usd,
-    child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state
-FROM delegation_facts;
+-- polylogue-a7xr.22: the `delegations` view was dropped in
+-- INDEX_SCHEMA_VERSION 102. It was `SELECT <28 of delegation_facts' 29
+-- columns> FROM delegation_facts` -- zero joins, zero renames, zero computed
+-- columns; the only difference from the table was that it hid the
+-- `delegation_id` primary key. Every read site now reads `delegation_facts`
+-- directly. The PUBLIC query-unit token is still `delegations`
+-- (archive/query/metadata.py); that name is grammar vocabulary and is
+-- unrelated to the SQL object this removed.
 
 CREATE VIEW IF NOT EXISTS session_tag_rollups AS
 WITH tag_members AS (

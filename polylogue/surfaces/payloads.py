@@ -2814,7 +2814,7 @@ def _bounded_delegation_text(value: str | None) -> str | None:
 
 class DelegationAttemptPayload(SurfacePayloadModel):
     """Bounded read payload for one delegation attempt (polylogue-y964
-    `delegations` view, polylogue-lph4 ObjectRef normalization).
+    `delegation_facts`, polylogue-lph4 ObjectRef normalization).
 
     ``mapping_state`` mirrors the view's own vocabulary exactly --
     resolved/unresolved/edge_only/quarantined/authority-contradicted -- never

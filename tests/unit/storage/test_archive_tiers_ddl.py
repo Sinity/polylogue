@@ -278,6 +278,18 @@ def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> N
 
 
 def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Path) -> None:
+    """The `actions` view and `delegation_facts` stay indexed, seekable relations.
+
+    polylogue-a7xr.22: `delegations` was a zero-join rename of
+    `delegation_facts` and is gone. The delegation half of this law now names
+    the table the read sites actually use; the `actions` half still guards a
+    real view (a tool_use/tool_result join) against acquiring a WITH/WINDOW
+    body that would defeat predicate pushdown.
+
+    Anti-vacuity: reintroducing any rename-only view over `delegation_facts`
+    makes `test_no_rename_only_view_over_delegation_facts` fail; giving
+    `actions` a CTE or window body makes this one fail.
+    """
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
 
@@ -291,23 +303,45 @@ def test_agent_action_and_delegation_views_are_indexed_projections(tmp_path: Pat
     delegation_plan = " | ".join(
         str(row["detail"])
         for row in conn.execute(
-            "EXPLAIN QUERY PLAN SELECT * FROM delegations WHERE parent_session_id = ? AND mapping_state = ?",
+            "EXPLAIN QUERY PLAN SELECT * FROM delegation_facts WHERE parent_session_id = ? AND mapping_state = ?",
             ("codex-session:parent", "resolved"),
         ).fetchall()
     )
     view_sql = {
         row["name"]: row["sql"]
-        for row in conn.execute(
-            "SELECT name, sql FROM sqlite_schema WHERE name IN ('actions', 'delegations')"
-        ).fetchall()
+        for row in conn.execute("SELECT name, sql FROM sqlite_schema WHERE name IN ('actions')").fetchall()
     }
 
     assert "USING INDEX" in action_plan.upper()
     assert "USING INDEX" in delegation_plan.upper()
     assert "WINDOW" not in view_sql["actions"].upper()
     assert "WITH" not in view_sql["actions"].upper()
-    assert "WINDOW" not in view_sql["delegations"].upper()
-    assert "WITH" not in view_sql["delegations"].upper()
+
+
+def test_no_rename_only_view_over_delegation_facts(tmp_path: Path) -> None:
+    """No view may exist that only re-selects `delegation_facts` columns.
+
+    polylogue-a7xr.22 deleted `delegations`, which was exactly that: 28 of the
+    table's 29 columns, no join, no rename, no computed column. AC2 of the bead
+    forbids replacing it with another rename.
+
+    Anti-vacuity: re-adding `CREATE VIEW delegations AS SELECT <cols> FROM
+    delegation_facts` to INDEX_DDL makes this test fail.
+    """
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+
+    assert conn.execute("SELECT 1 FROM sqlite_schema WHERE type='view' AND name='delegations'").fetchone() is None
+
+    for (name,) in conn.execute("SELECT name FROM sqlite_schema WHERE type='view'").fetchall():
+        body = str(
+            conn.execute("SELECT sql FROM sqlite_schema WHERE type='view' AND name = ?", (name,)).fetchone()[0]
+        ).upper()
+        if "DELEGATION_FACTS" not in body:
+            continue
+        assert "JOIN" in body or "WHERE" in body or "WITH" in body, (
+            f"view {name} reads delegation_facts without joining, filtering or computing anything"
+        )
 
 
 def test_action_pairs_does_not_materialize_text_copies(tmp_path: Path) -> None:

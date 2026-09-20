@@ -159,7 +159,7 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveDelegationQueryRow:
-    """Terminal query projection over one `delegations` view row
+    """Terminal query projection over one `delegation_facts` row
     (polylogue-y964). ``mapping_state`` is the view's own vocabulary --
     resolved/unresolved/edge_only/quarantined -- never reinterpreted here
     (polylogue-1vpm.7 retired 'ambiguous': with a provider-asserted content
@@ -370,7 +370,7 @@ WITH RECURSIVE ancestry(session_id, depth, child_session_id, mapping_state,
         d.link_confidence,
         d.link_method,
         a.path || d.parent_session_id || '/'
-    FROM delegations d
+    FROM delegation_facts d
     JOIN ancestry a ON d.child_session_id = a.session_id
     WHERE {topology_status_composes_sql("d.mapping_state")}
       AND instr(a.path, '/' || d.parent_session_id || '/') = 0
@@ -394,7 +394,7 @@ WITH RECURSIVE subtree(session_id, depth, parent_session_id, mapping_state,
         d.link_confidence,
         d.link_method,
         s.path || d.child_session_id || '/'
-    FROM delegations d
+    FROM delegation_facts d
     JOIN subtree s ON d.parent_session_id = s.session_id
     WHERE {topology_status_composes_sql("d.mapping_state")}
       AND d.child_session_id IS NOT NULL
@@ -930,7 +930,7 @@ def _query_unit_from_sql_by_unit(action_relation_name: str) -> dict[str, str]:
         "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
         "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
         "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
-        "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
+        "delegation": "delegation_facts d JOIN sessions s ON s.session_id = d.parent_session_id",
     }
 
 
@@ -2089,7 +2089,7 @@ def _exists_predicate_clause(table_alias: str, predicate: QueryExistsPredicate) 
             f"""
             EXISTS (
                 SELECT 1
-                FROM delegations {row_alias}
+                FROM delegation_facts {row_alias}
                 WHERE {row_alias}.parent_session_id = {table_alias}.session_id
                   AND {child_clause}
             )
@@ -3371,7 +3371,7 @@ def get_delegation_attempt(
     parent_session_id: str | None = None,
     child_session_id: str | None = None,
 ) -> ArchiveDelegationQueryRow | None:
-    """Resolve one `delegations` row (polylogue-y964) by its ref identity.
+    """Resolve one `delegation_facts` row (polylogue-y964) by its ref identity.
 
     Action-observed identity (resolved/unresolved): pass only
     ``instruction_tool_use_block_id``. Edge identity (edge_only,
@@ -3383,13 +3383,13 @@ def get_delegation_attempt(
 
     if instruction_tool_use_block_id is not None:
         row = self._conn.execute(
-            "SELECT * FROM delegations WHERE instruction_tool_use_block_id = ? LIMIT 1",
+            "SELECT * FROM delegation_facts WHERE instruction_tool_use_block_id = ? LIMIT 1",
             (instruction_tool_use_block_id,),
         ).fetchone()
     elif parent_session_id is not None and child_session_id is not None:
         row = self._conn.execute(
             """
-            SELECT * FROM delegations
+            SELECT * FROM delegation_facts
             WHERE parent_session_id = ? AND child_session_id = ?
               AND mapping_state IN ('edge_only', 'quarantined', 'authority-contradicted')
             LIMIT 1
@@ -3630,7 +3630,7 @@ def query_delegations(
     rows = self._conn.execute(
         f"""
         SELECT d.*
-        FROM delegations d
+        FROM delegation_facts d
         JOIN sessions s ON s.session_id = d.parent_session_id
         {where_clause}
         {session_clause}

@@ -3,7 +3,7 @@
 The `delegations` view (polylogue-y964, `polylogue/storage/sqlite/archive_tiers/
 index.py`) spines on `actions.semantic_type='subagent'` (a parent-side Task
 tool_use) corroborated against resolved `session_links(link_type='subagent')`
-edges. `tests/unit/storage/test_delegations_view.py` proves the view's SQL
+edges. `tests/unit/storage/test_delegation_facts.py` proves the relation's SQL
 contract by hand-inserting rows directly into `actions`/`session_links` --
 legitimate for exercising the view's join logic in isolation, but it does not
 prove that a REAL provider parser ever produces those rows in that shape.
@@ -76,7 +76,7 @@ def _delegations_rows(db_path: Path, *, parent_session_id: str) -> list[sqlite3.
     try:
         return list(
             conn.execute(
-                "SELECT * FROM delegations WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id",
+                "SELECT * FROM delegation_facts WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id",
                 (parent_session_id,),
             ).fetchall()
         )

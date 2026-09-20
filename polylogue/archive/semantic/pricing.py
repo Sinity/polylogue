@@ -467,7 +467,7 @@ def canonical_model_family(model_name: str | None) -> str | None:
     """Map a raw provider model name to its canonical semantic family
     (anthropic, openai, deepseek, ...). Delegates to `semantic_model_vendor`
     -- pure model-name pattern matching, independent of the pricing catalog
-    (1vpm.1 named this the enabling primitive for the `delegations` view's
+    (1vpm.1 named this the enabling primitive for `delegation_facts`'
     model identity; polylogue-4c27 fixed it to stop returning the pricing
     catalog's routing-tag provenance, which drifted from vendor identity on
     every bare-name catalog collision)."""

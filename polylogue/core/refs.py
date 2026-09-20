@@ -77,7 +77,7 @@ ObjectRefKind: TypeAlias = Literal[
     "analysis-run",
     "basket",
     # polylogue-lph4: delegation attempt identity, reusing the polylogue-y964
-    # `delegations` view vocabulary. Two id shapes share this one kind:
+    # `delegation_facts` vocabulary. Two id shapes share this one kind:
     #   - action-observed (resolved/unresolved): object_id is the
     #     parent-side dispatch `instruction_tool_use_block_id` verbatim. That
     #     block id already embeds its owning session_id as a structural

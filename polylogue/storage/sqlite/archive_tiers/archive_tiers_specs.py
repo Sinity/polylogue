@@ -1844,7 +1844,7 @@ SESSION_PROFILES_SPEC = _make_table_spec(
             "primary_model_name",
             """-- 1vpm.1: dominant model by assistant output-token share + its canonical
     -- family (anthropic/openai/deepseek/...) -- the enabling primitive for
-    -- the `delegations` view's orchestrator/subagent model identity.
+    -- `delegation_facts`' orchestrator/subagent model identity.
     primary_model_name              TEXT""",
         ),
         _raw_column("primary_model_family", """primary_model_family            TEXT"""),
