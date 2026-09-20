@@ -7249,6 +7249,45 @@ def _write_repo_edges(
             resolved_root_paths.append(raw_path)
     root_paths = tuple(dict.fromkeys(resolved_root_paths))
     if not root_paths and not origin_url:
+        # polylogue-1pzmq: no repo identity resolves -- but the parser may
+        # still have been handed an explicit commit and branch. That is the
+        # documented Codex shape on a checkout this machine no longer has (or
+        # never had): branch and commit, no remote, and a cwd that resolves to
+        # no git root here. Returning outright threw away commit evidence the
+        # export stated. Record it with a NULL ``repo_id``: the column is
+        # nullable exactly so a commit can be known without a repository, and
+        # keying a synthetic repo on the commit hash alone would collide
+        # across repositories that share it (a fork, a cherry-pick, an
+        # imported subtree).
+        if update_session_observations and session.git_commit_hash:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO session_commits (
+                    session_id, commit_sha, repo_id, detection_type, method,
+                    confidence, evidence_json, created_at_ms
+                ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    _sqlite_text(session.git_commit_hash),
+                    "explicit_ref",
+                    "parser-git-meta-unresolved-repo",
+                    1.0,
+                    _json_dumps(
+                        {
+                            "git_repository_url": None,
+                            "root_path": None,
+                            "git_branch": session.git_branch,
+                            # The cwds the session declared, kept verbatim: they
+                            # are the only handle on which checkout this was, and
+                            # a later acquisition on a machine that has the repo
+                            # can resolve them.
+                            "unresolved_working_directories": list(raw_root_paths),
+                        }
+                    ),
+                    observed_at_ms or 0,
+                ),
+            )
         return
     for root_path in root_paths or ("",):
         repo_name = _repo_name(origin_url, root_path)
