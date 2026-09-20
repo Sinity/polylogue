@@ -106,6 +106,33 @@ def _create_current_database(path: Path) -> None:
         conn.commit()
 
 
+def test_explicit_migration_refuses_an_unmarked_historical_v1_before_writes(tmp_path: Path) -> None:
+    """The production migration route needs the fresh-lineage marker, not v1 alone.
+
+    Anti-vacuity: removing the format admission at the execution route lets this
+    historical file reach migration reconciliation and changes its observable
+    error from a lineage refusal to a guessed compatibility path.
+    """
+    source_path = tmp_path / "source.db"
+    with sqlite3.connect(source_path) as conn:
+        conn.execute("CREATE TABLE historical_v1 (id INTEGER PRIMARY KEY) STRICT")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    before = source_path.read_bytes()
+
+    with pytest.raises(DurableChangeTrainError, match="archive format marker is missing"):
+        execute_durable_change_train(
+            tmp_path,
+            ArchiveTier.SOURCE,
+            backup_manifest=None,
+            daemon_stopped_evidence_ref="proof:test-daemon-stopped",
+            single_writer_evidence_ref="proof:test-single-writer",
+            release_archive_ownership=lambda: pytest.fail("lineage refusal must precede writer release"),
+        )
+
+    assert source_path.read_bytes() == before
+
+
 def _claim(tier: ArchiveTier, sql: str = _ADDITIVE_SQL) -> DurableMigrationClaim:
     return durable_migration_claim_for_sql(
         tier,
@@ -523,6 +550,15 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
 
 
 def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A marker-admitted v1 archive advances through the retained v2 route.
+
+    Anti-vacuity: removing the fresh floor from durable train discovery leaves
+    slot 2 occupied by the retired history; removing marker admission lets an
+    unmarked v1 tier enter this production route.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
     package_root = tmp_path / "fixture_migrations_maintenance"
     source_package = package_root / "source"
     source_package.mkdir(parents=True)
@@ -576,10 +612,6 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
         "polylogue.storage.sqlite.durable_change_train._migration_package",
         lambda _tier: "fixture_migrations_maintenance.source",
     )
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.durable_change_train.DURABLE_MIGRATION_ADOPTION_FLOORS",
-        {ArchiveTier.SOURCE: 1, ArchiveTier.USER: 1},
-    )
     versions = dict(ARCHIVE_VERSION_BY_TIER)
     versions[ArchiveTier.SOURCE] = 2
     monkeypatch.setattr("polylogue.storage.sqlite.migration_runner.ARCHIVE_VERSION_BY_TIER", versions)
@@ -587,13 +619,10 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
 
     monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
     ddl = dict(ARCHIVE_DDL_BY_TIER)
-    ddl[ArchiveTier.SOURCE] = (
-        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; CREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;"
-    )
+    ddl[ArchiveTier.SOURCE] = ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE] + "\n" + sql
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
-    _create_current_database(db_path)
 
     released: list[bool] = []
     result = execute_durable_change_train(
@@ -615,7 +644,7 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
 
     released_bytes = db_path.read_bytes()
     db_path.unlink()
-    with pytest.raises(DurableChangeTrainError, match="durable tier is missing"):
+    with pytest.raises(DurableChangeTrainError, match="missing durable tier"):
         execute_durable_change_train(
             tmp_path,
             ArchiveTier.SOURCE,
@@ -629,9 +658,7 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
-    with pytest.raises(
-        DurableChangeTrainError, match="(?:released source train .* expects live v2|continuity proof failed)"
-    ):
+    with pytest.raises(DurableChangeTrainError, match="historical version-1 schema"):
         execute_durable_change_train(
             tmp_path,
             ArchiveTier.SOURCE,

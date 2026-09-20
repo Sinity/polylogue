@@ -149,7 +149,11 @@ def assert_archive_format_lineage(archive_root: Path) -> None:
         raise RuntimeError(f"archive format marker does not identify {ARCHIVE_FORMAT_LINEAGE}: {marker_path}")
     versions = payload.get("tier_versions")
     fingerprints = payload.get("durable_schema_fingerprints")
-    if not isinstance(versions, dict) or versions != _archive_tier_versions():
+    if (
+        not isinstance(versions, dict)
+        or set(versions) != {tier.value for tier in ArchiveTier}
+        or any(versions.get(tier.value) != ARCHIVE_FORMAT_FLOOR_VERSION for tier in _DURABLE_FORMAT_TIERS)
+    ):
         raise RuntimeError(f"archive format marker has an incomplete six-tier floor: {marker_path}")
     if not isinstance(fingerprints, dict) or set(fingerprints) != {tier.value for tier in _DURABLE_FORMAT_TIERS}:
         raise RuntimeError(f"archive format marker has incomplete durable schema evidence: {marker_path}")
