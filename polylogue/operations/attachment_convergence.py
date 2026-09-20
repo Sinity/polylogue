@@ -25,6 +25,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_blob_refs,
 )
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.queries.attachment_records import (
+    contested_native_id_predicate,
+    unambiguous_native_id_sql,
+)
 
 logger = get_logger(__name__)
 
@@ -42,41 +46,70 @@ class AttachmentConvergenceResult:
     #: operator durably excised. Counted separately from ``terminal`` so a
     #: privacy refusal is never read as an ordinary transport failure.
     excised: int = 0
+    #: Unfetched Drive references whose provider identity is contested -- two
+    #: observations of one id kind for one reference. They are neither
+    #: candidates nor terminal: downloading under a lexically chosen id binds
+    #: bytes to the wrong attachment, and marking them ``unavailable`` would
+    #: assert a permanent absence nobody measured. They stay ``unfetched`` and
+    #: out of the bounded window so one contested reference cannot starve it.
+    unresolved_identity: int = 0
 
     @property
     def complete(self) -> bool:
         return self.deferred == 0
 
 
+#: Drive-hosted references still owed bytes. ``upload_origin`` and
+#: ``acquisition_status`` decide eligibility; identity decides resolvability.
+_UNFETCHED_DRIVE_REFERENCE_SQL = """
+    FROM attachments AS a
+    JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id
+    JOIN sessions AS s ON s.session_id = r.session_id
+    WHERE a.acquisition_status = 'unfetched'
+      AND r.upload_origin = 'drive'
+"""
+
+
 def _candidate_rows(conn: sqlite3.Connection, *, limit: int) -> list[sqlite3.Row]:
+    """One bounded window of references with a resolvable provider identity.
+
+    The download coordinate comes from :func:`unambiguous_native_id_sql`, the
+    same selection the session reads use, so what the operator is shown and
+    what the downloader asks for cannot diverge. A reference whose identity is
+    contested is excluded here rather than downloaded under a lexical winner;
+    :func:`_unresolved_identity_count` reports it.
+    """
     conn.row_factory = sqlite3.Row
     return list(
         conn.execute(
-            """
+            f"""
             SELECT a.attachment_id, r.ref_id, r.session_id, r.upload_origin,
                    r.source_url, s.raw_id,
                    COALESCE(
-                       (SELECT native_id FROM attachment_native_ids
-                        WHERE ref_id = r.ref_id AND id_kind = 'file'
-                        ORDER BY native_id LIMIT 1),
-                       (SELECT native_id FROM attachment_native_ids
-                        WHERE ref_id = r.ref_id AND id_kind = 'drive'
-                        ORDER BY native_id LIMIT 1),
-                       (SELECT native_id FROM attachment_native_ids
-                        WHERE ref_id = r.ref_id AND id_kind = 'attachment'
-                        ORDER BY native_id LIMIT 1)
+                       ({unambiguous_native_id_sql("file")}),
+                       ({unambiguous_native_id_sql("drive")}),
+                       ({unambiguous_native_id_sql("attachment")})
                    ) AS provider_file_id
-            FROM attachments AS a
-            JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id
-            JOIN sessions AS s ON s.session_id = r.session_id
-            WHERE a.acquisition_status = 'unfetched'
-              AND r.upload_origin = 'drive'
+            {_UNFETCHED_DRIVE_REFERENCE_SQL}
+              AND NOT {contested_native_id_predicate()}
             ORDER BY a.attachment_id, r.ref_id
             LIMIT ?
             """,
             (max(0, int(limit)),),
         ).fetchall()
     )
+
+
+def _unresolved_identity_count(conn: sqlite3.Connection) -> int:
+    """How many owed Drive references this pass refused to resolve at all."""
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*)
+        {_UNFETCHED_DRIVE_REFERENCE_SQL}
+          AND {contested_native_id_predicate()}
+        """
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 def _permanent_failure(exc: BaseException) -> bool:
@@ -183,9 +216,22 @@ def converge_drive_attachments(
     this pass off the writer -- the daemon stage engine does -- must supply the
     opener rather than hand in connections it could not have opened yet.
     """
+    unresolved_identity = _unresolved_identity_count(index_conn)
+    if unresolved_identity:
+        # Not a transport failure and not a terminal absence: the archive
+        # holds two provider identities for one reference and no evidence
+        # that ranks them. Name it every pass rather than letting a silent
+        # lexical choice make the ambiguity invisible.
+        emit(
+            "operations.attachment_convergence.identity_unresolved",
+            level=WARNING,
+            outcome="degraded",
+            unresolved_identity=unresolved_identity,
+            reason="two native ids of one kind for one attachment reference",
+        )
     rows = _candidate_rows(index_conn, limit=limit)
     if not rows:
-        return AttachmentConvergenceResult()
+        return AttachmentConvergenceResult(unresolved_identity=unresolved_identity)
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     acquired_refs: list[ArchiveSourceBlobRef] = []
     acquired_rows: list[tuple[str, bytes, int]] = []
@@ -367,6 +413,7 @@ def converge_drive_attachments(
         terminal=len(terminal_ids),
         deferred=deferred,
         excised=len(excised_ids),
+        unresolved_identity=unresolved_identity,
     )
 
 

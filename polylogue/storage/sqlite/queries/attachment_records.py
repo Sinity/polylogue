@@ -11,6 +11,65 @@ from polylogue.core.types import SessionId
 from polylogue.storage.runtime import AttachmentRecord
 from polylogue.storage.search.models import SessionSearchEvidenceRow
 
+#: Kinds of provider-native attachment identity that a read or an acquisition
+#: resolves to exactly one value.
+ATTACHMENT_NATIVE_ID_KINDS: tuple[str, ...] = ("attachment", "file", "drive")
+
+
+def unambiguous_native_id_sql(id_kind: str, *, ref_alias: str = "r") -> str:
+    """Correlated selection of one reference's native id for ``id_kind``.
+
+    ``attachment_native_ids`` is keyed ``(ref_id, id_kind, native_id)``, so the
+    schema admits two observations of one kind for one reference even though
+    every current writer produces at most one
+    (``archive_tiers/write.py:_attachment_native_id_values`` reads one
+    ``ParsedAttachment`` field per kind, and ``_write_attachments`` clears a
+    reference's rows before rewriting them). The two readers here and the
+    Drive downloader used to answer that with ``ORDER BY native_id LIMIT 1``:
+    lexical order, which is neither provider authority nor a revision. On
+    contested identity it picked a winner silently, and every consumer then
+    displayed, downloaded and re-bound under it.
+
+    Nothing in this table carries revision or provider-currency evidence, so
+    the only authority available is that the observation is unique.
+    Ambiguity therefore resolves to ``NULL`` -- an explicitly unresolved
+    identity -- while every stored alias stays in the table for history and
+    for :func:`search_attachment_identity_evidence_hits`, which deliberately
+    joins all of them.
+
+    ``GROUP BY``/``HAVING`` rather than a counting subquery keeps the scan on
+    the ``(ref_id, id_kind)`` prefix of the primary key.
+    """
+    if id_kind not in ATTACHMENT_NATIVE_ID_KINDS:
+        raise ValueError(f"unsupported attachment native id kind: {id_kind!r}")
+    return (
+        "SELECT ani.native_id FROM attachment_native_ids ani "
+        f"WHERE ani.ref_id = {ref_alias}.ref_id AND ani.id_kind = '{id_kind}' "
+        "GROUP BY ani.ref_id HAVING COUNT(*) = 1"
+    )
+
+
+def contested_native_id_predicate(*, ref_alias: str = "r") -> str:
+    """SQL predicate: this reference carries a contested native identity.
+
+    The complement of :func:`unambiguous_native_id_sql` over the kinds an
+    acquisition resolves. A candidate matching it has no single downloadable
+    identity, so it must stay an explicit unresolved target rather than
+    becoming a lexical guess or a terminal "unavailable" claim.
+    """
+    kinds = ", ".join(f"'{kind}'" for kind in ATTACHMENT_NATIVE_ID_KINDS)
+    return (
+        "EXISTS (SELECT 1 FROM attachment_native_ids ani "
+        f"WHERE ani.ref_id = {ref_alias}.ref_id AND ani.id_kind IN ({kinds}) "
+        "GROUP BY ani.ref_id, ani.id_kind HAVING COUNT(*) > 1)"
+    )
+
+
+#: The three identity columns both session reads project, composed once.
+_NATIVE_ID_COLUMNS = ",\n".join(
+    f"            ({unambiguous_native_id_sql(kind)}) AS {kind}_native_id" for kind in ATTACHMENT_NATIVE_ID_KINDS
+)
+
 
 def _row_value(row: aiosqlite.Row, key: str) -> object | None:
     """Read an optional column from a row, returning None if the column is absent."""
@@ -50,7 +109,7 @@ async def get_attachments(
 ) -> list[AttachmentRecord]:
     """Get all attachments for a session."""
     cursor = await conn.execute(
-        """
+        f"""
         SELECT
             a.attachment_id,
             a.media_type AS mime_type,
@@ -65,21 +124,7 @@ async def get_attachments(
             r.upload_origin,
             r.direction,
             r.producer_ref,
-            (
-                SELECT native_id FROM attachment_native_ids ani
-                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'attachment'
-                ORDER BY native_id LIMIT 1
-            ) AS attachment_native_id,
-            (
-                SELECT native_id FROM attachment_native_ids ani
-                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'file'
-                ORDER BY native_id LIMIT 1
-            ) AS file_native_id,
-            (
-                SELECT native_id FROM attachment_native_ids ani
-                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'drive'
-                ORDER BY native_id LIMIT 1
-            ) AS drive_native_id
+{_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
         WHERE r.session_id = ?
@@ -116,21 +161,7 @@ async def get_attachments_batch(
             r.upload_origin,
             r.direction,
             r.producer_ref,
-            (
-                SELECT native_id FROM attachment_native_ids ani
-                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'attachment'
-                ORDER BY native_id LIMIT 1
-            ) AS attachment_native_id,
-            (
-                SELECT native_id FROM attachment_native_ids ani
-                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'file'
-                ORDER BY native_id LIMIT 1
-            ) AS file_native_id,
-            (
-                SELECT native_id FROM attachment_native_ids ani
-                WHERE ani.ref_id = r.ref_id AND ani.id_kind = 'drive'
-                ORDER BY native_id LIMIT 1
-            ) AS drive_native_id
+{_NATIVE_ID_COLUMNS}
         FROM attachments a
         JOIN attachment_refs r ON a.attachment_id = r.attachment_id
         WHERE r.session_id IN ({placeholders})

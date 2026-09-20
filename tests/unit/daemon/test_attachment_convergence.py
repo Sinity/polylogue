@@ -441,3 +441,83 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
     assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 2
     index.close()
     source.close()
+
+
+def test_contested_provider_identity_is_refused_not_downloaded_under_a_lexical_winner(
+    tmp_path: Path,
+) -> None:
+    """Two 'file' ids for one reference leave it unresolved, not guessed (polylogue-vnx8v).
+
+    ``attachment_native_ids`` is keyed ``(ref_id, id_kind, native_id)``, so an
+    archive can hold two provider file ids for one attachment reference.
+    ``ORDER BY native_id LIMIT 1`` answered that by lexical order and handed
+    the winner to ``download_bytes`` -- binding whatever bytes came back to an
+    attachment whose identity the archive never resolved. The candidate scan
+    now selects only a unique observation, so a contested reference is
+    reported and left ``unfetched``: an explicit unresolved download target
+    rather than a lexical guess or a false terminal ``unavailable``.
+
+    Anti-vacuity (both verified by mutation): dropping the
+    ``AND NOT contested_native_id_predicate()`` clause from ``_candidate_rows``
+    makes ``calls`` ``["drive-file-contested-a", "drive-file-resolvable"]`` and
+    flips the contested row to ``acquired``; making the refusal terminal
+    instead of leaving the row owed makes the ``unfetched`` assertion red.
+    Both stored aliases are asserted to survive, so "resolve the ambiguity by
+    deleting one observation" also fails.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    contested = _session("contested", file_id="drive-file-contested-a")
+    write_parsed_session_to_archive(index, contested, raw_id="contested-raw")
+    resolvable = _session("resolvable", file_id="drive-file-resolvable")
+    write_parsed_session_to_archive(index, resolvable, raw_id="resolvable-raw")
+
+    ref_id = index.execute("SELECT r.ref_id FROM attachment_refs AS r WHERE r.session_id LIKE '%contested'").fetchone()[
+        "ref_id"
+    ]
+    # A second observation of the same id kind for the same reference: the
+    # state the table's primary key admits and the readers had to answer.
+    index.execute(
+        "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES (?, 'file', ?)",
+        (ref_id, "drive-file-contested-z"),
+    )
+    index.commit()
+
+    source = sqlite3.connect(tmp_path / "source.db")
+    source.row_factory = sqlite3.Row
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    calls: list[str] = []
+
+    def fetch(file_id: str) -> bytes:
+        calls.append(file_id)
+        return b"bytes for %s" % file_id.encode()
+
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=fetch)
+
+    assert calls == ["drive-file-resolvable"]
+    assert result.unresolved_identity == 1
+    assert result.inspected == 1
+    assert result.terminal == 0
+
+    statuses = {
+        str(row["ref_id"]): str(row["acquisition_status"])
+        for row in index.execute(
+            "SELECT r.ref_id, a.acquisition_status FROM attachments AS a "
+            "JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id"
+        )
+    }
+    assert statuses[ref_id] == "unfetched"
+    assert sorted(statuses.values()) == ["acquired", "unfetched"]
+
+    # Refusing the ambiguity must not resolve it by discarding an observation.
+    surviving = sorted(
+        str(row[0])
+        for row in index.execute(
+            "SELECT native_id FROM attachment_native_ids WHERE ref_id = ? AND id_kind = 'file'",
+            (ref_id,),
+        )
+    )
+    assert surviving == ["drive-file-contested-a", "drive-file-contested-z"]
+    index.close()
+    source.close()
