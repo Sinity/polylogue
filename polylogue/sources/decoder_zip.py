@@ -17,7 +17,7 @@ from polylogue.archive.zip_admission import (
     ZipBombError,
     open_bounded_zip_entry,
 )
-from polylogue.core.content_identity import bounded_payload_content_identity
+from polylogue.core.content_identity import STRUCTURAL_IDENTITY_MAX_BYTES, bounded_payload_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
@@ -309,13 +309,14 @@ def process_zip(
                             stored_handle, size=blob_size, byte_digest=blob_hash
                         )
                     if identity_skipped is not None:
-                        logger.warning(
-                            "zip member %s:%s is %d bytes; structural content identity skipped (%s), "
-                            "byte digest used instead",
-                            zip_path,
-                            name,
-                            blob_size,
-                            identity_skipped,
+                        emit(
+                            "sources.zip.structural_identity_skipped",
+                            level=WARNING,
+                            outcome="degraded",
+                            reason=identity_skipped,
+                            entry=name,
+                            blob_bytes=blob_size,
+                            identity_ceiling_bytes=STRUCTURAL_IDENTITY_MAX_BYTES,
                         )
                     receipt_id = publication_receipt_id(store, blob_hash)
                     flush_blob_publications(store)

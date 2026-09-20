@@ -14,13 +14,17 @@ import ijson
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
-from polylogue.core.content_identity import bounded_payload_content_identity, payload_content_identity
+from polylogue.core.content_identity import (
+    STRUCTURAL_IDENTITY_MAX_BYTES,
+    bounded_payload_content_identity,
+    payload_content_identity,
+)
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.core.raw_coordinates import MemberAddressingMode
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionReceipt,
@@ -37,8 +41,6 @@ from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
 from .parsers.base import RawSessionData
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
-
-logger = get_logger(__name__)
 
 _ZIP_SNIFF_MEMBER_LIMIT = 64
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
@@ -550,11 +552,14 @@ def stream_preserved_zip_entry_raw_data(
             stored_handle, size=blob_size, byte_digest=blob_hash
         )
     if identity_skipped is not None:
-        logger.warning(
-            "acquired member %s is %d bytes; structural content identity skipped (%s), byte digest used instead",
-            context.source_path,
-            blob_size,
-            identity_skipped,
+        emit(
+            "sources.acquisition.structural_identity_skipped",
+            level=WARNING,
+            outcome="degraded",
+            reason=identity_skipped,
+            source_path=context.source_path,
+            blob_bytes=blob_size,
+            identity_ceiling_bytes=STRUCTURAL_IDENTITY_MAX_BYTES,
         )
     from polylogue.storage.blob_publication import publication_receipt_id
 

@@ -36,7 +36,7 @@ class _ReadRecorder(io.BytesIO):
         super().__init__(data)
         self.read_sizes: list[int | None] = []
 
-    def read(self, size: int | None = -1, /) -> bytes:  # type: ignore[override]
+    def read(self, size: int | None = -1, /) -> bytes:
         self.read_sizes.append(size)
         return super().read(-1 if size is None else size)
 
@@ -55,15 +55,9 @@ def test_tail_scan_never_reads_more_than_one_chunk_at_a_time(tmp_path: Path, mon
     path.write_bytes(b"x" * (64 * 40))
 
     recorder: dict[str, _ReadRecorder] = {}
-    real_open = Path.open
 
-    def _recording_open(self: Path, *args: object, **kwargs: object) -> object:
-        handle = real_open(self, *args, **kwargs)  # type: ignore[arg-type]
-        try:
-            data = handle.read()
-        finally:
-            handle.close()
-        recorder["handle"] = _ReadRecorder(bytes(data))
+    def _recording_open(self: Path, *_args: object, **_kwargs: object) -> _ReadRecorder:
+        recorder["handle"] = _ReadRecorder(self.read_bytes())
         return recorder["handle"]
 
     monkeypatch.setattr(Path, "open", _recording_open)

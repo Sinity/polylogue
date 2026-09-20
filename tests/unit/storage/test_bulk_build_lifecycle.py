@@ -176,7 +176,7 @@ def _stable_finished_table_digests(path: Path) -> dict[str, str]:
     return _logical_table_digests(path, tables=tables)
 
 
-def _finished_output_snapshot(path: Path) -> tuple[dict[str, str], list[tuple[object, ...]], list[tuple[object, ...]]]:
+def _finished_output_snapshot(path: Path) -> tuple[dict[str, str], list[tuple[object, ...]]]:
     """The completed archive product, not FTS5's implementation tables."""
     with sqlite3.connect(path) as conn:
         return _stable_finished_table_digests(path), _fts_rows(conn)
