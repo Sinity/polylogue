@@ -10,26 +10,27 @@ calls out).
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from polylogue import Polylogue
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
 
 
 def _init_tiers(archive_root: Path, *, with_user: bool = True) -> None:
-    archive_root.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        initialize_archive_tier(conn, ArchiveTier.SOURCE)
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
-    if with_user:
-        with sqlite3.connect(archive_root / "user.db") as conn:
-            initialize_archive_tier(conn, ArchiveTier.USER)
+    """Bootstrap through the production owner, not a hand-rolled tier set.
+
+    polylogue-r29bv routed ``set_setting`` onto the actuator/executor cycle,
+    so the write now opens the archive the way every other facade mutation
+    does -- which means the root has to be a real archive (format marker,
+    audit tier) rather than three tier files in a directory.
+    """
+
+    initialize_active_archive_root(archive_root)
+    if not with_user:
+        (archive_root / "user.db").unlink()
 
 
 async def test_get_setting_returns_none_when_unset(tmp_path: Path) -> None:
@@ -83,8 +84,11 @@ async def test_set_setting_raises_when_user_tier_missing(tmp_path: Path) -> None
     archive_root = tmp_path / "archive"
     _init_tiers(archive_root, with_user=False)
 
+    # The refusal moved with the route (polylogue-r29bv): the archive open
+    # that every executor-routed mutation performs refuses first, naming the
+    # missing durable tier, instead of the write discovering it later.
     async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        with pytest.raises(ValueError, match="user settings tier is not initialized"):
+        with pytest.raises(RuntimeError, match="names a missing durable tier"):
             await poly.set_setting("subscription_tier", "pro")
 
 

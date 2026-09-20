@@ -594,6 +594,32 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-set-user-setting",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Insert-or-update one typed user_settings row. Key/value validation, the durable user-tier write and "
+            "its audit record run through OperationExecutor/SetUserSettingActuator with role_only confirmation."
+        ),
+        surfaces=("facade", "cli"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbWrite",),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+        allowed_surfaces=("api", "cli"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="set-user-setting",
+                target_kinds=("setting",),
+                required_capabilities=("archive.set_setting",),
+                destructive_class="reversible",
+                required_confirmation="role_only",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("none",),
+            ),
+        ),
+    ),
+    OperationSpec(
         name="mutate-import-annotation-batch",
         kind=OperationKind.IMPORT,
         description=(

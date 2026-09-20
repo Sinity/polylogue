@@ -50,6 +50,7 @@ from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 if TYPE_CHECKING:
+    from polylogue.core.json import JSONValue
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -1342,6 +1343,93 @@ class CaptureAssertionCandidateActuator(_FailClosedRecovery):
             target_refs=plan.target_refs,
             affected_count=0 if existing is not None else 1,
             detail="idempotent_replay" if existing is not None else None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"envelope": envelope},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SetUserSettingArgs:
+    """Inputs for one typed ``user_settings`` upsert."""
+
+    archive: ArchiveStore
+    setting_key: str
+    value: object
+    author_ref: str
+
+
+@dataclass(frozen=True, slots=True)
+class SetUserSettingActuator(_FailClosedRecovery):
+    """Actuator for ``mutate-set-user-setting``: a reversible user.db setting upsert.
+
+    polylogue-r29bv: ``polylogue setting set`` wrote ``user.db`` directly from
+    the facade, with no preview, no authorization record and no audit row --
+    a wrong-owner write to the archive's one irreplaceable tier. Routing it
+    through the executor cycle gives it the same three records every other
+    user-tier mutation produces.
+
+    The key's own validator is the gate on whether the value is writable at
+    all, and it runs in ``prepare``: an unknown key or a rejected value must
+    refuse before an authorization is issued, not after.
+    """
+
+    operation: str = "mutate-set-user-setting"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: SetUserSettingArgs) -> MutationPlan:
+        from polylogue.storage.sqlite.archive_tiers.user_settings_write import validate_user_setting
+
+        setting_key = args.setting_key.strip()
+        if not setting_key:
+            raise ValueError("setting_key cannot be empty")
+        author_ref = normalize_object_ref_text(args.author_ref)
+        validate_user_setting(setting_key, cast("JSONValue", args.value))
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(f"setting:{setting_key}",),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "setting_key": setting_key,
+                "value": args.value,
+                "author_ref": author_ref,
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: SetUserSettingArgs) -> MutationReceipt:
+        from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
+
+        context = plan.context
+        setting_key = str(context["setting_key"])
+        user_db = args.archive.user_db_path
+        if not user_db.exists():
+            raise ValueError("user settings tier is not initialized")
+        try:
+            conn = open_connection(user_db)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                envelope = set_user_setting(
+                    conn,
+                    setting_key,
+                    cast("JSONValue", context["value"]),
+                    author_ref=str(context["author_ref"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"failed to set user setting {setting_key!r}: {exc}") from exc
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=1,
+            detail=None,
             receipt_ref=None,
             applied_at=plan.prepared_at,
             domain_receipt={"envelope": envelope},

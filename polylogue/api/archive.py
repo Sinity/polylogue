@@ -53,7 +53,7 @@ from polylogue.context.scheduler import (
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
 from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
-from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.core.json import JSONDocument
 from polylogue.core.refs import (
     EvidenceRef,
     ObjectRef,
@@ -1737,37 +1737,6 @@ def _archive_list_settings(config: Config) -> list[ArchiveUserSettingEnvelope]:
             conn.close()
     except (sqlite3.Error, ValueError):
         return []
-
-
-def _archive_set_setting(
-    config: Config,
-    setting_key: str,
-    value: object,
-    *,
-    author_ref: str = "user:local",
-) -> ArchiveUserSettingEnvelope:
-    """Insert-or-update one typed ``user_settings`` row.
-
-    ``user.db`` must already be initialized (an archive that has never
-    ingested anything has no durable tier to write into yet).
-    """
-
-    from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
-
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        raise ValueError("user settings tier is not initialized")
-    try:
-        conn = open_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            envelope = set_user_setting(conn, setting_key, cast(JSONValue, value), author_ref=author_ref)
-            conn.commit()
-            return envelope
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        raise RuntimeError(f"failed to set user setting {setting_key!r}: {exc}") from exc
 
 
 def _read_source_and_index(
@@ -8655,6 +8624,23 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         Raises :class:`ValueError` for an unknown ``setting_key`` or a
         value the key's validator rejects (see
         :mod:`polylogue.storage.sqlite.archive_tiers.user_settings_write`).
+
+        polylogue-r29bv: this used to open ``user.db`` and write it directly,
+        with no preview, no authorization record and no audit row -- the one
+        durable tier the archive cannot rebuild, mutated outside the
+        actuator/executor cycle every other user-tier write goes through.
         """
 
-        return _archive_set_setting(self.config, setting_key, value, author_ref=author_ref)
+        from polylogue.operations.mutation_actuators import SetUserSettingActuator, SetUserSettingArgs
+
+        receipt, _plan = self._execute_facade_mutation(
+            SetUserSettingActuator(),
+            lambda archive: SetUserSettingArgs(
+                archive=archive,
+                setting_key=setting_key,
+                value=value,
+                author_ref=author_ref,
+            ),
+            capability="archive.set_setting",
+        )
+        return cast("ArchiveUserSettingEnvelope", receipt.domain_receipt["envelope"])

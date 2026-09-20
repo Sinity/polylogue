@@ -104,6 +104,7 @@ class SessionInsightStatusSnapshot:
     context_snapshot_count: int = 0
     thread_count: int = 0
     tag_rollup_count: int = 0
+    provider_usage_row_count: int = 0
     missing_profile_row_count: int = 0
     stale_profile_row_count: int = 0
     orphan_profile_row_count: int = 0
@@ -119,6 +120,8 @@ class SessionInsightStatusSnapshot:
     stale_thread_count: int = 0
     orphan_thread_count: int = 0
     expected_tag_rollup_count: int = 0
+    expected_provider_usage_row_count: int = 0
+    missing_provider_usage_row_count: int = 0
     stale_tag_rollup_count: int = 0
     profile_evidence_fts_count: int = 0
     profile_evidence_fts_duplicate_count: int = 0

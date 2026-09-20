@@ -16,6 +16,7 @@ import pickle
 import sqlite3
 import time
 import unicodedata
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from contextlib import AsyncExitStack, closing
@@ -546,6 +547,43 @@ def _incoming_write_regresses_attachment_coverage(
     ).fetchone()
     existing_acquired = int(existing_acquired_row[0]) if existing_acquired_row is not None else 0
     return incoming_acquired < existing_acquired
+
+
+def _incoming_write_carries_distinct_messages(
+    conn: sqlite3.Connection,
+    payload: SessionWritePayload,
+    session_to_write: ParsedSession,
+) -> bool:
+    """Return whether ``session_to_write`` holds message content the archive lacks.
+
+    polylogue-5uoed: the attachment tie-break above decides the tie on
+    attachment coverage ALONE. That is sound for the case it was measured on
+    -- a Drive re-acquisition whose message content is byte-identical and
+    whose only difference is which attachment bytes were fetched -- but it
+    generalizes wrongly: a genuinely different revision whose content-derived
+    freshness happens to tie can be skipped for carrying fewer attachments,
+    and its distinct messages then never land. Skipping is counted, not
+    silent, but the content is still lost on a fresh import.
+
+    Comparing composed message signatures is the narrowest evidence that
+    separates the two cases. ``_composed_db_signatures`` returns the stored
+    session's composed transcript (inherited prefix + own tail), the same
+    view the incoming full parse represents, and signatures carry role plus
+    every block's type/text/tool name/tool input -- so a revision that merely
+    re-states what is already stored is a multiset subset and stays skippable,
+    while one that adds or revises any message is not. The measured
+    aistudio-drive shape (identical messages, differing attachment coverage)
+    is a subset by construction and remains blocked.
+
+    Multiplicity matters: two byte-identical messages in the incoming parse
+    against one stored occurrence is new content, so the comparison counts
+    occurrences rather than testing set membership.
+    """
+    existing_signatures = Counter(
+        signature for _message_id, signature in _composed_db_signatures(conn, payload.session_id)
+    )
+    incoming_signatures = Counter(_parsed_message_signature(message) for message in session_to_write.messages)
+    return any(count > existing_signatures[signature] for signature, count in incoming_signatures.items())
 
 
 #: Session-event families whose payload names a tool-result sidecar this
@@ -1108,6 +1146,11 @@ def _write_session(
             and existing_raw_id != payload.raw_id
             and not drive_revision_proven_winner
             and _incoming_write_regresses_attachment_coverage(conn, payload, session_to_write)
+            # Attachment coverage alone cannot tell a re-acquisition of the
+            # same transcript from a genuinely different revision that happens
+            # to tie on content-derived freshness (polylogue-5uoed). Skipping
+            # the latter loses its distinct messages on a fresh import.
+            and not _incoming_write_carries_distinct_messages(conn, payload, session_to_write)
         ):
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count

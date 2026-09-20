@@ -1584,6 +1584,82 @@ def test_write_session_freshness_tie_regression_without_lineage_still_blocks(tmp
         assert row["raw_id"] == "raw-no-lineage-first"
 
 
+def test_write_session_freshness_tie_with_distinct_messages_is_not_skipped(tmp_path: Path) -> None:
+    """polylogue-5uoed: the attachment tie-break must not discard new content.
+
+    Same shape as the negative control above -- tied content-derived
+    freshness, different ``raw_id``, no lineage governance evidence, and an
+    incoming revision carrying FEWER acquired attachments -- with one
+    difference: the incoming revision also carries a message the archive does
+    not hold. Deciding that tie on attachment count alone skips the write and
+    the distinct message never lands, which on a fresh import is lost content.
+
+    Anti-vacuity: drop the ``_incoming_write_carries_distinct_messages`` term
+    from the caller gate in ``ingest_batch/_core.py`` and this goes red --
+    ``changed_second`` comes back ``False``, ``skipped_sessions`` is 1, and
+    ``m-2`` is absent from ``messages``. The negative control immediately
+    above is the other half of the pair: with the SAME message set it must
+    still be skipped, so this cannot be satisfied by disabling the tie-break.
+    """
+    with open_connection(tmp_path / "index.db") as conn:
+        blob_publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        session_id = "aistudio-drive:tie-distinct-messages"
+        tied_timestamp = "2026-07-18T17:46:10Z"
+        first_message = _message_tuple(
+            "m-1",
+            session_id,
+            role="user",
+            text="hi",
+            content_hash="msg-hash-tie-distinct-1",
+            sort_key=1777636800.0,
+        )
+        second_message = _message_tuple(
+            "m-2",
+            session_id,
+            role="assistant",
+            text="a reply the archive has never seen",
+            content_hash="msg-hash-tie-distinct-2",
+            sort_key=1777636801.0,
+        )
+        first_session = _session_data(
+            session_id,
+            content_hash="hash-tie-distinct-first",
+            raw_id="raw-distinct-first",
+            message_tuples=[first_message],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=b"acquired bytes")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "m-1")],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher)
+        conn.commit()
+        assert changed_first is True
+
+        second_session = _session_data(
+            session_id,
+            content_hash="hash-tie-distinct-second",
+            raw_id="raw-distinct-second",
+            message_tuples=[first_message, second_message],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_second, counts_second = _write_session(conn, second_session, blob_publisher=blob_publisher)
+        conn.commit()
+
+        assert changed_second is True
+        assert counts_second["skipped_sessions"] == 0
+        native_ids = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT native_id FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+        }
+        assert native_ids == {"m-1", "m-2"}
+
+
 def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path: Path) -> None:
     """bd polylogue-8ac0: bytes already streamed into the blob store during
     sidecar discovery (ChatGPT ``.dat`` asset acquisition) are recorded

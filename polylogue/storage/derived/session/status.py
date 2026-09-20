@@ -226,6 +226,7 @@ SESSION_OBSERVED_EVENT_COUNT_SQL = (
 SESSION_CONTEXT_SNAPSHOT_COUNT_SQL = f"{context_snapshot_relation_sql()} SELECT COUNT(*) FROM context_snapshots"
 THREAD_COUNT_SQL = "SELECT COUNT(*) FROM threads"
 SESSION_TAG_ROLLUP_COUNT_SQL = "SELECT COUNT(*) FROM session_tag_rollups"
+SESSION_PROVIDER_USAGE_ROW_COUNT_SQL = "SELECT COUNT(*) FROM session_model_usage"
 TOTAL_SESSIONS_SQL = "SELECT COUNT(*) FROM sessions"
 HOT_SOURCE_GRACE_SECONDS = 600
 HOT_SOURCE_READY_CUTOFF_SQL = f"(strftime('%s', 'now') - {HOT_SOURCE_GRACE_SECONDS})"
@@ -243,6 +244,41 @@ MISSING_SESSION_PROFILE_COUNT_SQL = """
       AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
 """
 MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
+#: polylogue-ix65t: the provider token/cost rollup (``session_model_usage``)
+#: is refreshed per session by the insight rebuild
+#: (``rebuild._refresh_provider_usage_rollup``) but had no readiness surface at
+#: all, so the report claimed completeness while one derived relation was never
+#: inspected. A rollup row is expected for every (session, model) pair named by
+#: persisted evidence -- a message carrying a model name, or a provider usage
+#: event -- which is exactly the set ``_reconcile_session_model_usage_rows``
+#: keeps and ``_aggregate_message_tokens_into_model_usage`` populates.
+_PROVIDER_USAGE_EXPECTED_PAIRS_SQL = """
+    SELECT DISTINCT m.session_id AS session_id, m.model_name AS model_name
+    FROM messages AS m
+    JOIN sessions AS c ON c.session_id = m.session_id
+    WHERE m.model_name IS NOT NULL
+      AND m.model_name != ''
+      AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
+    UNION
+    SELECT DISTINCT e.session_id AS session_id, TRIM(e.model_name) AS model_name
+    FROM session_provider_usage_events AS e
+    JOIN sessions AS c ON c.session_id = e.session_id
+    WHERE TRIM(COALESCE(e.model_name, '')) != ''
+      AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
+"""
+_PROVIDER_USAGE_EXPECTED_PAIRS_SQL = _PROVIDER_USAGE_EXPECTED_PAIRS_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
+EXPECTED_PROVIDER_USAGE_ROW_COUNT_SQL = f"SELECT COUNT(*) FROM ({_PROVIDER_USAGE_EXPECTED_PAIRS_SQL})"
+MISSING_PROVIDER_USAGE_ROW_COUNT_SQL = f"""
+    SELECT COUNT(*)
+    FROM ({_PROVIDER_USAGE_EXPECTED_PAIRS_SQL}) AS expected
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM session_model_usage AS u
+        WHERE u.session_id = expected.session_id
+          AND u.model_name = expected.model_name
+    )
+"""
+
 ORPHAN_SESSION_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_profiles sp
@@ -456,6 +492,18 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
     ),
     # Presence probes only. The run projections above select through these, and
     # ``_VIEW_DEPENDENCIES`` can only name a relation the probe reports on.
+    SessionInsightTableDescriptor(
+        key="session_model_usage",
+        table_name="session_model_usage",
+        count_key="provider_usage_row_count",
+        count_sql=SESSION_PROVIDER_USAGE_ROW_COUNT_SQL,
+    ),
+    # Presence probe only: the provider-usage readiness counts read it as
+    # evidence for what a rollup row is expected to exist for.
+    SessionInsightTableDescriptor(
+        key="session_provider_usage_events",
+        table_name="session_provider_usage_events",
+    ),
     SessionInsightTableDescriptor(key="messages", table_name="messages"),
     SessionInsightTableDescriptor(key="blocks", table_name="blocks"),
     SessionInsightTableDescriptor(key="session_events", table_name="session_events"),
@@ -579,6 +627,17 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         sql=STALE_SESSION_TAG_ROLLUP_COUNT_SQL,
         requires_freshness=True,
         requires_inspection=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="expected_provider_usage_row_count",
+        table_keys=("messages", "session_provider_usage_events"),
+        sql=EXPECTED_PROVIDER_USAGE_ROW_COUNT_SQL,
+        fallback_count_key="provider_usage_row_count",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="missing_provider_usage_row_count",
+        table_keys=("messages", "session_provider_usage_events", "session_model_usage"),
+        sql=MISSING_PROVIDER_USAGE_ROW_COUNT_SQL,
     ),
 )
 
