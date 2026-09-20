@@ -14,6 +14,7 @@ budget is what matters when workers start.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
 
@@ -22,8 +23,11 @@ __all__ = [
     "CGROUP_ROOT",
     "CONTROLLER_PEAK_MIB",
     "CORPUS_MAX_WORKERS",
+    "MEASURED_CHARGE",
     "PYTEST_SLICE_MEMORY_HIGH_MIB",
-    "WORKER_PEAK_MIB",
+    "WORKER_PEAK_ANON_MIB",
+    "WORKER_PEAK_CACHE_MIB",
+    "ChargeProfile",
     "available_memory_mib",
     "cgroup_available_mib",
     "memory_bounded_worker_cap",
@@ -32,21 +36,41 @@ __all__ = [
     "width_within",
 ]
 
-#: What one worker and the controller cost at peak, in MiB: worker PSS takes
-#: the upper end of the measured spread so the estimate errs toward fewer
-#: workers. These are properties of the workload; pressure enters as the live
-#: readings, never as these constants.
+#: A worker's own allocations at peak, in MiB -- ANONYMOUS memory only, which
+#: is what a process-level RSS/PSS sampler reports.
 #:
-#: Measured 2026-09-14 by two independent methods that agree within 1%, after a
-#: corpus run was OOM-killed at 93%: the kill-time arithmetic on that run gives
-#: (5600 - 1075) / 2 = 2263 MiB per worker, and a slot receipt for a managed
-#: pytest process running 4,293 tests shows 2290 MiB private / 2352 MiB PSS.
-#: The previous 686 was low by ~3.3x, which is why a width derived from it
-#: produced a sustained-pressure kill rather than the throttling this file
-#: anticipates. Only ~420 MiB of the peak is the import floor (58 MiB base plus
-#: 362 MiB for 1,256 test modules); the rest grows with tests executed, so
-#: trimming imports does not recover width.
-WORKER_PEAK_MIB = 2263
+#: Measured 2026-09-20 with the suite-cost sampler over 3,318 node IDs / 9,954
+#: outcomes in one directory: ``peak_rss_kib 595684`` (582 MiB), with the slot
+#: telemetry's peak private at 683 MiB. The trajectory PLATEAUS -- 250 tests
+#: 423.1 MiB, 1,250 tests 541.6, 2,000 tests 581.7, 3,318 tests 581.1 -- so
+#: growth is roughly 53 KiB/test to ~2,000 tests and flat after that. The
+#: import floor therefore DOMINATES the peak, and trimming imports IS a lever
+#: on width. (The superseded comment here claimed the opposite, that only
+#: ~420 MiB was floor and "the rest grows with tests executed"; the plateau
+#: falsifies it.)
+#:
+#: 700 rather than the measured 582: an xdist worker collects the whole corpus
+#: before running its own share, so a full-corpus worker carries the import
+#: floor of all ~1,256 test modules while the measured selection carried one
+#: directory's. The measurement is a floor for this constant, not a drop-in.
+WORKER_PEAK_ANON_MIB = 700
+#: What the same worker charges the cgroup BESIDES its anonymous memory, in
+#: MiB: page cache and slab. It belongs in the model because ``memory.high``
+#: charges it -- see :class:`ChargeProfile`.
+#:
+#: Derived 2026-09-20 from the 09-17 run held at width 3, which sat pinned at
+#: ~11.5 GiB of charge against a 12 GiB ceiling: 11,776 - 1,075 (controller)
+#: - 3 * 700 (worker anon) = 8,601 MiB of non-anon over three workers, i.e.
+#: ~2,867 each, taken here at 2,850. It is large because the corpus writes
+#: 47-55 GB of scratch SQLite per run and the page cache from its own writes
+#: expands toward whatever the ceiling allows.
+#:
+#: This is the term to attack, not the ceiling: capping the scratch page cache
+#: (``fadvise(DONTNEED)``/``sync_file_range`` on discarded basetemps, or a
+#: ``memory.low`` split) recovers width without renegotiating any budget.
+WORKER_PEAK_CACHE_MIB = 2850
+#: The xdist controller at peak, in MiB. It collects the corpus but runs no
+#: tests and writes no scratch databases, so it is carried as anon alone.
 CONTROLLER_PEAK_MIB = 1075
 #: The pytest pool's soft ceiling: ``agentctl-pytest.slice`` MemoryHigh, with a
 #: MemoryMax above it and no swap. Above the soft ceiling the kernel does not
@@ -63,27 +87,81 @@ CONTROLLER_PEAK_MIB = 1075
 #: ``pytest_slot_available_mib()`` reads the live cgroup and is the authority at
 #: runtime; this constant only sizes the default before a slot is held.
 #:
+#: COUPLING: this value and the Sinnix declaration are one budget kept in two
+#: places, and nothing gates the pair. Changing either without the other is the
+#: drift that already happened once. When ``flake/data/runtime-defaults.nix``
+#: moves, move this line in the same landing and say so in both messages; 12G
+#: there is a closed budget (12G pytest + 8G agent = the plane's own 20G
+#: MemoryHigh, derived from 31G host minus app/session/desktop reservations),
+#: not free headroom to raise unilaterally from this side.
+#:
 #: HEADROOM OWNER: the Sinnix value, not this module. Sinnix picked 12G by
-#: taking the intended width's peak (4 * 2263 + ~1 GiB = 10.05 GiB) and
-#: applying 1.2x -- "the corpus is sized for four workers". The ceiling this
-#: module reads therefore already carries its safety margin, and
-#: ``width_within`` must not discount it a second time; doing so cost a worker
-#: (a 12 GiB slice provisioned for 4 derived 3). Raising or lowering the margin
-#: is a Sinnix change to ``flake/data/runtime-defaults.nix``, not an arithmetic
-#: change here.
+#: taking an intended width's peak and applying 1.2x -- under the anonymous-RSS
+#: model this file used to carry, which understated the charge (see
+#: :class:`ChargeProfile`). The ceiling already carries its safety margin, so
+#: ``width_within`` does not discount it a second time. Raising or lowering the
+#: margin is a Sinnix change to ``flake/data/runtime-defaults.nix``, not an
+#: arithmetic change here.
 PYTEST_SLICE_MEMORY_HIGH_MIB: Final = 12 * 1024
 
 
-def width_within(budget_mib: float) -> int:
-    """The widest run whose peak fits ``budget_mib``.
+@dataclass(frozen=True)
+class ChargeProfile:
+    """What a run CHARGES its cgroup at peak, in MiB, per worker and in total.
 
-    ``budget_mib`` is a ceiling that already carries its own headroom -- the
-    slice's ``memory.high`` as its owner sized it, or what remains of it -- so
-    nothing is held back here beyond the controller's own peak.
+    The quantity matters more than the numbers. ``memory.high`` accounts anon
+    + page cache + slab; a per-process RSS/PSS sampler reports anon alone.
+    Dividing the first by the second is a category error, and it is what was
+    OOM-killing the corpus: a live managed worker measured 2026-09-20 held
+    anon 544 MiB, file 457 MiB (nearly all ``inactive_file``) and slab 44 MiB
+    for ``memory.current`` 1050 MiB -- 1.93x its anonymous footprint, with
+    ~44% of the charge being page cache from the suite's own scratch writes.
+    The width the anon model chose therefore overran the ceiling by roughly
+    the same factor, which systemd-oomd observed at the 2026-09-19 kills.
+
+    Every field here is a charge against the same ceiling, so the comparison
+    in :func:`width_within` is between compatible quantities. Anon is kept as
+    its own field rather than folded in because it is the term a sampler can
+    re-measure directly, so drift in either component stays detectable.
+    """
+
+    #: One worker's anonymous peak.
+    worker_anon_mib: float
+    #: The page cache and slab charged alongside that worker.
+    worker_cache_mib: float
+    #: The controller's whole charge.
+    controller_mib: float
+
+    @property
+    def worker_charge_mib(self) -> float:
+        """One worker's whole charge against ``memory.high``."""
+        return self.worker_anon_mib + self.worker_cache_mib
+
+    def charge_mib(self, workers: int) -> float:
+        """What a run of ``workers`` charges the slice at peak, controller included."""
+        return self.controller_mib + workers * self.worker_charge_mib
+
+
+#: The profile every default width is derived from.
+MEASURED_CHARGE: Final = ChargeProfile(
+    worker_anon_mib=WORKER_PEAK_ANON_MIB,
+    worker_cache_mib=WORKER_PEAK_CACHE_MIB,
+    controller_mib=CONTROLLER_PEAK_MIB,
+)
+
+
+def width_within(budget_mib: float, *, profile: ChargeProfile = MEASURED_CHARGE) -> int:
+    """The widest run whose peak CHARGE fits ``budget_mib``.
+
+    ``budget_mib`` is a cgroup memory ceiling -- the slice's ``memory.high`` as
+    its owner sized it, or what remains of it -- so what is divided into it is
+    the charge a worker makes against that same accounting, not the anonymous
+    memory a sampler sees. The ceiling already carries its own headroom, so
+    nothing is held back here beyond the controller's own charge.
 
     Never zero: a slow run beats a run that does not start.
     """
-    return max(1, int((budget_mib - CONTROLLER_PEAK_MIB) // WORKER_PEAK_MIB))
+    return max(1, int((budget_mib - profile.controller_mib) // profile.worker_charge_mib))
 
 
 #: The corpus width, and the ceiling any configured width is reduced to. It is
@@ -258,7 +336,9 @@ def memory_bounded_worker_cap(
             "cgroup_available_mib": None,
             "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
             "controller_peak_mib": CONTROLLER_PEAK_MIB,
-            "worker_peak_mib": WORKER_PEAK_MIB,
+            "worker_peak_anon_mib": WORKER_PEAK_ANON_MIB,
+            "worker_peak_cache_mib": WORKER_PEAK_CACHE_MIB,
+            "worker_peak_charge_mib": MEASURED_CHARGE.worker_charge_mib,
             "workers": workers,
             "requested_workers": requested,
             "narrowed": workers < requested,
@@ -271,7 +351,9 @@ def memory_bounded_worker_cap(
         "cgroup_available_mib": cgroup,
         "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
         "controller_peak_mib": CONTROLLER_PEAK_MIB,
-        "worker_peak_mib": WORKER_PEAK_MIB,
+        "worker_peak_anon_mib": WORKER_PEAK_ANON_MIB,
+        "worker_peak_cache_mib": WORKER_PEAK_CACHE_MIB,
+        "worker_peak_charge_mib": MEASURED_CHARGE.worker_charge_mib,
         "workers": workers,
         "requested_workers": requested,
         "narrowed": workers < requested,

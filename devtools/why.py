@@ -22,7 +22,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from devtools.verify_runs import VERIFY_HISTORY_PATH, VERIFY_RUNS_DIR
+from devtools.verify_runs import (
+    ABANDONED_DIAGNOSIS,
+    VERIFY_HISTORY_PATH,
+    VERIFY_RUNS_DIR,
+    reconcile_and_record_abandoned_verify_runs,
+)
 
 __all__ = ["main"]
 
@@ -89,6 +94,13 @@ _EXPLANATIONS: dict[str, Explanation] = {
     "affected_admission_refused": Explanation(
         "The affected test plan was refused before pytest because its graph, size, time, or resource budget was not bounded.",
         "Use the named next verification boundary; the explicit corpus command is devtools verify --all on master.",
+    ),
+    ABANDONED_DIAGNOSIS: Explanation(
+        "The run's own process died without writing a terminal state -- a SIGKILL "
+        "(systemd-oomd, a hard cancel, a lost host), which no in-process handler can catch. "
+        "This receipt was closed out from outside it, so its steps report what had finished, "
+        "not what the run would have concluded.",
+        "Check `journalctl --user -g oom` or the AgentCTL job outcome for the cause, then rerun the tier.",
     ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
@@ -356,6 +368,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="Emit the receipt as JSON.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    # Reading the receipts is the moment a stranded ``running`` run can be
+    # closed out: the process that would have finished it is gone.
+    reconcile_and_record_abandoned_verify_runs(runs_root=VERIFY_RUNS_DIR)
 
     if args.history is not None:
         if args.json:

@@ -17,10 +17,9 @@ from devtools.pytest_invocation import (
 )
 from devtools.verify import _pytest_steps, build_verify_steps
 from devtools.worker_memory import (
-    CONTROLLER_PEAK_MIB,
     CORPUS_MAX_WORKERS,
+    MEASURED_CHARGE,
     PYTEST_SLICE_MEMORY_HIGH_MIB,
-    WORKER_PEAK_MIB,
 )
 
 
@@ -84,7 +83,7 @@ def test_the_managed_width_fits_the_pytest_pool_by_construction() -> None:
     workers = int(command[command.index("-n") + 1])
 
     assert workers >= 1
-    assert workers * WORKER_PEAK_MIB + CONTROLLER_PEAK_MIB <= PYTEST_SLICE_MEMORY_HIGH_MIB
+    assert MEASURED_CHARGE.charge_mib(workers) <= PYTEST_SLICE_MEMORY_HIGH_MIB
 
 
 def test_a_wider_configured_width_is_reduced_to_what_the_pool_holds(monkeypatch: pytest.MonkeyPatch) -> None:
