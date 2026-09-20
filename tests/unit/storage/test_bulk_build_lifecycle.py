@@ -286,8 +286,18 @@ def _build_corpus(conn: sqlite3.Connection, *, bulk_build: bool) -> list[str]:
 
 
 def _fts_rows(conn: sqlite3.Connection) -> list[tuple[object, ...]]:
+    # polylogue-wohv: `messages_fts` is contentless and declares only the
+    # indexed `text` column. Identity is resolved through the `blocks` rowid
+    # join, exactly as every production reader does -- selecting the former
+    # UNINDEXED columns straight off the index returned four NULLs, so the
+    # comparison below used to prove parity on `text` alone.
     rows = conn.execute(
-        "SELECT block_id, message_id, session_id, block_type, text FROM messages_fts ORDER BY block_id"
+        """
+        SELECT b.block_id, b.message_id, b.session_id, b.block_type, f.text
+        FROM messages_fts AS f
+        JOIN blocks AS b ON b.rowid = f.rowid
+        ORDER BY b.block_id
+        """
     ).fetchall()
     return sorted(tuple(row) for row in rows)
 

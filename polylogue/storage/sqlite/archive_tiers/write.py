@@ -2491,8 +2491,8 @@ def rebuild_archive_messages_fts(conn: sqlite3.Connection) -> int:
     conn.execute("DELETE FROM messages_fts")
     conn.execute(
         f"""
-        INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-        SELECT rowid, block_id, message_id, session_id, block_type, {pl_fold_sql_expr("search_text")}
+        INSERT INTO messages_fts(rowid, text)
+        SELECT rowid, {pl_fold_sql_expr("search_text")}
         FROM blocks
         WHERE search_text != ''
         """

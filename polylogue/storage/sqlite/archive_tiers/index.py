@@ -475,7 +475,15 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # now carries no provider-named table. SEMANTIC_REPARSE: the rows exist only in
 # the acquired export, so they are recomputed from it rather than copied
 # across.
-INDEX_SCHEMA_VERSION = 100
+# polylogue-wohv: v101 removes the four UNINDEXED columns
+# (block_id/message_id/session_id/block_type) from the contentless
+# ``messages_fts`` declaration and from every INSERT that fed them. A
+# contentless FTS5 table discards UNINDEXED values at insert, so the columns
+# stored nothing and no reader could read them back; every consumer already
+# joins ``blocks`` on rowid or uses ``messages_fts_identity``. INDEX_ONLY: the
+# indexed column set, tokenizer and rowid binding are unchanged, so the search
+# index is rebuilt with identical content and no parsed row is re-derived.
+INDEX_SCHEMA_VERSION = 101
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

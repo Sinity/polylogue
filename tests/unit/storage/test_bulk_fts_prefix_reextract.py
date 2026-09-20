@@ -124,12 +124,16 @@ def _trigram_ghost_posting_count(conn: sqlite3.Connection) -> int:
 
 def _fts_rows_for_session(conn: sqlite3.Connection, session_id: str) -> list[tuple[object, ...]]:
     """Session-scoped ``messages_fts`` content, independent of literal rowid."""
+    # polylogue-wohv: identity comes from the `blocks` rowid join; the
+    # contentless index declares only the indexed `text` column, so reading
+    # block_id/message_id/session_id/block_type off it returned NULLs.
     rows = conn.execute(
         """
-        SELECT block_id, message_id, session_id, block_type, text
-        FROM messages_fts
-        WHERE rowid IN (SELECT rowid FROM blocks WHERE session_id = ?)
-        ORDER BY block_id
+        SELECT b.block_id, b.message_id, b.session_id, b.block_type, f.text
+        FROM messages_fts AS f
+        JOIN blocks AS b ON b.rowid = f.rowid
+        WHERE b.session_id = ?
+        ORDER BY b.block_id
         """,
         (session_id,),
     ).fetchall()

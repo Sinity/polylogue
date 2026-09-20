@@ -87,30 +87,24 @@ def _init_blocks_db(path: Path, *, fts_rows: int = 0, block_rows: int = 0) -> No
                 (f"m{i}", f"s{i}", 0, f"body {i}"),
             )
         for row in conn.execute(
-            "SELECT rowid, block_id, message_id, session_id, block_type, text FROM blocks ORDER BY rowid LIMIT ?",
+            "SELECT rowid, text FROM blocks ORDER BY rowid LIMIT ?",
             (fts_rows,),
         ):
             conn.execute(
-                """
-                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
+                "INSERT INTO messages_fts(rowid, text) VALUES (?, ?)",
                 tuple(row),
             )
         for i in range(block_rows, fts_rows):
             conn.execute(
-                """
-                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-                VALUES (?, ?, ?, ?, 'text', ?)
-                """,
-                (i + 1, f"stale-{i}", f"missing-m{i}", f"missing-s{i}", f"stale body {i}"),
+                "INSERT INTO messages_fts(rowid, text) VALUES (?, ?)",
+                (i + 1, f"stale body {i}"),
             )
         conn.executescript(
             """
             CREATE TRIGGER messages_fts_ai
             AFTER INSERT ON blocks WHEN new.search_text != '' BEGIN
-                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-                VALUES (new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text);
+                INSERT INTO messages_fts(rowid, text)
+                VALUES (new.rowid, new.search_text);
             END;
 
             CREATE TRIGGER messages_fts_ad
@@ -121,8 +115,8 @@ def _init_blocks_db(path: Path, *, fts_rows: int = 0, block_rows: int = 0) -> No
             CREATE TRIGGER messages_fts_au
             AFTER UPDATE ON blocks BEGIN
                 DELETE FROM messages_fts WHERE rowid = old.rowid;
-                INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-                SELECT new.rowid, new.block_id, new.message_id, new.session_id, new.block_type, new.search_text
+                INSERT INTO messages_fts(rowid, text)
+                SELECT new.rowid, new.search_text
                 WHERE new.search_text != '';
             END;
             """

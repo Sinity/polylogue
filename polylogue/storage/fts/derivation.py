@@ -609,9 +609,8 @@ class FtsDerivationAdapter:
             params = (key,)
         conn.execute(
             f"""
-            INSERT INTO messages_fts(rowid, block_id, message_id, session_id, block_type, text)
-            SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type,
-                   {pl_fold_sql_expr("b.search_text")}
+            INSERT INTO messages_fts(rowid, text)
+            SELECT b.rowid, {pl_fold_sql_expr("b.search_text")}
             FROM blocks AS b WHERE {where}
             """,
             params,

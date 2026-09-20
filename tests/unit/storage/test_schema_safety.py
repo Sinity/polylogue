@@ -659,3 +659,64 @@ class TestAnalyticsQueryPlan:
             assert "messages_fts" not in plan.lower(), f"COUNT(*) on sessions should not touch FTS: {plan}"
         finally:
             conn.close()
+
+
+# =============================================================================
+# DDL honesty: contentless messages_fts declares only retrievable columns
+# =============================================================================
+
+
+class TestContentlessFTSDeclaresOnlyIndexedColumns:
+    """``messages_fts`` is contentless, so an UNINDEXED column would be a lie.
+
+    polylogue-wohv: the table used to declare block_id/message_id/session_id/
+    block_type UNINDEXED. A ``content=''`` FTS5 table discards UNINDEXED values
+    at insert, so those columns stored nothing and no SELECT could read them
+    back, while the DDL implied they were retrievable. Identity comes from the
+    ``blocks`` rowid join or ``messages_fts_identity``.
+
+    Anti-vacuity: restoring any UNINDEXED column to FTS_MESSAGES_TABLE_SQL makes
+    ``test_declares_only_the_indexed_text_column`` fail, and leaving a stale
+    wide column list in any production INSERT makes
+    ``test_trigger_populates_index_through_production_write`` fail with an
+    SQLite arity/unknown-column error instead of returning the hit.
+    """
+
+    def test_declares_only_the_indexed_text_column(self, test_db: Path) -> None:
+        """Every declared column of the contentless index must be readable."""
+        conn = sqlite3.connect(str(test_db))
+        try:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(messages_fts)")]
+            assert columns == ["text"], f"contentless messages_fts must declare only `text`, got: {columns}"
+        finally:
+            conn.close()
+
+    def test_trigger_populates_index_through_production_write(self, test_db: Path) -> None:
+        """A block written through the production trigger is still findable."""
+        from polylogue.storage.sqlite.connection import open_connection
+
+        with open_connection(test_db) as conn:
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, content_hash)"
+                " VALUES ('wohv1', 'unknown-export', zeroblob(32))"
+            )
+            session_id = "unknown-export:wohv1"
+            conn.execute(
+                "INSERT INTO messages (session_id, native_id, position, role, content_hash)"
+                " VALUES (?, 'm1', 0, 'user', zeroblob(32))",
+                (session_id,),
+            )
+            message_id = archive_message_id(session_id, "m1")
+            conn.execute(
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text)"
+                " VALUES (?, ?, 0, 'text', 'zarquon indexing probe')",
+                (message_id, session_id),
+            )
+            conn.commit()
+
+            hits = conn.execute(
+                "SELECT b.block_id FROM messages_fts"
+                " JOIN blocks AS b ON b.rowid = messages_fts.rowid"
+                " WHERE messages_fts MATCH 'zarquon'"
+            ).fetchall()
+            assert len(hits) == 1, "production trigger must still index block search_text"
