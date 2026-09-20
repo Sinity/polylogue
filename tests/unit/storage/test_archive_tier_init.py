@@ -74,6 +74,27 @@ def test_initialize_archive_tier_files_refuses_blocked_plan(tmp_path: Path) -> N
         initialize_archive_tier_files(archive_root=tmp_path)
 
 
+def test_initialize_archive_tier_files_does_not_mutate_a_partial_marked_root(tmp_path: Path) -> None:
+    """A marker beside missing durable tiers is diagnosed before replacement."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    source = tmp_path / "source.db"
+    user = tmp_path / "user.db"
+    audit = tmp_path / "audit.db"
+    source.unlink()
+    user.unlink()
+    audit.unlink()
+    index_before = (tmp_path / "index.db").read_bytes()
+    ops_before = (tmp_path / "ops.db").read_bytes()
+
+    with pytest.raises(RuntimeError, match="missing durable tier"):
+        initialize_archive_tier_files(archive_root=tmp_path, replace_existing=True)
+
+    assert (tmp_path / "index.db").read_bytes() == index_before
+    assert (tmp_path / "ops.db").read_bytes() == ops_before
+
+
 # ---------------------------------------------------------------------------
 # Tier-initialization telemetry (polylogue-l218h / WS-A bootstrap sizing)
 # ---------------------------------------------------------------------------

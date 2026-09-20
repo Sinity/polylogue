@@ -16,6 +16,8 @@ from polylogue.storage.sqlite.archive_tiers.archive_plan import (
     ArchiveInitAction,
     ArchiveInitPlan,
     ArchiveTierPlan,
+    archive_format_marker_path,
+    assert_archive_format_lineage,
     build_archive_init_plan,
     record_fresh_archive_format,
 )
@@ -59,6 +61,13 @@ def initialize_archive_tier_files(
 
 def initialize_archive_tier_files_from_plan(plan: ArchiveInitPlan) -> ArchiveInitResult:
     """Execute a previously inspected archive initialization plan."""
+    # A marker is an authority record, not a disposable initialization hint.
+    # Validate it before taking any replacement action so a partial/corrupt
+    # marked root cannot be repaired by mutating whichever tiers happen to be
+    # present.  In particular, this keeps diagnostics read-only when an
+    # interrupted fresh bootstrap left the marker beside only derived tiers.
+    if archive_format_marker_path(plan.archive_root).is_file():
+        assert_archive_format_lineage(plan.archive_root)
     if not plan.ready:
         raise ArchiveInitBlockedError("; ".join(plan.blockers))
 
