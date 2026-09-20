@@ -147,6 +147,9 @@ class ShardSessionRows:
     message_hi: int
     block_lo: int
     block_hi: int
+    #: Content-derived fallback identities carried by the prepared rows.  The
+    #: writer validates and reuses these; it never regenerates them.
+    content_identities: tuple[tuple[str, int], ...]
 
     @property
     def message_row_count(self) -> int:
@@ -200,6 +203,9 @@ class SessionShardBuilder:
         """
         message_rows: Sequence[tuple[object, ...]] = prepared.message_rows  # type: ignore[attr-defined]
         block_rows: Sequence[tuple[object, ...]] = prepared.block_rows  # type: ignore[attr-defined]
+        content_identities = tuple(prepared.content_identities)  # type: ignore[attr-defined]
+        if len(content_identities) != len(message_rows):
+            raise ShardRefusedError("prepared identity carrier does not cover every message row")
         message_lo = self._append("messages", message_rows)
         block_lo = self._append("blocks", block_rows)
         self._sessions.append(
@@ -210,6 +216,7 @@ class SessionShardBuilder:
                 message_hi=message_lo + len(message_rows) - 1,
                 block_lo=block_lo,
                 block_hi=block_lo + len(block_rows) - 1,
+                content_identities=content_identities,
             )
         )
 
@@ -276,6 +283,35 @@ def build_session_shard(directory: Path, prepared_sessions: Sequence[object]) ->
     return builder.seal()
 
 
+def _read_message_identities(
+    conn: sqlite3.Connection,
+    *,
+    message_lo: int,
+    message_hi: int,
+    session_id: str,
+) -> tuple[tuple[str, int], ...]:
+    """Read the identity carrier from the sealed message rows, without hashing."""
+    if message_hi < message_lo:
+        return ()
+    rows = conn.execute(
+        "SELECT session_id, content_identity, content_occurrence "
+        "FROM messages WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
+        (message_lo, message_hi),
+    ).fetchall()
+    if len(rows) != message_hi - message_lo + 1:
+        raise ShardRefusedError(f"shard {conn}: message identity range is incomplete for {session_id}")
+    identities: list[tuple[str, int]] = []
+    for row_session_id, identity, occurrence in rows:
+        if row_session_id != session_id:
+            raise ShardRefusedError(f"shard {conn}: message identity range crosses sessions for {session_id}")
+        if not isinstance(identity, str) or not identity:
+            raise ShardRefusedError(f"shard {conn}: missing message identity for {session_id}")
+        if not isinstance(occurrence, int) or occurrence < 0:
+            raise ShardRefusedError(f"shard {conn}: invalid message identity occurrence for {session_id}")
+        identities.append((identity, occurrence))
+    return tuple(identities)
+
+
 def open_session_shard(path: Path) -> SessionShard:
     """Read a shard's manifest, refusing anything a builder did not seal.
 
@@ -287,6 +323,7 @@ def open_session_shard(path: Path) -> SessionShard:
     """
     if not path.exists():
         raise ShardRefusedError(f"shard {path}: file is absent")
+    session_entries: tuple[ShardSessionRows, ...]
     try:
         with closing(sqlite3.connect(path)) as conn:
             seal = conn.execute("SELECT layout_version, column_signature, session_count FROM shard_seal").fetchall()
@@ -324,22 +361,29 @@ def open_session_shard(path: Path) -> SessionShard:
                             raise ShardRefusedError(f"shard {path}: invalid empty {table} range for {session_id}")
                     elif lo < 1 or hi > maxima[table]:
                         raise ShardRefusedError(f"shard {path}: {table} range is outside sealed rows for {session_id}")
+            session_entries = tuple(
+                ShardSessionRows(
+                    session_id=str(row[0]),
+                    session_content_hash=bytes(row[1]),
+                    message_lo=int(row[2]),
+                    message_hi=int(row[3]),
+                    block_lo=int(row[4]),
+                    block_hi=int(row[5]),
+                    content_identities=tuple(
+                        (str(identity), int(occurrence))
+                        for identity, occurrence in _read_message_identities(
+                            conn,
+                            message_lo=int(row[2]),
+                            message_hi=int(row[3]),
+                            session_id=str(row[0]),
+                        )
+                    ),
+                )
+                for row in rows
+            )
     except sqlite3.DatabaseError as exc:
         raise ShardRefusedError(f"shard {path}: unreadable ({exc})") from exc
-    return SessionShard(
-        path=path,
-        sessions=tuple(
-            ShardSessionRows(
-                session_id=str(row[0]),
-                session_content_hash=bytes(row[1]),
-                message_lo=int(row[2]),
-                message_hi=int(row[3]),
-                block_lo=int(row[4]),
-                block_hi=int(row[5]),
-            )
-            for row in rows
-        ),
-    )
+    return SessionShard(path=path, sessions=session_entries)
 
 
 def discard_session_shard(path: Path) -> None:
