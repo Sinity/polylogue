@@ -1142,18 +1142,15 @@ def _seed_raw_authority_blocker(
     plan_id: str,
     observed_pass_id: str,
     frontier: bool = False,
-    judgment_assertion_id: str | None = None,
     reason: str = "immutable source/index preconditions changed after the inspection pass",
 ) -> None:
     """Seed one real, unresolved ``raw_authority_blockers`` row plus the one
     real ``raw_sessions`` row a non-frontier resolution needs to replan it.
 
-    ``frontier`` alone seeds a ``frontier_obligation``-kind blocker (missing
-    bytes / unresolved provenance / corrupt -- no judgment assertion
-    required). Pass ``judgment_assertion_id`` too to seed a genuine
-    ``frontier_judgment`` blocker, matching how
-    ``_reconcile_frontier_obligations`` only writes that key into
-    ``observed_json`` for ``CONFLICTING_AUTHORITY_NEEDS_JUDGMENT`` plans.
+    ``frontier`` seeds a ``frontier_obligation``-kind blocker: the current
+    frontier plan shape ``_reconcile_frontier_obligations`` writes. Without
+    it the row is a ``stale_plan`` -- a durable snapshot predating that shape,
+    which the resolver re-derives from live evidence instead of trusting.
     """
     raw_id = f"raw-{blocker_id}"
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -1171,7 +1168,7 @@ def _seed_raw_authority_blocker(
         )
     witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
     input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
-    observed_json = json.dumps({"judgment_assertion_id": judgment_assertion_id}) if judgment_assertion_id else "{}"
+    observed_json = "{}"
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         # The blocker is keyed on the plan's content address and carries the
@@ -1630,36 +1627,20 @@ class TestBlockerResolveActuator:
         with pytest.raises(PlanStaleError):
             executor.execute(actuator, plan, authorization, args)
 
-    def test_frontier_judgment_kind_is_classified(self, tmp_path: Path) -> None:
-        """A frontier-schema blocker with a judgment_assertion_id (the only
-        state resolve_raw_authority_blocker actually demands one for --
-        CONFLICTING_AUTHORITY_NEEDS_JUDGMENT) is frontier_judgment."""
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-frontier",
-            plan_id="raw-replay:frontier-plan",
-            observed_pass_id="raw-authority-frontier-pass:frontier",
-            frontier=True,
-            judgment_assertion_id="judgment:frontier-conflict",
-            reason="conflicting canonical authority",
-        )
+    def test_frontier_obligation_resolves_with_no_extra_operator_authority(self, tmp_path: Path) -> None:
+        """Every frontier blocker resolves through the one declared mutation.
 
-        actuator = BlockerResolveActuator()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-frontier", resolution="ack")
-        plan = actuator.prepare(args)
+        polylogue-6kur deleted the ``frontier_judgment`` kind along with the
+        conflicting-authority state that was its only producer: an operator
+        judgment used to promote a blocked plan into an "executable successor"
+        that nothing executed. ``kind`` now only describes how the resolver
+        reads the stored snapshot, and no kind grants an extra effect.
 
-        assert plan.context["kind"] == "frontier_judgment"
-
-    def test_frontier_obligation_without_judgment_assertion_is_not_misclassified(self, tmp_path: Path) -> None:
-        """A frontier-schema blocker WITHOUT a judgment_assertion_id (missing
-        bytes / unresolved provenance / corrupt) must not be classified
-        frontier_judgment -- resolve_raw_authority_blocker enforces no
-        accepted-assertion requirement for these, so telling an operator
-        otherwise would be misleading (Codex review, PR #3258)."""
+        Anti-vacuity: restoring a second resolution contract (an accepted
+        assertion id plus a typed disposition, demanded for one blocker class)
+        makes the ``frontier_obligation`` assertion or the execute below red
+        for blockers that land in that class.
+        """
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         with ArchiveStore(archive_root):

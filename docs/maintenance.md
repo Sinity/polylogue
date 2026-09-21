@@ -419,8 +419,8 @@ resolver re-derives from live evidence instead of trusting. The listing is
 bounded to `--limit` (1-500, default 100) per
 call; if the response's `truncated` field is `true`, pass
 `--offset <next_offset>` to read the next page. After inspecting the
-blocker's own plan snapshot and current evidence, explicitly acknowledge it
-with a recorded rationale:
+blocker's own plan snapshot and current evidence, explicitly resolve it with
+a recorded rationale:
 
 ```bash
 polylogue ops maintenance raw-authority-blocker-resolve \
@@ -429,10 +429,10 @@ polylogue ops maintenance raw-authority-blocker-resolve \
   --yes
 ```
 
-Acknowledgement applies no remedy. It stores the replacement plan witness in
-the resolution receipt and tombstones the blocked state; whatever the
-obligation named is discharged by ordinary acquisition or derivation, or the
-next census pass republishes it. Both commands route through
+Resolution applies no remedy. It stores the replacement plan witness in the
+resolution receipt and tombstones the blocked state; whatever the obligation
+named is discharged by ordinary acquisition or derivation, or the next census
+pass republishes it. Both commands route through
 `OperationExecutor`/`BlockerResolveActuator` (polylogue-t46.9 phase 3):
 PREPARE previews the exact blocker target and EXECUTE requires a
 confirm-flag-strength authorization bound to that plan's hash, refusing

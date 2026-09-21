@@ -114,7 +114,7 @@ def raw_authority_blocker_resolve_command(
     confirmed: bool,
     output_format: str,
 ) -> None:
-    """Acknowledge one durable frontier blocker against current evidence.
+    """Resolve one durable frontier blocker against current evidence.
 
     Routed through ``OperationExecutor``/``BlockerResolveActuator`` (t46.9
     phase 3): PREPARE previews the exact blocker target, EXECUTE requires a
@@ -148,8 +148,8 @@ def raw_authority_blocker_resolve_command(
         # The actuator answered ``already_satisfied`` with a zero affected
         # count: nothing was resolved. Printing "Resolved <id>" here reported a
         # no-op as a durable effect -- the defect this branch exists to close.
-        raise click.ClickException(f"blocker {blocker_id} not found or already acknowledged; nothing was mutated")
-    click.echo(f"Acknowledged {blocker_id}")
+        raise click.ClickException(f"blocker {blocker_id} not found or already resolved; nothing was mutated")
+    click.echo(f"Resolved {blocker_id}")
     current_plan = receipt.get("current_plan")
     if isinstance(current_plan, dict):
         click.echo(f"Current plan: {current_plan.get('plan_id', 'unknown')}")
