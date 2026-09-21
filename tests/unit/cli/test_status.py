@@ -1393,3 +1393,135 @@ class TestStrictSourceExitCodes:
 
         assert result.exit_code == 2, result.output
         assert "must be an absolute exact source path" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Collection state and age in the plaintext renderer (polylogue-20d.17.3)
+# ---------------------------------------------------------------------------
+
+
+def _status_with_component_collection(collection: dict[str, Any] | None) -> dict[str, Any]:
+    """A daemon payload whose search component carries the given collection state."""
+    entry: dict[str, Any] = {"component": "search", "state": "ready", "summary": "ready"}
+    if collection is not None:
+        entry["collection"] = collection
+    return {
+        "daemon_liveness": True,
+        "fts_readiness": {"messages_ready": True, "coverage_pct": 100.0},
+        "db_size_bytes": 4096,
+        "disk_free_bytes": 8192,
+        "component_readiness": {"search": entry},
+    }
+
+
+def test_plaintext_status_marks_a_stale_component_and_labels_its_last_good_frame() -> None:
+    """A stale component's business value is never shown as a current reading.
+
+    ``_attach_collection_state`` has always attached ``state``/``age_s``/
+    ``last_good_at`` to each readiness entry, and ``git grep collection --
+    polylogue/cli/commands/status.py`` returned nothing: the plaintext renderer
+    displayed the last-good 100% coverage with no indication that the
+    collection behind it had gone stale (polylogue-20d.17.3).
+
+    Anti-vacuity: delete the ``_collection_marker`` read from the FTS line (or
+    the ``_render_component_collection_states`` call) and the stale state, its
+    age and its last-good frame all disappear while ``100.0% indexed`` stays.
+    """
+    env = _make_app_env()
+
+    _show_daemon_status(
+        env,
+        _status_with_component_collection(
+            {
+                "state": "stale",
+                "captured_at": "2026-01-01T00:00:00+00:00",
+                "age_s": 42.25,
+                "deadline_s": 1.5,
+                "fingerprint": "gen-2",
+                "error": None,
+                "last_good_at": "2026-01-01T00:00:00+00:00",
+            }
+        ),
+    )
+
+    output = _combined_calls(env)
+    # The business value is still shown ...
+    assert "100.0% indexed" in output
+    # ... but never bare: it is advisory, with its state, age and frame.
+    assert "collection stale" in output
+    assert "advisory last-good from 2026-01-01T00:00:00+00:00" in output
+    assert "42.2s old" in output
+    assert "Components not freshly collected:" in output
+    assert "search: stale" in output
+
+
+def test_plaintext_status_reports_a_timed_out_component_with_no_value_as_unmeasured() -> None:
+    """A non-fresh collection that produced nothing has nothing advisory to offer.
+
+    Anti-vacuity: render the same marker for both branches and this stops
+    distinguishing "advisory last-good" from "not measured".
+    """
+    env = _make_app_env()
+
+    _show_daemon_status(
+        env,
+        _status_with_component_collection(
+            {
+                "state": "timed_out",
+                "captured_at": "2026-01-01T00:00:05+00:00",
+                "age_s": 0.0,
+                "deadline_s": 1.5,
+                "fingerprint": None,
+                "error": "collector exceeded deadline_s=1.5",
+                "last_good_at": None,
+            }
+        ),
+    )
+
+    output = _combined_calls(env)
+    assert "collection timed_out; not measured" in output
+    assert "advisory last-good" not in output
+    assert "collector exceeded deadline_s=1.5" in output
+
+
+def test_plaintext_status_leaves_a_freshly_collected_component_unmarked() -> None:
+    """The control: a fresh collection adds no noise.
+
+    Without this the two tests above could pass from an unconditional marker.
+    """
+    env = _make_app_env()
+
+    _show_daemon_status(
+        env,
+        _status_with_component_collection(
+            {
+                "state": "fresh",
+                "captured_at": "2026-01-01T00:00:00+00:00",
+                "age_s": 0.2,
+                "deadline_s": 1.5,
+                "fingerprint": "gen-1",
+                "error": None,
+                "last_good_at": "2026-01-01T00:00:00+00:00",
+            }
+        ),
+    )
+
+    output = _combined_calls(env)
+    assert "100.0% indexed" in output
+    assert "collection" not in output
+    assert "Components not freshly collected" not in output
+
+
+def test_plaintext_status_without_collection_evidence_renders_unchanged() -> None:
+    """A payload from a producer that attached nothing must not grow a marker.
+
+    Anti-vacuity: default the missing evidence to a non-fresh state and this
+    reports every component of a pre-collection payload as stale.
+    """
+    env = _make_app_env()
+
+    _show_daemon_status(env, _status_with_component_collection(None))
+
+    output = _combined_calls(env)
+    assert "100.0% indexed" in output
+    assert "collection" not in output
