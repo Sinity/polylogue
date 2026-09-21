@@ -224,7 +224,7 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         "atlas",
-        "Check that every atlas citation resolves to an existing file and line range.",
+        "Check that every atlas citation and declared owning gate resolves.",
         "module",
         ("devtools.verify_atlas",),
         label="gate atlas",
