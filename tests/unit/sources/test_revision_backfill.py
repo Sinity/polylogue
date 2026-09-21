@@ -40,7 +40,7 @@ from polylogue.sources.sqlite_snapshot import member_export_scope
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
@@ -4501,7 +4501,7 @@ def test_frozen_shard_replay_degrades_named_for_prefix_sharing_child(tmp_path: P
         )
 
 
-def _owned_generation_corpus(root: Path, *, raw_count: int, snapshot: str) -> object:
+def _owned_generation_corpus(root: Path, *, raw_count: int, snapshot: str) -> IndexGeneration:
     """Seed ``raw_count`` byte-proven Codex raws and open an owned generation.
 
     Codex is the provider whose replay enrichment reads the index tier
@@ -4562,9 +4562,10 @@ def test_owned_generation_prefetch_never_waits_out_the_index_busy_timeout(
     30.01 s, against 0.24 s of CPU) because the worker's first Codex reparse
     blocks inside ``read_thread_titles`` until the 30 s ``busy_timeout``
     expires, and ``start_phase`` joins that worker ON THE WRITER THREAD. With
-    the fix the same fixture runs in ~0.1 s. Both bounds below therefore fail
-    on a revert and neither is satisfiable by output inspection -- the output
-    was byte-identical while the stall was present.
+    the fix the same fixture runs in 0.118 s cold (``decode_concurrent``
+    0.005 s), so both bounds below carry ~100x headroom and both fail on a
+    revert. Neither is satisfiable by output inspection -- the output was
+    byte-identical while the stall was present.
 
     Anti-vacuity against the other cheap "fix": deleting the prefetcher would
     also make the timing bounds pass, so ``spill_prefetch.consumed > 0`` pins
@@ -4589,12 +4590,14 @@ def test_owned_generation_prefetch_never_waits_out_the_index_busy_timeout(
     )
     elapsed_s = time.monotonic() - started
 
-    assert result.replayed_logical_sources == revision_backfill._PIPELINE_DECODE_MIN_COHORTS
     timings = result.stage_timings_s
+    # The stated bounds, first: a revert fails HERE, at 30 s, before any
+    # assertion about what the prefetcher produced.
+    assert elapsed_s < 15.0, f"owned-generation replay took {elapsed_s:.2f}s; stage timings {timings}"
+    assert timings.get("spill_prefetch.decode_concurrent", 0.0) < 5.0, timings
+    assert result.replayed_logical_sources == revision_backfill._PIPELINE_DECODE_MIN_COHORTS
     # AUTO engaged: this route is exactly the cohort count the default needs.
     assert timings.get("spill_prefetch.consumed", 0.0) > 0
-    assert timings["spill_prefetch.decode_concurrent"] < 5.0
-    assert elapsed_s < 15.0
 
 
 def test_owned_generation_pipelined_decode_matches_serial_archive_state(

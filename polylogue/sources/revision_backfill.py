@@ -3869,10 +3869,11 @@ def _prefetchable_index_path(archive: ArchiveStore) -> Path | None:
     conn = archive.index_connection
     if conn is None:
         return None
-    try:
-        row = conn.execute("PRAGMA main.locking_mode").fetchone()
-    except sqlite3.Error:
-        return None
+    # Deliberately unguarded: this is a local pragma read on the writer's own
+    # already-open connection, with no I/O and no lock to contend for. A
+    # failure here means the writer's handle is unusable, which the replay
+    # about to run on it must not absorb as "prefetch a little less".
+    row = conn.execute("PRAGMA main.locking_mode").fetchone()
     if row is not None and str(row[0]).strip().lower() == "exclusive":
         return None
     return archive.index_db_path
