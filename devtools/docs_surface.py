@@ -232,6 +232,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Agent-orientation sheet: tool dispatch, declarations, contract flow.",
         "internals",
     ),
+    _entry(
+        "Atlas: Doctrine",
+        "atlas/doctrine.md",
+        "Doctrine index: each invariant's executable owner, gate, failure signal, and change procedure.",
+        "internals",
+    ),
     _entry("Daemon", "daemon.md", "Daemon ownership, convergence, HTTP serving, and service operation.", "internals"),
     _entry(
         "Structured Logging",

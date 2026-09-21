@@ -78,6 +78,7 @@ Read the area sheet before opening broad source trees:
 | How are durable and derived records stored? | `storage.md` | `polylogue/storage/` |
 | Who owns writes and convergence? | `daemon.md` | `polylogue/daemon/` |
 | How does MCP dispatch? | `mcp.md` | `polylogue/mcp/` |
+| Which invariant owns this rule, and what enforces it? | `doctrine.md` | `devtools/gate.py`, the owners it names |
 
 Then consult `docs/architecture.md` for the ring model, the specific area
 sheet for anchors and gotchas, and `devtools --list-commands` for executable
