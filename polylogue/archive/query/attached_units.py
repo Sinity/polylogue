@@ -169,7 +169,7 @@ def _fetch_session_unit_rows(
 
 
 def _bracket_field_value(payload_document: JSONDocument, descriptor: QueryUnitDescriptor, key: str) -> Any:
-    attr = descriptor.attached_bracket_fields.get(key, key)
+    attr = descriptor.row_field_attributes.get(key, key)
     return payload_document.get(attr)
 
 
@@ -211,7 +211,7 @@ def fetch_attached_units(
     ``unit_windows`` (polylogue-fnm.2) carries an optional per-unit
     :class:`~polylogue.archive.query.expression.WithUnitWindow`: bracket
     equality predicates are applied to each fetched row (against the unit's
-    declared ``attached_bracket_fields``) before the field selection/
+    declared ``row_field_attributes``) before the field selection/
     compaction below, then an optional ``first:N``/``last:N`` trim is applied
     per session. Both operate on the already-fetched, capped row set -- they
     narrow what is attached, they do not push a predicate down to the SQL

@@ -2079,7 +2079,7 @@ def _parse_with_unit_bracket(unit: str, raw: str) -> WithUnitWindow:
     predicates: list[tuple[str, str]] = []
     window: tuple[Literal["first", "last"], int] | None = None
     descriptor = query_unit_descriptor(unit)
-    bracket_field_map = {} if descriptor is None else descriptor.attached_bracket_fields
+    bracket_field_map = {} if descriptor is None else descriptor.row_field_attributes
     known_fields = frozenset(bracket_field_map)
     for clause in clauses:
         key_raw, sep, value = clause.partition(":")

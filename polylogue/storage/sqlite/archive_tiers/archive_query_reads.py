@@ -988,6 +988,44 @@ def _query_unit_aggregate_order(
     return f"count {sql_direction}, group_key"
 
 
+def _query_unit_row_column(unit: str, row_alias: str, field: str, *, context: str) -> str:
+    """Return the unit's own SQL column for one DSL field name.
+
+    The DSL-field -> unit-attribute vocabulary is owned once by
+    :attr:`~polylogue.archive.query.metadata.QueryUnitDescriptor.row_field_attributes`,
+    shared with the ``with unit[field:value]`` bracket predicate, which reads
+    the same attribute off the projected payload row.
+    """
+
+    descriptor = query_unit_descriptor(cast(Any, unit))
+    attributes = {} if descriptor is None else descriptor.row_field_attributes
+    try:
+        return f"{row_alias}.{attributes[field]}"
+    except KeyError as exc:
+        raise ValueError(f"unsupported {unit} {context} field: {field}") from exc
+
+
+#: Group values that are not the raw column text. ``assertion`` stores its
+#: status/visibility/author kind sparsely and reads them through a declared
+#: default rather than an ``unknown`` bucket.
+_ASSERTION_GROUP_DEFAULTS: dict[str, str] = {
+    "status": ASSERTION_DEFAULT_STATUS,
+    "visibility": ASSERTION_DEFAULT_VISIBILITY,
+    "author_kind": ASSERTION_DEFAULT_AUTHOR_KIND,
+}
+
+
+def _delegation_basis_sql(row_alias: str) -> str:
+    """Return the delegation ``basis`` discriminator.
+
+    ``basis`` is the one declared group field that is not its column's value:
+    the column records which action carried the instruction, and the group
+    states whether there was one.
+    """
+
+    return f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"
+
+
 def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None) -> str:
     """Return the SQL expression for a supported terminal aggregate group."""
 
@@ -1010,56 +1048,11 @@ def _query_unit_group_expression(unit: str, row_alias: str, group_by: str | None
             return session_fields[normalized]
         except KeyError as exc:
             raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
-    unit_fields = {
-        "message": {
-            "role": f"COALESCE(NULLIF({row_alias}.role, ''), 'unknown')",
-            "type": f"COALESCE(NULLIF({row_alias}.message_type, ''), 'unknown')",
-        },
-        "action": {
-            "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
-            "action": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
-            "type": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
-            "is_error": f"COALESCE(CAST({row_alias}.is_error AS TEXT), 'unknown')",
-            "exit_code": f"COALESCE(CAST({row_alias}.exit_code AS TEXT), 'unknown')",
-            "followup_class": f"COALESCE(NULLIF({row_alias}.followup_class, ''), 'unknown')",
-        },
-        "file": {
-            "path": f"COALESCE(NULLIF({row_alias}.path, ''), 'unknown')",
-        },
-        "block": {
-            "type": f"COALESCE(NULLIF({row_alias}.block_type, ''), 'unknown')",
-            "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
-            "action": f"COALESCE(NULLIF({row_alias}.semantic_type, ''), 'unknown')",
-        },
-        "assertion": {
-            "kind": f"COALESCE(NULLIF({row_alias}.kind, ''), 'unknown')",
-            "status": f"COALESCE(NULLIF({row_alias}.status, ''), '{ASSERTION_DEFAULT_STATUS}')",
-            "visibility": f"COALESCE(NULLIF({row_alias}.visibility, ''), '{ASSERTION_DEFAULT_VISIBILITY}')",
-            "author_kind": f"COALESCE(NULLIF({row_alias}.author_kind, ''), '{ASSERTION_DEFAULT_AUTHOR_KIND}')",
-        },
-        "observed-event": {
-            "kind": f"COALESCE(NULLIF({row_alias}.kind, ''), 'unknown')",
-            "delivery_state": f"COALESCE(NULLIF({row_alias}.delivery_state, ''), 'unknown')",
-            # polylogue-dab.1: typed relation columns; these used to be
-            # json_extract-ed out of a payload_json bundle built from the very
-            # same columns one line earlier in the relation SQL.
-            "tool": f"COALESCE(NULLIF({row_alias}.tool_name, ''), 'unknown')",
-            "handler": f"COALESCE(NULLIF({row_alias}.handler_kind, ''), 'unknown')",
-            "status": f"COALESCE(NULLIF({row_alias}.status, ''), 'unknown')",
-        },
-        "delegation": {
-            "basis": (f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
-            "mapping_state": f"COALESCE(NULLIF({row_alias}.mapping_state, ''), 'unknown')",
-            "result_status": f"COALESCE(NULLIF({row_alias}.result_status, ''), 'unknown')",
-            "requested_model": f"COALESCE(NULLIF({row_alias}.requested_model, ''), 'unknown')",
-            "dispatch_model": f"COALESCE(NULLIF({row_alias}.dispatch_turn_model, ''), 'unknown')",
-            "child_model": f"COALESCE(NULLIF({row_alias}.child_session_dominant_model, ''), 'unknown')",
-        },
-    }
-    try:
-        return unit_fields[unit][group_by]
-    except KeyError as exc:
-        raise ValueError(f"unsupported {unit} aggregate group field: {group_by}") from exc
+    if unit == "delegation" and group_by == "basis":
+        return _delegation_basis_sql(row_alias)
+    column = _query_unit_row_column(unit, row_alias, group_by, context="aggregate group")
+    default = _ASSERTION_GROUP_DEFAULTS.get(group_by, "unknown") if unit == "assertion" else "unknown"
+    return f"COALESCE(NULLIF(CAST({column} AS TEXT), ''), {_sql_string_literal(default)})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1081,69 +1074,17 @@ def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> 
     explicit unknown token.
     """
 
+    if unit == "delegation" and field == "basis":
+        return _MultiAggregateFieldSQL(value=_delegation_basis_sql(row_alias), missing="0", unknown="0")
     if field == "session.origin":
         raw = "s.origin"
     elif field == "session.repo":
         raw = "s.git_repository_url"
     else:
-        raw_fields = {
-            "message": {
-                "role": f"{row_alias}.role",
-                "type": f"{row_alias}.message_type",
-            },
-            "action": {
-                "tool": f"{row_alias}.tool_name",
-                "action": f"{row_alias}.semantic_type",
-                "type": f"{row_alias}.semantic_type",
-                "is_error": f"{row_alias}.is_error",
-                "exit_code": f"{row_alias}.exit_code",
-                "followup_class": f"{row_alias}.followup_class",
-            },
-            "block": {
-                "type": f"{row_alias}.block_type",
-                "tool": f"{row_alias}.tool_name",
-                "action": f"{row_alias}.semantic_type",
-            },
-            "file": {"path": f"{row_alias}.path"},
-            "assertion": {
-                "kind": f"{row_alias}.kind",
-                "status": f"{row_alias}.status",
-                "visibility": f"{row_alias}.visibility",
-                "author_kind": f"{row_alias}.author_kind",
-            },
-            "observed-event": {
-                "kind": f"{row_alias}.kind",
-                "delivery_state": f"{row_alias}.delivery_state",
-                "tool": f"{row_alias}.tool_name",
-                "handler": f"{row_alias}.handler_kind",
-                "status": f"{row_alias}.status",
-            },
-            "delegation": {
-                "mapping_state": f"{row_alias}.mapping_state",
-                "result_status": f"{row_alias}.result_status",
-                "requested_model": f"{row_alias}.requested_model",
-                "dispatch_model": f"{row_alias}.dispatch_turn_model",
-                "child_model": f"{row_alias}.child_session_dominant_model",
-            },
-        }
-        if unit == "delegation" and field == "basis":
-            return _MultiAggregateFieldSQL(
-                value=(f"CASE WHEN {row_alias}.instruction_tool_use_block_id IS NULL THEN 'edge' ELSE 'action' END"),
-                missing="0",
-                unknown="0",
-            )
-        try:
-            raw = raw_fields[unit][field]
-        except KeyError as exc:
-            raise ValueError(f"unsupported {unit} multi-aggregate group field: {field}") from exc
+        raw = _query_unit_row_column(unit, row_alias, field, context="multi-aggregate group")
 
-    assertion_defaults = {
-        "status": ASSERTION_DEFAULT_STATUS,
-        "visibility": ASSERTION_DEFAULT_VISIBILITY,
-        "author_kind": ASSERTION_DEFAULT_AUTHOR_KIND,
-    }
-    if unit == "assertion" and field in assertion_defaults:
-        value = f"CAST(COALESCE(NULLIF({raw}, ''), {_sql_string_literal(assertion_defaults[field])}) AS TEXT)"
+    if unit == "assertion" and field in _ASSERTION_GROUP_DEFAULTS:
+        value = f"CAST(COALESCE(NULLIF({raw}, ''), {_sql_string_literal(_ASSERTION_GROUP_DEFAULTS[field])}) AS TEXT)"
         missing = "0"
     else:
         value = f"CASE WHEN {raw} IS NULL THEN '[missing]' ELSE CAST({raw} AS TEXT) END"
@@ -1175,7 +1116,8 @@ def _query_unit_metric_value_sql(unit: str, row_alias: str, field: str) -> str:
     descriptor = query_unit_descriptor(cast(Any, unit))
     if descriptor is None or field not in descriptor.aggregate_metric_fields:
         raise ValueError(f"unsupported {unit} aggregate metric field: {field}")
-    return f"CAST({row_alias}.{field} AS REAL)"
+    column = descriptor.row_field_attributes.get(field, field)
+    return f"CAST({row_alias}.{column} AS REAL)"
 
 
 def _agg_metric_value(spec: ArchiveAggMetricSpec, value: object, row_count: int) -> float | int | None:

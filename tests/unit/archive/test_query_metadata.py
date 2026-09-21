@@ -250,3 +250,49 @@ def test_delegation_unit_does_not_advertise_or_accept_time_sort() -> None:
     assert "sort by time" not in stage_values
     with pytest.raises(ExpressionCompileError, match="sort by time.*not supported"):
         parse_unit_source_expression("delegations where mapping_state:resolved | sort by time desc")
+
+
+def test_every_declared_group_field_resolves_through_the_one_row_field_map() -> None:
+    """One descriptor map answers both the group lowerer and the bracket predicate.
+
+    ``aggregate_group_fields`` names which DSL fields a ``group by`` accepts;
+    ``row_field_attributes`` says what each one reads. Every non-session entry
+    must be present in the map, so a unit cannot declare a groupable field the
+    SQL lowerer has no column for.
+
+    Anti-vacuity: adding a group field without its attribute -- exactly the
+    drift that a second hand-maintained map made invisible -- fails here, and
+    so does deleting an attribute a declared group field needs.
+    """
+
+    from polylogue.archive.query.metadata import query_unit_descriptors
+
+    missing = {
+        descriptor.unit: sorted(
+            field
+            for field in descriptor.aggregate_group_fields
+            if not field.startswith("session.") and field not in descriptor.row_field_attributes
+        )
+        for descriptor in query_unit_descriptors()
+    }
+    assert {unit: fields for unit, fields in missing.items() if fields} == {}
+
+
+def test_declared_metric_fields_are_resolvable_row_attributes() -> None:
+    """A metric field resolves to a row attribute, directly or through the map.
+
+    Anti-vacuity: declaring ``aggregate_metric_fields`` entries that name
+    neither a map key nor a payload field leaves the SQL lowerer composing a
+    column that does not exist.
+    """
+
+    from polylogue.archive.query.metadata import query_unit_descriptors
+    from polylogue.surfaces import payloads as surface_payloads
+
+    for descriptor in query_unit_descriptors():
+        if not descriptor.aggregate_metric_fields:
+            continue
+        model = getattr(surface_payloads, descriptor.payload_model)
+        for field in descriptor.aggregate_metric_fields:
+            attribute = descriptor.row_field_attributes.get(field, field)
+            assert attribute in model.model_fields, (descriptor.unit, field, attribute)
