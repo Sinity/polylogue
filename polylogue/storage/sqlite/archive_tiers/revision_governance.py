@@ -2412,14 +2412,13 @@ def record_current_parser_source_census(
     conn.execute(
         """
         INSERT INTO raw_authority_parser_census (
-            raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-        ) VALUES (?, ?, ?, ?, ?, 0)
+            raw_id, parser_fingerprint, status, logical_keys_json, detail
+        ) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(raw_id) DO UPDATE SET
             parser_fingerprint = excluded.parser_fingerprint,
             status = excluded.status,
             logical_keys_json = excluded.logical_keys_json,
-            detail = excluded.detail,
-            censused_at_ms = excluded.censused_at_ms
+            detail = excluded.detail
         """,
         (
             raw_id,

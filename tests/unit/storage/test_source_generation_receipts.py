@@ -58,8 +58,8 @@ def _connections() -> tuple[sqlite3.Connection, sqlite3.Connection, str]:
     source.execute(
         """
         INSERT INTO raw_authority_parser_census(
-            raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-        ) VALUES ('raw-1', ?, 'complete', '["codex:session-1"]', '', 1)
+            raw_id, parser_fingerprint, status, logical_keys_json, detail
+        ) VALUES ('raw-1', ?, 'complete', '["codex:session-1"]', '')
         """,
         (RAW_AUTHORITY_PARSER_FINGERPRINT,),
     )

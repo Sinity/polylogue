@@ -152,6 +152,119 @@ def test_durable_evolution_rejects_adding_an_object_alongside_retirement(
     assert "source: rendered DDL changed without a schema-version bump" in violations
 
 
+#: The exact shape polylogue-48bos retires: one declared-retired COLUMN of a
+#: table that survives. The table's own CREATE TABLE text necessarily differs.
+_RETIRED_COLUMN_DDL = """
+CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;
+CREATE TABLE raw_authority_parser_census (
+    raw_id TEXT PRIMARY KEY,
+    detail TEXT NOT NULL DEFAULT '',
+    censused_at_ms INTEGER NOT NULL CHECK(censused_at_ms >= 0)
+) STRICT;
+"""
+_AFTER_COLUMN_RETIREMENT_DDL = """
+CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;
+CREATE TABLE raw_authority_parser_census (
+    raw_id TEXT PRIMARY KEY,
+    detail TEXT NOT NULL DEFAULT ''
+) STRICT;
+"""
+
+
+def test_durable_evolution_accepts_a_declared_retired_column_of_a_surviving_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-48bos: retiring one column needs no durable migration.
+
+    Concrete input: ``raw_authority_parser_census`` keeps its identity and
+    loses only ``censused_at_ms``, which
+    ``RETIRED_SOURCE_SCHEMA_OBJECTS`` declares retired.
+
+    Wrong observable outcome prevented: the gate demanding a numbered
+    migration chain for a removal that, by declaration, runs no migration --
+    while the tier's own version is the archive format floor, so no bump is
+    expressible at all.
+
+    Anti-vacuity: the two tests below are its partners. Removing the
+    ``tables_losing_a_retired_column`` allowance makes this red; removing
+    the kept-column digest check makes the next one green.
+    """
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl=_RETIRED_COLUMN_DDL if ref == "base" else _AFTER_COLUMN_RETIREMENT_DDL),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+
+def test_durable_evolution_rejects_a_redefined_column_beside_a_retired_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retired column cannot carry a redefinition of a surviving column.
+
+    Concrete input: the same retirement, with ``detail`` silently losing its
+    ``NOT NULL DEFAULT ''`` declaration in the same edit.
+
+    Wrong observable outcome prevented: a durable column changing its
+    nullability with no migration, hidden behind a legitimate retirement.
+    """
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(
+            source_ddl=_RETIRED_COLUMN_DDL
+            if ref == "base"
+            else """
+CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;
+CREATE TABLE raw_authority_parser_census (
+    raw_id TEXT PRIMARY KEY,
+    detail TEXT
+) STRICT;
+"""
+        ),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    violations = verify_schema_manifest._durable_ddl_evolution_violations()
+
+    assert "source: rendered DDL changed without a schema-version bump" in violations
+
+
+def test_durable_evolution_rejects_an_undeclared_column_removal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a DECLARED retired column may be dropped without a migration.
+
+    Concrete input: ``detail`` -- which no ``RETIRED_SOURCE_SCHEMA_OBJECTS``
+    entry names -- removed from a surviving table.
+    """
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(
+            source_ddl=_RETIRED_COLUMN_DDL
+            if ref == "base"
+            else """
+CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;
+CREATE TABLE raw_authority_parser_census (
+    raw_id TEXT PRIMARY KEY,
+    censused_at_ms INTEGER NOT NULL CHECK(censused_at_ms >= 0)
+) STRICT;
+"""
+        ),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    violations = verify_schema_manifest._durable_ddl_evolution_violations()
+
+    assert "source: rendered DDL changed without a schema-version bump" in violations
+
+
 def test_durable_evolution_accepts_a_complete_contiguous_migration_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

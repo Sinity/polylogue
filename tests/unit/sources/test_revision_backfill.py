@@ -426,8 +426,8 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
             conn.execute(
                 """
                 INSERT INTO raw_authority_parser_census (
-                    raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-                ) VALUES (?, ?, 'complete', ?, 'parser-observed: legacy receipt shape', 1)
+                    raw_id, parser_fingerprint, status, logical_keys_json, detail
+                ) VALUES (?, ?, 'complete', ?, 'parser-observed: legacy receipt shape')
                 """,
                 (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, receipt_keys),
             )
@@ -503,7 +503,7 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
                 """
                 UPDATE raw_authority_parser_census
                 SET parser_fingerprint = ?, status = 'complete', logical_keys_json = '[]',
-                    detail = 'parser-observed: legacy receipt shape', censused_at_ms = 1
+                    detail = 'parser-observed: legacy receipt shape'
                 WHERE raw_id = ?
                 """,
                 (RAW_AUTHORITY_PARSER_FINGERPRINT, raw_id),
@@ -550,7 +550,7 @@ def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path
                 """
                 UPDATE raw_authority_parser_census
                 SET status = 'failed', logical_keys_json = '[]',
-                    detail = 'parser-observed: legacy incomplete receipt', censused_at_ms = 1
+                    detail = 'parser-observed: legacy incomplete receipt'
                 WHERE raw_id = ?
                 """,
                 (raw_id,),
@@ -2274,8 +2274,8 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
             conn.execute(
                 """
                 INSERT INTO raw_authority_parser_census
-                    (raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms)
-                VALUES (?, ?, 'complete', ?, 'pre-seeded for test', 0)
+                    (raw_id, parser_fingerprint, status, logical_keys_json, detail)
+                VALUES (?, ?, 'complete', ?, 'pre-seeded for test')
                 """,
                 (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, json.dumps([key])),
             )
