@@ -34,13 +34,9 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 from polylogue.storage.derived.raw import RawObservationScope
-from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
@@ -186,7 +182,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     ):
         initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "embeddings.db") as conn:
-        conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.EMBEDDINGS]}")
         conn.commit()
     inspect_raw_authority_frontier(
         Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
@@ -213,13 +209,11 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     assert storage["archive_ready"] is True
     assert storage["present_tiers"] == ["source", "index", "embeddings", "user", "audit", "ops"]
     tiers = cast(list[dict[str, object]], storage["tiers"])
+    # The daemon reports what each tier stamps, so the expectation is the one
+    # runtime declaration of that -- not a second per-tier constant that can
+    # silently disagree with it.
     assert {tier["name"]: tier["user_version"] for tier in tiers} == {
-        "source": SOURCE_SCHEMA_VERSION,
-        "index": INDEX_SCHEMA_VERSION,
-        "embeddings": EMBEDDINGS_SCHEMA_VERSION,
-        "user": USER_SCHEMA_VERSION,
-        "audit": AUDIT_SCHEMA_VERSION,
-        "ops": 1,
+        tier.value: ARCHIVE_VERSION_BY_TIER[tier] for tier in ArchiveTier
     }
     assert {tier["name"]: tier["version_status"] for tier in tiers} == {
         "source": "ok",
@@ -270,7 +264,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
     tiers = cast(list[dict[str, object]], storage["tiers"])
     index_tier = next(tier for tier in tiers if tier["name"] == "index")
     assert index_tier["user_version"] == 1
-    assert index_tier["expected_user_version"] == INDEX_SCHEMA_VERSION
+    assert index_tier["expected_user_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]
     assert index_tier["version_status"] == "mismatch"
     components_raw = payload["component_readiness"]
     assert isinstance(components_raw, dict)

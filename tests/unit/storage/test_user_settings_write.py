@@ -13,7 +13,9 @@ import sqlite3
 
 import pytest
 
-from polylogue.storage.sqlite.archive_tiers.user import USER_DDL, USER_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 from polylogue.storage.sqlite.archive_tiers.user_settings_write import (
     SETTING_KEY_SUBSCRIPTION_TIER,
     get_user_setting,
@@ -27,7 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.user_settings_write import (
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.executescript(USER_DDL)
-    conn.execute(f"PRAGMA user_version = {USER_SCHEMA_VERSION}")
+    conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]}")
     return conn
 
 

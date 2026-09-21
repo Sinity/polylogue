@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-USER_SCHEMA_VERSION = 11
-
 USER_DDL = """
 CREATE TABLE IF NOT EXISTS query_unit_frame_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -363,4 +361,4 @@ CREATE INDEX IF NOT EXISTS idx_context_deliveries_run_time
 ON context_deliveries(run_ref, delivered_at_ms DESC);
 """
 
-__all__ = ["USER_DDL", "USER_SCHEMA_VERSION"]
+__all__ = ["USER_DDL"]

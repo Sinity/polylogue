@@ -36,12 +36,12 @@ from polylogue.annotations.write import (
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.json import require_json_document
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
     persist_annotation_schema,
     read_durable_annotation_schema,
@@ -174,7 +174,7 @@ def test_seed_catalog_is_registered_and_replayed_without_user_schema_bump(tmp_pa
     user_db = tmp_path / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
         rows = {
             f"{schema_id}@v{version}"
             for schema_id, version in conn.execute(
@@ -200,7 +200,7 @@ def test_seed_catalog_is_registered_and_replayed_without_user_schema_bump(tmp_pa
     # Same user_version: data-only bootstrap replays the missing immutable row.
     initialize_archive_database(user_db, ArchiveTier.USER)
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM annotation_schemas WHERE schema_id = ? AND schema_version = ?",

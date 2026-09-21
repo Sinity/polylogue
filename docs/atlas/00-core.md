@@ -25,10 +25,10 @@ dashboard or an unbounded semantic-memory promise.
    evidence boundaries are explicit (`polylogue/analysis/registry.py:1-100`).
 3. **Audit** — inspect operation previews, authorization, attempts, and
    continuity, with durable audit records separate from rebuildable indexes
-   (`polylogue/storage/sqlite/archive_tiers/audit.py:53-67`).
+   (`polylogue/storage/sqlite/archive_tiers/audit.py:51-65`).
 4. **Remember** — retain user assertions and context-delivery provenance in
    the durable user tier; claims remain typed and evidence-linked
-   (`polylogue/storage/sqlite/archive_tiers/user.py:19-40`).
+   (`polylogue/storage/sqlite/archive_tiers/user.py:17-38`).
 
 ## Data flow
 

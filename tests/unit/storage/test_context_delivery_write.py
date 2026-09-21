@@ -12,18 +12,20 @@ from polylogue.context.compiler import (
     context_snapshot_record_from_image,
 )
 from polylogue.core.refs import EvidenceRef
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
     list_context_deliveries,
     read_context_delivery,
     write_context_delivery,
 )
-from polylogue.storage.sqlite.archive_tiers.user import USER_DDL, USER_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
 
 def _conn() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
     conn.executescript(USER_DDL)
-    conn.execute(f"PRAGMA user_version = {USER_SCHEMA_VERSION}")
+    conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]}")
     return conn
 
 

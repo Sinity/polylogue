@@ -27,13 +27,15 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source import (
     RETIRED_SOURCE_SCHEMA_OBJECTS,
     SOURCE_DDL,
-    SOURCE_SCHEMA_VERSION,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+SOURCE_TIER_VERSION = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
 from polylogue.storage.sqlite.migration_runner import (
     DurableFreshDDLParityProof,
     MigrationError,
@@ -60,7 +62,7 @@ def _fresh_source() -> Iterator[sqlite3.Connection]:
     """A source tier exactly as current canonical DDL builds it."""
     with closing(sqlite3.connect(":memory:")) as conn:
         conn.executescript(SOURCE_DDL)
-        conn.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+        conn.execute(f"PRAGMA user_version = {SOURCE_TIER_VERSION}")
         conn.commit()
         yield conn
 
@@ -68,7 +70,7 @@ def _fresh_source() -> Iterator[sqlite3.Connection]:
 def _prove(migrated: sqlite3.Connection, fresh: sqlite3.Connection) -> DurableFreshDDLParityProof:
     return prove_durable_fresh_ddl_parity(
         ArchiveTier.SOURCE,
-        SOURCE_SCHEMA_VERSION,
+        SOURCE_TIER_VERSION,
         migrated_connection=migrated,
         fresh_connection=fresh,
         evidence_ref="proof:retirement-parity-test",
@@ -240,7 +242,7 @@ def test_the_unprojected_digest_is_the_one_the_apply_evidence_records(tmp_path: 
     # evidence to the tier's own archive identity on disk.
     initialize_archive_database(source_path, ArchiveTier.SOURCE)
     with closing(sqlite3.connect(source_path)) as migrated:
-        migrated.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+        migrated.execute(f"PRAGMA user_version = {SOURCE_TIER_VERSION}")
         # A historical tier that migration carried forward carrying exactly
         # what the retirement declaration says it would carry.
         migrated.execute(f"CREATE TABLE {RETIRED_TABLE_NAME} (census_id TEXT PRIMARY KEY) STRICT")
@@ -282,7 +284,7 @@ def test_a_parity_proof_over_different_bytes_still_fails_the_applied_binding(tmp
     # evidence to the tier's own archive identity on disk.
     initialize_archive_database(source_path, ArchiveTier.SOURCE)
     with closing(sqlite3.connect(source_path)) as migrated:
-        migrated.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+        migrated.execute(f"PRAGMA user_version = {SOURCE_TIER_VERSION}")
         migrated.execute(f"CREATE TABLE {RETIRED_TABLE_NAME} (census_id TEXT PRIMARY KEY) STRICT")
         migrated.commit()
         post = capture_durable_database_evidence(migrated, ArchiveTier.SOURCE)

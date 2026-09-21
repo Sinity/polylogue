@@ -55,16 +55,20 @@ def _stamp_index_as_current_schema(index_db: Path) -> None:
 
 def test_probe_archive_tier_reports_schema_skew_without_opening_a_usable_reader(tmp_path: Path) -> None:
     """The version probe remains readable when the normal reader rejects stale schemas."""
+    # Above the expected version, not below: the source tier sits at the
+    # archive format floor, so one below it is 0 -- the never-provisioned
+    # sentinel the reader deliberately admits rather than a stale schema.
+    skewed_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1
     db_path = tmp_path / "source.db"
     with sqlite3.connect(db_path) as connection:
-        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] - 1}")
+        connection.execute(f"PRAGMA user_version = {skewed_version}")
 
     with pytest.raises(SchemaSkew):
         connection_profile.open_readonly_connection(db_path)
 
     probe = probe_archive_tier(ArchiveTier.SOURCE, db_path)
 
-    assert probe.user_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] - 1
+    assert probe.user_version == skewed_version
     assert probe.version_status == "mismatch"
 
 
