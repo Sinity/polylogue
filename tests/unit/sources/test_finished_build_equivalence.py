@@ -37,13 +37,13 @@ anyway, and the receipt names the phase rather than hiding it.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from devtools.measurement_receipts import emit_receipt
 from polylogue.sources import revision_backfill
 from polylogue.sources.revision_backfill import (
     backfill_historical_revision_evidence,
@@ -70,6 +70,10 @@ from tests.infra.workload_artifacts import FinishedBuildResourceProbe
 _RAW_COUNT = 8
 _RAW_PAYLOAD_BYTES = 2_000
 _WORK_PROFILE = "finished-build-equivalence:synthetic-8-raw:codex"
+#: The measurement-receipt name this comparison emits under. It is an
+#: observation, not a committed baseline: promoting one is the deliberate
+#: ``devtools bench baseline --record`` step.
+_MEASUREMENT_NAME = "finished-build-equivalence-synthetic"
 # ``RevisionBackfillResult.stage_timings_s`` carries a few COUNTERS in the same
 # mapping as its durations (``float(self.reparse_hits)`` and friends). A naive
 # maximum over the ledger therefore reports a hit count as the expensive phase.
@@ -336,7 +340,25 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
                 "output_session_count": run.output.output_session_count,
             }
         )
-    print("finished-build-equivalence=" + json.dumps({"arms": receipts}, sort_keys=True))
+    emitted = emit_receipt(
+        _MEASUREMENT_NAME,
+        {
+            "input": {
+                "digest": sealed.digest,
+                "bytes": sealed.byte_count,
+                "raw_count": sealed.raw_count,
+            },
+            "arms": receipts,
+            "verdict": {
+                "conclusion": "equivalent-finished-output",
+                "reason": (
+                    "both production arms reached one canonical logical digest; "
+                    "no transport or width ranking is claimed at this scale"
+                ),
+            },
+        },
+    )
+    print(f"finished-build-equivalence receipt: {emitted}")
 
 
 def test_finished_build_comparison_rejects_a_diverged_or_indebted_arm(tmp_path: Path) -> None:
