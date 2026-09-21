@@ -381,3 +381,81 @@ def test_await_interrupt_cancels_the_original_request_not_the_control_exchange(
             "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
         )
     assert cancelled == ["accepted-mutation"]
+
+
+def test_an_accepted_write_is_never_called_indeterminate_without_one_receipt_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A durably accepted write consults its lifecycle before being given up on.
+
+    ``operation_to_completion`` budgets the whole exchange at ``spec.deadline_s``,
+    while its own submit is allowed to take that deadline plus a second. When the
+    submit uses the budget, the receipt wait has none left -- and reporting
+    ``indeterminate`` there claims the outcome is unknown without ever asking the
+    durable lifecycle that already settled it. Every such report costs the
+    operator a manual recovery for a write that had a receipt waiting.
+
+    Anti-vacuity: the guarded ``while perf_counter() < deadline:`` this replaces
+    performs zero awaits under this clock, so ``awaited`` stays empty and the
+    returned outcome is ``indeterminate`` -- both assertions go red.
+    """
+    from polylogue.daemon_client import DaemonClient
+
+    # The first read builds the deadline; every later read is past it, which is
+    # the exhausted-budget state this law is about.
+    readings = iter([0.0])
+    monkeypatch.setattr("polylogue.daemon_client.perf_counter", lambda: next(readings, 1_000_000.0))
+
+    reference = {
+        "request_id": "accepted-write",
+        "archive_identity": "archive-identity",
+        "principal_ref": "principal",
+        "fingerprint": "fingerprint",
+        "operation_name": "mutation.session.tag",
+    }
+    accepted = {
+        "request_id": "accepted-write",
+        "outcome": "accepted",
+        "result": {"sequence": 1, "outcome": "accepted", "reference": reference},
+        "accepted_reference": reference,
+    }
+    settled: dict[str, object] = {
+        key: {}
+        for key in (
+            "archive",
+            "generation",
+            "readiness",
+            "served_by",
+            "timing",
+            "schema_versions",
+            "authority_snapshot",
+        )
+    }
+    settled["degraded_components"] = []
+    settled["result"] = {
+        "sequence": 2,
+        "outcome": "completed",
+        "effect": "committed",
+        "affected_count": 1,
+        "reference": reference,
+    }
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    awaited: list[tuple[str, int]] = []
+
+    def await_operation(request_id: str, **kwargs: object) -> dict[str, object]:
+        awaited.append((request_id, int(str(kwargs["timeout_ms"]))))
+        return settled
+
+    monkeypatch.setattr(client, "operation", lambda *args, **kwargs: accepted)
+    monkeypatch.setattr(client, "await_operation", await_operation)
+
+    envelope = client.operation_to_completion(
+        "mutation.session.tag",
+        {"session_ids": ["codex-session:one"], "tags": ["t"]},
+        archive_root=str(tmp_path),
+    )
+
+    assert awaited == [("accepted-write", 1)]
+    assert envelope is not None
+    assert envelope["outcome"] == "completed"

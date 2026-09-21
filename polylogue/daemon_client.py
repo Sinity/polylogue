@@ -467,7 +467,16 @@ class DaemonClient:
         target = str(envelope["request_id"])
         state = envelope.get("result")
         sequence = int(state.get("sequence", 0)) if isinstance(state, dict) else 0
-        while perf_counter() < deadline:
+        # One receipt read is always owed.  The submit above can consume the
+        # whole completion budget on its own -- its own socket timeout is the
+        # operation deadline plus a second -- and a plain ``while`` then
+        # reports indeterminate without ever asking the durable lifecycle that
+        # already holds the receipt.  "We never looked" is not an honest
+        # indeterminate for a write the daemon durably accepted, and the
+        # recovery it forces on the operator is the read skipped here.
+        consulted = False
+        while not consulted or perf_counter() < deadline:
+            consulted = True
             timeout_ms = max(1, min(30_000, int((deadline - perf_counter()) * 1000)))
             try:
                 waited = self.await_operation(
