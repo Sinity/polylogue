@@ -280,6 +280,67 @@ def maintenance_blob_publications_abandon(
     )
 
 
+def maintenance_blob_refs_replace_from_source(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Repoint raw-backed missing blob refs under daemon write authority."""
+    from polylogue.operations.maintenance_actuators import (
+        BlobReferenceSourceReplaceActuator,
+        BlobReferenceSourceReplaceArgs,
+    )
+
+    payload = request.payload
+    max_count = payload.get("max_count")
+    args = BlobReferenceSourceReplaceArgs(
+        archive_root=context.archive_root,
+        manifest_path=Path(str(payload["manifest_path"])),
+        max_count=None if max_count is None else int(cast(int, max_count)),
+        sample_size=int(cast(int, payload.get("sample_size", 30))),
+    )
+    return _execute_named_mutation(
+        request,
+        context,
+        audit,
+        snapshot,
+        BlobReferenceSourceReplaceActuator(),
+        args,
+    )
+
+
+def maintenance_blob_refs_prune_orphans(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Quarantine and prune orphan blob refs under daemon write authority."""
+    from polylogue.operations.maintenance_actuators import (
+        BlobReferenceOrphanPruneActuator,
+        BlobReferenceOrphanPruneArgs,
+    )
+
+    payload = request.payload
+    max_count = payload.get("max_count")
+    quarantine_path = payload.get("quarantine_path")
+    args = BlobReferenceOrphanPruneArgs(
+        archive_root=context.archive_root,
+        quarantine_path=None if quarantine_path is None else Path(str(quarantine_path)),
+        max_count=None if max_count is None else int(cast(int, max_count)),
+        sample_size=int(cast(int, payload.get("sample_size", 30))),
+    )
+    return _execute_named_mutation(
+        request,
+        context,
+        audit,
+        snapshot,
+        BlobReferenceOrphanPruneActuator(),
+        args,
+    )
+
+
 def maintenance_demo_augment(
     request: DaemonOperationRequest,
     context: OperationContext,

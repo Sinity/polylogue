@@ -1012,6 +1012,66 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         ),
     ),
     OperationSpec(
+        name="mutate-replace-blob-refs-from-source",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Repoint raw-backed missing blob references at current source-derived bytes through OperationExecutor, "
+            "recording every before/after row in the caller-named manifest. The resident daemon is the only executor "
+            "(maintenance.blob-refs.replace-from-source is daemon-authority WRITE with no fallback); the preview "
+            "command remains a read-only dry run of the same candidate set."
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        affected_tiers=("source", "audit"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="blob-reference-source-replacement",
+                target_kinds=("source",),
+                required_capabilities=("archive.blob_refs.replace_from_source",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("reconcile_required",),
+            ),
+        ),
+    ),
+    OperationSpec(
+        name="mutate-prune-orphan-blob-refs",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Quarantine and delete missing blob references whose raw session row is gone, through "
+            "OperationExecutor. The quarantine JSONL is written before the delete. The resident daemon is the only "
+            "executor (maintenance.blob-refs.prune-orphans is daemon-authority WRITE with no fallback); the preview "
+            "command remains a read-only dry run of the same candidate set."
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute", "explicit_dry_run_evidence"),
+        executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        affected_tiers=("source", "audit"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="blob-reference-orphan-prune",
+                target_kinds=("source",),
+                required_capabilities=("archive.blob_refs.prune_orphans",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("reconcile_required",),
+            ),
+        ),
+    ),
+    OperationSpec(
         name="mutate-maintenance-target-run",
         kind=OperationKind.MAINTENANCE,
         description=(

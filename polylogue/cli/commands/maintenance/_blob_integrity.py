@@ -3,19 +3,64 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
-from polylogue.paths import archive_root
+from polylogue.config import Config
+from polylogue.paths import archive_root, render_root
 
 if TYPE_CHECKING:
     from polylogue.storage.blob_integrity import (
         BlobReferenceDebtClassificationReport,
-        BlobReferenceOrphanPruneReport,
         BlobReferenceRecoveryPlanReport,
-        BlobReferenceSourceReplaceReport,
+    )
+
+
+def _submit_maintenance_mutation(operation: str, payload: dict[str, object]) -> dict[str, object]:
+    """Dispatch one declared blob-reference repair to the resident daemon.
+
+    Both apply commands used to call their storage routine in the CLI's own
+    process, which commits ``UPDATE``/``DELETE`` against the durable source
+    tier. The storage routines assert a write lease, but enforcement is only
+    armed inside the daemon, so outside it the assertion returned ``None`` and
+    the write proceeded beside a live daemon.
+    """
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+        configured_mutation_operation,
+    )
+
+    config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
+    try:
+        return configured_mutation_operation(config, operation, payload)
+    except OperationUnavailableError as exc:
+        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
+    except OperationIndeterminateError as exc:
+        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
+    except OperationFailedError as exc:
+        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
+
+
+def _submit_replace_from_source(manifest_file: Path, max_count: int | None, sample_limit: int) -> dict[str, object]:
+    return _submit_maintenance_mutation(
+        "maintenance.blob-refs.replace-from-source",
+        {"manifest_path": str(manifest_file), "max_count": max_count, "sample_size": sample_limit},
+    )
+
+
+def _submit_prune_orphans(quarantine_file: Path | None, max_count: int | None, sample_limit: int) -> dict[str, object]:
+    return _submit_maintenance_mutation(
+        "maintenance.blob-refs.prune-orphans",
+        {
+            "quarantine_path": None if quarantine_file is None else str(quarantine_file),
+            "max_count": max_count,
+            "sample_size": sample_limit,
+        },
     )
 
 
@@ -230,18 +275,19 @@ def blob_reference_replace_from_source_preview_command(
         max_count=max_count,
         sample_size=sample_limit,
     )
+    result = report.to_dict()
     payload = {
         "mode": "blob_reference_replace_from_source",
         "mutates": False,
         "writes_manifest": manifest_file is not None,
-        **report.to_dict(),
+        **result,
     }
 
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    _render_blob_reference_replace_from_source_plain(report)
+    _render_blob_reference_replace_from_source_plain(result)
 
 
 @click.command("blob-reference-replace-from-source")
@@ -279,56 +325,59 @@ def blob_reference_replace_from_source_command(
     ``blob-reference-replace-from-source-preview`` for a read-only dry run
     of the same candidate set.
     """
-    from polylogue.storage.blob_integrity import replace_raw_backed_blob_reference_debt_from_source
-
-    report = replace_raw_backed_blob_reference_debt_from_source(
-        archive_root() / "source.db",
-        dry_run=False,
-        manifest_path=manifest_file,
-        max_count=max_count,
-        sample_size=sample_limit,
-    )
+    envelope = _submit_replace_from_source(manifest_file, max_count, sample_limit)
+    result = envelope.get("result")
+    result = result if isinstance(result, dict) else {}
+    receipt_ref = envelope.get("receipt_ref")
     payload = {
         "mode": "blob_reference_replace_from_source",
         "mutates": True,
         "writes_manifest": True,
-        **report.to_dict(),
+        "receipt_ref": None if receipt_ref is None else str(receipt_ref),
+        **result,
     }
 
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    _render_blob_reference_replace_from_source_plain(report)
+    _render_blob_reference_replace_from_source_plain(result)
 
 
-def _render_blob_reference_replace_from_source_plain(report: BlobReferenceSourceReplaceReport) -> None:
+def _render_blob_reference_replace_from_source_plain(report: Mapping[str, Any]) -> None:
+    """Render the replacement report from its serialized shape.
+
+    Preview and apply now reach this through the same ``to_dict()`` payload --
+    preview from the in-process dry run, apply from the daemon's typed
+    operation result -- so there is one renderer rather than one per executor.
+    """
     click.echo("Blob reference current-source replacement")
-    click.echo(f"Source DB:    {report.source_db}")
-    click.echo(f"Blob root:    {report.blob_root}")
-    click.echo(f"Mode:         {'dry-run' if report.dry_run else 'apply'}")
-    click.echo(f"Scanned:      {report.scanned_rows:,} raw-backed row(s)")
-    click.echo(f"Candidates:   {report.candidate_rows:,}")
-    click.echo(f"Replaced:     {report.replaced_rows:,}")
-    click.echo(f"Written:      {report.written_blobs:,} blob(s), {report.written_bytes:,} byte(s)")
+    click.echo(f"Source DB:    {report['source_db']}")
+    click.echo(f"Blob root:    {report['blob_root']}")
+    click.echo(f"Mode:         {'dry-run' if report['dry_run'] else 'apply'}")
+    click.echo(f"Scanned:      {report['scanned_rows']:,} raw-backed row(s)")
+    click.echo(f"Candidates:   {report['candidate_rows']:,}")
+    click.echo(f"Replaced:     {report['replaced_rows']:,}")
+    click.echo(f"Written:      {report['written_blobs']:,} blob(s), {report['written_bytes']:,} byte(s)")
     click.echo(
         "Skipped:      "
-        f"existing={report.skipped_existing_blob:,} "
-        f"no_source={report.skipped_no_source_path:,} "
-        f"source_missing={report.skipped_source_missing:,} "
-        f"source_index={report.skipped_source_index:,} "
-        f"unsupported={report.skipped_unsupported_source:,} "
-        f"error={report.skipped_error:,}"
+        f"existing={report['skipped_existing_blob']:,} "
+        f"no_source={report['skipped_no_source_path']:,} "
+        f"source_missing={report['skipped_source_missing']:,} "
+        f"source_index={report['skipped_source_index']:,} "
+        f"unsupported={report['skipped_unsupported_source']:,} "
+        f"error={report['skipped_error']:,}"
     )
-    if report.manifest_path:
-        click.echo(f"Manifest:    {report.manifest_path}")
-    if report.samples:
+    if report["manifest_path"]:
+        click.echo(f"Manifest:    {report['manifest_path']}")
+    samples = report["samples"]
+    if samples:
         click.echo("Samples:")
-        for sample in report.samples[:5]:
-            detail = f" reason={sample.reason}" if sample.reason else ""
+        for sample in samples[:5]:
+            detail = f" reason={sample['reason']}" if sample["reason"] else ""
             click.echo(
-                f"  {sample.action} raw_id={sample.raw_id} old={sample.old_blob_hash} "
-                f"new={sample.new_blob_hash}{detail}"
+                f"  {sample['action']} raw_id={sample['raw_id']} old={sample['old_blob_hash']} "
+                f"new={sample['new_blob_hash']}{detail}"
             )
 
 
@@ -369,17 +418,18 @@ def blob_reference_prune_orphans_preview_command(
         max_count=max_count,
         sample_size=sample_limit,
     )
+    result = report.to_dict()
     payload = {
         "mode": "blob_reference_prune_orphans",
         "mutates": False,
-        **report.to_dict(),
+        **result,
     }
 
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    _render_blob_reference_prune_orphans_plain(report)
+    _render_blob_reference_prune_orphans_plain(result)
 
 
 @click.command("blob-reference-prune-orphans")
@@ -424,51 +474,49 @@ def blob_reference_prune_orphans_command(
     Always mutates the archive. Use ``blob-reference-prune-orphans-preview``
     for a read-only dry run of the same candidate set.
     """
-    from polylogue.storage.blob_integrity import prune_orphan_blob_reference_debt
-
-    report = prune_orphan_blob_reference_debt(
-        archive_root() / "source.db",
-        dry_run=False,
-        quarantine_path=quarantine_file,
-        max_count=max_count,
-        sample_size=sample_limit,
-    )
+    envelope = _submit_prune_orphans(quarantine_file, max_count, sample_limit)
+    result = envelope.get("result")
+    result = result if isinstance(result, dict) else {}
+    receipt_ref = envelope.get("receipt_ref")
     payload = {
         "mode": "blob_reference_prune_orphans",
         "mutates": True,
-        **report.to_dict(),
+        "receipt_ref": None if receipt_ref is None else str(receipt_ref),
+        **result,
     }
 
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    _render_blob_reference_prune_orphans_plain(report)
+    _render_blob_reference_prune_orphans_plain(result)
 
 
-def _render_blob_reference_prune_orphans_plain(report: BlobReferenceOrphanPruneReport) -> None:
+def _render_blob_reference_prune_orphans_plain(report: Mapping[str, Any]) -> None:
+    """Render the prune report from its serialized shape (see the sibling renderer)."""
     click.echo("Blob reference orphan prune")
-    click.echo(f"Source DB:    {report.source_db}")
-    click.echo(f"Blob root:    {report.blob_root}")
-    click.echo(f"Mode:         {'dry-run' if report.dry_run else 'apply'}")
-    click.echo(f"Blob refs:    {report.scanned_blob_refs:,} scanned")
+    click.echo(f"Source DB:    {report['source_db']}")
+    click.echo(f"Blob root:    {report['blob_root']}")
+    click.echo(f"Mode:         {'dry-run' if report['dry_run'] else 'apply'}")
+    click.echo(f"Blob refs:    {report['scanned_blob_refs']:,} scanned")
     click.echo(
-        f"Orphans:      {report.missing_orphan_refs:,} row(s), "
-        f"{report.missing_orphan_distinct_blobs:,} distinct blob(s)"
+        f"Orphans:      {report['missing_orphan_refs']:,} row(s), "
+        f"{report['missing_orphan_distinct_blobs']:,} distinct blob(s)"
     )
-    action = "would prune" if report.dry_run else "pruned"
-    click.echo(
-        f"Result:       {action} {report.missing_orphan_refs if report.dry_run else report.pruned_refs:,} row(s)"
-    )
+    dry_run = report["dry_run"]
+    action = "would prune" if dry_run else "pruned"
+    counted = report["missing_orphan_refs"] if dry_run else report["pruned_refs"]
+    click.echo(f"Result:       {action} {counted:,} row(s)")
     click.echo(
         "Skipped:      "
-        f"existing_blob={report.skipped_existing_blob:,} "
-        f"raw_session_present={report.skipped_raw_session_present:,}"
+        f"existing_blob={report['skipped_existing_blob']:,} "
+        f"raw_session_present={report['skipped_raw_session_present']:,}"
     )
-    if report.quarantine_path:
-        click.echo(f"Quarantine:   {report.quarantine_path}")
-    if report.samples:
+    if report["quarantine_path"]:
+        click.echo(f"Quarantine:   {report['quarantine_path']}")
+    samples = report["samples"]
+    if samples:
         click.echo("Samples:")
-        for sample in report.samples[:5]:
-            source = sample.source_path or "(none)"
-            click.echo(f"  {sample.action} {sample.blob_hash} ref_id={sample.ref_id} {source}")
+        for sample in samples[:5]:
+            source = sample["source_path"] or "(none)"
+            click.echo(f"  {sample['action']} {sample['blob_hash']} ref_id={sample['ref_id']} {source}")
