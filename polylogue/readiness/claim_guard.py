@@ -124,6 +124,17 @@ def raw_materialization_unmeasured_reason(readiness: Mapping[str, Any] | object 
     production archive permanently indeterminate. An unresolved frontier
     obligation is a durable blocker row and refutes
     ``raw_materialization_ready`` directly instead.
+
+    The census row also carried a second, separable question -- "was this
+    domain ever measured at all?" -- and retiring the ledger retired the row,
+    not the question (polylogue-njcms). Its successor is the zero-denominator
+    check below. ``raw_materialization_ready`` is the invariant "every raw
+    artifact is materialized", and at zero raw artifacts every blocking
+    counter is trivially zero, so a pristine archive that has never ingested
+    anything certified ``converged: true`` off an inspection that examined no
+    rows. That is the same shape :func:`search_unmeasured_reason` already
+    refuses for FTS coverage at a zero denominator (polylogue-o6oct), and
+    unlike the census condition it leaves every populated archive determinate.
     """
     payload: Mapping[str, Any] | None
     if readiness is None:
@@ -141,6 +152,13 @@ def raw_materialization_unmeasured_reason(readiness: Mapping[str, Any] | object 
     parser_census = payload.get("raw_authority_parser_census")
     if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
         return "source parser census not measured"
+    raw_artifact_count = payload.get("raw_artifact_count")
+    # Only an explicit zero is classified, for the same reason
+    # ``search_unmeasured_reason`` only classifies an explicit zero: a producer
+    # that reported no denominator keeps its own verdict rather than having a
+    # real refutation masked into "unknown".
+    if isinstance(raw_artifact_count, int) and not isinstance(raw_artifact_count, bool) and raw_artifact_count == 0:
+        return "no raw artifacts: raw materialization is undefined at a zero denominator, not converged"
     return None
 
 

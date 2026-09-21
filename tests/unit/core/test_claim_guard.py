@@ -216,3 +216,29 @@ def test_unreadable_writer_evidence_withholds_perf_measurable() -> None:
     assert guard["perf_measurable"]["value"] is None
     assert guard["perf_measurable"]["determinate"] is False
     assert "cannot rule out" in str(guard["perf_measurable"]["reason"])
+
+
+def test_a_zero_raw_artifact_denominator_withholds_raw_materialization() -> None:
+    """A vacuously-satisfied readiness predicate certifies nothing.
+
+    ``raw_materialization_ready`` is the invariant "every raw artifact is
+    materialized", and it reads every blocking counter as zero on an archive
+    that holds no raw artifacts at all -- so a pristine archive published
+    ``converged: true`` off an inspection that examined no rows
+    (polylogue-njcms). This is the same zero-denominator shape
+    :func:`search_unmeasured_reason` already refuses for FTS coverage
+    (polylogue-o6oct).
+
+    Anti-vacuity, both directions: deleting the zero-denominator branch makes
+    the first assertion red, and widening it to any falsy/absent count makes
+    the second and third red -- a populated archive must stay determinate, and
+    a producer that reported no denominator at all must keep its own verdict
+    rather than have a real refutation masked into "unknown".
+    """
+    from polylogue.readiness.claim_guard import raw_materialization_unmeasured_reason
+
+    complete = {"available": True, "raw_authority_parser_census": {"available": True}}
+
+    assert raw_materialization_unmeasured_reason({**complete, "raw_artifact_count": 0}) is not None
+    assert raw_materialization_unmeasured_reason({**complete, "raw_artifact_count": 4}) is None
+    assert raw_materialization_unmeasured_reason(complete) is None

@@ -76,9 +76,22 @@ def _complete_healthy_frontier() -> JSONDocument:
 
 
 def _complete_raw_materialization_readiness() -> status_module.RawMaterializationReadiness:
-    """Return the complete source evidence required to isolate claim signals."""
+    """Return the complete source evidence required to isolate claim signals.
+
+    "Complete" includes a measured denominator (polylogue-njcms): every
+    blocking counter is trivially zero on an archive that holds no raw
+    artifacts at all, so a zero ``raw_artifact_count`` is an uninspected
+    domain, not a converged one, and the claim guard withholds certification
+    for it. These tests are about the debt ledger's isolation from the
+    convergence claim, so the raw projection they hand it has to be one that
+    actually inspected something -- otherwise they would pass on a signal
+    nothing measured.
+    """
     return status_module.RawMaterializationReadiness(
         available=True,
+        raw_artifact_count=4,
+        materialized_raw_artifact_count=4,
+        archive_session_count=4,
         raw_authority_parser_census={"available": True},
     )
 
