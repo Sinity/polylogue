@@ -2715,7 +2715,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
-            from polylogue.daemon.intake_adapters import RawMaterializationDiscovery, SubUnitHaltPolicy
+            from polylogue.daemon.intake_adapters import RawMaterializationDiscovery
 
             # Fair intake and the whale lane each retain their own bounded
             # traversal. A whale probe is selection work, not an intake
@@ -3005,6 +3005,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     # registering here costs nothing and the class starts
                     # admitting as soon as the first acquisition commits.
                     raw_materialization_available = not watcher_blocked
+                    from polylogue.daemon.intake_adapters import SubUnitHaltPolicy
 
                     # A configured source that terminally refuses halts
                     # *itself*, not the whole ``configured_local`` class it

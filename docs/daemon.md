@@ -567,12 +567,27 @@ it.
   sweep no longer takes the process with it.
 - **Shutdown** cancels children in reverse start order and awaits each one
   inside its declared deadline. A child still running when its deadline expires
-  is reported by name as an orphan.
+  is reported by name as an orphan, and the report is `incomplete`, never a
+  clean stop. Incomplete shutdown **retains ownership**: the pidfile, the
+  process-lifetime rebuild exclusion and the durable archive lease are all
+  kept, because an orphan is running code that can still commit and releasing
+  would let an offline rebuild, a second daemon or a CLI mutation start beside
+  it. A `failed` service is deliberately not treated this way — it already
+  terminated with an exception and cannot write.
 - **Profiles** narrow the one registry: `production` runs everything;
   `resident_core` runs process liveness and health only; `surfaces` adds the
   sockets; `intake` adds acquisition. `polylogued run` uses `production`.
   Focused tests select a narrower profile through `service_profile`, which is
-  why a daemon test cannot start a convergence pass it never asked for.
+  why a daemon test cannot start a convergence pass it never asked for. The
+  composition root also asks the supervisor whether any intake service is
+  schedulable before it builds the intake stack, so a profile that runs no
+  intake does not open an archive generation or register adapters for
+  services it will never start.
+- **Drain cycles.** A cadence loop that drains a backlog reports each pass's
+  outcome, and the runner counts the progressed-to-drained *edge*. An already
+  empty backlog woken again by an ingest that changed nothing does not
+  announce a second completion; `drain_transitions` in the per-loop payload is
+  one per cycle, and the cycle re-arms on the next pass that does work.
 
 #### Halted work
 
@@ -589,6 +604,15 @@ daemon holding one is not `ok`. Halts survive restart; clearing one is explicit
 
 Refusing at execution time is the defect this replaces. Work that cannot
 succeed must never have been planned.
+
+Sources halt at their own grain rather than their class's. Every configured
+source shares the one `configured_local` intake class, so a class-grain halt
+would stop the healthy siblings too. When a source terminally refuses, the
+multiplexed adapter records a `source:<name>` halt, returns a per-item
+terminal outcome, and stops discovering that source's files; the class keeps
+draining. The page that carried the refusal is still admitted — the halt is
+consulted where work is selected, not where it is executed — so the bounded
+cost is one page, not a run.
 
 ### Acquisition: one intake route
 

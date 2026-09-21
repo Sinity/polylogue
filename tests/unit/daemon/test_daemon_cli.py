@@ -4439,13 +4439,12 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
         stack.enter_context(patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", resident_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", resident_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_raw_materialization_convergence", materialization))
-        stack.enter_context(
-            patch.object(
-                daemon_intake_adapters,
-                "build_intake_adapters",
-                lambda *args, **kwargs: intake_builds.append(args) or (),
-            )
-        )
+
+        def _record_intake_build(*args: object, **_kwargs: object) -> tuple[object, ...]:
+            intake_builds.append(args)
+            return ()
+
+        stack.enter_context(patch.object(daemon_intake_adapters, "build_intake_adapters", _record_intake_build))
         started_at = time.monotonic()
         asyncio.run(
             daemon_cli.run_daemon_services(
@@ -4590,12 +4589,11 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
     import dataclasses as _dataclasses
 
     from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import supervisor as supervisor_module
-    from polylogue.daemon.services import ServiceProfile, ServiceState
+    from polylogue.daemon.services import ServiceProfile, ServiceState, service_spec
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
     from polylogue.operations import durable_change_train
 
-    real_spec = supervisor_module.service_spec
+    real_spec = service_spec
     ignoring = True
     running = asyncio.Event()
     retained: list[str] = []
@@ -4646,7 +4644,7 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
     with contextlib.ExitStack() as stack, capture() as events:
         _daemon_startup_stubs(stack, daemon_cli, tmp_path)
         supervisors = _capture_supervisor(stack, daemon_cli)
-        stack.enter_context(patch.object(supervisor_module, "service_spec", narrowed_spec))
+        stack.enter_context(patch("polylogue.daemon.supervisor.service_spec", narrowed_spec))
         stack.enter_context(patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", resident_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", uncancellable_health))
         stack.enter_context(
