@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import pickle
 import sqlite3
 import time
@@ -24,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
@@ -679,6 +680,85 @@ def _preacquire_sidecar_blobs(
     return session_to_write.model_copy(update={"session_events": updated_events}), counts
 
 
+# polylogue-ojjet: the Drive revision-cohort classifier
+# (``classify_historical_full_revision_streams``) deliberately re-derives
+# every cohort member's true size and content hash from its bytes rather
+# than trusting a caller-supplied value, and then streams pairwise prefix
+# comparisons between the survivors. Both phases reach the blob store
+# through ``store._blob_publisher.open``, so one classification re-opens the
+# same handful of blobs once per hash and once per candidate pair, and a
+# whole ingest pass repeats that for every raw that reaches
+# ``_write_session``. Measured on the production ``_write_session`` route
+# with one Gemini logical identity: 6 raws cost 87 opens of 6 distinct
+# blobs, 12 raws cost 646 opens of 12, and 24 raws cost 4,896 opens of 24.
+#
+# Blobs are content-addressed and immutable, so the bytes behind a hash can
+# never change underneath this cache. Serving those repeats from a
+# pass-scoped, byte-bounded cache leaves every decision -- and therefore
+# every lineage binding -- bit-identical while making the cohort's disk
+# loads one per distinct blob instead of growing with the cohort. Nothing
+# here caps a cohort or moves the classifier behind ``_write_session``'s
+# skip check: which raws get lineage-recorded is unchanged.
+_DRIVE_COHORT_BLOB_CACHE_MAX_BYTES = 64 * 1024 * 1024
+
+
+class DriveRevisionCohortCache:
+    """Pass-scoped, byte-bounded cache of Drive revision-cohort blob bytes.
+
+    A blob larger than the remaining budget is never cached and is read
+    straight from disk, so a single large cohort member cannot push the
+    resident set past the budget.
+    """
+
+    def __init__(self, max_bytes: int = _DRIVE_COHORT_BLOB_CACHE_MAX_BYTES) -> None:
+        self._blobs: dict[str, bytes] = {}
+        self._remaining = max_bytes
+        self.disk_loads = 0
+        self.served_from_cache = 0
+
+    def read(self, publisher: ArchiveBlobPublisher, hash_hex: str) -> bytes | None:
+        cached = self._blobs.get(hash_hex)
+        if cached is not None:
+            self.served_from_cache += 1
+            return cached
+        path = publisher.blob_path(hash_hex)
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return None
+        if size > self._remaining:
+            return None
+        data = path.read_bytes()
+        self._blobs[hash_hex] = data
+        self._remaining -= len(data)
+        self.disk_loads += 1
+        return data
+
+
+class _CohortCachingBlobPublisher(ArchiveBlobPublisher):
+    """An :class:`ArchiveBlobPublisher` whose reads go through a cohort cache.
+
+    Only ``open`` is intercepted. Every piece of publication bookkeeping is
+    the inner publisher's own mutable state, shared by reference, so this
+    wrapper can never fork a pending-blob queue or a receipt table.
+    """
+
+    def __init__(self, inner: ArchiveBlobPublisher, cache: DriveRevisionCohortCache) -> None:
+        super().__init__(inner.source_db_path, inner.root, store=inner._store)
+        self._inner = inner
+        self._cohort_cache = cache
+        self.publisher_id = inner.publisher_id
+        self._pending = inner._pending
+        self._latest_receipt_by_hash = inner._latest_receipt_by_hash
+        self._pending_by_hash = inner._pending_by_hash
+
+    def open(self, hash_hex: str) -> BinaryIO:
+        data = self._cohort_cache.read(self._inner, hash_hex)
+        if data is None:
+            return self._inner.open(hash_hex)
+        return io.BytesIO(data)
+
+
 class _DriveRevisionGovernanceAdapter:
     """Minimal ``RawRevisionGovernanceHost`` for Drive lineage bookkeeping.
 
@@ -822,6 +902,7 @@ def _bind_drive_revision_lineage(
     raw_id: str | None,
     source_conn: sqlite3.Connection | None,
     blob_publisher: ArchiveBlobPublisher | None,
+    cohort_cache: DriveRevisionCohortCache | None = None,
 ) -> RevisionReplayPlan | None:
     """Best-effort revision-lineage bookkeeping for Drive re-acquisitions.
 
@@ -853,6 +934,13 @@ def _bind_drive_revision_lineage(
     ``classify_raw_revision_cohort`` requiring a writable blob publisher) is
     logged and swallowed (returning ``None``), never allowed to break the
     session write itself.
+
+    polylogue-ojjet: ``cohort_cache``, when supplied, serves the cohort's
+    repeated blob reads from a pass-scoped byte cache (see
+    :class:`DriveRevisionCohortCache`). It bounds only repeated work -- the
+    call above stays unconditional for every Drive raw, no cohort is capped,
+    and the classifier still sees the identical bytes -- so the lineage this
+    function records is unchanged.
 
     Returns the classifier's :class:`RevisionReplayPlan` on success (``None``
     on any early-return or swallowed failure) so the caller can tell whether
@@ -901,10 +989,13 @@ def _bind_drive_revision_lineage(
                 raw_id=raw_id,
                 source_conn=writer,
                 blob_publisher=blob_publisher,
+                cohort_cache=cohort_cache,
             )
     logical_source_key = (
         f"{origin_from_provider(session_to_write.source_name).value}:{session_to_write.provider_session_id}"
     )
+    if cohort_cache is not None:
+        blob_publisher = _CohortCachingBlobPublisher(blob_publisher, cohort_cache)
     adapter = _DriveRevisionGovernanceAdapter(source_conn, blob_publisher)
     try:
         if raw_membership_raw_ids(adapter, logical_source_key):
@@ -971,6 +1062,7 @@ def _write_session(
     fresh_build_batch: set[str] | None = None,
     attachment_owner_resolutions: list[dict[str, str]] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
+    drive_cohort_cache: DriveRevisionCohortCache | None = None,
     manage_transaction: bool = True,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
@@ -1032,6 +1124,7 @@ def _write_session(
             raw_id=payload.raw_id,
             source_conn=source_conn,
             blob_publisher=blob_publisher,
+            cohort_cache=drive_cohort_cache,
         )
     )
     # polylogue-sp72 AC2: once real byte-prefix lineage evidence has proven
@@ -1426,6 +1519,7 @@ def _write_session_entry(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
+    drive_cohort_cache: DriveRevisionCohortCache | None = None,
 ) -> bool:
     # polylogue-qoa75: when the batch owns the transaction the writer must not
     # manage one of its own, or its `with conn:` commits the batch's
@@ -1454,6 +1548,7 @@ def _write_session_entry(
             fresh_build_batch=fresh_build_batch,
             attachment_owner_resolutions=summary.attachment_owner_resolutions,
             drive_plans=drive_plans,
+            drive_cohort_cache=drive_cohort_cache,
         )
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -1588,6 +1683,9 @@ def _drain_ready_session_entries(
     # byte bound. A plain dict remains accepted by lower-level/test callers as
     # the explicit unbounded compatibility path.
     signature_cache = LineageSignatureCache()
+    # polylogue-ojjet: one Drive revision-cohort blob cache per drained
+    # batch, the same lifetime as the signature cache above.
+    drive_cohort_cache = DriveRevisionCohortCache()
     if fresh_build and fresh_build_batch is None:
         fresh_build_batch = set()
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
@@ -1604,6 +1702,7 @@ def _drain_ready_session_entries(
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
             drive_plans=drive_plans,
+            drive_cohort_cache=drive_cohort_cache,
         )
         discard_session_data_payload(cdata)
         if not wrote:
@@ -2260,12 +2359,16 @@ def _prepare_ingest_unit_sync(
                 scratch.executemany(f"INSERT INTO {snapshot.table} VALUES ({values})", snapshot.rows)
             scratch.commit()
             publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+            # polylogue-ojjet: every payload here classifies the same cohort
+            # snapshot, so one cache spans the whole prepared unit.
+            prepare_cohort_cache = DriveRevisionCohortCache()
             for payload in result.sessions:
                 plans[payload.session_id] = _bind_drive_revision_lineage(
                     payload.parsed_session,
                     raw_id=raw_id,
                     source_conn=scratch,
                     blob_publisher=publisher,
+                    cohort_cache=prepare_cohort_cache,
                 )
             revision_positions = tuple(raw.columns.index(column) for column in _DRIVE_REVISION_COLUMNS)
             before = {row[raw_id_position]: tuple(row[pos] for pos in revision_positions) for row in raw.rows}
