@@ -19,6 +19,10 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.maintenance.candidate_capacity import (
+    InsufficientCapacityError,
+    read_capacity_receipts,
+)
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cold_build import (
@@ -28,6 +32,7 @@ from polylogue.sources.live.cold_build import (
     register_cold_build_generation,
 )
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.archive_identity import GENERATIONS_DIRNAME
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -206,3 +211,113 @@ def test_acquisition_stays_on_the_real_durable_tiers(tmp_path: Path, cold_build:
         assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) >= 1
     finally:
         conn.close()
+
+
+def _free_space(monkeypatch: pytest.MonkeyPatch, available_bytes: int) -> None:
+    """Pin what the filesystem reports as usable for the generations root."""
+    monkeypatch.setattr(
+        "polylogue.maintenance.candidate_capacity._available_bytes",
+        lambda _path: available_bytes,
+    )
+
+
+def test_the_cold_build_refuses_before_it_allocates_a_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production build route is the one that has to refuse on free space.
+
+    ``IndexGenerationStore.create_transaction`` carries the same guard and has
+    no production caller, so before this lift a real daemon cold build -- the
+    route that writes a second whole index beside the one serving reads --
+    allocated with no headroom check at all.
+
+    Anti-vacuity: deleting the ``require_candidate_capacity`` call from
+    ``ColdBuildGeneration.begin`` makes this red -- ``begin`` returns a live
+    generation instead of raising, and a ``gen-*`` directory appears.
+    """
+    assert active_index_generation_is_empty(tmp_path) is True
+    _free_space(monkeypatch, 0)
+
+    with pytest.raises(InsufficientCapacityError) as refusal:
+        ColdBuildGeneration.begin(tmp_path, reason="test")
+
+    assert refusal.value.projection.shortfall_bytes > 0
+    assert list((tmp_path / GENERATIONS_DIRNAME).glob("gen-*")) == []
+    # A refused build records nothing: a prediction receipt for a build that
+    # never ran would calibrate the next projection from fiction.
+    assert read_capacity_receipts(tmp_path) == ()
+
+
+def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) -> None:
+    """The preflight is unconditional, so it must clear a fresh root on its own.
+
+    A freshly bootstrapped archive needs 276.8 MiB (the 256 MiB reserve floor
+    plus the 16 MiB receipt floor dominate an evidence-proportional term of
+    under 4 MiB), which is why this guard does not need an operator-intent
+    gate to avoid blocking an ordinary first start.
+
+    Anti-vacuity: raising ``RESERVE_FLOOR_BYTES`` above real free space, or
+    making the projection scale from the filesystem rather than the archive,
+    makes this red.
+    """
+    generation = ColdBuildGeneration.begin(tmp_path, reason="test")
+    try:
+        receipts = read_capacity_receipts(tmp_path)
+        assert [receipt.operation_id for receipt in receipts] == [generation.operation_id]
+        receipt = receipts[0]
+        assert receipt.required_free_bytes < 512 * 1024 * 1024
+        assert receipt.available_bytes_at_prediction >= receipt.required_free_bytes
+        assert receipt.actual_peak_index_bytes == 0
+    finally:
+        generation.discard()
+
+
+def test_a_promoted_cold_build_calibrates_the_next_projection(tmp_path: Path, cold_build: ColdBuildGeneration) -> None:
+    """Prediction without observation leaves ``calibrated_index_ratio`` at its default.
+
+    ``record_capacity_observation`` had exactly one caller
+    (``IndexGenerationStore.save_transaction``) on a route with no production
+    entry point, so every recorded receipt kept ``actual_peak_index_bytes ==
+    0`` and every projection forever used the unmeasured 4.0 constant.
+
+    Anti-vacuity: deleting the ``observe_candidate_capacity`` call from
+    ``ColdBuildGeneration.promote`` leaves the peak at zero and the
+    calibration source at ``default``, making both assertions red.
+    """
+    from polylogue.maintenance.candidate_capacity import calibrated_index_ratio
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "owned-calibrated")
+    assert calibrated_index_ratio(tmp_path) == (4.0, "default")
+
+    cold_build.promote()
+
+    receipt = read_capacity_receipts(tmp_path)[0]
+    assert receipt.operation_id == cold_build.operation_id
+    assert receipt.actual_peak_index_bytes > 0
+    assert receipt.observations == 1
+    ratio, source = calibrated_index_ratio(tmp_path)
+    assert source == "recorded"
+    assert ratio > 0
+
+
+def test_a_failed_capacity_observation_does_not_block_promotion(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Calibration is evidence about the next build, never a gate on this one.
+
+    Anti-vacuity: letting the observation error escape
+    ``observe_candidate_capacity`` makes ``promote`` raise ``OSError`` here.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _ingest(tmp_path, root, "one.jsonl", "owned-unmeasured")
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise OSError("receipt directory is gone")
+
+    monkeypatch.setattr("polylogue.maintenance.candidate_capacity.record_capacity_observation", explode)
+
+    assert cold_build.promote().state == "active"
+    assert _active_session_count(tmp_path) == 1

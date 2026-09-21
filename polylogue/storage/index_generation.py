@@ -847,23 +847,30 @@ class IndexGenerationStore:
         path = self._transaction_path(transaction.operation_id)
         _ensure_lifecycle_directory(path.parent, label="transaction root")
         _atomic_json_write(path, asdict(updated), label="rebuild transaction")
-        self._observe_candidate_capacity(updated)
+        self.observe_candidate_capacity(operation_id=updated.operation_id, generation_id=updated.generation_id)
         return updated
 
-    def _observe_candidate_capacity(self, transaction: IndexRebuildTransaction) -> None:
+    def observe_candidate_capacity(self, *, operation_id: str, generation_id: str) -> None:
         """Raise the recorded peak for this build so the next projection calibrates.
 
         Calibration is evidence about future builds, never a precondition of
-        this one: a receipt that cannot be written is logged and the pass
+        this one: a receipt that cannot be written is logged and the build
         continues.
+
+        Public because the candidate builder is not always a rebuild
+        transaction. The daemon's cold build (``sources/live/cold_build.py``)
+        owns a generation directly and is the only production route that
+        records a capacity prediction, so it has to be the route that closes
+        the loop -- otherwise ``calibrated_index_ratio`` can never leave its
+        default and every projection is made from an unmeasured constant.
         """
         from polylogue.maintenance.candidate_capacity import record_capacity_observation
 
         try:
             record_capacity_observation(
                 self.archive_root,
-                operation_id=transaction.operation_id,
-                candidate_root=self.generations_root / transaction.generation_id,
+                operation_id=operation_id,
+                candidate_root=self.generations_root / generation_id,
             )
         except (OSError, RuntimeError) as exc:
             emit(
@@ -871,8 +878,8 @@ class IndexGenerationStore:
                 level=WARNING,
                 outcome="unmeasured",
                 reason="capacity_probe_failed",
-                operation_id=transaction.operation_id,
-                generation_id=transaction.generation_id,
+                operation_id=operation_id,
+                generation_id=generation_id,
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
