@@ -944,13 +944,20 @@ autocheckpoint to fight WAL growth (per-commit cost, symptom not cause).
 
 ### Daemon-side periodic checkpoint
 
-The daemon runs `checkpoint_archive_wals()` every 5 minutes and is the
-process' only ordinary checkpoint owner; every writable connection it opens
-sets `wal_autocheckpoint = 0` so no implicit checkpoint can run inside a
-publication hold. Recurring escalation is PASSIVE. RESTART needs a declared
-quiescent boundary and TRUNCATE belongs to seal, shutdown and offline
+The daemon runs `checkpoint_archive_wals()` every 5 minutes; every writable
+connection it opens sets `wal_autocheckpoint = 0` so no implicit checkpoint can
+run inside a publication hold. Recurring escalation is PASSIVE. RESTART needs a
+declared quiescent boundary and TRUNCATE belongs to seal, shutdown and offline
 generation lifecycle, so the `journal_size_limit` cap is what shrinks a
 reader-blocked WAL once contention clears.
+
+The one other checkpoint against the live active generation is the cold-build
+pass boundary (`ArchiveStore.finish_active_cold_build`), draining the WAL that
+`COLD_BUILD_ACTIVE_WAL_AUTOCHECKPOINT_PAGES` let grow. It runs through
+`checkpoint_connection` at the same `recurring` boundary and so is also PASSIVE
+only: the active generation is read concurrently by the CLI, MCP and the
+daemon's own readers, and a per-pass TRUNCATE would wait on them against a 30 s
+busy timeout.
 
 ## Content Hash Model
 
