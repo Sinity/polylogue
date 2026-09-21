@@ -1,4 +1,4 @@
-"""Raw-identity repair commands: missing cursors, quarantined/duplicate/mismatched raws."""
+"""Raw-authority frontier commands: inspect the frontier and read or acknowledge its blockers."""
 
 from __future__ import annotations
 
@@ -44,8 +44,7 @@ def raw_authority_frontier_command(
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
     click.echo(
-        f"Frontier {payload['pass_id']}: accepted={payload['accepted_head_count']} "
-        f"plans={payload['plan_count']} executable={payload['executable_plan_count']}"
+        f"Frontier {payload['pass_id']}: accepted={payload['accepted_head_count']} obligations={payload['plan_count']}"
     )
     click.echo(f"States: {json.dumps(payload['state_counts'], sort_keys=True)}")
     click.echo("Blocking items are published as durable blockers; list them with raw-authority-blockers.")
@@ -65,12 +64,10 @@ def raw_authority_frontier_command(
 def raw_authority_blockers_command(env: AppEnv, limit: int, offset: int, output_format: str) -> None:
     """List unresolved raw-authority blockers (read-only operator discovery surface).
 
-    Distinguishes ``frontier_judgment`` blockers (require an accepted judgment
-    assertion + disposition) from ``frontier_obligation`` blockers (other
-    frontier obligation states -- missing bytes, unresolved provenance,
-    corrupt -- that resolve without a judgment assertion) so an operator can
-    find a ``--blocker-id`` for ``raw-authority-blocker-resolve`` without
-    writing an ad hoc script against the live archive.
+    Reports each row's ``kind`` -- how the resolver reads its stored snapshot,
+    not a different effect -- so an operator can find a ``--blocker-id`` for
+    ``raw-authority-blocker-resolve`` without writing an ad hoc script against
+    the live archive.
 
     Bounded to ``--limit`` (1-500) per call. If ``truncated`` is true in the
     output, pass ``--offset <next_offset>`` to read the next page.
@@ -101,17 +98,6 @@ def raw_authority_blockers_command(env: AppEnv, limit: int, offset: int, output_
 @click.command("raw-authority-blocker-resolve")
 @click.option("--blocker-id", required=True, help="Exact unresolved durable blocker identifier.")
 @click.option("--reason", required=True, help="Operator rationale recorded in the immutable resolution receipt.")
-@click.option(
-    "--assertion-id",
-    default=None,
-    help="Accepted judgment assertion required by a conflicting-authority blocker.",
-)
-@click.option(
-    "--judgment-disposition",
-    type=click.Choice(["retain_canonical_authority"]),
-    default=None,
-    help="Typed authority choice required when resolving a conflicting frontier.",
-)
 @click.option("--yes", "confirmed", is_flag=True, help="Confirm resolving this blocker against current evidence.")
 @click.option(
     "--output-format",
@@ -125,18 +111,20 @@ def raw_authority_blocker_resolve_command(
     env: AppEnv,
     blocker_id: str,
     reason: str,
-    assertion_id: str | None,
-    judgment_disposition: str | None,
     confirmed: bool,
     output_format: str,
 ) -> None:
-    """Resolve one durable frontier blocker against current evidence.
+    """Acknowledge one durable frontier blocker against current evidence.
 
     Routed through ``OperationExecutor``/``BlockerResolveActuator`` (t46.9
     phase 3): PREPARE previews the exact blocker target, EXECUTE requires a
     confirm-flag-strength authorization bound to that plan's hash, and a
     fresh PREPARE immediately before EXECUTE refuses (``PlanStaleError``) if
     the blocker was concurrently resolved between preview and confirm.
+
+    This acknowledges evidence; it repairs nothing. The obligation the
+    blocker named is discharged by ordinary acquisition or derivation, or it
+    reappears on the next census pass.
     """
     if not confirmed:
         raise click.ClickException("refusing to resolve a durable blocker without --yes")
@@ -145,8 +133,6 @@ def raw_authority_blocker_resolve_command(
         {
             "blocker_id": blocker_id,
             "resolution": reason,
-            "assertion_id": assertion_id,
-            "judgment_disposition": judgment_disposition,
         },
     )
     receipt_result = result.get("result")
@@ -162,8 +148,8 @@ def raw_authority_blocker_resolve_command(
         # The actuator answered ``already_satisfied`` with a zero affected
         # count: nothing was resolved. Printing "Resolved <id>" here reported a
         # no-op as a durable effect -- the defect this branch exists to close.
-        raise click.ClickException(f"blocker {blocker_id} not found or already resolved; nothing was mutated")
-    click.echo(f"Resolved {blocker_id}")
+        raise click.ClickException(f"blocker {blocker_id} not found or already acknowledged; nothing was mutated")
+    click.echo(f"Acknowledged {blocker_id}")
     current_plan = receipt.get("current_plan")
     if isinstance(current_plan, dict):
         click.echo(f"Current plan: {current_plan.get('plan_id', 'unknown')}")

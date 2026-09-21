@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import hashlib
 import sqlite3
 from pathlib import Path
@@ -20,12 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     admit_raw_observation,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
-    ContentExcisedError,
-    ReconstructedRawRow,
     bind_source_raw_revision,
-    deterministic_blob_hash,
-    insert_reconstructed_raw_row,
-    record_excised_blob_hash,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -729,138 +723,6 @@ def test_admit_raw_observation_rejects_grouped_with_prior_head(tmp_path: Path) -
         )
 
 
-def test_insert_reconstructed_raw_row_preserves_byte_proven_repair_authority(tmp_path: Path) -> None:
-    """polylogue-1fijp: the copy-forward exemption keeps the authority it was given.
-
-    ``storage/raw_convergence.py``'s browser-origin copy-forward rebuilds a raw row from
-    a plan that already proved the bytes. Routing it through
-    ``admit_raw_observation`` instead would resolve BASELINE/``asserted``
-    against the absent prior head for the corrected logical key and silently
-    downgrade that proof, which is exactly why this path is exempt. Pin the
-    authority so a future "just migrate the last call site" cannot erase it.
-    """
-    conn = _connect(tmp_path / "source.db")
-    payload = b'{"reconstructed": true}\n'
-    blob_hash = hashlib.sha256(payload).digest()
-
-    insert_reconstructed_raw_row(
-        conn,
-        ReconstructedRawRow(
-            raw_id="copy-forward-raw",
-            origin=Origin.CLAUDE_AI_EXPORT.value,
-            capture_mode=Provider.CLAUDE_AI.value,
-            native_id="native-42",
-            source_path="/copy-forward/session.json",
-            source_index=0,
-            blob_hash=blob_hash,
-            blob_size=len(payload),
-            acquired_at_ms=1_767_000_000_000,
-            logical_source_key="claude-ai-export:native-42",
-            source_revision=blob_hash.hex(),
-            baseline_raw_id="copy-forward-raw",
-        ),
-    )
-
-    row = _row(conn, "copy-forward-raw")
-    assert row["revision_kind"] == RawRevisionKind.FULL.value
-    assert row["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value
-    assert row["logical_source_key"] == "claude-ai-export:native-42"
-    assert row["baseline_raw_id"] == "copy-forward-raw"
-
-
-def test_insert_reconstructed_raw_row_rejects_untrusted_schema_and_short_hash(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "source.db")
-    row = ReconstructedRawRow(
-        raw_id="r",
-        origin=Origin.CLAUDE_AI_EXPORT.value,
-        capture_mode=None,
-        native_id=None,
-        source_path="/p",
-        source_index=0,
-        blob_hash=b"\x00" * 32,
-        blob_size=1,
-        acquired_at_ms=1,
-        logical_source_key="k",
-        source_revision="00",
-        baseline_raw_id="r",
-    )
-
-    with pytest.raises(ValueError, match="unsupported source schema"):
-        insert_reconstructed_raw_row(conn, row, schema="attached; DROP TABLE raw_sessions")
-    with pytest.raises(ValueError, match="32-byte"):
-        insert_reconstructed_raw_row(conn, dataclasses.replace(row, blob_hash=b"\x00" * 16))
-
-
-def test_insert_reconstructed_raw_row_refuses_durably_excised_hash(tmp_path: Path) -> None:
-    """The copy-forward exemption cannot resurrect a durably excised blob."""
-    conn = _connect(tmp_path / "source.db")
-    payload = b'{"reconstructed": "excised"}\n'
-    blob_hash = deterministic_blob_hash(payload)
-    record_excised_blob_hash(
-        conn,
-        blob_hash=blob_hash,
-        reason="red-twin",
-        actor="test",
-        excised_at_ms=1,
-    )
-
-    with pytest.raises(ContentExcisedError, match="durably excised"):
-        insert_reconstructed_raw_row(
-            conn,
-            ReconstructedRawRow(
-                raw_id="excised-copy-forward",
-                origin=Origin.CLAUDE_AI_EXPORT.value,
-                capture_mode=Provider.CLAUDE_AI.value,
-                native_id="excised-native",
-                source_path="/copy-forward/excised.json",
-                source_index=0,
-                blob_hash=blob_hash,
-                blob_size=len(payload),
-                acquired_at_ms=1,
-                logical_source_key="claude-ai-export:excised-native",
-                source_revision=blob_hash.hex(),
-                baseline_raw_id="excised-copy-forward",
-            ),
-        )
-
-    assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == 0
-
-
-def test_insert_reconstructed_raw_row_checks_excision_in_selected_attached_schema(tmp_path: Path) -> None:
-    """An attached source schema cannot bypass the durable excision ledger."""
-    payload = b'{"reconstructed": "attached-excised"}\n'
-    blob_hash = deterministic_blob_hash(payload)
-    source_path = tmp_path / "source.db"
-    source_conn = _connect(source_path)
-    record_excised_blob_hash(
-        source_conn, blob_hash=blob_hash, reason="attached-red-twin", actor="test", excised_at_ms=1
-    )
-    source_conn.commit()
-    source_conn.close()
-
-    conn = sqlite3.connect(tmp_path / "index.db")
-    conn.execute("ATTACH DATABASE ? AS source", (str(source_path),))
-    row = ReconstructedRawRow(
-        raw_id="attached-excised-copy-forward",
-        origin=Origin.CLAUDE_AI_EXPORT.value,
-        capture_mode=Provider.CLAUDE_AI.value,
-        native_id="attached-excised-native",
-        source_path="/copy-forward/attached-excised.json",
-        source_index=0,
-        blob_hash=blob_hash,
-        blob_size=len(payload),
-        acquired_at_ms=1,
-        logical_source_key="claude-ai-export:attached-excised-native",
-        source_revision=blob_hash.hex(),
-        baseline_raw_id="attached-excised-copy-forward",
-    )
-
-    with pytest.raises(ContentExcisedError, match="durably excised"):
-        insert_reconstructed_raw_row(conn, row, schema="source")
-
-    assert int(conn.execute("SELECT COUNT(*) FROM source.raw_sessions").fetchone()[0]) == 0
-
-
 def test_raw_source_root_scope_is_a_literal_path_prefix(tmp_path: Path) -> None:
     """polylogue-gzxhi: a replay scoped to one source root must select that
     root and its descendants and nothing else. ``LIKE`` cannot express that:
@@ -886,21 +748,23 @@ def test_raw_source_root_scope_is_a_literal_path_prefix(tmp_path: Path) -> None:
     for index, path in enumerate(paths):
         payload = f'{{"row": {index}}}\n'.encode()
         blob_hash = hashlib.sha256(payload).digest()
-        insert_reconstructed_raw_row(
-            conn,
-            ReconstructedRawRow(
-                raw_id=f"raw-{index}",
-                origin=Origin.CLAUDE_AI_EXPORT.value,
-                capture_mode=Provider.CLAUDE_AI.value,
-                native_id=f"native-{index}",
-                source_path=path,
-                source_index=0,
-                blob_hash=blob_hash,
-                blob_size=len(payload),
-                acquired_at_ms=1_767_000_000_000 + index,
-                logical_source_key=f"claude-ai-export:native-{index}",
-                source_revision=blob_hash.hex(),
-                baseline_raw_id=f"raw-{index}",
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, capture_mode, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"raw-{index}",
+                Origin.CLAUDE_AI_EXPORT.value,
+                Provider.CLAUDE_AI.value,
+                f"native-{index}",
+                path,
+                0,
+                blob_hash,
+                len(payload),
+                1_767_000_000_000 + index,
             ),
         )
 

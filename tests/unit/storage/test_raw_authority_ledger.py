@@ -19,7 +19,6 @@ from polylogue.operations.raw_observation_derivation import (
     raw_observation_frame,
 )
 from polylogue.storage import raw_authority as raw_authority_mod
-from polylogue.storage import raw_reconciler as raw_reconciler_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationDerivation
@@ -30,8 +29,6 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_plan,
 )
 from polylogue.storage.raw_reconciler import (
-    RawAuthorityActuator,
-    RawAuthorityFrontierItem,
     RawAuthorityFrontierState,
     inspect_raw_authority_frontier,
 )
@@ -69,63 +66,6 @@ def _derived_count(report: DerivationReport, outcome: Outcome = Outcome.DONE) ->
 def _raw_ids(root: Path) -> tuple[str, ...]:
     with sqlite3.connect(root / "source.db") as conn:
         return tuple(str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id"))
-
-
-def _frontier_test_item(
-    *,
-    raw_id: str,
-    plan_id: str,
-    input_raw_ids: tuple[str, ...],
-    strategy_witness: JSONDocument,
-) -> RawAuthorityFrontierItem:
-    return RawAuthorityFrontierItem(
-        state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
-        actuator=RawAuthorityActuator.COPY_FORWARD_ORIGIN,
-        raw_id=raw_id,
-        logical_source_key="chatgpt:test",
-        session_id="chatgpt-export:test",
-        reason="test frontier item",
-        evidence_digest="e" * 64,
-        input_raw_ids=input_raw_ids,
-        source_preconditions=json_document({"raw_id": raw_id}),
-        index_preconditions=json_document({"raw_id": raw_id}),
-        strategy_witness=strategy_witness,
-        plan_id=plan_id,
-    )
-
-
-def test_frontier_plan_witness_carries_no_top_level_raw_id() -> None:
-    """A frontier plan's authority witness never hoists a single raw id.
-
-    The witness describes a whole component, so a top-level ``raw_id`` would
-    make two plans over the same component disagree depending on which raw
-    happened to be named. The blocker row stores this witness verbatim in
-    ``expected_json``, so the shape is what a resolution later reads back.
-
-    Anti-vacuity: re-adding ``raw_id`` at the top level of the witness that
-    ``_plan`` builds fails this; the nested ``strategy_witness.item.raw_id``
-    asserted below proves the raw id is still reachable where it belongs.
-    """
-    strategy_witness = json_document(
-        {
-            "schema": "polylogue.raw-authority-strategy-witness.v1",
-            "kind": "browser_origin",
-            "item": {"raw_id": "primary-raw"},
-        }
-    )
-    item = _frontier_test_item(
-        raw_id="primary-raw",
-        plan_id="raw-authority-frontier:witness-shape",
-        input_raw_ids=("primary-raw", "auxiliary-raw"),
-        strategy_witness=strategy_witness,
-    )
-
-    plan = raw_reconciler_mod._plan(item)
-
-    assert "raw_id" not in plan.authority_witness
-    stored_witness = cast(dict[str, object], plan.authority_witness["strategy_witness"])
-    assert cast(dict[str, object], stored_witness["item"])["raw_id"] == "primary-raw"
-    assert plan.input_raw_ids == ("primary-raw", "auxiliary-raw")
 
 
 def _write_codex_raw(
@@ -511,7 +451,6 @@ def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Path) ->
     item = next(entry for entry in census.items if entry.raw_id == raw_id)
     assert item.state is RawAuthorityFrontierState.CORRUPT
     assert item.reason == "accepted head has no matching materialized session"
-    assert item.executable is False
     assert census.state_counts[RawAuthorityFrontierState.CORRUPT.value] == 1
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
@@ -568,7 +507,6 @@ def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path
     item = next(entry for entry in census.items if entry.raw_id == accepted_raw_id)
     assert item.state is RawAuthorityFrontierState.CORRUPT
     assert item.reason == "accepted revision head and materialized session select different raw authority"
-    assert item.executable is False
     assert item.index_preconditions["head_accepted_raw_id"] == phantom_raw_id
     assert item.index_preconditions["accepted_raw_id"] == accepted_raw_id
     assert census.state_counts[RawAuthorityFrontierState.CORRUPT.value] == 1
@@ -661,35 +599,24 @@ def test_verified_blob_receipt_skips_rehash_on_unchanged_blob_across_census_pass
         assert item2.state is RawAuthorityFrontierState.PROVEN_CURRENT
 
 
-def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quarantine(tmp_path: Path) -> None:
-    """polylogue-u19l: reproduces the absorbing-state defect end to end.
+def test_quarantined_accepted_head_is_a_terminal_obligation_not_a_promise(tmp_path: Path) -> None:
+    """polylogue-u19l/polylogue-6kur: a quarantined head is a typed refusal.
 
-    Live evidence (source.db, read-only, 2026-07-31): 4,147 open
-    ``raw_authority_blockers`` rows all read "accepted raw authority remains
-    quarantined pending exact refinement proof" with actuator
-    REFINE_QUARANTINE, 15,205/17,384 frontier plans residual, fixed_point=0
-    on all 256 retained censuses, and the gap count only ever grew
-    (16,874 -> 17,384). Root cause: REFINE_QUARANTINE has a real apply()
-    dispatch branch (``raw_reconciler.py``, the ``item.actuator is
-    RawAuthorityActuator.REFINE_QUARANTINE`` block), but the executability
-    gate (``_EXECUTABLE_STATES``) only ever admits SAFELY_REKEYABLE /
-    DUPLICATE_ALIAS states -- so once ``inspect_quarantined_accepted_raws``
-    proves a quarantined raw's refinement is "ineligible" (a permanent
-    structural fact, not a transient one -- see the reasons enumerated in
-    ``_inspect_quarantined_accepted_raw``), the census silently promised an
-    actuator that neither the daemon nor the operator break-glass path
-    could ever select.
+    The historical defect was an absorbing state: the census promised a
+    REFINE_QUARANTINE actuator for every quarantined head while the
+    executability gate could never select one, so 4,147 blockers accumulated
+    behind a remedy that did not exist. polylogue-6kur removed the promise
+    instead of re-plumbing it -- there is no actuator taxonomy left to
+    misassign. What must survive is the honest half: the state is reported,
+    counted, and published as a durable operator-visible blocker.
 
-    Force a raw into exactly that "ineligible" shape by accepting it
-    normally, then flipping only its ``revision_authority`` to
-    'quarantined' out from under an otherwise byte-proven envelope -- this
-    fails ``_inspect_quarantined_accepted_raw``'s typed-envelope check
-    (source/predecessor/baseline columns don't match any of the three
-    admitted envelopes), which is exactly the "source raw has an
-    incompatible typed authority envelope" ineligibility reason observed
-    live. The frontier item must come back non-executable AND with an
-    honest NONE actuator -- never REFINE_QUARANTINE -- while remaining
-    countable (state_counts) and operator-visible (raw_authority_blockers).
+    Force the shape by accepting a raw normally, then flipping only its
+    ``revision_authority`` to 'quarantined' under an otherwise byte-proven
+    envelope.
+
+    Anti-vacuity: dropping ``revision_authority == 'quarantined'`` from
+    ``_classify_frontier`` reclassifies this head as PROVEN_CURRENT, and both
+    the state assertion and the blocker assertion go red.
     """
     bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(
@@ -708,14 +635,11 @@ def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quaranti
 
     item = next(entry for entry in census.items if entry.raw_id == raw_id)
     assert item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
-    assert item.actuator is raw_reconciler_mod.RawAuthorityActuator.NONE
-    assert item.executable is False
-    assert "ineligible" in item.reason
+    assert item.reason == "accepted raw authority remains quarantined"
     assert census.state_counts[RawAuthorityFrontierState.UNRESOLVED_PROVENANCE.value] == 1
 
-    # Terminal, countable, operator-visible: still tracked as an open
-    # blocker (an operator can find it), just no longer misrepresented as
-    # "an automatic actuator will resolve this".
+    # Terminal, countable, operator-visible: tracked as an open blocker an
+    # operator can find, never misrepresented as "something will fix this".
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         blocker = source_conn.execute(
             "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ?",
@@ -723,50 +647,7 @@ def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quaranti
         ).fetchone()
     assert blocker is not None
     assert blocker[1] is None
-    assert "ineligible" in blocker[0]
+    assert "quarantined" in blocker[0]
 
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_blocker_count"] == 1
-
-
-def test_frontier_item_construction_rejects_unreachable_actuator_state_pairs() -> None:
-    """polylogue-w32w: the invariant made structurally enforceable.
-
-    ``RawAuthorityFrontierItem.__post_init__`` must reject any combination
-    of a dispatch-handled actuator (one with a real apply() branch) paired
-    with a state the executability gate does not admit -- the exact defect
-    class polylogue-u19l fixed for REFINE_QUARANTINE. This proves the guard
-    fires at construction, not merely that today's call sites happen to
-    comply.
-    """
-    row: dict[str, object] = {
-        "accepted_raw_id": "raw-1",
-        "logical_source_key": "codex:native-1",
-        "session_id": "codex-session:native-1",
-    }
-    with pytest.raises(ValueError, match="unreachable"):
-        raw_reconciler_mod._item(
-            state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
-            actuator=raw_reconciler_mod.RawAuthorityActuator.REFINE_QUARANTINE,
-            row=row,
-            reason="an actuator with a real apply() handler must only pair with an executable state",
-        )
-    # The dual is fine: an executable state may pair with a dispatched actuator.
-    executable_item = raw_reconciler_mod._item(
-        state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
-        actuator=raw_reconciler_mod.RawAuthorityActuator.REFINE_QUARANTINE,
-        row=row,
-        reason="eligible",
-    )
-    assert executable_item.executable is True
-    # And a non-dispatched actuator (REQUEST_JUDGMENT, REACQUIRE, NONE) may
-    # legitimately pair with a non-executable state -- those resolve
-    # out-of-band (operator judgment, ordinary re-acquisition), not through
-    # this apply dispatcher.
-    judgment_item = raw_reconciler_mod._item(
-        state=RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
-        actuator=raw_reconciler_mod.RawAuthorityActuator.REQUEST_JUDGMENT,
-        row=row,
-        reason="needs an operator disposition",
-    )
-    assert judgment_item.executable is False

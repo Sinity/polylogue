@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage import blob_gc, raw_authority, raw_convergence
+from polylogue.storage import blob_gc, raw_authority
 
 
 def _open_seeded_database(path: Path) -> None:
@@ -19,7 +19,7 @@ def _open_seeded_database(path: Path) -> None:
 
 def test_storage_reader_census_has_no_direct_sqlite_opens() -> None:
     """Mutation: restoring an unmanaged maintenance reader fails the census."""
-    for module in (blob_gc, raw_authority, raw_convergence):
+    for module in (blob_gc, raw_authority):
         assert "sqlite3.connect" not in inspect.getsource(module)
 
 

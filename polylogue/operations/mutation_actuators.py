@@ -1680,8 +1680,6 @@ class BlockerResolveArgs:
     archive_root: Path
     blocker_id: str
     resolution: str
-    assertion_id: str | None = None
-    judgment_disposition: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1689,19 +1687,18 @@ class BlockerResolveActuator(_FailClosedRecovery):
     """Actuator for ``mutate-resolve-raw-authority-blocker``: reopen raw replanning.
 
     Real production mutation: ``raw_authority.resolve_raw_authority_blocker``
-    -- the durable ``source.db`` acknowledgement that lets a stale-plan or
-    frontier-judgment raw-authority blocker be replanned against current
+    -- the durable ``source.db`` acknowledgement that a frontier obligation
+    was read and accepted, so the next census pass replans it against current
     evidence. Classified ``reset`` (not ``reversible``: an operator cannot
     literally un-resolve a blocker once acknowledged; not ``delete``/
     ``excise``: no archive content or evidence row is removed, only the
     blocked state is tombstoned so replanning can resume), requiring
     ``confirm_flag`` -- matching the CLI's pre-existing ``--yes`` gate this
     actuator now authorizes through instead of leaving unauthorized.
-    Frontier-judgment blockers layer additional accepted-assertion-id and
-    ``retain_canonical_authority``-disposition enforcement inside the
-    primitive itself (unchanged, domain-owned -- the executor's job here is
-    authorization strength and TOCTOU staleness detection, not re-deriving
-    that domain policy).
+
+    Acknowledging a blocker repairs nothing: it records that the operator saw
+    the obligation. Whatever the obligation names is discharged by ordinary
+    acquisition or derivation, or it stays blocked.
     """
 
     operation: str = "mutate-resolve-raw-authority-blocker"
@@ -1724,8 +1721,6 @@ class BlockerResolveActuator(_FailClosedRecovery):
                 "found": described is not None,
                 "kind": described["kind"] if described is not None else None,
                 "resolution": args.resolution,
-                "assertion_id": args.assertion_id,
-                "judgment_disposition": args.judgment_disposition,
             },
         )
 
@@ -1747,8 +1742,6 @@ class BlockerResolveActuator(_FailClosedRecovery):
             args.archive_root,
             args.blocker_id,
             resolution=args.resolution,
-            assertion_id=args.assertion_id,
-            judgment_disposition=args.judgment_disposition,
         )
         receipt_dict = dict(receipt)
         return MutationReceipt(

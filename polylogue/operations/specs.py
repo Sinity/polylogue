@@ -671,10 +671,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         kind=OperationKind.MAINTENANCE,
         description=(
             "Explicitly acknowledge current source/index evidence and reopen replanning for one "
-            "unresolved raw-authority blocker (stale-plan or frontier-judgment). Routed through "
-            "OperationExecutor/BlockerResolveActuator; requires --yes/confirm-flag. Frontier-judgment "
-            "blockers additionally require their exact accepted assertion id and "
-            "disposition=retain_canonical_authority, enforced by the primitive itself."
+            "unresolved raw-authority blocker. Routed through OperationExecutor/"
+            "BlockerResolveActuator; requires --yes/confirm-flag. Acknowledging a blocker applies "
+            "no remedy: the obligation is discharged by ordinary acquisition or derivation, or it "
+            "stays blocked."
         ),
         surfaces=("cli",),
         mutates_state=True,

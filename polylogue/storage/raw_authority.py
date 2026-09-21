@@ -5,7 +5,7 @@ from current source and index evidence on demand -- it is never stored. The
 source tier is the authority for the one durable relation here,
 ``raw_authority_blockers``: ``index.db`` may be rebuilt and ``ops.db`` may be
 deleted, and neither event is allowed to erase an unresolved frontier
-obligation or the operator judgment that closed one.
+obligation or the operator resolution that closed one.
 """
 
 from __future__ import annotations
@@ -32,8 +32,8 @@ from polylogue.storage.sqlite.write_lease import require_write_lease
 #: later, deliberately-corrected version of ``classify_membership_revisions``
 #: (polylogue-9dxn). A persisted ``ambiguous`` verdict recorded under one of
 #: these fingerprints is stale, not authoritative -- the terminal-decision
-#: check in ``storage/raw_convergence.py`` treats it as replayable instead of durable
-#: debt. A verdict recorded under the CURRENT fingerprint, or with no census
+#: check in ``storage/derived/raw.py`` treats it as replayable instead of
+#: durable debt. A verdict recorded under the CURRENT fingerprint, or with no census
 #: row at all (never independently confirmed which parser produced it),
 #: stays terminal -- absent evidence must default to conservative, not to
 #: "assume it's fixed". This set only affects the *terminal* gate; the
@@ -619,27 +619,21 @@ BLOCKER_ORIGIN_KEY = "blocker_origin"
 BLOCKER_ORIGIN_FRONTIER_OBLIGATION = "frontier_obligation"
 
 
-def _blocker_kind(*, witness_schema: str, has_judgment_assertion: bool) -> str:
-    """Classify a blocker exactly as :func:`resolve_raw_authority_blocker` enforces it.
+def _blocker_kind(*, witness_schema: str) -> str:
+    """Classify a blocker exactly as :func:`resolve_raw_authority_blocker` reads it.
 
-    Frontier plans (``authority_witness_json.schema ==
-    polylogue.raw-authority-frontier-plan.v1``) cover four obligation states
-    (``missing_bytes_reacquire``, ``conflicting_authority_needs_judgment``,
-    ``unresolved_provenance``, ``corrupt`` --
-    ``polylogue.storage.raw_reconciler._OBLIGATION_STATES``), but only
-    ``conflicting_authority_needs_judgment`` ever writes a
-    ``judgment_assertion_id`` into the blocker's ``observed_json``
-    (``_reconcile_frontier_obligations``). ``resolve_raw_authority_blocker``
-    only demands an accepted assertion id + disposition when that key is
-    present -- so classification must key off the same signal, not merely
-    "is this a frontier-schema plan at all". A frontier blocker without a
-    ``judgment_assertion_id`` (missing-bytes/unresolved-provenance/corrupt)
-    resolves like an ordinary blocker and must not tell an operator that an
-    accepted judgment assertion is required when the resolver enforces none.
+    A ``frontier_obligation`` carries the current frontier plan shape
+    (``authority_witness.schema == polylogue.raw-authority-frontier-plan.v1``)
+    and covers every obligation state in
+    ``polylogue.storage.raw_reconciler._OBLIGATION_STATES``. Anything else is
+    a ``stale_plan``: a durable row whose snapshot predates the current plan
+    shape, which the resolver re-derives from live evidence instead of
+    trusting. Every blocker resolves through the same declared mutation; no
+    kind grants an extra effect.
     """
     if witness_schema != _FRONTIER_WITNESS_SCHEMA:
         return "stale_plan"
-    return "frontier_judgment" if has_judgment_assertion else "frontier_obligation"
+    return "frontier_obligation"
 
 
 def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSONDocument | None:
@@ -666,8 +660,7 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
             SELECT b.blocker_id,
                    json_extract(b.expected_json, '$.plan_id') AS plan_id,
                    b.observed_pass_id, b.reason, b.created_at_ms,
-                   COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') AS witness_schema,
-                   json_extract(b.observed_json, '$.judgment_assertion_id') AS judgment_assertion_id
+                   COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') AS witness_schema
             FROM raw_authority_blockers AS b
             WHERE b.blocker_id = ? AND b.resolved_at_ms IS NULL
             """,
@@ -675,9 +668,7 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
         ).fetchone()
     if row is None:
         return None
-    kind = _blocker_kind(
-        witness_schema=str(row["witness_schema"]), has_judgment_assertion=row["judgment_assertion_id"] is not None
-    )
+    kind = _blocker_kind(witness_schema=str(row["witness_schema"]))
     return json_document(
         {
             "blocker_id": str(row["blocker_id"]),
@@ -693,12 +684,9 @@ def describe_raw_authority_blocker(archive_root: Path, blocker_id: str) -> JSOND
 def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> JSONDocument:
     """Read-only, paginated inventory of unresolved raw-authority blockers.
 
-    Distinguishes ``frontier_judgment`` blockers (require an accepted
-    judgment assertion id + ``retain_canonical_authority`` disposition, per
-    :func:`resolve_raw_authority_blocker`) from ``frontier_obligation``
-    blockers (other frontier obligation states -- missing bytes, unresolved
-    provenance, corrupt -- that resolve without a judgment assertion). See
-    :func:`_blocker_kind`. This is the operator discovery surface for an
+    Reports each row's ``kind`` (see :func:`_blocker_kind`), which describes
+    how :func:`resolve_raw_authority_blocker` reads its stored snapshot, not
+    a different effect. This is the operator discovery surface for an
     exact ``--blocker-id``; it reads the blocker rows themselves, so it does
     not depend on any per-pass inspection record.
 
@@ -744,8 +732,7 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
             SELECT b.blocker_id,
                    json_extract(b.expected_json, '$.plan_id') AS plan_id,
                    b.observed_pass_id, b.reason, b.created_at_ms,
-                   COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') AS witness_schema,
-                   json_extract(b.observed_json, '$.judgment_assertion_id') AS judgment_assertion_id
+                   COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') AS witness_schema
             FROM raw_authority_blockers AS b
             WHERE b.resolved_at_ms IS NULL
             ORDER BY b.created_at_ms, b.blocker_id
@@ -761,10 +748,7 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
                 "observed_pass_id": (None if row["observed_pass_id"] is None else str(row["observed_pass_id"])),
                 "reason": str(row["reason"]),
                 "created_at_ms": int(row["created_at_ms"]),
-                "kind": _blocker_kind(
-                    witness_schema=str(row["witness_schema"]),
-                    has_judgment_assertion=row["judgment_assertion_id"] is not None,
-                ),
+                "kind": _blocker_kind(witness_schema=str(row["witness_schema"])),
             }
         )
         for row in rows
@@ -788,8 +772,6 @@ def resolve_raw_authority_blocker(
     blocker_id: str,
     *,
     resolution: str,
-    assertion_id: str | None = None,
-    judgment_disposition: str | None = None,
 ) -> JSONDocument:
     """Explicitly acknowledge current evidence and reopen replanning."""
     if not resolution.strip():
@@ -819,25 +801,7 @@ def resolve_raw_authority_blocker(
         # durable snapshot, not from a join into the retired plan ledger.
         stored_plan = _raw_replay_plan_from_expected_json(str(row["expected_json"]))
         witness_schema = stored_plan.authority_witness.get("schema")
-        frontier_observed = json.loads(str(row["observed_json"]))
-        if witness_schema == "polylogue.raw-authority-frontier-plan.v1":
-            expected_assertion_id = frontier_observed.get("judgment_assertion_id")
-            if expected_assertion_id is not None:
-                if assertion_id != expected_assertion_id:
-                    conn.rollback()
-                    raise RuntimeError("frontier judgment blocker requires its exact accepted assertion id")
-                user_db = archive_root / "user.db"
-                with closing(_readonly(user_db)) as user_conn:
-                    assertion = user_conn.execute(
-                        "SELECT status FROM assertions WHERE assertion_id = ?",
-                        (assertion_id,),
-                    ).fetchone()
-                if assertion is None or str(assertion[0]) != "accepted":
-                    conn.rollback()
-                    raise RuntimeError("frontier judgment assertion must be explicitly accepted before replanning")
-                if judgment_disposition != "retain_canonical_authority":
-                    conn.rollback()
-                    raise RuntimeError("frontier judgment resolution requires disposition=retain_canonical_authority")
+        if witness_schema == _FRONTIER_WITNESS_SCHEMA:
             observed = stored_plan
         else:
             observed = build_raw_replay_plan(conn, stored_plan.input_raw_ids)
@@ -849,8 +813,6 @@ def resolve_raw_authority_blocker(
                 "superseded_plan_id": stored_plan.plan_id,
                 "current_plan": observed.to_dict(),
                 "operator_resolution": resolution.strip(),
-                "operator_assertion_id": assertion_id,
-                "judgment_disposition": judgment_disposition,
                 "resolved_at_ms": now,
             }
         )
@@ -878,8 +840,6 @@ def resolve_raw_authority_blocker(
                 "logical_key_count": len(observed.logical_keys),
             },
             "operator_resolution": resolution.strip(),
-            "operator_assertion_id": assertion_id,
-            "judgment_disposition": judgment_disposition,
             "resolved_at_ms": now,
         }
     )

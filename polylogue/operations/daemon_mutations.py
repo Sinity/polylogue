@@ -133,8 +133,6 @@ def mutation_raw_authority_blocker_resolve(
         archive_root=context.archive_root,
         blocker_id=str(payload["blocker_id"]),
         resolution=str(payload["resolution"]),
-        assertion_id=cast(str | None, payload.get("assertion_id")),
-        judgment_disposition=cast(str | None, payload.get("judgment_disposition")),
     )
     return _execute_named_mutation(request, context, audit, snapshot, BlockerResolveActuator(), args)
 
