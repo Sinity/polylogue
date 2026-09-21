@@ -1251,7 +1251,6 @@ def write_parsed_session_to_archive(
     event_duplicate_message_native_ids = context.event_duplicate_native_ids
     duplicate_message_native_ids = context.duplicate_native_ids
     effective_session_kind = context.effective_session_kind
-    parent_session_id = context.parent_session_id
     branch_point_message_id = context.branch_point_message_id
     branch_point_content_address = context.branch_point_content_address
     lineage_inheritance = context.lineage_inheritance
@@ -1660,13 +1659,6 @@ def write_parsed_session_to_archive(
             add_timing("index.session_link", t0)
             t0 = time.perf_counter()
             event_position_offset = _next_session_event_position(conn, session_id)
-            provider_usage_baseline = (
-                _provider_usage_cumulative_baseline(conn, parent_session_id, branch_point_message_id)
-                if parent_session_id is not None
-                and branch_point_message_id is not None
-                and lineage_inheritance == "prefix-sharing"
-                else None
-            )
             session_event_result = _write_session_events(
                 conn,
                 session_id,
@@ -1675,7 +1667,6 @@ def write_parsed_session_to_archive(
                 position_offset=position_offset,
                 event_position_offset=event_position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
-                provider_usage_baseline=provider_usage_baseline,
                 inherited_source_message_ids=inherited_source_message_ids,
                 ambiguous_source_provider_ids=event_duplicate_message_native_ids,
                 content_identities=content_identities,
@@ -6329,7 +6320,6 @@ def _write_session_events(
     position_offset: int = 0,
     event_position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
-    provider_usage_baseline: Mapping[str, int] | None = None,
     inherited_source_message_ids: Mapping[str, str] | None = None,
     ambiguous_source_provider_ids: frozenset[str] = frozenset(),
 ) -> SessionEventWriteResult:
@@ -6450,7 +6440,6 @@ def _write_session_events(
                 source_message_id,
                 position,
                 event,
-                provider_usage_baseline=provider_usage_baseline,
                 source_message_provider_id=declared_provider_id,
                 source_message_resolution=resolution,
             )
@@ -6529,10 +6518,21 @@ def _provider_usage_event_row(
     position: int,
     event: ParsedSessionEvent,
     *,
-    provider_usage_baseline: Mapping[str, int] | None = None,
     source_message_provider_id: str | None = None,
     source_message_resolution: str = "session",
 ) -> tuple[object, ...]:
+    """Build one ``session_provider_usage_events`` row from a parsed event.
+
+    The ``total_*`` lanes are stored exactly as the provider reported them,
+    including on a prefix-sharing child. Every origin that reaches these
+    columns (``codex-session`` and ``hermes-session`` are the only two that
+    emit ``total_token_usage``) scopes its cumulative counter to the physical
+    session, not to the lineage chain: a resumed Codex thread restarts its
+    ``total_token_usage`` at one context window, and a Hermes child row's
+    counters move up and down relative to its parent's. Rebasing a child
+    against its parent therefore subtracts tokens the child never counted
+    (polylogue-uoq3x).
+    """
     last_usage = _payload_mapping(event.payload, "last_token_usage")
     total_usage = _payload_mapping(event.payload, "total_token_usage")
     total_input = _payload_int(total_usage, "input_tokens")
@@ -6542,14 +6542,6 @@ def _provider_usage_event_row(
     total_reasoning = _payload_int(total_usage, "reasoning_output_tokens")
     last_total_tokens = _payload_optional_int(last_usage, "total_tokens")
     total_tokens = _payload_optional_int(total_usage, "total_tokens")
-    if provider_usage_baseline is not None and event.event_type == "token_count":
-        total_input = max(total_input - provider_usage_baseline.get("total_input_tokens", 0), 0)
-        total_output = max(total_output - provider_usage_baseline.get("total_output_tokens", 0), 0)
-        total_cache_read = max(total_cache_read - provider_usage_baseline.get("total_cached_input_tokens", 0), 0)
-        total_cache_write = max(total_cache_write - provider_usage_baseline.get("total_cache_write_tokens", 0), 0)
-        total_reasoning = max(total_reasoning - provider_usage_baseline.get("total_reasoning_output_tokens", 0), 0)
-        if total_tokens is not None:
-            total_tokens = max(total_tokens - provider_usage_baseline.get("total_tokens", 0), 0)
     return (
         session_id,
         source_message_id,
@@ -6619,61 +6611,6 @@ def _provider_usage_event_has_evidence(event: ParsedSessionEvent, row: tuple[obj
     return bool(_payload_string(event.payload, "request_id")) or bool(
         _payload_string(event.payload, "finish_reason", "stop_reason")
     )
-
-
-def _provider_usage_cumulative_baseline(
-    conn: sqlite3.Connection,
-    parent_session_id: str,
-    branch_point_message_id: str,
-) -> dict[str, int]:
-    branch_row = conn.execute(
-        "SELECT session_id, position FROM messages WHERE message_id = ?",
-        (branch_point_message_id,),
-    ).fetchone()
-    if branch_row is None:
-        return {}
-    baseline_session_id = str(branch_row[0] or parent_session_id)
-    branch_position = int(branch_row[1] or 0)
-    row = conn.execute(
-        """
-        SELECT
-          e.total_input_tokens,
-          e.total_output_tokens,
-          e.total_cached_input_tokens,
-          e.total_cache_write_tokens,
-          e.total_reasoning_output_tokens,
-          e.total_tokens
-        FROM session_provider_usage_events AS e
-        LEFT JOIN messages AS m ON m.message_id = e.source_message_id
-        WHERE e.session_id = ?
-          AND e.provider_event_type = 'token_count'
-          AND (
-            m.position <= ?
-            OR (e.source_message_id IS NULL AND e.position <= ?)
-          )
-          AND (
-            e.total_input_tokens != 0
-            OR e.total_output_tokens != 0
-            OR e.total_cached_input_tokens != 0
-            OR e.total_cache_write_tokens != 0
-            OR e.total_reasoning_output_tokens != 0
-            OR e.total_tokens != 0
-          )
-        ORDER BY e.position DESC
-        LIMIT 1
-        """,
-        (baseline_session_id, branch_position, branch_position),
-    ).fetchone()
-    if row is None:
-        return {}
-    return {
-        "total_input_tokens": int(row[0] or 0),
-        "total_output_tokens": int(row[1] or 0),
-        "total_cached_input_tokens": int(row[2] or 0),
-        "total_cache_write_tokens": int(row[3] or 0),
-        "total_reasoning_output_tokens": int(row[4] or 0),
-        "total_tokens": int(row[5] or 0),
-    }
 
 
 def _provider_usage_disjoint_lanes(
@@ -8348,8 +8285,6 @@ def _reextract_prefix_tail_db(
     _reextract_provider_usage_tail_db(
         conn,
         child_session_id,
-        parent_session_id,
-        parent_composed[k - 1][0],
         prefix_message_ids=prefix_message_ids,
     )
     record_substage("provider_usage_tail", t0)
@@ -8753,11 +8688,28 @@ def _remap_session_event_prefix_refs(
 def _reextract_provider_usage_tail_db(
     conn: sqlite3.Connection,
     child_session_id: str,
-    parent_session_id: str,
-    branch_point_message_id: str,
     *,
     prefix_message_ids: Sequence[str],
 ) -> None:
+    """Re-slice a late-resolved child's provider usage onto its stored tail.
+
+    A usage event *bound to a replayed prefix message* is a physical duplicate
+    of the parent's own event: the child no longer stores that message, so the
+    row is deleted and the parent's copy remains the single observation.
+
+    The surviving events keep their reported ``total_*`` counters verbatim.
+    They are cumulative *within the physical session*, never across a lineage
+    chain -- see :func:`_provider_usage_event_row`. polylogue-uoq3x: subtracting
+    the parent's branch-point cumulative here was doubly wrong. It removed
+    tokens the child genuinely spent re-sending the replayed context, and it
+    read the parent's *stored* row, which on a chain of depth >= 2 had itself
+    already been rebased, so the error compounded into a sawtooth
+    (reported 10/13/16/19/22/25 stored as 10/3/13/6/16/9). Where every link
+    reported the same counters the subtraction clamped them to zero and a
+    companion "drop all-zero rows" delete then destroyed the evidence outright
+    -- including the ``request_id``/``finish_reason``-only rows that
+    :func:`_provider_usage_event_has_evidence` deliberately admits.
+    """
     if not prefix_message_ids:
         return
     placeholders = ",".join("?" for _ in prefix_message_ids)
@@ -8768,49 +8720,6 @@ def _reextract_provider_usage_tail_db(
           AND source_message_id IN ({placeholders})
         """,
         (child_session_id, *prefix_message_ids),
-    )
-    baseline = _provider_usage_cumulative_baseline(conn, parent_session_id, branch_point_message_id)
-    if baseline:
-        conn.execute(
-            """
-            UPDATE session_provider_usage_events
-            SET total_input_tokens = MAX(total_input_tokens - ?, 0),
-                total_output_tokens = MAX(total_output_tokens - ?, 0),
-                total_cached_input_tokens = MAX(total_cached_input_tokens - ?, 0),
-                total_cache_write_tokens = MAX(total_cache_write_tokens - ?, 0),
-                total_reasoning_output_tokens = MAX(total_reasoning_output_tokens - ?, 0),
-                total_tokens = MAX(total_tokens - ?, 0)
-            WHERE session_id = ?
-              AND provider_event_type = 'token_count'
-            """,
-            (
-                baseline.get("total_input_tokens", 0),
-                baseline.get("total_output_tokens", 0),
-                baseline.get("total_cached_input_tokens", 0),
-                baseline.get("total_cache_write_tokens", 0),
-                baseline.get("total_reasoning_output_tokens", 0),
-                baseline.get("total_tokens", 0),
-                child_session_id,
-            ),
-        )
-    conn.execute(
-        """
-        DELETE FROM session_provider_usage_events
-        WHERE session_id = ?
-          AND last_input_tokens = 0
-          AND last_output_tokens = 0
-          AND last_cached_input_tokens = 0
-          AND last_cache_write_tokens = 0
-          AND last_reasoning_output_tokens = 0
-          AND last_total_tokens = 0
-          AND total_input_tokens = 0
-          AND total_output_tokens = 0
-          AND total_cached_input_tokens = 0
-          AND total_cache_write_tokens = 0
-          AND total_reasoning_output_tokens = 0
-          AND total_tokens = 0
-        """,
-        (child_session_id,),
     )
     # Clear rows populated by the (now stale) provider-usage-event rollup
     # before re-deriving them below, scoped the same way

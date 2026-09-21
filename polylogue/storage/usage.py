@@ -1837,11 +1837,15 @@ def _model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[st
 def _logical_model_rollup_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, UsageCounters]:
     """Return logical-session/model high-water usage by origin.
 
-    ``session_model_usage`` is the physical-session evidence stream.  A
-    prefix-sharing child contains a tail delta, while non-lineage rows retain
-    cumulative observations.  Logical accounting therefore takes the highest
-    non-lineage observation and adds prefix-sharing deltas for each
-    logical-session/model pair.
+    ``session_model_usage`` is the physical-session evidence stream: every row
+    holds that physical session's own reported usage, lineage or not
+    (polylogue-uoq3x -- a prefix-sharing child is *not* stored as a delta
+    against its parent, because no origin's cumulative counter spans a chain).
+    A logical session is one chain root plus its prefix-sharing descendants,
+    and re-sending a replayed prefix costs real tokens in every descendant, so
+    the logical figure is the root observation plus each descendant's own.
+    ``is_prefix_child`` separates the two: the highest root observation, plus
+    the sum over descendants, per logical-session/model pair.
     """
 
     rows = conn.execute(
@@ -1856,21 +1860,21 @@ def _logical_model_rollup_stats(conn: sqlite3.Connection, origin: str | None) ->
                        FROM session_links l
                        WHERE l.src_session_id = u.session_id
                          AND l.inheritance = 'prefix-sharing'
-                   ) AS is_prefix_delta
+                   ) AS is_prefix_child
             FROM session_model_usage u
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles p ON p.session_id = u.session_id
             {_where_origin(origin, table_alias="s")}
         ), logical_model AS (
             SELECT origin, logical_session_id, model_name,
-                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN input_tokens END), 0)
-                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN input_tokens ELSE 0 END), 0) AS input_tokens,
-                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN output_tokens END), 0)
-                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN output_tokens ELSE 0 END), 0) AS output_tokens,
-                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_read_tokens END), 0)
-                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
-                   COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_write_tokens END), 0)
-                     + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN input_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_child THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN output_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_child THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN cache_read_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_child THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
+                   COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN cache_write_tokens END), 0)
+                     + COALESCE(SUM(CASE WHEN is_prefix_child THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
             FROM physical_model
             GROUP BY origin, logical_session_id, model_name
         )
@@ -1999,21 +2003,21 @@ def _pricing_lane_reports(
                            FROM session_links l
                            WHERE l.src_session_id = u.session_id
                              AND l.inheritance = 'prefix-sharing'
-                       ) AS is_prefix_delta
+                       ) AS is_prefix_child
                 FROM session_model_usage u
                 JOIN sessions s ON s.session_id = u.session_id
                 LEFT JOIN session_profiles p ON p.session_id = u.session_id
                 {_where_origin(origin, table_alias="s")}
             ), logical_model AS (
                 SELECT provenance, logical_session_id, model_name,
-                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN input_tokens END), 0)
-                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN input_tokens ELSE 0 END), 0) AS input_tokens,
-                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN output_tokens END), 0)
-                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN output_tokens ELSE 0 END), 0) AS output_tokens,
-                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_read_tokens END), 0)
-                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
-                       COALESCE(MAX(CASE WHEN NOT is_prefix_delta THEN cache_write_tokens END), 0)
-                         + COALESCE(SUM(CASE WHEN is_prefix_delta THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN input_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_child THEN input_tokens ELSE 0 END), 0) AS input_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN output_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_child THEN output_tokens ELSE 0 END), 0) AS output_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN cache_read_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_child THEN cache_read_tokens ELSE 0 END), 0) AS cached_input_tokens,
+                       COALESCE(MAX(CASE WHEN NOT is_prefix_child THEN cache_write_tokens END), 0)
+                         + COALESCE(SUM(CASE WHEN is_prefix_child THEN cache_write_tokens ELSE 0 END), 0) AS cache_write_tokens
                 FROM physical_model
                 GROUP BY provenance, logical_session_id, model_name
             )

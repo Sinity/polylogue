@@ -35,7 +35,6 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     _MAX_LINEAGE_DEPTH,
     IDENTITY_INVALIDATION_DEBT_STAGE,
-    _provider_usage_cumulative_baseline,
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
     repair_stale_prefix_branch_points,
@@ -211,7 +210,11 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
 
 
-def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: Path) -> None:
+def test_prefix_sharing_child_provider_usage_keeps_its_own_reported_totals(tmp_path: Path) -> None:
+    """A prefix-sharing child drops usage bound to the replayed prefix (the
+    parent already owns that observation) and keeps its OWN cumulative totals
+    verbatim. polylogue-uoq3x: the child's counter is session-scoped, so the
+    parent's branch-point cumulative is not a baseline to subtract."""
     db = tmp_path / "index.db"
     conn = _connect(db)
 
@@ -308,13 +311,13 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
         """,
         (child_id,),
     ).fetchone()
-    # Child total after subtracting the parent branch-point baseline:
-    # input 60, cached 10, output 15. Disjoint billing lanes therefore store
-    # fresh input 50, cache read 10, output 15.
+    # The child's own latest cumulative is input 160, cached 30, output 25.
+    # Disjoint billing lanes therefore store fresh input 130, cache read 30,
+    # output 25 -- the parent's 100/20/10 is NOT subtracted.
     assert dict(usage) == {
-        "input_tokens": 50,
-        "output_tokens": 15,
-        "cache_read_tokens": 10,
+        "input_tokens": 130,
+        "output_tokens": 25,
+        "cache_read_tokens": 30,
         "cost_provenance": "priced",
     }
     events = conn.execute(
@@ -329,64 +332,155 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
     assert [dict(row) for row in events] == [
         {
             "source_message_id": archive_message_id(child_id, "cy"),
-            "total_input_tokens": 60,
-            "total_cached_input_tokens": 10,
-            "total_output_tokens": 15,
-            "total_tokens": 75,
+            "total_input_tokens": 160,
+            "total_cached_input_tokens": 30,
+            "total_output_tokens": 25,
+            "total_tokens": 185,
         },
         {
             "source_message_id": archive_message_id(child_id, "cy"),
             "total_input_tokens": 0,
             "total_cached_input_tokens": 0,
             "total_output_tokens": 0,
-            "total_tokens": 271_890,
+            "total_tokens": 272_000,
         },
     ]
 
 
-def test_provider_usage_baseline_follows_ancestor_branch_point(tmp_path: Path) -> None:
+def test_replaying_chain_stores_each_link_reported_cumulative(tmp_path: Path) -> None:
+    """polylogue-uoq3x: every link of a replaying chain stores its OWN reported
+    cumulative totals.
+
+    Anti-vacuity: the chain must be at least four links. The writer used to
+    rebase each child against the PARENT'S STORED row, which for a mid-chain
+    parent had itself already been rebased, so the error compounded. Link 2's
+    subtraction is correct on its own (its parent is the un-rebased root); only
+    link 3 onward exposes the compounding. Reinstating the subtraction turns
+    the reported ``10, 13, 16, 19, 22, 25`` into the stored sawtooth
+    ``10, 3, 13, 6, 16, 9`` and makes this test red.
+    """
     db = tmp_path / "index.db"
     conn = _connect(db)
 
-    ancestor = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="ancestor",
-        title="ancestor",
-        messages=[
-            _msg("a0", Role.USER, "root prompt", 0),
-            _msg("a1", Role.ASSISTANT, "root answer", 1),
-        ],
-        session_events=[
-            ParsedSessionEvent(
-                event_type="token_count",
-                source_message_provider_id="a1",
-                payload={
-                    "type": "token_count",
-                    "model": "gpt-5-codex",
-                    "total_token_usage": {
-                        "input_tokens": 200,
-                        "cached_input_tokens": 40,
-                        "output_tokens": 20,
-                        "total_tokens": 220,
-                    },
-                },
+    reported = (10, 13, 16, 19, 22, 25)
+    turns: list[tuple[str, Role, str]] = []
+    messages: list[ParsedMessage] = []
+    session_ids: list[str] = []
+    for link, total in enumerate(reported):
+        turns += [(f"u{link}", Role.USER, f"prompt {link}"), (f"a{link}", Role.ASSISTANT, f"answer {link}")]
+        messages = [_msg(pid, role, text, index) for index, (pid, role, text) in enumerate(turns)]
+        session_ids.append(
+            write_parsed_session_to_archive(
+                conn,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=f"s{link}",
+                    title=f"s{link}",
+                    parent_session_provider_id=(f"s{link - 1}" if link else None),
+                    messages=messages,
+                    session_events=[
+                        ParsedSessionEvent(
+                            event_type="token_count",
+                            source_message_provider_id=f"a{link}",
+                            payload={
+                                "type": "token_count",
+                                "model": "gpt-5-codex",
+                                "total_token_usage": {
+                                    "input_tokens": total,
+                                    "output_tokens": total,
+                                    "total_tokens": 2 * total,
+                                },
+                            },
+                        )
+                    ],
+                ),
             )
-        ],
-    )
-    ancestor_id = write_parsed_session_to_archive(conn, ancestor)
-    parent_id = "codex-session:parent"
-    branch_point = archive_message_id(ancestor_id, "a1")
+        )
 
-    baseline = _provider_usage_cumulative_baseline(conn, parent_id, branch_point)
+    # Every link past the root really is a replaying child: without the edge
+    # there is nothing to rebase against and the assertion below is vacuous.
+    assert [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT src_session_id FROM session_links WHERE inheritance = 'prefix-sharing' ORDER BY src_session_id"
+        ).fetchall()
+    ] == session_ids[1:]
 
-    assert baseline == {
-        "total_input_tokens": 200,
-        "total_output_tokens": 20,
-        "total_cached_input_tokens": 40,
-        "total_cache_write_tokens": 0,
-        "total_reasoning_output_tokens": 0,
-        "total_tokens": 220,
-    }
+    stored = [
+        conn.execute(
+            """
+            SELECT total_input_tokens, total_output_tokens, total_tokens
+            FROM session_provider_usage_events
+            WHERE session_id = ? AND provider_event_type = 'token_count'
+            ORDER BY position
+            """,
+            (session_id,),
+        ).fetchall()
+        for session_id in session_ids
+    ]
+    assert [[tuple(row) for row in rows] for rows in stored] == [[(total, total, 2 * total)] for total in reported]
+    rollups = [
+        conn.execute(
+            "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        for session_id in session_ids
+    ]
+    assert [tuple(row) for row in rollups] == [(total, total) for total in reported]
+
+
+def test_replaying_chain_with_equal_counters_keeps_every_usage_row(tmp_path: Path) -> None:
+    """polylogue-uoq3x: identical reported counters must not annihilate rows.
+
+    Anti-vacuity: with the baseline subtraction reinstated each odd link is
+    clamped to zero and the companion "drop all-zero rows" delete removes it,
+    so three of six links lose their usage evidence outright.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    turns: list[tuple[str, Role, str]] = []
+    messages: list[ParsedMessage] = []
+    session_ids: list[str] = []
+    for link in range(6):
+        turns += [(f"u{link}", Role.USER, f"prompt {link}"), (f"a{link}", Role.ASSISTANT, f"answer {link}")]
+        messages = [_msg(pid, role, text, index) for index, (pid, role, text) in enumerate(turns)]
+        session_ids.append(
+            write_parsed_session_to_archive(
+                conn,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=f"s{link}",
+                    title=f"s{link}",
+                    parent_session_provider_id=(f"s{link - 1}" if link else None),
+                    messages=messages,
+                    session_events=[
+                        ParsedSessionEvent(
+                            event_type="token_count",
+                            source_message_provider_id=f"a{link}",
+                            payload={
+                                "type": "token_count",
+                                "model": "gpt-5-codex",
+                                "total_token_usage": {
+                                    "input_tokens": 10,
+                                    "output_tokens": 10,
+                                    "total_tokens": 20,
+                                },
+                            },
+                        )
+                    ],
+                ),
+            )
+        )
+
+    counts = [
+        conn.execute(
+            "SELECT COUNT(*) FROM session_provider_usage_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()[0]
+        for session_id in session_ids
+    ]
+    assert counts == [1] * 6
 
 
 def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> None:
@@ -1569,6 +1663,33 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
                     "billing_provider": "openrouter",
                 },
             ),
+            # A measured-zero tick: every lane explicitly 0, admitted on its
+            # provider correlation id alone (polylogue-1pzmq).
+            ParsedSessionEvent(
+                event_type="token_count",
+                source_message_provider_id="cy",
+                payload={
+                    "type": "token_count",
+                    "model": "gpt-5-codex",
+                    "request_id": "req-zero",
+                    "last_token_usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "total_token_usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_input_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "reasoning_output_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                },
+            ),
         ],
     )
     child_id = write_parsed_session_to_archive(conn, child)
@@ -1615,9 +1736,9 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
         (child_id,),
     ).fetchone()
     assert dict(usage) == {
-        "input_tokens": 50,
-        "output_tokens": 15,
-        "cache_read_tokens": 10,
+        "input_tokens": 130,
+        "output_tokens": 25,
+        "cache_read_tokens": 30,
         "cost_provenance": "priced",
     }
     # polylogue-664l: session_provider_usage_events dropped its 8 Hermes
@@ -1627,14 +1748,26 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
     # purely on the token counters -- correctly writes no row for it. Of the
     # two remaining events, the "c1" one is deleted by the prefix-tail
     # reextraction (its source message is in the shared parent prefix); only
-    # the divergent-tail "cy" event survives, with baseline subtraction
-    # applied against the parent's cumulative totals.
+    # the divergent-tail "cy" event survives, and polylogue-uoq3x keeps its
+    # reported cumulative verbatim rather than rebasing it on the parent.
     remaining = conn.execute(
-        "SELECT total_input_tokens, total_tokens FROM session_provider_usage_events WHERE session_id = ?",
+        """
+        SELECT total_input_tokens, total_tokens, request_id
+        FROM session_provider_usage_events
+        WHERE session_id = ?
+        ORDER BY position
+        """,
         (child_id,),
     ).fetchall()
-    assert len(remaining) == 1
-    assert dict(remaining[0]) == {"total_input_tokens": 60, "total_tokens": 75}
+    # The fourth event reports a measured zero on every lane and is admitted on
+    # its provider correlation id alone (polylogue-1pzmq). polylogue-uoq3x
+    # removed the companion "delete every all-zero row" sweep that ran here: it
+    # existed only to clear rows the baseline subtraction had clamped to zero,
+    # and it destroyed this row -- and its request id -- along with them.
+    assert [dict(row) for row in remaining] == [
+        {"total_input_tokens": 160, "total_tokens": 185, "request_id": None},
+        {"total_input_tokens": 0, "total_tokens": 0, "request_id": "req-zero"},
+    ]
 
 
 def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:
