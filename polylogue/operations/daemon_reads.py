@@ -1225,10 +1225,17 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         session_id = archive.resolve_session_id(ref.removeprefix("session:"))
     except KeyError as exc:
         raise ValueError(f"session not found: {ref}") from exc
-    summary = archive.read_summary(session_id)
     envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
     excluded_blocks = frozenset(projection.exclude_block_kinds) if projection is not None else frozenset()
-    total = summary.message_count
+    # The window this kind serves is ``read_session_page``, which composes a
+    # prefix-sharing child's inherited prefix.  ``sessions.message_count`` is the
+    # child's OWN stored row count (the divergent tail), so for a lineage child
+    # it is smaller than the sequence being paged -- and because ``next_offset``
+    # is computed against it, pagination stopped before the composed tail.
+    # ``transcript`` and ``messages`` are declared as two row vocabularies over
+    # the *same* window (``read_contracts.SessionReadKind``), so they must agree
+    # on its length.
+    total = envelope.total_message_count if envelope.total_message_count is not None else len(envelope.messages)
     returned = len(envelope.messages)
     next_offset = offset + returned if offset + returned < total else None
     result: dict[str, object] = {

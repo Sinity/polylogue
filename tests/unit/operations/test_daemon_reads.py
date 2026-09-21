@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -407,3 +408,81 @@ class TestBoundedReadsDegradeByName:
         assert len(attached) == 200
         assert outcome["state"] == "degraded"
         assert outcome["reason"] == "attached_unit_truncated:message:200"
+
+
+def _seed_lineage_child(root: Path) -> str:
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.session.branch_type import BranchType
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+    def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
+        return ParsedMessage(provider_message_id=pid, role=role, text=text, position=position)
+
+    bootstrap_archive_root(root)
+    conn = sqlite3.connect(root / "index.db")
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="parent",
+                title="parent",
+                messages=[
+                    _msg("p0", Role.USER, "hello", 0),
+                    _msg("p1", Role.ASSISTANT, "hi there", 1),
+                ],
+            ),
+        )
+        child_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="child",
+                title="child",
+                parent_session_provider_id="parent",
+                branch_type=BranchType.FORK,
+                messages=[
+                    _msg("c0", Role.USER, "hello", 0),
+                    _msg("c1", Role.ASSISTANT, "hi there", 1),
+                    _msg("cx", Role.USER, "child diverges", 2),
+                    _msg("cy", Role.ASSISTANT, "child replies", 3),
+                ],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return str(child_id)
+
+
+def test_transcript_total_is_the_composed_length(tmp_path: Path) -> None:
+    """Anti-vacuity: read ``total`` from ``summary.message_count`` again and
+    this asserts 2 for a child whose composed transcript is 4 -- and the
+    ``next_offset`` assertion below goes None, i.e. the reader never reaches
+    the divergent tail.  A plain (non-lineage) session cannot see this: its
+    stored count and its composed length are the same number.
+    """
+    child_id = _seed_lineage_child(tmp_path)
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        stored = archive.read_summary(child_id).message_count
+        first = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{child_id}", "kind": "transcript", "limit": 2, "offset": 0},
+            archive=archive,
+            serving_identity="test",
+        )
+        messages_kind = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{child_id}", "kind": "messages", "limit": 2, "offset": 0},
+            archive=archive,
+            serving_identity="test",
+        )
+
+    assert stored == 2, "fixture must be a real prefix-sharing child storing only its tail"
+    assert first["total"] == 4
+    assert first["next_offset"] == 2, "pagination must reach the divergent tail"
+    assert messages_kind["total"] == first["total"], "two vocabularies, one window"
