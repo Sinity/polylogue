@@ -10,9 +10,12 @@ Backend selection happens once at import time, in priority order:
    to compile free-threaded (polylogue-xikl phase 1 gate finding,
    2026-07-19) -- it could never load on the shipped interpreter, so it was
    removed rather than kept as a dead accelerator option.
-2. stdlib ``json`` -- always available; the fallback when msgspec isn't
-   installed (e.g. an environment that installed polylogue without the
-   ``speed`` extra).
+2. stdlib ``json`` -- always importable, but *not* an equivalent backend.
+   msgspec is a declared base dependency (``[project] dependencies`` in
+   pyproject.toml, the program's own list in flake.nix), so no supported
+   install selects this branch; it is reached only by an environment that
+   dropped the dependency, and it does not reproduce the canonical hash
+   bytes described below.
 
 Every direct ``import msgspec`` elsewhere in the codebase should route
 through this facade instead, so backend selection, bytes/str normalization,
@@ -35,10 +38,11 @@ so canonical/content-hash dumps (`material_protocol/v1/canonical.py`) stay
 byte-identical across every archive ever written by this facade, regardless
 of which accelerator produced them. stdlib json's float formatter is a
 *larger* departure (a different decimal-vs-exponent threshold entirely, e.g.
-``1e-05`` where this facade writes ``0.00001``) that is not reconciled --
-stdlib is a best-effort last resort used only when msgspec isn't installed;
-canonical byte-stability is guaranteed only when msgspec is the active
-backend.
+``1e-05`` where this facade writes ``0.00001``) that is not reconciled. That
+divergence is why msgspec is a declared dependency rather than an optional
+accelerator: an install lacking it would hash the same payload differently,
+with nothing observable to say so
+(`tests/unit/test_packaging_dependencies.py` pins both halves).
 """
 
 from __future__ import annotations
@@ -373,9 +377,9 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
     ``1e-05`` for ``0.00001`` where orjson/msgspec write ``0.00001``, and
     zero-pads short exponents to 2 digits) -- reconciling that would mean
     reimplementing orjson's float formatter from scratch, not a one-line fix.
-    stdlib therefore stays a best-effort *last-resort* fallback (used only
-    when neither orjson nor msgspec is installed at all); canonical/hash byte
-    stability is only a hard guarantee between orjson and msgspec.
+    stdlib therefore cannot produce these bytes at all, which is why msgspec
+    is a declared base dependency: canonical/hash byte stability holds for
+    orjson and msgspec, and a supported install always has one of them.
     """
 
     # Avoid a regex that has to repeatedly backtrack through large quoted

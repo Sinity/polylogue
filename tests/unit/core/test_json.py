@@ -28,11 +28,13 @@ from polylogue.core.provider_identity import (
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 
 # Every backend-parametrized test forces `core_json._BACKEND` via monkeypatch
-# rather than requiring any backend to be actually absent -- the `dev` extra
-# (pyproject.toml) installs msgspec so both code paths in
-# polylogue/core/json.py get real coverage, not just whichever backend
-# happened to win import-time selection. `orjson` used to be a second
-# backend tested this same way, but it ships no cp314t wheel and its build
+# rather than requiring any backend to be actually absent -- msgspec is a base
+# `[project] dependency` (pyproject.toml), so it is always installed and both
+# code paths in polylogue/core/json.py get real coverage, not just whichever
+# backend happened to win import-time selection. Note that forcing `stdlib`
+# here is a coverage device only: it is not a supported install shape, and
+# `tests/unit/test_packaging_dependencies.py` pins why. `orjson` used to be a
+# second backend tested this same way, but it ships no cp314t wheel and its build
 # refuses to compile free-threaded -- the only interpreter polylogue ships
 # on (operator decision 2026-07-19: adopt free-threaded Python fully) -- so
 # it was removed from the facade and the dependency graph entirely rather
