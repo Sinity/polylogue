@@ -3110,3 +3110,150 @@ def test_a_content_address_witness_is_also_refused_without_prefix_sharing(tmp_pa
             )
     finally:
         conn.close()
+
+
+def _codex_session(session_id: str, texts: list[str], *, parent: str | None = None) -> ParsedSession:
+    """One Codex session whose message native ids are its texts."""
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=session_id,
+        title=session_id,
+        parent_session_provider_id=parent,
+        branch_type=BranchType.FORK if parent is not None else None,
+        messages=[
+            _msg(text, Role.USER if index % 2 == 0 else Role.ASSISTANT, text, index) for index, text in enumerate(texts)
+        ],
+    )
+
+
+def _composed_texts(conn: sqlite3.Connection, session_id: str) -> list[str | None]:
+    return [message.blocks[0].text for message in read_archive_session_envelope(conn, session_id).messages]
+
+
+def test_dropped_branch_point_names_the_loss(tmp_path: Path) -> None:
+    """polylogue-gy2yu: a full replace that SHORTENS the parent strands its child.
+
+    A full replace is the ordinary route for a re-acquired source. Identity
+    resolution only ever revisits *unresolved* edges, so before this fix an
+    already-resolved child was in none of ``_resolve_session_graph``'s impacted
+    sets and the write neither repaired it nor recorded that it could not.
+
+    The branch-point message is genuinely gone from the replacement transcript,
+    so no edge rewrite can recover the child's inherited prefix -- the only
+    remedy is re-deriving it from durable source evidence. The write therefore
+    names the loss as retryable ``lineage_prefix_recompose`` convergence debt,
+    and the edge keeps its *composing* status so the composed read keeps
+    reporting ``dangling_branch_point`` instead of a bare tail claimed whole.
+
+    Anti-vacuity: dropping ``anchored_stranded_ids`` from
+    ``_resolve_session_graph``'s ``impacted_session_ids`` (or returning
+    ``set()`` instead of the residual) leaves ``list_convergence_debt()`` empty
+    -- the archive truncates exactly as before with nothing naming it.
+    """
+    from polylogue.sources.live.cursor import CursorStore
+
+    db = tmp_path / "index.db"
+    cursor = CursorStore(db)
+    conn = _connect(db)
+
+    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2"]))
+    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    conn.commit()
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
+    assert count_dangling_prefix_branch_points(conn) == (0, 0)
+    assert cursor.list_convergence_debt() == []
+
+    # The re-acquired export no longer carries m1 -- the child's branch point.
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m2"]))
+    conn.commit()
+
+    assert _composed_texts(conn, parent_id) == ["m0", "m2"]
+    # The reader is told by name that the transcript cannot be composed.
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert envelope.lineage_complete is False
+    assert envelope.lineage_truncation_reason == "dangling_branch_point"
+    assert count_dangling_prefix_branch_points(conn) == (1, 1)
+
+    # The edge stays composing on purpose: a QUARANTINED status would drop it
+    # out of composition and the child would read as a COMPLETE bare tail.
+    link = conn.execute(
+        "SELECT status, branch_point_message_id FROM session_links WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchone()
+    assert link["status"] is None
+    assert link["branch_point_message_id"] == f"{parent_id}:n:m1"
+
+    debt = cursor.list_convergence_debt()
+    assert [(row.stage, row.subject_type, row.subject_id) for row in debt] == [
+        (IDENTITY_INVALIDATION_DEBT_STAGE, "session_id", child_id)
+    ]
+    assert "stranded by a parent re-parse" in str(debt[0].last_error)
+    conn.close()
+
+
+def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
+    """The repairable half of polylogue-gy2yu, closed by the producer itself.
+
+    Re-acquiring ``parent`` with a parent claim of its own normalizes it to
+    tail-only storage, so ``m1`` moves from ``parent`` to ``gp``. The child's
+    branch point still names ``parent:n:m1``. That row is gone, but the message
+    survives in the parent's *composed* transcript, so the edge can be
+    re-resolved onto ``gp:n:m1`` -- and must be, at write time, with no
+    archive-wide sweep involved.
+
+    Anti-vacuity: dropping ``anchored_stranded_ids`` from ``impacted_session_ids``
+    makes the child compose ``['x2']`` with ``lineage_complete`` False here.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    write_parsed_session_to_archive(conn, _codex_session("gp", ["m0", "m1", "m2", "m3"]))
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"]))
+    child_id = write_parsed_session_to_archive(conn, _codex_session("child", ["m0", "m1", "x2"], parent="parent"))
+    conn.commit()
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
+
+    write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1", "m2", "m3", "m4"], parent="gp"))
+    conn.commit()
+
+    envelope = read_archive_session_envelope(conn, child_id)
+    assert [message.blocks[0].text for message in envelope.messages] == ["m0", "m1", "x2"]
+    assert envelope.lineage_complete is True
+    assert envelope.lineage_truncation_reason is None
+    assert count_dangling_prefix_branch_points(conn) == (0, 0)
+    assert (
+        conn.execute(
+            "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?", (child_id,)
+        ).fetchone()[0]
+        == "codex-session:gp:n:m1"
+    )
+    conn.close()
+
+
+def test_stranded_lookup_uses_the_branch_index(tmp_path: Path) -> None:
+    """Every session write runs this lookup, so it must not scan ``session_links``.
+
+    A full-corpus replay pays it once per session. Measured on the live index
+    shape (23,496 sessions, 9,497 edges): 0.617 ms per write as a scan -- 14.5 s
+    of replay that grows as sessions x edges -- against 0.0053 ms as an indexed
+    range probe.
+
+    Anti-vacuity: dropping ``idx_session_links_branch_point`` from the index
+    tier DDL, or rewriting the range predicate as ``substr(...) = ?`` /
+    ``LIKE``, puts ``SCAN`` back in the plan.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    plan = conn.execute(
+        """
+        EXPLAIN QUERY PLAN
+        SELECT DISTINCT l.src_session_id
+        FROM session_links l
+        WHERE l.branch_point_message_id >= :low AND l.branch_point_message_id < :high
+        """,
+        {"low": "codex-session:parent:", "high": "codex-session:parent;"},
+    ).fetchall()
+    detail = " | ".join(str(row["detail"]) for row in plan)
+    assert "idx_session_links_branch_point" in detail, detail
+    assert "SCAN" not in detail, detail
+    conn.close()
