@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.core.enums import OperationStatus
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
-from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
+from polylogue.daemon.periodic import PassOutcome, daemon_periodic_runner, watcher_registered_gate
 from polylogue.logging import WARNING, emit, span
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -108,7 +108,15 @@ async def periodic_embedding_backlog_check(
     db = archive_root() / "index.db"
     resolved_callback = converge
 
-    async def once() -> None:
+    async def once() -> PassOutcome | None:
+        """Run one backlog pass and report whether it drained the backlog.
+
+        The return value is what gives this loop drain-cycle accounting in
+        :class:`~polylogue.daemon.periodic.PeriodicRunner`. ``None`` means the
+        pass reported nothing to account for: a policy deferral refused the
+        work rather than finding none of it, and a failure did not establish
+        either. Only a completed pass that converged zero messages is a drain.
+        """
         nonlocal resolved_callback
         if resolved_callback is None:
             # Composed lazily on the first tick, i.e. right after the gate
@@ -149,8 +157,11 @@ async def periodic_embedding_backlog_check(
                     pass_span.refused("deferred_by_policy", error_detail=str(result.deferred_reason))
                 elif result.report is not None and result.report.done:
                     pass_span.ok(messages=int(result.report.done))
+                    return PassOutcome.PROGRESSED
                 else:
                     pass_span.empty(messages=0)
+                    return PassOutcome.DRAINED
+            return None
 
     await daemon_periodic_runner().run(
         "embedding_backlog",
