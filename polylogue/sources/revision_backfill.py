@@ -2701,7 +2701,7 @@ def backfill_historical_revision_evidence(
             decode_prefetcher = _ReplaySpillPrefetcher(
                 spill,
                 archive_root=archive_root,
-                index_db_path=archive.index_db_path if archive.index_connection is not None else None,
+                index_db_path=_prefetchable_index_path(archive),
             )
             spill.attach_prefetcher(decode_prefetcher)
             decode_prefetcher.start_phase(ordered_logical_keys, provisional_full_raw_ids)
@@ -3490,6 +3490,19 @@ def reset_replay_enrichment_degradations() -> None:
         _ENRICHMENT_DEGRADATIONS.clear()
 
 
+def _replay_enrichment_reads_index(provider: Provider) -> bool:
+    """Whether :func:`_replay_safe_enrich_sessions` consults ``index_conn``.
+
+    One declaration for the index-backed branch of that function -- today only
+    Codex's retained-state title lane reads the index tier. A caller that
+    cannot hold a readable index handle (the replay prefetch worker against an
+    EXCLUSIVE-locked owned generation, see :func:`_prefetchable_index_path`)
+    uses this to defer the enrichment to a caller that can, rather than
+    producing a differently-enriched tree.
+    """
+    return provider is Provider.CODEX
+
+
 def _replay_safe_enrich_sessions(
     *,
     provider: Provider,
@@ -3521,9 +3534,10 @@ def _replay_safe_enrich_sessions(
     if spec is None:
         return sessions
     sidecar_data = cast("SidecarData", {})
-    if provider is Provider.CODEX and index_conn is None:
+    reads_index = _replay_enrichment_reads_index(provider)
+    if reads_index and index_conn is None:
         _count_enrichment_degradation("codex_titles_without_index_conn")
-    if provider is Provider.CODEX and index_conn is not None:
+    if reads_index and index_conn is not None:
         from polylogue.sources.codex_state_projection import read_thread_titles
 
         thread_ids = [session.provider_session_id for session in sessions if session.provider_session_id]
@@ -3828,6 +3842,42 @@ _PREFETCH_BUFFER_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
 _PIPELINE_DECODE_MIN_COHORTS: Final[int] = 8
 
 
+def _prefetchable_index_path(archive: ArchiveStore) -> Path | None:
+    """The index tier a prefetch worker may open its OWN read handle to.
+
+    ``None`` means "open none". Two shapes resolve that way:
+
+    * the archive holds no index connection at all; and
+    * an owned INACTIVE generation, whose writer holds
+      ``PRAGMA locking_mode=EXCLUSIVE`` for the connection's entire lifetime
+      (``BULK_BUILD_WRITE_CONNECTION_PROFILE`` -- "exactly one writer and zero
+      readers until promoted"). A second connection to that file cannot read
+      it at ANY point during the build, so a ``busy_timeout`` there is not a
+      bridge over a short window; it is a wait that can only expire.
+
+    polylogue-cz17d: the worker opened one anyway, and the first Codex reparse
+    then sat inside ``read_thread_titles`` for the full 30 s busy timeout
+    before degrading to the empty mapping it was always going to get. That
+    wait is not off the critical path -- ``start_phase`` joins the previous
+    phase's worker ON THE WRITER THREAD -- so the whole backfill paid it:
+    30.04 s wall against 0.24 s CPU on an 8-raw owned-generation replay that
+    takes 0.10 s with the prefetcher disabled.
+
+    The lock regime is read from the live connection rather than inferred from
+    the route flag, so a profile change cannot silently re-arm the wait.
+    """
+    conn = archive.index_connection
+    if conn is None:
+        return None
+    try:
+        row = conn.execute("PRAGMA main.locking_mode").fetchone()
+    except sqlite3.Error:
+        return None
+    if row is not None and str(row[0]).strip().lower() == "exclusive":
+        return None
+    return archive.index_db_path
+
+
 class _ReplaySpillPrefetcher:
     """Decode upcoming replay cohorts' parsed sessions off the writer thread.
 
@@ -3911,8 +3961,12 @@ class _ReplaySpillPrefetcher:
             self._budget = max(floor, min(ceiling, physical // 16)) if physical else floor
         self._lock = threading.Lock()
         self._wakeup = threading.Condition(self._lock)
-        #: raw_id -> (sessions, payload_bytes, tree_bytes, from_reparse, seq)
-        self._buffer: dict[str, tuple[list[ParsedSession], int, int, bool, int]] = {}
+        #: raw_id -> (sessions, payload_bytes, tree_bytes, from_reparse, seq,
+        #: needs_enrichment). ``needs_enrichment`` marks a reparse this worker
+        #: decoded but could NOT enrich, because the provider's enrichment
+        #: reads an index tier this worker holds no handle to; the writer
+        #: applies it on consumption (``_ParsedSessionSpill.for_raw``).
+        self._buffer: dict[str, tuple[list[ParsedSession], int, int, bool, int, bool]] = {}
         self._buffered_tree_bytes = 0
         self._key_start_seq: dict[str, int] = {}
         self._writer_floor_seq = 0
@@ -3965,17 +4019,22 @@ class _ReplaySpillPrefetcher:
         self._thread = worker
         worker.start()
 
-    def pop(self, raw_id: str) -> tuple[list[ParsedSession], int, bool] | None:
-        """Consume one prefetched decode, releasing its budget share."""
+    def pop(self, raw_id: str) -> tuple[list[ParsedSession], int, bool, bool] | None:
+        """Consume one prefetched decode, releasing its budget share.
+
+        The fourth element is ``needs_enrichment``: True when the caller must
+        still run :func:`_replay_safe_enrich_sessions` on its own handles
+        before using the tree (see ``_decode``).
+        """
         with self._wakeup:
             entry = self._buffer.pop(raw_id, None)
             if entry is None:
                 return None
-            sessions, payload_bytes, tree_bytes, from_reparse, _seq = entry
+            sessions, payload_bytes, tree_bytes, from_reparse, _seq, needs_enrichment = entry
             self._buffered_tree_bytes -= tree_bytes
             self.consumed += 1
             self._wakeup.notify_all()
-            return sessions, payload_bytes, from_reparse
+            return sessions, payload_bytes, from_reparse, needs_enrichment
 
     def enter_key(self, logical_key: str) -> None:
         """Writer progress signal: drop buffered entries from earlier keys."""
@@ -3986,7 +4045,7 @@ class _ReplaySpillPrefetcher:
             self._writer_floor_seq = max(self._writer_floor_seq, floor)
             stale = [raw_id for raw_id, entry in self._buffer.items() if entry[4] < floor]
             for raw_id in stale:
-                _sessions, _payload, tree_bytes, _from_reparse, _seq = self._buffer.pop(raw_id)
+                _sessions, _payload, tree_bytes, _from_reparse, _seq, _needs = self._buffer.pop(raw_id)
                 self._buffered_tree_bytes -= tree_bytes
             if stale:
                 self._wakeup.notify_all()
@@ -4067,7 +4126,7 @@ class _ReplaySpillPrefetcher:
                 )
                 if decoded is None:
                     continue
-                sessions, payload_bytes, from_reparse = decoded
+                sessions, payload_bytes, from_reparse, needs_enrichment = decoded
                 tree_bytes = estimate_parsed_tree_bytes(sessions)
                 with self._wakeup:
                     if self._generation != generation or self._closed:
@@ -4076,7 +4135,14 @@ class _ReplaySpillPrefetcher:
                         # The writer already moved past this key while we
                         # were decoding; buffering it would only pin budget.
                         continue
-                    self._buffer[raw_id] = (sessions, payload_bytes, tree_bytes, from_reparse, seq)
+                    self._buffer[raw_id] = (
+                        sessions,
+                        payload_bytes,
+                        tree_bytes,
+                        from_reparse,
+                        seq,
+                        needs_enrichment,
+                    )
                     self._buffered_tree_bytes += tree_bytes
         finally:
             if spill_conn is not None:
@@ -4177,7 +4243,7 @@ class _ReplaySpillPrefetcher:
         index_conn: sqlite3.Connection | None,
         raw_id: str,
         descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-    ) -> tuple[list[ParsedSession], int, bool] | None:
+    ) -> tuple[list[ParsedSession], int, bool, bool] | None:
         started = time.perf_counter()
         rows = spill_conn.execute(
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
@@ -4190,7 +4256,7 @@ class _ReplaySpillPrefetcher:
             )
             self.hits += 1
             self.decode_seconds += time.perf_counter() - started
-            return sessions, int(rows[0][1]), False
+            return sessions, int(rows[0][1]), False, False
         descriptor = descriptors.get(raw_id)
         if descriptor is None:
             return None
@@ -4215,6 +4281,19 @@ class _ReplaySpillPrefetcher:
             # identical error at the identical point in the identical order.
             return None
         sessions_or_none = _normalize_retained_parse_sessions(source_conn, raw_id, sessions_or_none)
+        if index_conn is None and _replay_enrichment_reads_index(provider):
+            # This provider's enrichment reads the index tier and this worker
+            # holds no handle to it (``_prefetchable_index_path`` refuses one
+            # against an EXCLUSIVE-locked owned generation). Enriching here
+            # against ``index_conn=None`` would bake in the content-heuristic
+            # fallback and diverge from what the writer -- which DOES hold a
+            # readable index connection -- produces inline for the same raw.
+            # Hand the decoded tree over unenriched instead: the expensive
+            # parse still happens off the writer thread, and the writer runs
+            # the identical enrichment call at the identical point on pop.
+            self.reparse_hits += 1
+            self.decode_seconds += time.perf_counter() - started
+            return sessions_or_none, payload_bytes, True, True
         sessions_or_none = _replay_safe_enrich_sessions(
             provider=provider,
             sessions=sessions_or_none,
@@ -4225,7 +4304,7 @@ class _ReplaySpillPrefetcher:
         )
         self.reparse_hits += 1
         self.decode_seconds += time.perf_counter() - started
-        return sessions_or_none, payload_bytes, True
+        return sessions_or_none, payload_bytes, True, False
 
 
 class _ParsedSessionSpill:
@@ -4488,7 +4567,24 @@ class _ParsedSessionSpill:
         if self._prefetcher is not None:
             prefetched = self._prefetcher.pop(raw_id)
             if prefetched is not None:
-                sessions, payload_bytes, from_reparse = prefetched
+                sessions, payload_bytes, from_reparse, needs_enrichment = prefetched
+                if needs_enrichment:
+                    # The worker decoded this raw but deferred the enrichment
+                    # it could not perform (see ``_ReplaySpillPrefetcher._decode``).
+                    # Run it here, on the writer's own handles, in the exact
+                    # shape the inline reparse fallback below uses -- that is
+                    # what keeps a pipelined run byte-identical to a serial one.
+                    provider, _blob_hash, enrich_source_path, _descriptor_kind, _size = archive.raw_revision_descriptor(
+                        raw_id
+                    )
+                    sessions = _replay_safe_enrich_sessions(
+                        provider=provider,
+                        sessions=sessions,
+                        index_conn=archive.index_connection,
+                        source_conn=archive.source_connection,
+                        blob_root=Path(archive.archive_root) / "blob",
+                        source_path=enrich_source_path,
+                    )
                 if from_reparse:
                     # Mirror the inline reparse fallback below exactly: a
                     # freshly reparsed raw is (re)admitted to the cache tiers
