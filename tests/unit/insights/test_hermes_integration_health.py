@@ -18,12 +18,16 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.analysis.hermes_integration_health as hermes_health
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
 from polylogue.analysis.hermes_integration_health import build_hermes_integration_health
+from polylogue.sources.hooks import append_hook_event
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.parsers.hermes_lifecycle import TOOL_START
+from tests.infra.hook_carriers import materialize_hook_carriers
 
 _STATE_DB_SCHEMA = """
 CREATE TABLE schema_version(version INTEGER NOT NULL);
@@ -232,3 +236,156 @@ def test_watcher_lag_is_visible_as_a_non_searchable_stage(workspace_env: dict[st
     # report "unknown" and fail this assertion.
     assert source.stage in {"unseen", "acquired-unparsed", "parsed-unindexed", "indexed-unconverged"}
     assert source.parse_state != "parsed"
+
+
+def _seed_hermes_state_db(root: Path) -> Path:
+    """Write one minimal Hermes ``state.db`` under ``root`` and return its path."""
+
+    source_path = root / "state.db"
+    with sqlite3.connect(source_path) as conn:
+        conn.executescript(_STATE_DB_SCHEMA)
+        conn.execute(
+            "INSERT INTO sessions (id, source, model_config, started_at, ended_at, end_reason, title) "
+            "VALUES ('root', 'cli', '{}', 1.0, 8.0, 'completed', 'root')"
+        )
+    return source_path
+
+
+def test_unreadable_source_tier_is_unavailable_not_healthy(workspace_env: dict[str, Path]) -> None:
+    """A durable spool that cannot be read is reported unavailable, never healthy.
+
+    The Hermes root is deliberately empty, so no freshness projection runs and
+    nothing else in the rollup can notice the damage: the *only* probe that
+    touches the corrupted ``source.db`` is the recent-session sample. Compare
+    with ``test_deferred_convergence_debt_is_reported_without_degrading``,
+    which uses the same empty root over an intact archive and must stay
+    ``healthy`` -- the corrupted tier is the single differing input.
+
+    Anti-vacuity: delete the ``sample_unmeasured is not None`` branch in
+    ``build_hermes_integration_health`` (or make
+    ``_recent_hermes_session_native_ids`` return a bare empty tuple again) and
+    the unreadable tier becomes indistinguishable from an empty one, the
+    verdict falls through to ``healthy``, and this test is red.
+    """
+
+    hermes_root = workspace_env["data_root"] / "hermes-unreadable-source"
+    hermes_root.mkdir(parents=True)
+    archive_root = workspace_env["archive_root"]
+    for suffix in ("-wal", "-shm"):
+        sidecar = archive_root / f"source.db{suffix}"
+        if sidecar.exists():
+            sidecar.unlink()
+    (archive_root / "source.db").write_bytes(b"this is not a sqlite database")
+
+    health = build_hermes_integration_health(archive_root, hermes_root=hermes_root)
+
+    assert health.enabled is True
+    assert health.verdict == "unavailable"
+    assert health.measurement_coverage.complete is False
+    assert any("source tier" in reason for reason in health.measurement_coverage.unmeasured_reasons)
+    # The gap reaches the operator-facing caveat list too, not just the record.
+    assert any("source tier" in caveat for caveat in health.caveats)
+
+
+def test_absent_index_tier_is_unavailable_not_healthy(workspace_env: dict[str, Path]) -> None:
+    """Lifecycle debt "reconciled against an empty snapshot" is not measured debt.
+
+    With real Hermes hook events in the durable spool there is a session
+    sample to reconcile, but no ``index.db`` to reconcile it against, so
+    ``sessions_checked`` stays 0 and ``unpaired_event_count`` stays 0. Those
+    zeros previously read as clean.
+
+    Anti-vacuity: delete the ``lifecycle_unmeasured``/``lifecycle_unsampled``
+    bookkeeping in the ``else`` branch of ``_sample_session_debt``'s index-tier
+    probe -- so the absent tier contributes only a caveat string and the
+    verdict falls through to ``healthy`` -- and this test is red.
+    """
+
+    hermes_root = workspace_env["data_root"] / "hermes-absent-index"
+    hermes_root.mkdir(parents=True)
+    archive_root = workspace_env["archive_root"]
+
+    append_hook_event(
+        event_id="e1",
+        provider="hermes",
+        event_type=TOOL_START,
+        session_id="conv-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_call_id": "call-1", "message_id": "m1"},
+        root=archive_root / "hooks",
+    )
+    assert materialize_hook_carriers(archive_root) == 1
+
+    for suffix in ("", "-wal", "-shm"):
+        tier = archive_root / f"index.db{suffix}"
+        if tier.exists():
+            tier.unlink()
+
+    health = build_hermes_integration_health(archive_root, hermes_root=hermes_root)
+
+    assert health.enabled is True
+    assert health.verdict == "unavailable"
+    # The zeros are still reported -- they are just no longer read as clean.
+    assert health.lifecycle_debt.sessions_checked == 0
+    assert health.lifecycle_debt.unpaired_event_count == 0
+    assert health.measurement_coverage.lifecycle_sessions_sampled == 0
+    assert health.measurement_coverage.lifecycle_sessions_unsampled == 1
+    assert any("index tier" in reason for reason in health.measurement_coverage.unmeasured_reasons)
+
+
+def test_raising_freshness_projection_is_unavailable_not_healthy(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A freshness projection that raises leaves a source unmeasured, not fine.
+
+    On the exception path the source row keeps its pre-probe placeholders --
+    ``operational_state == "unknown"`` and ``projection_error_count == 0`` --
+    and the verdict's tests are for ``"degraded"`` and a nonzero error count,
+    so neither could ever see the failure.
+
+    Anti-vacuity: delete the ``sources_unprojected``/``unmeasured_reasons``
+    bookkeeping from that ``except`` clause in
+    ``build_hermes_integration_health``, leaving only the caveat, and the
+    verdict falls through to ``healthy`` -- this test is red.
+    """
+
+    hermes_root = workspace_env["data_root"] / "hermes-freshness-raises"
+    hermes_root.mkdir(parents=True)
+    _seed_hermes_state_db(hermes_root)
+
+    def _raise(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("freshness projection unavailable")
+
+    monkeypatch.setattr(hermes_health, "project_named_source_freshness", _raise)
+
+    health = build_hermes_integration_health(workspace_env["archive_root"], hermes_root=hermes_root)
+
+    assert health.enabled is True
+    assert len(health.sources) == 1
+    source = health.sources[0]
+    # These are exactly the placeholders the verdict cannot read as a failure.
+    assert source.operational_state == "unknown"
+    assert source.projection_error_count == 0
+    assert health.verdict == "unavailable"
+    assert health.measurement_coverage.sources_projected == 0
+    assert health.measurement_coverage.sources_unprojected == 1
+    assert any("freshness projection failed" in reason for reason in health.measurement_coverage.unmeasured_reasons)
+
+
+def test_fully_measured_archive_still_reaches_healthy(workspace_env: dict[str, Path]) -> None:
+    """The totality guard must not turn every quiet archive into unavailable.
+
+    An intact archive with an empty Hermes root measured everything it
+    attempted and found nothing: coverage is complete and the verdict stays
+    ``healthy``. This is the control for the three tests above -- without it
+    they would also pass under a verdict that always answered ``unavailable``.
+    """
+
+    hermes_root = workspace_env["data_root"] / "hermes-quiet-but-intact"
+    hermes_root.mkdir(parents=True)
+
+    health = build_hermes_integration_health(workspace_env["archive_root"], hermes_root=hermes_root)
+
+    assert health.verdict == "healthy"
+    assert health.measurement_coverage.complete is True
+    assert health.measurement_coverage.unmeasured_reasons == ()

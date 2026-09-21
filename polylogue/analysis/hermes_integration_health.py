@@ -120,6 +120,53 @@ class HermesDeliveryCorrelationSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class HermesMeasurementCoverage:
+    """What this rollup actually measured, and what it tried to and could not.
+
+    The verdict is only as good as its inputs, so the inputs are reported
+    beside it. Each probe contributes two distinct counters -- what it
+    measured and what it could not -- rather than one number that folds an
+    unreadable tier into the same zero as a genuinely empty one. This is the
+    same discipline
+    :class:`polylogue.analysis.measurement.outcome_coverage.ToolOutcomeAggregate`
+    applies to tool outcomes, where ``unknown_n`` and ``no_result_n`` stay
+    separate uncounted buckets and are never folded into the numerator.
+
+    ``unmeasured_reasons`` names every probe that was attempted and did not
+    produce a measurement. "Nothing in scope" is not an entry here: a Hermes
+    root with no files and an archive with no Hermes hook events were both
+    fully measured and found empty. Only a failure to look is recorded.
+    """
+
+    sources_projected: int = 0
+    sources_unprojected: int = 0
+    lifecycle_sessions_sampled: int = 0
+    lifecycle_sessions_unsampled: int = 0
+    delivery_sessions_sampled: int = 0
+    delivery_sessions_unsampled: int = 0
+    unmeasured_reasons: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        """True when every probe the rollup attempted returned a measurement."""
+
+        return not self.unmeasured_reasons
+
+    def merge(self, other: HermesMeasurementCoverage) -> HermesMeasurementCoverage:
+        """Combine two probes' coverage, keeping distinct reasons in order."""
+
+        return HermesMeasurementCoverage(
+            sources_projected=self.sources_projected + other.sources_projected,
+            sources_unprojected=self.sources_unprojected + other.sources_unprojected,
+            lifecycle_sessions_sampled=self.lifecycle_sessions_sampled + other.lifecycle_sessions_sampled,
+            lifecycle_sessions_unsampled=self.lifecycle_sessions_unsampled + other.lifecycle_sessions_unsampled,
+            delivery_sessions_sampled=self.delivery_sessions_sampled + other.delivery_sessions_sampled,
+            delivery_sessions_unsampled=self.delivery_sessions_unsampled + other.delivery_sessions_unsampled,
+            unmeasured_reasons=tuple(dict.fromkeys((*self.unmeasured_reasons, *other.unmeasured_reasons))),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class HermesIntegrationHealth:
     """One bounded, composed Hermes integration health rollup."""
 
@@ -139,6 +186,7 @@ class HermesIntegrationHealth:
     delivery_correlation: HermesDeliveryCorrelationSummary = field(
         default_factory=lambda: HermesDeliveryCorrelationSummary(0, 0, 0, 0, ())
     )
+    measurement_coverage: HermesMeasurementCoverage = field(default_factory=lambda: HermesMeasurementCoverage())
     caveats: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
@@ -170,15 +218,17 @@ def _classify_source_ref(
     return "other"
 
 
-def _recent_hermes_session_native_ids(source_db: Path, *, limit: int) -> tuple[str, ...]:
+def _recent_hermes_session_native_ids(source_db: Path, *, limit: int) -> tuple[tuple[str, ...], str | None]:
     """Return up to ``limit`` recently-observed Hermes session ids from the durable spool.
 
-    Returns an empty tuple, never raises, when ``source.db`` or its
-    ``raw_hook_events`` table is unavailable — "no lifecycle/delivery
-    evidence sampled yet" is itself a valid, explicit state.
+    Never raises. The second element is ``None`` when the spool was read and
+    ``str`` naming why it was not: an unreadable durable tier and a spool that
+    genuinely holds no Hermes events both yield no ids, and collapsing them
+    into one bare empty tuple is what let an unreadable ``source.db`` reach a
+    "healthy" verdict. The caller keeps them apart.
     """
     if not source_db.exists():
-        return ()
+        return (), "source tier unavailable; recent Hermes session sample not drawn"
     try:
         conn = open_readonly_connection(source_db)
         try:
@@ -186,7 +236,7 @@ def _recent_hermes_session_native_ids(source_db: Path, *, limit: int) -> tuple[s
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_hook_events'"
             ).fetchone()
             if has_table is None:
-                return ()
+                return (), "source tier carries no raw_hook_events spool; recent Hermes session sample not drawn"
             rows = conn.execute(
                 """
                 SELECT DISTINCT session_native_id
@@ -201,8 +251,8 @@ def _recent_hermes_session_native_ids(source_db: Path, *, limit: int) -> tuple[s
             conn.close()
     except sqlite3.Error as exc:
         logger.warning("hermes session-id sample query failed for %s: %s", source_db, exc, exc_info=True)
-        return ()
-    return tuple(str(row[0]) for row in rows)
+        return (), f"source tier read failed: {type(exc).__name__}; recent Hermes session sample not drawn"
+    return tuple(str(row[0]) for row in rows), None
 
 
 def build_hermes_integration_health(
@@ -248,10 +298,18 @@ def build_hermes_integration_health(
             enabled=True,
             enabled_reason="hermes runtime root is present",
             verdict="unavailable",
+            measurement_coverage=HermesMeasurementCoverage(
+                unmeasured_reasons=(
+                    "archive root does not exist; freshness, debt, and delivery evidence are unavailable.",
+                )
+            ),
             caveats=("archive root does not exist; freshness, debt, and delivery evidence are unavailable.",),
         )
 
     caveats: list[str] = []
+    unmeasured_reasons: list[str] = []
+    sources_projected = 0
+    sources_unprojected = 0
 
     explain = explain_import_path(hermes_root, source_name="hermes", limit=source_limit)
     sources: list[HermesSourceStatus] = []
@@ -279,6 +337,7 @@ def build_hermes_integration_health(
                 fts_converged = freshness.fts.converged
                 insights_converged = freshness.insights.converged
                 projection_error_count = len(freshness.errors)
+                sources_projected += 1
             except Exception as exc:  # defensive: freshness projection must never crash the rollup
                 logger.warning(
                     "hermes health: named-source freshness projection failed for %s: %s",
@@ -286,7 +345,14 @@ def build_hermes_integration_health(
                     exc,
                     exc_info=True,
                 )
-                caveats.append(f"freshness projection failed for {source_ref}: {type(exc).__name__}")
+                # This source's stage/operational_state stay at their
+                # pre-probe "unknown" placeholders. "unknown" is not
+                # "degraded", so the verdict's equality tests below cannot
+                # see this failure; the coverage record is how it is seen.
+                sources_unprojected += 1
+                reason = f"freshness projection failed for {source_ref}: {type(exc).__name__}"
+                caveats.append(reason)
+                unmeasured_reasons.append(reason)
         sources.append(
             HermesSourceStatus(
                 source_ref=source_ref,
@@ -334,14 +400,27 @@ def build_hermes_integration_health(
             caveats.append(skip.reason)
     caveats.extend(explain.caveats)
 
-    session_ids = _recent_hermes_session_native_ids(archive_root / "source.db", limit=session_limit)
+    session_ids, sample_unmeasured = _recent_hermes_session_native_ids(archive_root / "source.db", limit=session_limit)
     lifecycle_debt = HermesLifecycleDebtSummary(0, 0, 0, 0, ())
     delivery_correlation = HermesDeliveryCorrelationSummary(0, 0, 0, 0, ())
-    if session_ids:
-        lifecycle_debt, delivery_correlation = _sample_session_debt(archive_root, session_ids)
+    sample_coverage = HermesMeasurementCoverage()
+    if sample_unmeasured is not None:
+        caveats.append(sample_unmeasured)
+        unmeasured_reasons.append(sample_unmeasured)
+    elif session_ids:
+        lifecycle_debt, delivery_correlation, sample_coverage = _sample_session_debt(archive_root, session_ids)
 
-    all_caveats = tuple(caveats)
+    coverage = HermesMeasurementCoverage(
+        sources_projected=sources_projected,
+        sources_unprojected=sources_unprojected,
+        unmeasured_reasons=tuple(unmeasured_reasons),
+    ).merge(sample_coverage)
+
+    # Every unmeasured reason is also an operator-visible caveat, so the
+    # plaintext surface names the gap without needing its own vocabulary.
+    all_caveats = tuple(dict.fromkeys((*caveats, *coverage.unmeasured_reasons)))
     verdict = _aggregate_verdict(
+        coverage=coverage,
         sources=sources,
         parser_failures=parser_failures,
         convergence_debt_failed_count=convergence_debt_failed_count,
@@ -362,6 +441,7 @@ def build_hermes_integration_health(
         convergence_debt_retry_due_count=convergence_debt_retry_due_count,
         lifecycle_debt=lifecycle_debt,
         delivery_correlation=delivery_correlation,
+        measurement_coverage=coverage,
         caveats=all_caveats,
     )
 
@@ -369,12 +449,15 @@ def build_hermes_integration_health(
 def _sample_session_debt(
     archive_root: Path,
     session_ids: tuple[str, ...],
-) -> tuple[HermesLifecycleDebtSummary, HermesDeliveryCorrelationSummary]:
+) -> tuple[HermesLifecycleDebtSummary, HermesDeliveryCorrelationSummary, HermesMeasurementCoverage]:
     """Reconcile lifecycle debt and delivery correlation for a bounded session sample.
 
     Returns explicit zero-with-caveat summaries, never raises, when
     ``index.db``/``user.db`` are unavailable — "sampled, zero events" and
-    "could not sample" are kept distinguishable via the caveat text.
+    "could not sample" are kept distinguishable via the caveat text and,
+    structurally, via the returned :class:`HermesMeasurementCoverage`: a
+    caveat string informs a reader, the coverage record is what the verdict
+    can act on.
     """
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
@@ -391,11 +474,17 @@ def _sample_session_debt(
     unavailable = 0
     delivery_checked = 0
 
+    unsampled = len(session_ids)
+
     if not source_db.exists():
+        reason = "source tier unavailable; lifecycle debt and delivery correlation not sampled."
         return (
-            HermesLifecycleDebtSummary(0, 0, 0, 0, ("source tier unavailable; lifecycle debt not sampled.",)),
-            HermesDeliveryCorrelationSummary(
-                0, 0, 0, 0, ("source tier unavailable; delivery correlation not sampled.",)
+            HermesLifecycleDebtSummary(0, 0, 0, 0, (reason,)),
+            HermesDeliveryCorrelationSummary(0, 0, 0, 0, (reason,)),
+            HermesMeasurementCoverage(
+                lifecycle_sessions_unsampled=unsampled,
+                delivery_sessions_unsampled=unsampled,
+                unmeasured_reasons=(reason,),
             ),
         )
 
@@ -407,7 +496,17 @@ def _sample_session_debt(
         return (
             HermesLifecycleDebtSummary(0, 0, 0, 0, (reason,)),
             HermesDeliveryCorrelationSummary(0, 0, 0, 0, (reason,)),
+            HermesMeasurementCoverage(
+                lifecycle_sessions_unsampled=unsampled,
+                delivery_sessions_unsampled=unsampled,
+                unmeasured_reasons=(reason,),
+            ),
         )
+
+    lifecycle_unmeasured: list[str] = []
+    delivery_unmeasured: list[str] = []
+    lifecycle_unsampled = 0
+    delivery_unsampled = 0
 
     try:
         index_conn: sqlite3.Connection | None = None
@@ -417,8 +516,15 @@ def _sample_session_debt(
             except sqlite3.Error as exc:
                 logger.warning("hermes health: index.db open failed: %s", exc, exc_info=True)
                 lifecycle_caveats.append(f"index tier read failed: {type(exc).__name__}")
+                lifecycle_unmeasured.append(f"index tier read failed: {type(exc).__name__}; lifecycle debt not sampled")
+                lifecycle_unsampled += unsampled
         else:
+            # Reconciling against an empty snapshot is not a measurement of
+            # zero debt: every event would look unknown, so no session is
+            # reconciled at all and the loop below is skipped entirely.
             lifecycle_caveats.append("index tier unavailable; lifecycle debt reconciled against an empty snapshot.")
+            lifecycle_unmeasured.append("index tier unavailable; lifecycle debt not sampled")
+            lifecycle_unsampled += unsampled
 
         try:
             if index_conn is not None:
@@ -434,6 +540,10 @@ def _sample_session_debt(
                         lifecycle_caveats.append(
                             f"lifecycle reconciliation failed for one sampled session: {type(exc).__name__}"
                         )
+                        lifecycle_unmeasured.append(
+                            f"lifecycle reconciliation failed for at least one sampled session: {type(exc).__name__}"
+                        )
+                        lifecycle_unsampled += 1
                         continue
                     lifecycle_checked += 1
                     total_events += reconciliation.total_events
@@ -450,8 +560,14 @@ def _sample_session_debt(
             except sqlite3.Error as exc:
                 logger.warning("hermes health: user.db open failed: %s", exc, exc_info=True)
                 delivery_caveats.append(f"user tier read failed: {type(exc).__name__}")
+                delivery_unmeasured.append(
+                    f"user tier read failed: {type(exc).__name__}; delivery correlation not sampled"
+                )
+                delivery_unsampled += unsampled
         else:
             delivery_caveats.append("user tier unavailable; delivery correlation not sampled.")
+            delivery_unmeasured.append("user tier unavailable; delivery correlation not sampled")
+            delivery_unsampled += unsampled
 
         try:
             if user_conn is not None:
@@ -467,6 +583,10 @@ def _sample_session_debt(
                         delivery_caveats.append(
                             f"delivery correlation failed for one sampled session: {type(exc).__name__}"
                         )
+                        delivery_unmeasured.append(
+                            f"delivery correlation failed for at least one sampled session: {type(exc).__name__}"
+                        )
+                        delivery_unsampled += 1
                         continue
                     delivery_checked += 1
                     for correlation in correlations:
@@ -500,23 +620,50 @@ def _sample_session_debt(
         unavailable_count=unavailable,
         caveats=delivery_caveats_dedup,
     )
-    return lifecycle_summary, delivery_summary
+    coverage = HermesMeasurementCoverage(
+        lifecycle_sessions_sampled=lifecycle_checked,
+        lifecycle_sessions_unsampled=lifecycle_unsampled,
+        delivery_sessions_sampled=delivery_checked,
+        delivery_sessions_unsampled=delivery_unsampled,
+        unmeasured_reasons=tuple(dict.fromkeys((*lifecycle_unmeasured, *delivery_unmeasured))),
+    )
+    return lifecycle_summary, delivery_summary, coverage
 
 
 def _aggregate_verdict(
     *,
+    coverage: HermesMeasurementCoverage,
     sources: list[HermesSourceStatus],
     parser_failures: tuple[HermesParserFailure, ...],
     convergence_debt_failed_count: int,
     lifecycle_debt: HermesLifecycleDebtSummary,
     delivery_correlation: HermesDeliveryCorrelationSummary,
 ) -> HermesHealthVerdict:
+    """Decide one verdict that is total over its own input.
+
+    Every branch below tests a *positive* signal, and a positive signal can
+    only come from a probe that ran. ``healthy`` is therefore only reachable
+    once ``coverage`` says every attempted probe produced a measurement:
+    without that guard an unreadable ``source.db``, an absent ``index.db``
+    and a freshness projection that raised all fell through to ``healthy``,
+    and a false healthy stops inquiry.
+
+    ``degraded`` is checked before ``unavailable`` on purpose. An observed
+    failure is a stronger and more actionable statement than "the probe did
+    not run", and the unmeasured portion is not lost either way: it is named
+    in ``measurement_coverage.unmeasured_reasons`` and echoed into
+    ``caveats``. ``unavailable`` is already in
+    :data:`HermesHealthVerdict`; nothing new is added to the vocabulary.
+    """
+
     if parser_failures or convergence_debt_failed_count or lifecycle_debt.unpaired_event_count:
         return "degraded"
     if any(source.operational_state == "degraded" or source.projection_error_count for source in sources):
         return "degraded"
     if delivery_correlation.unavailable_count and not delivery_correlation.available_count:
         return "degraded"
+    if not coverage.complete:
+        return "unavailable"
     return "healthy"
 
 
@@ -526,6 +673,7 @@ __all__ = [
     "HermesHealthVerdict",
     "HermesIntegrationHealth",
     "HermesLifecycleDebtSummary",
+    "HermesMeasurementCoverage",
     "HermesParserFailure",
     "HermesSourceStatus",
     "build_hermes_integration_health",
