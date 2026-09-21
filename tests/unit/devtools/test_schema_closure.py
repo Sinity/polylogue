@@ -59,6 +59,24 @@ def test_command_reports_membership(capsys: pytest.CaptureFixture[str]) -> None:
     assert not any(reported[path] for path in OUTSIDE_CLOSURE)
 
 
+def test_the_cli_package_is_identity_neutral() -> None:
+    """No file under ``polylogue/cli/`` may feed the derived schema identity.
+
+    The CLI is a surface adapter: an ordinary CLI edit must not move the
+    derived identity and demand an archive reconvergence. The single edge that
+    used to exist was a function-local
+    ``from polylogue.cli.shared.machine_errors import emit_success`` in
+    ``analysis/registry.py`` -- ``_import_bases`` walks the AST, so a deferred
+    import written to break a runtime cycle is still a full closure edge.
+
+    Anti-vacuity: point any closure member's import back at
+    ``polylogue.cli.*`` -- deferred or not -- and this goes red.
+    """
+    members = {Path(member).as_posix() for member in derived_identity_source_closure()}
+    cli_members = sorted(member for member in members if "polylogue/cli/" in member)
+    assert cli_members == []
+
+
 def test_command_lists_the_whole_closure(capsys: pytest.CaptureFixture[str]) -> None:
     assert schema_closure.main(["--json"]) == 0
     payload = json.loads(capsys.readouterr().out)

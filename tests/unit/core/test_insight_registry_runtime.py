@@ -111,7 +111,7 @@ def test_insight_items_payload_and_rendering_cover_json_plain_and_empty_paths() 
     assert payload["total"] == 1
     assert payload["items"][0]["origin"] == "claude-code-session"
 
-    with patch("polylogue.cli.shared.machine_errors.emit_success") as mock_emit:
+    with patch("polylogue.surfaces.machine_envelope.emit_success") as mock_emit:
         render_insight_items([insight], insight_type, json_mode=True)
     mock_emit.assert_called_once_with(insight_items_payload([insight], insight_type))
 

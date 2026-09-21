@@ -8,6 +8,11 @@ from dataclasses import dataclass, field
 from typing import Literal, NotRequired, TypedDict
 
 from polylogue.core.json import JSONDocument, require_json_document
+from polylogue.surfaces.machine_envelope import (
+    MachineSuccess,
+    emit_success,
+    success,
+)
 from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 
@@ -20,13 +25,6 @@ class MachineErrorEnvelope(TypedDict):
     command: NotRequired[list[str]]
     details: NotRequired[JSONDocument]
     outcome: NotRequired[JSONDocument]
-
-
-class MachineSuccessEnvelope(TypedDict):
-    """Serialized machine-success envelope."""
-
-    status: Literal["ok"]
-    result: JSONDocument
 
 
 # ---------------------------------------------------------------------------
@@ -78,39 +76,6 @@ class MachineError:
         sys.stdout.write("\n")
         sys.stdout.flush()
         raise SystemExit(exit_code)
-
-
-@dataclass(frozen=True, slots=True)
-class MachineSuccess:
-    """CLI-visible machine-success envelope."""
-
-    result: Mapping[str, object] = field(default_factory=dict)
-    status: Literal["ok"] = "ok"
-
-    def to_dict(self) -> MachineSuccessEnvelope:
-        return {
-            "status": self.status,
-            "result": require_json_document(dict(self.result), context="machine success result"),
-        }
-
-    def to_json(self, *, exclude_none: bool = False) -> str:
-        import json
-
-        del exclude_none
-        return json.dumps(self.to_dict(), indent=2)
-
-
-def _normalize_result_payload(
-    result: Mapping[str, object] | MachineSuccess | None,
-) -> JSONDocument:
-    if result is None:
-        return {}
-    if isinstance(result, MachineSuccess):
-        return require_json_document(result.result, context="machine success result")
-    return require_json_document(
-        {str(key): value for key, value in result.items()},
-        context="machine success result",
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,17 +182,6 @@ def error_no_results(
         details=details,
         outcome=decide_outcome(matched=0),
     )
-
-
-def success(result: Mapping[str, object] | MachineSuccess | None = None) -> MachineSuccess:
-    return MachineSuccess(result=_normalize_result_payload(result))
-
-
-def emit_success(result: Mapping[str, object] | MachineSuccess | None = None) -> None:
-    """Write a ``{\"status\": \"ok\", \"result\": …}`` envelope to stdout."""
-    sys.stdout.write(success(result).to_json(exclude_none=True))
-    sys.stdout.write("\n")
-    sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------

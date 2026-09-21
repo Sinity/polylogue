@@ -42,6 +42,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
+from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
     PytestSlotUnavailableError,
     basetemp_root,
@@ -398,6 +399,8 @@ def _run(
     cwd: str,
     env: dict[str, str],
     run: VerifyRun,
+    artifacts: PytestStepArtifacts,
+    report_path: Path,
     runner: str = "managed",
 ) -> tuple[int, float, dict[str, Any]]:
     """Run focused pytest through the host's pytest slot, preserving its receipt."""
@@ -417,13 +420,35 @@ def _run(
                 "termination_reason": "pytest_slot_unavailable",
             },
         )
+    returncode = outcome.returncode
+    # Exit 1 is "tests failed", the only outcome a rerun can speak to. Exit 2
+    # (interrupted), 3 (internal error), 4 (usage) and the signal codes
+    # describe the run itself. This is the same adjudication `devtools verify`
+    # performs, from the same module: a focused run is the one MORE likely to
+    # sit beside six sibling jobs in the pool, so it needs it at least as much.
+    rerun = (
+        rerun_failed_once(
+            report_path=report_path,
+            step_dir=artifacts.step_dir,
+            env=env,
+            root=ROOT,
+            runner=runner,
+        )
+        if returncode == 1
+        else None
+    )
+    if rerun is not None and not rerun["still_failed"]:
+        # Every failure passed alone: the run is green with its flakes named,
+        # never green silently.
+        returncode = 0
     suite_cost_receipt = write_run_receipt(env.get(SUITE_COST_DIR_ENV))
     return (
-        outcome.returncode,
+        returncode,
         time.monotonic() - started,
         {
-            "diagnosis": "pytest_passed" if outcome.returncode == 0 else "pytest_failed",
+            "diagnosis": "pytest_passed" if returncode == 0 else "pytest_failed",
             "pytest_slot": outcome.slot,
+            **({"rerun": rerun} if rerun is not None else {}),
             **({"suite_cost_receipt": str(suite_cost_receipt)} if suite_cost_receipt is not None else {}),
             # Named per client pid: the checkout accumulates one log per run,
             # and a glob over them reaches an arbitrary one.
@@ -569,6 +594,8 @@ def main(argv: list[str] | None = None) -> int:
             cwd=str(ROOT),
             env=pytest_env,
             run=run,
+            artifacts=artifacts,
+            report_path=report_path,
             runner=runner,
         )
         _publish_last_focused_pytest_report(report_path)

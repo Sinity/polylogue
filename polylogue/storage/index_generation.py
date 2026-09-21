@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -15,19 +14,17 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import closing, contextmanager, suppress
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
 from typing import Any, cast
 
-from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.logging import WARNING, emit
 from polylogue.storage.archive_identity import (
     ACTIVE_POINTER_FILENAME,
     GENERATIONS_DIRNAME,
     LIFECYCLE_LOCK_FILENAME,
-    REBUILD_TRANSACTIONS_DIRNAME,
     ArchiveLocation,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import DEFAULT_ARCHIVE_PAGE_SIZE, initialize_archive_database
@@ -51,18 +48,6 @@ _GENERATION_READ_THROUGH_MEMBERS: tuple[str, ...] = (
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
 _LOCK_HOST_PATTERN = re.compile(r"host=(\S+)")
-
-#: ``raw_session_memberships.decision`` values that mean "this raw is
-#: resolved, durable history" rather than resume debt -- reused directly from
-#: ``classify_membership_revisions``'s own closed vocabulary
-#: (``polylogue.archive.session_revision_membership.MembershipDecision``)
-#: instead of a rebuild-local classifier (polylogue-b5l.1 design note: reuse
-#: the existing revision authority vocabulary, never fork a parallel one).
-_SUPERSEDED_DECISIONS: tuple[str, ...] = (
-    MembershipDecision.SUPERSEDED_EQUIVALENT.value,
-    MembershipDecision.SUPERSEDED_PREFIX.value,
-)
-_SUPERSEDED_DECISION_PLACEHOLDERS = ",".join("?" for _ in _SUPERSEDED_DECISIONS)
 
 #: Superseded generations kept after a promotion.  One is enough to roll back
 #: to the previous index; each costs roughly the size of the index itself
@@ -215,9 +200,9 @@ def _is_generation_member(path: Path) -> bool:
     """True when ``path`` lives inside a generation directory rather than beside one.
 
     The canonical index pointer must not name a path inside a generation,
-    because ``generations_root`` and ``transactions_root`` are derived from the
-    pointer's *parent*: a pointer at ``…/.index-generations/gen-X/index.db``
-    makes them nest as ``…/gen-X/.index-generations``, which is the shape the
+    because ``generations_root`` is derived from the pointer's *parent*: a
+    pointer at ``…/.index-generations/gen-X/index.db`` makes it nest as
+    ``…/gen-X/.index-generations``, which is the shape the
     self-poisoning bug produced.
 
     The test is deliberately narrower than "the path mentions
@@ -276,94 +261,12 @@ class IndexGeneration:
     predecessor_generation_id: str | None = None
     retention_owner_id: str | None = None
     retention_state: str | None = None
-    sealed_membership_count: int = 0
-    sealed_membership_digest: str = ""
     # polylogue-kc8eq: the SQLite page size this generation's index.db was
     # created with. Recorded because it is unrecoverable from anything else
     # once the file exists and cannot be changed without recreating it, so a
     # generation built before the choice existed has to read as 0 ("whatever
     # SQLite defaulted to") rather than as a claim about 8192.
     page_size: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class IndexRebuildTransaction:
-    """Durable cursor and candidate ownership for one source-index rebuild.
-
-    A transaction is deliberately retained while it is paused or failed.  The
-    inactive generation is useful work, not disposable scratch: resuming the
-    same source snapshot continues from the next raw key without exposing a
-    partial index to readers.
-    """
-
-    operation_id: str
-    generation_id: str
-    generation_owner_id: str
-    source_snapshot: str
-    status: str
-    created_at_ms: int
-    updated_at_ms: int
-    last_blob_hash_hex: str | None = None
-    last_raw_id: str | None = None
-    processed_raw_count: int = 0
-    processed_blob_bytes: int = 0
-    pass_byte_budget: int | None = None
-    pass_deadline_ms: int | None = None
-    error: str | None = None
-    # The transaction record is also the durable operation receipt.  Keep the
-    # operating process separate from the opaque generation owner so a status
-    # reader can tell a retained candidate from the process that last made
-    # progress on it.
-    owner_pid: int | None = None
-    owner_host: str | None = None
-    heartbeat_at_ms: int | None = None
-    # polylogue-v6i3: set once a RESUMED pass has explicitly emptied this
-    # generation's messages_fts (defensive idempotent
-    # bookkeeping -- a fresh generation starts empty by construction and never
-    # needs this, but a resumed pass makes "derived stores are empty" an
-    # explicit, code-verified invariant instead of an assumption inherited
-    # from generation creation). Missing on older persisted transaction JSON
-    # defaults to ``False`` via the dataclass default, so an in-flight
-    # transaction created before this field existed is treated as not yet
-    # cleared and clears exactly once on its next resume.
-    derived_stores_cleared: bool = False
-    # Promotion is a terminal lifecycle boundary.  This attestation is
-    # written after the pointer flip without re-running fallible admission
-    # checks, so a post-flip observation failure cannot leave a resumable
-    # transaction claiming that its candidate is merely ready.
-    post_promotion_attestation: dict[str, object] | None = None
-    # The schema-inference evidence admitted for this checkpoint. This is
-    # distinct from ``source_snapshot``: it records the receipt-bound external
-    # inventory token that authorized the current replay state.
-    consumed_evidence: dict[str, object] = field(default_factory=dict)
-
-    @property
-    def cursor(self) -> str | None:
-        if self.last_blob_hash_hex is None or self.last_raw_id is None:
-            return None
-        return f"source:{self.last_blob_hash_hex}:{self.last_raw_id}"
-
-
-@dataclass(frozen=True, slots=True)
-class RebuildRawPage:
-    """One bounded content-order scheduling decision.
-
-    Rows are ``(raw_id, blob_hash_hex, blob_size)``, ordered by
-    ``(blob_hash, raw_id)`` (polylogue-hord) rather than acquisition time --
-    see ``IndexGenerationStore.next_raw_page`` for why: content order makes
-    byte-identical duplicates adjacent so the existing per-page dedup group
-    in ``_parse_retained_raws`` (and the cross-page content cache layered on
-    top of it) actually captures them, instead of only catching whatever
-    duplicates happen to land close together in acquisition-time order.
-
-    ``deferred_reason`` is scheduling evidence, not an admission decision: an
-    oversized first row is still scheduled alone, and every later row remains
-    reachable from the persisted keyset cursor on a later invocation.
-    """
-
-    rows: tuple[tuple[str, str, int], ...]
-    has_more: bool
-    deferred_reason: str | None = None
 
 
 class RebuildLeaseUnavailableError(RuntimeError):
@@ -680,9 +583,7 @@ class IndexGenerationStore:
                 raise RuntimeError(f"active pointer is a symlink: {anchor}")
             _atomic_text_write(anchor, str(self.active_pointer.absolute()), label="active pointer")
         self.generations_root = self.active_pointer.parent / GENERATIONS_DIRNAME
-        self.transactions_root = self.active_pointer.parent / REBUILD_TRANSACTIONS_DIRNAME
         _ensure_lifecycle_directory(self.generations_root, label="generation root")
-        _ensure_lifecycle_directory(self.transactions_root, label="transaction root")
         _ensure_lifecycle_directory(self.generations_root / _RETENTION_RECEIPTS_DIRNAME, label="retention receipt root")
         self._lifecycle_lock_path = self.active_pointer.parent / LIFECYCLE_LOCK_FILENAME
         self._active_parent_identity = _stable_directory(self.active_pointer.parent, label="active pointer parent")
@@ -755,101 +656,6 @@ class IndexGenerationStore:
 
         require_write_lease(purpose, archive_root=self.archive_root)
 
-    def create_transaction(
-        self,
-        *,
-        source_snapshot: str,
-        operation_id: str | None = None,
-        pass_byte_budget: int | None = None,
-        pass_deadline_ms: int | None = None,
-        consumed_evidence: dict[str, object] | None = None,
-    ) -> IndexRebuildTransaction:
-        """Create an inactive candidate and its resumable transaction record."""
-        self._require_write_lease("IndexGenerationStore.create_transaction")
-        from polylogue.maintenance.candidate_capacity import require_candidate_capacity
-
-        op_id = operation_id or str(uuid.uuid4())
-        path = self._transaction_path(op_id)
-        if path.exists():
-            raise RuntimeError(f"rebuild transaction already exists: {op_id}")
-        # A candidate is the whole index again on disk beside the one still
-        # serving reads. Refuse here, before the generation directory exists:
-        # a build that runs the filesystem out mid-pass leaves a partial
-        # generation and no room to reclaim it.
-        require_candidate_capacity(self.archive_root, operation_id=op_id)
-        generation = self.create(source_snapshot=source_snapshot)
-        self.seal_candidate_membership(generation, source_snapshot=source_snapshot)
-        now = int(time.time() * 1000)
-        transaction = IndexRebuildTransaction(
-            operation_id=op_id,
-            generation_id=generation.generation_id,
-            generation_owner_id=generation.owner_id,
-            source_snapshot=source_snapshot,
-            status="running",
-            created_at_ms=now,
-            updated_at_ms=now,
-            pass_byte_budget=pass_byte_budget,
-            pass_deadline_ms=pass_deadline_ms,
-            owner_pid=os.getpid(),
-            owner_host=socket.gethostname(),
-            heartbeat_at_ms=now,
-            consumed_evidence=dict(consumed_evidence or {}),
-        )
-        self.save_transaction(transaction)
-        return transaction
-
-    def load_transaction(self, operation_id: str) -> IndexRebuildTransaction:
-        """Load a rebuild transaction; corrupt or missing state is never resumed."""
-        self._validate_lifecycle_id(operation_id, "operation")
-        payload = _read_json_nofollow(self._transaction_path(operation_id), label="rebuild transaction")
-        try:
-            transaction = IndexRebuildTransaction(**cast(dict[str, Any], payload))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("invalid rebuild transaction") from exc
-        if transaction.operation_id != operation_id:
-            raise RuntimeError("rebuild transaction identity mismatch")
-        return transaction
-
-    def save_pass_receipt(self, operation_id: str, receipt: dict[str, object]) -> Path:
-        """Durably persist one rebuild pass's receipt for post-hoc recovery.
-
-        The CLI's only other copy of a pass receipt is a JSON blob written to
-        stdout; if the invoking shell's pipe dies (killed shell, SIGPIPE) an
-        orphaned rebuild process keeps working but the receipt is gone
-        (polylogue-k8kj live incident: two page receipts lost this way in one
-        night). Each pass gets its own numbered file under a
-        ``<operation_id>.receipts/`` directory alongside the transaction
-        record, written with the same tmp+os.replace+fsync pattern as
-        ``save_transaction``.
-        """
-        self._require_write_lease(f"IndexGenerationStore.save_pass_receipt(operation={operation_id})")
-        self._validate_lifecycle_id(operation_id, "operation")
-        directory = self.transactions_root / f"{operation_id}.receipts"
-        sequence = len(list(directory.glob("pass-*.json")))
-        path = directory / f"pass-{sequence:06d}.json"
-        _ensure_lifecycle_directory(directory, label="pass receipt directory")
-        _atomic_json_write(path, receipt, label="pass receipt")
-        return path
-
-    def save_transaction(self, transaction: IndexRebuildTransaction) -> IndexRebuildTransaction:
-        """Atomically checkpoint a transaction after one bounded replay pass."""
-        self._require_write_lease(f"IndexGenerationStore.save_transaction(operation={transaction.operation_id})")
-        now = int(time.time() * 1000)
-        updated = IndexRebuildTransaction(
-            **{
-                **asdict(transaction),
-                "updated_at_ms": now,
-                "owner_pid": os.getpid(),
-                "owner_host": socket.gethostname(),
-                "heartbeat_at_ms": now,
-            }
-        )
-        path = self._transaction_path(transaction.operation_id)
-        _ensure_lifecycle_directory(path.parent, label="transaction root")
-        _atomic_json_write(path, asdict(updated), label="rebuild transaction")
-        self.observe_candidate_capacity(operation_id=updated.operation_id, generation_id=updated.generation_id)
-        return updated
-
     def observe_candidate_capacity(self, *, operation_id: str, generation_id: str) -> None:
         """Raise the recorded peak for this build so the next projection calibrates.
 
@@ -883,263 +689,6 @@ class IndexGenerationStore:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
-
-    def checkpoint_transaction(
-        self,
-        transaction: IndexRebuildTransaction,
-        *,
-        status: str,
-        last_blob_hash_hex: str | None = None,
-        last_raw_id: str | None = None,
-        processed_raw_count: int | None = None,
-        processed_blob_bytes: int | None = None,
-        error: str | None = None,
-        derived_stores_cleared: bool | None = None,
-        post_promotion_attestation: dict[str, object] | None = None,
-        consumed_evidence: dict[str, object] | None = None,
-    ) -> IndexRebuildTransaction:
-        """Persist one state transition without changing candidate ownership."""
-        return self.save_transaction(
-            IndexRebuildTransaction(
-                **{
-                    **asdict(transaction),
-                    "status": status,
-                    "last_blob_hash_hex": last_blob_hash_hex
-                    if last_blob_hash_hex is not None
-                    else transaction.last_blob_hash_hex,
-                    "last_raw_id": last_raw_id if last_raw_id is not None else transaction.last_raw_id,
-                    "processed_raw_count": processed_raw_count
-                    if processed_raw_count is not None
-                    else transaction.processed_raw_count,
-                    "processed_blob_bytes": processed_blob_bytes
-                    if processed_blob_bytes is not None
-                    else transaction.processed_blob_bytes,
-                    "error": error,
-                    "derived_stores_cleared": derived_stores_cleared
-                    if derived_stores_cleared is not None
-                    else transaction.derived_stores_cleared,
-                    "post_promotion_attestation": post_promotion_attestation
-                    if post_promotion_attestation is not None
-                    else transaction.post_promotion_attestation,
-                    "consumed_evidence": (
-                        dict(consumed_evidence) if consumed_evidence is not None else transaction.consumed_evidence
-                    ),
-                }
-            )
-        )
-
-    def discard_transaction(self, operation_id: str) -> bool:
-        """Remove a terminal transaction's record so its ``operation_id`` can be reused.
-
-        Only the record itself is removed; pass receipts under
-        ``<operation_id>.receipts/`` are left in place as audit history
-        (mirroring ``save_pass_receipt``'s own retention). The candidate
-        generation is a SEPARATE lifecycle -- callers that also want to
-        reclaim a still-inactive generation must call
-        ``discard_if_inactive`` themselves; a ``promoted`` generation is
-        already the active index and must never be discarded here.
-        """
-        self._require_write_lease(f"IndexGenerationStore.discard_transaction(operation={operation_id})")
-        path = self._transaction_path(operation_id)
-        if not path.exists():
-            return False
-        path.unlink()
-        return True
-
-    def next_raw_page(
-        self,
-        transaction: IndexRebuildTransaction,
-        *,
-        limit: int,
-    ) -> RebuildRawPage:
-        """Schedule one content-order page without materializing archive-wide IDs.
-
-        Ordered by ``(blob_hash, raw_id)``, not acquisition time
-        (polylogue-hord). ``blob_hash`` is a fixed-length ``NOT NULL`` 32-byte
-        digest (``009_expand_origin_vocabulary.sql``), so byte-identical raws
-        -- including re-acquisitions/re-exports of the same content under an
-        entirely different ``acquired_at_ms`` -- sort adjacently and land in
-        the same or a neighboring page, where ``_parse_retained_raws``'s
-        existing per-page dedup grouping (and the cross-page content cache
-        layered on it, ``RawParsePrefetchCache``) actually collapses them
-        into a single parse. Acquisition-time order scattered duplicates
-        across the entire multi-hour rebuild instead, so only whatever
-        happened to land in the same bounded page or the cache's bounded
-        budget was ever caught.
-
-        ``(blob_hash, raw_id)`` is still a stable total order over
-        ``raw_sessions``, so the keyset cursor below resumes correctly; which
-        raws land on which page changes, but nothing about correctness does
-        -- revision/membership authority selection
-        (``session_revision_membership.classify_membership_revisions``) is a
-        pure function of each logical cohort's persisted rows (content
-        hashes, ``provider_updated_at``), and cohort expansion
-        (``ArchiveStore.expand_raw_membership_selection``) already walks the
-        full ``raw_sessions``/``raw_session_memberships`` graph regardless of
-        which page triggered it -- neither depends on processing order.
-
-        polylogue-b5l.1: a raw whose EVERY persisted
-        ``raw_session_memberships`` row already carries a durable
-        ``superseded_equivalent``/``superseded_prefix`` decision (the
-        classification ``classify_membership_revisions`` itself writes back,
-        durable in ``source.db`` independent of any index generation) is
-        legitimate resolved history, not resume debt: it will never gain an
-        ``index.sessions`` row of its own (only its cohort's accepted head
-        does), so scheduling it wastes a full page slot re-parsing content a
-        prior pass already resolved -- every single rebuild pass would
-        otherwise re-touch it. A raw with no membership row at all (never
-        censused) or with at least one non-superseded row (``applied``/
-        ``ambiguous``/``deferred``/still pending) is left eligible -- this
-        only ever narrows the schedule, it never risks dropping a genuinely
-        unresolved or newly-accepted raw.
-        """
-        if limit <= 0:
-            raise ValueError("rebuild raw page limit must be positive")
-        generation = self.load(transaction.generation_id)
-        membership_status = self.candidate_membership_status(generation)
-        with closing(sqlite3.connect(f"file:{generation.index_path}?mode=ro", uri=True)) as conn:
-            # A pre-membership transaction written by older code may have a
-            # cursor checkpoint but no committed membership rows. Honor that
-            # cursor only for this compatibility state. Once one membership
-            # row is committed, the sealed table is the sole resume authority.
-            if membership_status["committed"] == 0 and transaction.cursor is not None:
-                last_blob_hash = bytes.fromhex(transaction.last_blob_hash_hex or "")
-                query = """
-                    SELECT raw_id, lower(hex(blob_hash)), blob_size
-                    FROM candidate_source_membership
-                    WHERE status = 'pending'
-                      AND (blob_hash > ? OR (blob_hash = ? AND raw_id > ?))
-                    ORDER BY blob_hash, raw_id LIMIT ?
-                """
-                params: tuple[object, ...] = (last_blob_hash, last_blob_hash, transaction.last_raw_id, limit + 1)
-            else:
-                query = """
-                    SELECT raw_id, lower(hex(blob_hash)), blob_size
-                    FROM candidate_source_membership
-                    WHERE status = 'pending'
-                    ORDER BY blob_hash, raw_id LIMIT ?
-                """
-                params = (limit + 1,)
-            rows = conn.execute(query, params).fetchall()
-        selected: list[tuple[str, str, int]] = []
-        selected_bytes = 0
-        deferred_reason: str | None = None
-        budget = transaction.pass_byte_budget
-        for raw_id, blob_hash, blob_size in rows:
-            raw = (str(raw_id), str(blob_hash), int(blob_size or 0))
-            if budget is not None and selected and selected_bytes + raw[2] > budget:
-                deferred_reason = "byte-budget"
-                break
-            # A single oversized raw must never become permanently ineligible.
-            selected.append(raw)
-            selected_bytes += raw[2]
-            if len(selected) == limit:
-                break
-        has_more = len(rows) > len(selected)
-        if has_more and deferred_reason is None:
-            deferred_reason = "raw-batch"
-        return RebuildRawPage(rows=tuple(selected), has_more=has_more, deferred_reason=deferred_reason)
-
-    def seal_candidate_membership(self, generation: IndexGeneration, *, source_snapshot: str) -> int:
-        """Copy the selected source-head universe into the inactive generation."""
-        # The candidate index is an archive tier even though it lives below
-        # ``.index-generations``.  Keep this direct writable open behind the
-        # same archive-bound authority as ArchiveStore's factories; offline
-        # rebuild callers remain valid when enforcement is not armed.
-        from polylogue.storage.sqlite.write_lease import require_write_lease
-
-        require_write_lease(
-            f"IndexGenerationStore.seal_candidate_membership(index={generation.index_path})",
-            archive_root=self.archive_root,
-        )
-        source_db = self.archive_root / "source.db"
-        clause = f"""(
-            NOT EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id = raw_sessions.raw_id)
-            OR EXISTS (
-                SELECT 1 FROM raw_session_memberships m
-                WHERE m.raw_id = raw_sessions.raw_id
-                  AND (m.decision IS NULL OR m.decision NOT IN ({_SUPERSEDED_DECISION_PLACEHOLDERS}))
-            )
-        )"""
-        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source:
-            rows = source.execute(
-                f"SELECT raw_id, blob_hash, blob_size FROM raw_sessions WHERE {clause} ORDER BY blob_hash, raw_id",
-                _SUPERSEDED_DECISIONS,
-            ).fetchall()
-        with closing(sqlite3.connect(generation.index_path)) as conn:
-            conn.executemany(
-                """INSERT INTO candidate_source_membership
-                   (raw_id, blob_hash, blob_size, source_snapshot, status)
-                   VALUES (?, ?, ?, ?, 'pending')""",
-                [
-                    (str(raw_id), bytes(blob_hash), int(blob_size or 0), source_snapshot)
-                    for raw_id, blob_hash, blob_size in rows
-                ],
-            )
-            conn.commit()
-        digest = hashlib.sha256()
-        for raw_id, blob_hash, blob_size in rows:
-            digest.update(str(raw_id).encode())
-            digest.update(b"\0")
-            digest.update(bytes(blob_hash))
-            digest.update(b"\0")
-            digest.update(str(int(blob_size or 0)).encode())
-            digest.update(b"\n")
-        self._write(
-            IndexGeneration(
-                **{
-                    **asdict(generation),
-                    "sealed_membership_count": len(rows),
-                    "sealed_membership_digest": digest.hexdigest(),
-                }
-            )
-        )
-        return len(rows)
-
-    def commit_candidate_membership(self, generation: IndexGeneration, raw_ids: list[str]) -> None:
-        """Commit source membership after the corresponding replay transaction."""
-        if not raw_ids:
-            return
-        from polylogue.storage.sqlite.write_lease import require_write_lease
-
-        require_write_lease(
-            f"IndexGenerationStore.commit_candidate_membership(index={generation.index_path})",
-            archive_root=self.archive_root,
-        )
-        with closing(sqlite3.connect(generation.index_path)) as conn:
-            conn.executemany(
-                """UPDATE candidate_source_membership
-                   SET status = 'committed', committed_at_ms = ?
-                   WHERE raw_id = ? AND status = 'pending'""",
-                [(int(time.time() * 1000), raw_id) for raw_id in raw_ids],
-            )
-            conn.commit()
-
-    def candidate_membership_status(self, generation: IndexGeneration) -> dict[str, int]:
-        """Return exact sealed, committed, and pending counts from the candidate."""
-        with closing(sqlite3.connect(f"file:{generation.index_path}?mode=ro", uri=True)) as conn:
-            rows = conn.execute("SELECT status, COUNT(*) FROM candidate_source_membership GROUP BY status").fetchall()
-            members = conn.execute(
-                "SELECT raw_id, blob_hash, blob_size FROM candidate_source_membership ORDER BY blob_hash, raw_id"
-            ).fetchall()
-        counts = {str(status): int(count) for status, count in rows}
-        committed = counts.get("committed", 0)
-        pending = counts.get("pending", 0)
-        sealed = committed + pending
-        if generation.sealed_membership_count and sealed != generation.sealed_membership_count:
-            raise RuntimeError("candidate source membership count does not match its sealed generation")
-        if generation.sealed_membership_digest:
-            digest = hashlib.sha256()
-            for raw_id, blob_hash, blob_size in members:
-                digest.update(str(raw_id).encode())
-                digest.update(b"\0")
-                digest.update(bytes(blob_hash))
-                digest.update(b"\0")
-                digest.update(str(int(blob_size or 0)).encode())
-                digest.update(b"\n")
-            if digest.hexdigest() != generation.sealed_membership_digest:
-                raise RuntimeError("candidate source membership does not match its sealed generation")
-        return {"sealed": sealed, "committed": committed, "pending": pending, "failed": 0}
 
     def create(
         self,
@@ -1671,10 +1220,6 @@ class IndexGenerationStore:
             latest = max(latest, _generation_lifecycle_recency_ns(generation))
         return max(time.time_ns(), latest + 1)
 
-    def _transaction_path(self, operation_id: str) -> Path:
-        self._validate_lifecycle_id(operation_id, "operation")
-        return self.transactions_root / f"{operation_id}.json"
-
     def _write(self, generation: IndexGeneration) -> None:
         self._validate_generation(generation, generation.generation_id)
         path = self._metadata_path(generation.generation_id)
@@ -1913,10 +1458,8 @@ def _fsync_directory(path: Path) -> None:
 __all__ = [
     "ActiveWriterLease",
     "IndexGeneration",
-    "IndexRebuildTransaction",
     "IndexGenerationStore",
     "RebuildLeaseStatus",
-    "RebuildRawPage",
     "RebuildLease",
     "RebuildLeaseUnavailableError",
     "rebuild_lease_status",

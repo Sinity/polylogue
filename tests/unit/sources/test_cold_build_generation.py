@@ -226,8 +226,8 @@ def test_the_cold_build_refuses_before_it_allocates_a_generation(
 ) -> None:
     """The production build route is the one that has to refuse on free space.
 
-    ``IndexGenerationStore.create_transaction`` carries the same guard and has
-    no production caller, so before this lift a real daemon cold build -- the
+    The guard used to sit only on the manual rebuild lifecycle, which has no
+    production caller, so before this lift a real daemon cold build -- the
     route that writes a second whole index beside the one serving reads --
     allocated with no headroom check at all.
 
@@ -275,10 +275,10 @@ def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) ->
 def test_a_promoted_cold_build_calibrates_the_next_projection(tmp_path: Path, cold_build: ColdBuildGeneration) -> None:
     """Prediction without observation leaves ``calibrated_index_ratio`` at its default.
 
-    ``record_capacity_observation`` had exactly one caller
-    (``IndexGenerationStore.save_transaction``) on a route with no production
-    entry point, so every recorded receipt kept ``actual_peak_index_bytes ==
-    0`` and every projection forever used the unmeasured 4.0 constant.
+    ``record_capacity_observation`` used to have exactly one caller, on the
+    manual rebuild lifecycle that had no production entry point, so every
+    recorded receipt kept ``actual_peak_index_bytes == 0`` and every
+    projection forever used the unmeasured 4.0 constant.
 
     Anti-vacuity: deleting the ``observe_candidate_capacity`` call from
     ``ColdBuildGeneration.promote`` leaves the peak at zero and the
