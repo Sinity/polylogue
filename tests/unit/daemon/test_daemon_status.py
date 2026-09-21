@@ -3394,3 +3394,137 @@ def test_pinned_only_refutations_still_reach_the_composed_verdict() -> None:
                 runtime_status=daemon_payload,
             )
         assert operation_payload["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# One producer for the quick-check fact (polylogue-20d.17.2)
+# ---------------------------------------------------------------------------
+
+
+def _health_payload_from_http_handler() -> dict[str, object]:
+    """Drive ``GET /api/health`` far enough to read what it published."""
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
+    handler.server = cast(Any, type("_Server", (), {"started_at": None})())
+    sent: list[tuple[object, dict[str, object]]] = []
+
+    def _capture(status: object, payload: dict[str, object]) -> None:
+        sent.append((status, payload))
+
+    handler._send_json = _capture  # type: ignore[method-assign,assignment]
+    handler._handle_health()
+    return sent[0][1]
+
+
+def _quick_check_facts(archive_root: Path) -> dict[str, tuple[object, object]]:
+    """Read the quick-check fact off all three surfaces for one archive."""
+    from polylogue.daemon.status_snapshot import _minimal_status_payload
+    from polylogue.operations.quick_check import AGE_KEY, HEALTH_RESULT_KEY, STATUS_RESULT_KEY
+
+    with (
+        patch("polylogue.daemon.status.halted_unit_status", return_value=[]),
+        patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
+    ):
+        daemon_payload = daemon_status_payload(sources=())
+    minimal_payload = _minimal_status_payload()
+    health_payload = _health_payload_from_http_handler()
+    del archive_root
+    return {
+        "daemon_status": (daemon_payload[STATUS_RESULT_KEY], daemon_payload[AGE_KEY]),
+        "status_snapshot": (minimal_payload[STATUS_RESULT_KEY], minimal_payload[AGE_KEY]),
+        "health": (health_payload[HEALTH_RESULT_KEY], health_payload[AGE_KEY]),
+    }
+
+
+def test_all_three_status_surfaces_publish_one_measured_quick_check(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``polylogued status``, ``/api/status`` and ``/api/health`` report one fact.
+
+    ``daemon/status.py`` hardcoded ``quick_check_result: "unknown"``,
+    ``status_snapshot.py`` hardcoded ``None``, and ``http.py`` published a
+    literal ``quick_check_age_s: None`` beside a real probe result -- three
+    surfaces, three different answers for one archive (polylogue-20d.17.2).
+
+    Anti-vacuity: restore any one of those literals and the surface carrying it
+    stops agreeing with the other two.
+    """
+    archive_root = workspace_env["archive_root"]
+    archive_root.mkdir(parents=True, exist_ok=True)
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    ArchiveStore(archive_root).close()
+    monkeypatch.setattr(status_module, "check_health", lambda **_: DaemonHealth())
+
+    facts = _quick_check_facts(archive_root)
+
+    results = {name: value[0] for name, value in facts.items()}
+    assert results == {"daemon_status": "pass", "status_snapshot": "pass", "health": "pass"}
+    for name, (_result, age) in facts.items():
+        assert isinstance(age, float), f"{name} published a non-measured age beside a measured result: {age!r}"
+        assert age >= 0.0
+
+
+def test_an_unopenable_index_reports_error_on_every_quick_check_surface(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe that failed is ``error`` everywhere, never a fixed string.
+
+    Anti-vacuity: return ``"unknown"`` (or any literal) from
+    ``observe_quick_check`` and the assertion on the enum value goes red.
+    """
+    archive_root = workspace_env["archive_root"]
+    archive_root.mkdir(parents=True, exist_ok=True)
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    ArchiveStore(archive_root).close()
+    monkeypatch.setattr(status_module, "check_health", lambda **_: DaemonHealth())
+
+    def unopenable(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr("polylogue.operations.diagnostic_reads.one_shot_diagnostic_read", unopenable)
+
+    facts = _quick_check_facts(archive_root)
+
+    assert {name: value[0] for name, value in facts.items()} == {
+        "daemon_status": "error",
+        "status_snapshot": "error",
+        "health": "error",
+    }
+
+
+def test_an_uncollected_quick_check_renders_explicitly_unavailable() -> None:
+    """A component that never completed says so; it does not say ``"unknown"``.
+
+    ``"unknown"`` reads like an answer about the archive. ``unavailable`` names
+    the absence of a measurement, and carries no age because an unmeasured fact
+    has none (polylogue-20d.17.2 T2-2).
+
+    Anti-vacuity: restore ``"quick_check_result": "unknown"`` in
+    ``daemon_status_payload`` and this asserts ``unavailable`` against
+    ``unknown``. (The stale-last-good half of the same rule -- the
+    ``unmeasured=`` argument -- is proven separately, per component, in
+    ``test_status_unmeasured.py``: a first failed collection carries no
+    previous value for ``_v`` to serve.)
+    """
+    import time
+
+    from polylogue.operations.quick_check import AGE_KEY, STATUS_RESULT_KEY, QuickCheckObservation
+
+    def slow_probe() -> QuickCheckObservation:
+        time.sleep(5.0)
+        raise AssertionError("collector must not finish within the component deadline")
+
+    with (
+        patch("polylogue.daemon.status._quick_check_observation", side_effect=slow_probe),
+        patch("polylogue.daemon.status.halted_unit_status", return_value=[]),
+        patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    assert payload[STATUS_RESULT_KEY] == "unavailable"
+    assert payload[AGE_KEY] is None

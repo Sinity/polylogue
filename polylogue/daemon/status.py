@@ -71,6 +71,11 @@ from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
 from polylogue.operations.daemon_status import overall_status_ok
+from polylogue.operations.quick_check import (
+    QuickCheckObservation,
+    observe_quick_check,
+    unmeasured_quick_check,
+)
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -654,6 +659,12 @@ class DaemonStatus(BaseModel):
         default_factory=BlobPublicationReservationStatus
     )
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
+    #: The bounded index-openability probe, produced once for every status
+    #: surface (polylogue-20d.17.2). Defaults to the explicit unavailable
+    #: state so a payload built without the component never reads as a pass.
+    quick_check: QuickCheckObservation = Field(
+        default_factory=lambda: unmeasured_quick_check("quick check not collected for this status build")
+    )
     component_readiness: dict[str, object] = Field(default_factory=dict)
     # Surface-neutral component snapshot metadata.  Adapters must render this
     # projection rather than recollecting their own status facts.
@@ -2555,6 +2566,10 @@ def _sinex_publication_status_info() -> dict[str, object]:
     return publication_status(source_db, mode).as_dict()
 
 
+def _quick_check_observation() -> QuickCheckObservation:
+    return observe_quick_check(_active_status_db_path())
+
+
 def _daemon_status_component_specs(
     *,
     checked_health: Callable[[set[HealthTier]], DaemonHealth],
@@ -2582,6 +2597,17 @@ def _daemon_status_component_specs(
         ),
         StatusComponentSpec(
             name="db_size", scope="archive", collector=_db_size_info, deadline_s=0.5, fingerprint=fingerprint
+        ),
+        # Budgeted like every other fact: the quick check used to be a
+        # hardcoded literal on this route, so a status build published
+        # "unknown" whether or not the index could be opened
+        # (polylogue-20d.17.2).
+        StatusComponentSpec(
+            name="quick_check",
+            scope="archive",
+            collector=_quick_check_observation,
+            deadline_s=0.5,
+            fingerprint=fingerprint,
         ),
         StatusComponentSpec(
             name="blob_size", scope="archive", collector=_blob_size_info, deadline_s=0.5, fingerprint=fingerprint
@@ -2952,6 +2978,15 @@ def build_daemon_status(
             return value
         return default_factory() if default_factory is not None else default
 
+    _quick_check_unmeasured = unmeasured_quick_check("quick-check collection did not complete")
+    quick_check = _v("quick_check", _quick_check_unmeasured, unmeasured=_quick_check_unmeasured)
+    if not isinstance(quick_check, QuickCheckObservation):
+        quick_check = _quick_check_unmeasured
+    # The age is the snapshot's, not the probe's: a fresh value served from
+    # inside its TTL is genuinely that many seconds old, and an unmeasured one
+    # has no age at all.
+    quick_check = quick_check.with_age(snapshots["quick_check"].age_s)
+
     db_info: dict[str, object] = _v("db_size", {})
     storage_info = _v("archive_storage", ArchiveStorageStatus())
     fts: dict[str, object] = _v("fts_readiness", {})
@@ -3189,6 +3224,7 @@ def build_daemon_status(
         raw_replay_backlog=raw_replay_backlog,
         blob_publication_reservations=blob_publication_reservations,
         archive_storage=storage_info,
+        quick_check=quick_check,
         component_readiness=component_readiness,
         status_components=_status_component_metadata(snapshots),
         claim_guard=_daemon_claim_guard(
@@ -3441,8 +3477,7 @@ def daemon_status_payload(
             "sinex_publication": status.sinex_publication,
             "archive_debt": archive_debt,
             "assertion_candidate_queue": assertion_candidate_queue,
-            "quick_check_result": "unknown",
-            "quick_check_age_s": None,
+            **status.quick_check.payload(),
             "watcher_roots": [str(s.root) for s in watch_sources],
             "browser_capture_active": status.browser_capture_active,
             "failing_files": status.failing_files,
