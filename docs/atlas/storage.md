@@ -36,7 +36,7 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 
 - `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (`polylogue/storage/sqlite/archive_tiers/write.py:966-1069`).
 - It owns its transaction by default; bulk callers pass `manage_transaction=False` and own the surrounding commit to amortize per-commit fsync and WAL churn (`polylogue/storage/sqlite/archive_tiers/write.py:1015-1019`; `polylogue/storage/sqlite/archive_tiers/write.py:1186`).
-- It is the parsed-session lowering choke point shared by batch ingest and authoritative revision replay/reindex (`polylogue/storage/sqlite/archive_tiers/write.py:4968`; `polylogue/pipeline/services/ingest_batch/_core.py:1211`; `polylogue/storage/sqlite/archive_tiers/revision_governance.py:426`). It is not the only mutation function in the six-tier substrate.
+- It is the parsed-session lowering choke point shared by batch ingest and authoritative revision replay/reindex (`polylogue/storage/sqlite/archive_tiers/write.py:1053`; `polylogue/pipeline/services/ingest_batch/_core.py:1399`; `polylogue/storage/sqlite/archive_tiers/revision_governance.py:442`). It is not the only mutation function in the six-tier substrate.
 
 ## Blob publication, liveness, and GC
 
@@ -61,7 +61,7 @@ Pending generations are restartable; a restart resumes their exact member set in
 - A prefix-sharing child stores only its divergent tail. The writer resolves the parent, compares composed signatures, records the last inherited message as the branch point, and lowers only the remaining messages (`polylogue/storage/sqlite/archive_tiers/write.py:749-812`).
 - `session_links` stores destination identity, resolved parent, branch point and its content address, inheritance mode, status, parent tool-use block, method, confidence, and evidence (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1173-1250`).
 - Reads plan the composition before materializing it: one recursive walk resolves the ancestral prefix into per-session segment lengths, with explicit depth-limit and dangling-branch-point status instead of silently claiming completeness (`polylogue/storage/sqlite/archive_tiers/write.py:2058-2127`). A full read materializes every segment; a bounded page fetches only the window the caller asked for, so a deep child's first paint costs the chain depth rather than the composed transcript (`polylogue/storage/sqlite/archive_tiers/write.py:2494-2523`).
-- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge, rather than losing it to last-writer-wins (`polylogue/storage/sqlite/archive_tiers/write.py:4833-4878`).
+- Link writes refuse to let parser inference overwrite an existing hook-authoritative edge, rather than losing it to last-writer-wins (`polylogue/storage/sqlite/archive_tiers/write.py:5253-5309`).
 - Provider usage counters are NOT sliced like messages. A prefix-sharing child keeps its own reported `total_*` lanes verbatim; only a usage event bound to a replayed prefix message is dropped, because the parent already owns that observation (`polylogue/storage/sqlite/archive_tiers/write.py:6352-6372`; `polylogue/storage/sqlite/archive_tiers/write.py:8525-8550`).
 - Logical-session usage is therefore the chain root's observation plus each prefix-sharing descendant's own, not a root plus deltas (`polylogue/storage/usage.py:1837-1849`).
 

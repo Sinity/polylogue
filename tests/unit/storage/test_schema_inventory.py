@@ -110,8 +110,8 @@ def test_changed_definition_is_detected_even_when_object_name_survives(tmp_path:
     _fresh_archive(tmp_path)
     connection = sqlite3.connect(tmp_path / "ops.db")
     try:
-        connection.execute("DROP INDEX idx_slo_samples_label_time")
-        connection.execute("CREATE INDEX idx_slo_samples_label_time ON slo_samples(observed_at_ms)")
+        connection.execute("DROP INDEX idx_schema_drift_samples_time")
+        connection.execute("CREATE INDEX idx_schema_drift_samples_time ON schema_drift_samples(origin)")
         connection.commit()
     finally:
         connection.close()

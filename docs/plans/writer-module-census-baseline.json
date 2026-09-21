@@ -82,12 +82,6 @@
     ]
   },
   {
-    "file": "polylogue/operations/slo.py",
-    "tiers": [
-      "ops"
-    ]
-  },
-  {
     "file": "polylogue/pipeline/services/ingest_batch/_core.py",
     "tiers": [
       "index",
