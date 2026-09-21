@@ -4094,3 +4094,96 @@ def test_referenced_path_matches_across_actions(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr("polylogue.archive.query.runtime_matching._actions_for", lambda _session: (foo, bar))
     assert matches_referenced_path(SessionQueryPlan(referenced_path=terms), session) is True
+
+
+def test_a_bounded_stream_reads_every_window_its_limit_covers(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--stream --limit N`` delivers N messages, not one window of them.
+
+    ``session.read`` is windowed at ``_SESSION_READ_WINDOW`` (200), and
+    ``_read_session_windows`` used to leave the loop as soon as a message limit
+    was set at all.  A bounded read therefore never asked for a second window:
+    ``--limit 220`` over a 250-message session rendered 200 messages and
+    nothing said the remaining 20 the caller asked for had been dropped.
+
+    Anti-vacuity: EXECUTED -- restoring ``or message_limit is not None`` on the
+    loop's break makes this assert 200 lines against the expected 220, and
+    ``windows`` records a single ``(200, 0)`` read instead of the two below.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+    total_messages = 250
+    requested_limit = 220
+
+    def _message(position: int) -> ArchiveMessageRow:
+        message_id = f"codex-session:native-1:m{position}"
+        return ArchiveMessageRow(
+            message_id=message_id,
+            native_id=f"m{position}",
+            role="user" if position % 2 == 0 else "assistant",
+            position=position,
+            variant_index=0,
+            is_active_path=True,
+            is_active_leaf=position == total_messages - 1,
+            blocks=(
+                ArchiveBlockRow(
+                    block_id=f"{message_id}:0",
+                    message_id=message_id,
+                    block_type="text",
+                    text=f"line {position}",
+                ),
+            ),
+        )
+
+    rows = tuple(_message(position) for position in range(total_messages))
+    windows: list[tuple[int, int]] = []
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class WindowedArchiveStore(ArchiveStoreDouble):
+        def resolve_session_id(self, token: str) -> str:
+            return token
+
+        def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
+            # ``read_summary`` asks for the whole session to state its total;
+            # only the operation's real windows belong in the ledger.
+            if limit < total_messages:
+                windows.append((limit, offset))
+            return ArchiveSessionEnvelope(
+                session_id=session_id,
+                native_id="native-1",
+                origin="codex-session",
+                title="Windowed",
+                active_leaf_message_id=f"codex-session:native-1:m{total_messages - 1}",
+                messages=rows[offset : offset + limit],
+            )
+
+    install_archive_store_double(monkeypatch, WindowedArchiveStore())
+
+    asyncio.run(
+        _execute_query_params(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:native-1",
+                "stream": True,
+                "limit": requested_limit,
+                "output_format": "json",
+            },
+        )
+    )
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert len(lines) == requested_limit
+    assert lines[0]["blocks"][0]["text"] == "line 0"
+    assert lines[-1]["blocks"][0]["text"] == f"line {requested_limit - 1}"
+    assert windows == [(200, 0), (200, 200)]

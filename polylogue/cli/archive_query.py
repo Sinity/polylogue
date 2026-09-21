@@ -309,6 +309,20 @@ def _read_session_windows(
     empty window — ends it: a truncated read must never render as a finished
     one.  A caller that only needs a prefix (``--stream --limit``) asks for
     exactly that prefix and stops.
+
+    A bounded prefix is bounded by ``message_limit``, not by one window.
+    Breaking out of the loop as soon as ``message_limit`` was set capped every
+    bounded read at ``_SESSION_READ_WINDOW``: ``--stream --limit 500`` read one
+    200-message window and rendered it as the 500 the caller asked for, with
+    nothing in the output to say the rest had been dropped (polylogue-vbsc0).
+    The remaining-count guard at the top of the loop is what ends a bounded
+    read, so a continuation window may overshoot the request by less than one
+    window; the final slice trims it.
+
+    A window that adds no messages also ends the loop.  It cannot advance the
+    composition — the next request would repeat it — so continuing on one is
+    not patience, it is a hang; ending there renders the prefix that was
+    actually read.
     """
     from polylogue.cli.lowering import lower_session_read
 
@@ -337,9 +351,12 @@ def _read_session_windows(
         if not session:
             session = {key: value for key, value in window.items() if key != "messages"}
         window_messages = window.get("messages")
+        added = 0
         if isinstance(window_messages, list):
-            messages.extend(item for item in window_messages if isinstance(item, dict))
-        if payload.get("complete") or message_limit is not None:
+            rows = [item for item in window_messages if isinstance(item, dict)]
+            messages.extend(rows)
+            added = len(rows)
+        if payload.get("complete") or added == 0:
             break
         next_continuation = payload.get("continuation")
         if not isinstance(next_continuation, str):

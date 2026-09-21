@@ -16,9 +16,9 @@ from tests.infra.storage_records import SessionBuilder
 NID_CONTINUE_ROOT = native_session_id_for("codex", "cli-continue-root")
 
 
-def _seed_continuation_session(db_path: Path) -> None:
+def _seed_continuation_session(db_path: Path, slug: str = "cli-continue-root") -> None:
     (
-        SessionBuilder(db_path, "cli-continue-root")
+        SessionBuilder(db_path, slug)
         .provider("codex")
         .title("CLI Continue")
         .created_at("2026-04-21T09:00:00+00:00")
@@ -96,7 +96,8 @@ def test_continue_candidates_json_repeats_recent_files(cli_workspace: dict[str, 
     payload = json.loads(result.output)
     assert payload["status"] == "ok"
     result_payload = payload["result"]
-    assert result_payload["total"] >= 1
+    assert result_payload["returned"] >= 1
+    assert result_payload["limit"] == 10
     assert result_payload["candidates"][0]["logical_session_id"] == NID_CONTINUE_ROOT
     assert "score_breakdown" in result_payload["candidates"][0]
     assert "overlap_basis" in result_payload["candidates"][0]
@@ -122,3 +123,48 @@ def test_continue_candidates_terminal_renders_overlap_basis(cli_workspace: dict[
     assert "[overlap exact=" in result.output
     assert " dir=" in result.output
     assert " dead-excluded=" in result.output
+
+
+def test_continue_candidates_report_the_page_they_hold_not_a_total(
+    cli_workspace: dict[str, Path],
+) -> None:
+    """The candidate payload never calls its page size a total.
+
+    ``find_resume_candidates`` ranks every session profile and returns
+    ``candidates[:limit]``; it reports no total.  The payload's ``total`` was
+    therefore ``len(page)`` -- it equalled the limit whenever more sessions
+    matched, and changed when the operator changed ``--limit``.
+
+    Anti-vacuity: EXECUTED -- restoring ``"total": len(candidates)`` in
+    ``_emit_continue_candidates`` makes the first assertion below red, because
+    the payload once again claims ``total: 2`` for three ranked sessions.
+    """
+
+    for slug in ("cli-continue-root", "cli-continue-second", "cli-continue-third"):
+        _seed_continuation_session(cli_workspace["db_path"], slug)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--format",
+            "json",
+            "continue",
+            "--candidates",
+            "--limit",
+            "2",
+            "--repo",
+            "/workspace/polylogue",
+            "--cwd",
+            "/workspace/polylogue",
+            "--recent",
+            "/workspace/polylogue/polylogue/cli/query_verbs.py",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["result"]
+    assert "total" not in payload, "the ranking reports no total, so the payload must not claim one"
+    assert payload["returned"] == 2
+    assert payload["limit"] == 2
+    assert len(payload["candidates"]) == 2
