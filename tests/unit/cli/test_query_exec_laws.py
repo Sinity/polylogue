@@ -3724,6 +3724,66 @@ class TestSearchQueryContracts:
             {"group_key": item["group_key"], "count": item["count"]} for item in payload["items"]
         ]
 
+    def test_named_metric_aggregate_renders_exact_metrics_through_the_cli(
+        self, search_workspace: SearchWorkspace
+    ) -> None:
+        """The `| agg ...` terminal reaches the CLI with the metrics SQL computed.
+
+        Anti-vacuity: the metrics below are the seeded word counts. A CLI that
+        renders the aggregate envelope without its `metrics` map, or a lowerer
+        that reduces a truncated sample, changes them.
+        """
+
+        from polylogue.cli import cli
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = search_workspace["archive_root"] / "index.db"
+        (
+            SessionBuilder(index_db, "agg-metrics-cli")
+            .provider("codex")
+            .title("agg metrics cli")
+            .add_message("m1", role="assistant", text="aggcli one two")
+            .add_message("m2", role="assistant", text="aggcli one two three four")
+            .add_message("m3", role="user", text="aggcli one")
+            .save()
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--plain",
+                "--format",
+                "json",
+                "find",
+                "messages",
+                "where",
+                "text:aggcli",
+                "|",
+                "group",
+                "by",
+                "role",
+                "|",
+                "agg",
+                "count,",
+                "avg:word_count,",
+                "max:word_count",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "query-unit-aggregate"
+        metrics = {item["group_key"]: item["metrics"] for item in payload["items"]}
+        assert metrics == {
+            "assistant": {"count": 2, "avg_word_count": 4.0, "max_word_count": 5.0},
+            "user": {"count": 1, "avg_word_count": 2.0, "max_word_count": 2.0},
+        }
+        # The truncation regime is gone: no exactness flag, no sampled-row count.
+        result_payload = payload["pipeline"].get("result", {})
+        assert "exact" not in result_payload
+        assert "sampled_rows" not in result_payload
+
     def test_delegation_unit_source_renders_bounded_rows(self, search_workspace: SearchWorkspace) -> None:
         from polylogue.cli import cli
         from tests.infra.storage_records import SessionBuilder

@@ -40,15 +40,22 @@ class QueryUnitDescriptor:
     #: sum/avg/min/max/percentile functions, in addition to the always-legal
     #: field-less ``count`` metric. Empty means only ``count`` is available.
     aggregate_metric_fields: tuple[str, ...] = ()
-    #: Bracket-predicate field vocabulary for a ``with unit[field:value, ...]``
-    #: projection clause (polylogue-fnm.2), mapping the DSL-facing field name
-    #: to its attached-row payload attribute name. Deliberately a small,
-    #: explicit vocabulary rather than the full ``<unit> where`` structural
-    #: predicate field set: bracket predicates filter already-fetched payload
-    #: rows in Python (not pushed down to SQL), so only fields present on the
-    #: unit's own projected payload model are safe to filter. Empty means the
-    #: unit only supports the ``first:N``/``last:N`` window, not predicates.
-    attached_bracket_fields: dict[str, str] = dataclass_field(default_factory=dict)
+    #: The unit's DSL field vocabulary, mapping each DSL-facing field name to
+    #: the unit's own row attribute. One map serves both consumers of that
+    #: mapping: the ``with unit[field:value, ...]`` bracket predicate, which
+    #: reads the attribute off an already-fetched payload row, and the SQL
+    #: aggregate group lowerer, which reads the identically-named column off
+    #: the unit's relation.
+    #:
+    #: Deliberately a small, explicit vocabulary rather than the full
+    #: ``<unit> where`` structural predicate field set. Session-scoped fields
+    #: (``session.origin``, ``session.repo``) are absent on purpose: they are
+    #: not the unit's own columns, and the SQL layer resolves them from the
+    #: owning-session join. ``aggregate_group_fields`` names which of these
+    #: entries a ``group by`` accepts; a unit may declare a field here that no
+    #: aggregate uses, but every non-session ``aggregate_group_fields`` entry
+    #: must appear here.
+    row_field_attributes: dict[str, str] = dataclass_field(default_factory=dict)
     #: Fields that may be emitted by the terminal ``fields``/``select``
     #: transform. Values are row attributes; session-scoped names are resolved
     #: from the owning-session join.
@@ -852,7 +859,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         cli_plain_renderer="message",
         aggregate_group_fields=("role", "type", "session.origin", "session.repo"),
         aggregate_metric_fields=("word_count",),
-        attached_bracket_fields={"role": "role", "type": "message_type"},
+        row_field_attributes={"role": "role", "type": "message_type"},
         projectable_fields={
             "message_id": "message_id",
             "session_id": "session_id",
@@ -894,7 +901,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
             "session.repo",
         ),
         aggregate_metric_fields=("is_error", "exit_code"),
-        attached_bracket_fields={
+        row_field_attributes={
             "tool": "tool_name",
             "action": "semantic_type",
             "type": "semantic_type",
@@ -916,6 +923,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         sql_query_method="query_blocks",
         cli_plain_renderer="block",
         aggregate_group_fields=("type", "tool", "action", "session.origin", "session.repo"),
+        row_field_attributes={"type": "block_type", "tool": "tool_name", "action": "semantic_type"},
         fields=_unit_info("block").fields,
         description=_unit_info("block").description,
         example=_unit_info("block").example,
@@ -930,7 +938,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         sql_query_method="query_assertions",
         cli_plain_renderer="assertion",
         aggregate_group_fields=("kind", "status", "visibility", "author_kind", "session.origin", "session.repo"),
-        attached_bracket_fields={
+        row_field_attributes={
             "kind": "kind",
             "status": "status",
             "visibility": "visibility",
@@ -950,7 +958,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         sql_query_method="query_files",
         cli_plain_renderer="file",
         aggregate_group_fields=("path", "session.origin", "session.repo"),
-        attached_bracket_fields={"path": "path"},
+        row_field_attributes={"path": "path"},
         fields=_unit_info("file").fields,
         description=_unit_info("file").description,
         example=_unit_info("file").example,
@@ -986,6 +994,13 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
             "session.origin",
             "session.repo",
         ),
+        row_field_attributes={
+            "kind": "kind",
+            "delivery_state": "delivery_state",
+            "tool": "tool_name",
+            "handler": "handler_kind",
+            "status": "status",
+        },
         fields=_unit_info("observed-event").fields,
         description=_unit_info("observed-event").description,
         example=_unit_info("observed-event").example,
@@ -1023,6 +1038,14 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
             "session.origin",
             "session.repo",
         ),
+        row_field_attributes={
+            "basis": "instruction_tool_use_block_id",
+            "mapping_state": "mapping_state",
+            "result_status": "result_status",
+            "requested_model": "requested_model",
+            "dispatch_model": "dispatch_turn_model",
+            "child_model": "child_session_dominant_model",
+        },
         fields=_unit_info("delegation").fields,
         description=_unit_info("delegation").description,
         example=_unit_info("delegation").example,

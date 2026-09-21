@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic
@@ -12,10 +11,8 @@ from typing import Any, Literal, Protocol, cast
 from polylogue.archive.query.execution_control import QueryExecutionContext
 from polylogue.archive.query.expression import (
     ExpressionCompileError,
-    QueryUnitAggMetric,
     QueryUnitPipeline,
     QueryUnitSource,
-    percentile_rank,
 )
 from polylogue.archive.query.metadata import (
     QueryUnitDescriptor,
@@ -39,7 +36,7 @@ from polylogue.archive.query.transaction import (
     validate_continuation_epoch,
 )
 from polylogue.operations.authority import authority_for_reader
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveAggMetricSpec, ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
@@ -444,32 +441,6 @@ class TerminalExecutionContext:
 TerminalExecutor = Callable[[TerminalExecutionContext], QueryUnitResultEnvelope]
 
 
-_AGGREGATE_ROW_FIELDS: dict[str, dict[str, str]] = {
-    "message": {"role": "role", "type": "message_type", "session.origin": "origin"},
-    "action": {
-        "tool": "tool_name",
-        "action": "semantic_type",
-        "type": "semantic_type",
-        "is_error": "is_error",
-        "exit_code": "exit_code",
-        "followup_class": "followup_class",
-        "session.origin": "origin",
-    },
-    "block": {"type": "block_type", "tool": "tool_name", "action": "semantic_type", "session.origin": "origin"},
-    "file": {"path": "path", "session.origin": "origin"},
-    "delegation": {
-        "basis": "instruction_tool_use_block_id",
-        "mapping_state": "mapping_state",
-        "result_status": "result_status",
-        "requested_model": "requested_model",
-        "dispatch_model": "dispatch_turn_model",
-        "child_model": "child_session_dominant_model",
-        "session.origin": "parent_origin",
-    },
-}
-_MISSING_GROUP_KEY = "[missing]"
-
-
 def _aggregate_group_fields(group_by: str | None) -> tuple[str, ...]:
     return () if group_by is None else tuple(field.strip() for field in group_by.split(",") if field.strip())
 
@@ -650,140 +621,65 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
     )
 
 
-#: Hard cap on rows fetched for Python-side ``agg`` metric computation
-#: (polylogue-fnm.1). Sum/avg/min/max/percentile reducers cannot push down to
-#: SQL from this lane, so ``_execute_agg_terminal`` fetches up to this many
-#: predicate-matching rows through the unit's existing SQL-pushdown row query
-#: and reduces them in Python. When the match set exceeds the cap the result
-#: is marked ``"exact": false`` in the pipeline result payload instead of
-#: silently reporting a partial sample as a complete aggregate.
-_AGG_ROW_FETCH_CAP = 50_000
-
-
-def _agg_group_key(row: object, group_fields: tuple[str, ...], unit: str) -> tuple[str, ...]:
-    field_map = _AGGREGATE_ROW_FIELDS.get(unit, {})
-    values: list[str] = []
-    for field in group_fields:
-        attr = field_map.get(field, field)
-        value = getattr(row, attr, None)
-        values.append(_MISSING_GROUP_KEY if value is None else str(value))
-    return tuple(values)
-
-
-def _reduce_agg_metric(metric: QueryUnitAggMetric, values: Sequence[float]) -> float | int | None:
-    """Reduce ``values`` with ``metric.fn``. Percentiles use nearest-rank."""
-
-    if metric.fn == "count":
-        return len(values)
-    if not values:
-        return None
-    if metric.fn == "sum":
-        return sum(values)
-    if metric.fn == "avg":
-        return sum(values) / len(values)
-    if metric.fn == "min":
-        return min(values)
-    if metric.fn == "max":
-        return max(values)
-    rank = percentile_rank(metric.fn)
-    if rank is not None:
-        ordered = sorted(values)
-        index = max(0, min(len(ordered) - 1, math.ceil(rank / 100 * len(ordered)) - 1))
-        return ordered[index]
-    raise ValueError(f"unsupported agg function: {metric.fn!r}")
-
-
 def _execute_agg_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnvelope:
     """Terminal ``agg`` action: emit named sum/avg/min/max/percentile metrics per group.
 
-    This reducer cannot push sum/avg/min/max/percentile down to SQL from this
-    lane (polylogue-fnm.1: storage/sqlite owns the SQL aggregate builder and
-    is out of scope here), so it fetches up to :data:`_AGG_ROW_FETCH_CAP`
-    predicate-matching rows through the unit's existing SQL-pushdown row
-    query (the same query the ``rows`` terminal uses) and reduces them in
-    Python, grouping by the same fields the ``count`` aggregate lowerer
-    already supports (:data:`_AGGREGATE_ROW_FIELDS`). The pipeline result
-    payload explicitly reports ``"exact": true`` when every matching row was
-    fetched, or ``"exact": false`` plus ``"sampled_rows"`` when the match set
-    was larger than the cap, instead of silently treating a partial sample as
-    a complete aggregate.
+    Every reducer is evaluated by SQLite over the complete predicate-matching
+    relation through :meth:`ArchiveStore.query_unit_agg_metrics`, and Python
+    retains only the requested aggregate page. The reported metric therefore
+    does not change meaning with the size of the match set: there is one
+    regime, not a bounded-sample regime above some row count.
     """
 
     pipeline = ctx.source.pipeline
     agg_metrics = pipeline.agg_metrics
     assert agg_metrics is not None
-    method_name = ctx.descriptor.sql_query_method
-    payload_model = _row_payload_model(ctx.descriptor)
-    if method_name is None or payload_model is None:
-        raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
-    query_method = cast(Any, getattr(ctx.archive, method_name))
-    sort = "time" if ctx.descriptor.time_sort_supported else None
-    rows = cast(
-        Sequence[Any],
-        query_method(
-            pipeline.predicate,
-            limit=_AGG_ROW_FETCH_CAP + 1,
-            offset=0,
-            session_filters=ctx.session_filters,
-            sort=sort,
-            sort_direction="asc",
-        ),
-    )
-    exact = len(rows) <= _AGG_ROW_FETCH_CAP
-    fetched_rows = rows[:_AGG_ROW_FETCH_CAP]
-    payload_rows = [payload_model.from_row(row) for row in fetched_rows]
-
     group_fields = _aggregate_group_fields(pipeline.group_by)
-    groups: dict[tuple[str, ...], list[Any]] = {}
-    for payload_row in payload_rows:
-        key = _agg_group_key(payload_row, group_fields, ctx.source.unit) if group_fields else ()
-        groups.setdefault(key, []).append(payload_row)
+    page = ctx.archive.query_unit_agg_metrics(
+        ctx.source.unit,
+        pipeline.predicate,
+        group_by=group_fields,
+        metrics=tuple(
+            ArchiveAggMetricSpec(label=metric.label, fn=metric.fn, field=metric.field) for metric in agg_metrics
+        ),
+        limit=ctx.fetch_limit,
+        offset=ctx.offset,
+        session_filters=ctx.session_filters,
+    )
 
-    field_map = _AGGREGATE_ROW_FIELDS.get(ctx.source.unit, {})
     aggregate_rows: list[QueryUnitAggregateRowPayload] = []
-    for key, group_rows in sorted(groups.items()):
-        metrics: dict[str, float | int | None] = {}
-        for metric in agg_metrics:
-            if metric.fn == "count" or metric.field is None:
-                metrics[metric.label] = len(group_rows)
-                continue
-            attr = field_map.get(metric.field, metric.field)
-            values = [float(v) for v in (getattr(row, attr, None) for row in group_rows) if v is not None]
-            metrics[metric.label] = _reduce_agg_metric(metric, values)
+    for row in page.rows:
         if not group_fields:
             group_key = None
         elif len(group_fields) == 1:
-            group_key = key[0]
+            group_key = row.group_values[0]
         else:
-            group_key = json.dumps(dict(zip(group_fields, key, strict=True)), sort_keys=True, separators=(",", ":"))
+            group_key = json.dumps(
+                dict(zip(group_fields, row.group_values, strict=True)), sort_keys=True, separators=(",", ":")
+            )
         aggregate_rows.append(
             QueryUnitAggregateRowPayload(
                 unit=cast(Any, ctx.source.unit),
                 group_by=pipeline.group_by,
                 group_key=group_key,
-                count=len(group_rows),
-                metrics=metrics,
+                count=row.count,
+                metrics=dict(row.metrics),
             )
         )
 
-    page = aggregate_rows[ctx.offset : ctx.offset + ctx.limit + 1]
-    payload = pipeline.to_payload()
-    result = cast(dict[str, object], payload.setdefault("result", {}))
-    result["exact"] = exact
-    result["sampled_rows"] = len(fetched_rows)
     return _record_result_page(
         ctx,
         build_query_unit_aggregate_envelope(
-            tuple(page[: ctx.limit]),
+            tuple(aggregate_rows[: ctx.limit]),
             unit=ctx.source.unit,
             query=ctx.query,
             limit=ctx.limit,
             offset=ctx.caller_offset,
-            has_next=len(page) > ctx.limit,
-            pipeline=payload,
+            has_next=len(aggregate_rows) > ctx.limit,
+            pipeline=pipeline.to_payload(),
             pipeline_stages=_pipeline_stage_payloads(pipeline),
         ),
-        selected_rows_exact=len(aggregate_rows) if exact else None,
+        selected_rows_exact=page.total_groups,
     )
 
 

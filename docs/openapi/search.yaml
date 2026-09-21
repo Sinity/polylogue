@@ -3621,7 +3621,7 @@ components:
       type: object
     QueryExpressionAstNodeAst:
       additionalProperties: false
-      description: 'Mirrors ``_ast_payload()``''s dict shape: one entry-tagged AST node.'
+      description: One entry-tagged node of an explained expression's AST.
       properties:
         entry:
           enum:
@@ -3683,7 +3683,7 @@ components:
       type: object
     QueryExpressionClauseAst:
       additionalProperties: false
-      description: Mirrors ``QueryExpressionExplainClause.to_payload()``.
+      description: Serializable clause view for parser/lowerer diagnostics.
       properties:
         kind:
           enum:
@@ -3851,7 +3851,7 @@ components:
       type: object
     QueryLoweringPlanAst:
       additionalProperties: false
-      description: Mirrors ``_lowering_plan_payload()``.
+      description: The lowerer selection and execution plan an explained expression resolves to.
       properties:
         lowerer:
           title: Lowerer
@@ -3877,6 +3877,14 @@ components:
           - type: 'null'
           default: null
           title: Compatibility Selector
+        reference_lineage:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Reference Lineage
         pipeline:
           anyOf:
           - $ref: '#/components/schemas/QueryUnitPipelineAst'
@@ -3887,6 +3895,7 @@ components:
           - items:
               discriminator:
                 mapping:
+                  agg: '#/components/schemas/QueryUnitAggStageAst'
                   count: '#/components/schemas/QueryUnitCountStageAst'
                   group: '#/components/schemas/QueryUnitGroupStageAst'
                   limit: '#/components/schemas/QueryUnitLimitStageAst'
@@ -3903,20 +3912,13 @@ components:
               - $ref: '#/components/schemas/QueryUnitOffsetStageAst'
               - $ref: '#/components/schemas/QueryUnitGroupStageAst'
               - $ref: '#/components/schemas/QueryUnitCountStageAst'
+              - $ref: '#/components/schemas/QueryUnitAggStageAst'
               - $ref: '#/components/schemas/QueryUnitTransformStageAst'
               - $ref: '#/components/schemas/QueryUnitTerminalStageAst'
             type: array
           - type: 'null'
           default: null
           title: Pipeline Stages
-        reference_lineage:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          default: null
-          title: Reference Lineage
       required:
       - lowerer
       title: QueryLoweringPlanAst
@@ -4072,8 +4074,46 @@ components:
       - text
       title: QueryTextPredicateAst
       type: object
+    QueryUnitAggMetricAst:
+      additionalProperties: false
+      description: One named reducer in an `agg` pipeline stage.
+      properties:
+        fn:
+          title: Fn
+          type: string
+        label:
+          title: Label
+          type: string
+        field:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Field
+      required:
+      - fn
+      - label
+      title: QueryUnitAggMetricAst
+      type: object
+    QueryUnitAggStageAst:
+      additionalProperties: false
+      description: Named-metric aggregation stage in a terminal query-unit pipeline.
+      properties:
+        kind:
+          const: agg
+          default: agg
+          title: Kind
+          type: string
+        metrics:
+          items:
+            $ref: '#/components/schemas/QueryUnitAggMetricAst'
+          title: Metrics
+          type: array
+      title: QueryUnitAggStageAst
+      type: object
     QueryUnitCountStageAst:
       additionalProperties: false
+      description: Count aggregation stage in a terminal query-unit pipeline.
       properties:
         kind:
           const: count
@@ -4089,6 +4129,7 @@ components:
       type: object
     QueryUnitGroupStageAst:
       additionalProperties: false
+      description: Aggregate grouping stage in a terminal query-unit pipeline.
       properties:
         kind:
           const: group
@@ -4113,6 +4154,7 @@ components:
       type: object
     QueryUnitLimitStageAst:
       additionalProperties: false
+      description: Limit stage in a terminal query-unit pipeline.
       properties:
         kind:
           const: limit
@@ -4128,6 +4170,7 @@ components:
       type: object
     QueryUnitOffsetStageAst:
       additionalProperties: false
+      description: Offset stage in a terminal query-unit pipeline.
       properties:
         kind:
           const: offset
@@ -4143,7 +4186,7 @@ components:
       type: object
     QueryUnitPipelineAst:
       additionalProperties: false
-      description: Mirrors ``QueryUnitPipeline.to_payload()``.
+      description: Executable terminal-row pipeline parsed from the query DSL.
       properties:
         source:
           $ref: '#/components/schemas/QueryUnitPipelineSourceAst'
@@ -4151,6 +4194,7 @@ components:
           items:
             discriminator:
               mapping:
+                agg: '#/components/schemas/QueryUnitAggStageAst'
                 count: '#/components/schemas/QueryUnitCountStageAst'
                 group: '#/components/schemas/QueryUnitGroupStageAst'
                 limit: '#/components/schemas/QueryUnitLimitStageAst'
@@ -4167,6 +4211,7 @@ components:
             - $ref: '#/components/schemas/QueryUnitOffsetStageAst'
             - $ref: '#/components/schemas/QueryUnitGroupStageAst'
             - $ref: '#/components/schemas/QueryUnitCountStageAst'
+            - $ref: '#/components/schemas/QueryUnitAggStageAst'
             - $ref: '#/components/schemas/QueryUnitTransformStageAst'
             - $ref: '#/components/schemas/QueryUnitTerminalStageAst'
           title: Stages
@@ -4209,6 +4254,7 @@ components:
       type: object
     QueryUnitPipelineResultAst:
       additionalProperties: false
+      description: Result shaping a terminal query-unit pipeline applies.
       properties:
         sort:
           anyOf:
@@ -4228,6 +4274,14 @@ components:
           - type: 'null'
           default: null
           title: Aggregate
+        agg_metrics:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/QueryUnitAggMetricAst'
+            type: array
+          - type: 'null'
+          default: null
+          title: Agg Metrics
         limit:
           anyOf:
           - type: integer
@@ -4252,6 +4306,7 @@ components:
       type: object
     QueryUnitPipelineSourceAst:
       additionalProperties: false
+      description: The relation a terminal query-unit pipeline selects from.
       properties:
         unit:
           enum:
@@ -4297,6 +4352,7 @@ components:
       type: object
     QueryUnitSessionScopeStageAst:
       additionalProperties: false
+      description: Session-source stage in a terminal query-unit pipeline.
       properties:
         kind:
           const: session_scope
@@ -4333,7 +4389,7 @@ components:
       type: object
     QueryUnitSortSpecAst:
       additionalProperties: false
-      description: Mirrors ``QueryUnitSort`` (field/direction).
+      description: Terminal query-unit sort field and direction.
       properties:
         field:
           enum:
@@ -4355,6 +4411,7 @@ components:
       type: object
     QueryUnitSortStageAst:
       additionalProperties: false
+      description: Row or aggregate sort stage in a terminal query-unit pipeline.
       properties:
         kind:
           const: sort
@@ -4369,7 +4426,7 @@ components:
       type: object
     QueryUnitSourceAst:
       additionalProperties: false
-      description: Mirrors the ``unit_source`` branch of ``_ast_payload()``.
+      description: Explicit unit-changing source parsed from `<unit>s where ...`.
       properties:
         unit:
           enum:
@@ -4465,10 +4522,19 @@ components:
           - type: 'null'
           default: null
           title: Aggregate
+        agg_metrics:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/QueryUnitAggMetricAst'
+            type: array
+          - type: 'null'
+          default: null
+          title: Agg Metrics
         pipeline_stages:
           items:
             discriminator:
               mapping:
+                agg: '#/components/schemas/QueryUnitAggStageAst'
                 count: '#/components/schemas/QueryUnitCountStageAst'
                 group: '#/components/schemas/QueryUnitGroupStageAst'
                 limit: '#/components/schemas/QueryUnitLimitStageAst'
@@ -4485,6 +4551,7 @@ components:
             - $ref: '#/components/schemas/QueryUnitOffsetStageAst'
             - $ref: '#/components/schemas/QueryUnitGroupStageAst'
             - $ref: '#/components/schemas/QueryUnitCountStageAst'
+            - $ref: '#/components/schemas/QueryUnitAggStageAst'
             - $ref: '#/components/schemas/QueryUnitTransformStageAst'
             - $ref: '#/components/schemas/QueryUnitTerminalStageAst'
           title: Pipeline Stages
@@ -4499,6 +4566,7 @@ components:
       type: object
     QueryUnitTerminalStageAst:
       additionalProperties: false
+      description: Terminal action that emits the resolved query-unit set.
       properties:
         kind:
           const: terminal
@@ -4506,6 +4574,10 @@ components:
           title: Kind
           type: string
         action:
+          enum:
+          - rows
+          - count
+          - agg
           title: Action
           type: string
         args:
@@ -4522,6 +4594,7 @@ components:
       type: object
     QueryUnitTransformStageAst:
       additionalProperties: false
+      description: Named row-shaping transform stage in a terminal query-unit pipeline.
       properties:
         kind:
           const: transform
@@ -4545,7 +4618,7 @@ components:
       type: object
     RefOperandAst:
       additionalProperties: false
-      description: Mirrors ``RefOperand.to_payload()``.
+      description: A provenance-preserving durable-reference operand.
       properties:
         kind:
           const: ref_operand
@@ -4579,7 +4652,7 @@ components:
       type: object
     ReferenceQueryPipelineAst:
       additionalProperties: false
-      description: Mirrors ``ReferenceQueryPipeline.to_payload()``.
+      description: A pipeline rooted in a durable reference whose grain is planner-resolved.
       properties:
         source:
           $ref: '#/components/schemas/RefOperandAst'
@@ -4594,20 +4667,7 @@ components:
       type: object
     QueryExpressionExplanationAst:
       additionalProperties: false
-      description: 'Canonical, versioned projection of ``QueryExpressionExplanation.to_payload()``.
-
-
-        This is the schema published in ``docs/openapi/search.yaml`` and the
-
-        documented shape of the MCP ``explain`` operation''s ``kind="query"``
-
-        result (``polylogue.mcp.server_cutover:explain`` ->
-
-        ``Polylogue.explain_query_expression``). It is deliberately additive over
-
-        history: every field already existed in the hand-rolled payload dict this
-
-        module validates against; ``schema_version`` is the only new key.'
+      description: Canonical, versioned projection of an explained query expression.
       properties:
         schema_version:
           const: polylogue.query-explain-ast.v1
