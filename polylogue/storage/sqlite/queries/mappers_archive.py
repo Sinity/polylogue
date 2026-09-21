@@ -38,11 +38,35 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 )
 
 
-def _row_to_session(row: sqlite3.Row) -> SessionRecord:
+def cursor_column_names(description: Sequence[Sequence[Any]] | None) -> tuple[str, ...]:
+    """Name a cursor's selected layout for the ``bind_*_row_mapper`` family.
+
+    One expression, one owner: a caller that spells the projection out again
+    is a second inventory of the same fact, which is exactly what the binder
+    exists to remove.
+    """
+    return tuple(str(column[0]) for column in description or ())
+
+
+def _row_to_session(
+    row: sqlite3.Row,
+    *,
+    record_mapper: Callable[[sqlite3.Row], dict[str, Any]] | None = None,
+) -> SessionRecord:
     # Every mechanical step -- which columns project, their record names, the
     # JSON payload decoding -- is declared on SESSIONS_SPEC; typing and
     # validation stay with SessionRecord.
-    return SessionRecord(**SESSIONS_SPEC.row_to_record_kwargs(row))
+    return SessionRecord(**(record_mapper or SESSIONS_SPEC.row_to_record_kwargs)(row))
+
+
+def bind_session_row_mapper(column_names: Sequence[str]) -> Callable[[sqlite3.Row], SessionRecord]:
+    """Bind mechanical session extraction to one cursor's selected layout."""
+    record_mapper = SESSIONS_SPEC.bind_record_mapper(column_names)
+
+    def decode(row: sqlite3.Row) -> SessionRecord:
+        return _row_to_session(row, record_mapper=record_mapper)
+
+    return decode
 
 
 def _row_to_message(
@@ -69,12 +93,26 @@ def bind_message_row_mapper(column_names: Sequence[str]) -> Callable[[sqlite3.Ro
     return decode
 
 
-def _row_to_content_block(row: sqlite3.Row) -> BlockRecord:
-    values = BLOCKS_SPEC.row_to_record_kwargs(row)
+def _row_to_content_block(
+    row: sqlite3.Row,
+    *,
+    record_mapper: Callable[[sqlite3.Row], dict[str, Any]] | None = None,
+) -> BlockRecord:
+    values = (record_mapper or BLOCKS_SPEC.row_to_record_kwargs)(row)
     values.setdefault("block_id", row["block_id"])
     values["message_id"] = MessageId(str(values["message_id"]))
     values["session_id"] = SessionId(str(values["session_id"]))
     return BlockRecord(**values)
+
+
+def bind_block_row_mapper(column_names: Sequence[str]) -> Callable[[sqlite3.Row], BlockRecord]:
+    """Bind mechanical block extraction to one cursor's selected layout."""
+    record_mapper = BLOCKS_SPEC.bind_record_mapper(column_names)
+
+    def decode(row: sqlite3.Row) -> BlockRecord:
+        return _row_to_content_block(row, record_mapper=record_mapper)
+
+    return decode
 
 
 def _row_to_file_edit(row: sqlite3.Row) -> FileEditRecord:
@@ -250,6 +288,10 @@ def _row_to_artifact_observation(row: sqlite3.Row) -> ArtifactObservationRecord:
 
 __all__ = [
     "_ms_to_iso",
+    "bind_block_row_mapper",
+    "bind_message_row_mapper",
+    "bind_session_row_mapper",
+    "cursor_column_names",
     "_row_to_artifact_observation",
     "_row_to_content_block",
     "_row_to_file_edit",
