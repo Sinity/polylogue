@@ -419,6 +419,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench slo", "devtools bench slo --json", "devtools bench slo --skip-benchmarks --json"),
     ),
     CommandSpec(
+        "bench collection",
+        "benchmarking",
+        "Measure what a pytest selection costs to collect, before any test runs.",
+        "devtools.collection_cost",
+        json_flag=True,
+        flags=(("--budget-mib", "Exit 3 when the collection peak exceeds this many MiB."),),
+        use_when=(
+            "Reproduce the per-worker collection cost a width is bounded by, before and after a change, on one head."
+        ),
+        examples=(
+            "devtools bench collection --json",
+            "devtools bench collection --budget-mib 430",
+            "devtools bench collection tests/unit/devtools/",
+        ),
+    ),
+    CommandSpec(
         "bench memory",
         "benchmarking",
         "Measure query-memory envelopes on generated fixtures.",
