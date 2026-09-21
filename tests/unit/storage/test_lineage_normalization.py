@@ -11,7 +11,6 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import aiosqlite
 import pytest
@@ -19,7 +18,6 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
-from polylogue.sources.parsers import hermes_state
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -1812,7 +1810,14 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(
         event.event_type == "compaction" and event.payload.get("end_reason") == end_reason
         for event in parent.session_events
     )
-    assert [message.text for message in continuation.messages] == ["before", "summary", "after", "continued"]
+    # polylogue-7y53q: the continuation carries only its own divergent tail and
+    # DECLARES where it diverged, at the positions it occupies in the composed
+    # transcript. Everything below still proves the archive stores that tail,
+    # records the prefix-sharing edge at the parent's tip, and recomposes the
+    # whole transcript on read -- the parse just stopped replaying it first.
+    assert [message.text for message in continuation.messages] == ["after", "continued"]
+    assert [message.position for message in continuation.messages] == [2, 3]
+    assert continuation.branch_point_provider_message_id == parent.messages[-1].provider_message_id
     assert delegate.branch_type is BranchType.SUBAGENT
     assert [message.text for message in delegate.messages] == ["fresh work"]
 
@@ -2605,7 +2610,13 @@ def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) 
     conn.close()
 
 
-def _hermes_chain_state_db(path: Path, *, links: int, messages_per_session: int) -> None:
+def _hermes_chain_state_db(
+    path: Path,
+    *,
+    links: int,
+    messages_per_session: int,
+    session_tokens: list[tuple[int, int]] | None = None,
+) -> None:
     """A Hermes state.db of ``links`` sessions, each a compression continuation of the last."""
     with sqlite3.connect(path) as source:
         source.executescript(
@@ -2620,6 +2631,8 @@ def _hermes_chain_state_db(path: Path, *, links: int, messages_per_session: int)
                 started_at REAL,
                 ended_at REAL,
                 end_reason TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
                 title TEXT
             );
             CREATE TABLE messages (
@@ -2639,9 +2652,18 @@ def _hermes_chain_state_db(path: Path, *, links: int, messages_per_session: int)
         for index in range(links):
             session_id = f"s{index:04d}"
             parent = f"s{index - 1:04d}" if index else None
+            reported = session_tokens[index] if session_tokens else (None, None)
             source.execute(
-                "INSERT INTO sessions VALUES (?, 'cli', '{}', ?, ?, ?, 'compression', ?)",
-                (session_id, parent, float(index), float(index) + 0.5, f"Session {index}"),
+                "INSERT INTO sessions VALUES (?, 'cli', '{}', ?, ?, ?, 'compression', ?, ?, ?)",
+                (
+                    session_id,
+                    parent,
+                    float(index),
+                    float(index) + 0.5,
+                    reported[0],
+                    reported[1],
+                    f"Session {index}",
+                ),
             )
             for offset in range(messages_per_session):
                 message_id += 1
@@ -2657,84 +2679,123 @@ def _hermes_chain_state_db(path: Path, *, links: int, messages_per_session: int)
                 )
 
 
-def test_hermes_continuation_hydration_refuses_past_its_declared_composition_bound(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The bound is the fix: a chain past it refuses, typed, before composing it.
+def test_hermes_continuation_chain_far_past_the_retired_bound_parses(tmp_path: Path) -> None:
+    """A continuation chain longer than any declared bound is ingested, not refused.
 
-    Anti-vacuity: with the bound removed (or raised past the chain), this same
-    input composes ``links * (links + 1) / 2 * messages_per_session`` messages
-    and the call returns instead of raising -- exactly the unbounded behaviour
-    this test exists to keep out. The composed-message counter also proves the
-    refusal is *pre-allocation*: a bound checked after composing would leave the
-    counter at the full quadratic total.
+    Before polylogue-7y53q the parser composed each continuation child's full
+    inherited prefix and the archive writer aligned it straight back off, so a
+    chain of ``N`` links holding ``M`` messages each retained ``M*N*(N+1)/2``
+    messages. A ~2 MB ``state.db`` reached 1.6M messages and 5.2 GB RSS, and
+    the parser answered with a permanent typed refusal
+    (``HermesLineageBoundError``) at 128 links. The chain below is 200 links.
+
+    Anti-vacuity: restore the composing pass and this raises instead of
+    returning -- 200 exceeds the old depth bound of 128. A parity-only
+    assertion on a short chain passes under both implementations, which is why
+    the chain is built past the retired bound rather than at three links.
     """
-    links = 40
-    messages_per_session = 10
-    limit = 600
-    monkeypatch.setattr(hermes_state, "HERMES_MAX_COMPOSED_MESSAGES", limit)
-
-    composed_messages = 0
-    original_copy = ParsedMessage.model_copy
-
-    def counting_copy(self: ParsedMessage, **kwargs: Any) -> ParsedMessage:
-        nonlocal composed_messages
-        composed_messages += 1
-        return original_copy(self, **kwargs)
-
-    monkeypatch.setattr(ParsedMessage, "model_copy", counting_copy)
-
-    state_db = tmp_path / "state.db"
-    _hermes_chain_state_db(state_db, links=links, messages_per_session=messages_per_session)
-
-    with pytest.raises(hermes_state.HermesLineageBoundError) as refusal:
-        parse_state_db(state_db)
-
-    assert refusal.value.bound == "composed_messages"
-    assert refusal.value.limit == limit
-    assert refusal.value.observed > limit
-    # Named counts, not a generic message: the operator can see what was refused.
-    assert str(refusal.value.observed) in str(refusal.value)
-    assert str(limit) in str(refusal.value)
-
-    unbounded_total = messages_per_session * links * (links + 1) // 2
-    assert unbounded_total == 8200
-    # Composition stops at the bound. The slack covers the per-message copies
-    # made while building the individual sessions, which are linear in the source.
-    assert composed_messages < limit + links * messages_per_session
-    assert composed_messages < unbounded_total // 4
-
-
-def test_hermes_continuation_hydration_copies_are_shallow_and_share_blocks(tmp_path: Path) -> None:
-    """Within the bound, recomposition costs one shallow copy per composed message.
-
-    Anti-vacuity: restoring ``model_copy(deep=True)`` makes the block-identity
-    assertion red, because a deep copy duplicates the whole block subtree once
-    per link -- the term that turned a 2 MB state.db into gigabytes.
-    """
-    links = 6
-    messages_per_session = 3
+    links = 200
+    messages_per_session = 4
     state_db = tmp_path / "state.db"
     _hermes_chain_state_db(state_db, links=links, messages_per_session=messages_per_session)
 
     parsed = parse_state_db(state_db)
-    by_raw_id = {session.provider_session_id.split("@", 1)[0]: session for session in parsed}
 
-    # Recomposition semantics are preserved: each child reads as parent prefix + tail.
+    assert len(parsed) == links
+    # Retention is the source's own message count, not its square.
+    assert sum(len(session.messages) for session in parsed) == links * messages_per_session
+
+    by_raw_id = {session.provider_session_id.split("@", 1)[0]: session for session in parsed}
     for index in range(links):
         session = by_raw_id[f"s{index:04d}"]
+        # Each link carries only its own rows...
         assert [message.text for message in session.messages] == [
+            f"s{index:04d} message {offset}" for offset in range(messages_per_session)
+        ]
+        # ...at the positions they occupy in the composed transcript...
+        assert [message.position for message in session.messages] == list(
+            range(index * messages_per_session, (index + 1) * messages_per_session)
+        )
+        # ...and declares where it diverged, rather than replaying the prefix.
+        if index == 0:
+            assert session.branch_point_provider_message_id is None
+        else:
+            parent = by_raw_id[f"s{index - 1:04d}"]
+            assert session.branch_point_provider_message_id == parent.messages[-1].provider_message_id
+
+
+def test_hermes_continuation_segments_store_each_message_once_and_read_composed(tmp_path: Path) -> None:
+    """The declared divergence still composes the whole chain on read.
+
+    The segmented parse only moves where the prefix is expressed: the archive
+    must still hold each message exactly once and recompose the full
+    transcript for every link (#2467).
+    """
+    links = 12
+    messages_per_session = 3
+    state_db = tmp_path / "state.db"
+    _hermes_chain_state_db(state_db, links=links, messages_per_session=messages_per_session)
+    conn = _connect(tmp_path / "index.db")
+
+    written = [write_parsed_session_to_archive(conn, session) for session in parse_state_db(state_db)]
+    conn.commit()
+
+    stored = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
+    assert stored == links * messages_per_session, "storage must hold each message exactly once"
+
+    for index, session_id in enumerate(written):
+        envelope = read_archive_session_envelope(conn, session_id)
+        assert envelope.lineage_complete is True
+        assert [message.blocks[0].text for message in envelope.messages] == [
             f"s{link:04d} message {offset}" for link in range(index + 1) for offset in range(messages_per_session)
         ]
-        assert [message.position for message in session.messages] == list(range((index + 1) * messages_per_session))
-        assert session.messages[-1].is_active_leaf is True
-        assert not any(message.is_active_leaf for message in session.messages[:-1])
+        assert envelope.lineage_inheritance == ("prefix-sharing" if index else "none")
 
-    root_block = by_raw_id["s0000"].messages[0].blocks[0]
-    for index in range(1, links):
-        composed_block = by_raw_id[f"s{index:04d}"].messages[0].blocks[0]
-        assert composed_block is root_block, "recomposition must share blocks, never deep-copy them"
+    # The edge carries the staleness witness, so a parent whose branch-point
+    # content changes cannot silently keep composing underneath the child.
+    witnesses = conn.execute(
+        "SELECT branch_point_content_address FROM session_links WHERE inheritance = 'prefix-sharing'"
+    ).fetchall()
+    assert len(witnesses) == links - 1
+    assert all(row[0] is not None for row in witnesses)
+    conn.close()
+
+
+def test_hermes_continuation_child_keeps_its_own_reported_usage(tmp_path: Path) -> None:
+    """A continuation child's usage stays the totals its own session row reported.
+
+    Hermes reports cumulative counters per session, not across a continuation
+    chain (``docs/cost-model.md``). While each child physically replayed its
+    parent, the writer rebased the child's cumulative totals by subtracting the
+    parent's STORED baseline -- and the parent's stored baseline had itself
+    already been rebased, so a chain produced a sawtooth
+    (10, 3, 13, 6, 16, ...) instead of the reported 10, 13, 16, ... Nothing is
+    replayed now, so nothing is rebased.
+
+    Anti-vacuity: restore the composing parse and the rebasing fires again,
+    turning link 1's reported 13 input tokens into 3.
+    """
+    links = 5
+    state_db = tmp_path / "state.db"
+    _hermes_chain_state_db(
+        state_db,
+        links=links,
+        messages_per_session=2,
+        session_tokens=[(10 + index * 3, 20 + index * 5) for index in range(links)],
+    )
+    conn = _connect(tmp_path / "index.db")
+    written = [write_parsed_session_to_archive(conn, session) for session in parse_state_db(state_db)]
+    conn.commit()
+
+    totals = {
+        str(row["session_id"]): (int(row["total_input_tokens"]), int(row["total_output_tokens"]))
+        for row in conn.execute(
+            "SELECT session_id, total_input_tokens, total_output_tokens FROM session_provider_usage_events"
+        ).fetchall()
+    }
+
+    assert [totals[session_id] for session_id in written] == [(10 + i * 3, 20 + i * 5) for i in range(links)]
+    conn.close()
 
 
 def test_alias_invalidation_records_retryable_convergence_debt(tmp_path: Path) -> None:

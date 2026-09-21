@@ -2600,10 +2600,10 @@ class ArchiveStore:
     def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
         """Read a bounded ``[offset, offset + limit)`` page of a session's transcript.
 
-        See ``read_archive_session_page`` for the bounding contract (ordinary
-        sessions compose only the requested window; prefix-sharing lineage
-        children fall back to full composition, matching the DB-backed
-        reader's own established constraint).
+        See ``read_archive_session_page`` for the bounding contract: every
+        session, including a prefix-sharing lineage child, composes only the
+        requested window, and the envelope's ``total_message_count`` carries
+        the true composed transcript length.
         """
         return read_archive_session_page(self._conn, session_id, limit=limit, offset=offset)
 

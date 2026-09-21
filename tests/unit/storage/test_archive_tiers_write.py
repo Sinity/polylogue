@@ -4274,16 +4274,256 @@ def test_read_archive_session_page_composes_bounded_sql_work_regardless_of_sessi
     assert large_statements < 15
 
 
-def test_read_archive_session_page_falls_back_to_full_composition_for_lineage_child(
+def _lineage_chain(
+    conn: sqlite3.Connection,
+    prefix: str,
+    *,
+    links: int,
+    per_link: int,
+) -> tuple[str, int]:
+    """Write a prefix-sharing chain and return ``(deepest child id, composed length)``.
+
+    Each link physically replays its parent's composed transcript and then
+    appends its own messages, which is what the writer aligns to record a
+    ``prefix-sharing`` edge and store only the divergent tail (#2467).
+    """
+    composed: list[ParsedMessage] = []
+    session_id = ""
+    for link in range(links):
+        own = [
+            ParsedMessage(
+                provider_message_id=f"m{len(composed) + index}",
+                role=Role.USER if index % 2 == 0 else Role.ASSISTANT,
+                text=f"body {len(composed) + index}",
+                position=len(composed) + index,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"body {len(composed) + index}")],
+            )
+            for index in range(per_link)
+        ]
+        composed = [*composed, *own]
+        session_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=f"{prefix}-{link}",
+                title=f"{prefix} link {link}",
+                parent_session_provider_id=f"{prefix}-{link - 1}" if link else None,
+                branch_type=BranchType.FORK if link else None,
+                messages=[message.model_copy(deep=True) for message in composed],
+            ),
+        )
+    return session_id, len(composed)
+
+
+def _forking_chain(
+    conn: sqlite3.Connection,
+    prefix: str,
+    *,
+    own_counts: list[int],
+    cuts: list[int],
+) -> tuple[str, int]:
+    """Write a chain whose links fork from the MIDDLE of their parent.
+
+    ``cuts[i]`` is how much of link ``i``'s composed transcript link ``i + 1``
+    replays before diverging, so the recorded branch point is an interior
+    message of the parent rather than its last one. That is what makes the
+    composed transcript need a real cut: a chain that always replays its whole
+    parent leaves every inherited segment unbounded, and a page that ignored
+    the branch point entirely would still return the right rows.
+    """
+    composed: list[ParsedMessage] = []
+    session_id = ""
+    for link, own_count in enumerate(own_counts):
+        base = composed if link == 0 else composed[: cuts[link - 1]]
+        own = [
+            ParsedMessage(
+                provider_message_id=f"{prefix}-l{link}-m{index}",
+                role=Role.USER if index % 2 == 0 else Role.ASSISTANT,
+                text=f"{prefix} link {link} body {index}",
+                position=len(base) + index,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"{prefix} link {link} body {index}")],
+            )
+            for index in range(own_count)
+        ]
+        composed = [*base, *own]
+        session_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=f"{prefix}-{link}",
+                title=f"{prefix} link {link}",
+                parent_session_provider_id=f"{prefix}-{link - 1}" if link else None,
+                branch_type=BranchType.FORK if link else None,
+                messages=[message.model_copy(deep=True) for message in composed],
+            ),
+        )
+    return session_id, len(composed)
+
+
+def _page_sql_work(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    limit: int,
+    offset: int,
+    step_interval: int = 64,
+) -> tuple[int, int]:
+    """Return ``(statements, sampled VM steps)`` for one page read."""
+    statements = 0
+    vm_steps = 0
+
+    def _trace(_statement: str) -> None:
+        nonlocal statements
+        statements += 1
+
+    def _progress() -> int:
+        nonlocal vm_steps
+        vm_steps += step_interval
+        return 0
+
+    conn.set_trace_callback(_trace)
+    conn.set_progress_handler(_progress, step_interval)
+    try:
+        read_archive_session_page(conn, session_id, limit=limit, offset=offset)
+    finally:
+        conn.set_trace_callback(None)
+        conn.set_progress_handler(None, 0)
+    return statements, vm_steps
+
+
+def test_read_archive_session_page_bounds_sql_work_for_a_lineage_child(tmp_path: Path) -> None:
+    """A lineage child's page costs the chain depth, never the composed length.
+
+    A prefix-sharing child stores only its divergent tail, so a page read has
+    to resolve the ancestral prefix. Resolving it by composing every ancestor's
+    full transcript and slicing the result (the contract before
+    polylogue-0le8d) makes first paint of a deep child cost the whole chain,
+    while the same call on a plain session is bounded by ``limit``.
+
+    The anti-vacuity condition is the shape of the growth, not a wall clock:
+    restore the composed-then-sliced branch and the statement count stops
+    being independent of the per-link message count -- it becomes the composed
+    transcript length, because the full read issues one blocks query per
+    composed message.
+    """
+
+    def _chain(name: str, *, links: int, per_link: int) -> tuple[sqlite3.Connection, str, int]:
+        conn = _connect(tmp_path / f"{name}.db")
+        session_id, composed_total = _lineage_chain(conn, name, links=links, per_link=per_link)
+        return conn, session_id, composed_total
+
+    conn_shallow_small, shallow_small, shallow_small_total = _chain("shallow-small", links=4, per_link=40)
+    conn_shallow_large, shallow_large, shallow_large_total = _chain("shallow-large", links=4, per_link=400)
+    conn_deep_small, deep_small, _ = _chain("deep-small", links=16, per_link=40)
+    conn_deep_large, deep_large, deep_large_total = _chain("deep-large", links=16, per_link=400)
+
+    assert (shallow_small_total, shallow_large_total, deep_large_total) == (160, 1600, 6400)
+
+    shallow_small_statements, _ = _page_sql_work(conn_shallow_small, shallow_small, limit=10, offset=0)
+    shallow_large_statements, _ = _page_sql_work(conn_shallow_large, shallow_large, limit=10, offset=0)
+    deep_small_statements, _ = _page_sql_work(conn_deep_small, deep_small, limit=10, offset=0)
+    deep_large_statements, deep_large_steps = _page_sql_work(conn_deep_large, deep_large, limit=10, offset=0)
+
+    # A ten-fold larger composed transcript at the same chain depth must cost
+    # exactly the same statements: the page reads the plan, not the transcript.
+    assert shallow_large_statements == shallow_small_statements
+    assert deep_large_statements == deep_small_statements
+
+    # Deepening the chain adds a bounded per-ancestor plan cost, not an
+    # ancestor's transcript.
+    assert deep_small_statements - shallow_small_statements <= 8 * (16 - 4)
+    assert deep_large_statements <= 8 * 16
+
+    # The sampled VM-step budget stays a small multiple of the composed
+    # length rather than the per-message row/blocks/attachment hydration the
+    # full composition pays. ``total_message_count`` is contractually the true
+    # composed length, so an index-only count per ancestor is inherent.
+    assert deep_large_steps < 25 * deep_large_total
+
+
+def test_read_archive_session_page_window_equals_full_composition_slice_for_a_lineage_child(
     tmp_path: Path,
 ) -> None:
-    """A prefix-sharing child's page still composes the parent prefix correctly.
+    """A lineage child's page window is field-for-field the full read's slice.
 
-    Bounding is deliberately NOT attempted for the lineage case here -- it
-    falls back to the same full-composition-then-slice contract
-    ``get_messages_paginated`` already documents for the DB-backed reader
-    (#2470), rather than risking a subtly wrong bounded lineage algorithm.
+    The bounded page and the unbounded envelope resolve the same plan, so this
+    pins every message field -- ids, identity source, positions, blocks,
+    attachments, composition provenance -- not just the rendered text. A
+    contents-only comparison would pass under a page that silently dropped a
+    field the full read carries (the narrower-page failure class
+    polylogue-blpir named for the session projection).
     """
+    conn = _connect(tmp_path / "index.db")
+    child_id, composed_total = _forking_chain(conn, "slice", own_counts=[8, 5, 6, 4, 5], cuts=[5, 9, 11, 13])
+    full = read_archive_session_envelope(conn, child_id)
+    assert len(full.messages) == composed_total
+    # Every link contributes, so the window genuinely spans segment boundaries,
+    # and every inherited segment is cut short of its session's own last row.
+    assert len({message.source_session_id for message in full.messages}) == 5
+    contributed: dict[str, int] = {}
+    for message in full.messages:
+        contributed[str(message.source_session_id)] = contributed.get(str(message.source_session_id), 0) + 1
+    for ancestor_id, count in contributed.items():
+        own_rows = int(conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (ancestor_id,)).fetchone()[0])
+        assert count == own_rows if ancestor_id == child_id else count < own_rows, (ancestor_id, count, own_rows)
+
+    for offset in range(composed_total + 2):
+        for limit in (1, 4, 7, composed_total):
+            page = read_archive_session_page(conn, child_id, limit=limit, offset=offset)
+            assert page.messages == full.messages[offset : offset + limit], (offset, limit)
+            assert page.total_message_count == composed_total
+            assert page.lineage_inheritance == "prefix-sharing"
+            assert page.lineage_complete is full.lineage_complete
+            assert page.lineage_branch_point_message_id == full.lineage_branch_point_message_id
+            assert page.orphan_attachments == full.orphan_attachments
+
+
+def test_reads_report_the_stored_message_identity_source(tmp_path: Path) -> None:
+    """Both reads report each message's real identity source, not the default.
+
+    ``ArchiveMessageRow.identity_source`` defaults to ``"content"``. A read
+    that never populated it reported every provider-native message as
+    content-derived, and disagreed with the other read of the same row about
+    which identity namespace produced its ``message_id``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    session_id = write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="identity-source",
+            title="identity source",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="native-1",
+                    role=Role.USER,
+                    text="named by the provider",
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="named by the provider")],
+                ),
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.ASSISTANT,
+                    text="no provider id at all",
+                    position=1,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="no provider id at all")],
+                ),
+            ],
+        ),
+    )
+
+    envelope = read_archive_session_envelope(conn, session_id)
+    page = read_archive_session_page(conn, session_id, limit=10, offset=0)
+
+    assert [message.identity_source for message in envelope.messages] == ["native", "content"]
+    assert [message.identity_source for message in page.messages] == ["native", "content"]
+    assert [message.message_id for message in envelope.messages] == [message.message_id for message in page.messages]
+
+
+def test_read_archive_session_page_composes_the_parent_prefix_for_a_lineage_child(
+    tmp_path: Path,
+) -> None:
+    """A prefix-sharing child's page still composes the parent prefix correctly."""
     conn = _connect(tmp_path / "index.db")
     parent = ParsedSession(
         source_name=Provider.CODEX,

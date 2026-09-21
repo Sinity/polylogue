@@ -18,7 +18,7 @@ import unicodedata
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
@@ -1938,32 +1938,197 @@ def upsert_session_profile_costs(
         )
 
 
-def read_archive_session_envelope(
-    conn: sqlite3.Connection, session_id: str, *, _depth: int = 0
-) -> ArchiveSessionEnvelope:
-    """Read a compact archive envelope, holding one read snapshot across composition.
+@dataclass(frozen=True, slots=True)
+class _TranscriptSegment:
+    """One contiguous run of a single session's own rows in a composed transcript.
 
-    For a prefix-sharing lineage child (#2467) the inherited prefix is not stored
-    under this session; the returned ``messages`` compose the parent's transcript
-    up to the branch point followed by this session's own messages, so reads see
-    the full logical transcript while storage holds each message once.
-
-    Composition issues multiple autocommit SELECTs across a recursive parent
-    walk (own read -> edge read -> recursive parent read). Without a held
-    transaction, a concurrent parent re-ingest between those reads can yield a
-    torn transcript (4ts.4). If ``conn`` is not already inside a transaction
-    (e.g. a caller-held write transaction), this wraps the whole composition
-    in one deferred read transaction so every SELECT sees the same snapshot;
-    recursive calls see ``conn.in_transaction`` already true and skip
-    re-wrapping.
+    ``upto_position``/``upto_variant_index`` bound the run at an inherited
+    branch point; ``None`` means the session contributes every row it owns.
+    ``message_count`` is that run's length, counted in SQL rather than by
+    materializing the rows -- which is the whole point of planning a
+    composition before fetching it.
     """
-    if not conn.in_transaction:
-        conn.execute("BEGIN DEFERRED")
-        try:
-            return read_archive_session_envelope(conn, session_id, _depth=_depth)
-        finally:
-            conn.execute("ROLLBACK")
-    conn.row_factory = sqlite3.Row
+
+    session_id: str
+    upto_position: int | None
+    upto_variant_index: int | None
+    message_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ComposedTranscriptPlan:
+    """The segment layout of a composed transcript, decided without reading rows.
+
+    #2467 stores a prefix-sharing child as its divergent tail and recomposes
+    the ancestral prefix on read. This is that recomposition decided once, in
+    SQL work proportional to the chain depth, so a caller can either
+    materialize every segment (``read_archive_session_envelope``) or fetch
+    exactly one ``[offset, offset + limit)`` window across the segments
+    (``read_archive_session_page``) from the same composition rules.
+
+    Two materializers over one plan is also what keeps a page read and a full
+    read from ever disagreeing about the transcript they describe: the
+    ordering, the branch-point cut and the truncation verdict are computed in
+    one place, not re-derived per surface.
+    """
+
+    segments: tuple[_TranscriptSegment, ...]
+    total_message_count: int
+    lineage_complete: bool
+    lineage_truncation_reason: LineageTruncationReason | None
+    lineage_inheritance: str
+    lineage_branch_point_message_id: str | None
+
+
+def _count_session_messages(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    upto_position: int | None = None,
+    upto_variant_index: int | None = None,
+) -> int:
+    """Count a session's own message rows, optionally through a branch point."""
+    upto_clause = ""
+    upto_params: tuple[int, int] | tuple[()] = ()
+    if upto_position is not None and upto_variant_index is not None:
+        upto_clause = " AND (position, variant_index) <= (?, ?)"
+        upto_params = (upto_position, upto_variant_index)
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM messages WHERE session_id = ?{upto_clause}",
+        (session_id, *upto_params),
+    ).fetchone()
+    return int(row[0])
+
+
+def _branch_point_coordinates(conn: sqlite3.Connection, branch_point_message_id: str) -> tuple[str, int, int] | None:
+    """Return ``(session_id, position, variant_index)`` for a branch-point message."""
+    row = conn.execute(
+        "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?",
+        (branch_point_message_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return (str(row["session_id"]), int(row["position"]), int(row["variant_index"]))
+
+
+def _segments_through_branch_point(
+    conn: sqlite3.Connection,
+    segments: tuple[_TranscriptSegment, ...],
+    branch_point_message_id: str,
+) -> tuple[_TranscriptSegment, ...] | None:
+    """Cut ``segments`` after the branch point, or ``None`` when it is not in them.
+
+    ``None`` is the dangling branch point: the parent message was hard-deleted,
+    or it is not part of the parent's own composed transcript. The first
+    segment that both owns the message and still contains it wins, which is
+    what scanning the composed rows in order finds -- a lineage cycle can put
+    the same session in the list more than once, and only the earliest
+    occurrence is the one a row scan would reach.
+    """
+    located = _branch_point_coordinates(conn, branch_point_message_id)
+    if located is None:
+        return None
+    owner_session_id, position, variant_index = located
+    for index, segment in enumerate(segments):
+        if segment.session_id != owner_session_id:
+            continue
+        if (
+            segment.upto_position is not None
+            and segment.upto_variant_index is not None
+            and (position, variant_index) > (segment.upto_position, segment.upto_variant_index)
+        ):
+            continue
+        return (
+            *segments[:index],
+            _TranscriptSegment(
+                session_id=owner_session_id,
+                upto_position=position,
+                upto_variant_index=variant_index,
+                message_count=_count_session_messages(
+                    conn,
+                    owner_session_id,
+                    upto_position=position,
+                    upto_variant_index=variant_index,
+                ),
+            ),
+        )
+    return None
+
+
+def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str, *, _depth: int = 0) -> _ComposedTranscriptPlan:
+    """Plan a session's composed transcript: the parent's prefix, then its own tail.
+
+    4ts.6: two paths yield an INCOMPLETE transcript -- a chain deeper than
+    ``_MAX_LINEAGE_DEPTH``, and a dangling branch point (the parent message
+    was hard-deleted, so only the child's own tail remains, starting
+    mid-conversation). Both are recorded on the plan rather than served as if
+    whole, and a parent's own incompleteness propagates up, since this
+    session's composed view contains that parent's transcript.
+    """
+    own = _TranscriptSegment(
+        session_id=session_id,
+        upto_position=None,
+        upto_variant_index=None,
+        message_count=_count_session_messages(conn, session_id),
+    )
+    edge = _prefix_sharing_edge_sync(conn, session_id)
+    if edge is None:
+        return _ComposedTranscriptPlan(
+            segments=(own,),
+            total_message_count=own.message_count,
+            lineage_complete=True,
+            lineage_truncation_reason=None,
+            lineage_inheritance="none",
+            lineage_branch_point_message_id=None,
+        )
+    parent_session_id, branch_point_message_id = edge
+    if _depth >= _MAX_LINEAGE_DEPTH:
+        logger.warning(
+            "lineage composition hit depth limit (%d) for session %s; ancestors beyond this depth are dropped",
+            _MAX_LINEAGE_DEPTH,
+            session_id,
+        )
+        return _ComposedTranscriptPlan(
+            segments=(own,),
+            total_message_count=own.message_count,
+            lineage_complete=False,
+            lineage_truncation_reason=LINEAGE_TRUNCATION_DEPTH_LIMIT,
+            lineage_inheritance="prefix-sharing",
+            lineage_branch_point_message_id=branch_point_message_id,
+        )
+    parent_plan = _composed_transcript_plan(conn, parent_session_id, _depth=_depth + 1)
+    witness_matches = _branch_point_content_address_matches(
+        conn, session_id, parent_session_id, branch_point_message_id
+    )
+    prefix = (
+        _segments_through_branch_point(conn, parent_plan.segments, branch_point_message_id) if witness_matches else None
+    )
+    segments = (*prefix, own) if prefix is not None else (own,)
+    lineage_complete = True
+    lineage_truncation_reason: LineageTruncationReason | None = None
+    # Check the parent's OWN incompleteness first: a parent truncated by the
+    # depth limit may not carry its own inherited prefix, so a branch point
+    # missing from it is a SYMPTOM of that truncation, not an independent
+    # dangling-branch-point condition. Surfacing the parent's real reason
+    # avoids masking the root cause one level up.
+    if not parent_plan.lineage_complete:
+        lineage_complete = False
+        lineage_truncation_reason = parent_plan.lineage_truncation_reason
+    elif prefix is None:
+        lineage_complete = False
+        lineage_truncation_reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
+    return _ComposedTranscriptPlan(
+        segments=segments,
+        total_message_count=sum(segment.message_count for segment in segments),
+        lineage_complete=lineage_complete,
+        lineage_truncation_reason=lineage_truncation_reason,
+        lineage_inheritance="prefix-sharing",
+        lineage_branch_point_message_id=branch_point_message_id,
+    )
+
+
+def _read_session_header_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
+    """Read the declared envelope projection for one session, or raise ``KeyError``."""
     session = conn.execute(
         f"""
         SELECT {archive_session_envelope_select_sql()}
@@ -1974,7 +2139,13 @@ def read_archive_session_envelope(
     ).fetchone()
     if session is None:
         raise KeyError(session_id)
-    working_directories = tuple(
+    if not isinstance(session, sqlite3.Row):
+        raise TypeError(f"expected sqlite3.Row for session {session_id!r}, got {type(session).__name__}")
+    return session
+
+
+def _read_session_working_directories(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
+    return tuple(
         str(row["path"])
         for row in conn.execute(
             """
@@ -1987,148 +2158,62 @@ def read_archive_session_envelope(
         ).fetchall()
     )
 
-    attachment_rows = conn.execute(
+
+def _read_orphan_attachments(conn: sqlite3.Connection, session_id: str) -> tuple[ArchiveAttachmentRow, ...]:
+    """Read a session's message-less attachment refs.
+
+    Same construction as the per-message rows -- including ``blob_hash`` and
+    the resolved ``availability``. A page read and a full read of one session
+    must not disagree about whether an attachment's bytes are present
+    (the narrower-page failure class polylogue-blpir named for the session
+    projection).
+    """
+    rows = conn.execute(
         """
-        SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
-               a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
-               a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
-               r.upload_origin AS upload_origin, r.direction AS direction, r.producer_ref AS producer_ref,
-               r.source_url AS source_url, r.caption AS caption
+        SELECT a.attachment_id AS attachment_id, a.display_name AS display_name, a.media_type AS media_type,
+               a.byte_count AS byte_count, a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
+               r.upload_origin AS upload_origin, r.direction AS direction,
+               r.producer_ref AS producer_ref, r.source_url AS source_url,
+               r.caption AS caption
         FROM attachment_refs r
         JOIN attachments a ON a.attachment_id = r.attachment_id
-        WHERE r.session_id = ?
-        ORDER BY r.message_id, a.attachment_id
+        WHERE r.session_id = ? AND r.message_id IS NULL
+        ORDER BY a.attachment_id
         """,
         (session_id,),
     ).fetchall()
-    attachments_by_message: dict[str | None, list[ArchiveAttachmentRow]] = {}
-    for attachment in attachment_rows:
-        attachments_by_message.setdefault(attachment["message_id"], []).append(
-            ArchiveAttachmentRow(
-                attachment_id=attachment["attachment_id"],
-                message_id=attachment["message_id"],
-                display_name=attachment["display_name"],
-                media_type=attachment["media_type"],
-                byte_count=int(attachment["byte_count"] or 0),
-                upload_origin=attachment["upload_origin"],
-                direction=attachment["direction"],
-                producer_ref=attachment["producer_ref"],
-                source_url=attachment["source_url"],
-                caption=attachment["caption"],
-                blob_hash=bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
-                acquisition_status=attachment["acquisition_status"],
-                availability=_attachment_availability(
-                    bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
-                    attachment["acquisition_status"],
-                ),
-            )
-        )
+    return tuple(_archive_attachment_row(row, message_id=None) for row in rows)
 
-    message_rows = conn.execute(
-        f"""
-        SELECT {archive_message_row_select_sql()}
-        FROM messages
-        WHERE session_id = ?
-        ORDER BY position, variant_index
-        """,
-        (session_id,),
-    ).fetchall()
-    messages: list[ArchiveMessageRow] = []
-    for message in message_rows:
-        block_rows = conn.execute(
-            f"""
-            SELECT {archive_block_row_select_sql()}
-            FROM blocks
-            WHERE message_id = ?
-            ORDER BY position
-            """,
-            (message["message_id"],),
-        ).fetchall()
-        messages.append(
-            ArchiveMessageRow(
-                message_id=message["message_id"],
-                native_id=message["native_id"],
-                role=message["role"],
-                position=message["position"],
-                variant_index=message["variant_index"],
-                is_active_path=bool(message["is_active_path"]),
-                is_active_leaf=bool(message["is_active_leaf"]),
-                blocks=tuple(archive_block_row(block) for block in block_rows),
-                message_type=message["message_type"],
-                material_origin=message["material_origin"],
-                word_count=int(message["word_count"] or 0),
-                has_tool_use=bool(message["has_tool_use"]),
-                has_thinking=bool(message["has_thinking"]),
-                has_paste=bool(message["has_paste"]),
-                paste_boundary_state=message["paste_boundary_state"],
-                occurred_at=_iso_from_ms(message["occurred_at_ms"]),
-                duration_ms=int(message["duration_ms"] or 0),
-                parent_message_id=message["parent_message_id"],
-                attachments=tuple(attachments_by_message.get(message["message_id"], ())),
-                source_session_id=str(session["session_id"]),
-                stop_reason=message["stop_reason"],
-            )
-        )
 
-    # Lineage composition (#2467): prepend the parent's composed transcript up to
-    # and including the branch point. The parent envelope is itself composed via
-    # this same recursion, so nested lineages resolve correctly.
-    #
-    # 4ts.6: two paths silently return an INCOMPLETE transcript with no signal
-    # -- a depth-limit cutoff (a chain deeper than _MAX_LINEAGE_DEPTH) and a
-    # dangling branch point (the parent message was hard-deleted, so the
-    # child's own tail is returned starting mid-conversation). Track both and
-    # surface them on the envelope rather than silently serving a partial
-    # transcript as if it were whole. A parent's own incompleteness (from a
-    # DEEPER recursion level) also propagates up, since this session's
-    # composed view includes that parent's transcript.
-    lineage_complete = True
-    lineage_truncation_reason: LineageTruncationReason | None = None
-    lineage_inheritance = "none"
-    lineage_branch_point_message_id: str | None = None
-    edge = _prefix_sharing_edge_sync(conn, str(session["session_id"]))
-    if edge is not None:
-        lineage_inheritance = "prefix-sharing"
-        parent_session_id, lineage_branch_point_message_id = edge
-        if _depth >= _MAX_LINEAGE_DEPTH:
-            lineage_complete = False
-            lineage_truncation_reason = LINEAGE_TRUNCATION_DEPTH_LIMIT
-            logger.warning(
-                "lineage composition hit depth limit (%d) for session %s; ancestors beyond this depth are dropped",
-                _MAX_LINEAGE_DEPTH,
-                session["session_id"],
-            )
-        else:
-            parent_envelope = read_archive_session_envelope(conn, parent_session_id, _depth=_depth + 1)
-            parent_messages = parent_envelope.messages
-            prefix: list[ArchiveMessageRow] = []
-            witness_matches = _branch_point_content_address_matches(
-                conn, str(session["session_id"]), parent_session_id, lineage_branch_point_message_id
-            )
-            found = False
-            for parent_message in parent_messages:
-                prefix.append(parent_message)
-                if parent_message.message_id == lineage_branch_point_message_id:
-                    found = witness_matches
-                    break
-            # Dangling branch point (parent message hard-deleted): keep this
-            # session's own tail rather than splice the entire parent (#2467 audit).
-            if found:
-                messages = prefix + messages
-            # Check the parent's OWN incompleteness first: if the parent was
-            # already truncated (e.g. by the depth limit), its composed
-            # messages may not include its own inherited prefix, so a
-            # not-found branch point here is a SYMPTOM of that truncation,
-            # not an independent dangling-branch-point condition. Surfacing
-            # the parent's real reason (not a locally-derived one) avoids
-            # masking the root cause one level up.
-            if not parent_envelope.lineage_complete:
-                lineage_complete = False
-                lineage_truncation_reason = parent_envelope.lineage_truncation_reason
-            elif not found:
-                lineage_complete = False
-                lineage_truncation_reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
+def _archive_attachment_row(row: sqlite3.Row, *, message_id: str | None) -> ArchiveAttachmentRow:
+    blob_hash = bytes(row["blob_hash"]) if row["blob_hash"] is not None else None
+    return ArchiveAttachmentRow(
+        attachment_id=row["attachment_id"],
+        message_id=message_id,
+        display_name=row["display_name"],
+        media_type=row["media_type"],
+        byte_count=int(row["byte_count"] or 0),
+        upload_origin=row["upload_origin"],
+        direction=row["direction"],
+        producer_ref=row["producer_ref"],
+        source_url=row["source_url"],
+        caption=row["caption"],
+        blob_hash=blob_hash,
+        acquisition_status=row["acquisition_status"],
+        availability=_attachment_availability(blob_hash, row["acquisition_status"]),
+    )
 
+
+def _composed_session_envelope(
+    session: sqlite3.Row,
+    *,
+    plan: _ComposedTranscriptPlan,
+    messages: tuple[ArchiveMessageRow, ...],
+    working_directories: tuple[str, ...],
+    orphan_attachments: tuple[ArchiveAttachmentRow, ...],
+    total_message_count: int | None,
+) -> ArchiveSessionEnvelope:
+    """Assemble one envelope from a session header and a materialized plan."""
     return ArchiveSessionEnvelope(
         session_id=session["session_id"],
         native_id=session["native_id"],
@@ -2136,11 +2221,11 @@ def read_archive_session_envelope(
         title=session["title"],
         session_kind=session["session_kind"],
         active_leaf_message_id=session["active_leaf_message_id"],
-        messages=tuple(messages),
-        lineage_complete=lineage_complete,
-        lineage_truncation_reason=lineage_truncation_reason,
-        lineage_inheritance=lineage_inheritance,
-        lineage_branch_point_message_id=lineage_branch_point_message_id,
+        messages=messages,
+        lineage_complete=plan.lineage_complete,
+        lineage_truncation_reason=plan.lineage_truncation_reason,
+        lineage_inheritance=plan.lineage_inheritance,
+        lineage_branch_point_message_id=plan.lineage_branch_point_message_id,
         parent_session_id=session["parent_session_id"],
         root_session_id=session["root_session_id"],
         branch_type=session["branch_type"],
@@ -2155,8 +2240,128 @@ def read_archive_session_envelope(
         git_repository_url=session["git_repository_url"],
         provider_project_ref=session["provider_project_ref"],
         reported_cost_usd=session["reported_cost_usd"],
-        orphan_attachments=tuple(attachments_by_message.get(None, ())),
+        orphan_attachments=orphan_attachments,
+        total_message_count=total_message_count,
     )
+
+
+def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> ArchiveSessionEnvelope:
+    """Read a compact archive envelope, holding one read snapshot across composition.
+
+    For a prefix-sharing lineage child (#2467) the inherited prefix is not stored
+    under this session; the returned ``messages`` compose the parent's transcript
+    up to the branch point followed by this session's own messages, so reads see
+    the full logical transcript while storage holds each message once.
+
+    Composition issues multiple autocommit SELECTs across a recursive parent
+    walk (own read -> edge read -> recursive parent read). Without a held
+    transaction, a concurrent parent re-ingest between those reads can yield a
+    torn transcript (4ts.4). If ``conn`` is not already inside a transaction
+    (e.g. a caller-held write transaction), this wraps the whole composition
+    in one deferred read transaction so every SELECT sees the same snapshot;
+    the recursive call sees ``conn.in_transaction`` already true and skips
+    re-wrapping.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN DEFERRED")
+        try:
+            return read_archive_session_envelope(conn, session_id)
+        finally:
+            conn.execute("ROLLBACK")
+    conn.row_factory = sqlite3.Row
+    session = _read_session_header_row(conn, session_id)
+    plan = _composed_transcript_plan(conn, session_id)
+    messages: list[ArchiveMessageRow] = []
+    for segment in plan.segments:
+        messages.extend(
+            _fetch_session_rows(
+                conn,
+                segment.session_id,
+                upto_position=segment.upto_position,
+                upto_variant_index=segment.upto_variant_index,
+            )
+        )
+    return _composed_session_envelope(
+        session,
+        plan=plan,
+        messages=tuple(messages),
+        working_directories=_read_session_working_directories(conn, session_id),
+        orphan_attachments=_read_orphan_attachments(conn, session_id),
+        # An unbounded read already holds every composed message, so the
+        # bounded-page count stays absent (see ``ArchiveSessionEnvelope``).
+        total_message_count=None,
+    )
+
+
+def _fetch_session_rows(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    upto_position: int | None = None,
+    upto_variant_index: int | None = None,
+) -> list[ArchiveMessageRow]:
+    """Every row one session contributes to a composed transcript, in order.
+
+    The unbounded materializer for one ``_TranscriptSegment``. It keeps the
+    per-message blocks read rather than the batched ``IN (...)`` form
+    ``_fetch_message_window`` uses, because a segment is an entire session and
+    a single ``IN`` list over its messages would run into SQLite's host
+    parameter ceiling on a large one.
+    """
+    attachment_rows = conn.execute(
+        """
+        SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
+               a.display_name AS display_name, a.media_type AS media_type, a.byte_count AS byte_count,
+               a.blob_hash AS blob_hash, a.acquisition_status AS acquisition_status,
+               r.upload_origin AS upload_origin, r.direction AS direction, r.producer_ref AS producer_ref,
+               r.source_url AS source_url, r.caption AS caption
+        FROM attachment_refs r
+        JOIN attachments a ON a.attachment_id = r.attachment_id
+        WHERE r.session_id = ? AND r.message_id IS NOT NULL
+        ORDER BY r.message_id, a.attachment_id
+        """,
+        (session_id,),
+    ).fetchall()
+    attachments_by_message: dict[str, list[ArchiveAttachmentRow]] = {}
+    for attachment in attachment_rows:
+        attachments_by_message.setdefault(attachment["message_id"], []).append(
+            _archive_attachment_row(attachment, message_id=attachment["message_id"])
+        )
+
+    upto_clause = ""
+    upto_params: tuple[int, int] | tuple[()] = ()
+    if upto_position is not None and upto_variant_index is not None:
+        upto_clause = " AND (position, variant_index) <= (?, ?)"
+        upto_params = (upto_position, upto_variant_index)
+    message_rows = conn.execute(
+        f"""
+        SELECT {archive_message_row_select_sql()}
+        FROM messages
+        WHERE session_id = ?{upto_clause}
+        ORDER BY position, variant_index
+        """,
+        (session_id, *upto_params),
+    ).fetchall()
+    rows: list[ArchiveMessageRow] = []
+    for message in message_rows:
+        block_rows = conn.execute(
+            f"""
+            SELECT {archive_block_row_select_sql()}
+            FROM blocks
+            WHERE message_id = ?
+            ORDER BY position
+            """,
+            (message["message_id"],),
+        ).fetchall()
+        rows.append(
+            _row_to_archive_message(
+                message,
+                session_id,
+                blocks=tuple(archive_block_row(block) for block in block_rows),
+                attachments=tuple(attachments_by_message.get(message["message_id"], ())),
+            )
+        )
+    return rows
 
 
 def _row_to_archive_message(
@@ -2198,32 +2403,30 @@ def _fetch_message_window(
     *,
     offset: int,
     limit: int,
-    upto_position: int | None = None,
-    upto_variant_index: int | None = None,
 ) -> list[ArchiveMessageRow]:
     """Bounded ``[offset, offset + limit)`` window of a session's OWN rows.
 
     Batches block/attachment reads for exactly the returned messages instead
-    of the full session's N+1-per-message pattern in
-    ``read_archive_session_envelope``, since the window is small by
-    construction (``read_archive_session_page``'s whole point).
+    of the full session's N+1-per-message pattern in ``_fetch_session_rows``,
+    since the window is small by construction (``read_archive_session_page``'s
+    whole point).
+
+    It takes no branch-point bound: a ``_TranscriptSegment`` already counted
+    the rows it contributes, and since a bounded segment is a prefix of this
+    session's own ordering, a window that stays inside that count can never
+    reach a row past the branch point.
     """
     if limit <= 0:
         return []
-    upto_clause = ""
-    upto_params: tuple[int, int] | tuple[()] = ()
-    if upto_position is not None and upto_variant_index is not None:
-        upto_clause = " AND (position, variant_index) <= (?, ?)"
-        upto_params = (upto_position, upto_variant_index)
     message_rows = conn.execute(
         f"""
         SELECT {archive_message_row_select_sql()}
         FROM messages
-        WHERE session_id = ?{upto_clause}
+        WHERE session_id = ?
         ORDER BY position, variant_index
         LIMIT ? OFFSET ?
         """,
-        (session_id, *upto_params, max(limit, 0), max(offset, 0)),
+        (session_id, max(limit, 0), max(offset, 0)),
     ).fetchall()
     if not message_rows:
         return []
@@ -2288,6 +2491,38 @@ def _fetch_message_window(
     ]
 
 
+def _fetch_planned_window(
+    conn: sqlite3.Connection,
+    segments: tuple[_TranscriptSegment, ...],
+    *,
+    offset: int,
+    limit: int,
+) -> list[ArchiveMessageRow]:
+    """Fetch ``[offset, offset + limit)`` of a composed transcript.
+
+    The plan already knows each segment's length, so the window is mapped onto
+    the one or two segments it actually intersects and every other segment is
+    skipped without reading a row. SQL work is proportional to ``limit`` and
+    the chain depth, never to the composed transcript length.
+    """
+    if limit <= 0:
+        return []
+    remaining_offset = max(offset, 0)
+    remaining = limit
+    window: list[ArchiveMessageRow] = []
+    for segment in segments:
+        if remaining <= 0:
+            break
+        if remaining_offset >= segment.message_count:
+            remaining_offset -= segment.message_count
+            continue
+        take = min(remaining, segment.message_count - remaining_offset)
+        window.extend(_fetch_message_window(conn, segment.session_id, offset=remaining_offset, limit=take))
+        remaining -= take
+        remaining_offset = 0
+    return window
+
+
 def read_archive_session_page(
     conn: sqlite3.Connection,
     session_id: str,
@@ -2297,24 +2532,22 @@ def read_archive_session_page(
 ) -> ArchiveSessionEnvelope:
     """Read a bounded ``[offset, offset + limit)`` PAGE of a session's transcript.
 
-    For an ordinary (non-lineage) session this composes only the requested
-    message window at the SQL layer -- header, that window's messages, their
-    blocks/attachments, and orphan attachments -- so first paint of a large
-    session is bounded by the page size, not the session's total message
-    count (polylogue-07g6).
+    The page composes only the requested window at the SQL layer -- header,
+    that window's messages, their blocks/attachments, and orphan attachments
+    -- so first paint is bounded by the page size rather than the session's
+    total message count (polylogue-07g6).
 
-    A prefix-sharing lineage child (#2467) still requires the full composed
-    parent-prefix + own-tail transcript to slice a display window correctly,
-    since the child's own rows are only its divergent tail -- the exact same
-    constraint ``get_messages_paginated`` already documents and accepts for
-    the DB-backed reader (#2470). This mirrors that established fallback
-    (full composition, sliced in Python) rather than inventing a different
-    contract for the archive-backed reader; genuinely bounding the lineage
-    case is tracked as a follow-up.
+    That bound holds for a prefix-sharing lineage child too (polylogue-0le8d).
+    The child's own rows are only its divergent tail, but
+    ``_composed_transcript_plan`` resolves the ancestral prefix into segment
+    lengths without reading a row, so the window is fetched from the one or
+    two segments it intersects. A deep chain costs one plan per ancestor, not
+    one full ancestral transcript.
 
     ``total_message_count`` on the returned envelope always carries the TRUE
-    composed transcript length; ``messages`` holds only the requested
-    window.
+    composed transcript length; ``messages`` holds only the requested window.
+    A negative ``offset`` is clamped to zero rather than wrapping a window
+    onto the end of the transcript.
     """
     if not conn.in_transaction:
         conn.execute("BEGIN DEFERRED")
@@ -2323,97 +2556,15 @@ def read_archive_session_page(
         finally:
             conn.execute("ROLLBACK")
     conn.row_factory = sqlite3.Row
-
-    if _prefix_sharing_edge_sync(conn, session_id) is not None:
-        full = read_archive_session_envelope(conn, session_id)
-        window = full.messages[offset : offset + limit] if limit > 0 else ()
-        return replace(full, messages=window, total_message_count=len(full.messages))
-
-    # The same declared projection the unbounded read uses: a hand-written
-    # column list here silently produced a narrower page envelope than the
-    # full read for the same session (polylogue-blpir).
-    session = conn.execute(
-        f"""
-        SELECT {archive_session_envelope_select_sql()}
-        FROM sessions
-        WHERE session_id = ?
-        """,
-        (session_id,),
-    ).fetchone()
-    if session is None:
-        raise KeyError(session_id)
-    working_directories = tuple(
-        str(row["path"])
-        for row in conn.execute(
-            """
-            SELECT path
-            FROM session_working_dirs
-            WHERE session_id = ?
-            ORDER BY position, path
-            """,
-            (session_id,),
-        ).fetchall()
-    )
-    total_message_count = int(
-        conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
-    )
-    messages = _fetch_message_window(conn, session_id, offset=offset, limit=limit)
-    orphan_attachment_rows = conn.execute(
-        """
-        SELECT a.attachment_id AS attachment_id, a.display_name AS display_name, a.media_type AS media_type,
-               a.byte_count AS byte_count, r.upload_origin AS upload_origin, r.direction AS direction,
-               r.producer_ref AS producer_ref, r.source_url AS source_url,
-               r.caption AS caption
-        FROM attachment_refs r
-        JOIN attachments a ON a.attachment_id = r.attachment_id
-        WHERE r.session_id = ? AND r.message_id IS NULL
-        ORDER BY a.attachment_id
-        """,
-        (session_id,),
-    ).fetchall()
-    orphan_attachments = tuple(
-        ArchiveAttachmentRow(
-            attachment_id=row["attachment_id"],
-            message_id=None,
-            display_name=row["display_name"],
-            media_type=row["media_type"],
-            byte_count=int(row["byte_count"] or 0),
-            upload_origin=row["upload_origin"],
-            direction=row["direction"],
-            producer_ref=row["producer_ref"],
-            source_url=row["source_url"],
-            caption=row["caption"],
-        )
-        for row in orphan_attachment_rows
-    )
-    return ArchiveSessionEnvelope(
-        session_id=session["session_id"],
-        native_id=session["native_id"],
-        origin=session["origin"],
-        title=session["title"],
-        session_kind=session["session_kind"],
-        active_leaf_message_id=session["active_leaf_message_id"],
-        messages=tuple(messages),
-        lineage_complete=True,
-        lineage_truncation_reason=None,
-        lineage_inheritance="none",
-        lineage_branch_point_message_id=None,
-        parent_session_id=session["parent_session_id"],
-        root_session_id=session["root_session_id"],
-        branch_type=session["branch_type"],
-        title_source=session["title_source"],
-        title_ref=session["title_ref"],
-        display_name=session["display_name"],
-        instructions_text=session["instructions_text"],
-        created_at=_iso_from_ms(session["created_at_ms"]),
-        updated_at=_iso_from_ms(session["updated_at_ms"]),
-        working_directories=working_directories,
-        git_branch=session["git_branch"],
-        git_repository_url=session["git_repository_url"],
-        provider_project_ref=session["provider_project_ref"],
-        reported_cost_usd=session["reported_cost_usd"],
-        orphan_attachments=orphan_attachments,
-        total_message_count=total_message_count,
+    session = _read_session_header_row(conn, session_id)
+    plan = _composed_transcript_plan(conn, session_id)
+    return _composed_session_envelope(
+        session,
+        plan=plan,
+        messages=tuple(_fetch_planned_window(conn, plan.segments, offset=offset, limit=limit)),
+        working_directories=_read_session_working_directories(conn, session_id),
+        orphan_attachments=_read_orphan_attachments(conn, session_id),
+        total_message_count=plan.total_message_count,
     )
 
 
@@ -5213,10 +5364,18 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
             """
             UPDATE session_links
                SET branch_point_message_id = ?,
+                   branch_point_content_address = ?,
                    inheritance = 'prefix-sharing'
              WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
             """,
-            (bound, src_session_id, dst_origin, dst_native_id, link_type),
+            (
+                bound,
+                _message_content_address_for_id(conn, bound),
+                src_session_id,
+                dst_origin,
+                dst_native_id,
+                link_type,
+            ),
         )
 
 
@@ -5324,14 +5483,18 @@ def _write_session_link(
     if asserted_branch_point:
         evidence[ASSERTED_BRANCH_POINT_EVIDENCE_KEY] = asserted_branch_point
         if branch_point_message_id is None:
-            # ``branch_point_content_address`` stays NULL: it is the staleness
-            # witness for a prefix this child stores a tail of, and an asserted
-            # branch point comes with no such prefix.
             branch_point_message_id = _bind_asserted_branch_point(
                 conn,
                 _existing_parent_session_id(conn, session, origin),
                 asserted_branch_point,
             )
+            if branch_point_message_id is not None:
+                # The staleness witness records which parent content this edge
+                # was bound against. That is as true of an assertion as of a
+                # measured alignment: the composed read splices the parent's
+                # prefix in either case, so an edge with no witness is one whose
+                # prefix can silently drift underneath it.
+                branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
         # ``fork-context-ref`` children do not replay the parent's prefix, but
         # their effective context is still the parent's transcript through the
         # provider-asserted branch point. Mark a successfully bound assertion
