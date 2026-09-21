@@ -633,13 +633,6 @@ def backfill_subcommand(
         raise click.Abort()
     index_db = location.active_index_path
 
-    if rebuild:
-        from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
-
-        mark_all_archive_sessions_needs_reindex(
-            index_db, embeddings_db_path=location.active_tier("embeddings").configured_path
-        )
-
     embeddings_db = location.active_tier("embeddings").configured_path
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -654,6 +647,21 @@ def backfill_subcommand(
     if vec_provider is None:
         click.echo("Error: vector provider unavailable (sqlite-vec or voyage init failed).", err=True)
         raise click.Abort()
+
+    # AFTER the tier open and the provider, never before (polylogue-d02y8 AC2).
+    # ``--rebuild`` is a second write: it marks every session needs-reindex so
+    # the loop below re-embeds them. Running it first meant an abort between
+    # the mark and the loop -- an uninitialized embeddings tier, or a provider
+    # that failed to construct because sqlite-vec is missing or the Voyage key
+    # is rejected, both of which are the ordinary way this command fails --
+    # left the whole archive marked stale with nothing written and no run
+    # ledger row, and the only route back was another successful backfill.
+    # Ordering it here does not make the pair atomic; it removes the two
+    # failure modes that reach it before a single embedding could be produced.
+    if rebuild:
+        from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
+
+        mark_all_archive_sessions_needs_reindex(index_db, embeddings_db_path=embeddings_db)
 
     payload = _run_archive_backfill(
         env,

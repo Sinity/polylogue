@@ -1,9 +1,12 @@
 """Transport-only stdlib UDS client for the declared daemon operation protocol.
 
 The public surface is deliberately the operation vocabulary and nothing else:
-:meth:`DaemonClient.operation`, the control verbs built on it, and the one
-named read fallback.  There is no way to ask this client for an arbitrary
-daemon HTTP path, because the CLI rewrite's contract is that the warm path
+:meth:`DaemonClient.operation` and the control verbs built on it.  It offers
+no local execution route: ``operation_with_read_fallback`` -- which ran
+``execute_operation`` in the caller's process against a locally opened
+``ArchiveStore`` when no socket answered -- had no production caller and is
+deleted (polylogue-3eexy AC3).  There is no way to ask this client for an
+arbitrary daemon HTTP path, because the CLI rewrite's contract is that the warm path
 speaks the archive-scoped operation protocol and never a browser route or a
 separate liveness probe.  A generic ``request_json(method, path, ...)`` used
 to sit here with no production caller, which made "the CLI issues no health
@@ -23,10 +26,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from polylogue.operations.operation_context import OperationContext
+from typing import Any
 
 from polylogue.operations.daemon_errors import (
     DaemonMutationIndeterminateError,
@@ -386,41 +386,6 @@ class DaemonClient:
             {"request_id": request_id},
             archive_root=archive_root,
         )
-
-    def operation_with_read_fallback(
-        self,
-        operation: str,
-        payload: dict[str, object] | None = None,
-        *,
-        context: OperationContext,
-    ) -> dict[str, Any]:
-        """Use the pinned reader only when the socket is absent.
-
-        This fallback is deliberately named and scoped as a read fallback.
-        ``operation()`` is the only route for writes; keeping the old generic
-        name made it too easy for a new CLI adapter to mistake this for an
-        offline mutation escape hatch.
-        """
-        from polylogue.operations.daemon_execution import execute_operation
-
-        spec = daemon_operation_spec(operation)
-        if spec is None:
-            raise DaemonOperationProtocolError(f"operation is not declared: {operation}")
-        response = self.operation(operation, payload, archive_root=str(context.archive_root))
-        if response is not None:
-            return response
-        if not spec.direct_allowed or context.serving_identity != "direct" or context.runtime is not None:
-            raise DaemonOperationRejected("daemon-required", "daemon is required for this operation")
-        request = DaemonOperationRequest.from_dict(
-            {
-                "protocol": DAEMON_OPERATION_PROTOCOL,
-                "operation": operation,
-                "payload": payload or {},
-                "archive_root": str(context.archive_root),
-                "request_id": uuid.uuid4().hex,
-            }
-        )
-        return execute_operation(request, context).to_dict()
 
     def await_operation(
         self,

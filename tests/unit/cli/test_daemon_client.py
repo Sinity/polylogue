@@ -81,13 +81,25 @@ def test_daemon_client_import_does_not_load_storage() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_client_exposes_no_generic_offline_operation_fallback() -> None:
-    """The only local fallback is named and constrained to read operations."""
+def test_client_exposes_no_offline_operation_fallback_at_all() -> None:
+    """The transport has no local execution route, named or generic.
+
+    It used to carry ``operation_with_read_fallback``, which ran
+    ``execute_operation`` in the caller's process against a locally opened
+    ``ArchiveStore`` whenever no socket answered. It had no production caller
+    at any point after the CLI kernel took over dispatch, so it was a second
+    execution mode reachable only by a new adapter that found it -- exactly
+    the shape the sole-writer programme removes (polylogue-3eexy AC3).
+
+    Anti-vacuity: restore either name and this is red. Asserting only the
+    absence of ``operation_with_direct_fallback``, as this did before, passes
+    with the read fallback still present.
+    """
 
     from polylogue.daemon_client import DaemonClient
 
     assert not hasattr(DaemonClient, "operation_with_direct_fallback")
-    assert hasattr(DaemonClient, "operation_with_read_fallback")
+    assert not hasattr(DaemonClient, "operation_with_read_fallback")
 
 
 def test_client_exposes_no_arbitrary_daemon_http_route() -> None:
