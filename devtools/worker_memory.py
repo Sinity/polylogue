@@ -14,6 +14,7 @@ budget is what matters when workers start.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Final
@@ -30,6 +31,7 @@ __all__ = [
     "ChargeProfile",
     "available_memory_mib",
     "cgroup_available_mib",
+    "corroborate_profile",
     "memory_bounded_worker_cap",
     "pytest_slot_available_mib",
     "resize_worker_argument",
@@ -39,38 +41,69 @@ __all__ = [
 #: A worker's own allocations at peak, in MiB -- ANONYMOUS memory only, which
 #: is what a process-level RSS/PSS sampler reports.
 #:
-#: Measured 2026-09-20 with the suite-cost sampler over 3,318 node IDs / 9,954
-#: outcomes in one directory: ``peak_rss_kib 595684`` (582 MiB), with the slot
-#: telemetry's peak private at 683 MiB. The trajectory PLATEAUS -- 250 tests
-#: 423.1 MiB, 1,250 tests 541.6, 2,000 tests 581.7, 3,318 tests 581.1 -- so
-#: growth is roughly 53 KiB/test to ~2,000 tests and flat after that. The
-#: import floor therefore DOMINATES the peak, and trimming imports IS a lever
-#: on width. (The superseded comment here claimed the opposite, that only
-#: ~420 MiB was floor and "the rest grows with tests executed"; the plateau
-#: falsifies it.)
+#: Measured 2026-09-21 by reading the slot sampler back against the complete
+#: corpus run it sized (receipt
+#: ``.cache/verify/runs/20260921T010003Z-all-2490183-814ed21d``, width 2,
+#: 23,526 collected, 9,783 s, no pressure kill). The two xdist workers peaked
+#: at ``peak_private_kib`` 4,724 MiB (15,416 tests executed) and 4,481 MiB
+#: (8,109 tests), with ``peak_rss_kib`` only 15-20 MiB above each -- so a
+#: worker's charge is anonymous memory almost entirely.
 #:
-#: 700 rather than the measured 582: an xdist worker collects the whole corpus
-#: before running its own share, so a full-corpus worker carries the import
-#: floor of all ~1,256 test modules while the measured selection carried one
-#: directory's. The measurement is a floor for this constant, not a drop-in.
-WORKER_PEAK_ANON_MIB = 700
+#: This SUPERSEDES 700, which was the whole-corpus COLLECTION floor mistaken
+#: for the peak. That floor is real and still measurable -- ``devtools bench
+#: collection`` reports 583.5 MiB RSS for 23,528 collected at 0b1e99d69 -- but
+#: it is 12% of what a worker reaches once it runs its share. The superseded
+#: comment here claimed the trajectory PLATEAUS near 582 MiB and that "the
+#: import floor therefore DOMINATES the peak"; that plateau was an artifact of
+#: measuring one directory (3,318 node IDs). Over 15,416 executed tests the
+#: worker climbs 4.1 GiB above the floor, so import trimming is NOT the lever
+#: on width -- what a worker accumulates while running tests is.
+#:
+#: Taken at the widest per-worker observation rather than the mean. The peak
+#: is not width-independent (a worker runs corpus/width tests, and this term
+#: grows with tests executed), so charging every width the width-2 peak
+#: overestimates at width 3+ -- in the safe direction, which is the direction
+#: ``width_within`` must err.
+WORKER_PEAK_ANON_MIB = 4750
 #: What the same worker charges the cgroup BESIDES its anonymous memory, in
-#: MiB: page cache and slab. It belongs in the model because ``memory.high``
-#: charges it -- see :class:`ChargeProfile`.
+#: MiB: mapped page cache and slab. It stays in the model because
+#: ``memory.high`` charges it -- see :class:`ChargeProfile` -- but it is a
+#: small term, not the dominant one.
 #:
-#: Derived 2026-09-20 from the 09-17 run held at width 3, which sat pinned at
-#: ~11.5 GiB of charge against a 12 GiB ceiling: 11,776 - 1,075 (controller)
-#: - 3 * 700 (worker anon) = 8,601 MiB of non-anon over three workers, i.e.
-#: ~2,867 each, taken here at 2,850. It is large because the corpus writes
-#: 47-55 GB of scratch SQLite per run and the page cache from its own writes
-#: expands toward whatever the ceiling allows.
+#: Measured 2026-09-21 from the same receipt: ``peak_rss_kib -
+#: peak_private_kib`` is 15 MiB and 20 MiB for the two workers, against 98 GiB
+#: of scratch SQLite written during the run (suite-cost receipt
+#: ``write_bytes`` 105,337,847,808). The writes do not accumulate as charged
+#: cache for this process group.
 #:
-#: This is the term to attack, not the ceiling: capping the scratch page cache
-#: (``fadvise(DONTNEED)``/``sync_file_range`` on discarded basetemps, or a
-#: ``memory.low`` split) recovers width without renegotiating any budget.
-WORKER_PEAK_CACHE_MIB = 2850
+#: This SUPERSEDES 2850, which was never measured: it was back-solved as the
+#: residual of ``11,776 - 1,075 - 3 * 700`` from the 2026-09-17 width-3 run
+#: and therefore absorbed the anonymous-memory underestimate above. With the
+#: anon term corrected the residual closes without it: that run's ~11,776 MiB
+#: less an 869 MiB controller is ~3,636 MiB per worker at 7,842 tests each,
+#: consistent with 4,724 MiB at 15,416 tests. Nothing is left over for
+#: gigabytes of page cache.
+#:
+#: Consequently the remedy the superseded comment named -- capping the scratch
+#: page cache with ``fadvise(DONTNEED)``/``sync_file_range`` on discarded
+#: basetemps, or a ``memory.low`` split -- is REJECTED: it attacks ~20 MiB per
+#: worker, not 2,850. The term to attack, if width is wanted, is what a worker
+#: retains across 15,000 executed tests.
+#:
+#: LIMIT of this measurement, stated rather than implied: ``smaps_rollup``
+#: sees only cache a process still maps. Cache the cgroup charges for files no
+#: process maps is invisible to it, so this is a floor for the cgroup's file
+#: charge, not a proof of its total. It is the residual arithmetic above, not
+#: the sampler alone, that rules out a large hidden term.
+#: :func:`corroborate_profile` re-runs this comparison on every future run so
+#: the constant stops being a single observation nothing reads back.
+WORKER_PEAK_CACHE_MIB = 25
 #: The xdist controller at peak, in MiB. It collects the corpus but runs no
 #: tests and writes no scratch databases, so it is carried as anon alone.
+#:
+#: Measured 869 MiB RSS / 852 MiB private in the 2026-09-21 receipt. Left at
+#: 1075: it is already conservative against measurement, and narrowing it
+#: would widen admission on the strength of one observation.
 CONTROLLER_PEAK_MIB = 1075
 #: The pytest pool's soft ceiling: ``agentctl-pytest.slice`` MemoryHigh, with a
 #: MemoryMax above it and no swap. Above the soft ceiling the kernel does not
@@ -152,11 +185,12 @@ class ChargeProfile:
 
         The margin is worth reading, not just recording: ``width_within``
         deliberately holds nothing back beyond the controller, so the chosen
-        width fills the ceiling. At the 2026-09-20 profile and a 12 GiB
-        ``memory.high`` that is 11,725 MiB predicted at width 3 -- a 563 MiB,
-        4.6% margin, which is the condition the 2026-09-17 run stalled in
-        (~11.5 GiB of charge at width 3, pinned at ``memory.high``, throttled
-        into continuous reclaim). Widening the margin is a Sinnix change to
+        width fills the ceiling. Under the superseded 2026-09-20 constants a
+        12 GiB ``memory.high`` predicted 11,725 MiB at width 3 -- a 4.6%
+        margin -- and admitted it; the 2026-09-17 run at that width stalled
+        pinned at ``memory.high``, throttled into continuous reclaim. The
+        2026-09-21 constants predict 15,400 MiB for the same width and refuse
+        it, which is the correction. Widening the margin is a Sinnix change to
         the slice budget, not an arithmetic change here.
         """
         predicted = self.charge_mib(workers)
@@ -195,6 +229,69 @@ def width_within(budget_mib: float, *, profile: ChargeProfile = MEASURED_CHARGE)
 #: beside them, so an idle slice yields exactly this many workers and the live
 #: bounds below narrow only a slice that is already occupied.
 CORPUS_MAX_WORKERS = width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)
+
+
+def corroborate_profile(
+    memory: Mapping[str, Any] | None,
+    sizing: Mapping[str, Any] | None,
+    *,
+    profile: ChargeProfile = MEASURED_CHARGE,
+) -> dict[str, Any] | None:
+    """Read the run's own sampler back against the profile that sized it.
+
+    Every constant above is a measurement taken once. Until this existed
+    nothing compared them to what the next run actually took, so
+    :data:`WORKER_PEAK_CACHE_MIB` sat at a value back-solved from a single
+    2026-09-17 residual for four days while real workers charged the slice
+    differently -- and the receipt that would have shown it was written and
+    never read. This turns every managed run into a falsification of the
+    profile it was admitted under, recorded beside the width it chose.
+
+    The comparison is deliberately between a *predicted charge* and what the
+    sampler saw, with the sampler's own limit named in the result rather than
+    silently absorbed: ``smaps_rollup`` reports only cache a process still
+    maps, so ``observed_worker_file_mib`` is a floor for the cgroup's file
+    charge, not its total. ``observed_worker_anon_mib`` has no such caveat --
+    it is exactly the quantity :attr:`ChargeProfile.worker_anon_mib` claims to
+    bound, taken at the largest single process so one over-large worker cannot
+    be averaged away.
+
+    ``None`` when there is nothing to compare: no sampler document, a run too
+    short to observe the group, or no width on record.
+    """
+    if not memory or not sizing or memory.get("unmeasured"):
+        return None
+    processes = [entry for entry in memory.get("processes") or [] if entry.get("peak_private_kib")]
+    peak = memory.get("peak") or {}
+    if not processes or not peak.get("rss_kib"):
+        return None
+    try:
+        workers = int(sizing["workers"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    heaviest = max(processes, key=lambda entry: int(entry["peak_private_kib"]))
+    worker_anon_mib = round(int(heaviest["peak_private_kib"]) / 1024, 1)
+    worker_file_mib = round(max(0, int(heaviest["peak_rss_kib"]) - int(heaviest["peak_private_kib"])) / 1024, 1)
+    group_peak_mib = round(int(peak["rss_kib"]) / 1024, 1)
+    predicted_mib = round(profile.charge_mib(workers), 1)
+
+    understated = worker_anon_mib > profile.worker_anon_mib or group_peak_mib > predicted_mib
+    return {
+        "verdict": "understated" if understated else "corroborated",
+        "workers": workers,
+        "heaviest_pid": heaviest.get("pid"),
+        "observed_worker_anon_mib": worker_anon_mib,
+        "observed_worker_file_mib": worker_file_mib,
+        "observed_group_peak_mib": group_peak_mib,
+        "declared_worker_anon_mib": float(profile.worker_anon_mib),
+        "declared_worker_cache_mib": float(profile.worker_cache_mib),
+        "predicted_charge_mib": predicted_mib,
+        "worker_anon_headroom_mib": round(profile.worker_anon_mib - worker_anon_mib, 1),
+        "group_headroom_mib": round(predicted_mib - group_peak_mib, 1),
+        "file_term_is_a_mapped_floor": True,
+    }
+
 
 #: This process's cgroup v2 membership, and where that hierarchy is mounted.
 CGROUP_PROCESS_PATH: Final = Path("/proc/self/cgroup")

@@ -416,9 +416,7 @@ def _raw_dumps_bytes(obj: object, *, encoder: JSONEncoder, sort_keys: bool, inde
     raw = _normalize_msgspec_float_exponents(raw)
     if indent == 2:
         raw = msgspec.json.format(raw, indent=2)
-    # cast: msgspec.json.encode is `-> bytes` and .format(bytes-like, ...) is
-    # `-> bytes` per its stub.
-    return cast(bytes, raw)
+    return raw
 
 
 def dumps_bytes(

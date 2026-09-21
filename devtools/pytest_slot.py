@@ -44,7 +44,7 @@ from typing import IO, Any, Final
 from devtools.agent_env import PYTEST_POOL, PYTEST_POOLS, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.pytest_memory import ProcessGroupMemorySampler
-from devtools.worker_memory import resize_worker_argument
+from devtools.worker_memory import corroborate_profile, resize_worker_argument
 
 __all__ = [
     "BASETEMP_ROOT_ENV",
@@ -814,6 +814,14 @@ def _slot_receipt(
     The width and the peak belong to the same document because neither answers
     the question alone: a peak is only over or under budget against the width
     that was chosen, and a width is only justified by what the run then took.
+
+    ``corroboration`` closes that loop in the receipt itself. The sizing
+    constants in ``worker_memory`` are single measurements; recording the
+    verdict here means the next reader sees whether this run's sampler agreed
+    with the profile it was admitted under, instead of the peak being written
+    and never compared to anything (which is how ``WORKER_PEAK_CACHE_MIB``
+    stayed at a back-solved residual across four runs that could have
+    falsified it).
     """
     receipt: dict[str, Any] = {
         "schema_version": 1,
@@ -829,6 +837,9 @@ def _slot_receipt(
         receipt["sizing"] = dict(sizing)
     if memory is not None:
         receipt["memory"] = dict(memory)
+    corroboration = corroborate_profile(memory, sizing)
+    if corroboration is not None:
+        receipt["corroboration"] = corroboration
     if extra is not None:
         receipt.update(extra)
     return receipt
