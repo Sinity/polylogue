@@ -14,7 +14,6 @@ archive-writer experiments. The writer-level transport laws remain in
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 import resource
 import sqlite3
@@ -38,14 +37,17 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.index_generation import IndexGenerationStore
 from tests.infra.archive_templates import (
     bootstrap_archive_root,
-    clone_archive_template,
     finalize_archive_template,
 )
 from tests.infra.reindex_differential import (
     DerivedModelSnapshot,
     FinishedBuildRoute,
     FinishedBuildWorkIdentity,
+    SealedRawInput,
     capture_finished_build_output,
+    clone_sealed_arm,
+    finished_build_work_identity,
+    seal_raw_input,
 )
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
 from tests.infra.workload_artifacts import FinishedBuildResourceMeasurement, FinishedBuildResourceProbe
@@ -74,13 +76,6 @@ class _Arm:
     uses_shard_transport: bool
     worker_mode: str = "thread"
     refusal_reason: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class _SealedInput:
-    digest: str
-    bytes: int
-    raw_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,7 +216,7 @@ _REJECTED_ALTERNATIVES = (
 )
 
 
-def _input_slice(root: Path) -> _SealedInput:
+def _input_slice(root: Path) -> SealedRawInput:
     """Acquire one deterministic raw input through the ordinary source writer."""
     bootstrap_archive_root(root)
     build_independent_raw_corpus(
@@ -233,38 +228,20 @@ def _input_slice(root: Path) -> _SealedInput:
     return _sealed_input(root)
 
 
-def _sealed_input(root: Path) -> _SealedInput:
-    """Read the immutable raw identity/byte manifest without changing it."""
-    with sqlite3.connect(root / "source.db") as conn:
-        rows = conn.execute("SELECT raw_id, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall()
-    digest = hashlib.sha256()
-    byte_count = 0
-    for raw_id, blob_hash in rows:
-        blob_hex = bytes(blob_hash).hex() if isinstance(blob_hash, bytes) else str(blob_hash)
-        blob_path = root / "blob" / blob_hex[:2] / blob_hex[2:]
-        size = blob_path.stat().st_size
-        byte_count += size
-        digest.update(f"{raw_id}:{blob_hex}:{size}\n".encode())
-    if len(rows) != _SESSION_COUNT or byte_count != _SEALED_INPUT_BYTES:
+def _sealed_input(root: Path) -> SealedRawInput:
+    """Read the shared raw manifest and hold it to this measurement's seal."""
+    sealed = seal_raw_input(root)
+    if sealed.raw_count != _SESSION_COUNT or sealed.byte_count != _SEALED_INPUT_BYTES:
         raise AssertionError(
-            f"sealed input shape drifted: raws={len(rows)} bytes={byte_count} "
+            f"sealed input shape drifted: raws={sealed.raw_count} bytes={sealed.byte_count} "
             f"expected={_SESSION_COUNT}/{_SEALED_INPUT_BYTES}"
         )
-    input_digest = digest.hexdigest()
-    if input_digest != _SEALED_INPUT_DIGEST:
-        raise AssertionError(f"sealed input digest drifted: {input_digest} != {_SEALED_INPUT_DIGEST}")
-    return _SealedInput(digest=input_digest, bytes=byte_count, raw_count=len(rows))
+    if sealed.digest != _SEALED_INPUT_DIGEST:
+        raise AssertionError(f"sealed input digest drifted: {sealed.digest} != {_SEALED_INPUT_DIGEST}")
+    return sealed
 
 
-def _arm_root(template: Path, destination: Path, sealed: _SealedInput) -> Path:
-    """Clone the same sealed source tree for one isolated production arm."""
-    clone_archive_template(template, destination)
-    if _sealed_input(destination) != sealed:
-        raise AssertionError("cloned finished-build arm does not carry the sealed input")
-    return destination
-
-
-def _prepare_censused_template(root: Path, sealed: _SealedInput) -> _SourceCensusReceipt:
+def _prepare_censused_template(root: Path, sealed: SealedRawInput) -> _SourceCensusReceipt:
     """Record the production source-admission prerequisite once, before arms.
 
     An owned inactive generation intentionally refuses an uncensused source.
@@ -296,7 +273,7 @@ def _prepare_censused_template(root: Path, sealed: _SealedInput) -> _SourceCensu
 @pytest.fixture(scope="module")
 def _censused_input_template(
     tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[Path, _SealedInput, _SourceCensusReceipt]:
+) -> tuple[Path, SealedRawInput, _SourceCensusReceipt]:
     """Build and seal one raw-identical, production-censused template."""
     template = tmp_path_factory.mktemp("finished-build-template") / "sealed-input"
     sealed = _input_slice(template)
@@ -321,21 +298,18 @@ def _archive_bytes(index_path: Path) -> int:
     return sum(path.stat().st_size for path in (index_path, index_path.with_suffix(".db-wal")) if path.exists())
 
 
-def _work_identity(sealed: _SealedInput) -> FinishedBuildWorkIdentity:
+def _work_identity(sealed: SealedRawInput) -> FinishedBuildWorkIdentity:
     """Bind the sealed source, exact route code, and one selected profile."""
-    route_source = inspect.getsource(backfill_historical_revision_evidence)
-    shard_source = inspect.getsource(revision_backfill._FrozenReplayShardTransport)
-    code_digest = hashlib.sha256((route_source + shard_source).encode()).hexdigest()
-    return FinishedBuildWorkIdentity(
-        source_identity=f"sha256:{sealed.digest}",
-        code_identity=f"sha256:{code_digest}",
-        profile_identity=("finished-build:sealed-516-raw:thread-4:owned-inactive-generation:session-shard"),
+    return finished_build_work_identity(
+        sealed,
+        profile="finished-build:sealed-516-raw:thread-4:owned-inactive-generation:session-shard",
+        routes=(backfill_historical_revision_evidence, revision_backfill._FrozenReplayShardTransport),
     )
 
 
 def _live_metrics(
     result: RevisionBackfillResult,
-    sealed: _SealedInput,
+    sealed: SealedRawInput,
     *,
     archive_bytes: int,
     wall_seconds: float,
@@ -351,8 +325,8 @@ def _live_metrics(
         succeeded_file_count=result.replayed_logical_sources,
         failed_file_count=result.quarantined,
         source_group_count=sealed.raw_count,
-        input_bytes=sealed.bytes,
-        source_payload_read_bytes=sealed.bytes,
+        input_bytes=sealed.byte_count,
+        source_payload_read_bytes=sealed.byte_count,
         cursor_fingerprint_read_bytes=0,
         ingest_worker_count_max=worker_count,
         append_file_count=0,
@@ -363,7 +337,7 @@ def _live_metrics(
         parse_time_s=parse_seconds,
         convergence_time_s=apply_seconds,
         total_time_s=wall_seconds,
-        ingested_bytes=sealed.bytes if result.quarantined == 0 and result.adoption_deferred == 0 else 0,
+        ingested_bytes=sealed.byte_count if result.quarantined == 0 and result.adoption_deferred == 0 else 0,
         failed_bytes=0,
         refused_bytes_by_reason={},
         ingested_session_count=result.replayed_logical_sources,
@@ -376,7 +350,7 @@ def _live_metrics(
 
 def _run_arm(
     root: Path,
-    sealed: _SealedInput,
+    sealed: SealedRawInput,
     arm: _Arm,
     *,
     worker_count: int,
@@ -489,7 +463,7 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
         "deferred-index-fresh-shard-process",
     }
     assert all(arm.refusal_reason for arm in _REJECTED_ALTERNATIVES)
-    sealed = _SealedInput(digest="sealed", bytes=0, raw_count=0)
+    sealed = SealedRawInput(digest="sealed", byte_count=1, raw_count=1)
     for arm in _REJECTED_ALTERNATIVES:
         with pytest.raises(RuntimeError, match="declared selected arm"):
             _run_arm(Path("not-opened-for-capability-refusal"), sealed, arm, worker_count=1)
@@ -549,7 +523,7 @@ def test_finished_build_measurement_compacts_projection_before_rendering() -> No
 @pytest.mark.timeout(900)
 def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scale(
     tmp_path: Path,
-    _censused_input_template: tuple[Path, _SealedInput, _SourceCensusReceipt],
+    _censused_input_template: tuple[Path, SealedRawInput, _SourceCensusReceipt],
 ) -> None:
     """Measure one completed production route over the sealed 516-raw input.
 
@@ -561,7 +535,7 @@ def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scal
     template, sealed, source_census = _censused_input_template
     receipt = _compact_receipt(
         _run_arm(
-            _arm_root(template, tmp_path / f"{_SELECTED_ARM.name}-n{worker_count}", sealed),
+            clone_sealed_arm(template, tmp_path / f"{_SELECTED_ARM.name}-n{worker_count}", sealed),
             sealed,
             _SELECTED_ARM,
             worker_count=worker_count,
