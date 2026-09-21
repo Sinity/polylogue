@@ -42,8 +42,10 @@ def _msg(provider_message_id: str, role: Role, text: str, position: int) -> Pars
     return ParsedMessage(
         provider_message_id=provider_message_id,
         role=role,
+        text=text,
         position=position,
-        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text, position=0)],
+        is_active_path=True,
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
     )
 
 

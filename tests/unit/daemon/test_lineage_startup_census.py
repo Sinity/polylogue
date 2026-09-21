@@ -39,8 +39,10 @@ def _msg(provider_message_id: str, role: Role, text: str, position: int) -> Pars
     return ParsedMessage(
         provider_message_id=provider_message_id,
         role=role,
+        text=text,
         position=position,
-        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text, position=0)],
+        is_active_path=True,
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
     )
 
 
@@ -103,7 +105,7 @@ def _archive_with_three_generations(archive_root: Path) -> str:
     return child_id
 
 
-def _composed_texts(archive_root: Path, session_id: str) -> list[str]:
+def _composed_texts(archive_root: Path, session_id: str) -> list[str | None]:
     with open_connection(archive_root / "index.db") as conn:
         conn.row_factory = sqlite3.Row
         return [message.blocks[0].text for message in read_archive_session_envelope(conn, session_id).messages]
