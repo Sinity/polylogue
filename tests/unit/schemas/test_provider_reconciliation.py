@@ -13,8 +13,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.provider_denominator import DenominatorSubject, ProviderDenominator
 from polylogue.schemas.provider_reconciliation import (
+    ProviderMatrix,
     load_receipts,
     reconcile_provider_matrix,
 )
@@ -26,7 +28,7 @@ from polylogue.schemas.source_frontier import (
     SchemaFrontier,
 )
 
-CONFIGURATION = {"privacy_level": "standard", "source_selection": "declared_frontier"}
+CONFIGURATION: JSONDocument = {"privacy_level": "standard", "source_selection": "declared_frontier"}
 
 
 def _denominator(*subjects: DenominatorSubject) -> ProviderDenominator:
@@ -123,7 +125,9 @@ def _receipt(
     }
 
 
-def _reconcile(denominator: ProviderDenominator, frontier: SchemaFrontier, receipts: list[dict[str, object]]):
+def _reconcile(
+    denominator: ProviderDenominator, frontier: SchemaFrontier, receipts: list[dict[str, object]]
+) -> ProviderMatrix:
     return reconcile_provider_matrix(
         frontier=frontier,
         check=_check(frontier),
@@ -284,7 +288,10 @@ def test_a_mixed_generator_revision_blocks_the_matrix() -> None:
     frontier = _frontier("codex", members=4)
     first = _receipt("codex", candidates=4, included=4, samples=40, statuses=("changed",))
     second = _receipt("hermes", candidates=0, included=0, samples=0, statuses=())
-    second["result"]["phase_receipt"]["source"]["source_recipe"]["implementation_fingerprint"] = "a" * 64
+    recipe = json_document(
+        json_document(json_document(json_document(second["result"])["phase_receipt"])["source"])["source_recipe"]
+    )
+    recipe["implementation_fingerprint"] = "a" * 64
 
     matrix = _reconcile(denominator, frontier, [first, second])
     assert any("mixed 2 generator revisions" in blocker for blocker in matrix.blockers)
@@ -316,4 +323,4 @@ def test_the_matrix_binds_what_decided_it() -> None:
         "matrix_digest",
     ):
         assert payload[field], field
-    assert payload["generator_semantics"]["implementation_fingerprint"] == ["f" * 64]
+    assert json_document(payload["generator_semantics"])["implementation_fingerprint"] == ["f" * 64]

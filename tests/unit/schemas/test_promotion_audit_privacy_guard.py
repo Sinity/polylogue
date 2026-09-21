@@ -550,7 +550,7 @@ def test_unjustified_published_vocabulary_is_red(tmp_path: Path) -> None:
     and not the mere presence of ``x-polylogue-values``.
     """
 
-    document = {
+    document: dict[str, object] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -569,7 +569,7 @@ def test_unjustified_published_vocabulary_is_red(tmp_path: Path) -> None:
 
 
 def test_declared_protocol_vocabulary_is_green(tmp_path: Path) -> None:
-    document = {
+    document: dict[str, object] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -594,14 +594,14 @@ def test_published_home_path_is_red(tmp_path: Path) -> None:
     the assertion measures the path shape rather than the document's presence.
     """
 
-    document = {
+    document: dict[str, object] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
             "hook": {
                 "type": "string",
                 "x-polylogue-semantic-role": "message_role",
-                "x-polylogue-values": ["~/.claude/hooks/pretooluse-bash.sh"],
+                "x-polylogue-values": ["~/.synthetic-agent/hooks/pre-tool.sh"],
             }
         },
     }
@@ -611,17 +611,17 @@ def test_published_home_path_is_red(tmp_path: Path) -> None:
     failures = [check for check in report.checks if check.status.value == "error"]
     assert any(check.name == "published_paths" for check in failures)
     rendered = report.format_text()
-    assert "pretooluse-bash.sh" not in rendered, "a leak report must not republish the leaked text"
+    assert "pre-tool.sh" not in rendered, "a leak report must not republish the leaked text"
     assert "sha256:" in rendered
 
 
 def test_published_path_in_a_property_name_is_red(tmp_path: Path) -> None:
     """A dynamic key harvested into a property name is inspected too."""
 
-    document = {
+    document: dict[str, object] = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
-        "properties": {"/home/operator/notes.md": {"type": "string"}},
+        "properties": {"/srv/synthetic-operator/notes.md": {"type": "string"}},
     }
     _write_element(tmp_path, "codex", document)
     report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path / "providers"))

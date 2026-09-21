@@ -19,6 +19,22 @@ Source inputs use whole members; `--max-samples` and `--no-full-corpus` are
 incompatible with source-backed commits. Without `--source`, generation uses the
 archive-backed sampler. Selecting ordinary sources requires no archive rebuild.
 
+`--frontier` takes the inputs from the declared source frontier
+(`devtools schema frontier`) instead of repeating `--source`, and refuses when
+the live roots no longer match the recorded baseline. A subject whose declared
+roots admit no member reports `zero_eligible_material` with the declared reason
+rather than falling back to the archive-backed sampler over a different
+population.
+
+After a pass, `devtools schema reconcile --receipts <dir>` accounts for every
+declared subject exactly once. It derives the subject denominator from the
+schema-subject kernel and the executable `OriginSpec` registry rather than from
+the pass's own receipts or the committed packages, so a subject the pass never
+reached is recorded as `not_run` instead of disappearing, and it binds the
+matrix to the baseline digest, the provider declaration digest, the code
+revision, the generator semantics revision and the resolved inference
+configuration.
+
 ## Inputs and reuse
 
 JSONL and NDJSON records are streamed. JSON export arrays and supported ZIP
@@ -88,11 +104,22 @@ and categorical summaries use bounded sketches. Their annotations identify
 estimates and saturation. Historical shape counts and current source-record counts
 have separate denominators.
 
-Publication uses the configured privacy rules for values and dynamic keys.
+A committed package publishes *observed member values* in exactly one place,
+`x-polylogue-values`, and that is an allowlist: a field publishes its members
+only when its declared semantic role is in
+`polylogue.schemas.privacy.PUBLISHABLE_VOCABULARY_ROLES`. Every other field
+publishes its type, frequency and distribution with no member list, because
+value shape cannot separate a provider protocol constant from a recurring
+private token. The rule is enforced at `SchemaRegistry.write_package`, the one
+physical element writer, so a version that is only carried forward is sanitized
+on re-serialization rather than keeping members admitted under an older rule.
+`devtools gate schema-privacy` re-checks every committed element independently,
+including property names, for an unjustified vocabulary and for any filesystem
+path, mail address or URL.
+
 Review generated packages before committing them; input paths and transcript
 text do not belong in public schema metadata.
 
 Generated package updates retain numeric observation counts and structural size
 distributions. Observed numeric magnitudes, timestamp ranges, and empirical time
-deltas remain in private evidence. Untouched historical versions retain their
-existing annotations.
+deltas remain in private evidence.

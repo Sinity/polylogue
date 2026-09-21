@@ -34,12 +34,12 @@ every artifact of the run and still be counted here.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, TypeAlias
 
 from polylogue.core.hashing import hash_payload
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.provider_denominator import ProviderDenominator, derive_provider_denominator
 from polylogue.schemas.source_frontier import FrontierCheck, SchemaFrontier
 
@@ -56,6 +56,19 @@ SubjectOutcome: TypeAlias = Literal[
 BLOCKING_OUTCOMES: frozenset[str] = frozenset({"failed", "not_run"})
 
 RECONCILIATION_SCHEMA = "polylogue.provider-schema-reconciliation.v1"
+
+
+def _json_strings(values: Iterable[str]) -> list[JSONValue]:
+    items: list[JSONValue] = []
+    items.extend(sorted(values))
+    return items
+
+
+def _terminal_payload(counts: Mapping[str, int]) -> JSONValue:
+    payload: dict[str, JSONValue] = {}
+    for key, value in sorted(counts.items()):
+        payload[key] = value
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +110,7 @@ class SubjectDenominatorCounts:
             "live_members": self.live_members,
             "candidates_inventoried": self.candidates_inventoried,
             "candidates_included": self.candidates_included,
-            "candidate_terminal_outcomes": dict(sorted(self.candidate_terminal_outcomes.items())),
+            "candidate_terminal_outcomes": _terminal_payload(self.candidate_terminal_outcomes),
             "conserves": self.conserves,
         }
 
@@ -162,10 +175,10 @@ class ProviderMatrix:
             "code_revision": self.code_revision,
             "generator_semantics": self.generator_semantics,
             "inference_configuration": self.inference_configuration,
-            "outcome_counts": self.counts_by_outcome(),
+            "outcome_counts": _terminal_payload(self.counts_by_outcome()),
             "subjects": [item.to_payload() for item in self.subjects],
             "denominator": self.denominator.to_payload(),
-            "blockers": list(self.blockers),
+            "blockers": _json_strings(self.blockers),
         }
 
     @property
@@ -195,6 +208,11 @@ class ProviderMatrix:
         for blocker in self.blockers:
             lines.append(f"  BLOCKER: {blocker}")
         return "\n".join(lines)
+
+
+def _path_list(version: JSONDocument, field: str) -> list[str]:
+    value = version.get(field)
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
 def _subject_counts(
@@ -314,12 +332,17 @@ def _reconcile_subject(
     source = phase.get("source") if isinstance(phase, Mapping) else None
     source_map = source if isinstance(source, Mapping) else None
     counts = _subject_counts(subject, frontier, check, source_map)
-    versions = tuple(item for item in result.get("versions", ()) if isinstance(item, Mapping))
+    raw_versions = result.get("versions", ())
+    versions: tuple[JSONDocument, ...] = (
+        tuple(json_document(item) for item in raw_versions if isinstance(item, Mapping))
+        if isinstance(raw_versions, Sequence)
+        else ()
+    )
     sample_count = result.get("sample_count")
     sample_count = sample_count if isinstance(sample_count, int) else None
     manifest_digest = source_map.get("source_input_manifest_digest") if source_map else None
-    narrowed = sum(len(item.get("narrowed_paths", ())) for item in versions)
-    added = sum(len(item.get("added_paths", ())) for item in versions)
+    narrowed = sum(len(_path_list(item, "narrowed_paths")) for item in versions)
+    added = sum(len(_path_list(item, "added_paths")) for item in versions)
 
     if exit_code != 0 or not result.get("success"):
         return SubjectReconciliation(
@@ -349,6 +372,7 @@ def _reconcile_subject(
     included = counts.candidates_included or 0
     if included == 0 or not sample_count:
         zero_reason = _zero_material_reason(subject, frontier)
+        outcome: SubjectOutcome
         if zero_reason is not None and counts.live_members == 0:
             outcome, reason = (
                 "proven_non_applicable",
@@ -373,25 +397,26 @@ def _reconcile_subject(
         )
 
     changed = [item for item in versions if item.get("status") in {"new", "changed"}]
+    final_outcome: SubjectOutcome
     route = (
         f"route read {included} of {counts.candidates_inventoried} inventoried candidate(s) "
         f"over {counts.live_members} admitted member(s) and produced {sample_count} sample(s)"
     )
     if changed:
-        outcome = "generated"
+        final_outcome = "generated"
         reason = f"{len(changed)} package version(s) new or changed; {route}"
     elif not counts.conserves:
-        outcome = "failed"
+        final_outcome = "failed"
         reason = (
             "zero-diff is not acceptable without a reconciled denominator: the route inventoried "
             f"{counts.candidates_inventoried} candidate(s) against {counts.live_members} admitted member(s)"
         )
     else:
-        outcome = "zero_diff"
+        final_outcome = "zero_diff"
         reason = f"every committed version is structurally unchanged; {route}"
     return SubjectReconciliation(
         subject=subject,
-        outcome=outcome,
+        outcome=final_outcome,
         reason=reason,
         counts=counts,
         sample_count=sample_count,
@@ -422,7 +447,10 @@ def _generator_semantics(receipts: Mapping[str, Mapping[str, object]]) -> JSONDo
             value = recipe.get(key)
             if isinstance(value, str):
                 collected.setdefault(key, set()).add(value)
-    return {key: sorted(values) for key, values in sorted(collected.items())}
+    payload: dict[str, JSONValue] = {}
+    for key, values in sorted(collected.items()):
+        payload[key] = _json_strings(values)
+    return payload
 
 
 def reconcile_provider_matrix(
@@ -471,8 +499,9 @@ def reconcile_provider_matrix(
             )
     semantics = _generator_semantics(receipts)
     for key, values in semantics.items():
-        if len(values) > 1:
-            blockers.append(f"the pass mixed {len(values)} generator revisions at {key}")
+        revisions = len(values) if isinstance(values, list) else 1
+        if revisions > 1:
+            blockers.append(f"the pass mixed {revisions} generator revisions at {key}")
 
     return ProviderMatrix(
         subjects=subjects,

@@ -254,7 +254,7 @@ class TestPublishableSlotAllowlist:
     def test_declared_slot_publishes_a_single_session_member(self) -> None:
         """A declared protocol vocabulary is not user content, so recurrence is not required."""
         samples = [{"status": "attachment"}] + [{"status": "assistant"} for _ in range(9)]
-        session_ids: list[str | None] = ["conv_A"] + ["conv_B"] * 9
+        session_ids: list[str | None] = ["conv_A", *["conv_B"] * 9]
         stats = _collect_field_stats(samples, session_ids=session_ids)
         schema: dict[str, object] = {"type": "object", "properties": {"status": dict(ROLE_SLOT)}}
         annotated = schema_property(_annotate_schema(schema, stats), "status")

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle_packages import allocate_package_versions
 from polylogue.schemas.generation.workflow import persist_generated_provider_bundle
@@ -374,9 +374,9 @@ def test_the_writer_strips_an_unjustified_vocabulary_from_every_version(tmp_path
 
     persisted_v1 = registry.get_schema(item.provider, "v1")
     assert persisted_v1 is not None
-    properties = persisted_v1["properties"]
-    assert "x-polylogue-values" not in properties["grep_pattern"]
-    assert properties["role"]["x-polylogue-values"] == ["assistant", "user"]
+    properties = json_document(persisted_v1["properties"])
+    assert "x-polylogue-values" not in json_document(properties["grep_pattern"])
+    assert json_document(properties["role"])["x-polylogue-values"] == ["assistant", "user"]
 
     # A second generation that produces only v2 carries v1 forward.
     second = _vocabulary_package("v2")
@@ -396,4 +396,5 @@ def test_the_writer_strips_an_unjustified_vocabulary_from_every_version(tmp_path
 
     carried = registry.get_schema(second.provider, "v1")
     assert carried is not None
-    assert "x-polylogue-values" not in carried["properties"]["grep_pattern"]
+    carried_properties = json_document(carried["properties"])
+    assert "x-polylogue-values" not in json_document(carried_properties["grep_pattern"])

@@ -16,11 +16,12 @@ import argparse
 import json
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.privacy import PUBLISHABLE_VOCABULARY_ROLES
-from polylogue.schemas.privacy_config import load_privacy_config
+from polylogue.schemas.privacy_config import PrivacyConfigSection, load_privacy_config
 from polylogue.schemas.provider_reconciliation import (
     ProviderMatrix,
     load_receipts,
@@ -51,21 +52,35 @@ def _inference_configuration(privacy: str | None, privacy_config_path: Path | No
     later change to a preset cannot silently re-describe what this pass did.
     """
 
-    overrides = {"level": privacy} if privacy else {}
+    overrides: PrivacyConfigSection = {"level": privacy} if privacy else {}
     config = load_privacy_config(
         cli_overrides=overrides,
         project_path=privacy_config_path.parent if privacy_config_path else None,
     )
-    return {
+    payload: JSONDocument = {
         "privacy_level": config.level,
         "safe_enum_max_length": config.safe_enum_max_length,
         "high_entropy_min_length": config.high_entropy_min_length,
-        "field_overrides": dict(sorted(config.field_overrides.items())),
-        "allow_value_patterns": sorted(config.allow_value_patterns),
-        "deny_value_patterns": sorted(config.deny_value_patterns),
-        "publishable_vocabulary_roles": sorted(PUBLISHABLE_VOCABULARY_ROLES),
         "source_selection": "declared_frontier",
     }
+    payload["field_overrides"] = _string_map(config.field_overrides)
+    payload["allow_value_patterns"] = _json_strings(config.allow_value_patterns)
+    payload["deny_value_patterns"] = _json_strings(config.deny_value_patterns)
+    payload["publishable_vocabulary_roles"] = _json_strings(PUBLISHABLE_VOCABULARY_ROLES)
+    return payload
+
+
+def _json_strings(values: Iterable[str]) -> list[JSONValue]:
+    items: list[JSONValue] = []
+    items.extend(sorted(values))
+    return items
+
+
+def _string_map(values: dict[str, str]) -> JSONDocument:
+    payload: JSONDocument = {}
+    for key, value in sorted(values.items()):
+        payload[key] = value
+    return payload
 
 
 def _load_receipt_payloads(directory: Path) -> list[JSONDocument]:
