@@ -870,6 +870,7 @@ export type QueryPage = Page<MessageQueryRowPayload | ActionQueryRowPayload | Bl
 
 export type ReadSessionViewParameters = {
   readonly session_id: string;
+  readonly around?: string;
   readonly at_position?: string;
   readonly confidence_threshold?: number;
   readonly edge_limit?: string;
@@ -1069,6 +1070,7 @@ export class PolylogueClient {
         method: "GET",
         path: `/api/sessions/${encodeURIComponent(String(parameters.session_id))}/read`,
         query: {
+          around: parameters.around,
           at_position: parameters.at_position,
           confidence_threshold: parameters.confidence_threshold,
           edge_limit: parameters.edge_limit,

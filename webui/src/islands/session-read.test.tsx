@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/preact';
 import { describe, expect, it, vi } from 'vitest';
-import type { SessionMessageRow } from '../contracts/session-read';
+import type { SessionMessageRow, SessionMessageWindow } from '../contracts/session-read';
 import type { SemanticEntry } from '../contracts/semantic-cards';
 import { ArchiveRequestError } from '../lib/api';
 import { SessionReadIsland } from './session-read';
@@ -54,7 +54,14 @@ describe('SessionReadIsland', () => {
       id: 'message:1600',
       text: 'The deep-linked message.',
     };
-    const loadPage = vi.fn(async () => ({ messages: [deepMessage], total: 5000, offset: 1590 }));
+    // Only an `around` window contains the target, exactly as a 5,000-message
+    // archive behaves: paging forward from offset 30 reaches messages the
+    // reader does not want and never the one it asked for.
+    const loadPage = vi.fn(async (_sessionId: string, window: SessionMessageWindow) =>
+      'around' in window
+        ? { messages: [deepMessage], total: 5000, offset: 1590 }
+        : { messages: [{ ...toolMessage, id: `message:${window.offset}` }], total: 5000, offset: window.offset },
+    );
     render(
       <SessionReadIsland
         sessionId="codex-session:session/2"

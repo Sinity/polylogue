@@ -337,6 +337,34 @@ def test_compare_serves_only_the_requested_window(reader: dict[str, Any]) -> Non
     assert diff["left"] == diff["right"] == _MESSAGE_COUNT, "the header diff compares true lengths"
 
 
+async def test_database_backed_session_payload_serializes_only_the_window(
+    seeded_archive: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loader the database-backed stack/compare routes call is bounded too.
+
+    ``_do_get_session`` reads no handler state, so it is exercised directly
+    rather than through a second HTTP server. Drop the slice and this returns
+    2,000 message envelopes for a 25-message window.
+    """
+
+    from polylogue import Polylogue
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(seeded_archive["archive_root"]))
+    session_id = seeded_archive["session_ids"][0]
+    poly = Polylogue(archive_root=seeded_archive["archive_root"])
+    try:
+        payload = await DaemonAPIHandler._do_get_session(cast("Any", None), poly, session_id, limit=25, offset=100)
+    finally:
+        await poly.close()
+
+    assert isinstance(payload, dict)
+    assert len(payload["messages"]) == 25
+    assert payload["total"] == _MESSAGE_COUNT
+    assert payload["message_count"] == _MESSAGE_COUNT
+    assert str(payload["messages"][0]["id"]).endswith(":m-100")
+
+
 def test_workspace_builders_thread_the_window_to_every_referenced_session() -> None:
     """The database-backed stack/compare routes carry the same window."""
 
@@ -371,5 +399,6 @@ def test_workspace_builders_thread_the_window_to_every_referenced_session() -> N
     assert {carried for _, carried in seen} == {window}
     assert stack["limit"] == 7 and stack["offset"] == 21
     assert compare["limit"] == 7 and compare["offset"] == 21
-    assert len(stack["items"][0]["session"]["messages"]) == 7
-    assert len(compare["pairs"]) == 7
+    items = cast("list[dict[str, Any]]", stack["items"])
+    assert len(cast("dict[str, Any]", items[0]["session"])["messages"]) == 7
+    assert len(cast("list[Any]", compare["pairs"])) == 7
