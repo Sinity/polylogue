@@ -316,3 +316,158 @@ def test_blob_refs_check_vocabulary_and_liveness_join_map_agree(tmp_path: Path) 
         f"blob_refs CHECK admits {sorted(admitted)} but the liveness join map resolves "
         f"{sorted(mapped)}; unresolved ref_types block liveness projection"
     )
+
+
+_SIDECAR_SESSION_ID = "de99ba60-ccc4-43a7-b882-1dd1f2672db7"
+
+
+def _claude_code_session_tree_with_sidecar(root: Path) -> tuple[Path, Path, str]:
+    """Lay out one Claude Code transcript whose tool result overflowed to a sidecar."""
+    import json
+
+    project = root / "-realm-project-x"
+    sidecar_dir = project / _SIDECAR_SESSION_ID / "tool-results"
+    sidecar_dir.mkdir(parents=True)
+    sidecar = sidecar_dir / "bsq814i68.txt"
+    sidecar_text = "persisted tool output\n" * 64
+    sidecar.write_text(sidecar_text, encoding="utf-8")
+
+    pointer = f"<persisted-output>Output too large. Full output saved to: {sidecar}</persisted-output>"
+    owner = project / f"{_SIDECAR_SESSION_ID}.jsonl"
+    owner.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "sessionId": _SIDECAR_SESSION_ID,
+                    "timestamp": "2026-07-20T10:00:00Z",
+                    "message": {"role": "user", "content": "run it"},
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "a1",
+                    "parentUuid": "u1",
+                    "sessionId": _SIDECAR_SESSION_ID,
+                    "timestamp": "2026-07-20T10:00:01Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "tool_use", "id": "toolu_abc", "name": "Bash", "input": {}}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "uuid": "u2",
+                    "parentUuid": "a1",
+                    "sessionId": _SIDECAR_SESSION_ID,
+                    "timestamp": "2026-07-20T10:00:02Z",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "tool_result", "tool_use_id": "toolu_abc", "content": pointer}],
+                    },
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return owner, sidecar, sidecar_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("ages retained blob bytes past the production GC age gate")
+async def test_acquired_sidecar_bytes_outlive_their_source_tree_and_the_index_tier(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A tool-output sidecar's bytes stay source-owned and re-readable (polylogue-hxrhn).
+
+    The original defect was a sidecar whose only surviving pointer was a
+    derived ``session_events`` payload: nothing owned the bytes, so GC was
+    entitled to reclaim them and a reparse could only recover the transcript's
+    truncated preview. This walks the production acquisition route
+    (``LiveBatchProcessor.ingest_files``), then removes both things the
+    original defect assumed would still be there -- the source tree the bytes
+    were staged from, and the index tier -- and asserts the bytes survive a
+    real ``run_blob_gc_report`` pass and still resolve through the derivation
+    reader (``RetainedSidecarResolver``).
+
+    Anti-vacuity: drop the ``BlobOwner("source", "raw_sessions", ...)`` direct
+    entry *and* its ``raw_payload`` ledger entry from ``BLOB_OWNERS`` and the
+    GC assertions go red (the hash has no owning surface once the index is
+    rebuilt empty); make the acquisition walk skip ``tool_result_sidecar``
+    paths instead of retaining them as raw artifacts and both the GC and the
+    ``RetainedSidecarResolver`` assertions go red.
+    """
+    import shutil
+
+    import polylogue.sources.live.watcher as live_watcher
+    from polylogue import Polylogue
+    from polylogue.sources.live import WatchSource
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+    tree_root = workspace_env["data_root"] / "projects"
+    tree_root.mkdir(parents=True)
+    owner, sidecar, sidecar_text = _claude_code_session_tree_with_sidecar(tree_root)
+    archive_root = workspace_env["archive_root"]
+
+    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "index.db")
+    cursor = CursorStore(workspace_env["data_root"] / "cursor.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=tree_root, suffixes=(".jsonl",)),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        await processor.ingest_files([sidecar, owner], emit_event=False)
+
+        with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source:
+            retained = source.execute(
+                "SELECT hex(blob_hash) FROM raw_sessions WHERE source_path = ?", (str(sidecar),)
+            ).fetchone()
+            assert retained is not None, "acquisition left no source-tier row for the sidecar"
+            sidecar_hash = str(retained[0]).lower()
+            # The ledger ref exists beside the direct column owner, so the
+            # bytes are owned twice over rather than by a derived payload.
+            assert (
+                source.execute(
+                    "SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ref_type = 'raw_payload'",
+                    (bytes.fromhex(sidecar_hash),),
+                ).fetchone()
+                is not None
+            )
+
+        with (
+            sqlite3.connect(archive_root / "source.db") as source,
+            sqlite3.connect(archive_root / "index.db") as index,
+        ):
+            decision = inspect_blob_liveness(source, sidecar_hash, index_conn=index)
+        assert decision.state is LivenessState.LIVE
+        assert decision.surfaces == ("source.db.raw_sessions", "source.db.blob_refs")
+    finally:
+        await archive.close()
+
+    # The transient staging is gone: the source tree the bytes came from, and
+    # the whole index tier, rebuilt empty as a reindex would leave it.
+    shutil.rmtree(tree_root)
+    (archive_root / "index.db").unlink()
+    initialize_active_archive_root(archive_root)
+
+    store = BlobStore(archive_root / "blob")
+    aged = time.time() - 3600
+    for blob_file in store.root.rglob("*"):
+        if blob_file.is_file():
+            os.utime(blob_file, (aged, aged))
+
+    report = run_blob_gc_report(archive_root / "source.db", store.root)
+    assert report.blocked_reason is None
+    assert report.deleted_count == 0
+    assert store.exists(sidecar_hash)
+
+    scope = RetainedSidecarResolver(archive_root).claude_code_scope(owner)
+    assert scope.available is True
+    assert [entry.filename for entry in scope.files] == [sidecar.name]
+    assert scope.files[0].read_text() == sidecar_text

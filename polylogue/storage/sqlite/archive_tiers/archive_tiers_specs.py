@@ -501,6 +501,13 @@ MESSAGES_SPEC = _make_table_spec(
         # UNIQUE admits many NULLs, so every reference into it would silently
         # dangle. Refuse the row instead (polylogue-eqsri).
         "CHECK(native_id IS NOT NULL OR content_identity IS NOT NULL)",
+        # The parent key of ``blocks``'s compound owner FK (polylogue-asp4b).
+        # ``message_id`` alone is already UNIQUE, so this adds no new row
+        # restriction -- SQLite simply requires the referenced column list to
+        # carry its own UNIQUE index before it will accept the compound
+        # reference, and this is what makes "the block's session is its
+        # message's session" a schema law instead of a writer convention.
+        "UNIQUE(message_id, session_id)",
     ),
 )
 
@@ -514,14 +521,21 @@ BLOCKS_SPEC = _make_table_spec(
             record_name="block_id",
             domain_name="id",
         ),
+        # polylogue-asp4b: the per-column references below are deliberately
+        # bare. The owning relation is the compound FK in
+        # ``table_constraints``; a second single-column FK to
+        # ``messages(message_id)`` would be implied by it and a second one to
+        # ``sessions(session_id)`` is implied transitively through
+        # ``messages.session_id``. Both are kept out so there is exactly one
+        # statement of who owns a block.
         _raw_column(
             "message_id",
-            "message_id TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE",
+            "message_id TEXT NOT NULL",
             record_name="message_id",
         ),
         _raw_column(
             "session_id",
-            "session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE",
+            "session_id TEXT NOT NULL",
             record_name="session_id",
         ),
         _raw_column("position", "position INTEGER NOT NULL CHECK(position >= 0)", record_name="block_index"),
@@ -600,6 +614,17 @@ BLOCKS_SPEC = _make_table_spec(
     record_only_columns=(_derived_column("metadata", "NULL"),),
     table_constraints=(
         "PRIMARY KEY(message_id, position)",
+        # polylogue-asp4b: ``session_id`` is a denormalized owner key kept for
+        # query locality (``idx_blocks_session_position`` and every
+        # session-scoped read use it). With two independent single-column
+        # references, the schema accepted a block whose ``message_id`` belongs
+        # to session A while ``session_id`` said B -- ``PRAGMA
+        # foreign_key_check`` stayed clean, the two read routes disagreed
+        # about which session the block belongs to, and deleting session B
+        # cascaded away a block of session A's message. Referencing the pair
+        # makes the two owner keys agree by construction instead of by
+        # convention.
+        "FOREIGN KEY(message_id, session_id) REFERENCES messages(message_id, session_id) ON DELETE CASCADE",
         # An unknown structural outcome is only honest with a reason for it.
         # The reason describes a tool_result's missing outcome, so it may
         # appear on no other block shape: a tool_use mirrors its result's

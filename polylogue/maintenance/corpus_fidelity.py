@@ -123,13 +123,39 @@ def audit_absences(
     }
 
 
-def audit_attachment_fidelity(index: sqlite3.Connection) -> dict[str, Any]:
+def audit_attachment_fidelity(
+    index: sqlite3.Connection,
+    *,
+    blob_present: Callable[[str], bool],
+) -> dict[str, Any]:
     """Report attachment acquisition by origin, upload origin, and status.
 
     ``unavailable`` is terminal only when the reference retains structured
     provenance explaining where the unavailable bytes came from. An
     unprovenanced terminal status is indistinguishable from a blanket waiver
     and remains an actionable fidelity failure.
+
+    ``acquisition_status = 'acquired'`` is a claim about durable state, not a
+    measurement of it, so it is reconciled against ``blob_present`` rather
+    than trusted (polylogue-o0uw5: the 2026-09-14 pre-wipe census found 1240
+    of 1446 acquired hashes with no bytes in the store -- this audit reported
+    that archive as fully acquired). ``blob_present`` is required, not
+    optional: an index-only answer here is exactly the unverified positive
+    claim the bead is about.
+
+    Three outcomes replace the single trusted one:
+
+    ``refs_acquired_with_bytes``
+        The claim is corroborated by bytes the store can return.
+    ``refs_acquired_contradicted``
+        The row names a blob hash the store does not hold. The bytes are gone;
+        the claim is false.
+    ``refs_acquired_unverifiable``
+        The row claims acquisition with no ``blob_hash`` at all, so nothing
+        can check it. No current writer produces this
+        (``archive_tiers/write.py:_acquire_attachment_blob`` returns
+        ``unfetched`` whenever it has no hash), but the column is nullable and
+        an unverifiable claim must not silently count as a verified one.
     """
     rows = index.execute(
         """
@@ -163,13 +189,57 @@ def audit_attachment_fidelity(index: sqlite3.Connection) -> dict[str, Any]:
         counts[str(status)] += amount
         if int(unprovenanced):
             unprovenanced_unavailable += amount
+    # Reconcile the positive claim against the store, one presence probe per
+    # distinct hash rather than one per reference.
+    acquired_rows = index.execute(
+        """
+        SELECT s.origin,
+               COALESCE(r.upload_origin, '<none>'),
+               a.blob_hash,
+               COUNT(*)
+        FROM attachments AS a
+        JOIN attachment_refs AS r USING (attachment_id)
+        JOIN sessions AS s USING (session_id)
+        WHERE a.acquisition_status = 'acquired'
+        GROUP BY 1, 2, 3
+        """
+    ).fetchall()
+    presence: dict[str, bool] = {}
+    with_bytes = 0
+    contradicted = 0
+    unverifiable = 0
+    contradicted_by_origin = collections.Counter[str]()
+    for origin, upload_origin, blob_hash, count in acquired_rows:
+        amount = int(count)
+        if blob_hash is None:
+            unverifiable += amount
+            contradicted_by_origin[f"{origin}/{upload_origin}/unverifiable"] += amount
+            continue
+        hash_hex = blob_hash.hex() if isinstance(blob_hash, (bytes, bytearray)) else str(blob_hash)
+        cached = presence.get(hash_hex)
+        if cached is None:
+            try:
+                cached = bool(blob_present(hash_hex))
+            except (OSError, ValueError):
+                cached = False
+            presence[hash_hex] = cached
+        if cached:
+            with_bytes += amount
+        else:
+            contradicted += amount
+            contradicted_by_origin[f"{origin}/{upload_origin}/contradicted"] += amount
+
     return {
         "refs_acquired": counts["acquired"],
+        "refs_acquired_with_bytes": with_bytes,
+        "refs_acquired_contradicted": contradicted,
+        "refs_acquired_unverifiable": unverifiable,
         "refs_unfetched": counts["unfetched"],
         "refs_unavailable": counts["unavailable"],
         "refs_unavailable_without_provenance": unprovenanced_unavailable,
         "refs_not_acquired": counts["unfetched"] + counts["unavailable"],
         "breakdown": breakdown,
+        "acquired_unverified_by_origin": dict(sorted(contradicted_by_origin.items())),
     }
 
 

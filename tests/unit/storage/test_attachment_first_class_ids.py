@@ -358,3 +358,62 @@ def test_no_json_extract_indexes_on_attachment_tables(
             f"#1252: index {row['name']!r} reintroduces a JSON-expression index "
             "on an attachment table; native identifiers must use stored columns"
         )
+
+
+@pytest.mark.asyncio
+async def test_contested_native_id_reads_as_unresolved_not_the_lexical_first(tmp_path: Path) -> None:
+    """A reference with two 'file' ids reports no file id at all (polylogue-vnx8v).
+
+    ``attachment_native_ids``'s primary key admits two observations of one id
+    kind for one reference, and ``get_attachments`` answered that with
+    ``ORDER BY native_id LIMIT 1``. Lexical order is not provider authority
+    and not a revision, so the reader silently published one of two contested
+    identities -- the same identity the Drive downloader then fetched under.
+    Unique observation is the only authority this table carries, so a
+    contested kind now reads as ``None`` while the kinds that are unique still
+    resolve and every stored alias stays in the table.
+
+    Anti-vacuity: restore ``ORDER BY native_id LIMIT 1`` in
+    ``unambiguous_native_id_sql`` and ``file_native_id`` becomes
+    ``'drive-file-a'``; drop the surviving-rows assertion's second alias and
+    "resolve it by deleting one observation" would pass.
+    """
+    import aiosqlite
+
+    from polylogue.storage.sqlite.queries.attachment_records import get_attachments
+
+    db_path = tmp_path / "contested.db"
+    bootstrap = sqlite3.connect(db_path)
+    try:
+        bootstrap.executescript(SCHEMA_DDL)
+        _insert_attachment_row(
+            bootstrap,
+            attachment_id="att-1",
+            provider_attachment_id="prov-att-1",
+            provider_file_id="drive-file-a",
+            provider_drive_id="drive-root-1",
+            upload_origin="drive",
+        )
+        bootstrap.execute(
+            "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES (?, 'file', ?)",
+            ("gemini-cli-session:session-1:message-1:attachment:0", "drive-file-z"),
+        )
+        bootstrap.commit()
+    finally:
+        bootstrap.close()
+
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        records = await get_attachments(conn, "gemini-cli-session:session-1")
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.file_native_id is None, "a contested kind must read as unresolved, not lexically first"
+    assert record.attachment_native_id == "prov-att-1"
+    assert record.drive_native_id == "drive-root-1"
+
+    with sqlite3.connect(db_path) as verify:
+        surviving = sorted(
+            str(row[0]) for row in verify.execute("SELECT native_id FROM attachment_native_ids WHERE id_kind = 'file'")
+        )
+    assert surviving == ["drive-file-a", "drive-file-z"]

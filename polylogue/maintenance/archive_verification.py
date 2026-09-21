@@ -2822,33 +2822,53 @@ def _check_corpus_attachment_fidelity(archive_root: Path, _sample_limit: int) ->
 
 
 def _check_corpus_attachment_fidelity_at_index_path(
-    _archive_root: Path, index_path: Path, _sample_limit: int
+    archive_root: Path, index_path: Path, _sample_limit: int
 ) -> ArchiveVerificationCheck:
+    """Attachment references must be acquired *and* backed by readable bytes.
+
+    ``archive_root`` was previously unused here, so this check answered an
+    index-only question and reported "all attachment references are acquired"
+    for an archive whose acquired rows named blobs the store no longer held
+    (polylogue-o0uw5). The blob store is the evidence that decides the claim,
+    so it is passed in and a contradicted or unverifiable claim blocks
+    exactly as an unfetched reference does.
+    """
     if not index_path.exists():
         return _skip_check("corpus-attachment-fidelity", "index.db not present")
     try:
         index = _open_ro(index_path)
     except sqlite3.Error as exc:
         return _error_check("corpus-attachment-fidelity", f"could not open index.db: {exc}", exc=exc)
+    store = BlobStore(archive_root / "blob")
     try:
-        evidence = audit_attachment_fidelity(index)
+        evidence = audit_attachment_fidelity(index, blob_present=store.exists)
     except sqlite3.Error as exc:
         return _error_check("corpus-attachment-fidelity", f"could not read index.db: {exc}", exc=exc)
     finally:
         index.close()
     unfetched = int(evidence["refs_unfetched"])
     unprovenanced_unavailable = int(evidence["refs_unavailable_without_provenance"])
-    blocking_count = unfetched + unprovenanced_unavailable
+    contradicted = int(evidence["refs_acquired_contradicted"])
+    unverifiable = int(evidence["refs_acquired_unverifiable"])
+    blocking_count = unfetched + unprovenanced_unavailable + contradicted + unverifiable
+    if contradicted or unverifiable:
+        summary = (
+            f"{contradicted:,} acquired attachment reference(s) name blob bytes the store does not hold, "
+            f"{unverifiable:,} claim acquisition with no blob identity"
+        )
+    elif unfetched:
+        summary = f"{unfetched:,} attachment reference(s) remain unfetched"
+    elif unprovenanced_unavailable:
+        summary = f"{unprovenanced_unavailable:,} unavailable attachment reference(s) lack structured provenance"
+    else:
+        summary = (
+            f"all {evidence['refs_acquired_with_bytes']:,} acquired attachment reference(s) have readable bytes "
+            f"({evidence['refs_unavailable']:,} typed unavailable)"
+        )
     return ArchiveVerificationCheck(
         name="corpus-attachment-fidelity",
         status=OutcomeStatus.ERROR if blocking_count else OutcomeStatus.OK,
-        summary=(
-            f"{unfetched:,} attachment reference(s) remain unfetched"
-            if unfetched
-            else f"{unprovenanced_unavailable:,} unavailable attachment reference(s) lack structured provenance"
-            if unprovenanced_unavailable
-            else f"all attachment references are acquired or typed unavailable ({evidence['refs_unavailable']:,} unavailable)"
-        ),
+        summary=summary,
         count=blocking_count,
         evidence=evidence,
     )

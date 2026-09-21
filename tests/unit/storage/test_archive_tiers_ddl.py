@@ -121,6 +121,68 @@ def test_a_message_with_neither_identity_is_refused_by_the_index_schema(tmp_path
         conn.close()
 
 
+def test_a_block_cannot_claim_a_session_its_message_does_not_belong_to(tmp_path: Path) -> None:
+    """``blocks``'s two owner keys must agree by construction (polylogue-asp4b).
+
+    ``session_id`` is a denormalized owner key kept for query locality. With
+    two independent single-column references -- ``message_id`` to
+    ``messages`` and ``session_id`` to ``sessions`` -- the schema accepted a
+    block whose message belonged to session A while its own ``session_id``
+    said B. ``PRAGMA foreign_key_check`` stayed clean, the session-scoped
+    read and the message-joined read disagreed about which session owned the
+    block, and deleting session B cascaded away a block of session A's
+    message. The compound FK to ``messages(message_id, session_id)`` makes the
+    contradiction unrepresentable.
+
+    Anti-vacuity: drop the ``FOREIGN KEY(message_id, session_id)`` constraint
+    from ``BLOCKS_SPEC.table_constraints`` (or drop the
+    ``UNIQUE(message_id, session_id)`` parent key from ``MESSAGES_SPEC``,
+    which makes SQLite refuse the reference) and the contradictory INSERT
+    succeeds with ``foreign_key_check`` clean. The agreeing insert and the
+    cascade assertion below fail if the fix is "forbid the denormalized
+    column" or "stop cascading".
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _apply_tier(conn, ArchiveTier.INDEX)
+        for native_id in ("owner-a", "other-b"):
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+                (native_id, "codex-session", _HASH),
+            )
+        conn.execute(
+            """
+            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash)
+            VALUES ('codex-session:owner-a', 'm0', 0, 'user', 'message', ?)
+            """,
+            (_HASH,),
+        )
+        message_id = str(conn.execute("SELECT message_id FROM messages").fetchone()["message_id"])
+
+        # The agreeing row is ordinary and must stay ordinary.
+        conn.execute(
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', 'owned')",
+            (message_id, "codex-session:owner-a"),
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
+            conn.execute(
+                "INSERT INTO blocks (message_id, session_id, position, block_type, text) "
+                "VALUES (?, ?, 1, 'text', 'claims the other session')",
+                (message_id, "codex-session:other-b"),
+            )
+
+        assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+        # The owning session still cascades its blocks away through messages.
+        conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:owner-a'")
+        assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] == 0
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
+
+
 def test_archive_tiers_index_generates_ids_and_actions_view(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     _apply_tier(conn, ArchiveTier.INDEX)
