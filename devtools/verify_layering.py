@@ -1273,9 +1273,13 @@ def main(argv: list[str] | None = None) -> int:
                 "baseline file to ratchet the count down"
             )
         for entry in sqlite_shrunk:
+            # ``_sqlite_degradation_findings`` reports content anchors, not
+            # per-file counts: the entry names the handler that is gone, so the
+            # remedy is dropping that anchor rather than lowering a number.
             print(
-                f"  {entry['file']}: {entry['observed']} improvised sqlite handler(s), baseline allows "
-                f"{entry['baseline']} -- lower the baseline entry to hold the ground"
+                f"  {entry['anchor']}: sqlite_degradation_anchor_no_longer_reproduces "
+                f"({entry['removed']} site(s) in {entry['file']}) -- drop this anchor from the baseline "
+                "to ratchet the ground down"
             )
     return 1 if violations or not gate.ok else 0
 

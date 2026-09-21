@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from devtools import required_gate, verify_layering
+from devtools.sqlite_degradation import census_sqlite_degradation_anchors
 
 
 def test_layering_no_violations_passes(tmp_path: Path) -> None:
@@ -159,6 +160,111 @@ def test_layering_ratchet_reports_stale_baseline_entry(
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "1 baseline entr" in out
+
+
+_DEGRADED_HANDLER_MODULE = """\
+import sqlite3
+
+
+def read(connection):
+    try:
+        return connection.execute("SELECT 1").fetchone()
+    except sqlite3.DatabaseError:
+        return None
+"""
+
+
+def _write_sqlite_degradation_fixture(tmp_path: Path, *, anchors: list[dict[str, object]]) -> None:
+    """Build a repo whose one degradation site is anchored by ``anchors``."""
+    package = tmp_path / "polylogue" / "storage"
+    package.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "polylogue" / "__init__.py").write_text('"""Fixture package."""\n', encoding="utf-8")
+    (tmp_path / "polylogue" / "storage" / "__init__.py").write_text('"""Fixture package."""\n', encoding="utf-8")
+    (package / "degraded.py").write_text(_DEGRADED_HANDLER_MODULE, encoding="utf-8")
+
+    plans_dir = tmp_path / "docs" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    baseline_ref = "docs/plans/sqlite-degradation-baseline.json"
+    (tmp_path / baseline_ref).write_text(
+        json.dumps({"rule": "fixture", "anchors": anchors}),
+        encoding="utf-8",
+    )
+    (plans_dir / "layering.yaml").write_text(
+        f"rules: []\nsqlite_degradation:\n  baseline: {baseline_ref}\n  roots: [polylogue]\n",
+        encoding="utf-8",
+    )
+
+
+def _fixture_anchor_digest(tmp_path: Path) -> str:
+    anchors = census_sqlite_degradation_anchors(tmp_path, ("polylogue",))
+    assert len(anchors) == 1, f"fixture should carry exactly one degradation site, got {sorted(anchors)}"
+    return next(iter(anchors))[1]
+
+
+def test_layering_plaintext_names_a_baseline_anchor_that_no_longer_reproduces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The human path must print the shrink finding, not raise on its own payload.
+
+    ``_sqlite_degradation_findings`` returns entries keyed file/anchor/digest/
+    removed. The plaintext printer read ``entry['observed']`` and
+    ``entry['baseline']`` -- a per-file-count shape from before the baseline
+    became content-anchored -- so every plaintext run with a non-reproducing
+    anchor died with ``KeyError: 'observed'`` while the ``--json`` form the
+    gate table uses stayed green (bd polylogue-0gcri).
+
+    Anti-vacuity: restore either ``entry['observed']`` or ``entry['baseline']``
+    in ``verify_layering.main`` and this raises ``KeyError`` instead of
+    asserting. A ``--json``-only test cannot see it, so this one never passes
+    ``--json``.
+    """
+    _write_sqlite_degradation_fixture(
+        tmp_path,
+        anchors=[
+            {"file": "polylogue/storage/gone.py", "digest": "0" * 40},
+        ],
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    exit_code = verify_layering.main([])
+
+    out = capsys.readouterr().out
+    assert exit_code == 1, "the fixture's unanchored live handler is a blocking finding"
+    assert "polylogue/storage/gone.py:" + "0" * 40 in out
+    assert "sqlite_degradation_anchor_no_longer_reproduces" in out
+    assert "observed" not in out
+
+
+def test_layering_plaintext_and_json_report_the_same_shrunk_anchors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The two surfaces name one set of findings, or the human path is a lie.
+
+    Anti-vacuity: printing a different anchor (or dropping the loop) leaves the
+    JSON anchor unnamed in the plaintext output and this fails.
+    """
+    _write_sqlite_degradation_fixture(tmp_path, anchors=[])
+    live_digest = _fixture_anchor_digest(tmp_path)
+    _write_sqlite_degradation_fixture(
+        tmp_path,
+        anchors=[
+            {"file": "polylogue/storage/degraded.py", "digest": live_digest},
+            {"file": "polylogue/storage/gone.py", "digest": "1" * 40, "count": 2},
+        ],
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    plaintext_code = verify_layering.main([])
+    plaintext = capsys.readouterr().out
+    json_code = verify_layering.main(["--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert plaintext_code == json_code
+
+    shrunk = payload["sqlite_degradation_shrunk"]
+    assert [entry["digest"] for entry in shrunk] == ["1" * 40]
+    for entry in shrunk:
+        assert str(entry["anchor"]) in plaintext
+        assert str(entry["removed"]) in plaintext
 
 
 def test_layering_cli_imports_storage_is_detected(tmp_path: Path) -> None:

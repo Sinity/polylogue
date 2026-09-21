@@ -17,7 +17,7 @@ cases fail.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -28,9 +28,11 @@ from polylogue.core.enums import BlockType, Origin, Provider, ToolOutcome, ToolR
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider
 from polylogue.sources.origin_specs import origin_specs, tool_outcome_unknown_reasons_for_origin
+from polylogue.sources.parsers.antigravity import looks_like_trajectory_db_path, parse_trajectory_db
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
+from polylogue.sources.parsers.claude import looks_like_ai, looks_like_claude_design, parse_ai, parse_design
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as parse_codex
@@ -233,43 +235,133 @@ def _hermes_payload(tool_content: str) -> dict[str, Any]:
     }
 
 
+def _claude_ai_payload(result_segment: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "uuid": "claude-ai-outcome",
+        "name": "outcome",
+        "created_at": "2026-04-01T10:00:00Z",
+        "chat_messages": [
+            {
+                "uuid": "m1",
+                "sender": "assistant",
+                "created_at": "2026-04-01T10:00:01Z",
+                "content": [{"type": "tool_use", "id": "toolu_1", "name": "web_search", "input": {"q": "x"}}],
+            },
+            {
+                "uuid": "m2",
+                "sender": "human",
+                "created_at": "2026-04-01T10:00:02Z",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "res", **result_segment},
+                ],
+            },
+        ],
+    }
+
+
+def _claude_design_payload() -> dict[str, Any]:
+    """Claude Design's structural success marker is the presence of ``output``.
+
+    The provider carries no result-status field, so an answered ``toolCall``
+    is the only outcome shape this origin can emit.
+    """
+    return {
+        "uuid": "claude-design-outcome",
+        "name": "outcome",
+        "project": {"uuid": "design-project-1"},
+        "messages": [
+            {"role": "user", "content": {"text": "make it"}},
+            {
+                "role": "assistant",
+                "content": {
+                    "uuid": "d1",
+                    "contentBlocks": [
+                        {
+                            "type": "tool_call",
+                            "toolCall": {"id": "toolu_d1", "name": "artifact", "input": {}, "output": "done"},
+                        }
+                    ],
+                },
+            },
+        ],
+    }
+
+
+def _antigravity_trajectory_db(root: Path, result_payload: str) -> Path:
+    path = root / "conversation.db"
+    connection = sqlite3.connect(path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (
+                idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT,
+                status TEXT, error_details TEXT
+            );
+            """
+        )
+        connection.execute("INSERT INTO trajectory_meta VALUES (?, ?)", ("trajectory-outcome", "cascade-outcome"))
+        connection.executemany(
+            "INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    0,
+                    "terminal_command",
+                    "v1",
+                    '{"tool_name":"shell","command":"printf hi","tool_id":"ag-1"}',
+                    None,
+                    None,
+                ),
+                (1, "tool_result", "v1", result_payload, None, None),
+            ],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    return path
+
+
+def _antigravity_session(root: Path, result_payload: str) -> ParsedSession:
+    return next(iter(parse_trajectory_db(_antigravity_trajectory_db(root, result_payload))))
+
+
 # --------------------------------------------------------------------------
 # Detection -> parser -> writer -> hydration -> actions -> public envelope
 # --------------------------------------------------------------------------
 
-_ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | None], ...] = (
+_ROUTES: tuple[tuple[str, Provider, Callable[[Path], ParsedSession], Triple, str | None], ...] = (
     (
         "claude-code-success",
         Provider.CLAUDE_CODE,
-        lambda: parse_code(_claude_code_records({"content": "ok", "is_error": False}), "cc-outcome"),
+        lambda _root: parse_code(_claude_code_records({"content": "ok", "is_error": False}), "cc-outcome"),
         (ToolOutcome.OK.value, 0, None),
         "outcome_success",
     ),
     (
         "claude-code-failure",
         Provider.CLAUDE_CODE,
-        lambda: parse_code(_claude_code_records({"content": "boom", "is_error": True}), "cc-outcome"),
+        lambda _root: parse_code(_claude_code_records({"content": "boom", "is_error": True}), "cc-outcome"),
         (ToolOutcome.ERROR.value, 1, None),
         "outcome_error",
     ),
     (
         "claude-code-absent-report",
         Provider.CLAUDE_CODE,
-        lambda: parse_code(_claude_code_records({"content": "Error: it failed, fatal"}), "cc-outcome"),
+        lambda _root: parse_code(_claude_code_records({"content": "Error: it failed, fatal"}), "cc-outcome"),
         (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
         "outcome_unknown",
     ),
     (
         "claude-code-unsupported-is-error-shape",
         Provider.CLAUDE_CODE,
-        lambda: parse_code(_claude_code_records({"content": "?", "is_error": "maybe"}), "cc-outcome"),
+        lambda _root: parse_code(_claude_code_records({"content": "?", "is_error": "maybe"}), "cc-outcome"),
         (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
         "outcome_unknown",
     ),
     (
         "claude-code-background-start-ack",
         Provider.CLAUDE_CODE,
-        lambda: parse_code(
+        lambda _root: parse_code(
             _claude_code_records(
                 {"content": "started", "is_error": False},
                 extra={"toolUseResult": {"backgroundTaskId": "bg-1"}},
@@ -282,63 +374,63 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | N
     (
         "codex-exit-code-only",
         Provider.CODEX,
-        lambda: parse_codex(_codex_records('{"exit_code": 3}'), "codex-outcome"),
+        lambda _root: parse_codex(_codex_records('{"exit_code": 3}'), "codex-outcome"),
         (ToolOutcome.ERROR.value, 1, None),
         "outcome_error",
     ),
     (
         "codex-absent-report",
         Provider.CODEX,
-        lambda: parse_codex(_codex_records("plain output"), "codex-outcome"),
+        lambda _root: parse_codex(_codex_records("plain output"), "codex-outcome"),
         (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
         "outcome_unknown",
     ),
     (
         "codex-truncated-envelope",
         Provider.CODEX,
-        lambda: parse_codex(_codex_records('{"output": "partial", "exit_c'), "codex-outcome"),
+        lambda _root: parse_codex(_codex_records('{"output": "partial", "exit_c'), "codex-outcome"),
         (ToolOutcome.UNKNOWN.value, None, TRUNCATED),
         "outcome_unknown",
     ),
     (
         "codex-unsupported-exit-code-type",
         Provider.CODEX,
-        lambda: parse_codex(_codex_records('{"exit_code": "0"}'), "codex-outcome"),
+        lambda _root: parse_codex(_codex_records('{"exit_code": "0"}'), "codex-outcome"),
         (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
         "outcome_unknown",
     ),
     (
         "chatgpt-terminal-success",
         Provider.CHATGPT,
-        lambda: parse_chatgpt(_chatgpt_payload("finished_successfully"), "chatgpt-outcome"),
+        lambda _root: parse_chatgpt(_chatgpt_payload("finished_successfully"), "chatgpt-outcome"),
         (ToolOutcome.OK.value, 0, None),
         "outcome_success",
     ),
     (
         "chatgpt-terminal-partial",
         Provider.CHATGPT,
-        lambda: parse_chatgpt(_chatgpt_payload("finished_partial_completion"), "chatgpt-outcome"),
+        lambda _root: parse_chatgpt(_chatgpt_payload("finished_partial_completion"), "chatgpt-outcome"),
         (ToolOutcome.ERROR.value, 1, None),
         "outcome_error",
     ),
     (
         "chatgpt-unconcluded",
         Provider.CHATGPT,
-        lambda: parse_chatgpt(_chatgpt_payload("in_progress"), "chatgpt-outcome"),
+        lambda _root: parse_chatgpt(_chatgpt_payload("in_progress"), "chatgpt-outcome"),
         (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
         "outcome_unknown",
     ),
     (
         "chatgpt-unmapped-status",
         Provider.CHATGPT,
-        lambda: parse_chatgpt(_chatgpt_payload("finished_with_something_new"), "chatgpt-outcome"),
+        lambda _root: parse_chatgpt(_chatgpt_payload("finished_with_something_new"), "chatgpt-outcome"),
         (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
         "outcome_unknown",
     ),
     (
         "gemini-cli-status-success",
         Provider.GEMINI_CLI,
-        lambda: parse_gemini_cli(
+        lambda _root: parse_gemini_cli(
             _gemini_cli_payload({"id": "tc-1", "name": "read_file", "status": "success", "resultDisplay": "ok"}),
             "gemini-outcome",
         ),
@@ -348,7 +440,7 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | N
     (
         "gemini-cli-status-error",
         Provider.GEMINI_CLI,
-        lambda: parse_gemini_cli(
+        lambda _root: parse_gemini_cli(
             _gemini_cli_payload({"id": "tc-1", "name": "read_file", "status": "error", "resultDisplay": "nope"}),
             "gemini-outcome",
         ),
@@ -358,7 +450,7 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | N
     (
         "gemini-cli-unmapped-status",
         Provider.GEMINI_CLI,
-        lambda: parse_gemini_cli(
+        lambda _root: parse_gemini_cli(
             _gemini_cli_payload({"id": "tc-1", "name": "read_file", "status": "awaiting_approval"}),
             "gemini-outcome",
         ),
@@ -368,7 +460,7 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | N
     (
         "gemini-cli-absent-status",
         Provider.GEMINI_CLI,
-        lambda: parse_gemini_cli(
+        lambda _root: parse_gemini_cli(
             _gemini_cli_payload({"id": "tc-1", "name": "read_file", "resultDisplay": "contents"}),
             "gemini-outcome",
         ),
@@ -378,28 +470,28 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | N
     (
         "hermes-exit-code",
         Provider.HERMES,
-        lambda: parse_hermes(_hermes_payload('{"output": "ran", "exit_code": 0}'), "hermes-outcome"),
+        lambda _root: parse_hermes(_hermes_payload('{"output": "ran", "exit_code": 0}'), "hermes-outcome"),
         (ToolOutcome.OK.value, 0, None),
         "outcome_success",
     ),
     (
         "hermes-error-envelope",
         Provider.HERMES,
-        lambda: parse_hermes(_hermes_payload('{"output": "", "error": "boom"}'), "hermes-outcome"),
+        lambda _root: parse_hermes(_hermes_payload('{"output": "", "error": "boom"}'), "hermes-outcome"),
         (ToolOutcome.ERROR.value, 1, None),
         "outcome_error",
     ),
     (
         "hermes-absent-report",
         Provider.HERMES,
-        lambda: parse_hermes(_hermes_payload("plain tool output"), "hermes-outcome"),
+        lambda _root: parse_hermes(_hermes_payload("plain tool output"), "hermes-outcome"),
         (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
         "outcome_unknown",
     ),
     (
         "hermes-truncated-envelope",
         Provider.HERMES,
-        lambda: parse_hermes(_hermes_payload('\x00json:{"output": "partial", "exit_c'), "hermes-outcome"),
+        lambda _root: parse_hermes(_hermes_payload('\x00json:{"output": "partial", "exit_c'), "hermes-outcome"),
         (ToolOutcome.UNKNOWN.value, None, TRUNCATED),
         "outcome_unknown",
     ),
@@ -409,30 +501,81 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | N
     (
         "aistudio-drive-outcome-ok",
         Provider.DRIVE,
-        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_OK"), "drive-outcome"),
+        lambda _root: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_OK"), "drive-outcome"),
         (ToolOutcome.OK.value, 0, None),
         None,
     ),
     (
         "aistudio-drive-outcome-failed",
         Provider.DRIVE,
-        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_FAILED"), "drive-outcome"),
+        lambda _root: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_FAILED"), "drive-outcome"),
         (ToolOutcome.ERROR.value, 1, None),
         None,
     ),
     (
         "aistudio-drive-unmapped-outcome",
         Provider.DRIVE,
-        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_SOMETHING_NEW"), "drive-outcome"),
+        lambda _root: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_SOMETHING_NEW"), "drive-outcome"),
         (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
         None,
     ),
     (
         "aistudio-drive-absent-outcome",
         Provider.DRIVE,
-        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload(None), "drive-outcome"),
+        lambda _root: parse_chunked_prompt(Provider.DRIVE, _drive_payload(None), "drive-outcome"),
         (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
         None,
+    ),
+    (
+        "hermes-unread-exit-code",
+        Provider.HERMES,
+        lambda _root: parse_hermes(_hermes_payload('\x00json:{"exit_code": "zero"}'), "hermes-outcome"),
+        (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "claude-ai-success",
+        Provider.CLAUDE_AI,
+        lambda _root: parse_ai(_claude_ai_payload({"is_error": False}), "claude-ai-outcome"),
+        (ToolOutcome.OK.value, 0, None),
+        "outcome_success",
+    ),
+    (
+        "claude-ai-absent-report",
+        Provider.CLAUDE_AI,
+        lambda _root: parse_ai(_claude_ai_payload({}), "claude-ai-outcome"),
+        (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "claude-ai-unsupported-is-error-shape",
+        Provider.CLAUDE_AI,
+        lambda _root: parse_ai(_claude_ai_payload({"is_error": "maybe"}), "claude-ai-outcome"),
+        (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "claude-design-answered-tool-call",
+        Provider.CLAUDE_DESIGN,
+        lambda _root: parse_design(_claude_design_payload(), "claude-design-outcome"),
+        (ToolOutcome.OK.value, 0, None),
+        "outcome_success",
+    ),
+    (
+        "antigravity-status-success",
+        Provider.ANTIGRAVITY,
+        lambda root: _antigravity_session(
+            root, '{"tool_name":"shell","output":"hi","status":"success","tool_id":"ag-1"}'
+        ),
+        (ToolOutcome.OK.value, 0, None),
+        "outcome_success",
+    ),
+    (
+        "antigravity-unsupported-step-verdict",
+        Provider.ANTIGRAVITY,
+        lambda root: _antigravity_session(root, '{"tool_name":"shell","output":"hi","tool_id":"ag-1"}'),
+        (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
+        "outcome_unknown",
     ),
 )
 
@@ -445,13 +588,13 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | N
 def test_provider_record_reaches_the_public_envelope_with_one_triple(
     label: str,
     provider: Provider,
-    build: Callable[[], ParsedSession],
+    build: Callable[[Path], ParsedSession],
     expected: Triple,
     expected_state: str | None,
     tmp_path: Path,
 ) -> None:
     """One provider record, one structural triple, identical at every surface."""
-    session = build()
+    session = build(tmp_path)
     result_blocks = [
         block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
     ]
@@ -470,7 +613,7 @@ def test_provider_record_reaches_the_public_envelope_with_one_triple(
         conn.close()
 
 
-def test_detection_routes_each_wire_record_to_the_parser_that_maps_its_outcome() -> None:
+def test_detection_routes_each_wire_record_to_the_parser_that_maps_its_outcome(tmp_path: Path) -> None:
     """The fixtures above are the shapes dispatch actually admits.
 
     Anti-vacuity: a fixture shaped so no detector claims it would still parse
@@ -483,6 +626,11 @@ def test_detection_routes_each_wire_record_to_the_parser_that_maps_its_outcome()
     assert looks_like_gemini_cli(_gemini_cli_payload({"id": "tc-1", "name": "read_file", "status": "success"}))
     assert looks_like_hermes(_hermes_payload("plain tool output"))
     assert drive_looks_like(_drive_payload("OUTCOME_OK"))
+    assert looks_like_ai(_claude_ai_payload({}))
+    assert looks_like_claude_design(_claude_design_payload())
+    assert looks_like_trajectory_db_path(
+        _antigravity_trajectory_db(tmp_path, '{"tool_name":"shell","output":"hi","tool_id":"ag-1"}')
+    )
 
 
 def test_unpaired_invocation_is_no_result_not_an_unknown_outcome(tmp_path: Path) -> None:
@@ -666,7 +814,7 @@ def test_hermes_off_type_success_is_unsupported_not_false() -> None:
     assert result_blocks[0].outcome_unknown_reason == UNSUPPORTED
 
 
-def test_an_unknown_outcome_never_coerces_to_a_reported_success() -> None:
+def test_an_unknown_outcome_never_coerces_to_a_reported_success(tmp_path: Path) -> None:
     """Coercing NULL to false is the failure this vocabulary exists to prevent.
 
     Anti-vacuity: replace ``is_error = None if outcome is UNKNOWN`` in
@@ -675,8 +823,10 @@ def test_an_unknown_outcome_never_coerces_to_a_reported_success() -> None:
     """
     unknown_routes = [route for route in _ROUTES if route[3][0] == ToolOutcome.UNKNOWN.value]
     assert unknown_routes, "no unknown-outcome route to check"
-    for _label, _provider, build, expected, _state in unknown_routes:
-        session = build()
+    for label, _provider, build, expected, _state in unknown_routes:
+        route_root = tmp_path / label
+        route_root.mkdir()
+        session = build(route_root)
         for message in session.messages:
             for block in message.blocks:
                 if block.type is BlockType.TOOL_RESULT:
@@ -755,8 +905,85 @@ def test_the_vocabulary_is_a_closed_partition_with_an_owner_for_every_member() -
     assert exercised == {reason.value for reason in ToolResultUnknownReason}
 
 
-def test_every_origin_that_can_produce_a_tool_result_declares_its_reasons() -> None:
+#: Declared ``(origin, reason)`` pairs that no route above exercises, each
+#: with the recorded evidence for why the origin's parser cannot derive it.
+#: This is the only permitted answer other than a route: an origin that
+#: declares a reason and neither routes nor records it fails below.
+_UNDERIVABLE_DECLARATIONS: Mapping[tuple[str, str], str] = {
+    (
+        Origin.CLAUDE_DESIGN_SESSION.value,
+        ToolResultUnknownReason.NOT_REPORTED.value,
+    ): (
+        "claude-design emits a tool_result only from _design_tool_call_blocks "
+        "(claude/ai_parser.py), which hardcodes is_error=False on the provider's "
+        "toolCall.output marker, so no parsed Claude Design result can carry an "
+        "unknown outcome. The declaration has no derivation site (bd polylogue-b6qba)."
+    ),
+    (
+        Origin.CLAUDE_DESIGN_SESSION.value,
+        ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT.value,
+    ): (
+        "Same derivation site as above: Claude Design carries no result-status "
+        "field at all, so there is no unreadable verdict for the parser to refuse."
+    ),
+}
+
+
+def test_every_declaring_origin_reaches_a_provider_route() -> None:
+    """The denominator is the origin declarations, never the route table.
+
+    An origin whose ``OriginSpec`` declares a tool-outcome unknown reason
+    asserts its parser can derive one; this proves a real provider record
+    exists above that reaches the archive through that parser.
+
+    Anti-vacuity: deriving the denominator from ``_ROUTES`` instead (the
+    pre-fix shape) makes this pass with antigravity, claude.ai and Claude
+    Design entirely unrouted. Adding a declaring origin without a route, or
+    deleting an origin's only route, reddens this.
+    """
+    routed = {origin_from_provider(route[1]).value for route in _ROUTES}
+    declaring = sorted(spec.origin.value for spec in origin_specs() if spec.tool_outcome_unknown_reasons)
+    assert declaring, "no origin declares a tool-outcome unknown reason; the denominator collapsed"
+    missing = [origin for origin in declaring if origin not in routed]
+    assert not missing, f"declaring origins with no provider route: {missing}"
+
+
+def test_every_declared_reason_is_routed_or_recorded_as_underivable() -> None:
+    """Every declared reason is either exercised by a route or explained.
+
+    Anti-vacuity: adding a reason to an origin's ``tool_outcome_unknown_reasons``
+    without either a route above or an ``_UNDERIVABLE_DECLARATIONS`` entry
+    fails here. Emptying ``_ROUTES`` fails here for every routed reason.
+    """
+    routed_pairs = {(origin_from_provider(route[1]).value, route[3][2]) for route in _ROUTES if route[3][2] is not None}
+    unexplained = [
+        (origin.value, reason.value)
+        for origin, reason in _declared_pairs()
+        if (origin.value, reason.value) not in routed_pairs
+        and (origin.value, reason.value) not in _UNDERIVABLE_DECLARATIONS
+    ]
+    assert not unexplained, f"declared reasons with neither a route nor a recorded reason: {unexplained}"
+
+
+def test_no_recorded_underivable_declaration_is_stale() -> None:
+    """The escape hatch cannot outlive the gap it records.
+
+    Anti-vacuity: routing a recorded pair, or dropping the declaration it
+    excuses, reddens this instead of leaving a silent permanent exemption.
+    """
+    routed_pairs = {(origin_from_provider(route[1]).value, route[3][2]) for route in _ROUTES if route[3][2] is not None}
+    declared_pairs = {(origin.value, reason.value) for origin, reason in _declared_pairs()}
+    for pair, evidence in _UNDERIVABLE_DECLARATIONS.items():
+        assert evidence.strip(), f"{pair} records no evidence"
+        assert pair not in routed_pairs, f"{pair} is routed now; delete its _UNDERIVABLE_DECLARATIONS entry"
+        assert pair in declared_pairs, f"{pair} is no longer declared; delete its _UNDERIVABLE_DECLARATIONS entry"
+
+
+def test_every_routed_origin_declares_its_reasons() -> None:
     """An executable origin whose parser can emit an unknown must own it.
+
+    The converse of the closure above, and the reason the route table cannot
+    be its own denominator: this direction alone can never see a gap.
 
     Anti-vacuity: clearing an origin's declaration makes its unknown results
     refuse at the writer, which the provider routes above then catch.
