@@ -105,6 +105,19 @@ class ShutdownReport:
     def clean(self) -> bool:
         return not self.orphaned and not self.failed
 
+    @property
+    def incomplete(self) -> bool:
+        """Whether a cancelled child outlived its deadline and is still live.
+
+        Distinct from :attr:`clean`, and the distinction is load-bearing for
+        the caller's ownership decision. A ``failed`` service already
+        terminated with an exception and cannot commit anything; an
+        ``orphaned`` one is running code we stopped waiting for. Only the
+        latter means the process must keep the archive lease, the pidfile and
+        rebuild exclusion, because only the latter can still write.
+        """
+        return bool(self.orphaned)
+
     def as_dict(self) -> dict[str, object]:
         return {
             "stopped": list(self.stopped),
@@ -330,7 +343,12 @@ class DaemonSupervisor:
 
         Tasks stop in reverse start order so a dependent never outlives what
         it depends on. Anything still running when its deadline expires is
-        reported by name as an orphan rather than silently abandoned.
+        reported by name as an orphan rather than silently abandoned, and the
+        report is :attr:`~ShutdownReport.incomplete` -- never ``stopped``. The
+        supervisor keeps that child in :data:`ServiceState.ORPHANED` and first-
+        writer-wins stops a later cancellation from settling ``stopped`` over
+        it, so the composition root's ownership decision reads one honest
+        state.
         """
         started = time.monotonic()
         stopped: list[str] = []

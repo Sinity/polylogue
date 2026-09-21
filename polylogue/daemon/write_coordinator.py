@@ -883,7 +883,10 @@ class DaemonWriteThreadBridge:
         """Borrow the already-owned loop for one staged operation publication."""
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("staged publication must run on the bridge's owner loop")
-        pending = asyncio.create_task(self._coordinator.run_sync(actor, function, *args, **kwargs))
+        pending = asyncio.create_task(
+            self._coordinator.run_sync(actor, function, *args, **kwargs),
+            name=f"polylogue-writer-staged:{actor}",
+        )
         try:
             return await asyncio.shield(pending)
         except asyncio.CancelledError:

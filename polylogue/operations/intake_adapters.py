@@ -48,6 +48,7 @@ __all__ = [
     "CallbackIntakeAdapter",
     "RawMaterializationIntakeAdapter",
     "RawMaterializationDiscovery",
+    "SubUnitHaltPolicy",
     "active_index_generation_is_empty",
     "build_intake_adapters",
     "clear_cold_build_generation",
@@ -619,6 +620,31 @@ class FileIntakeAdapter(IntakeAdapter):
                 self._after = position
 
 
+@dataclass(frozen=True, slots=True)
+class SubUnitHaltPolicy:
+    """Halt authority for the units *inside* one multiplexed intake class.
+
+    ``configured_local`` is one dispatcher class over every configured
+    source. Halting the class for one source's terminal refusal would stop
+    every sibling; not halting anything leaves the planner selecting a dead
+    source's files forever, which is polylogue-kqrbw: a source logged
+    "refusing further ingest until restart" once, and for the rest of the run
+    the planner kept selecting its files and 926 empty chunks each took the
+    writer lease.
+
+    The two callables are supplied by the daemon composition root, which owns
+    the durable halt registry. Keeping them as callables is deliberate: this
+    module is product-layer and must not acquire an import edge onto the
+    daemon's halt store to ask a yes/no question.
+    """
+
+    is_halted: Callable[[str], bool]
+    """Whether *unit name* is durably halted, asked at planning time."""
+
+    halt: Callable[[str, str], None]
+    """Record *unit name* as terminally refusing, with its reason."""
+
+
 class MultiplexIntakeAdapter(IntakeAdapter):
     """Bounded round-robin over several configured local file roots.
 
@@ -628,36 +654,80 @@ class MultiplexIntakeAdapter(IntakeAdapter):
     root position and delegates each item to its source adapter.
     """
 
-    def __init__(self, adapters: Sequence[IntakeAdapter]) -> None:
+    def __init__(self, adapters: Sequence[IntakeAdapter], *, halts: SubUnitHaltPolicy | None = None) -> None:
         if not adapters:
             raise ValueError("at least one file adapter is required")
         self.adapters = tuple(adapters)
+        self._halts = halts
         self._next = 0
         self._by_item: dict[str, IntakeAdapter] = {}
+
+    def schedulable_adapters(self) -> tuple[IntakeAdapter, ...]:
+        """Sub-adapters this pass may plan work for.
+
+        A halted source is excluded *here*, where work is selected. Its files
+        are never discovered, so nothing downstream forms a batch from them
+        or takes the writer lease on their behalf.
+        """
+        if self._halts is None:
+            return self.adapters
+        return tuple(
+            adapter
+            for adapter in self.adapters
+            if not (_sub_unit_name(adapter) and self._halts.is_halted(cast("str", _sub_unit_name(adapter))))
+        )
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         if limit <= 0:
             return ()
+        adapters = self.schedulable_adapters()
+        if not adapters:
+            return ()
         result: list[IntakeItem] = []
         owners: list[IntakeAdapter] = []
         start = self._next
-        for offset in range(len(self.adapters)):
-            adapter = self.adapters[(start + offset) % len(self.adapters)]
+        for offset in range(len(adapters)):
+            adapter = adapters[(start + offset) % len(adapters)]
             remaining = limit - len(result)
             if remaining <= 0:
                 break
             page = await adapter.discover(limit=remaining)
             result.extend(page)
             owners.extend([adapter] * len(page))
-        self._next = (start + 1) % len(self.adapters)
+        self._next = (start + 1) % len(adapters)
         self._by_item.update({item.item_id: adapter for item, adapter in zip(result, owners, strict=True)})
         return tuple(result[:limit])
+
+    def _isolate_sub_unit(self, adapter: IntakeAdapter, result: AdmissionResult) -> AdmissionResult:
+        """Convert one sub-unit's class-terminal refusal into that unit's halt.
+
+        The refusal is real but its blast radius is not the class. Recording
+        it against the source and returning a per-item ``TERMINAL`` keeps the
+        siblings in this class draining, which is the whole reason they share
+        a class identity rather than an outcome.
+        """
+        if result.outcome is not AdmissionOutcome.CLASS_TERMINAL:
+            return result
+        unit = _sub_unit_name(adapter)
+        if self._halts is None or unit is None:
+            return result
+        reason = result.reason or "source reported terminal failure"
+        self._halts.halt(unit, reason)
+        emit(
+            "daemon.intake.source_halted",
+            level=WARNING,
+            outcome="refused",
+            reason="terminal_refusal",
+            component=unit,
+            error_detail=reason,
+        )
+        return AdmissionResult(AdmissionOutcome.TERMINAL, reason=f"{unit}: {reason}")
 
     async def admit(self, item: IntakeItem) -> AdmissionResult:
         adapter = self._by_item.get(item.item_id)
         if adapter is None:
             return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="configured source item lost its adapter")
-        return await adapter.admit(item)
+        return self._isolate_sub_unit(adapter, await adapter.admit(item))
 
     async def admit_page(self, items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
         """Split one page along source ownership and admit each part as a page.
@@ -681,15 +751,27 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             admit_page = getattr(adapter, "admit_page", None)
             if admit_page is None:
                 for item in group:
-                    outcomes[item.item_id] = await adapter.admit(item)
+                    outcomes[item.item_id] = self._isolate_sub_unit(adapter, await adapter.admit(item))
                 continue
-            outcomes.update(await admit_page(tuple(group)))
+            for item_id, result in (await admit_page(tuple(group))).items():
+                outcomes[item_id] = self._isolate_sub_unit(adapter, result)
         return outcomes
 
     async def acknowledge(self, item: IntakeItem) -> None:
         adapter = self._by_item.pop(item.item_id, None)
         if adapter is not None:
             await adapter.acknowledge(item)
+
+
+def _sub_unit_name(adapter: IntakeAdapter) -> str | None:
+    """The halt identity of one sub-adapter, or ``None`` if it has none.
+
+    File adapters carry the configured source they read; anything else in a
+    multiplexed class has no unit of its own and is never halted separately.
+    """
+    source = getattr(adapter, "source", None)
+    name = getattr(source, "name", None)
+    return name if isinstance(name, str) and name else None
 
 
 class CallbackIntakeAdapter(IntakeAdapter):
@@ -1025,6 +1107,7 @@ def build_intake_adapters(
     hook_events_callback: Callable[..., Awaitable[AdmissionResult | int] | AdmissionResult | int] | None = None,
     hook_events_discover: Callable[[int], Awaitable[Sequence[tuple[str, int]]] | Sequence[tuple[str, int]]]
     | None = None,
+    source_halts: SubUnitHaltPolicy | None = None,
 ) -> tuple[tuple[str, IntakeAdapter], ...]:
     """Compose browser, hook, local, remote, admitted-raw and hook-event classes."""
 
@@ -1044,9 +1127,9 @@ def build_intake_adapters(
         else:
             local.append(FileIntakeAdapter(context, source, class_name="configured_local"))
     if local:
-        result.append(("configured_local", MultiplexIntakeAdapter(local)))
+        result.append(("configured_local", MultiplexIntakeAdapter(local, halts=source_halts)))
     if hook_carriers:
-        result.append(("hook_carrier", MultiplexIntakeAdapter(hook_carriers)))
+        result.append(("hook_carrier", MultiplexIntakeAdapter(hook_carriers, halts=source_halts)))
     if remote_callback is not None:
         result.append(("configured_remote", CallbackIntakeAdapter("configured_remote", remote_callback)))
     if raw_callback is not None:

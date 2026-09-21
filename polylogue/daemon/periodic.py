@@ -31,6 +31,7 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Literal
 
 from polylogue.logging import WARNING, emit
@@ -41,6 +42,22 @@ from polylogue.logging import WARNING, emit
 DEFAULT_JITTER_RATIO = 0.1
 
 OnError = Literal["record", "propagate"]
+
+
+class PassOutcome(str, Enum):
+    """What one cadence pass found, for loops that drain a backlog.
+
+    A loop that returns one of these from its work callable gets drain-cycle
+    accounting; a loop that returns anything else (every maintenance sweep
+    with no backlog of its own) is unaffected and reports nothing here.
+    """
+
+    PROGRESSED = "progressed"
+    """The pass did work. The backlog is not known to be empty."""
+
+    DRAINED = "drained"
+    """The pass completed and found nothing left to do."""
+
 
 #: How long a gated loop waits for watcher registration before
 #: proceeding without having observed it. One value, because every gated loop
@@ -73,6 +90,16 @@ class PeriodicLoopState:
     #: which is exactly the idle/stalled distinction the old loops lost.
     blocked_on: str | None = None
     blocked_since: float | None = None
+    #: Whether the last reported pass found the backlog empty. ``None`` on a
+    #: loop that does not report a pass outcome at all.
+    drained: bool | None = None
+    #: Completed drain cycles: the number of times this loop crossed from
+    #: "there was work" into "there is none". It counts *edges*, so a backlog
+    #: that is already empty and gets woken a hundred times still shows one.
+    #: An empty loop that kept re-announcing completion is how polylogue-09rn
+    #: turned an idle backlog into a 300-second spin.
+    drain_transitions: int = 0
+    last_drained_at: float | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -90,6 +117,9 @@ class PeriodicLoopState:
             "wakeups": self.wakeups,
             "blocked_on": self.blocked_on,
             "blocked_since": self.blocked_since,
+            "drained": self.drained,
+            "drain_transitions": self.drain_transitions,
+            "last_drained_at": self.last_drained_at,
         }
 
 
@@ -219,7 +249,7 @@ class PeriodicRunner:
                 continue
             state.last_run_started_at = self._clock()
             try:
-                await work()
+                outcome = await work()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -240,7 +270,24 @@ class PeriodicRunner:
             else:
                 state.runs += 1
                 state.last_run_completed_at = self._clock()
+                if isinstance(outcome, PassOutcome):
+                    self._record_pass_outcome(state, outcome)
             state.next_run_at = self._clock() + interval
+
+    def _record_pass_outcome(self, state: PeriodicLoopState, outcome: PassOutcome) -> None:
+        """Count the progressed -> drained edge, never the flat stretch after it.
+
+        The terminal transition belongs to the *cycle*, not to the pass: a
+        drained backlog woken again by an ingest that changed nothing has not
+        completed a second drain, and publishing one per wake is exactly the
+        idle resubmission this exists to make impossible. Re-arming happens
+        on the next pass that actually progresses.
+        """
+        drained = outcome is PassOutcome.DRAINED
+        if drained and state.drained is not True:
+            state.drain_transitions += 1
+            state.last_drained_at = self._clock()
+        state.drained = drained
 
     async def _delay(self, seconds: float) -> None:
         if self._sleep is None:
@@ -297,6 +344,7 @@ def periodic_loop_payload() -> dict[str, object]:
 __all__ = [
     "WATCHER_REGISTRATION_TIMEOUT_SECONDS",
     "DEFAULT_JITTER_RATIO",
+    "PassOutcome",
     "PeriodicGate",
     "PeriodicLoopState",
     "PeriodicRunner",

@@ -1534,3 +1534,173 @@ def test_a_directory_symlink_escaping_the_source_root_is_refused(tmp_path: Path)
     assert found == [kept]
     escapes = [record for record in records if record.get("reason") == "escaping_symlink"]
     assert [record["path"] for record in escapes] == [str(root / "escape")]
+
+
+# -- a halted *source* inside one multiplexed class -------------------------
+
+
+class _LeaseTakingSourceAdapter(FakeAdapter):
+    """A configured-source adapter that takes the writer lease to admit.
+
+    The lease is what the kqrbw incident actually wasted: 926 empty chunks
+    each held it for 1.0-3.1 s on behalf of a source that had already
+    refused. Counting acquisitions is what lets "zero subsequent lease
+    acquisitions attributable to it" be asserted rather than inferred from
+    the absence of discovery calls.
+
+    ``endless`` models the shape that made the waste unbounded: the source
+    had a 12,150-file backlog, so every pass found fresh work to select. A
+    fixed pending list would exhaust itself and hide the cost behind the
+    dispatcher's per-item isolation rather than behind the halt.
+    """
+
+    def __init__(
+        self,
+        source_name: str,
+        pending: Sequence[str],
+        *,
+        archive_root: Path,
+        endless: bool = False,
+        outcome_for: Callable[[IntakeItem], AdmissionResult] | None = None,
+    ) -> None:
+        super().__init__("configured_local", pending, outcome_for=outcome_for)
+        self.source = SimpleNamespace(name=source_name)
+        self.archive_root = archive_root
+        self.lease_acquisitions = 0
+        self._endless = endless
+        self._minted = 0
+
+    async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        if not self._endless:
+            return await super().discover(limit=limit)
+        self.discover_calls.append(limit)
+        items = []
+        for _ in range(max(0, limit)):
+            self._minted += 1
+            items.append(IntakeItem(item_id=f"{self.source.name}-{self._minted}", class_name=self.class_name))
+        return items
+
+    async def admit(self, item: IntakeItem) -> AdmissionResult:
+        from polylogue.core.write_lease import write_lease
+
+        with write_lease(f"test.intake.{self.source.name}", archive_root=self.archive_root):
+            self.lease_acquisitions += 1
+            return await super().admit(item)
+
+
+def _source_halt_policy(halts: HaltRegistry) -> Any:
+    from polylogue.operations.intake_adapters import SubUnitHaltPolicy
+
+    def _halt(name: str, message: str) -> None:
+        halts.halt(
+            unit_id(UnitKind.SOURCE, name),
+            reason=HaltReason.TERMINAL_REFUSAL,
+            message=message,
+            frame="daemon:1",
+        )
+
+    return SubUnitHaltPolicy(
+        is_halted=lambda name: halts.is_halted(unit_id(UnitKind.SOURCE, name)),
+        halt=_halt,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_source_in_terminal_refusal_stops_costing_the_writer_lease(tmp_path: Path) -> None:
+    """One dead source is excluded at planning; its siblings keep draining.
+
+    In production every configured source shares one ``configured_local``
+    class, so a class-grain halt is the wrong instrument twice over: halting
+    the class stops every healthy sibling, and not halting anything is
+    polylogue-kqrbw -- the planner kept selecting a dead source's files and
+    each empty chunk took the writer lease.
+
+    The halt is consulted where work is *selected*, not where it is
+    executed, so the page that carried the refusal is still admitted -- one
+    bounded page, not a run's worth. Everything after it costs nothing.
+
+    Anti-vacuity, both executed: remove the ``schedulable_adapters`` filter
+    from ``MultiplexIntakeAdapter.discover`` and the dead source is planned
+    again, so its lease count keeps climbing; make ``_isolate_sub_unit``
+    return the CLASS_TERMINAL unchanged and the whole class halts, so the
+    live sibling stops draining too.
+    """
+    from polylogue.operations.intake_adapters import MultiplexIntakeAdapter
+
+    halts = HaltRegistry(tmp_path)
+    dead = _LeaseTakingSourceAdapter(
+        "claude-code",
+        (),
+        archive_root=tmp_path,
+        endless=True,
+        outcome_for=lambda _item: AdmissionResult(
+            AdmissionOutcome.CLASS_TERMINAL, reason="refusing further ingest until restart"
+        ),
+    )
+    live = _LeaseTakingSourceAdapter("codex", ["x0", "x1"], archive_root=tmp_path)
+    multiplex = MultiplexIntakeAdapter((dead, live), halts=_source_halt_policy(halts))
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="configured_local", adapter=multiplex, page_size=8)],
+        halts=halts,
+        frame="daemon:1",
+    )
+
+    first = await dispatcher.run_once(budget=8)
+    leases_at_halt = dead.lease_acquisitions
+    discoveries_at_halt = len(dead.discover_calls)
+
+    assert halts.is_halted(unit_id(UnitKind.SOURCE, "claude-code"))
+    assert leases_at_halt >= 1, "the page that carried the refusal is admitted; everything after it is the defect"
+    # The class itself survives: the refusal belonged to one source.
+    assert not halts.is_halted(unit_id(UnitKind.INTAKE_CLASS, "configured_local"))
+    assert first.skipped_halted == ()
+
+    for _ in range(5):
+        await dispatcher.run_once(budget=8)
+
+    assert dead.lease_acquisitions == leases_at_halt, "a halted source kept taking the writer lease"
+    assert len(dead.discover_calls) == discoveries_at_halt, "a halted source was planned again"
+    assert dead.acknowledged == [], "a halted source's items were released as if handled"
+    assert live.acknowledged == ["x0", "x1"], "a sibling source stopped draining behind the halt"
+
+
+@pytest.mark.asyncio
+async def test_a_halted_source_survives_a_restart(tmp_path: Path) -> None:
+    """The halt is durable state, not this process' memory.
+
+    Anti-vacuity: drop the `_write_records` call from `HaltRegistry.halt` and
+    the reopened registry plans the dead source again. Executed.
+    """
+    from polylogue.operations.intake_adapters import MultiplexIntakeAdapter
+
+    halts = HaltRegistry(tmp_path)
+    halts.halt(
+        unit_id(UnitKind.SOURCE, "claude-code"),
+        reason=HaltReason.TERMINAL_REFUSAL,
+        message="refusing further ingest until restart",
+        frame="daemon:1",
+    )
+
+    dead = _LeaseTakingSourceAdapter("claude-code", ["c0"], archive_root=tmp_path)
+    live = _LeaseTakingSourceAdapter("codex", ["x0"], archive_root=tmp_path)
+    restarted = FairIntakeDispatcher(
+        [
+            IntakeClassSpec(
+                name="configured_local",
+                adapter=MultiplexIntakeAdapter((dead, live), halts=_source_halt_policy(HaltRegistry(tmp_path))),
+                page_size=8,
+            )
+        ],
+        halts=HaltRegistry(tmp_path),
+    )
+
+    await restarted.run_once(budget=8)
+
+    assert dead.discover_calls == []
+    assert dead.lease_acquisitions == 0
+    assert live.acknowledged == ["x0"]
+
+    record = HaltRegistry(tmp_path).record_for(unit_id(UnitKind.SOURCE, "claude-code"))
+    assert record is not None
+    assert record.reason is HaltReason.TERMINAL_REFUSAL
+    assert record.frame == "daemon:1"

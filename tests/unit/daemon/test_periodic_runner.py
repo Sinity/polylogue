@@ -343,3 +343,137 @@ def test_every_periodic_service_either_registers_a_cadence_or_is_a_named_residua
     from polylogue.daemon import judgment_automation
 
     assert "while True:" in inspect.getsource(judgment_automation.periodic_judgment_automation_sweep)
+
+
+# -- drained backlogs publish one terminal transition, not one per wake ------
+
+
+class _PassBarrier:
+    """A cadence wait the test opens one pass at a time.
+
+    Every wait parks here until :meth:`release` is called, so the number of
+    passes is a value the test sets rather than a consequence of wall-clock
+    time elapsing. That is what lets the spin regression below be observed
+    directly instead of inferred from a timeout.
+    """
+
+    def __init__(self) -> None:
+        self.waits = 0
+        self._open = asyncio.Event()
+
+    async def sleep(self, _seconds: float) -> None:
+        self.waits += 1
+        await self._open.wait()
+        self._open.clear()
+
+    def release(self) -> None:
+        self._open.set()
+
+
+@pytest.mark.asyncio
+async def test_a_drained_backlog_publishes_one_terminal_transition_per_cycle() -> None:
+    """Repeated empty passes are one drain, not one drain each.
+
+    polylogue-09rn is the shape this prevents: an already-empty backlog woken
+    again and again, announcing completion every time. The edge -- "there was
+    work, now there is none" -- is the terminal transition; the flat stretch
+    after it is not.
+
+    Anti-vacuity: drop the ``state.drained is not True`` guard in
+    ``_record_pass_outcome`` and the first assertion reads 4 instead of 1,
+    because every empty pass counts again. Executed.
+    """
+    from polylogue.daemon.periodic import PassOutcome
+
+    barrier = _PassBarrier()
+    runner = PeriodicRunner(jitter_ratio=0.0, rng=random.Random(0), sleep=barrier.sleep, clock=lambda: 0.0)
+    outcomes: list[PassOutcome] = [PassOutcome.DRAINED] * 4
+    passes = asyncio.Queue[int]()
+    index = 0
+
+    async def work() -> PassOutcome:
+        nonlocal index
+        outcome = outcomes[index]
+        index += 1
+        await passes.put(index)
+        return outcome
+
+    task = asyncio.create_task(runner.run("embedding_backlog", work, interval_s=3600.0, run_first=True))
+    try:
+        assert await asyncio.wait_for(passes.get(), timeout=2) == 1
+        for expected in (2, 3, 4):
+            barrier.release()
+            assert await asyncio.wait_for(passes.get(), timeout=2) == expected
+
+        state = runner.state("embedding_backlog")
+        assert state is not None
+        assert state.runs == 4
+        assert state.drained is True
+        assert state.drain_transitions == 1, "an empty backlog announced completion more than once"
+
+        # A pass that does work re-arms the cycle, and the next empty pass is a
+        # second, genuine terminal transition.
+        outcomes.extend([PassOutcome.PROGRESSED, PassOutcome.DRAINED])
+        for expected in (5, 6):
+            barrier.release()
+            assert await asyncio.wait_for(passes.get(), timeout=2) == expected
+        assert state.drain_transitions == 2
+        assert state.last_drained_at == 0.0
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_repeated_wakeups_on_a_drained_backlog_cannot_spin() -> None:
+    """One wake, one pass -- the loop always returns to its cadence wait.
+
+    The daemon wakes this loop from every committed ingest. When the backlog
+    is already drained each of those wakes must cost exactly one pass and
+    then park again; a consumed wakeup that stays set turns the cadence wait
+    into a no-op and the loop runs continuously.
+
+    Anti-vacuity: delete ``wakeup.clear()`` from
+    ``PeriodicRunner._sleep_until_woken`` and the final assertion sees the
+    pass count run away instead of holding at 3. Executed.
+    """
+    from polylogue.daemon.periodic import PassOutcome
+
+    barrier = _PassBarrier()
+    runner = PeriodicRunner(jitter_ratio=0.0, rng=random.Random(0), sleep=barrier.sleep, clock=lambda: 0.0)
+    wakeup = asyncio.Event()
+    passes = 0
+
+    async def work() -> PassOutcome:
+        nonlocal passes
+        passes += 1
+        return PassOutcome.DRAINED
+
+    task = asyncio.create_task(runner.run("embedding_backlog", work, interval_s=3600.0, wakeup=wakeup, run_first=True))
+    try:
+        # Pass 1 is the startup pass; passes 2 and 3 are the two wakes.
+        for _ in range(2):
+            while barrier.waits == 0 or passes == 0:
+                await asyncio.sleep(0)
+            before = passes
+            wakeup.set()
+            while passes == before:
+                await asyncio.sleep(0)
+
+        assert passes == 3
+        state = runner.state("embedding_backlog")
+        assert state is not None
+        assert state.wakeups == 2
+        assert state.drain_transitions == 1, "two idle wakes announced two drains"
+
+        # The loop is parked in its cadence wait, not looping. Turning the
+        # event loop over cannot produce another pass without another wake.
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert passes == 3, "the loop kept running without a wakeup or an elapsed cadence"
+        assert not wakeup.is_set()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
