@@ -24,11 +24,20 @@ if TYPE_CHECKING:
     from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.cli.root_request import RootModeRequest
 
+#: The declared bound on one completion request (``CompletionRequest.limit``
+#: is ``ge=1, le=200``).  Restated here rather than imported because this
+#: module is on the CLI's coldest path and must not pull in the Pydantic
+#: request models to lower a TAB press; the registry test proves the two
+#: agree.
+COMPLETION_LIMIT_BOUNDS: tuple[int, int] = (1, 200)
+
 __all__ = [
     "AGGREGATE_MODE_PARAMS",
+    "COMPLETION_LIMIT_BOUNDS",
     "aggregate_mode",
     "desugar_cli_retrieval_lane",
     "lower_cli_query",
+    "lower_completion",
     "lower_query_aggregate",
     "lower_query_units",
     "lower_session_read",
@@ -227,6 +236,26 @@ def lower_session_read(
     if continuation is not None:
         payload["continuation"] = continuation
     return OperationRequest("session.read", payload)
+
+
+def lower_completion(source: str, incomplete: str, *, limit: int) -> OperationRequest:
+    """Lower one archive-backed value completion onto ``completion``.
+
+    The bound is clamped into the declared request range instead of being
+    forwarded verbatim.  A completer that asks for more candidates than the
+    contract admits is refused by the request model, and a completer has no
+    channel to report a refusal on — so an out-of-range ``limit`` reached the
+    shell as an empty candidate list, which reads as "the archive has no
+    matching values".  That is the same lie the module's daemon-absent message
+    exists to avoid, so the one place that knows the CLI's bounds fixes it
+    here rather than letting each completer guess.
+    """
+
+    low, high = COMPLETION_LIMIT_BOUNDS
+    return OperationRequest(
+        "completion",
+        {"source": source, "incomplete": incomplete, "limit": min(high, max(low, int(limit)))},
+    )
 
 
 def lower_session_reference(expression: str, *, limit: int | None = None) -> OperationRequest:

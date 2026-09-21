@@ -22,8 +22,9 @@ from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS
 
 #: Operations that are declared but not yet reachable from a CLI route.  This
 #: set is closed on purpose: a new declaration is red until someone either
-#: binds it or adds it here with the step that adopts it.
-EXPECTED_PENDING_ADOPTION = frozenset({"completion"})
+#: binds it or adds it here with the step that adopts it.  It is empty --
+#: every declared operation the CLI serves has a lowering and a renderer.
+EXPECTED_PENDING_ADOPTION: frozenset[str] = frozenset()
 
 
 def test_every_declared_operation_is_classified_exactly_once() -> None:
@@ -44,6 +45,44 @@ def test_pending_adoption_stays_closed() -> None:
     assert set(CLI_PENDING_ADOPTION) == EXPECTED_PENDING_ADOPTION
     for operation, reason in CLI_PENDING_ADOPTION.items():
         assert reason.strip(), operation
+
+
+def test_completion_is_bound_to_a_lowering_and_a_renderer() -> None:
+    """The archive-backed completer is a served route, not a deferred one.
+
+    Mutation: return ``completion`` to ``CLI_PENDING_ADOPTION`` and the
+    lookup raises instead of naming the two callables -- which is the state
+    the registry described while the code had already moved on, because a
+    parked reason string is never checked against the code it describes.
+    """
+
+    binding = binding_for("completion")
+    assert binding.lowering == "polylogue.cli.lowering:lower_completion"
+    assert binding.renderers == ("polylogue.cli.shell_completion_values:render_completion_values",)
+    assert callable(resolve_reference(binding.lowering))
+    assert callable(resolve_reference(binding.renderers[0]))
+
+
+def test_completion_lowering_clamps_into_the_declared_request_bound() -> None:
+    """Mutation: forward the caller's ``limit`` verbatim and the declared
+    request model refuses it, which reaches a shell as an empty candidate list
+    indistinguishable from "no matching values"."""
+
+    from polylogue.cli.lowering import COMPLETION_LIMIT_BOUNDS, lower_completion
+    from polylogue.operations.daemon_protocol import CompletionRequest
+
+    low, high = COMPLETION_LIMIT_BOUNDS
+    assert (low, high) == (
+        CompletionRequest.model_fields["limit"].metadata[0].ge,
+        CompletionRequest.model_fields["limit"].metadata[1].le,
+    )
+    assert lower_completion("tag", "", limit=32).payload["limit"] == 32
+    for out_of_range in (0, -5, high + 1, 10_000):
+        payload = lower_completion("tag", "pre", limit=out_of_range).payload
+        bound = payload["limit"]
+        assert isinstance(bound, int)
+        assert low <= bound <= high
+        CompletionRequest.model_validate(payload)
 
 
 @pytest.mark.parametrize("operation", sorted(CLI_OPERATION_BINDINGS))

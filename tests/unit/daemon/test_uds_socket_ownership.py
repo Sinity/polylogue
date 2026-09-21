@@ -113,7 +113,7 @@ def test_the_client_withholds_the_bearer_from_a_foreign_peer(monkeypatch: pytest
 
         client = DaemonClient(socket_path, timeout_s=1.0, auth_token="machine-bearer")
         with pytest.raises(DaemonSocketOwnershipError) as excinfo:
-            client.request_json("POST", "/api/operation", {"operation": "status"})
+            client.operation("status", {})
         assert "refusing to send the machine bearer" in str(excinfo.value)
     finally:
         thread.join(timeout=1.0)
