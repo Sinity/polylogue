@@ -804,3 +804,48 @@ def test_the_shipped_profile_is_the_charge_the_slice_accounts() -> None:
     assert MEASURED_CHARGE.worker_cache_mib > 0, "page cache is part of what memory.high accounts"
     assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS) <= PYTEST_SLICE_MEMORY_HIGH_MIB
     assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS + 1) > PYTEST_SLICE_MEMORY_HIGH_MIB
+
+
+def test_the_sizing_receipt_records_the_estimate_a_run_was_admitted_on() -> None:
+    """polylogue-k1o3t 4: the estimate and its margin are recorded, not recomputed.
+
+    A run's measured cgroup peak is only evidence about admission if the
+    prediction it is compared against is on the receipt. The components were
+    already there; the two derived numbers a reader actually needs -- what the
+    chosen width was predicted to charge, and what that leaves under the
+    ceiling -- were not.
+
+    Anti-vacuity: drop ``admission_estimate`` from the sizing payload and a
+    receipt again states only the parts, so "the estimate matched the peak
+    within a stated margin" cannot be checked from the receipt at all. Make
+    the margin a fraction of the charge instead of the budget and the
+    over-budget case below stops being negative.
+    """
+    estimate = MEASURED_CHARGE.admission_estimate(3, 12288)
+
+    assert estimate["predicted_charge_mib"] == pytest.approx(MEASURED_CHARGE.charge_mib(3), abs=0.1)
+    assert estimate["budget_mib"] == 12288.0
+    assert estimate["margin_mib"] == pytest.approx(12288 - MEASURED_CHARGE.charge_mib(3), abs=0.1)
+    assert 0 < estimate["margin_fraction"] < 1
+
+    # A width that does not fit reports a negative margin rather than a
+    # clamped zero: the overrun is the fact, and hiding its sign is how a
+    # width that oom-killed the corpus twice looked admissible.
+    overrun = MEASURED_CHARGE.admission_estimate(40, 12288)
+    assert overrun["margin_mib"] < 0
+    assert overrun["margin_fraction"] < 0
+
+
+def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes() -> None:
+    """The receipt, not a recomputation, is what a later reader has.
+
+    Anti-vacuity: compute the estimate only at the call site and a sizing
+    payload from either basis carries the components without the conclusion.
+    """
+    _workers, sizing = memory_bounded_worker_cap(requested=3)
+
+    assert "predicted_charge_mib" in sizing
+    assert "margin_mib" in sizing
+    assert "margin_fraction" in sizing
+    assert sizing["budget_mib"] == pytest.approx(float(sizing["available_mib"]), abs=0.1)
+    assert sizing["predicted_charge_mib"] == pytest.approx(MEASURED_CHARGE.charge_mib(int(sizing["workers"])), abs=0.1)
