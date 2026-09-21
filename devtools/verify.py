@@ -399,6 +399,11 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     # environment value remains an intentional local policy and the CLI option
     # takes precedence inside pytest itself.
     env.setdefault("HYPOTHESIS_PROFILE", "default")
+    # Broad verification warms every shared archive on the controller once,
+    # instead of charging each worker's first consumer for a cold build.
+    # This opt-in is the BROAD verifier's alone: `devtools.run_tests` defines
+    # a function of the same name that deliberately does not set it, because a
+    # focused selection would pay the warm-up for archives it never opens.
     env["POLYLOGUE_BROAD_PREWARM"] = "1"
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
     env.pop("POLYLOGUE_CI", None)

@@ -1349,3 +1349,38 @@ def test_two_verify_runs_in_one_checkout_do_not_share_a_report_spool(
 
     assert spool.exists()
     assert all(not argument.endswith("verify-latest.xml") for argument in first)
+
+
+def test_a_focused_run_does_not_inherit_the_broad_archive_prewarm() -> None:
+    """polylogue-62j1f: a focused selection builds only what it asked for.
+
+    ``tests/conftest.py``'s ``pytest_sessionstart`` warms all seven shared
+    archives when ``POLYLOGUE_BROAD_PREWARM`` is set, which is right for the
+    broad verifier and wrong for a named selection. Measured on one head with
+    a warm artifact cache, interleaved off/on/off/on over a 12-test
+    devtools-only selection: 13.37 s / 26.29 s / 10.36 s / 25.65 s, and 24 vs
+    36 archive-tier initializations. The selection needs none of it.
+
+    The invariant is fragile by construction: ``run_tests`` and ``verify``
+    each define a ``_normalize_managed_pytest_environment``, and verify's SETS
+    the variable that run_tests' caller just popped. Routing the focused
+    runner through the wrong one of two identically-named functions would
+    reinstate the prewarm silently.
+
+    Anti-vacuity: call ``verify._normalize_managed_pytest_environment`` below
+    instead of ``run_tests``', or delete the pop in ``run_tests.run_focused``,
+    and the focused assertion goes red while the broad one still passes.
+    """
+    from devtools import run_tests
+
+    ambient = {"POLYLOGUE_BROAD_PREWARM": "1", "PATH": "/usr/bin"}
+
+    focused = dict(ambient)
+    focused.pop("POLYLOGUE_BROAD_PREWARM", None)
+    run_tests._normalize_managed_pytest_environment(focused)
+    assert "POLYLOGUE_BROAD_PREWARM" not in focused
+
+    # The broad verifier opts in deliberately, and must keep doing so.
+    broad = dict(ambient)
+    verify._normalize_managed_pytest_environment(broad)
+    assert broad["POLYLOGUE_BROAD_PREWARM"] == "1"

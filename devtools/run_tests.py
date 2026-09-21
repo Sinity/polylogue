@@ -550,6 +550,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         pytest_env = focused_pytest_env(run=run, artifacts=artifacts)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
+        # A named selection builds only what it asked for: the shared-archive
+        # warm-up in tests/conftest.py's pytest_sessionstart is the broad
+        # verifier's, and costs a focused run ~13 s and 12 archive-tier
+        # initializations it has no use for (polylogue-62j1f).
+        #
+        # HAZARD: `devtools.verify` defines a function of the SAME NAME whose
+        # body SETS this variable. The call below must stay this module's.
         pytest_env.pop("POLYLOGUE_BROAD_PREWARM", None)
         _normalize_managed_pytest_environment(pytest_env)
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(
