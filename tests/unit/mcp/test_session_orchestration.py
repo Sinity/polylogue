@@ -283,3 +283,90 @@ def test_projection_uses_stored_edges_and_excludes_inherited_calls() -> None:
     assert evidence.launches == []
     assert evidence.bead_mentions == []
     assert evidence.coverage["message_count"] == 1
+
+
+def test_unmeasured_token_lanes_are_a_distinct_bucket_from_measured_zero() -> None:
+    """A nullable lane must neither crash the projection nor read as a measured zero.
+
+    Anti-vacuity: ``Message``'s four token lanes default to ``None``, so a
+    fixture whose lanes are all populated exercises nothing. This one mixes
+    the three states that must stay apart -- measured-positive, measured-zero
+    and unmeasured -- and fails if the projection orders ``None`` against an
+    int (``TypeError``), folds ``None`` into ``0`` (the unmeasured message
+    would vanish from ``messages_with_unmeasured_token_lanes``), or folds a
+    measured ``0`` into the unmeasured bucket (the count would read 2).
+    """
+    from polylogue.analysis.orchestration_evidence import build_session_orchestration
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.message.models import Message
+    from polylogue.archive.session.domain_models import Session
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
+
+    session = Session(
+        id=SessionId("codex-session:lanes"),
+        origin=Origin.CODEX_SESSION,
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="codex-session:lanes:n:measured",
+                    role=Role.ASSISTANT,
+                    input_tokens=10,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
+                ),
+                Message(
+                    id="codex-session:lanes:n:partial",
+                    role=Role.ASSISTANT,
+                    input_tokens=5,
+                    output_tokens=7,
+                    cache_read_tokens=0,
+                    cache_write_tokens=None,
+                ),
+            ]
+        ),
+    )
+
+    evidence = build_session_orchestration(session, None)
+
+    usage = evidence.usage
+    assert usage["message_tokens_lower_bound"] == {"input_tokens": 15, "output_tokens": 7}
+    assert usage["messages_with_positive_tokens"] == 2
+    assert usage["messages_with_unmeasured_token_lanes"] == 1
+    assert usage["unmeasured_token_lane_messages"] == {"cache_write_tokens": 1}
+    assert usage["message_token_lane_scope"] == 2
+    assert "message_token_lanes_unmeasured" in evidence.gaps
+
+
+def test_all_measured_lanes_report_no_unmeasured_bucket() -> None:
+    """The other direction: measured zeros must not manufacture an unmeasured gap."""
+    from polylogue.analysis.orchestration_evidence import build_session_orchestration
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.message.models import Message
+    from polylogue.archive.session.domain_models import Session
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
+
+    session = Session(
+        id=SessionId("codex-session:measured"),
+        origin=Origin.CODEX_SESSION,
+        messages=MessageCollection(
+            messages=[
+                Message(
+                    id="codex-session:measured:n:m1",
+                    role=Role.ASSISTANT,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
+                )
+            ]
+        ),
+    )
+
+    evidence = build_session_orchestration(session, None)
+
+    assert evidence.usage["messages_with_unmeasured_token_lanes"] == 0
+    assert evidence.usage["unmeasured_token_lane_messages"] is None
+    assert "message_token_lanes_unmeasured" not in evidence.gaps
