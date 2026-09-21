@@ -12,7 +12,12 @@ from typing import Any, Literal, Protocol, cast
 
 from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
-from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
+from polylogue.archive.query.expression import percentile_rank
+from polylogue.archive.query.metadata import (
+    COUNT_QUERY_FIELD_REGISTRY,
+    NUMERIC_QUERY_FIELD_REGISTRY,
+    query_unit_descriptor,
+)
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -588,6 +593,43 @@ class ArchiveQueryUnitMultiAggregateRow:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveAggMetricSpec:
+    """One named reducer the SQL aggregate builder must emit.
+
+    ``fn`` is ``count`` (field-less) or ``sum``/``avg``/``min``/``max``/``pNN``
+    over ``field``. The DSL-facing ``field`` name is resolved to the unit's own
+    column through the query-unit descriptor, so this spec stays a plain
+    request rather than a second field vocabulary.
+    """
+
+    label: str
+    fn: str
+    field: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveQueryUnitAggMetricRow:
+    """One group of a named-metric aggregate page."""
+
+    group_values: tuple[str, ...]
+    count: int
+    metrics: dict[str, float | int | None]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveQueryUnitAggMetricPage:
+    """A bounded named-metric aggregate page plus the exact full-result group count.
+
+    ``rows`` is bounded by the caller's page limit; ``total_groups`` counts
+    every group the predicate produced, so a page boundary never changes what
+    the aggregate means.
+    """
+
+    rows: tuple[ArchiveQueryUnitAggMetricRow, ...]
+    total_groups: int
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveQueryUnitMultiAggregatePage:
     """A bounded multi-field aggregate page plus exact full-result facts.
 
@@ -1108,6 +1150,47 @@ def _query_unit_multi_group_field_sql(unit: str, row_alias: str, field: str) -> 
         missing = f"CASE WHEN {raw} IS NULL THEN 1 ELSE 0 END"
     unknown = f"CASE WHEN {raw} IS NOT NULL AND LOWER(CAST({raw} AS TEXT)) = 'unknown' THEN 1 ELSE 0 END"
     return _MultiAggregateFieldSQL(value=value, missing=missing, unknown=unknown)
+
+
+#: SQLite reducer for each non-percentile, field-bearing ``| agg ...`` metric.
+#: ``count`` is answered by the group's own ``COUNT(*)`` and percentiles use a
+#: nearest-rank window, so neither appears here.
+_SQL_AGGREGATE_FUNCTION_BY_METRIC: dict[str, str] = {
+    "sum": "SUM",
+    "avg": "AVG",
+    "min": "MIN",
+    "max": "MAX",
+}
+
+
+def _query_unit_metric_value_sql(unit: str, row_alias: str, field: str) -> str:
+    """Return the REAL-valued SQL expression for one declared aggregate metric field.
+
+    The field must be declared in the unit's
+    :attr:`~polylogue.archive.query.metadata.QueryUnitDescriptor.aggregate_metric_fields`,
+    which is a closed vocabulary the parser has already validated. Membership is
+    re-checked here so the composed SQL can never name an undeclared column.
+    """
+
+    descriptor = query_unit_descriptor(cast(Any, unit))
+    if descriptor is None or field not in descriptor.aggregate_metric_fields:
+        raise ValueError(f"unsupported {unit} aggregate metric field: {field}")
+    return f"CAST({row_alias}.{field} AS REAL)"
+
+
+def _agg_metric_value(spec: ArchiveAggMetricSpec, value: object, row_count: int) -> float | int | None:
+    """Return one reducer's typed result for a group.
+
+    ``count`` is the group's row count. Every other reducer is ``None`` for a
+    group with no non-NULL values, matching a Python reducer over an empty
+    sequence, and a float otherwise.
+    """
+
+    if spec.fn == "count" or spec.field is None:
+        return int(row_count)
+    if value is None:
+        return None
+    return float(cast(Any, value))
 
 
 def _query_unit_multi_aggregate_order(
@@ -3189,6 +3272,227 @@ def query_unit_multi_counts(
         denominator=int(stats_row["denominator"]),
         missing_counts=tuple(int(stats_row[f"missing_{index}"]) for index in range(len(fields))),
         unknown_counts=tuple(int(stats_row[f"unknown_{index}"]) for index in range(len(fields))),
+    )
+
+
+def query_unit_agg_metrics(
+    self: _ArchiveQueryReadsHost,
+    unit: str,
+    predicate: QueryPredicate,
+    *,
+    group_by: Sequence[str] = (),
+    metrics: Sequence[ArchiveAggMetricSpec],
+    limit: int = 50,
+    offset: int = 0,
+    session_filters: Mapping[str, object] | None = None,
+) -> ArchiveQueryUnitAggMetricPage:
+    """Return one bounded page of named sum/avg/min/max/percentile metrics.
+
+    Every reducer is evaluated by SQLite over the complete predicate-matching
+    relation. Python retains only the requested aggregate page, so the answer
+    does not change regime with the size of the match set. Grouping reproduces
+    the multi-field count lowerer's lossless value contract (``[missing]`` for
+    NULL, otherwise the value cast to text), and percentiles use exact-integer
+    nearest rank -- ``ceil(rank * n / 100)`` computed in integer arithmetic.
+    """
+
+    fields = tuple(str(field).strip() for field in group_by if str(field).strip())
+    metric_specs = tuple(metrics)
+    if not metric_specs:
+        raise ValueError("named-metric aggregation requires at least one metric")
+    normalized_limit = max(int(limit), 0)
+    normalized_offset = max(int(offset), 0)
+    if unit == "assertion":
+        self.require_user_tier()
+
+    row_alias = _QUERY_UNIT_ROW_ALIAS.get(unit)
+    if row_alias is None:
+        raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate metrics")
+
+    active_session_filters = _session_filter_is_active(session_filters)
+    needs_session = (
+        unit != "observed-event"
+        or active_session_filters
+        or any(_query_unit_group_uses_session(field) for field in fields)
+        or _predicate_uses_session_scope(predicate)
+    )
+    session_alias = "s" if needs_session else None
+    clause, predicate_params = _structural_predicate_clause(
+        unit,
+        "a" if unit == "file" else row_alias,
+        predicate,
+        session_alias=session_alias,
+    )
+    where_clause = clause or "1=1"
+    session_clause = ""
+    session_params: list[object] = []
+    if needs_session and active_session_filters and session_filters is not None:
+        session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+
+    relation_params: list[object] = []
+    source_params: list[object] = []
+    prefix_sql = ""
+    selected_where_clause = where_clause
+    selected_session_clause = session_clause
+    source_ctes: list[str] = []
+    if unit == "file":
+        source_ctes.append(
+            f"""
+            file_rows AS (
+                SELECT
+                    a.session_id,
+                    REPLACE(a.tool_path, char(92), '/') AS path
+                FROM actions a
+                JOIN sessions s ON s.session_id = a.session_id
+                JOIN messages m ON m.message_id = a.message_id
+                WHERE a.tool_path IS NOT NULL
+                  AND a.tool_path != ''
+                  AND {where_clause}
+                  {session_clause}
+                GROUP BY a.session_id, path
+            )
+            """
+        )
+        from_sql = "file_rows f JOIN sessions s ON s.session_id = f.session_id"
+        selected_where_clause = "1=1"
+        selected_session_clause = ""
+    else:
+        action_needs_followup = unit == "action" and (
+            "followup_class" in fields or _action_query_needs_followup_relation(predicate)
+        )
+        action_relation_name = "actions"
+        if unit == "action":
+            prefix_sql, action_relation_name, relation_params = _action_relation_for_query(
+                predicate=predicate,
+                include_followup=action_needs_followup,
+            )
+        from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
+        from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
+        if unit == "observed-event":
+            source_where, source_params = observed_event_source_pushdown(predicate)
+            prefix_sql = observed_event_relation_sql(source_where=source_where)
+
+    group_columns = tuple(f"group_{index}" for index in range(len(fields)))
+    selected_expressions = [
+        f"{_query_unit_multi_group_field_sql(unit, row_alias, field).value} AS group_{index}"
+        for index, field in enumerate(fields)
+    ]
+    metric_fields = tuple(dict.fromkeys(spec.field for spec in metric_specs if spec.field is not None))
+    metric_column_by_field = {field: f"metric_{index}" for index, field in enumerate(metric_fields)}
+    selected_expressions.extend(
+        f"{_query_unit_metric_value_sql(unit, row_alias, field)} AS {metric_column_by_field[field]}"
+        for field in metric_fields
+    )
+
+    grouped_metric_columns: list[str] = []
+    percentile_ctes: list[str] = []
+    percentile_joins: list[str] = []
+    result_column_by_label: dict[str, str] = {}
+    partition_clause = f"PARTITION BY {', '.join(group_columns)}" if group_columns else ""
+    join_condition = " AND ".join(f"grouped.{column} = pct_{{index}}.{column}" for column in group_columns) or "1 = 1"
+    for index, spec in enumerate(metric_specs):
+        column = f"agg_{index}"
+        if spec.fn == "count" or spec.field is None:
+            result_column_by_label[spec.label] = "grouped.row_count"
+            continue
+        source_column = metric_column_by_field[spec.field]
+        rank = percentile_rank(spec.fn)
+        if rank is not None:
+            percentile_ctes.append(
+                f"""
+                pct_{index} AS (
+                    SELECT {", ".join((*group_columns, "value"))}
+                    FROM (
+                        SELECT
+                            {", ".join((*group_columns, f"{source_column} AS value"))},
+                            ROW_NUMBER() OVER ({partition_clause} ORDER BY {source_column}) AS rn,
+                            COUNT(*) OVER ({partition_clause}) AS n
+                        FROM selected
+                        WHERE {source_column} IS NOT NULL
+                    )
+                    WHERE rn = MAX(1, MIN(n, ({rank} * n + 99) / 100))
+                )
+                """
+            )
+            percentile_joins.append(f"LEFT JOIN pct_{index} ON {join_condition.format(index=index)}")
+            result_column_by_label[spec.label] = f"pct_{index}.value"
+            continue
+        if spec.fn not in _SQL_AGGREGATE_FUNCTION_BY_METRIC:
+            raise ValueError(f"unsupported agg function: {spec.fn!r}")
+        grouped_metric_columns.append(f"{_SQL_AGGREGATE_FUNCTION_BY_METRIC[spec.fn]}({source_column}) AS {column}")
+        result_column_by_label[spec.label] = f"grouped.{column}"
+
+    column_separator = ",\n                "
+    selected_columns_sql = column_separator.join(selected_expressions) if selected_expressions else "1 AS present"
+    selected_cte = f"""
+        selected AS (
+            SELECT
+                {selected_columns_sql}
+            FROM {from_sql}
+            WHERE {selected_where_clause}
+            {selected_session_clause}
+        )
+    """
+    grouped_columns_sql = column_separator.join((*group_columns, "COUNT(*) AS row_count", *grouped_metric_columns))
+    grouped_cte = f"""
+        grouped AS (
+            SELECT
+                {grouped_columns_sql}
+            FROM selected
+            GROUP BY {", ".join(group_columns) if group_columns else "NULL"}
+        )
+    """
+    order_clause = ", ".join(f"grouped.{column} ASC" for column in group_columns)
+    ranked_selection = column_separator.join(
+        (
+            *(f"grouped.{column}" for column in group_columns),
+            "grouped.row_count",
+            *(f"{result_column_by_label[spec.label]} AS result_{index}" for index, spec in enumerate(metric_specs)),
+        )
+    )
+    ranked_cte = f"""
+        ranked AS (
+            SELECT
+                {ranked_selection},
+                COUNT(*) OVER () AS total_groups,
+                ROW_NUMBER() OVER ({f"ORDER BY {order_clause}" if order_clause else ""}) AS ordinal
+            FROM grouped
+            {" ".join(percentile_joins)}
+        )
+    """
+    cte_sql = _append_query_ctes(prefix_sql, *source_ctes, selected_cte, grouped_cte, *percentile_ctes, ranked_cte)
+    rows = self._conn.execute(
+        f"""
+        {cte_sql}
+        SELECT *
+        FROM ranked
+        WHERE ordinal > ? AND ordinal <= ?
+        ORDER BY ordinal
+        """,
+        [
+            *relation_params,
+            *source_params,
+            *predicate_params,
+            *session_params,
+            normalized_offset,
+            normalized_offset + normalized_limit,
+        ],
+    ).fetchall()
+    if not rows:
+        return ArchiveQueryUnitAggMetricPage(rows=(), total_groups=0)
+    return ArchiveQueryUnitAggMetricPage(
+        rows=tuple(
+            ArchiveQueryUnitAggMetricRow(
+                group_values=tuple(str(row[column]) for column in group_columns),
+                count=int(row["row_count"]),
+                metrics={
+                    spec.label: _agg_metric_value(spec, row[f"result_{label_index}"], row["row_count"])
+                    for label_index, spec in enumerate(metric_specs)
+                },
+            )
+            for row in rows
+        ),
+        total_groups=int(rows[0]["total_groups"]),
     )
 
 

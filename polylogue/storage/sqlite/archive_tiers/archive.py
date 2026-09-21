@@ -154,6 +154,7 @@ from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers import archive_query_reads as _archive_query_reads
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
     ArchiveActionQueryRow,
+    ArchiveAggMetricSpec,
     ArchiveAssertionQueryRow,
     ArchiveBlockQueryRow,
     ArchiveContextSnapshotQueryRow,
@@ -164,6 +165,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
     ArchiveFileQueryRow,
     ArchiveMessageQueryRow,
     ArchiveObservedEventQueryRow,
+    ArchiveQueryUnitAggMetricPage,
     ArchiveQueryUnitAggregateRow,
     ArchiveQueryUnitMultiAggregatePage,
     ArchiveRunQueryRow,
@@ -6793,6 +6795,28 @@ class ArchiveStore:
             session_filters=session_filters,
         )
 
+    def query_unit_agg_metrics(
+        self,
+        unit: str,
+        predicate: QueryPredicate,
+        *,
+        group_by: Sequence[str] = (),
+        metrics: Sequence[ArchiveAggMetricSpec],
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+    ) -> ArchiveQueryUnitAggMetricPage:
+        return _archive_query_reads.query_unit_agg_metrics(
+            self,
+            unit,
+            predicate,
+            group_by=group_by,
+            metrics=metrics,
+            limit=limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
+
     def query_actions(
         self,
         predicate: QueryPredicate,
@@ -8784,7 +8808,9 @@ __all__ = [
     "ArchiveDelegationSubtreeRow",
     "ArchiveFileQueryRow",
     "ArchiveMessageQueryRow",
+    "ArchiveAggMetricSpec",
     "ArchiveObservedEventQueryRow",
+    "ArchiveQueryUnitAggMetricPage",
     "ArchiveQueryUnitAggregateRow",
     "ArchiveQueryUnitMultiAggregatePage",
     "ArchiveRawParsedWriteResult",

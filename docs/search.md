@@ -179,18 +179,14 @@ field raises a typed error naming the unit, the metric, and the supported
 field set. Metric labels are stable output keys: `count` for the count
 metric, otherwise `f"{fn}_{field}"` (e.g. `avg_word_count`).
 
-`avg`/`sum`/`min`/`max`/percentile reducers are **not** pushed down to SQL
-today — the `count`-only aggregate lowerer (`ArchiveStore.query_unit_counts`)
-computes exact grouped counts directly in SQL, but named-metric reduction
-fetches up to 50,000 predicate-matching rows through the unit's existing
-row query and reduces them in Python. The pipeline result payload reports
-this explicitly: `result.exact` is `true` when every matching row was
-fetched (the aggregate is exact), or `false` plus `result.sampled_rows` when
-the match set was larger than the cap (the aggregate is a bounded sample of
-the first 50,000 rows in time order, not the full population). Narrow the
-query with session/time/repo filters before trusting an `agg` result on a
-large archive; a `count`-only `| group by ... | count` stage stays exact at
-any scale because it is fully SQL-pushed.
+Every reducer is pushed down to SQL (`ArchiveStore.query_unit_agg_metrics`),
+so an `agg` result is exact at any scale: there is one regime, and a larger
+match set changes how long the query takes, never what the number means.
+Percentiles use exact-integer nearest rank — the reported value is the
+element at 1-based index `ceil(rank * n / 100)` of the group's non-NULL
+values in ascending order. A group with no non-NULL values for a field
+reports `null` for that field's reducers; `count` always reports the group's
+row count, including rows whose metric field is NULL.
 
 `runs`, `observed-events`, `context-snapshots`, and `delegations` are SQL-backed terminal rows
 over source-derived archive relations (polylogue-dab): main runs,
