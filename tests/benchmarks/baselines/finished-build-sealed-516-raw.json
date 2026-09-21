@@ -1,0 +1,935 @@
+{
+  "format": "polylogue.measurement-baseline.v1",
+  "host": {
+    "cpu_count": 24,
+    "free_threaded": true,
+    "machine": "x86_64",
+    "python_implementation": "CPython",
+    "python_version": "3.14.4",
+    "system": "Linux"
+  },
+  "measurement": {
+    "receipt": {
+      "archive_bytes": 214466560,
+      "arm": "deferred-index-fresh-shard",
+      "candidate_identity": "index-generation:gen-1789951706179-bc8fd37c",
+      "canonical_logical_digest": "f5e184806826b5790bb4af76d708376f642b73e9ac6d27bcee06a689d5330060",
+      "deferred_raw_count": 0,
+      "deferred_secondary_indexes": true,
+      "derived_table_census": [
+        "action_pairs",
+        "attachment_native_ids",
+        "attachment_refs",
+        "attachments",
+        "blocks",
+        "delegation_facts",
+        "delegation_refresh_scope",
+        "derived_refresh_guard",
+        "file_edits",
+        "messages",
+        "paste_spans",
+        "raw_revision_heads",
+        "repo_checkouts",
+        "repos",
+        "session_agent_policies",
+        "session_commits",
+        "session_events",
+        "session_identity_claims",
+        "session_latency_profiles",
+        "session_links",
+        "session_model_usage",
+        "session_phases",
+        "session_profiles",
+        "session_provider_usage_events",
+        "session_refs",
+        "session_repos",
+        "session_tags",
+        "session_usage_rollup_bindings",
+        "session_work_events",
+        "session_working_dirs",
+        "sessions",
+        "web_content_constructs",
+        "work_evidence_edges",
+        "work_evidence_graphs",
+        "work_evidence_nodes"
+      ],
+      "failed_raw_count": 0,
+      "fresh_build": true,
+      "fts_indexed_rows": 516,
+      "fts_source_rows": 516,
+      "ingested_raw_count": 516,
+      "input_digest": "b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed",
+      "metrics": {
+        "append_file_count": 0,
+        "archive_bytes_after": 214466560,
+        "archive_bytes_before": 0,
+        "archive_write_bytes_delta": 214466560,
+        "cgroup_memory_current_mb": null,
+        "cgroup_memory_peak_mb": null,
+        "cgroup_memory_swap_current_mb": null,
+        "cgroup_path": null,
+        "changed_session_count": 516,
+        "changed_session_ids": [],
+        "changed_session_ids_omitted": 0,
+        "convergence_time_s": 31.602297927543987,
+        "cursor_fingerprint_read_bytes": 0,
+        "deferred_file_count": 0,
+        "excluded_file_count": 0,
+        "excluded_reasons": {},
+        "failed_bytes": 0,
+        "failed_file_count": 0,
+        "failed_paths": [],
+        "files_per_second": 11.059042,
+        "full_file_count": 516,
+        "ingest_worker_count_max": 4,
+        "ingested_bytes": 210554832,
+        "ingested_mb_per_second": 4.512664,
+        "ingested_message_count": 0,
+        "ingested_session_count": 516,
+        "input_bytes": 210554832,
+        "needed_file_count": 516,
+        "new_sessions": [],
+        "new_sessions_omitted": 0,
+        "parse_time_s": 13.25158957747044,
+        "queued_file_count": 516,
+        "raw_compaction_runs": 0,
+        "read_amplification": 1.0,
+        "refused_bytes": 0,
+        "refused_bytes_by_reason": {},
+        "rss_current_mb": null,
+        "rss_peak_children_mb": null,
+        "rss_peak_self_mb": 1822.62890625,
+        "skipped_file_count": 0,
+        "source_group_count": 516,
+        "source_mb_per_second": 4.512664,
+        "source_payload_read_bytes": 210554832,
+        "stage_timings_s": {
+          "census": 6.580680435989052,
+          "census_receipt": 0.004516885994235054,
+          "replay.adoptable_check": 0.01825217710575089,
+          "replay.classify_cohort": 0.8087758687906899,
+          "revision_replay.index.attachments": 0.4833038922806736,
+          "revision_replay.index.delegation_facts": 0.0003568546671885997,
+          "revision_replay.index.full_replace": 2.2042643578606658,
+          "revision_replay.index.full_replace.action_pairs": 0.00037951706326566637,
+          "revision_replay.index.full_replace.field_path_union": 0.00099238968687132,
+          "revision_replay.index.full_replace.file_edits": 0.01353210920933634,
+          "revision_replay.index.full_replace.fts_probe": 0.00039114055107347667,
+          "revision_replay.index.full_replace.shard_copy": 1.7128752019780222,
+          "revision_replay.index.full_replace.web_constructs": 0.02754176771850325,
+          "revision_replay.index.graph_resolve": 0.11899694969179109,
+          "revision_replay.index.graph_resolve.inbound_dispatch_blocks": 0.0075615536770783365,
+          "revision_replay.index.graph_resolve.inbound_lookup": 0.023368122143438086,
+          "revision_replay.index.graph_resolve.outbound_links": 0.044081927044317126,
+          "revision_replay.index.graph_resolve.root_current_check": 0.0076121297897771,
+          "revision_replay.index.graph_resolve.root_init": 0.03292938100639731,
+          "revision_replay.index.ingest_flags": 0.009271103626815602,
+          "revision_replay.index.model_usage_seed": 0.020811143302125856,
+          "revision_replay.index.parent_links": 0.0033597342553548515,
+          "revision_replay.index.paste_spans": 0.0018345999415032566,
+          "revision_replay.index.prepare": 1.7293196509126574,
+          "revision_replay.index.provider_usage_rollup": 0.017820006207330152,
+          "revision_replay.index.repo_edges": 0.0035227596818003803,
+          "revision_replay.index.session_counts": 0.07638905080966651,
+          "revision_replay.index.session_events": 0.03153211445896886,
+          "revision_replay.index.session_link": 0.055208280798979104,
+          "revision_replay.index.session_refs": 0.0035660019202623516,
+          "revision_replay.index.session_upsert": 0.20371764717856422,
+          "revision_replay.index.working_dirs": 0.0013195468054618686,
+          "revision_replay.index_parsed_write": 5.202601824566955,
+          "spill_load": 6.670909141481388,
+          "spill_prefetch.consumed": 0.0,
+          "spill_prefetch.decode_concurrent": 30.041250056005083,
+          "spill_prefetch.hits": 0.0,
+          "spill_prefetch.reparse_hits": 1.0,
+          "total": 44.85388750501443
+        },
+        "stale_cursor_write_count": 0,
+        "succeeded_file_count": 516,
+        "time_budget_exceeded": false,
+        "total_time_s": 46.65865231002681,
+        "unaccounted_bytes": 0,
+        "updated_sessions": [],
+        "updated_sessions_omitted": 0
+      },
+      "offered_raw_count": 516,
+      "open_convergence_debt_count": 0,
+      "output_block_count": 516,
+      "output_message_count": 516,
+      "output_session_count": 516,
+      "public_index_count": 516,
+      "refused_raw_count": 0,
+      "resources": {
+        "child_cpu_seconds": 0.0,
+        "elapsed_seconds": 46.65865231002681,
+        "peak_rss_self_bytes": 1911164928,
+        "read_io_bytes": 958291968,
+        "self_cpu_seconds": 33.157476,
+        "storage_bytes": 214467383,
+        "write_io_bytes": 470355968
+      },
+      "route": {
+        "callable_identity": "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
+        "variant": "deferred-index-fresh-shard"
+      },
+      "schema_identity": "2bcf45c17b0a5103e6b1aaa09b0b9019334116071916f10cfd97cd1545822a45",
+      "schema_object_census": [
+        [
+          "index",
+          "idx_action_pairs_message"
+        ],
+        [
+          "index",
+          "idx_action_pairs_outcome"
+        ],
+        [
+          "index",
+          "idx_action_pairs_path"
+        ],
+        [
+          "index",
+          "idx_action_pairs_semantic"
+        ],
+        [
+          "index",
+          "idx_action_pairs_session_order"
+        ],
+        [
+          "index",
+          "idx_action_pairs_tool"
+        ],
+        [
+          "index",
+          "idx_action_pairs_tool_result_block"
+        ],
+        [
+          "index",
+          "idx_attachment_native_ids_native"
+        ],
+        [
+          "index",
+          "idx_attachment_refs_attachment"
+        ],
+        [
+          "index",
+          "idx_attachment_refs_message"
+        ],
+        [
+          "index",
+          "idx_attachment_refs_session"
+        ],
+        [
+          "index",
+          "idx_attachment_refs_upload_origin"
+        ],
+        [
+          "index",
+          "idx_blocks_content_hash"
+        ],
+        [
+          "index",
+          "idx_blocks_search_text_populated"
+        ],
+        [
+          "index",
+          "idx_blocks_session_position"
+        ],
+        [
+          "index",
+          "idx_blocks_tool_id"
+        ],
+        [
+          "index",
+          "idx_blocks_tool_result_outcome"
+        ],
+        [
+          "index",
+          "idx_blocks_type"
+        ],
+        [
+          "index",
+          "idx_blocks_type_tool"
+        ],
+        [
+          "index",
+          "idx_candidate_source_membership_pending"
+        ],
+        [
+          "index",
+          "idx_delegation_facts_model"
+        ],
+        [
+          "index",
+          "idx_delegation_facts_parent_order"
+        ],
+        [
+          "index",
+          "idx_delegation_facts_state"
+        ],
+        [
+          "index",
+          "idx_file_edits_file_path"
+        ],
+        [
+          "index",
+          "idx_file_edits_message"
+        ],
+        [
+          "index",
+          "idx_file_edits_session"
+        ],
+        [
+          "index",
+          "idx_messages_active_leaf"
+        ],
+        [
+          "index",
+          "idx_messages_active_path"
+        ],
+        [
+          "index",
+          "idx_messages_embedding_prose"
+        ],
+        [
+          "index",
+          "idx_messages_material_origin"
+        ],
+        [
+          "index",
+          "idx_messages_message_type"
+        ],
+        [
+          "index",
+          "idx_messages_parent"
+        ],
+        [
+          "index",
+          "idx_messages_role"
+        ],
+        [
+          "index",
+          "idx_messages_session_material_origin"
+        ],
+        [
+          "index",
+          "idx_messages_session_position"
+        ],
+        [
+          "index",
+          "idx_messages_session_role"
+        ],
+        [
+          "index",
+          "idx_messages_session_sortkey"
+        ],
+        [
+          "index",
+          "idx_paste_spans_session"
+        ],
+        [
+          "index",
+          "idx_raw_revision_applications_identity"
+        ],
+        [
+          "index",
+          "idx_raw_revision_applications_logical"
+        ],
+        [
+          "index",
+          "idx_repos_root_path"
+        ],
+        [
+          "index",
+          "idx_session_agent_policies_source_message"
+        ],
+        [
+          "index",
+          "idx_session_commits_hash"
+        ],
+        [
+          "index",
+          "idx_session_commits_repo"
+        ],
+        [
+          "index",
+          "idx_session_events_source_message"
+        ],
+        [
+          "index",
+          "idx_session_identity_claims_lookup"
+        ],
+        [
+          "index",
+          "idx_session_latency_profiles_date"
+        ],
+        [
+          "index",
+          "idx_session_latency_profiles_provider"
+        ],
+        [
+          "index",
+          "idx_session_latency_profiles_stuck"
+        ],
+        [
+          "index",
+          "idx_session_links_dst"
+        ],
+        [
+          "index",
+          "idx_session_links_dst_native"
+        ],
+        [
+          "index",
+          "idx_session_phases_session"
+        ],
+        [
+          "index",
+          "idx_session_profiles_canonical_date"
+        ],
+        [
+          "index",
+          "idx_session_profiles_first_message"
+        ],
+        [
+          "index",
+          "idx_session_profiles_logical_session"
+        ],
+        [
+          "index",
+          "idx_session_profiles_provider"
+        ],
+        [
+          "index",
+          "idx_session_profiles_sort"
+        ],
+        [
+          "index",
+          "idx_session_provider_usage_events_session"
+        ],
+        [
+          "index",
+          "idx_session_provider_usage_events_source_message"
+        ],
+        [
+          "index",
+          "idx_session_provider_usage_events_time_model"
+        ],
+        [
+          "index",
+          "idx_session_refs_kind"
+        ],
+        [
+          "index",
+          "idx_session_repos_repo"
+        ],
+        [
+          "index",
+          "idx_session_work_events_session"
+        ],
+        [
+          "index",
+          "idx_session_work_events_type"
+        ],
+        [
+          "index",
+          "idx_sessions_origin_sort"
+        ],
+        [
+          "index",
+          "idx_sessions_parent"
+        ],
+        [
+          "index",
+          "idx_sessions_raw_id"
+        ],
+        [
+          "index",
+          "idx_sessions_recent_order"
+        ],
+        [
+          "index",
+          "idx_sessions_root"
+        ],
+        [
+          "index",
+          "idx_sessions_sort_key"
+        ],
+        [
+          "index",
+          "idx_web_constructs_message"
+        ],
+        [
+          "index",
+          "idx_web_constructs_query"
+        ],
+        [
+          "index",
+          "idx_web_constructs_session_type"
+        ],
+        [
+          "index",
+          "idx_web_constructs_url"
+        ],
+        [
+          "index",
+          "idx_work_evidence_edges_kind_target"
+        ],
+        [
+          "index",
+          "idx_work_evidence_edges_source"
+        ],
+        [
+          "index",
+          "idx_work_evidence_edges_target"
+        ],
+        [
+          "table",
+          "action_pairs"
+        ],
+        [
+          "table",
+          "attachment_native_ids"
+        ],
+        [
+          "table",
+          "attachment_refs"
+        ],
+        [
+          "table",
+          "attachments"
+        ],
+        [
+          "table",
+          "blocks"
+        ],
+        [
+          "table",
+          "candidate_source_membership"
+        ],
+        [
+          "table",
+          "delegation_facts"
+        ],
+        [
+          "table",
+          "delegation_refresh_scope"
+        ],
+        [
+          "table",
+          "derived_refresh_guard"
+        ],
+        [
+          "table",
+          "file_edits"
+        ],
+        [
+          "table",
+          "messages"
+        ],
+        [
+          "table",
+          "messages_fts"
+        ],
+        [
+          "table",
+          "messages_fts_config"
+        ],
+        [
+          "table",
+          "messages_fts_data"
+        ],
+        [
+          "table",
+          "messages_fts_docsize"
+        ],
+        [
+          "table",
+          "messages_fts_identity"
+        ],
+        [
+          "table",
+          "messages_fts_idx"
+        ],
+        [
+          "table",
+          "paste_spans"
+        ],
+        [
+          "table",
+          "query_unit_frame_state"
+        ],
+        [
+          "table",
+          "raw_revision_applications"
+        ],
+        [
+          "table",
+          "raw_revision_heads"
+        ],
+        [
+          "table",
+          "repo_checkouts"
+        ],
+        [
+          "table",
+          "repos"
+        ],
+        [
+          "table",
+          "schema_identity"
+        ],
+        [
+          "table",
+          "session_agent_policies"
+        ],
+        [
+          "table",
+          "session_commits"
+        ],
+        [
+          "table",
+          "session_events"
+        ],
+        [
+          "table",
+          "session_identity_claims"
+        ],
+        [
+          "table",
+          "session_latency_profiles"
+        ],
+        [
+          "table",
+          "session_links"
+        ],
+        [
+          "table",
+          "session_model_usage"
+        ],
+        [
+          "table",
+          "session_phases"
+        ],
+        [
+          "table",
+          "session_profiles"
+        ],
+        [
+          "table",
+          "session_provider_usage_events"
+        ],
+        [
+          "table",
+          "session_refs"
+        ],
+        [
+          "table",
+          "session_repos"
+        ],
+        [
+          "table",
+          "session_tags"
+        ],
+        [
+          "table",
+          "session_usage_rollup_bindings"
+        ],
+        [
+          "table",
+          "session_work_events"
+        ],
+        [
+          "table",
+          "session_work_events_fts"
+        ],
+        [
+          "table",
+          "session_work_events_fts_config"
+        ],
+        [
+          "table",
+          "session_work_events_fts_content"
+        ],
+        [
+          "table",
+          "session_work_events_fts_data"
+        ],
+        [
+          "table",
+          "session_work_events_fts_docsize"
+        ],
+        [
+          "table",
+          "session_work_events_fts_idx"
+        ],
+        [
+          "table",
+          "session_working_dirs"
+        ],
+        [
+          "table",
+          "sessions"
+        ],
+        [
+          "table",
+          "web_content_constructs"
+        ],
+        [
+          "table",
+          "work_evidence_edges"
+        ],
+        [
+          "table",
+          "work_evidence_graphs"
+        ],
+        [
+          "table",
+          "work_evidence_nodes"
+        ],
+        [
+          "trigger",
+          "blocks_action_pairs_ad"
+        ],
+        [
+          "trigger",
+          "blocks_action_pairs_ai"
+        ],
+        [
+          "trigger",
+          "blocks_action_pairs_au"
+        ],
+        [
+          "trigger",
+          "messages_fts_ad"
+        ],
+        [
+          "trigger",
+          "messages_fts_ai"
+        ],
+        [
+          "trigger",
+          "messages_fts_au"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_blocks_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_blocks_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_blocks_update"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_delegation_facts_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_delegation_facts_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_delegation_facts_update"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_messages_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_messages_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_messages_update"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_links_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_links_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_links_update"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_profiles_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_profiles_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_profiles_update"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_tags_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_tags_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_tags_update"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_sessions_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_sessions_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_sessions_update"
+        ],
+        [
+          "trigger",
+          "session_links_delegation_facts_ai"
+        ],
+        [
+          "trigger",
+          "session_links_delegation_facts_au"
+        ],
+        [
+          "trigger",
+          "session_profiles_delegation_facts_ai"
+        ],
+        [
+          "trigger",
+          "session_profiles_delegation_facts_au"
+        ],
+        [
+          "trigger",
+          "session_work_events_fts_ad"
+        ],
+        [
+          "trigger",
+          "session_work_events_fts_ai"
+        ],
+        [
+          "trigger",
+          "session_work_events_fts_au"
+        ],
+        [
+          "view",
+          "actions"
+        ],
+        [
+          "view",
+          "delegation_facts_source"
+        ],
+        [
+          "view",
+          "session_tag_rollups"
+        ],
+        [
+          "view",
+          "thread_sessions"
+        ],
+        [
+          "view",
+          "threads"
+        ]
+      ],
+      "skipped_raw_count": 0,
+      "snapshot": "derived-model-equivalent-and-ready",
+      "stage_timings_s": {
+        "census": 6.580680435989052,
+        "census_receipt": 0.004516885994235054,
+        "replay.adoptable_check": 0.01825217710575089,
+        "replay.classify_cohort": 0.8087758687906899,
+        "revision_replay.index.attachments": 0.4833038922806736,
+        "revision_replay.index.delegation_facts": 0.0003568546671885997,
+        "revision_replay.index.full_replace": 2.2042643578606658,
+        "revision_replay.index.full_replace.action_pairs": 0.00037951706326566637,
+        "revision_replay.index.full_replace.field_path_union": 0.00099238968687132,
+        "revision_replay.index.full_replace.file_edits": 0.01353210920933634,
+        "revision_replay.index.full_replace.fts_probe": 0.00039114055107347667,
+        "revision_replay.index.full_replace.shard_copy": 1.7128752019780222,
+        "revision_replay.index.full_replace.web_constructs": 0.02754176771850325,
+        "revision_replay.index.graph_resolve": 0.11899694969179109,
+        "revision_replay.index.graph_resolve.inbound_dispatch_blocks": 0.0075615536770783365,
+        "revision_replay.index.graph_resolve.inbound_lookup": 0.023368122143438086,
+        "revision_replay.index.graph_resolve.outbound_links": 0.044081927044317126,
+        "revision_replay.index.graph_resolve.root_current_check": 0.0076121297897771,
+        "revision_replay.index.graph_resolve.root_init": 0.03292938100639731,
+        "revision_replay.index.ingest_flags": 0.009271103626815602,
+        "revision_replay.index.model_usage_seed": 0.020811143302125856,
+        "revision_replay.index.parent_links": 0.0033597342553548515,
+        "revision_replay.index.paste_spans": 0.0018345999415032566,
+        "revision_replay.index.prepare": 1.7293196509126574,
+        "revision_replay.index.provider_usage_rollup": 0.017820006207330152,
+        "revision_replay.index.repo_edges": 0.0035227596818003803,
+        "revision_replay.index.session_counts": 0.07638905080966651,
+        "revision_replay.index.session_events": 0.03153211445896886,
+        "revision_replay.index.session_link": 0.055208280798979104,
+        "revision_replay.index.session_refs": 0.0035660019202623516,
+        "revision_replay.index.session_upsert": 0.20371764717856422,
+        "revision_replay.index.working_dirs": 0.0013195468054618686,
+        "revision_replay.index_parsed_write": 5.202601824566955,
+        "spill_load": 6.670909141481388,
+        "spill_prefetch.consumed": 0.0,
+        "spill_prefetch.decode_concurrent": 30.041250056005083,
+        "spill_prefetch.hits": 0.0,
+        "spill_prefetch.reparse_hits": 1.0,
+        "total": 44.85388750501443
+      },
+      "work": {
+        "code_identity": "sha256:e56a02baa6bd9a26d2e101ab6a6a2cb996434fe58dc3a9a700436598bee659f5",
+        "profile_identity": "finished-build:sealed-516-raw:thread-4:owned-inactive-generation:session-shard",
+        "source_identity": "sha256:b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed"
+      },
+      "worker_count": 4,
+      "worker_mode": "thread",
+      "writer_apply_seconds": 31.602297927543987
+    },
+    "rejected_alternatives": [
+      {
+        "arm": "retained-index-inline",
+        "reason": "not the selected fresh-build transport profile"
+      },
+      {
+        "arm": "deferred-index-fresh-inline",
+        "reason": "does not exercise the selected sealed-shard transport"
+      },
+      {
+        "arm": "retained-index-shard",
+        "reason": "sealed shards require the owned inactive-generation route"
+      },
+      {
+        "arm": "deferred-index-fresh-shard-process",
+        "reason": "production raw replay dispatches parsing through ThreadPoolExecutor only"
+      }
+    ],
+    "source_census": {
+      "classified_full": 516,
+      "input_digest": "b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed",
+      "logical_key_count": 516,
+      "peak_rss_bytes": 413851648,
+      "quarantined": 0,
+      "scanned": 516,
+      "self_cpu_seconds": 6.643069000000001,
+      "wall_seconds": 7.04069556700415
+    },
+    "verdict": {
+      "conclusion": "single-arm-observation",
+      "reason": "one selected production profile; no transport or width ranking claimed"
+    }
+  },
+  "measurement_digest": "de9cd211e2892b1a71944abcab4458e26300f9b1f332b5efbbc3ae3c17457553",
+  "name": "finished-build-sealed-516-raw",
+  "reason": "First committed measurement for the sealed 516-raw finished build (polylogue-cjyfw). Run 2026-09-21 on the 24-core free-threaded CPython 3.14.4 workstation: one selected production arm (owned inactive generation, sealed session-shard transport, 4 parse threads) over the 210,554,832-byte sealed Codex slice; 46.7 s elapsed, 33.2 s self CPU, 1.91 GiB peak RSS, 214,467,383 archive bytes, zero refused/deferred/failed raws and zero open convergence debt. Explained-not-ratcheted: a later arm that moves these numbers records why it moved.",
+  "supersedes": null
+}
