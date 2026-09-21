@@ -1,0 +1,169 @@
+# Rebuild-entrypoint caller census -- read by `devtools gate rebuild-routes`.
+#
+# The campaign invariant is that a derived tier is rebuilt only by ordinary
+# daemon convergence. `devtools gate layering` was cited as its check and does
+# not check it: its writer census asks which file executes its own DML, so a
+# route that orchestrates existing tier writers is invisible to it. This file
+# is the declaration that makes the real criterion enforceable.
+#
+# `entrypoints` is policy: the functions that rebuild a derived tier. Add one
+# when a new derived-tier rebuild primitive appears; the gate refuses a name
+# here that resolves to no definition, so a rename cannot empty the census.
+#
+# `routes` is the census: every function the gate observes as a direct caller
+# of an entrypoint, or as an entry root of the upward closure (a reaching
+# function that no other reaching function calls). Both populations must be
+# declared. An entry may leave when its route is gone; a new one cannot appear
+# without this edit and its review.
+
+package: polylogue
+
+entrypoints:
+  - polylogue.pipeline.services.indexing.rebuild_index
+  - polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_async
+  - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+  - polylogue.storage.derived.session.rebuild.rebuild_session_insights_async
+  - polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
+
+# Forward reachability is computed from these seeds so a `daemon_convergence`
+# classification is proven rather than asserted. The analysis is an
+# under-approximation -- a stage body reached only through a registry or a
+# stored callable is not followed -- so being outside this reach is not proof
+# of anything, while being inside it is proof of reachability.
+convergence_stage_seeds:
+  - polylogue.daemon.convergence_stages.make_default_convergence_stages
+
+routes:
+  # ── Demo/fixture seeding ────────────────────────────────────────────
+  - function: polylogue.demo.seed._materialize_session_insights
+    kinds: [direct_caller]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: fixture_seeding
+    reason: >-
+      Seeds the deterministic demo archive. It is reached only from
+      apply_demo_post_ingest_augmentation, whose own entry points are declared
+      below. Not a route over an operator archive.
+
+  - function: polylogue.cli.commands.demo.seed_command
+    kinds: [entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: fixture_seeding
+    reason: >-
+      `polylogue demo seed` builds a throwaway demo archive in-process. It
+      refuses an unsafe target with DemoSeedTargetUnsafeError rather than
+      writing wherever it is pointed.
+
+  - function: polylogue.cli.commands.demo.receipts_command
+    kinds: [entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: fixture_seeding
+    reason: >-
+      `polylogue demo receipts` seeds its own polylogue-receipts-demo/archive
+      before rendering, through the same guarded seed_demo_archive.
+
+  - function: polylogue.cli.commands.demo.tour_command
+    kinds: [entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: fixture_seeding
+    reason: >-
+      `polylogue demo tour` runs run_demo_tour, which seeds the same demo
+      archive before measuring the tour budget.
+
+  # ── Daemon-hosted demo augmentation ─────────────────────────────────
+  - function: polylogue.operations.daemon_mutations.maintenance_demo_augment
+    kinds: [entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: daemon_operation
+    reason: >-
+      Handler for the declared `maintenance.demo.augment` operation
+      (polylogue/operations/daemon_protocol.py), capability-gated on
+      archive.demo_augment and executed inside the daemon under its authority.
+      It applies demo-only post-ingest writes over context.archive_root; it is
+      a root because the dispatcher resolves handlers by name.
+
+  - function: polylogue.daemon.http.DaemonAPIHandler._handle_demo_augment.augment
+    kinds: [entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: daemon_operation
+    reason: >-
+      POST /api/demo/augment runs the same demo augmentation on the daemon
+      write bridge. It reaches apply_demo_post_ingest_augmentation directly
+      rather than through the `maintenance.demo.augment` dispatcher, so it is a
+      second entry into one augmentation inside the daemon process -- recorded
+      here rather than hidden (follow-up: lower it onto the declared
+      operation).
+
+  # ── Reachable from no production caller at this head ────────────────
+  # Each of these is an exported rebuild route whose only callers are tests.
+  # They are the shape polylogue-sbebh exists to police: an orchestration-only
+  # route that executes no DML of its own and is invisible to the writer
+  # census. Recorded so none can quietly acquire a production caller.
+  - function: polylogue.operations.mutation_actuators.InsightsRebuildActuator.apply
+    kinds: [direct_caller, entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: unreached
+    reason: >-
+      Nothing under polylogue/ constructs InsightsRebuildActuator. The
+      `maintenance.insights.rebuild` operation is served by
+      execute_insights_rebuild_operation, which converges through
+      SessionInsightMaintenance and the shared session-profile owner, not
+      through this actuator.
+
+  - function: polylogue.pipeline.services.indexing.IndexService.rebuild_index
+    kinds: [direct_caller, entry_root]
+    entrypoints:
+      - polylogue.pipeline.services.indexing.rebuild_index
+      - polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_async
+    route: unreached
+    reason: >-
+      IndexService is re-exported from polylogue.pipeline but constructed by no
+      production caller; only tests instantiate it. A full FTS rebuild through
+      this class would be a second index-tier build path.
+
+  - function: polylogue.pipeline.services.indexing.rebuild_index
+    kinds: [direct_caller]
+    entrypoints:
+      - polylogue.pipeline.services.indexing.rebuild_index
+      - polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_async
+    route: unreached
+    reason: >-
+      The module-level FTS rebuild is called only by IndexService.rebuild_index
+      above, which has no production caller of its own.
+
+  - function: polylogue.storage.derived.session.derivation.publish_session_profile
+    kinds: [direct_caller, entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: unreached
+    reason: >-
+      Exported from derivation.py's __all__ and called only by tests. The
+      daemon's session-profile owner imports SessionProfileDerivation from the
+      same module (polylogue/operations/session_profile_convergence.py) and
+      never this function.
+
+  - function: polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
+    kinds: [direct_caller, entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: unreached
+    reason: >-
+      Its docstring still claims polylogue.api and
+      polylogue.storage.raw_convergence call it; at this head neither does, and
+      its only callers are tests and tests/visual/conftest.py.
+
+  - function: polylogue.storage.derived.session.rebuild.rebuild_session_insights_async
+    kinds: [entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_async
+    route: unreached
+    reason: >-
+      The async twin of rebuild_session_insights_sync is exported and exercised
+      only by tests; no production caller reaches it.
