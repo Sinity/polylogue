@@ -103,12 +103,185 @@ def test_scoped_foreign_key_check_reports_current_session_orphans(tmp_path: Path
             "table": "blocks",
             "rowid": 1,
             "parent": "messages",
-            "fkid": 1,
+            "fkid": 0,
             "session_id": "codex-session:new",
-            "message_id": "codex-session:new:new-missing-message",
-            "child_key": "codex-session:new:new-missing-message",
+            "child_key": {
+                "message_id": "codex-session:new:new-missing-message",
+                "session_id": "codex-session:new",
+            },
         }
     ]
+
+
+def _seed_two_sessions_and_one_message(conn: sqlite3.Connection) -> tuple[str, str]:
+    """Return (message_id, block_id), both owned by ``codex-session:a``."""
+    for native_id in ("a", "b"):
+        conn.execute(
+            "INSERT INTO sessions (origin, native_id, content_hash) VALUES ('codex-session', ?, zeroblob(32))",
+            (native_id,),
+        )
+    conn.execute(
+        """
+        INSERT INTO messages
+            (session_id, native_id, position, content_occurrence, role, content_identity, content_hash)
+        VALUES ('codex-session:a', 'm1', 0, 0, 'user', 'identity', zeroblob(32))
+        """
+    )
+    message_id = str(conn.execute("SELECT message_id FROM messages").fetchone()[0])
+    conn.execute(
+        """
+        INSERT INTO blocks (message_id, session_id, position, block_type, text)
+        VALUES (?, 'codex-session:a', 0, 'text', 'owned by a')
+        """,
+        (message_id,),
+    )
+    block_id = str(conn.execute("SELECT block_id FROM blocks").fetchone()[0])
+    conn.commit()
+    return message_id, block_id
+
+
+_CONTRADICTORY_ROWS: dict[str, str] = {
+    "blocks": """
+        INSERT INTO blocks (message_id, session_id, position, block_type, text)
+        VALUES (:message_id, 'codex-session:b', 1, 'text', 'two owners disagree')
+        """,
+    "web_content_constructs": """
+        INSERT INTO web_content_constructs
+            (session_id, message_id, block_id, position, provider, construct_type)
+        VALUES ('codex-session:b', :message_id, :block_id, 0, 'openai', 'search_query')
+        """,
+    "action_pairs": """
+        INSERT INTO action_pairs (tool_use_block_id, session_id, message_id)
+        VALUES (:block_id, 'codex-session:b', :message_id)
+        """,
+}
+
+
+@pytest.mark.parametrize("table", sorted(_CONTRADICTORY_ROWS))
+def test_bulk_precommit_check_reports_a_compound_owner_disagreement(tmp_path: Path, table: str) -> None:
+    """The bulk path's ``foreign_keys=OFF`` window must not commit two owners that disagree.
+
+    ``message_id`` names a message of session ``a`` while ``session_id`` says
+    ``b``. Each column alone resolves, so the pair of independent
+    single-column ``NOT EXISTS`` probes this check used to run returned ``[]``
+    while ``PRAGMA foreign_key_check`` returned the violation -- measured, and
+    the reason a contradictory row committed silently on a large raw batch.
+
+    Anti-vacuity, executed: narrow the compound existence check to its first
+    column pair (``child_columns[:1]`` in ``_scoped_foreign_key_sql``) and all
+    three parameters fail with ``assert [] == [(table, 'messages')]`` while
+    ``PRAGMA foreign_key_check`` still reports the row -- the pre-fix
+    behaviour, measured. Running this with ``foreign_keys=ON`` would not
+    qualify: the INSERT is refused inline there and the pre-commit check is
+    never consulted, which is asserted below.
+    """
+    db_path = tmp_path / f"compound-fk-{table}.db"
+    with open_connection(db_path) as conn:
+        message_id, block_id = _seed_two_sessions_and_one_message(conn)
+        parameters = {"message_id": message_id, "block_id": block_id}
+
+        # The constraint IS enforced inline when SQLite is checking it, so the
+        # bulk window is the only route that can admit this row at all.
+        conn.execute("PRAGMA foreign_keys = ON")
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(_CONTRADICTORY_ROWS[table], parameters)
+        # The refused INSERT left an open transaction, and ``PRAGMA
+        # foreign_keys`` is a silent no-op inside one.
+        conn.rollback()
+
+        conn.execute("PRAGMA foreign_keys = OFF")
+        assert int(conn.execute("PRAGMA foreign_keys").fetchone()[0]) == 0
+        conn.execute(_CONTRADICTORY_ROWS[table], parameters)
+
+        violations = ingest_batch_core._foreign_key_violations_for_sessions(
+            conn, ("codex-session:a", "codex-session:b")
+        )
+        pragma_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+        conn.rollback()
+
+    assert [(str(row[0]), str(row[2])) for row in pragma_rows] == [(table, "messages")]
+    assert [(item["table"], item["parent"]) for item in violations] == [(table, "messages")]
+    assert violations[0]["session_id"] == "codex-session:b"
+    assert violations[0]["child_key"] == {"message_id": message_id, "session_id": "codex-session:b"}
+
+
+def test_foreign_key_check_plan_is_total_over_the_schema(tmp_path: Path) -> None:
+    """Every foreign key the schema declares is checked by one route or the other.
+
+    Derivation, not enumeration, is the fix: the list this replaced named
+    three tables (and the wrong parent for two of them) while the built schema
+    declares foreign keys on far more, and ``#5333`` had already found one
+    affected table that no written list mentioned.
+
+    Anti-vacuity, executed: re-introduce any written-down table set and a
+    table absent from it lands in neither partition, so ``uncovered`` is
+    non-empty; drop the ``unscoped`` fallback and the four tables that name no
+    session go unchecked.
+    """
+    db_path = tmp_path / "plan.db"
+    with open_connection(db_path) as conn:
+        scoped, unscoped = ingest_batch_core._foreign_key_check_plan(conn)
+        declared = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+            if conn.execute(f'PRAGMA foreign_key_list("{row[0]}")').fetchall()
+        }
+        declared_keys = {
+            (table, int(fk[0]))
+            for table in declared
+            for fk in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
+        }
+
+    covered = {check.table for check in scoped} | set(unscoped)
+    assert declared - covered == set()
+    assert {(check.table, check.fkid) for check in scoped} == {key for key in declared_keys if key[0] not in unscoped}
+    # The tables that carry no session column at all, checked whole instead.
+    assert set(unscoped) == {
+        "attachment_native_ids",
+        "repo_checkouts",
+        "work_evidence_edges",
+        "work_evidence_nodes",
+    }
+
+
+def test_compound_foreign_keys_are_probed_as_one_key(tmp_path: Path) -> None:
+    """A compound key is one existence check over both columns, never two.
+
+    Anti-vacuity, executed: generate one probe per column and ``child_columns``
+    becomes length 1 for every entry below, which is exactly the shape that
+    could not see the disagreement the test above reproduces.
+    """
+    db_path = tmp_path / "compound.db"
+    with open_connection(db_path) as conn:
+        scoped, _ = ingest_batch_core._foreign_key_check_plan(conn)
+        compound = {check.table: check for check in scoped if len(check.child_columns) > 1}
+        placeholders = "?"
+        plans = {
+            table: [
+                str(row[3])
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN " + ingest_batch_core._scoped_foreign_key_sql(check, placeholders),
+                    ("codex-session:a",),
+                ).fetchall()
+            ]
+            for table, check in compound.items()
+        }
+
+    assert set(compound) == {
+        "action_pairs",
+        "attachment_refs",
+        "blocks",
+        "file_edits",
+        "paste_spans",
+        "web_content_constructs",
+    }
+    for check in compound.values():
+        assert check.parent == "messages"
+        assert check.child_columns == ("message_id", "session_id")
+        assert check.parent_columns == ("message_id", "session_id")
+    # A per-batch pre-commit check must not itself scan the archive.
+    for table, detail_rows in plans.items():
+        assert not any(detail.upper().startswith("SCAN ") for detail in detail_rows), (table, detail_rows)
 
 
 def test_process_ingest_batch_sync_does_not_checkpoint(

@@ -4136,17 +4136,21 @@ class LiveBatchProcessor:
                 repair_message_fts_index_sync(archive._conn, list(dict.fromkeys(result.session_ids)))
             if active_cold_build:
                 # The cold-build shape is licensed per pass, so it is also
-                # surrendered per pass: verify the constraint the build ran
-                # without (foreign_keys=OFF), restore live durability and
-                # truncate the WAL the raised autocheckpoint let grow. The
-                # next pass re-selects the shape from generation state -- by
-                # then this generation is no longer empty, so the ordinary
-                # live shape is what it gets, which is the transition back.
+                # surrendered per pass. There is nothing to verify and nothing
+                # to restore here: ``COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE``
+                # keeps ``foreign_keys=ON`` precisely so the shape relaxes
+                # durability only, and every pragma it does relax is
+                # connection-local and dies with this connection. The one
+                # effect is draining the WAL the raised autocheckpoint let
+                # grow (see ``finish_active_cold_build``). The next pass
+                # re-selects the shape from generation state -- by then this
+                # generation is no longer empty, so the ordinary live shape is
+                # what it gets, which is the transition back.
                 archive.finish_active_cold_build()
                 emit(
                     "live.ingest.cold_build_shape_released",
                     outcome="ok",
-                    reason="pass complete; live durability restored",
+                    reason="pass complete; cold-build shape surrendered with the connection",
                     sessions=len(result.session_ids),
                 )
         # The loop checks before each later record, but a one-record pass has

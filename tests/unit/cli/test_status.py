@@ -1342,6 +1342,43 @@ class TestStrictSourceExitCodes:
         assert "errors=1" in result.output
 
     @pytest.mark.integration
+    def test_present_ops_tier_reaches_the_strict_source_branch(self, tmp_path: Path) -> None:
+        """The exit-2 branch is reachable with the disposable OPS tier in place.
+
+        The sibling tests above delete ``ops.db`` because the shipped
+        ``ingest_attempts`` carried no ``source_path`` index, so a present
+        ops.db pinned every ``--source`` call to exit 3 and made the 2-vs-3
+        distinction untestable. ``idx_ingest_attempts_source_path`` is what
+        makes that lookup plannable, so the ordinary shape now answers.
+
+        Anti-vacuity, executed: drop the index and the strict run goes back to
+        exit 3 -- the state this test exists to keep from returning.
+        """
+        from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
+
+        workspace = setup_isolated_workspace(tmp_path)
+        archive_root = Path(workspace["paths"]["archive_root"])
+        env = dict(workspace["env"])
+        assert (archive_root / "ops.db").exists()
+        never_ingested = tmp_path / "never-ingested.jsonl"
+        never_ingested.write_text("{}\n", encoding="utf-8")
+        argv = ["--plain", "ops", "status", "--source", str(never_ingested)]
+
+        lenient = run_cli(argv, env=env)
+        strict = run_cli([*argv, "--strict-source"], env=env)
+
+        assert lenient.exit_code == 0, lenient.output
+        assert strict.exit_code == 2, strict.output
+
+        with sqlite3.connect(archive_root / "ops.db") as conn:
+            conn.execute("DROP INDEX idx_ingest_attempts_source_path")
+            conn.commit()
+
+        unindexed = run_cli([*argv, "--strict-source"], env=env)
+
+        assert unindexed.exit_code == 3, unindexed.output
+
+    @pytest.mark.integration
     def test_relative_source_is_a_usage_error(self, tmp_path: Path) -> None:
         """``--source`` demands an absolute exact path.
 

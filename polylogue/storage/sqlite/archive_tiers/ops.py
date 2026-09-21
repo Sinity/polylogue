@@ -144,6 +144,21 @@ ON ingest_attempts(status, heartbeat_at_ms);
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_storage_route
 ON ingest_attempts(storage_route);
 
+-- polylogue-0glm0: the exact-source attempt lookup behind
+-- ``ops status --source <path>`` keys on source_path alone. None of the
+-- indexes above can serve it -- SQLite reads an index left to right, so
+-- ``(status, heartbeat_at_ms)``, ``(storage_route)`` and
+-- ``(outcome_code, started_at_ms)`` are unusable for an unconstrained
+-- source_path, and widening one of them would not change that. The read
+-- boundary in ``archive/query/source_freshness.py`` rejects a query whose
+-- plan scans a protected table, so without this index the named-source
+-- status of every archive is an unsafe-plan refusal (exit 3) rather than an
+-- answer. Single-column deliberately: the reader's ORDER BY is a COALESCE
+-- over three timestamps, which no index can order, so trailing columns would
+-- widen every attempt write without removing the temp b-tree.
+CREATE INDEX IF NOT EXISTS idx_ingest_attempts_source_path
+ON ingest_attempts(source_path);
+
 -- polylogue-cnu3: idx_ingest_attempts_outcome_code is deliberately NOT
 -- declared here. This DDL block reruns verbatim on every same-version
 -- reopen of an existing disposable ops.db (see initialize_archive_tier's
