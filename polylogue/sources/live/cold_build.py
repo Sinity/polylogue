@@ -32,10 +32,15 @@ from __future__ import annotations
 
 import os
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.logging import emit
+from polylogue.logging import ERROR, emit
+from polylogue.maintenance.candidate_capacity import (
+    InsufficientCapacityError,
+    require_candidate_capacity,
+)
 from polylogue.storage.index_generation import (
     IndexGeneration,
     IndexGenerationStore,
@@ -77,13 +82,25 @@ class ColdBuildGeneration:
     archive_root: Path
     generation: IndexGeneration
     reason: str
+    operation_id: str
     _store: IndexGenerationStore
     _promoted: bool = False
     _discarded: bool = False
 
     @classmethod
     def begin(cls, archive_root: Path, *, reason: str, owner_id: str | None = None) -> ColdBuildGeneration:
-        """Create the inactive generation this build will fill."""
+        """Create the inactive generation this build will fill.
+
+        Refuses on insufficient free space *before* the generation directory
+        exists. A cold build is the whole index again on disk beside the one
+        still serving reads, and it is engaged automatically whenever the
+        active generation is empty -- so this preflight cannot be conditioned
+        on the operator having asked for it, or the unattended 40 GB case
+        would be the one left unguarded. The refusal is fatal on purpose:
+        there is no smaller build to fall back to, and letting ingest fill
+        the active generation instead would allocate the same bytes with
+        readers attached.
+        """
         archive_root = Path(archive_root)
         # Every durable member must already exist: ``create`` links exactly
         # the members it finds, and the candidate open then refuses a member
@@ -93,6 +110,31 @@ class ColdBuildGeneration:
         with ArchiveStore.open_existing(archive_root, read_only=False):
             pass
         (archive_root / "blob").mkdir(mode=0o700, exist_ok=True)
+        # The whole-tree walk this costs is measured in tens of seconds on a
+        # real archive (77s over ~790k inodes), against a build measured in
+        # hours -- and it runs once per build, not once per pass, because
+        # ``begin`` is only reached when a cold build is actually starting.
+        # That is the only cost gate this needs; intent is not a gate.
+        operation_id = f"cold-build-{uuid.uuid4().hex}"
+        try:
+            require_candidate_capacity(archive_root, operation_id=operation_id)
+        except InsufficientCapacityError as refusal:
+            # The projection's numbers ride in ``error_detail`` rather than in
+            # named fields: ``logging_fields`` registers no byte-sized capacity
+            # field, and an unregistered field is dropped at the emit boundary
+            # rather than recorded. The persisted receipt under
+            # ``.maintenance-state`` is not written on a refusal either, so
+            # this event is the only place the shortfall is stated.
+            emit(
+                "daemon.cold_build.capacity_refused",
+                level=ERROR,
+                outcome="error",
+                reason=reason,
+                operation_id=operation_id,
+                error_type=type(refusal).__name__,
+                error_detail=str(refusal),
+            )
+            raise
         store = IndexGenerationStore.for_archive_root(archive_root)
         snapshot = ""
         if (archive_root / "source.db").exists():
@@ -105,8 +147,15 @@ class ColdBuildGeneration:
             owner_id=generation.owner_id,
             page_size=generation.page_size,
             reason=reason,
+            operation_id=operation_id,
         )
-        return cls(archive_root=archive_root, generation=generation, reason=reason, _store=store)
+        return cls(
+            archive_root=archive_root,
+            generation=generation,
+            reason=reason,
+            operation_id=operation_id,
+            _store=store,
+        )
 
     @property
     def generation_root(self) -> Path:
@@ -149,6 +198,13 @@ class ColdBuildGeneration:
             raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
         with self.open_writer() as archive:
             archive.run_generation_readiness_pass()
+        # Measured here and nowhere else: after the readiness pass the
+        # candidate carries its rows, its deferred indexes and its FTS, which
+        # is this build's real peak, and ``promote`` is about to start moving
+        # the tree around. Without this the recorded receipt keeps
+        # ``actual_peak_index_bytes == 0`` and ``calibrated_index_ratio``
+        # returns its unmeasured default forever.
+        self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
         promoted = self._store.promote(self.generation)
         self._promoted = True
         emit(
