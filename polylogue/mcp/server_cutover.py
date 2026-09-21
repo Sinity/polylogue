@@ -2279,6 +2279,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             import json as _json
 
             from polylogue.archive.query.spec import SessionQuerySpec
+            from polylogue.archive.query.watch_definition import WatchDefinitionError
 
             name = _require_field(hooks, fields, "name", operation=operation)
             query_json = _require_field(hooks, fields, "query_json", operation=operation)
@@ -2297,6 +2298,10 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 return hooks.error_json(
                     "query_json is not a valid SessionQuerySpec", detail=f"{type(exc).__name__}: {exc}"
                 )
+            watch_field = _field(fields, "watch")
+            if watch_field is not None and not isinstance(watch_field, bool):
+                return hooks.error_json("fields['watch'] must be a boolean", code="invalid_argument", tool="write")
+            watch = bool(watch_field)
             canonical_query_json = _json.dumps(query, sort_keys=True, separators=(",", ":"))
             from hashlib import sha256
 
@@ -2305,7 +2310,10 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             else:
                 digest_input = f"{name.strip()}\0{canonical_query_json}"
                 saved_id = f"saved-view-{sha256(digest_input.encode()).hexdigest()[:16]}"
-            created = await poly.save_view(saved_id, name.strip(), canonical_query_json)
+            try:
+                created = await poly.save_view(saved_id, name.strip(), canonical_query_json, watch=watch)
+            except WatchDefinitionError as exc:
+                return hooks.error_json(str(exc), code="invalid_watch_definition", tool="write")
             return hooks.json_payload(
                 MutationResultPayload(status="ok", key=saved_id, outcome="added" if created else "updated"),
                 exclude_none=True,
@@ -2769,6 +2777,14 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             operation-specific value beyond those (see each operation's
             retired single-purpose tool for the exact field names, e.g.
             ``fields={"mark_type": "star"}`` for ``add_mark``).
+            ``save_saved_view`` additionally accepts
+            ``fields={"watch": true}``, which promotes the saved name into the
+            durable watched-query substrate the daemon re-evaluates on
+            convergence. A watched view is defined by its ``query`` expression
+            alone and that expression must compile to a typed selection
+            predicate (``"sessions where origin:codex-session"``), so a view
+            carrying other filter parameters or bare search terms is refused
+            rather than watched over a different set.
             ``deliver_context`` compiles a bounded context image and records
             its exact durable delivery receipt; requires
             ``fields={"recipient_ref": ..., "delivered_by_ref": ...,

@@ -412,6 +412,12 @@
     ]
   },
   {
+    "file": "polylogue/storage/sqlite/query_watch.py",
+    "tiers": [
+      "user"
+    ]
+  },
+  {
     "file": "polylogue/storage/sqlite/schema.py",
     "tiers": [
       "ops"
