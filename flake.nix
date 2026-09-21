@@ -291,11 +291,14 @@
           pkgs.makeWrapper
         ];
 
-        # `msgspec` is the sole fast-JSON accelerator: `orjson` ships no
-        # cp314t wheel and its build refuses to compile free-threaded, so it
-        # can never load on this interpreter (polylogue.core.json's facade
-        # falls back to stdlib json when no accelerator is importable; on
-        # this build msgspec is always the one it picks).
+        # `msgspec` is a base dependency, not an accelerator: it decides the
+        # canonical float bytes `polylogue.core.digest.IDENTITY` hashes, so an
+        # install without it computes different content hashes. `orjson` ships
+        # no cp314t wheel and its build refuses to compile free-threaded, so it
+        # can never load on this interpreter and is not offered at all. This
+        # list must keep agreeing with `[project] dependencies` in
+        # pyproject.toml; `tests/unit/test_packaging_dependencies.py` pins the
+        # msgspec half of that agreement.
         dependencies = with pythonPackages; [
           google-auth-oauthlib
           google-api-python-client

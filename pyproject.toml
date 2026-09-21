@@ -44,25 +44,26 @@ dependencies = [
   "typing-extensions>=4.16.0",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=1.2.0",  # Rust-backed filesystem watcher for live ingestion
   "nh3>=0.3.7",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
+  # Identity-bearing, not an accelerator: `polylogue.core.json` selects its
+  # backend at import time, and only msgspec produces the canonical float
+  # bytes the `IDENTITY` digest profile (polylogue/core/digest.py) hashes.
+  # stdlib json picks decimal-vs-exponent notation at a different magnitude
+  # threshold, so the same payload gets a different content hash under it
+  # (0.00001 vs 1e-05). msgspec ships cp314t wheels since 0.20.0 (Nov 2025),
+  # so it loads on the free-threaded interpreter polylogue ships on
+  # (operator decision 2026-07-19). `orjson` was a second accelerator option
+  # until it turned out to ship no cp314t wheel and to refuse a
+  # free-threaded build, and was removed rather than kept dead-on-arrival.
+  "msgspec>=0.20.0",
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
   "cryptography>=50.0.1",  # GHSA-537c-gmf6-5ccf / CVE-2026-39892 (transitive via google-auth)
   "python-multipart>=0.0.32",  # CVE-2026-40347 (transitive via mcp)
 ]
 
 [project.optional-dependencies]
-# Optional fast-JSON accelerator for polylogue.core.json (polylogue-xikl).
-# Not required: the facade always falls back to stdlib json when it's
-# absent. `orjson` used to be a second accelerator option here, selected in
-# preference to msgspec when both were installed, but it ships no cp314t
-# (free-threaded Python 3.14) wheel and its build refuses to compile
-# free-threaded -- the only interpreter polylogue ships on (operator
-# decision 2026-07-19: adopt free-threaded Python fully) -- so it was
-# removed rather than kept as a dead-on-arrival alternative. msgspec ships
-# cp314t wheels since 0.20.0 (Nov 2025) and is what the packaged daemon
-# actually runs.
-speed = [
-  "msgspec>=0.20.0",
-]
+# There is no `speed` extra: msgspec moved into the base dependencies above
+# because it decides content-hash bytes, not throughput. An extra that every
+# supported install must select is not optional.
 dev-common = [
   "pytest>=9.1.1",  # CVE-2025-71176
   "pytest-cov>=4",
@@ -86,7 +87,7 @@ dev-common = [
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
 dev = [
-  "polylogue[dev-common,speed]",
+  "polylogue[dev-common]",
 ]
 fuzz = [
   "atheris>=3.1.0",  # Google's Python fuzzer
