@@ -12,6 +12,7 @@ import aiosqlite
 from polylogue.core.memory import release_process_memory
 from polylogue.storage.derived.session import rebuild as _rebuild
 from polylogue.storage.derived.session.aggregates import profile_provider_day
+from polylogue.storage.derived.session.input_binding import session_input_bindings_async
 from polylogue.storage.derived.session.rebuild import (
     SessionInsightRecordBundle,
     build_session_insight_records,
@@ -247,11 +248,17 @@ async def _apply_session_insight_session_update_async(
         )
 
     thread_root_id = await thread_root_id_async(conn, session_id)
+    # Stamp the binding this bundle was actually computed from, read on the
+    # same connection as ``load_async_batch`` above. Without it the stored row
+    # cannot say what produced it, ``inspect_session_profiles`` calls it stale
+    # on arrival, and the converger rebuilds an identical family next pass.
+    input_bindings = await session_input_bindings_async(conn, (session_id,))
     record_bundle = build_session_insight_records(
         hydrated[0],
         compaction_count=batch.compaction_counts_by_session.get(session_id),
         logical_session_id=thread_root_id,
         model_usage=batch.model_usage_by_session.get(session_id),
+        input_content_hash=input_bindings.get(session_id),
     )
     await replace_session_profile(conn, record_bundle.profile_record, transaction_depth)
     await replace_session_latency_profile(conn, record_bundle.latency_profile_record, transaction_depth)
@@ -435,6 +442,11 @@ async def _apply_session_insight_session_updates_async(
         load_started = time.perf_counter()
         old_profile_records = await _load_existing_session_profile_records_async(conn, chunk.session_ids)
         batch = await load_async_batch(conn, chunk_full_ids) if chunk_full_ids else None
+        # Same read, same connection as the batch: the binding names exactly
+        # the input this chunk's bundles were built from. The degraded builder
+        # already stamps its own (rebuild.build_large_session_insight_record_
+        # bundle_async), so only the hydrated jobs need it here.
+        input_bindings = await session_input_bindings_async(conn, chunk_full_ids) if chunk_full_ids else {}
         root_ids_by_session = await thread_root_ids_async(conn, chunk.session_ids)
         load_elapsed_ms = round((time.perf_counter() - load_started) * 1000.0, 1)
         hydrate_started = time.perf_counter()
@@ -488,6 +500,7 @@ async def _apply_session_insight_session_updates_async(
                 compaction_count=batch.compaction_counts_by_session.get(session_id) if batch is not None else None,
                 logical_session_id=root_ids_by_session.get(session_id),
                 model_usage=batch.model_usage_by_session.get(session_id) if batch is not None else None,
+                input_content_hash=input_bindings.get(session_id),
             )
             for session_id in present_full_ids
         ]
