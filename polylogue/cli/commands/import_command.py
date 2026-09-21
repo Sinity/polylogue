@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.cli.shared.helpers import fail
+from polylogue.cli.shared.helpers import DaemonRequiredError, fail
 from polylogue.cli.shared.types import AppEnv
 from polylogue.paths import archive_root
 
@@ -161,8 +161,8 @@ def _request_demo_augmentation(env: AppEnv, *, with_overlays: bool) -> None:
             "maintenance.demo.augment",
             {"with_overlays": with_overlays},
         )
-    except OperationUnavailableError:
-        fail("import", _daemon_required_message(config.archive_root))
+    except OperationUnavailableError as exc:
+        raise _daemon_required(config.archive_root, operation="maintenance.demo.augment") from exc
     except OperationIndeterminateError as exc:
         fail(
             "import",
@@ -227,8 +227,8 @@ def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> dict
     }
     try:
         envelope = configured_accepted_operation(config, "ingest", payload)
-    except OperationUnavailableError:
-        fail("import", _daemon_required_message(config.archive_root))
+    except OperationUnavailableError as exc:
+        raise _daemon_required(config.archive_root, operation="ingest") from exc
     except OperationIndeterminateError as exc:
         fail(
             "import",
@@ -267,12 +267,20 @@ def _submit_ingest(env: AppEnv, *, staged: Path, requested_source: Path) -> dict
     }
 
 
-def _daemon_required_message(archive: object) -> str:
-    """Build an actionable error when no daemon owns this archive's writes."""
-    return (
+def _daemon_required(archive: object, *, operation: str) -> DaemonRequiredError:
+    """Build the typed refusal for a write no daemon is here to own.
+
+    Typed rather than ``fail()``: ``fail`` raises ``SystemExit`` with a string,
+    which ``machine_main`` turns into ``invalid_arguments`` -- so ``import
+    --format json`` reported a daemon-absent archive as a malformed command
+    line (polylogue-re6s3 AC4).
+    """
+    return DaemonRequiredError(
         f"No polylogued daemon is serving the archive at {archive}.\n"
         "  The resident daemon is the only writer: start it with 'polylogued run' and re-try.\n"
-        "  There is no standalone import mode to fall back to."
+        "  There is no standalone import mode to fall back to.",
+        operation=operation,
+        archive_root=archive,
     )
 
 

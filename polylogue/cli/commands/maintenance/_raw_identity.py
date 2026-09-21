@@ -11,22 +11,14 @@ from polylogue.maintenance import raw_authority
 
 
 def _submit(env: AppEnv, payload: dict[str, object]) -> dict[str, object]:
-    from polylogue.cli.operation_kernel import (
-        OperationFailedError,
-        OperationIndeterminateError,
-        OperationUnavailableError,
-        configured_mutation_operation,
-    )
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_mutation_operation
+    from polylogue.cli.shared.helpers import mutation_refusal
 
     operation = "mutation.raw-authority-blocker.resolve"
     try:
         return configured_mutation_operation(env.config, operation, payload)
-    except OperationUnavailableError as exc:
-        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
-    except OperationIndeterminateError as exc:
-        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
-    except OperationFailedError as exc:
-        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
+    except OperationKernelError as exc:
+        raise mutation_refusal(exc, operation) from exc
 
 
 @click.command("raw-authority-frontier")

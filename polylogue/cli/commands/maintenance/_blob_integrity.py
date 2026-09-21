@@ -28,22 +28,14 @@ def _submit_maintenance_mutation(operation: str, payload: dict[str, object]) -> 
     armed inside the daemon, so outside it the assertion returned ``None`` and
     the write proceeded beside a live daemon.
     """
-    from polylogue.cli.operation_kernel import (
-        OperationFailedError,
-        OperationIndeterminateError,
-        OperationUnavailableError,
-        configured_mutation_operation,
-    )
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_mutation_operation
+    from polylogue.cli.shared.helpers import mutation_refusal
 
     config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
     try:
         return configured_mutation_operation(config, operation, payload)
-    except OperationUnavailableError as exc:
-        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
-    except OperationIndeterminateError as exc:
-        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
-    except OperationFailedError as exc:
-        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
+    except OperationKernelError as exc:
+        raise mutation_refusal(exc, operation) from exc
 
 
 def _submit_replace_from_source(manifest_file: Path, max_count: int | None, sample_limit: int) -> dict[str, object]:

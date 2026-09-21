@@ -222,15 +222,29 @@ def exit_for_read_failure(exc: BaseException) -> NoReturn:
 
     import sys
 
-    from polylogue.cli.shared.machine_errors import error_runtime, extract_command, wants_json
+    from polylogue.cli.shared.machine_errors import (
+        error_daemon_required,
+        error_runtime,
+        extract_command,
+        wants_json,
+    )
 
     code = read_failure_exit_code(exc)
     message = read_failure_message(exc)
     argv = list(sys.argv[1:])
     if wants_json(argv):
-        error_runtime(message, command=extract_command(argv), exception_type=type(exc).__qualname__).emit(
-            exit_code=code
-        )
+        command = extract_command(argv)
+        # ``daemon_required`` is the one read failure with a remedy the caller
+        # can act on, and it is the only one whose terminal form already names
+        # that remedy. Reporting it as ``runtime_error`` on the machine surface
+        # dropped exactly the fact worth transporting (polylogue-3eexy AC4).
+        if str(getattr(exc, "code", "") or "") == "daemon_required":
+            error_daemon_required(
+                message,
+                command=command,
+                operation=getattr(exc, "operation", None),
+            ).emit(exit_code=code)
+        error_runtime(message, command=command, exception_type=type(exc).__qualname__).emit(exit_code=code)
     click.echo(f"Error: {message}", err=True)
     raise SystemExit(code) from exc
 

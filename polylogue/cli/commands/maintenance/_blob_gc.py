@@ -25,22 +25,14 @@ from polylogue.paths import archive_root, render_root
 
 
 def _submit(config: Config, generation_id: str) -> dict[str, object]:
-    from polylogue.cli.operation_kernel import (
-        OperationFailedError,
-        OperationIndeterminateError,
-        OperationUnavailableError,
-        configured_mutation_operation,
-    )
+    from polylogue.cli.operation_kernel import OperationKernelError, configured_mutation_operation
+    from polylogue.cli.shared.helpers import mutation_refusal
 
     operation = "maintenance.blob-gc.recover"
     try:
         return configured_mutation_operation(config, operation, {"generation_id": generation_id})
-    except OperationUnavailableError as exc:
-        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
-    except OperationIndeterminateError as exc:
-        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
-    except OperationFailedError as exc:
-        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
+    except OperationKernelError as exc:
+        raise mutation_refusal(exc, operation) from exc
 
 
 @click.command("blob-gc")
