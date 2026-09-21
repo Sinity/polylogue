@@ -100,6 +100,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "rebuild-routes",
+        "Census every route reaching a derived-tier rebuild entrypoint against docs/plans/rebuild-route-census.yaml.",
+        "module",
+        ("devtools.verify_rebuild_routes", "--json"),
+        label="gate rebuild-routes",
+        in_quick=True,
+    ),
+    Gate(
         "patterns",
         "Enforce AST-shape defect-family rules with shrinking grandfathered baselines.",
         "module",
