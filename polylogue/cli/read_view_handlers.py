@@ -1,26 +1,29 @@
-"""Executable read-view registry for the query-first CLI."""
+"""Executable read-view registry for the query-first CLI.
+
+This module owns one fact per read view: *which callable runs it*, and — for a
+view with its own options — which builder types them.  Everything else a read
+view declares (session policy, accepted option names, query-set admission) is
+declared once in :mod:`polylogue.cli.read_view_registry` and read from there.
+
+Those static facts used to be spelled a second time in this module's handler
+table, and a ``metadata_mismatch`` check in
+``validate_read_view_handler_registry`` compared the two copies row by row.
+Two tables plus a drift check is the shape the read-algebra spec forbids
+(polylogue-vbsc0): the check can only report a disagreement after someone has
+already had to make the same edit twice, and it is dead weight once there is
+nothing to disagree.  Deriving the handler from the declaration removes the
+second edit site, so the mismatch it guarded is unrepresentable.
+"""
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import click
 
 from polylogue.archive.viewport import read_view_choices
-from polylogue.cli.read_view_registry import (
-    CHRONICLE_READ_VIEW_OPTION_NAMES,
-    CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
-    CONTEXT_READ_VIEW_OPTION_NAMES,
-    CORRELATION_READ_VIEW_OPTION_NAMES,
-    EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES,
-    EVENTS_READ_VIEW_OPTION_NAMES,
-    LINEAGE_READ_VIEW_OPTION_NAMES,
-    MESSAGE_READ_VIEW_OPTION_NAMES,
-    NEIGHBOR_READ_VIEW_OPTION_NAMES,
-    READ_VIEW_HANDLER_METADATA,
-    TOPOLOGY_READ_VIEW_OPTION_NAMES,
-)
+from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
 from polylogue.cli.read_views.base import (
     ReadViewChronicleOptions,
     ReadViewContextImageOptions,
@@ -28,9 +31,11 @@ from polylogue.cli.read_views.base import (
     ReadViewCorrelationOptions,
     ReadViewEventsOptions,
     ReadViewHandler,
+    ReadViewHandlerFunc,
     ReadViewInvocation,
     ReadViewMessageOptions,
     ReadViewNeighborOptions,
+    ReadViewOptionBuilder,
     ReadViewOptions,
 )
 from polylogue.cli.read_views.chronicle import build_chronicle_options, run_read_chronicle
@@ -70,152 +75,75 @@ if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
 
 
-READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
-    "summary": ReadViewHandler(
-        "summary",
-        "optional",
-        run_read_summary_or_transcript,
-        default_format="markdown",
-        accepts_query_set=True,
-    ),
-    "transcript": ReadViewHandler(
-        "transcript",
-        "optional",
-        run_read_summary_or_transcript,
-        default_format="markdown",
-        accepts_query_set=True,
-    ),
-    "dialogue": ReadViewHandler(
-        "dialogue",
-        "required",
-        run_read_dialogue,
-        default_format="markdown",
-        accepts_query_set=True,
-    ),
-    "messages": ReadViewHandler(
-        "messages",
-        "required",
-        run_read_messages,
-        default_format="text",
-        accepted_options=MESSAGE_READ_VIEW_OPTION_NAMES,
-        option_builder=build_message_options,
-    ),
-    "raw": ReadViewHandler(
-        "raw",
-        "required",
-        run_read_raw,
-        default_format="json",
-        accepted_options=MESSAGE_READ_VIEW_OPTION_NAMES,
-        option_builder=build_message_options,
-    ),
-    "hooks": ReadViewHandler(
-        "hooks",
-        "required",
-        run_read_hooks,
-        default_format="json",
-    ),
-    "effective_context": ReadViewHandler(
-        "effective_context",
-        "required",
-        run_read_effective_context,
-        default_format="json",
-        accepted_options=EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES,
-        option_builder=build_effective_context_options,
-    ),
-    "lineage": ReadViewHandler(
-        "lineage",
-        "required",
-        run_read_lineage,
-        default_format="json",
-        accepted_options=LINEAGE_READ_VIEW_OPTION_NAMES,
-        option_builder=build_lineage_options,
-    ),
-    "topology": ReadViewHandler(
-        "topology",
-        "required",
-        run_read_topology,
-        default_format="json",
-        accepted_options=TOPOLOGY_READ_VIEW_OPTION_NAMES,
-        option_builder=build_topology_options,
-    ),
-    "context": ReadViewHandler(
-        "context",
-        "required",
-        run_read_context,
-        default_format="json",
-        accepted_options=CONTEXT_READ_VIEW_OPTION_NAMES,
-        option_builder=build_context_options,
-    ),
-    "context-image": ReadViewHandler(
-        "context-image",
-        "none",
-        run_read_context_image,
-        default_format="markdown",
-        accepted_options=CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES,
-        option_builder=build_context_image_options,
-    ),
-    "neighbors": ReadViewHandler(
-        "neighbors",
-        "query_or_session",
-        run_read_neighbors,
-        default_format="text",
-        accepted_options=NEIGHBOR_READ_VIEW_OPTION_NAMES,
-        option_builder=build_neighbor_options,
-    ),
-    "correlation": ReadViewHandler(
-        "correlation",
-        "required",
-        run_read_correlation,
-        default_format="text",
-        accepted_options=CORRELATION_READ_VIEW_OPTION_NAMES,
-        option_builder=build_correlation_options,
-    ),
-    "temporal": ReadViewHandler(
-        "temporal",
-        "optional",
-        run_read_temporal,
-        default_format="markdown",
-        accepts_query_set=True,
-    ),
-    "chronicle": ReadViewHandler(
-        "chronicle",
-        "optional",
-        run_read_chronicle,
-        default_format="markdown",
-        accepted_options=CHRONICLE_READ_VIEW_OPTION_NAMES,
-        option_builder=build_chronicle_options,
-        accepts_query_set=True,
-    ),
+@dataclass(frozen=True, slots=True)
+class ReadViewExecution:
+    """The executable half of a read view: what runs it, and how it types options."""
+
+    run: ReadViewHandlerFunc
+    option_builder: ReadViewOptionBuilder | None = None
+
+
+def build_read_view_handler(
+    view_id: str,
+    execution: ReadViewExecution,
+    *,
+    declared_as: str | None = None,
+) -> ReadViewHandler:
+    """Bind one declared read view to the callable that executes it.
+
+    The declaration is the only source of the view's static contract, so a
+    handler cannot claim a session policy or an option set the declaration does
+    not carry.
+
+    ``declared_as`` names the declaration a view *borrows*.  A session-list
+    projection states which declared CLI handler serves it, so it is dispatched
+    under its own name while carrying that handler's contract; the contract is
+    still read from a declaration, never invented for the borrowing name.
+    """
+
+    declaration_id = declared_as or view_id
+    try:
+        metadata = READ_VIEW_HANDLER_METADATA[declaration_id]
+    except KeyError as exc:
+        raise RuntimeError(f"read view {declaration_id!r} has an executable handler but no declaration") from exc
+    return ReadViewHandler(
+        view_id=view_id,
+        session_policy=metadata.session_policy,
+        handler=execution.run,
+        accepted_options=metadata.accepted_options,
+        option_builder=execution.option_builder,
+        accepts_query_set=metadata.accepts_query_set,
+    )
+
+
+#: Executable bindings for the views declared directly by the registry.
+READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
+    "summary": ReadViewExecution(run_read_summary_or_transcript),
+    "transcript": ReadViewExecution(run_read_summary_or_transcript),
+    "dialogue": ReadViewExecution(run_read_dialogue),
+    "messages": ReadViewExecution(run_read_messages, build_message_options),
+    "raw": ReadViewExecution(run_read_raw, build_message_options),
+    "hooks": ReadViewExecution(run_read_hooks),
+    "effective_context": ReadViewExecution(run_read_effective_context, build_effective_context_options),
+    "lineage": ReadViewExecution(run_read_lineage, build_lineage_options),
+    "topology": ReadViewExecution(run_read_topology, build_topology_options),
+    "context": ReadViewExecution(run_read_context, build_context_options),
+    "context-image": ReadViewExecution(run_read_context_image, build_context_image_options),
+    "neighbors": ReadViewExecution(run_read_neighbors, build_neighbor_options),
+    "correlation": ReadViewExecution(run_read_correlation, build_correlation_options),
+    "temporal": ReadViewExecution(run_read_temporal),
+    "chronicle": ReadViewExecution(run_read_chronicle, build_chronicle_options),
 }
 
 
-_SESSION_LIST_CLI_HANDLER_TEMPLATES: dict[str, ReadViewHandler] = {
-    "events": ReadViewHandler(
-        "events",
-        "required",
-        run_read_events,
-        default_format="json",
-        accepted_options=EVENTS_READ_VIEW_OPTION_NAMES,
-        option_builder=build_events_options,
-    ),
-    "file-edits": ReadViewHandler(
-        "file-edits",
-        "required",
-        run_read_file_edits,
-        default_format="json",
-    ),
-    "agent-policies": ReadViewHandler(
-        "agent-policies",
-        "required",
-        run_read_agent_policies,
-        default_format="json",
-    ),
-    "web-content": ReadViewHandler(
-        "web-content",
-        "required",
-        run_read_web_content_constructs,
-        default_format="json",
-    ),
+#: Executable bindings the shared session-projection table names rather than
+#: this module: a projection states which of these runs it, so one binding can
+#: serve several declared views.
+SESSION_LIST_READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
+    "events": ReadViewExecution(run_read_events, build_events_options),
+    "file-edits": ReadViewExecution(run_read_file_edits),
+    "agent-policies": ReadViewExecution(run_read_agent_policies),
+    "web-content": ReadViewExecution(run_read_web_content_constructs),
 }
 
 
@@ -225,19 +153,33 @@ def session_list_read_view_handlers() -> dict[str, ReadViewHandler]:
     handlers: dict[str, ReadViewHandler] = {}
     for projection in SESSION_LIST_PROJECTIONS.values():
         try:
-            template = _SESSION_LIST_CLI_HANDLER_TEMPLATES[projection.cli_handler]
+            execution = SESSION_LIST_READ_VIEW_EXECUTION[projection.cli_handler]
         except KeyError as exc:
             raise RuntimeError(
                 f"session projection {projection.name!r} names unknown CLI handler {projection.cli_handler!r}"
             ) from exc
-        handlers[projection.name] = replace(template, view_id=projection.name)
+        handlers[projection.name] = build_read_view_handler(
+            projection.name, execution, declared_as=projection.cli_handler
+        )
     return handlers
 
 
-READ_VIEW_HANDLERS.update(session_list_read_view_handlers())
-# Preserve the profile registry's stable public order after injecting the
-# table-derived entries above.
-READ_VIEW_HANDLERS = {view_id: READ_VIEW_HANDLERS[view_id] for view_id in read_view_choices()}
+def _build_read_view_handlers() -> dict[str, ReadViewHandler]:
+    """Compose every executable read view, in the profile registry's public order."""
+
+    handlers = {
+        view_id: build_read_view_handler(view_id, execution) for view_id, execution in READ_VIEW_EXECUTION.items()
+    }
+    handlers.update(session_list_read_view_handlers())
+    # Public order first; anything the profile registry does not declare stays
+    # in the table so ``validate_read_view_handler_registry`` can name it
+    # instead of it disappearing into an ordering comprehension.
+    order = [view_id for view_id in read_view_choices() if view_id in handlers]
+    order.extend(view_id for view_id in handlers if view_id not in order)
+    return {view_id: handlers[view_id] for view_id in order}
+
+
+READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = _build_read_view_handlers()
 
 
 def run_read_view(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -257,12 +199,6 @@ def read_view_handler_ids() -> tuple[str, ...]:
     return tuple(READ_VIEW_HANDLERS)
 
 
-def read_view_option_names() -> frozenset[str]:
-    """Return every view-specific option name owned by read-view handlers."""
-
-    return frozenset(option_name for handler in READ_VIEW_HANDLERS.values() for option_name in handler.accepted_options)
-
-
 def read_view_options_for_view(view: str, values: dict[str, object]) -> ReadViewOptions | None:
     """Build typed options for one read view."""
 
@@ -274,57 +210,48 @@ def read_view_options_for_view(view: str, values: dict[str, object]) -> ReadView
 
 
 def validate_read_view_handler_registry() -> None:
-    """Fail fast if profile metadata and executable handlers drift."""
+    """Fail fast if profile metadata and executable handlers drift.
+
+    Only *coverage* is checkable here.  A handler's static contract is read
+    from its declaration, so it cannot disagree with one.
+    """
 
     profile_ids = set(read_view_choices())
     handler_ids = set(READ_VIEW_HANDLERS)
     validate_session_list_projection_cli_contract(handler_ids)
-    metadata_ids = set(READ_VIEW_HANDLER_METADATA)
     missing = sorted(profile_ids - handler_ids)
     extra = sorted(handler_ids - profile_ids)
-    metadata_missing = sorted(handler_ids - metadata_ids)
-    metadata_extra = sorted(metadata_ids - handler_ids)
-    metadata_mismatch = [
-        view_id
-        for view_id, handler in READ_VIEW_HANDLERS.items()
-        if view_id in READ_VIEW_HANDLER_METADATA
-        and (
-            handler.accepted_options != READ_VIEW_HANDLER_METADATA[view_id].accepted_options
-            or handler.session_policy != READ_VIEW_HANDLER_METADATA[view_id].session_policy
-            or handler.accepts_query_set != READ_VIEW_HANDLER_METADATA[view_id].accepts_query_set
-        )
-    ]
-    if missing or extra or metadata_missing or metadata_extra or metadata_mismatch:
+    unbound = sorted(set(READ_VIEW_HANDLER_METADATA) - handler_ids)
+    if missing or extra or unbound:
         details: list[str] = []
         if missing:
             details.append(f"missing handlers: {', '.join(missing)}")
         if extra:
             details.append(f"handlers without profiles: {', '.join(extra)}")
-        if metadata_missing:
-            details.append(f"handlers without metadata: {', '.join(metadata_missing)}")
-        if metadata_extra:
-            details.append(f"metadata without handlers: {', '.join(metadata_extra)}")
-        if metadata_mismatch:
-            details.append(f"handler metadata mismatch: {', '.join(sorted(metadata_mismatch))}")
+        if unbound:
+            details.append(f"declarations without an executable binding: {', '.join(unbound)}")
         raise RuntimeError("read-view handler registry drift: " + "; ".join(details))
 
 
 validate_read_view_handler_registry()
 
 __all__ = [
+    "READ_VIEW_EXECUTION",
     "READ_VIEW_HANDLERS",
+    "SESSION_LIST_READ_VIEW_EXECUTION",
     "ReadViewContextOptions",
     "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
     "ReadViewChronicleOptions",
     "ReadViewEventsOptions",
+    "ReadViewExecution",
     "ReadViewHandler",
     "ReadViewInvocation",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
     "ReadViewOptions",
+    "build_read_view_handler",
     "read_view_handler_ids",
-    "read_view_option_names",
     "read_view_options_for_view",
     "session_list_read_view_handlers",
     "run_query_set_read_view",
