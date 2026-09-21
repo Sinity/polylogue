@@ -65,7 +65,7 @@ outcomes use the canonical `blocks.tool_outcome` enum; deliberate unknown
 outcomes preserve `tool_result_outcome_unknown_reason`. Lineage
 children physically store only their divergent tail and reads recompose the
 parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:755-801`;
-`polylogue/storage/sqlite/archive_tiers/write.py:1903-1951`).
+`polylogue/storage/sqlite/archive_tiers/write.py:2058-2127`).
 
 ## Where to start
 

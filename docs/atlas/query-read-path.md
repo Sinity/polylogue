@@ -26,7 +26,7 @@ Use generated session, message, and block identities for exact reads. Use
 public `origin` filters, not provider-wire names. Lineage-aware reads compose
 parent prefixes and report depth-limit or dangling-branch-point status rather
 than silently claiming completeness
-(`polylogue/storage/sqlite/archive_tiers/write.py:1899-1951`).
+(`polylogue/storage/sqlite/archive_tiers/write.py:2058-2127`).
 
 ## Terminal outcome
 
