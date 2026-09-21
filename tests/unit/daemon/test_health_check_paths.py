@@ -683,38 +683,76 @@ def test_insight_freshness_error_when_large_gap(
 # ---------------------------------------------------------------------------
 
 
-def _init_live_ingest_attempt(dbf: Path, *, total: int, failed: int) -> None:
-    conn = sqlite3.connect(str(dbf))
-    try:
-        conn.execute(
-            "CREATE TABLE live_ingest_attempt ("
-            "attempt_id TEXT PRIMARY KEY,"
-            "started_at TEXT NOT NULL,"
-            "status TEXT NOT NULL,"
-            "phase TEXT,"
-            "error TEXT"
-            ")"
-        )
-        for i in range(total):
-            status = "failed" if i < failed else "completed"
-            error = "boom" if status == "failed" else None
-            conn.execute(
-                "INSERT INTO live_ingest_attempt(attempt_id, started_at, status, phase, error) VALUES (?, ?, ?, ?, ?)",
-                (f"a{i}", f"2026-05-17T00:00:{i:02d}+00:00", status, "convergence", error),
+def _init_ops_ingest_attempts(ops_db: Path, *, total: int, failed: int) -> None:
+    """Seed the declared ops-tier attempt table through its production writer."""
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for index in range(total):
+            status = "failed" if index < failed else "completed"
+            record_ingest_attempt(
+                conn,
+                attempt_id=f"a{index}",
+                status=status,
+                phase="convergence",
+                started_at_ms=1_770_000_000_000 + index,
+                error_message="boom" if status == "failed" else None,
             )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def test_repeated_stage_failures_ok(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = index_db_path()
-    dbf.parent.mkdir(parents=True, exist_ok=True)
-    _init_live_ingest_attempt(dbf, total=5, failed=0)
+    """A measured zero-failure window is the only thing that reports OK."""
+    _init_ops_ingest_attempts(archive_root() / "ops.db", total=5, failed=0)
     alert = _check_repeated_stage_failures_medium()
     assert alert.severity == HealthSeverity.OK
+    assert "no failures in last 5 attempts" in alert.message
+
+
+def test_repeated_stage_failures_reports_an_unreadable_ops_tier(
+    workspace_env: dict[str, Path],
+) -> None:
+    """An unreadable attempt table is a failed check, not an empty history.
+
+    polylogue-20d.17 AC3/AC9: the probe used to swallow ``sqlite3.Error`` and
+    fall through to a dead ``live_ingest_attempt`` read that no tier declares,
+    so every unreadable ops.db answered ``OK: no ingest attempt history``.
+
+    Anti-vacuity: make the ``sqlite3.Error`` branch answer "nothing read"
+    again and this alert drops to WARNING; restore the legacy fallback on top
+    of that and it reads OK.
+    """
+    ops_db = archive_root() / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    # A file that is a valid path but not a database: every read raises
+    # sqlite3.DatabaseError, which is exactly the live corruption shape.
+    ops_db.write_bytes(b"this is not a SQLite database" * 64)
+
+    alert = _check_repeated_stage_failures_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert alert.check_name == "repeated_stage_failures"
+    assert "unreadable" in alert.message
+
+
+def test_repeated_stage_failures_reports_an_absent_ops_tier(
+    workspace_env: dict[str, Path],
+) -> None:
+    """No ops tier means nothing was read -- which is not a healthy zero.
+
+    Anti-vacuity: return ``HealthSeverity.OK`` for the absent-tier branch and
+    this is red.
+    """
+    ops_db = archive_root() / "ops.db"
+    # The workspace fixture bootstraps every declared tier, which is the point:
+    # an archive that has lost ops.db has lost evidence, not accrued a clean
+    # history.
+    ops_db.unlink()
+
+    alert = _check_repeated_stage_failures_medium()
+
+    assert alert.severity == HealthSeverity.WARNING
+    assert "unavailable" in alert.message
 
 
 def test_secret_scan_sweep_reports_recorded_failure(
@@ -744,9 +782,7 @@ def test_secret_scan_sweep_reports_recorded_failure(
 def test_repeated_stage_failures_error_when_many_recent_failures(
     workspace_env: dict[str, Path],
 ) -> None:
-    dbf = index_db_path()
-    dbf.parent.mkdir(parents=True, exist_ok=True)
-    _init_live_ingest_attempt(dbf, total=10, failed=5)
+    _init_ops_ingest_attempts(archive_root() / "ops.db", total=10, failed=5)
     alert = _check_repeated_stage_failures_medium()
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
@@ -775,32 +811,6 @@ def test_repeated_stage_failures_reads_ops_tier_from_archive_tiers(
     assert alert.severity == HealthSeverity.ERROR
     assert "5/5 recent attempts failed" in alert.message
     assert "phase=convergence: boom" in alert.message
-
-
-def test_repeated_stage_failures_prefers_populated_archive_ops(
-    workspace_env: dict[str, Path],
-) -> None:
-    dbf = index_db_path()
-    dbf.parent.mkdir(parents=True, exist_ok=True)
-    _init_live_ingest_attempt(dbf, total=5, failed=0)
-    ops_db = dbf.with_name("ops.db")
-    initialize_archive_database(ops_db, ArchiveTier.OPS)
-    with sqlite3.connect(ops_db) as conn:
-        for i in range(3):
-            record_ingest_attempt(
-                conn,
-                attempt_id=f"failed-{i}",
-                status="failed",
-                phase="parse",
-                started_at_ms=1_770_000_000_000 + i,
-                error_message="v1 boom",
-            )
-
-    alert = _check_repeated_stage_failures_medium()
-
-    assert alert.severity == HealthSeverity.ERROR
-    assert "3/3 recent attempts failed" in alert.message
-    assert "v1 boom" in alert.message
 
 
 # ---------------------------------------------------------------------------
