@@ -93,6 +93,36 @@ derived convergence and convergence-debt retry. A manual `polylogue ops reset --
 required to pick up a provider-usage materializer fix or a zero-token bug fix
 for existing sessions; it remains available as a fallback for a full rebuild.
 
+### Lineage chains: per-session counters, never chain deltas
+
+A fork / resume / subagent copy physically replays its parent's message prefix,
+and the archive stores only the child's divergent tail. Provider *usage* does
+not follow that slice. Every origin that reaches the cumulative
+`session_provider_usage_events.total_*` lanes — `codex-session` and
+`hermes-session` are the only two that emit `total_token_usage` — scopes its
+counter to the physical session: a resumed Codex thread restarts
+`total_token_usage` at one context window rather than continuing its parent's,
+and a Hermes child's `sessions` row counters move up and down relative to its
+parent's. Re-sending the replayed prefix is billed again in every link, so each
+link's own counter is the honest figure for that link.
+
+The writer therefore stores a prefix-sharing child's reported `total_*` lanes
+verbatim. It deletes only a usage event *bound to a replayed prefix message*,
+whose observation the parent already owns. Logical-session accounting adds the
+chain root's observation to each descendant's own (`_logical_model_rollup_stats`
+in `polylogue/storage/usage.py`); it is not root-plus-deltas.
+
+Before polylogue-uoq3x the writer rebased each child's cumulative totals
+against the parent's *stored* row. That row had itself already been rebased
+once the chain was deeper than two links, so the subtraction compounded: a
+six-link chain reporting `10, 13, 16, 19, 22, 25` was stored as
+`10, 3, 13, 6, 16, 9`. Where every link reported identical counters the
+subtraction clamped them to zero and a companion sweep deleted three of the six
+usage rows outright. This corrupted every basis computed from those rows —
+`catalog_api_equivalent_usd` and `subscription_credit_usd` alike, since both
+price the same stored lanes — and it is a third error source independent of the
+API-equivalent / subscription split described above.
+
 ### Single authority for per-session token totals
 
 `session_model_usage` is the single authority for a session's per-model token
