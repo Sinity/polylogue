@@ -68,6 +68,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Atlas: Sources and Parsers](atlas/sources-parsers.md) | Agent-orientation sheet: acquisition, detection, normalization, and parser invariants. |
 | [Atlas: Query and Read Path](atlas/query-read-path.md) | Agent-orientation sheet: query planning, stable reads, and surface ownership. |
 | [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
+| [Atlas: Doctrine](atlas/doctrine.md) | Doctrine index: each invariant's executable owner, gate, failure signal, and change procedure. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
 | [Structured Logging](structured-logging.md) | Event vocabulary, correlation context, outcome honesty, the field allowlist, and the conversion recipe. |
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |

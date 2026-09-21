@@ -6,6 +6,13 @@ with the implementation; this document records the *why* and the *rules*. Use
 [Code Navigation](code-navigation.md) when the immediate question is where a
 change belongs or which production route must be exercised.
 
+For the standing invariants themselves — time, writer ownership, finding
+provenance, degradation, non-goals and revisit triggers, injected-context
+trust, and unification — read the [Doctrine index](atlas/doctrine.md). It
+names each invariant's executable owner, its gate, the observable failure, and
+the procedure for changing it, with anchors that `devtools gate atlas` keeps
+resolvable.
+
 ## Four Rings
 
 | Ring | Role | Primary modules |
