@@ -675,10 +675,6 @@
       "digest": "a3e9a8c5fe67a3d0714645814220240e680e8e88"
     },
     {
-      "file": "polylogue/sources/hooks.py",
-      "digest": "0a183315013a2d1860851265744867373c1eca1b"
-    },
-    {
       "file": "polylogue/sources/import_explain.py",
       "digest": "5c03a12b0aeee0194e2c378546a47350ef437b25"
     },
@@ -740,10 +736,6 @@
     {
       "file": "polylogue/sources/live/watcher.py",
       "digest": "704116e7b35058a3c63fdb4767331298e1141e9c"
-    },
-    {
-      "file": "polylogue/sources/live/watcher.py",
-      "digest": "8529d01ca9abe2d6273daaf21fdc2c73c226298e"
     },
     {
       "file": "polylogue/sources/parsers/codex_state.py",

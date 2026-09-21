@@ -506,8 +506,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "an origin's parsers do not own, and no public projection that disagrees with the block."
         ),
         examples=(
-            "devtools archive tool-outcome-census",
-            "devtools archive tool-outcome-census --json",
+            "devtools archive tool-outcome-census --archive-root /path/to/archive",
+            "devtools archive tool-outcome-census --archive-root /path/to/archive --json",
         ),
     ),
     CommandSpec(

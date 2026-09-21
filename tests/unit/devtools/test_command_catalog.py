@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import importlib
+import shlex
+
 from devtools.command_catalog import (
     CATEGORY_ORDER,
     COMMAND_SPECS,
@@ -72,3 +76,42 @@ def test_top_level_command_surface_is_the_folded_twelve() -> None:
         "verify",
         "why",
     }
+
+
+def _documented_examples_with_a_module_parser() -> list[tuple[str, tuple[str, ...], str, argparse.ArgumentParser]]:
+    """Every documented example whose command exposes an argparse parser."""
+    rows: list[tuple[str, tuple[str, ...], str, argparse.ArgumentParser]] = []
+    for spec in COMMAND_SPECS:
+        maker = getattr(importlib.import_module(spec.module), "_parser", None)
+        if not callable(maker):
+            continue
+        parser = maker()
+        if not isinstance(parser, argparse.ArgumentParser):
+            continue
+        for example in spec.examples:
+            rows.append((spec.name, tuple(spec.argv), example, parser))
+    return rows
+
+
+def test_documented_examples_parse_against_their_own_command_parser() -> None:
+    """A documented example that cannot run is worse than no example.
+
+    ``devtools archive tool-outcome-census`` and its ``--json`` sibling were
+    both documented without the parser's required ``--archive-root``, so the
+    two commands the catalog teaches exited 2 on a usage error.
+
+    Anti-vacuity: drop ``--archive-root`` from either tool-outcome-census
+    example and this reddens with ``SystemExit 2``. Nine examples across four
+    commands currently carry a module parser, so the loop is not empty.
+    """
+    rows = _documented_examples_with_a_module_parser()
+    assert len(rows) >= 9, f"the example denominator collapsed to {len(rows)}"
+    failures: list[tuple[str, str, str]] = []
+    for name, argv, example, parser in rows:
+        tokens = shlex.split(example)
+        assert tokens[: len(argv)] == list(argv), f"{name}: example {example!r} does not invoke {' '.join(argv)!r}"
+        try:
+            parser.parse_args(tokens[len(argv) :])
+        except SystemExit as exit_code:
+            failures.append((name, example, f"SystemExit {exit_code.code}"))
+    assert not failures, f"documented examples their own parser refuses: {failures}"
