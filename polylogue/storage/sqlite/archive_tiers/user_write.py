@@ -1522,8 +1522,26 @@ def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudg
 
 
 _FINDING_KINDS: Final[frozenset[str]] = frozenset(
-    {"query-delta", "query-drift", "measure", "pathology", "claim-vs-evidence"}
+    {
+        "query-delta",
+        "query-drift",
+        "measure",
+        "pathology",
+        "claim-vs-evidence",
+        # ``*-unmeasured`` are the designed degraded classes: the detector ran,
+        # could not establish the value its definitive sibling would claim, and
+        # says so. They exist because silently emitting nothing on a non-exact
+        # evaluation substitutes an unmeasured negative for a wrong positive
+        # (polylogue-uwm6y), which is the same defect class. A definitive
+        # sibling reports a measured current relation; these must not carry one
+        # -- see the ``current_ref`` guard in ``_finding_value``.
+        "query-delta-unmeasured",
+        "query-drift-unmeasured",
+    }
 )
+
+#: Degraded finding kinds: a claim that a value could not be established.
+_UNMEASURED_FINDING_KINDS: Final[frozenset[str]] = frozenset({"query-delta-unmeasured", "query-drift-unmeasured"})
 _PUBLIC_CLAIM_PRESETS: Final[frozenset[str]] = frozenset({"readme", "launch", "findings-page", "verified-export"})
 _PUBLIC_EVIDENCE_REF_KINDS: Final[frozenset[str]] = frozenset(
     {"file", "commit", "github-issue", "github-pr", "assertion", "finding", "analysis", "run"}
@@ -1619,6 +1637,17 @@ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
         value["current_ref"] = _validate_finding_ref(finding.current_ref, field="current_ref")
     if finding.finding_kind == "query-delta" and {"baseline_ref", "current_ref"} - value.keys():
         raise ValueError("query-delta findings require baseline_ref and current_ref")
+    if finding.finding_kind in _UNMEASURED_FINDING_KINDS:
+        # The whole point of a degraded class is that no current relation was
+        # established. Carrying one would let an unmeasured claim be read as a
+        # measured one -- the defect polylogue-uwm6y is about.
+        if "current_ref" in value:
+            raise ValueError(f"{finding.finding_kind} findings must not carry a current_ref")
+        if statistic.get("op") != "unmeasured" or statistic.get("value") is not None:
+            raise ValueError(f"{finding.finding_kind} findings require an unmeasured statistic with a null value")
+        degraded_reason = statistic.get("reason")
+        if not isinstance(degraded_reason, str) or not degraded_reason.strip():
+            raise ValueError(f"{finding.finding_kind} findings require a non-empty statistic reason")
     if finding.expected is not None:
         expected = dict(finding.expected)
         if not {"measure", "op", "value"}.issubset(expected):

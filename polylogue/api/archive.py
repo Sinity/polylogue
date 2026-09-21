@@ -6951,17 +6951,25 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     # Saved views
     # ------------------------------------------------------------------
 
-    async def save_view(self, view_id: str, name: str, query_json: str) -> bool:
+    async def save_view(self, view_id: str, name: str, query_json: str, *, watch: bool = False) -> bool:
         """Save a named query view. Returns ``True`` if newly created.
 
         Routed through ``OperationExecutor``/``SavedViewSaveActuator`` (t46.9
         phase 4); see :meth:`add_mark` for the shared-contract rationale.
+
+        ``watch=True`` is the product's creation route for a standing query:
+        the name is promoted into the durable watched-query substrate the
+        daemon's standing-query convergence stage re-evaluates
+        (polylogue-pm8cj). A selection with no evaluable predicate is refused
+        at plan time.
         """
         from polylogue.operations.mutation_actuators import SavedViewSaveActuator, SavedViewSaveArgs
 
         receipt, _plan = self._execute_facade_mutation(
             SavedViewSaveActuator(),
-            lambda archive: SavedViewSaveArgs(archive=archive, view_id=view_id, name=name, query_json=query_json),
+            lambda archive: SavedViewSaveArgs(
+                archive=archive, view_id=view_id, name=name, query_json=query_json, watch=watch
+            ),
             capability="archive.save_view",
         )
         return bool(receipt.domain_receipt.get("created"))

@@ -403,13 +403,26 @@ def handle_save_view(handler: Any) -> None:
         handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
         return
 
+    watch = body.get("watch", False)
+    if not isinstance(watch, bool):
+        handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+        return
+
     SessionQuerySpec.from_params(query, strict=True)
+    if watch:
+        from polylogue.archive.query.watch_definition import WatchDefinitionError, validate_watch_definition
+
+        try:
+            validate_watch_definition(query)
+        except WatchDefinitionError as exc:
+            handler._send_error(HTTPStatus.BAD_REQUEST, "invalid_watch_definition", detail=str(exc))
+            return
     query_json = json.dumps(query, sort_keys=True, separators=(",", ":"))
     view_id = str(body.get("view_id") or _default_saved_view_id(name, query_json))
 
     async def _save(poly: Any) -> MutationResultPayload:
         existing = await poly.get_view(view_id)
-        await poly.save_view(view_id, name, query_json)
+        await poly.save_view(view_id, name, query_json, watch=watch)
         created = existing is None
         status, detail, affected_count = _save_mutation_status(created)
         return MutationResultPayload(
