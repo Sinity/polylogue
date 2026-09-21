@@ -31,6 +31,7 @@ from polylogue.schemas.source_inference import (
     inventory_schema_sources,
     parse_schema_source_input,
 )
+from tests.infra.logical_source_probe import record_logical_source_connections
 
 
 def test_declared_claude_jsonl_source_reaches_evidence_schema_emission(tmp_path: Path) -> None:
@@ -86,6 +87,37 @@ def test_declared_codex_database_observes_table_and_column_shape(tmp_path: Path)
     assert isinstance(tables, dict)
     assert "added_column" in json.dumps(evidence.structure)
     assert "title" in json.dumps(evidence.structure)
+
+
+def test_database_schema_observation_closes_its_private_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Structure observation must release the connection it opened.
+
+    ``sqlite3``'s own context manager commits or rolls back and never closes,
+    so ``with open_logical_source(...)`` returned with the read handle still
+    open -- one stranded handle per observed candidate, and for a retained
+    export one stranded inode too, since the reconstruction is unlinked while
+    the connection holds it.
+
+    Anti-vacuity: revert ``closing(open_logical_source(...))`` in
+    ``_collect_database_schema_candidate`` to a bare ``with
+    open_logical_source(...)`` and ``probe.closed`` is ``False`` while the
+    observed structure below stays exactly right.
+    """
+    path = tmp_path / "state_5.sqlite"
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            "CREATE TABLE threads (id TEXT, title TEXT, added_column INTEGER);"
+            "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);"
+        )
+
+    candidate = _SourceCandidate("codex", tmp_path, path, "codex-state")
+    with record_logical_source_connections(monkeypatch, source_inference_module) as opened:
+        collected = _collect_candidate(candidate)
+        assert collected.terminal.outcome == "included", "sanity: the observation really ran"
+        assert "added_column" in json.dumps(
+            SchemaEvidence.from_json(collected.contributions[0].evidence_by_element["database_schema"]).structure
+        )
+        assert [probe.closed for probe in opened] == [True]
 
 
 def test_declared_json_array_accepts_fractional_values_and_one_file_source(tmp_path: Path) -> None:

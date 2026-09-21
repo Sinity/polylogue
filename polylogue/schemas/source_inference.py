@@ -20,7 +20,7 @@ import zipfile
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass, field, replace
 from datetime import timezone
 from functools import partial
@@ -1375,7 +1375,7 @@ def _collect_database_schema_candidate(
         # read-only connection still gives us a consistent transaction while
         # including the current WAL state; retained logical exports are
         # reconstructed through the same adapter and are safe on this path too.
-        with open_logical_source(candidate.path, immutable=False) as conn:
+        with closing(open_logical_source(candidate.path, immutable=False)) as conn:
             conn.row_factory = sqlite3.Row
             table_rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
