@@ -5364,10 +5364,18 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
             """
             UPDATE session_links
                SET branch_point_message_id = ?,
+                   branch_point_content_address = ?,
                    inheritance = 'prefix-sharing'
              WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
             """,
-            (bound, src_session_id, dst_origin, dst_native_id, link_type),
+            (
+                bound,
+                _message_content_address_for_id(conn, bound),
+                src_session_id,
+                dst_origin,
+                dst_native_id,
+                link_type,
+            ),
         )
 
 
@@ -5475,14 +5483,18 @@ def _write_session_link(
     if asserted_branch_point:
         evidence[ASSERTED_BRANCH_POINT_EVIDENCE_KEY] = asserted_branch_point
         if branch_point_message_id is None:
-            # ``branch_point_content_address`` stays NULL: it is the staleness
-            # witness for a prefix this child stores a tail of, and an asserted
-            # branch point comes with no such prefix.
             branch_point_message_id = _bind_asserted_branch_point(
                 conn,
                 _existing_parent_session_id(conn, session, origin),
                 asserted_branch_point,
             )
+            if branch_point_message_id is not None:
+                # The staleness witness records which parent content this edge
+                # was bound against. That is as true of an assertion as of a
+                # measured alignment: the composed read splices the parent's
+                # prefix in either case, so an edge with no witness is one whose
+                # prefix can silently drift underneath it.
+                branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
         # ``fork-context-ref`` children do not replay the parent's prefix, but
         # their effective context is still the parent's transcript through the
         # provider-asserted branch point. Mark a successfully bound assertion
