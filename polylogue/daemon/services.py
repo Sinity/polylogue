@@ -130,6 +130,16 @@ class ServiceCapability(str, Enum):
     DERIVED_WRITES = "derived_writes"
     """Derived tiers are usable, so index-writing work may be scheduled."""
 
+    EMBEDDINGS = "embeddings"
+    """Embedding convergence can do work: enabled *and* a provider key.
+
+    Both halves are read once per process from configuration, which is what
+    makes this a selection fact rather than a per-pass one. Without it the
+    composed convergence callback is a constant policy deferral, so a
+    scheduled backlog loop would refuse identical work on every ingest wake
+    instead of never being planned.
+    """
+
     SCHEMA_BLOCKED = "schema_blocked"
     """Schema preflight was CRITICAL; recheck work is scheduled instead."""
 
@@ -363,7 +373,13 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         "embedding_backlog",
         owner="daemon.embeddings",
         trigger=ServiceTrigger.PERIODIC,
-        requires=(ServiceCapability.DERIVED_WRITES,),
+        # EMBEDDINGS is a selection requirement, not a per-pass check: with
+        # embeddings unconfigured -- the default -- the convergence callback
+        # is a constant policy deferral for the life of the process, while
+        # this loop is woken by every committed ingest. Selected-and-refusing
+        # cost one identical refusal per commit (measured: 25 wakes, 25
+        # refusals) and published nothing an operator could read.
+        requires=(ServiceCapability.DERIVED_WRITES, ServiceCapability.EMBEDDINGS),
         profiles=(ServiceProfile.PRODUCTION,),
         readiness=ServiceReadiness.ON_FIRST_PASS,
         status_component="embeddings",
@@ -373,6 +389,9 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         "embedding_orphan_reconcile",
         owner="daemon.embeddings",
         trigger=ServiceTrigger.PERIODIC,
+        # Deliberately *not* gated on EMBEDDINGS: stale embedding rows left by
+        # an index rebuild are debt to drain whether or not new embedding work
+        # can be computed, and the pass is cadenced rather than ingest-woken.
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
         cadence_s=900.0,

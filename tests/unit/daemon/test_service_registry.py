@@ -9,6 +9,10 @@ these tests goes red.
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any, cast
+from unittest.mock import patch
+
 import pytest
 
 from polylogue.daemon.services import (
@@ -135,3 +139,71 @@ def test_selected_for_is_the_only_selection_rule() -> None:
         profile=ServiceProfile.PRODUCTION,
         capabilities=frozenset({ServiceCapability.API, ServiceCapability.SCHEMA_BLOCKED}),
     )
+
+
+def test_unconfigured_embeddings_deselect_the_ingest_woken_backlog_loop() -> None:
+    """A permanently deferred backlog loop must never be planned.
+
+    With embeddings unconfigured, ``compose_embedding_convergence`` returns a
+    constant policy deferral for the life of the process, and the backlog loop
+    is woken by every committed ingest -- so selecting it buys one identical
+    refusal per commit and never a pass that can progress. Orphan reconcile is
+    deliberately still selected: stale embedding rows are debt to drain whether
+    or not new embedding work can be computed.
+
+    Anti-vacuity: drop ``ServiceCapability.EMBEDDINGS`` from the
+    ``embedding_backlog`` spec's ``requires`` and the first assertion fails
+    because the loop is selected again. Executed: with the requirement removed,
+    ``embedding_backlog`` reappears in ``without_embeddings``.
+    """
+    without_embeddings = {
+        spec.name for spec in select_service_specs(capabilities=ALL_CAPABILITIES - {ServiceCapability.EMBEDDINGS})
+    }
+    with_embeddings = {spec.name for spec in select_service_specs(capabilities=ALL_CAPABILITIES)}
+
+    assert "embedding_backlog" not in without_embeddings
+    assert "embedding_backlog" in with_embeddings
+    assert with_embeddings - without_embeddings == {"embedding_backlog"}
+    assert "embedding_orphan_reconcile" in without_embeddings
+
+
+def test_the_capability_predicate_agrees_with_the_composed_callback() -> None:
+    """One configuration decides the capability and the composed deferral.
+
+    ``embedding_convergence_unavailable_reason`` lets the composition root
+    withhold the capability *before* a task exists, but it is a mirror of a
+    decision ``compose_embedding_convergence`` owns. If the two drift, the
+    service is scheduled against a callback that can only refuse -- exactly the
+    state the capability was added to prevent -- and nothing would say so.
+
+    Anti-vacuity: invert either branch of the predicate and a row below
+    disagrees with the composer's permanent deferral. Executed: swapping the
+    ``embedding_enabled`` test to ``if bool(...)`` makes the first two rows
+    fail.
+    """
+    import asyncio
+
+    from polylogue.config import PolylogueConfig
+    from polylogue.daemon.embedding_backlog import embedding_convergence_unavailable_reason
+    from polylogue.daemon.embedding_owner import compose_embedding_convergence
+    from tests.infra.embedding_config import embedding_config
+
+    matrix = (
+        (False, None, "disabled"),
+        (False, "vk-synthetic", "disabled"),
+        (True, None, "provider_unavailable"),
+    )
+    for enabled, key, expected in matrix:
+        config = embedding_config(embedding_enabled=enabled, voyage_api_key=key)
+        assert embedding_convergence_unavailable_reason(config) == expected
+
+        async def compose(cfg: PolylogueConfig = config) -> str | None:
+            with patch("polylogue.config.load_polylogue_config", return_value=cfg):
+                composed = compose_embedding_convergence(
+                    Path("/nonexistent/archive/index.db"),
+                    compute_adapter=cast(Any, None),
+                    write_bridge=cast(Any, None),
+                )
+            return (await composed(None)).deferred_reason
+
+        assert asyncio.run(compose()) == expected, f"composer disagreed for enabled={enabled} key={key!r}"
