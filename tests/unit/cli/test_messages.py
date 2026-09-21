@@ -11,7 +11,8 @@ import pytest
 
 from polylogue.cli.messages import run_messages, run_raw, run_session_events
 from polylogue.cli.read_views.base import ReadViewInvocation
-from polylogue.cli.read_views.messages import _write_messages_file, run_read_hooks
+from polylogue.cli.read_views.messages import _write_messages_file
+from polylogue.cli.read_views.session_evidence import run_read_hooks
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config

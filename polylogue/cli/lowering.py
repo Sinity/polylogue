@@ -211,6 +211,7 @@ def lower_session_read(
     offset: int = 0,
     projection: Mapping[str, object] | None = None,
     continuation: str | None = None,
+    around: str | None = None,
 ) -> OperationRequest:
     """Lower one bounded read for an exact reference onto ``session.read``.
 
@@ -219,17 +220,26 @@ def lower_session_read(
     Evidence kinds are answered whole and take no window at all; passing one
     is a caller error for the same reason.
 
-    The windowed kinds are named by the operation contract rather than spelled
-    again here: a kind that graduates to a window would otherwise keep being
-    refused a window by this adapter.
+    The windowed and anchored kinds are named by the operation contract rather
+    than spelled again here: a kind that graduates to a window would otherwise
+    keep being refused a window by this adapter.
+
+    ``around`` names a message instead of a coordinate.  It decides the offset,
+    so supplying either an offset or a continuation alongside it names two
+    different windows and is refused rather than silently resolved one way.
     """
 
-    from polylogue.operations.read_contracts import WINDOWED_SESSION_READ_KINDS
+    from polylogue.operations.read_contracts import ANCHORED_SESSION_READ_KINDS, WINDOWED_SESSION_READ_KINDS
 
     if continuation is not None and (limit is not None or offset):
         raise click.UsageError("A transcript continuation already carries its window coordinates.")
     if kind not in WINDOWED_SESSION_READ_KINDS and (limit is not None or offset or continuation is not None):
         raise click.UsageError(f"A {kind} read is answered whole and takes no window coordinates.")
+    if around is not None:
+        if kind not in ANCHORED_SESSION_READ_KINDS:
+            raise click.UsageError(f"A {kind} read does not serve a window around a message.")
+        if continuation is not None or offset:
+            raise click.UsageError("--around and an explicit window coordinate name two different windows.")
     payload: dict[str, object] = {"ref": ref}
     if kind != "transcript":
         payload["kind"] = kind
@@ -241,6 +251,8 @@ def lower_session_read(
         payload["projection"] = dict(projection)
     if continuation is not None:
         payload["continuation"] = continuation
+    if around is not None:
+        payload["around"] = around
     return OperationRequest("session.read", payload)
 
 

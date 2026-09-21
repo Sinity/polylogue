@@ -68,6 +68,7 @@ class SyncSessionQueriesMixin:
         limit: int = 50,
         offset: int = 0,
         continuation: str | None = None,
+        around: str | None = None,
     ) -> TranscriptWindow[Message]:
         """Synchronous mirror of the one bound transcript-window route."""
 
@@ -79,6 +80,7 @@ class SyncSessionQueriesMixin:
                 limit=limit,
                 offset=offset,
                 continuation=continuation,
+                around=around,
             )
         )
 

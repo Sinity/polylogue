@@ -74,7 +74,13 @@ def test_the_decided_classification_partitions_every_view() -> None:
     the affected paths the ``file`` unit reads) -- turns this red.
     """
 
-    assert read_views_by_execution_kind("session-read-projection") == ("hooks", "messages")
+    assert read_views_by_execution_kind("session-read-projection") == (
+        "agent-policies",
+        "file-edits",
+        "hooks",
+        "messages",
+        "web-content",
+    )
     assert read_views_by_execution_kind("query-units-projection") == ()
     assert read_views_by_execution_kind("distinct-operation") == (
         "context",
@@ -84,17 +90,14 @@ def test_the_decided_classification_partitions_every_view() -> None:
     )
     assert read_views_by_execution_kind("renderer") == ("summary", "transcript")
     assert read_views_by_execution_kind("in-process") == (
-        "agent-policies",
         "chronicle",
         "correlation",
         "dialogue",
         "effective_context",
         "events",
-        "file-edits",
         "neighbors",
         "raw",
         "temporal",
-        "web-content",
     )
     assert sum(
         len(read_views_by_execution_kind(kind))

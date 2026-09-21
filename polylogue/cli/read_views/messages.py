@@ -31,6 +31,7 @@ def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOption
         offset=cast(int, values.get("offset", 0)),
         full=cast(bool, values.get("full", False)),
         continuation=cast(str | None, values.get("continuation")),
+        around=cast(str | None, values.get("around")),
     )
 
 
@@ -59,6 +60,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
             full=options.full,
             output_format=invocation.output_format,
             out_path=Path(invocation.out_path),
+            around=options.around,
         )
         return
 
@@ -79,6 +81,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
                 offset=offset,
                 full=options.full,
                 output_format=invocation.output_format,
+                around=options.around,
             )
         finally:
             click.echo = _orig_echo
@@ -94,6 +97,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         full=options.full,
         output_format=invocation.output_format,
         continuation=options.continuation,
+        around=options.around,
     )
 
 
@@ -107,6 +111,7 @@ def _write_messages_file(
     full: bool,
     output_format: str,
     out_path: Path,
+    around: str | None = None,
 ) -> None:
     """Stream one message window sequence straight to a file.
 
@@ -130,6 +135,7 @@ def _write_messages_file(
         full=full,
         continuation=None,
         daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+        around=around,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,63 +226,9 @@ def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvo
     )
 
 
-def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Render the per-session hook-event summary from ``session.read``.
-
-    The hook read model is a per-session evidence relation with no query-grammar
-    unit of its own, so design D3 classifies this view as a ``session.read``
-    projection.  The view lowers and dispatches; it never opens an archive and
-    never branches on whether a daemon is present -- which executor answers is
-    the kernel's decision, recorded in the result's own authority.
-    """
-
-    from polylogue.cli.lowering import lower_session_read
-    from polylogue.cli.operation_kernel import (
-        OperationEnvelopeError,
-        OperationFailedError,
-        OperationUnavailableError,
-        dispatch,
-    )
-
-    assert invocation.session_id is not None
-    output_format = invocation.output_format or "json"
-    config = cast(Config, request.config())
-
-    try:
-        result = dispatch(config, lower_session_read(invocation.session_id, kind="hooks"))
-    except (OperationFailedError, OperationUnavailableError) as exc:
-        # A refusal names itself and exits non-zero; it must never render as an
-        # empty summary that reads "this session recorded no hook events".
-        # Classed exactly as the transcript path classes its refusals, through
-        # the one CLI read-failure terminal (polylogue-jtrtj).
-        from polylogue.cli.render.outcome import exit_for_read_failure
-
-        exit_for_read_failure(exc)
-    if not isinstance(result.value, dict):
-        raise OperationEnvelopeError("session.read returned a non-object result")
-    evidence = result.value.get("evidence")
-    if not isinstance(evidence, dict):
-        raise OperationEnvelopeError("session.read hooks result carries no evidence body")
-
-    if output_format == "json":
-        # Machine output is rendered as raw bytes so Rich markup never rewrites
-        # JSON and read-view delivery can capture file/clipboard targets.
-        content = json.dumps(evidence, indent=2) + "\n"
-    else:
-        import yaml
-
-        content = yaml.dump(evidence) + "\n"
-
-    if invocation.destination in (RenderDestination.FILE, RenderDestination.CLIPBOARD, RenderDestination.STDOUT):
-        deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
-        return
-    click.echo(content, nl=False)
-
-
 __all__ = [
     "MESSAGE_READ_VIEW_OPTION_NAMES",
     "build_message_options",
-    "run_read_hooks",
     "run_read_messages",
     "run_read_raw",
 ]

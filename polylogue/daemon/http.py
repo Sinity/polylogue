@@ -4943,10 +4943,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_ref_resolve(self, params: dict[str, list[str]]) -> None:
-        """``GET /api/refs/resolve`` resolves public object/evidence refs."""
+        """``GET /api/refs/resolve`` resolves public object/evidence refs.
 
-        from polylogue import Polylogue
-        from polylogue.api.sync.bridge import run_coroutine_sync
+        The resolution is the shared operation (``operations/ref_resolution``),
+        run against the reader this handler pins.  It deliberately no longer
+        constructs a ``Polylogue`` facade inside the daemon's own process: that
+        opened a second archive generation per request and made the daemon's
+        answer a *different execution* of ref resolution from the one the
+        annotation importer admits durable rows on (polylogue-j5u2b).
+        """
+
+        from polylogue.operations.ref_resolution import plan_ref_resolution
 
         ref = self._get_param(params, "ref")
         if not ref:
@@ -4958,9 +4965,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if archive_root is None:
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
             return
-        payload = run_coroutine_sync(
-            Polylogue(archive_root=archive_root, db_path=archive_root / "index.db").resolve_ref(ref)
-        )
+        plan = plan_ref_resolution(ref, archive_root=archive_root)
+        if plan.payload is not None:
+            payload = plan.payload
+        else:
+            assert plan.read is not None
+            with archive_read_context(
+                archive_root,
+                operation=plan.operation,
+                arguments=plan.arguments,
+                projection=plan.projection,
+                stable_order=plan.stable_order,
+            ) as archive:
+                payload = plan.read(archive)
         self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
 
     @daemon_safe_handler

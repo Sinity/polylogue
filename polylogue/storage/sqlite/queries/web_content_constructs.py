@@ -14,6 +14,7 @@ same shape as ``queries/file_edits.py``/``queries/session_refs.py``
 
 from __future__ import annotations
 
+import sqlite3
 from collections import defaultdict
 from collections.abc import Sequence
 
@@ -25,6 +26,7 @@ from polylogue.storage.sqlite.queries.mappers_archive import _row_to_web_content
 __all__ = [
     "get_web_content_constructs_for_session",
     "get_web_content_constructs_for_session_batch",
+    "sync_web_content_constructs_for_session",
 ]
 
 _SELECT_COLUMNS = (
@@ -32,6 +34,43 @@ _SELECT_COLUMNS = (
     "provider_key, title, url, text, source_id, group_id, group_title, query, asset_pointer, "
     "mime_type, status, task_id, task_type, rank, start_index, end_index"
 )
+
+
+def sync_web_content_constructs_for_session(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    construct_type: str | None = None,
+) -> list[WebContentConstructRecord]:
+    """Read the same rows, in the same order, off a pinned sync connection.
+
+    The declared ``session.read`` operation runs inside a reader the daemon
+    already opened, so it cannot await an ``aiosqlite`` handle. The SQL and the
+    row mapper are shared with the async twin rather than restated, so the two
+    routes cannot answer the same session differently.
+    """
+
+    if construct_type is not None:
+        rows = conn.execute(
+            f"""
+            SELECT {_SELECT_COLUMNS}
+            FROM web_content_constructs
+            WHERE session_id = ? AND construct_type = ?
+            ORDER BY message_id, block_id, position
+            """,
+            (session_id, construct_type),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT {_SELECT_COLUMNS}
+            FROM web_content_constructs
+            WHERE session_id = ?
+            ORDER BY message_id, block_id, position
+            """,
+            (session_id,),
+        ).fetchall()
+    return [_row_to_web_content_construct(row) for row in rows]
 
 
 async def get_web_content_constructs_for_session(

@@ -223,6 +223,158 @@ def _strip_read_provenance(payload: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in payload.items() if key != "authority"}
 
 
+def _seed_evidence_archive(root: Path) -> None:
+    """Seed one session that actually carries per-session evidence rows.
+
+    ``SessionBuilder`` writes the session tree only, so a file-edits parity
+    over it would compare two empty bodies.  This writes a real Edit tool call
+    and its result through the production writer, which is what populates the
+    ``file_edits`` relation the view reads.
+    """
+
+    from polylogue.core.enums import BlockType, Provider, Role
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore(root) as archive_db:
+        archive_db.write_raw_and_parsed(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="evidence-parity",
+                title="Evidence parity",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        position=0,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Edit",
+                                tool_id="edit-parity-1",
+                                tool_input={"file_path": "/tmp/parity.py"},
+                            )
+                        ],
+                    ),
+                    ParsedMessage(
+                        provider_message_id="m2",
+                        role=Role.USER,
+                        position=1,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                outcome_unknown_reason="not_reported",
+                                tool_id="edit-parity-1",
+                                text="applied",
+                                file_edit=ParsedFileEdit(
+                                    file_path="/tmp/parity.py",
+                                    structured_patch=[
+                                        {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}
+                                    ],
+                                    original_file="old contents\n",
+                                    old_string="old",
+                                    new_string="new",
+                                    replace_all=False,
+                                    user_modified=True,
+                                ),
+                            )
+                        ],
+                    ),
+                ],
+            ),
+            payload=b'{"raw": "claude payload"}',
+            source_path="/tmp/evidence-parity.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+
+
+def _run_read_evidence_json(session_id: str, view: str, *, no_daemon: bool = False) -> tuple[dict[str, object], str]:
+    from polylogue.cli import cli
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "--verbose",
+            *(["--no-daemon"] if no_daemon else []),
+            "read",
+            f"session:{session_id}",
+            "--view",
+            view,
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return dict(json.loads(result.stdout)), result.stderr
+
+
+def test_read_file_edits_json_parity_between_direct_and_daemon(
+    golden_parity_workspace: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-r3cuz: ``read --view file-edits`` is served by a reachable daemon.
+
+    ``file-edits`` was one of the ``IN_PROCESS_READ_VIEWS``: it opened the
+    archive through the Python API facade in this process, so a healthy daemon
+    paid for a local archive open on every invocation.  Both legs now run one
+    declared ``session.read`` evidence kind, and the rendered document must
+    agree field for field -- the evidence body is the whole payload here, so
+    there is no provenance to strip.
+
+    Anti-vacuity: the ``file_edits`` row assertions below -- two empty bodies
+    would agree trivially -- plus the per-leg ``served-by`` assertions, which a
+    route that silently answered as the other one fails.  Forcing
+    ``daemon_disabled`` on the second leg reds ``served-by: daemon``; returning
+    a hard-coded ``daemon`` identity reds ``served-by: direct`` on the first.
+    """
+
+    archive_root = golden_parity_workspace["archive_root"]
+    session_id = "claude-code-session:evidence-parity"
+
+    with running_daemon_operations(archive_root, seed_archive=_seed_evidence_archive) as stack:
+        _pin_cli_daemon_socket(monkeypatch, stack)
+        direct_payload, direct_err = _run_read_evidence_json(session_id, "file-edits", no_daemon=True)
+        daemon_payload, daemon_err = _run_read_evidence_json(session_id, "file-edits")
+
+    assert "served-by: direct" in direct_err, direct_err
+    assert "served-by: daemon (uds," in daemon_err, daemon_err
+    assert daemon_payload == direct_payload
+    assert direct_payload["total"] == 1, direct_payload
+    edit = cast("list[dict[str, object]]", direct_payload["file_edits"])[0]
+    assert edit["file_path"] == "/tmp/parity.py"
+    assert edit["original_file"] == "old contents\n"
+    assert edit["structured_patch"] == [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}]
+
+
+def test_read_agent_policies_and_web_content_are_served_by_the_daemon(
+    golden_parity_workspace: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two sibling evidence kinds reach the daemon on the same route.
+
+    These relations are empty for this fixture session, which is exactly why
+    the assertion is the *executor*, not the rows: an empty body served in
+    process and an empty body served by the daemon are indistinguishable by
+    content, and the thing that moved is which one answered.  The row-bearing
+    parity for this route is the ``file-edits`` test above.
+    """
+
+    archive_root = golden_parity_workspace["archive_root"]
+    session_id = "claude-code-session:evidence-parity"
+
+    with running_daemon_operations(archive_root, seed_archive=_seed_evidence_archive) as stack:
+        _pin_cli_daemon_socket(monkeypatch, stack)
+        for view, rows_key in (("agent-policies", "agent_policies"), ("web-content", "web_content_constructs")):
+            direct_payload, direct_err = _run_read_evidence_json(session_id, view, no_daemon=True)
+            daemon_payload, daemon_err = _run_read_evidence_json(session_id, view)
+            assert "served-by: direct" in direct_err, (view, direct_err)
+            assert "served-by: daemon (uds," in daemon_err, (view, daemon_err)
+            assert daemon_payload == direct_payload, view
+            assert rows_key in direct_payload, (view, sorted(direct_payload))
+
+
 def test_facets_json_parity_between_direct_and_daemon(
     golden_parity_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,

@@ -33,17 +33,25 @@ __all__ = [
     "MessageNotInSessionError",
     "locate_message_in_archive",
     "locate_message_in_order",
+    "window_offset_around",
     "window_offset_for_index",
 ]
 
 
-class MessageNotInSessionError(LookupError):
+class MessageNotInSessionError(LookupError, ValueError):
     """The named message is not part of the named session's transcript.
 
     This is a refusal, not an empty answer: the caller asked for the window
     around a message this session does not contain, and there is no window
     that honestly satisfies that request. Answering page zero instead would
     hand back a *different* message's window under the caller's reference.
+
+    It is both a ``LookupError`` -- what the HTTP route already catches to map
+    it onto ``404`` -- and a ``ValueError``, which is the declared read
+    operation's vocabulary for "the request was refused". One class with one
+    ``code`` therefore reaches every surface, instead of the operation route
+    escaping the kernel's error map and reaching the operator as a traceback
+    (polylogue-idrej).
     """
 
     code = "message_not_found"
@@ -90,6 +98,19 @@ def locate_message_in_order(session_id: str, message_id: str, ordered_ids: Itera
         if str(candidate) == message_id:
             return MessageLocation(session_id=session_id, message_id=message_id, index=index)
     raise MessageNotInSessionError(session_id, message_id)
+
+
+def window_offset_around(archive: Any, session_id: str, message_id: str, limit: int) -> int:
+    """Return the offset of the ``limit``-sized window holding ``message_id``.
+
+    The locate and the alignment are one step because separating them is what
+    lets two surfaces align the same index differently -- and an ``around``
+    window that is not the window the same reader reaches by paging would make
+    "load more" re-deliver rows it already has. Every surface that accepts an
+    anchor calls this.
+    """
+
+    return window_offset_for_index(locate_message_in_archive(archive, session_id, message_id).index, limit)
 
 
 def locate_message_in_archive(archive: Any, session_id: str, message_id: str) -> MessageLocation:

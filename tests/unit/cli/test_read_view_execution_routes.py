@@ -161,11 +161,14 @@ def test_session_read_projections_name_a_kind_the_operation_actually_serves() ->
     ``_session_read_payload`` answers the windowed kinds itself and delegates
     every other kind to ``_SESSION_EVIDENCE_READERS``, raising for anything
     absent from it.  A view declared as a ``session.read`` projection must
-    therefore name a kind in that union.
+    therefore name a kind in that union -- which is how four views (``hooks``,
+    ``file-edits``, ``agent-policies``, ``web-content``) can share one adapter
+    without any of them being able to claim a relation the operation does not
+    serve.
 
-    Anti-vacuity: re-declare ``file-edits`` as a ``session.read`` projection and
-    this goes red, because ``session.read`` raises
-    "does not serve kind 'file-edits'".
+    Anti-vacuity: re-declare ``raw`` (or any other surviving in-process view)
+    as a ``session.read`` projection and this goes red, because ``session.read``
+    raises "does not serve kind 'raw'".
     """
 
     from polylogue.operations.daemon_reads import _SESSION_EVIDENCE_READERS

@@ -159,7 +159,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="hooks",
         label="Hooks",
-        owner="polylogue.cli.read_views.messages.run_read_hooks",
+        owner="polylogue.cli.read_views.session_evidence.run_read_hooks",
         purpose="Per-session hook-event evidence summary (counts by event type, first/last observation).",
         input_scope="single session id",
         included_kinds=("hook event type counts", "first/last observed timestamps"),
@@ -237,7 +237,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="file-edits",
         label="File Edits",
-        owner="polylogue.cli.read_views.file_edits.run_read_file_edits",
+        owner="polylogue.cli.read_views.session_evidence.run_read_file_edits",
         purpose=(
             "Captured Claude Code Edit/Write/MultiEdit tool-call evidence: structured unified diffs "
             "(structured_patch), pre-edit file content (original_file), and old/new string pairs -- "
@@ -255,7 +255,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="agent-policies",
         label="Agent Policies",
-        owner="polylogue.cli.read_views.file_edits.run_read_agent_policies",
+        owner="polylogue.cli.read_views.session_evidence.run_read_agent_policies",
         purpose=(
             "Sandbox/approval/network policy facts (e.g. Codex agent_policy events), diverted out of "
             "session_events into a dedicated table for zero-loss re-derivation (polylogue-nua7)."
@@ -272,7 +272,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="web-content",
         label="Web Content",
-        owner="polylogue.cli.read_views.web_content_constructs.run_read_web_content_constructs",
+        owner="polylogue.cli.read_views.session_evidence.run_read_web_content",
         purpose=(
             "Typed web-export constructs projected from ChatGPT/Claude web payloads: search queries/results, "
             "canvas documents, content references, image results, async tasks, selected sources, token budgets, "

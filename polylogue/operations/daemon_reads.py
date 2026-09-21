@@ -8,13 +8,18 @@ re-open whichever archive generation happens to be current.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, lower_cli_query_params
+from polylogue.operations.session_evidence import (
+    read_agent_policies_evidence,
+    read_file_edits_evidence,
+    read_web_content_constructs_evidence,
+)
 
 if TYPE_CHECKING:
     from polylogue.archive.query.expression import WithUnitWindow
@@ -1266,10 +1271,17 @@ def _session_messages_payload(
     This reader composes windows from the pinned archive page reader, which has
     no filter vocabulary, so a filtered request is refused by name rather than
     answered with unfiltered rows.
+
+    ``around`` names a message instead of a coordinate.  It is resolved to an
+    offset *before* the window is framed, so the continuation this window mints
+    carries the resolved coordinate and nothing about the anchor: an ``around``
+    window is the same window, and the same continuation family, as asking for
+    the offset it reports (polylogue-idrej).
     """
 
     from types import SimpleNamespace
 
+    from polylogue.operations.message_locator import window_offset_around
     from polylogue.operations.transcript_window import read_transcript_window_sync, window_request
     from polylogue.surfaces.outcome import lineage_page_outcome
     from polylogue.surfaces.projection_spec import ProjectionSpec
@@ -1286,6 +1298,23 @@ def _session_messages_payload(
     excluded_blocks = frozenset(projection.exclude_block_kinds) if projection is not None else frozenset()
 
     continuation_token = payload.get("continuation")
+    around = payload.get("around")
+    if around and continuation_token:
+        raise ValueError("around and continuation name two different windows")
+
+    try:
+        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
+    except KeyError as exc:
+        raise ValueError(f"session not found: {ref}") from exc
+
+    if around:
+        # The anchor is resolved against the same ``(position, variant_index)``
+        # order ``read_session_page`` windows with, so the index and the page
+        # cannot disagree.  A message this session does not contain is refused
+        # rather than answered with page zero, which would hand back a
+        # different message's window under the caller's reference.
+        offset = window_offset_around(archive, session_id, str(around), limit)
+
     request = window_request(
         ref,
         limit=limit,
@@ -1294,11 +1323,6 @@ def _session_messages_payload(
     )
     if request.message_role or request.message_type is not None or request.material_origin:
         raise ValueError("session.read messages does not serve a filtered message window")
-
-    try:
-        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
-    except KeyError as exc:
-        raise ValueError(f"session not found: {ref}") from exc
 
     header: dict[str, object] = {}
 
@@ -1339,11 +1363,27 @@ def _session_messages_payload(
     return result
 
 
+def _hook_event_summary_evidence(archive: ArchiveStore, session_id: str) -> Mapping[str, object] | None:
+    """The hook-event summary, read from the pinned reader's own accessor."""
+
+    return archive.hook_event_summary_for_session(session_id)
+
+
 #: Bounded per-session evidence read models, keyed by the ``session.read``
 #: kind that names them.  Each reads one relation the query grammar declares no
 #: unit for (design D3), through the pinned reader rather than the API facade.
-_SESSION_EVIDENCE_READERS: dict[str, str] = {
-    "hooks": "hook_event_summary_for_session",
+#:
+#: The value is the reader itself rather than an ``ArchiveStore`` method name:
+#: ``archive_tiers/archive.py`` is inside the derived-schema identity closure,
+#: so growing this table by adding methods there would move the archive's
+#: schema identity and force a reconvergence for a read that adds no derived
+#: semantics.  The readers live in ``operations/session_evidence.py``, which
+#: measures closure ``out`` (polylogue-r3cuz).
+_SESSION_EVIDENCE_READERS: dict[str, Callable[[ArchiveStore, str], Mapping[str, object] | None]] = {
+    "hooks": _hook_event_summary_evidence,
+    "file-edits": lambda archive, session_id: read_file_edits_evidence(archive, session_id),
+    "agent-policies": lambda archive, session_id: read_agent_policies_evidence(archive, session_id),
+    "web-content": lambda archive, session_id: read_web_content_constructs_evidence(archive, session_id),
 }
 
 
@@ -1357,18 +1397,18 @@ def _session_evidence_payload(ref: str, *, kind: str, archive: ArchiveStore) -> 
 
     from polylogue.surfaces.outcome import decide_outcome
 
-    reader_name = _SESSION_EVIDENCE_READERS.get(kind)
-    if reader_name is None:
+    reader = _SESSION_EVIDENCE_READERS.get(kind)
+    if reader is None:
         raise ValueError(f"session.read does not serve kind {kind!r}")
     try:
         session_id = archive.resolve_session_id(ref.removeprefix("session:"))
     except KeyError as exc:
         raise ValueError(f"session not found: {ref}") from exc
 
-    evidence = getattr(archive, reader_name)(session_id)
-    if evidence is None:
+    read = reader(archive, session_id)
+    if read is None:
         raise ValueError(f"session not found: {ref}")
-    evidence = dict(evidence)
+    evidence = dict(read)
 
     summary = archive.read_summary(session_id)
     total = _non_negative_int(evidence.get("total"), default=0)

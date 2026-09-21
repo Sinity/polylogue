@@ -62,6 +62,7 @@ def read_message_windows(
     full: bool,
     continuation: str | None,
     daemon_disabled: bool,
+    around: str | None = None,
 ) -> Iterator[_MessageWindow]:
     """Yield the declared ``session.read`` message windows one request needs.
 
@@ -70,6 +71,11 @@ def read_message_windows(
     page wider than one window is read as a bounded sequence of windows.  A
     window that adds no rows ends the loop -- it cannot advance the
     composition, so continuing on one would hang rather than wait.
+
+    ``around`` decides the *first* window's offset and is carried only on that
+    request: the operation reports the coordinate it resolved to, and every
+    further window advances from there by coordinate, so a composed read walks
+    forward from the anchor rather than re-resolving it on each page.
     """
 
     from polylogue.cli.lowering import lower_session_read
@@ -77,15 +83,17 @@ def read_message_windows(
     token = continuation
     remaining: int | None = None if full else max(limit, 0)
     delivered = 0
+    anchor = around
     while True:
         if remaining is not None and remaining <= 0:
             return
         window_limit = _MESSAGE_READ_WINDOW if remaining is None else min(remaining, _MESSAGE_READ_WINDOW)
-        request = (
-            lower_session_read(session_id, kind="messages", continuation=token)
-            if token is not None
-            else lower_session_read(session_id, kind="messages", limit=window_limit, offset=offset + delivered)
-        )
+        if token is not None:
+            request = lower_session_read(session_id, kind="messages", continuation=token)
+        elif anchor is not None:
+            request = lower_session_read(session_id, kind="messages", limit=window_limit, around=anchor)
+        else:
+            request = lower_session_read(session_id, kind="messages", limit=window_limit, offset=offset + delivered)
         payload, served_by = dispatch_read(config, request, daemon_disabled=daemon_disabled)
         raw_rows = payload.get("messages")
         rows = [row for row in raw_rows if isinstance(row, Mapping)] if isinstance(raw_rows, list) else []
@@ -103,6 +111,11 @@ def read_message_windows(
             served_by=served_by,
         )
         yield window
+        if anchor is not None:
+            # The anchor resolved to a coordinate; the composition continues
+            # from that coordinate rather than re-resolving the same message.
+            offset = window.offset
+            anchor = None
         delivered += len(rows)
         if remaining is not None:
             remaining -= len(rows)
@@ -163,6 +176,7 @@ def run_messages(
     full: bool = False,
     output_format: str | None = None,
     continuation: str | None = None,
+    around: str | None = None,
 ) -> None:
     """Execute the messages verb over the declared ``session.read`` window.
 
@@ -186,6 +200,7 @@ def run_messages(
             full=full,
             continuation=continuation,
             daemon_disabled=daemon_disabled,
+            around=around,
         ):
             windows.append(window)
     except OperationKernelError as exc:
@@ -397,152 +412,10 @@ def run_session_events(
     run_coroutine_sync(_run())
 
 
-def run_session_file_edits(
-    env: AppEnv,
-    request: RootModeRequest,
-    *,
-    session_id: str,
-    output_format: str = "json",
-) -> None:
-    """Execute the file-edits verb.
-
-    Renders captured Claude Code Edit/Write/MultiEdit tool-call evidence
-    (polylogue-nua7/polylogue-cgfy): structured unified diffs
-    (``structured_patch``), pre-edit file content (``original_file``), and
-    old/new string pairs -- persisted on every ingest into the dedicated
-    ``file_edits`` table but, before this view, unreachable from any
-    surface. This is the "what did this session change" evidence a report
-    needs instead of re-deriving edits from tool-call prose.
-    """
-    from polylogue.api import Polylogue
-
-    async def _run() -> None:
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            edits = await api.get_file_edits(session_id)
-
-            if edits is None:
-                env.ui.error(f"Session not found: {session_id}")
-                return
-
-            payload = {
-                "session_id": session_id,
-                "total": len(edits),
-                "file_edits": edits,
-            }
-
-            if output_format == "json":
-                import json as _json
-
-                # Machine output uses raw stdout so Rich markup never rewrites
-                # JSON bytes and read-view delivery can capture file/clipboard
-                # targets consistently.
-                click.echo(_json.dumps(payload, indent=2))
-            else:
-                import yaml
-
-                click.echo(yaml.dump(payload))
-
-    run_coroutine_sync(_run())
-
-
-def run_session_web_content_constructs(
-    env: AppEnv,
-    request: RootModeRequest,
-    *,
-    session_id: str,
-    output_format: str = "json",
-) -> None:
-    """Execute the web-content verb.
-
-    Renders typed web-export constructs (polylogue-kktg): search queries/
-    results, canvas documents, content references, image results, async
-    tasks, selected sources, token budgets, and voice notes projected from
-    ChatGPT/Claude web payloads -- persisted on every ingest into the
-    dedicated ``web_content_constructs`` table but, before this view,
-    reachable only through an orphan-integrity DELETE sweep or a demo
-    smoke-probe COUNT(*), never a real reader.
-    """
-    from polylogue.api import Polylogue
-
-    async def _run() -> None:
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            constructs = await api.get_web_content_constructs(session_id)
-
-            if constructs is None:
-                env.ui.error(f"Session not found: {session_id}")
-                return
-
-            payload = {
-                "session_id": session_id,
-                "total": len(constructs),
-                "web_content_constructs": constructs,
-            }
-
-            if output_format == "json":
-                import json as _json
-
-                # Machine output uses raw stdout so Rich markup never rewrites
-                # JSON bytes and read-view delivery can capture file/clipboard
-                # targets consistently.
-                click.echo(_json.dumps(payload, indent=2))
-            else:
-                import yaml
-
-                click.echo(yaml.dump(payload))
-
-    run_coroutine_sync(_run())
-
-
-def run_session_agent_policies(
-    env: AppEnv,
-    request: RootModeRequest,
-    *,
-    session_id: str,
-    output_format: str = "json",
-) -> None:
-    """Execute the agent-policies verb.
-
-    Renders sandbox/approval/network policy facts (polylogue-nua7) -- the
-    writer diverts Codex ``agent_policy`` events out of ``session_events``
-    into the dedicated ``session_agent_policies`` table for zero-loss
-    re-derivation, but before this view nothing above the storage layer
-    could read them back.
-    """
-    from polylogue.api import Polylogue
-
-    async def _run() -> None:
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            policies = await api.get_agent_policies(session_id)
-
-            if policies is None:
-                env.ui.error(f"Session not found: {session_id}")
-                return
-
-            payload = {
-                "session_id": session_id,
-                "total": len(policies),
-                "agent_policies": policies,
-            }
-
-            if output_format == "json":
-                import json as _json
-
-                click.echo(_json.dumps(payload, indent=2))
-            else:
-                import yaml
-
-                click.echo(yaml.dump(payload))
-
-    run_coroutine_sync(_run())
-
-
 __all__ = [
     "message_read_failure",
     "read_message_windows",
     "run_messages",
     "run_raw",
-    "run_session_agent_policies",
     "run_session_events",
-    "run_session_file_edits",
-    "run_session_web_content_constructs",
 ]

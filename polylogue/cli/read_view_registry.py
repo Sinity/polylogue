@@ -54,7 +54,11 @@ ReadViewExecutionKind = Literal[
 READ_VIEW_GLOBAL_OPTION_NAMES = frozenset({"limit", "offset"})
 
 
-MESSAGE_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset", "continuation"})
+#: The raw view windows *artifacts*, not messages, so it takes no message
+#: anchor: accepting one it could only ignore would answer a window the caller
+#: did not ask for.
+RAW_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset", "continuation"})
+MESSAGE_READ_VIEW_OPTION_NAMES = RAW_READ_VIEW_OPTION_NAMES | {"around"}
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
 CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {
@@ -94,17 +98,14 @@ class ReadViewHandlerMetadata:
 #: execute -- which is the state ten of these rows were in (polylogue-dutav).
 IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
     {
-        "agent-policies",
         "chronicle",
         "correlation",
         "dialogue",
         "effective_context",
         "events",
-        "file-edits",
         "neighbors",
         "raw",
         "temporal",
-        "web-content",
     }
 )
 
@@ -118,10 +119,22 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
 # ``file`` unit reads affected file *paths* via ``query_files``, not the
 # structured ``file_edits`` diffs -- so none of them lowers to ``query.units``
 # with a ``session:`` filter, and ``query-units-projection`` is unpopulated.
-# ``hooks`` and ``messages`` have been moved onto ``session.read`` -- the
-# former as an evidence kind (``daemon_reads._SESSION_EVIDENCE_READERS``), the
-# latter as the ``messages`` message-row window kind; the rest are
-# ``in-process`` until S8/S9 declare their operations.
+# ``hooks``, ``file-edits``, ``agent-policies`` and ``web-content`` have been
+# moved onto ``session.read`` as evidence kinds
+# (``daemon_reads._SESSION_EVIDENCE_READERS``), and ``messages`` as the
+# message-row window kind.
+#
+# Of what remains, two are held back for stated reasons rather than for want of
+# effort.  ``events`` accepts ``--limit`` and reports the *truncated* row count
+# as its ``total``; an evidence kind is answered whole, so lowering it as it
+# stands would make the operation report ``complete`` for a truncated body,
+# which the result contract refuses outright.  ``raw`` windows source-tier
+# artifacts with a real ``limit``/``offset`` and a real total, so it is a
+# windowed kind -- but ``transcript_window`` owns the *message* window
+# vocabulary, and minting artifact continuations in the message continuation
+# family is exactly the mixing that family exists to prevent.  Both need a
+# windowed-evidence contract of their own.  The rest are ``in-process`` until
+# S8/S9 declare their operations.
 READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
@@ -153,7 +166,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "raw": ReadViewHandlerMetadata(
         "raw",
         "required",
-        MESSAGE_READ_VIEW_OPTION_NAMES,
+        RAW_READ_VIEW_OPTION_NAMES,
         execution_kind="in-process",
     ),
     "hooks": ReadViewHandlerMetadata(
@@ -189,17 +202,20 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "file-edits": ReadViewHandlerMetadata(
         "file-edits",
         "required",
-        execution_kind="in-process",
+        execution_kind="session-read-projection",
+        operations=("session.read",),
     ),
     "agent-policies": ReadViewHandlerMetadata(
         "agent-policies",
         "required",
-        execution_kind="in-process",
+        execution_kind="session-read-projection",
+        operations=("session.read",),
     ),
     "web-content": ReadViewHandlerMetadata(
         "web-content",
         "required",
-        execution_kind="in-process",
+        execution_kind="session-read-projection",
+        operations=("session.read",),
     ),
     "context": ReadViewHandlerMetadata(
         "context",
@@ -328,6 +344,7 @@ __all__ = [
     "IN_PROCESS_READ_VIEWS",
     "MESSAGE_READ_VIEW_OPTION_NAMES",
     "NEIGHBOR_READ_VIEW_OPTION_NAMES",
+    "RAW_READ_VIEW_OPTION_NAMES",
     "READ_VIEW_HANDLER_METADATA",
     "READ_VIEW_GLOBAL_OPTION_NAMES",
     "ReadViewExecutionKind",

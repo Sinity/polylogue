@@ -48,7 +48,6 @@ from polylogue.cli.read_views.context import (
 from polylogue.cli.read_views.correlation import build_correlation_options, run_read_correlation
 from polylogue.cli.read_views.effective_context import build_effective_context_options, run_read_effective_context
 from polylogue.cli.read_views.events import build_events_options, run_read_events
-from polylogue.cli.read_views.file_edits import run_read_agent_policies, run_read_file_edits
 from polylogue.cli.read_views.lineage import (
     build_lineage_options,
     build_topology_options,
@@ -57,14 +56,18 @@ from polylogue.cli.read_views.lineage import (
 )
 from polylogue.cli.read_views.messages import (
     build_message_options,
-    run_read_hooks,
     run_read_messages,
     run_read_raw,
 )
 from polylogue.cli.read_views.neighbors import build_neighbor_options, run_read_neighbors
 from polylogue.cli.read_views.query_set import run_query_set_read_view
+from polylogue.cli.read_views.session_evidence import (
+    run_read_agent_policies,
+    run_read_file_edits,
+    run_read_hooks,
+    run_read_web_content,
+)
 from polylogue.cli.read_views.standard import run_read_dialogue, run_read_summary_or_transcript, run_read_temporal
-from polylogue.cli.read_views.web_content_constructs import run_read_web_content_constructs
 from polylogue.cli.shared.types import AppEnv
 from polylogue.operations.session_projections import (
     SESSION_LIST_PROJECTIONS,
@@ -143,7 +146,7 @@ SESSION_LIST_READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
     "events": ReadViewExecution(run_read_events, build_events_options),
     "file-edits": ReadViewExecution(run_read_file_edits),
     "agent-policies": ReadViewExecution(run_read_agent_policies),
-    "web-content": ReadViewExecution(run_read_web_content_constructs),
+    "web-content": ReadViewExecution(run_read_web_content),
 }
 
 
