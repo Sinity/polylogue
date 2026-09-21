@@ -415,19 +415,60 @@ def _create_statement(table: str, columns: Sequence[str]) -> str:
     would refuse rows a generated column or a CHECK constraint owns. An
     untyped table applies no affinity conversion, so an INTEGER stays an
     INTEGER and a TEXT stays a TEXT.
+
+    Declaring no column type also declares no column collation, so the
+    reconstruction compares every TEXT value with SQLite's default BINARY
+    sequence. A source column declared ``COLLATE NOCASE`` answers ``WHERE
+    name = 'ABC'`` with a row storing ``'abc'``; the same query against the
+    reconstruction answers with nothing. Exact values round-trip, comparison
+    rules do not: a parser that needs source collation must state it in its
+    own query (``... COLLATE NOCASE``) rather than inherit it from the
+    column. Restoring collation means replaying the declarations, which
+    forfeits the exact-value round trip this untyped table exists to give.
     """
     quoted_table = '"' + table.replace('"', '""') + '"'
     declared = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
     return f"CREATE TABLE {quoted_table} ({declared})"
 
 
-def materialize_export(path: Path, destination: Path) -> None:
-    """Rebuild an export's declared tables into a standalone SQLite file."""
+def _index_statement(table: str, columns: Sequence[str]) -> str:
+    """Build one nonunique read index over the reconstruction's own columns.
+
+    Nonunique deliberately: the hint is a read plan, never a constraint, and
+    a UNIQUE index would refuse rows the source itself holds.
+    """
+    quoted_table = '"' + table.replace('"', '""') + '"'
+    quoted_columns = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+    name = "polylogue_read_" + "_".join((table, *columns))
+    quoted_name = '"' + name.replace('"', '""') + '"'
+    return f"CREATE INDEX IF NOT EXISTS {quoted_name} ON {quoted_table} ({quoted_columns})"
+
+
+def materialize_export(
+    path: Path,
+    destination: Path,
+    *,
+    read_indexes: Sequence[tuple[str, tuple[str, ...]]] = (),
+) -> None:
+    """Rebuild an export's declared tables into a standalone SQLite file.
+
+    ``read_indexes`` names ``(table, columns)`` a reader will filter and order
+    by. The reconstruction otherwise carries no index at all -- the export
+    retains the source DDL as evidence and never replays it -- so a parser
+    issuing one query per session scans and sorts the whole table every time.
+    A hint naming a table or a column this export does not carry is ignored:
+    an export is a shape the reader does not control, and reporting an
+    unsupported shape stays the parser's job.
+
+    Indexes are built after the rows are inserted, so each one is a single
+    sorted build rather than a per-row update of a growing B-tree.
+    """
     with closing(sqlite3.connect(destination)) as conn:
         conn.execute("PRAGMA journal_mode=OFF")
         table: str | None = None
         columns: list[str] = []
         targets = ""
+        materialized: dict[str, frozenset[str]] = {}
         for payload, kind in _iter_export(path):
             if kind == "header":
                 continue
@@ -436,7 +477,9 @@ def materialize_export(path: Path, destination: Path) -> None:
                 table = str(payload["table"])
                 columns = [str(name) for name in payload["columns"]]
                 synthetic_rowid = bool(payload.get("rowid", False))
-                conn.execute(_create_statement(table, columns[1:] if synthetic_rowid else columns))
+                declared_columns = columns[1:] if synthetic_rowid else columns
+                conn.execute(_create_statement(table, declared_columns))
+                materialized[table] = frozenset(declared_columns)
                 # Naming ``rowid`` in the column list is what restores the
                 # original row identity, and it is only unambiguous when no
                 # user column carries that name -- which is exactly what the
@@ -458,10 +501,21 @@ def materialize_export(path: Path, destination: Path) -> None:
             )
             quoted_table = '"' + table.replace('"', '""') + '"'
             conn.execute(f"INSERT INTO {quoted_table}{targets} VALUES ({placeholders})", values)
+        for hinted_table, hinted_columns in read_indexes:
+            available = materialized.get(hinted_table)
+            if available is None or not hinted_columns or not set(hinted_columns) <= available:
+                continue
+            conn.execute(_index_statement(hinted_table, hinted_columns))
         conn.commit()
 
 
-def open_logical_source(path: Path, *, immutable: bool = False, timeout: float = 5.0) -> sqlite3.Connection:
+def open_logical_source(
+    path: Path,
+    *,
+    immutable: bool = False,
+    timeout: float = 5.0,
+    read_indexes: Sequence[tuple[str, tuple[str, ...]]] = (),
+) -> sqlite3.Connection:
     """Open *path* for reading, whether it is an export or a live database.
 
     Every parser of a mutable SQLite member reads through here: the retained
@@ -474,6 +528,18 @@ def open_logical_source(path: Path, *, immutable: bool = False, timeout: float =
     process umask -- mode 0644 under the usual 0022 -- publishing every row of
     the export in the shared temporary directory for the whole materialization
     window.
+
+    The reconstruction is not a copy of the source's schema. It declares
+    columns untyped so every stored value round-trips exactly, and that also
+    drops the source's collating sequences: a ``COLLATE NOCASE`` column
+    compares case-sensitively here (see ``_create_statement``). A parser that
+    needs case-insensitive comparison must ask for it in its own query.
+
+    ``read_indexes`` names ``(table, columns)`` the caller will filter and
+    order by. It is honoured only for the private reconstruction, which no
+    other process can observe; a live database is opened read-only and is
+    never indexed on the archive's behalf. A hint naming a table or column
+    this source does not carry is ignored.
     """
     if not looks_like_logical_source_path(path):
         raise sqlite3.DatabaseError(f"not a SQLite database or logical export: {path}")
@@ -486,7 +552,7 @@ def open_logical_source(path: Path, *, immutable: bool = False, timeout: float =
     os.close(handle)
     reconstruction = Path(name)
     try:
-        materialize_export(path, reconstruction)
+        materialize_export(path, reconstruction, read_indexes=read_indexes)
         conn = sqlite3.connect(f"{reconstruction.as_uri()}?mode=ro", uri=True, timeout=timeout)
     except BaseException:
         reconstruction.unlink(missing_ok=True)

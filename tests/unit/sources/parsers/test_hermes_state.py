@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
+import polylogue.sources.parsers.hermes_state as hermes_state
+import polylogue.sources.sqlite_export as sqlite_export
 from polylogue.core.enums import BlockType, TitleSource
 from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
@@ -23,6 +26,7 @@ from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_d
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks, write_parsed_session_to_archive
+from tests.infra.logical_source_probe import open_reconstruction_handles, record_logical_source_connections
 
 
 def _write_state_db(path: Path, *, tool_contents: list[str]) -> None:
@@ -513,3 +517,140 @@ def test_state_db_and_atof_from_one_install_agree_on_the_profile_key(tmp_path: P
 
     assert state_key == profile_key(root)
     assert atof_key == state_key
+
+
+# THE PRIVATE READER: read plan, output parity, and connection lifetime
+
+
+def _state_db_export(tmp_path: Path) -> tuple[Path, Path]:
+    """Return ``(live state.db, its retained logical export)`` in one profile root.
+
+    Both files share a directory, so they resolve to the same Hermes profile
+    root and any identity difference between the two reads is a real parser
+    difference rather than a path artefact.
+    """
+    root = tmp_path / ".hermes"
+    live = root / "state.db"
+    _write_state_db(live, tool_contents=[json.dumps({"output": "ok", "exit_code": index}) for index in range(3)])
+    export = root / "state.db.export"
+    export.write_bytes(sqlite_export.logical_export_bytes(live))
+    return live, export
+
+
+def test_the_per_session_message_read_is_answered_by_the_reconstruction_index(tmp_path: Path) -> None:
+    """The parser's one per-session query must not scan and sort the whole table.
+
+    A retained export reconstructs with no index at all, so this parser --
+    which issues ``WHERE session_id = ? ORDER BY id`` once per session -- used
+    to re-scan and re-sort every reconstructed message for every session.
+
+    Anti-vacuity: drop the ``read_indexes=`` argument at
+    ``hermes_state._connect_readonly`` (or delete the ``CREATE INDEX`` loop in
+    ``materialize_export``) and the plan returns to the ``SCAN messages`` plus
+    ``USE TEMP B-TREE FOR ORDER BY`` this asserts against.
+    """
+    _live, export = _state_db_export(tmp_path)
+
+    with closing(hermes_state._connect_readonly(export)) as conn:
+        plan = [
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+                ("s1",),
+            )
+        ]
+        indexes = [str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")]
+
+    assert indexes == ["polylogue_read_messages_session_id_id"], indexes
+    assert any("SEARCH" in step and indexes[0] in step for step in plan), plan
+    assert not any("TEMP B-TREE" in step.upper() for step in plan), plan
+
+
+def test_the_read_index_changes_no_parsed_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hint is a read plan, so normalized output must be identical without it.
+
+    Anti-vacuity: make the hint change what is read -- for example build it as
+    a UNIQUE index, or let it reorder the result -- and the serialized
+    comparison below separates immediately. Parity alone would be vacuous, so
+    the sibling test asserts the index is really there.
+    """
+    live, export = _state_db_export(tmp_path)
+    real_open = sqlite_export.open_logical_source
+
+    def _open_without_hint(path: Path, **kwargs: object) -> sqlite3.Connection:
+        kwargs.pop("read_indexes", None)
+        return real_open(path, **kwargs)  # type: ignore[arg-type]
+
+    hinted = [session.model_dump_json() for session in parse_state_db(export)]
+    from_live = [session.model_dump_json() for session in parse_state_db(live)]
+    monkeypatch.setattr(hermes_state, "open_logical_source", _open_without_hint)
+    unhinted = [session.model_dump_json() for session in parse_state_db(export)]
+
+    assert hinted, "sanity: the fixture really parses"
+    assert hinted == unhinted, "the read index changed the parsed output"
+    # Replay parity: the retained export is the material for the live member,
+    # so parsing either must produce the same normalized sessions.
+    assert hinted == from_live, "the retained export and its live source parsed differently"
+
+
+def test_parse_state_db_closes_its_private_reader_on_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A leaked connection is invisible to any assertion about rows.
+
+    ``sqlite3``'s own context manager commits or rolls back and never closes,
+    so ``with _connect_readonly(...)`` returned with the connection open and
+    the already-unlinked reconstruction still backed by that handle.
+
+    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
+    ``parse_state_db`` to a bare ``with _connect_readonly(...)`` and
+    ``probe.closed`` is ``False`` while every parsed session stays correct.
+    """
+    _live, export = _state_db_export(tmp_path)
+
+    with record_logical_source_connections(monkeypatch, hermes_state) as opened:
+        sessions = parse_state_db(export)
+        assert sessions, "sanity: the parse really ran"
+        assert [probe.closed for probe in opened] == [True]
+
+
+def test_parse_state_db_closes_its_private_reader_when_it_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal path owns the connection too.
+
+    ``parse_state_db`` raises before its first row read when the file is not
+    a Hermes state.db, and that early return must still release the
+    reconstruction. Anti-vacuity: revert to a bare ``with`` and this probe
+    reports ``closed is False`` while the ``ValueError`` still raises.
+    """
+    stranger = tmp_path / ".hermes" / "other.db"
+    stranger.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(stranger) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    export = tmp_path / ".hermes" / "other.db.export"
+    export.write_bytes(sqlite_export.logical_export_bytes(stranger))
+
+    with record_logical_source_connections(monkeypatch, hermes_state) as opened:
+        with pytest.raises(ValueError, match="not a Hermes state.db file"):
+            parse_state_db(export)
+        assert [probe.closed for probe in opened] == [True]
+
+
+def test_parse_state_db_leaves_no_handle_on_the_unlinked_reconstruction(tmp_path: Path) -> None:
+    """The production route, with nothing patched, strands no inode.
+
+    ``open_logical_source`` unlinks the reconstruction while it is open, so an
+    unclosed connection holds a deleted file's inode -- and the only place
+    that is visible is this process's own descriptor table.
+
+    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
+    ``parse_state_db`` to a bare ``with`` and the descriptor count rises by
+    one per parse and never falls.
+    """
+    _live, export = _state_db_export(tmp_path)
+
+    before = open_reconstruction_handles()
+    sessions = parse_state_db(export)
+    after = open_reconstruction_handles()
+
+    assert sessions, "sanity: the parse really ran"
+    assert after == before, f"a reconstruction handle survived the parse: {before} -> {after}"

@@ -884,6 +884,167 @@ def test_an_out_of_scope_database_is_not_a_declared_codex_member(tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
+# The private reconstruction: read plan and collation boundary
+# ---------------------------------------------------------------------------
+
+_MESSAGE_READ_HINT: tuple[tuple[str, tuple[str, ...]], ...] = (("messages", ("session_id", "id")),)
+
+
+def _write_message_source(path: Path, *, sessions: int = 3, per_session: int = 4) -> None:
+    """A neutral two-column message table: the shape every state.db parser reads."""
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, body TEXT NOT NULL)"
+        )
+        conn.executemany(
+            "INSERT INTO messages (session_id, body) VALUES (?, ?)",
+            [
+                (f"session-{session}", f"body-{session}-{index}")
+                for session in range(sessions)
+                for index in range(per_session)
+            ],
+        )
+
+
+def _per_session_plan(conn: sqlite3.Connection) -> list[str]:
+    return [
+        str(row[3])
+        for row in conn.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM messages WHERE session_id = ? ORDER BY id",
+            ("session-1",),
+        )
+    ]
+
+
+def _index_definitions(conn: sqlite3.Connection) -> dict[str, str]:
+    return {
+        str(row[0]): str(row[1] or "")
+        for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'index'")
+    }
+
+
+def test_a_read_index_hint_is_built_in_the_reconstruction_and_answers_the_scan(tmp_path: Path) -> None:
+    """The reconstruction carries the read index its caller asked for.
+
+    Anti-vacuity: delete the ``CREATE INDEX`` loop in ``materialize_export``
+    and the hinted connection reports no index and the same full-table
+    ``SCAN`` plus ``TEMP B-TREE`` plan as the unhinted one -- which is what
+    the unhinted half of this test pins as the untreated behaviour.
+    """
+    source = tmp_path / "state.db"
+    _write_message_source(source)
+    export = tmp_path / "export.jsonl"
+    export.write_bytes(sqlite_export.logical_export_bytes(source))
+
+    with closing(open_logical_source(export)) as unhinted:
+        unhinted_rows = list(unhinted.execute("SELECT id, session_id, body FROM messages ORDER BY id"))
+        unhinted_indexes = _index_definitions(unhinted)
+        unhinted_plan = _per_session_plan(unhinted)
+
+    with closing(open_logical_source(export, read_indexes=_MESSAGE_READ_HINT)) as hinted:
+        hinted_rows = list(hinted.execute("SELECT id, session_id, body FROM messages ORDER BY id"))
+        hinted_indexes = _index_definitions(hinted)
+        hinted_plan = _per_session_plan(hinted)
+
+    assert unhinted_indexes == {}, "the reconstruction carries no index of its own"
+    assert any("SCAN" in step for step in unhinted_plan), unhinted_plan
+    assert any("TEMP B-TREE" in step.upper() for step in unhinted_plan), unhinted_plan
+
+    [(index_name, index_sql)] = hinted_indexes.items()
+    assert index_sql.replace('"', "") == f"CREATE INDEX {index_name} ON messages (session_id, id)".replace('"', "")
+    assert any("SEARCH" in step and index_name in step for step in hinted_plan), hinted_plan
+    assert not any("TEMP B-TREE" in step.upper() for step in hinted_plan), hinted_plan
+
+    assert hinted_rows == unhinted_rows, "the hint is a read plan and changes no value"
+
+
+def test_a_read_index_hint_never_touches_a_live_database(tmp_path: Path) -> None:
+    """A hint is honoured only for the private reconstruction.
+
+    Anti-vacuity: move the ``read_indexes`` handling out of the export branch
+    of ``open_logical_source`` into a statement executed on every connection
+    and the operator's own file grows an index -- a write against a source the
+    archive only ever reads.
+    """
+    source = tmp_path / "state.db"
+    _write_message_source(source)
+    before_bytes = source.read_bytes()
+    with closing(sqlite3.connect(source)) as observer:
+        before_master = observer.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+
+    with closing(open_logical_source(source, read_indexes=_MESSAGE_READ_HINT)) as conn:
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 12
+        assert _index_definitions(conn) == {}
+
+    with closing(sqlite3.connect(source)) as observer:
+        after_master = observer.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    assert after_master == before_master
+    assert source.read_bytes() == before_bytes
+
+
+def test_a_read_index_hint_naming_an_absent_table_or_column_is_ignored(tmp_path: Path) -> None:
+    """An export is a shape the reader does not control.
+
+    Reporting an unsupported shape stays the parser's job, so a hint that
+    does not apply must not turn the open into a failure. Anti-vacuity: drop
+    the membership test in ``materialize_export`` and each of these hints
+    raises ``sqlite3.OperationalError`` out of ``open_logical_source``.
+    """
+    source = tmp_path / "state.db"
+    _write_message_source(source)
+    export = tmp_path / "export.jsonl"
+    export.write_bytes(sqlite_export.logical_export_bytes(source))
+
+    hints: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("sessions", ("id",)),
+        ("messages", ("thread_id",)),
+        ("messages", ("session_id", "thread_id")),
+        ("messages", ()),
+    )
+    with closing(open_logical_source(export, read_indexes=hints)) as conn:
+        assert _index_definitions(conn) == {}
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 12
+
+
+def test_the_reconstruction_does_not_reproduce_source_collation(tmp_path: Path) -> None:
+    """The untyped reconstruction keeps values exactly and drops collation.
+
+    A parser that reads a ``COLLATE NOCASE`` column through a retained export
+    gets BINARY comparison, so an unqualified equality it inherited from the
+    source silently stops matching. This witnesses that boundary rather than
+    leaving it a docstring claim.
+
+    Anti-vacuity: change ``_create_statement`` to replay the source column
+    declarations and the reconstruction answers ``'ABC'`` with the stored
+    row, so the ``== []`` assertion goes red -- and that replay is exactly
+    what would forfeit the exact-value round trip the untyped table exists
+    to give.
+    """
+    source = tmp_path / "people.db"
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute("CREATE TABLE people (name TEXT COLLATE NOCASE, note TEXT)")
+        conn.executemany("INSERT INTO people (name, note) VALUES (?, ?)", [("abc", "lower"), ("ABC", "upper")])
+
+    with closing(sqlite3.connect(source)) as live:
+        live_matches = [str(row[0]) for row in live.execute("SELECT note FROM people WHERE name = 'ABC' ORDER BY note")]
+    assert live_matches == ["lower", "upper"], "sanity: the source column really does compare NOCASE"
+
+    export = tmp_path / "export.jsonl"
+    export.write_bytes(sqlite_export.logical_export_bytes(source))
+    with closing(open_logical_source(export)) as rebuilt:
+        rebuilt_matches = [str(row[0]) for row in rebuilt.execute("SELECT note FROM people WHERE name = 'ABC'")]
+        stated = [
+            str(row[0])
+            for row in rebuilt.execute("SELECT note FROM people WHERE name = 'ABC' COLLATE NOCASE ORDER BY note")
+        ]
+        values = sorted(str(row[0]) for row in rebuilt.execute("SELECT name FROM people"))
+
+    assert rebuilt_matches == ["upper"], "collation is not reproduced: only the byte-equal row matches"
+    assert stated == ["lower", "upper"], "a query that states its collation gets it back"
+    assert values == ["ABC", "abc"], "the values themselves round-trip exactly"
+
+
+# ---------------------------------------------------------------------------
 # Scale: the residue cohort was 551.87 MB across five databases
 # ---------------------------------------------------------------------------
 

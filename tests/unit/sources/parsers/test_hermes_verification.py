@@ -20,9 +20,11 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.sources.sqlite_export as sqlite_export
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.import_explain import explain_import_path
 from polylogue.sources.parsers import hermes_verification
+from tests.infra.logical_source_probe import open_reconstruction_handles, record_logical_source_connections
 
 
 def _write_verification_evidence_db(path: Path) -> None:
@@ -490,3 +492,70 @@ def test_verification_evidence_db_refuses_a_row_count_past_the_declared_bound(
 
     with pytest.raises(hermes_verification.HermesVerificationTooLargeError, match="refusing"):
         hermes_verification.parse_verification_evidence_db(path)
+
+
+# THE PRIVATE READER'S CONNECTION LIFETIME
+
+
+def test_parse_verification_evidence_db_closes_its_private_reader_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leaked connection is invisible to any assertion about parsed rows.
+
+    ``open_logical_source`` unlinks the reconstruction it builds for a
+    retained export, so the connection is the only reference keeping that
+    inode alive; ``sqlite3``'s own context manager commits or rolls back and
+    never closes.
+
+    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
+    ``parse_verification_evidence_db`` to a bare ``with
+    _connect_readonly(...)`` and ``probe.closed`` is ``False`` while the two
+    parsed sessions below stay exactly right.
+    """
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+    export = _declared_export_of(path, tmp_path / "blob")
+
+    with record_logical_source_connections(monkeypatch, hermes_verification) as opened:
+        sessions = hermes_verification.parse_verification_evidence_db(export, profile_root=path.parent)
+        assert len(sessions) == 2, "sanity: the parse really ran"
+        assert [probe.closed for probe in opened] == [True]
+
+
+def test_parse_verification_evidence_db_closes_its_private_reader_when_it_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal path owns the connection too.
+
+    Anti-vacuity: revert to a bare ``with`` and this probe reports ``closed is
+    False`` while the ``ValueError`` still raises, so only the lifecycle
+    assertion can catch it.
+    """
+    stranger = tmp_path / "not_it.db"
+    with sqlite3.connect(stranger) as conn:
+        conn.execute("CREATE TABLE meta (key TEXT)")
+    export = tmp_path / "not_it.export"
+    export.write_bytes(sqlite_export.logical_export_bytes(stranger))
+
+    with record_logical_source_connections(monkeypatch, hermes_verification) as opened:
+        with pytest.raises(ValueError, match="not a Hermes verification_evidence.db file"):
+            hermes_verification.parse_verification_evidence_db(export)
+        assert [probe.closed for probe in opened] == [True]
+
+
+def test_parse_verification_evidence_db_leaves_no_handle_on_the_unlinked_reconstruction(tmp_path: Path) -> None:
+    """The production route, with nothing patched, strands no inode.
+
+    Anti-vacuity: revert ``closing(_connect_readonly(...))`` to a bare
+    ``with`` and the descriptor count rises by one per parse and never falls.
+    """
+    path = tmp_path / "verification_evidence.db"
+    _write_verification_evidence_db(path)
+    export = _declared_export_of(path, tmp_path / "blob")
+
+    before = open_reconstruction_handles()
+    sessions = hermes_verification.parse_verification_evidence_db(export, profile_root=path.parent)
+    after = open_reconstruction_handles()
+
+    assert len(sessions) == 2, "sanity: the parse really ran"
+    assert after == before, f"a reconstruction handle survived the parse: {before} -> {after}"

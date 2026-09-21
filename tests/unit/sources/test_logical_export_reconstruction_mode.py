@@ -46,8 +46,8 @@ def test_reconstructed_export_is_owner_only_while_it_is_materialized(
     observed: list[int] = []
     real_materialize = sqlite_export.materialize_export
 
-    def _recording_materialize(path: Path, destination: Path) -> None:
-        real_materialize(path, destination)
+    def _recording_materialize(path: Path, destination: Path, **kwargs: object) -> None:
+        real_materialize(path, destination, **kwargs)  # type: ignore[arg-type]
         observed.append(stat.S_IMODE(os.stat(destination).st_mode))
 
     monkeypatch.setattr(sqlite_export, "materialize_export", _recording_materialize)

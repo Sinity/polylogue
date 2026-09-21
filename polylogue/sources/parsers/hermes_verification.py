@@ -76,6 +76,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from typing import Literal, TypeAlias
 
@@ -212,7 +213,12 @@ def looks_like_verification_evidence_db_path(path: Path, *, immutable: bool = Fa
 
 
 def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    """Open a retained logical export or a live Hermes database for reading."""
+    """Open a retained logical export or a live Hermes database for reading.
+
+    The caller owns the returned connection and must close it: for a retained
+    export it holds the only reference to an already-unlinked reconstruction,
+    so leaving it open keeps that inode alive for the rest of the process.
+    """
     conn = open_logical_source(path, immutable=immutable)
     conn.row_factory = sqlite3.Row
     return conn
@@ -295,7 +301,10 @@ def parse_verification_evidence_db(
     del fallback_id
     grouped_events: dict[str, list[ParsedSessionEvent]] = {}
     grouped_state: dict[str, list[ParsedSessionEvent]] = {}
-    with _connect_readonly(path, immutable=immutable) as conn:
+    # ``closing``, not a bare ``with``: a sqlite3 connection's own context
+    # manager commits or rolls back and never closes, so returning from here
+    # would leave the unlinked reconstruction backed by an open handle.
+    with closing(_connect_readonly(path, immutable=immutable)) as conn:
         if not _has_required_tables(conn):
             raise ValueError(f"{path} is not a Hermes verification_evidence.db file")
         schema_version = _schema_version(conn)
