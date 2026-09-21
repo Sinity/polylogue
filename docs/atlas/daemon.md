@@ -43,7 +43,7 @@ The generic stage engine remains for optional Sinex publication, raw-authority c
 
 The stage walk itself runs off the writer lease. Each stage declares how it reaches the writer: `bridged` means it computes, downloads and drains outside admission and brackets only its short publication with `admit_stage_write`; `whole_execute` is the named residual for a stage that has not split compute from publication yet, and the engine holds the writer across its whole `execute`. Read the field, not the caller's control flow, to know which a stage is (`polylogue/daemon/convergence.py:704-712`; `polylogue/daemon/convergence.py:778-785`; `polylogue/core/stage_admission.py:59-70`). The live route no longer calls the stage pass at all: page admission takes no writer hold of its own, and the daemon's own stage walk owns the generic pass (`polylogue/daemon/convergence.py:704-712`).
 
-`convergence_debt` remains disposable retry state for those surviving stage callers. FTS, embeddings, raw parsing and session profiles no longer use its stage rows as publication authority (`polylogue/daemon/cli.py:1614-1636`; `polylogue/sources/live/convergence_outcome.py:1`).
+`convergence_debt` remains disposable retry state for those surviving stage callers. The generic drain skips the stages named in `_OWNED_DEBT_STAGES`: FTS, embeddings, raw parsing and session profiles do not use its stage rows as publication authority, and raw retention keeps rows there as its own retry ledger but drains them from the live-ingest pass rather than here (`polylogue/daemon/cli.py:128-128`; `polylogue/daemon/cli.py:1626-1645`; `polylogue/sources/live/convergence_outcome.py:1`).
 
 ## Cadence loops
 
