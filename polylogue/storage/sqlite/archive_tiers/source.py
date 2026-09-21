@@ -61,6 +61,13 @@ RETIRED_SOURCE_SCHEMA_OBJECTS: Final[frozenset[str]] = frozenset(
         "table:otlp_spans",
         "index:idx_otlp_spans_trace",
         "index:idx_otlp_spans_session",
+        # polylogue-48bos: raw_authority_parser_census kept a censused_at_ms
+        # column declared INTEGER NOT NULL CHECK(>= 0) as if it were a wall
+        # clock. Both production writers bound the SQL literal 0 and no
+        # reader ever selected it, so no historical row carries information
+        # to migrate. The table itself stays: its other four columns are the
+        # durable authority receipt.
+        "column:raw_authority_parser_census.censused_at_ms",
     }
 )
 
@@ -470,8 +477,13 @@ CREATE TABLE IF NOT EXISTS raw_authority_parser_census (
     parser_fingerprint      TEXT NOT NULL,
     status                  TEXT NOT NULL CHECK(status IN ('complete', 'failed')),
     logical_keys_json       TEXT NOT NULL CHECK(json_valid(logical_keys_json)),
-    detail                  TEXT NOT NULL DEFAULT '',
-    censused_at_ms          INTEGER NOT NULL CHECK(censused_at_ms >= 0)
+    -- polylogue-48bos: this table carries no census TIMESTAMP. The retired
+    -- censused_at_ms column was declared INTEGER NOT NULL CHECK(>= 0) as if
+    -- it held a wall clock, but both production writers bound the SQL
+    -- literal 0 and no reader ever selected it, so every row it ever held
+    -- carried the same non-fact. A consumer that needs census timing
+    -- declares its own column with its own writer and a stated meaning.
+    detail                  TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
 -- The blocker is durable frontier AUTHORIZATION and survives the fresh start.

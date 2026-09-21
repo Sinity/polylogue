@@ -466,8 +466,8 @@ def test_resynthesis_composes_claude_frontier_from_legacy_append_chain(tmp_path:
         )
         conn.execute(
             """INSERT INTO raw_authority_parser_census(
-                   raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-               ) VALUES (?, 'current', 'complete', '[]', 'parser-observed: legacy', 0)""",
+                   raw_id, parser_fingerprint, status, logical_keys_json, detail
+               ) VALUES (?, 'current', 'complete', '[]', 'parser-observed: legacy')""",
             (append_id,),
         )
         conn.commit()

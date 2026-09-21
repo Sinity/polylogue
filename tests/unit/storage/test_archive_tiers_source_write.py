@@ -668,3 +668,102 @@ def test_capture_mode_resolution_ambiguous_via_blob_ref_writer(tmp_path: Path) -
     assert resolution.status == "ambiguous"
     assert resolution.modes == (Provider.GEMINI, Provider.DRIVE)
     conn.close()
+
+
+def test_fresh_source_ddl_declares_no_parser_census_timestamp(tmp_path: Path) -> None:
+    """polylogue-48bos: ``raw_authority_parser_census`` carries no census clock.
+
+    The retired ``censused_at_ms`` column was declared
+    ``INTEGER NOT NULL CHECK(censused_at_ms >= 0)`` as if it held a wall
+    clock, but the complete production writer set --
+    ``record_current_parser_source_census``
+    (``storage/sqlite/archive_tiers/revision_governance.py``) and
+    ``record_resource_blocked_revision_census``
+    (``sources/revision_backfill.py``) -- bound the bare SQL literal ``0``
+    on both the insert and the ``ON CONFLICT`` update path, and no reader
+    anywhere selected it. Every row it ever durably held carried the same
+    non-fact.
+
+    Concrete input: a fresh source tier. Wrong observable outcome
+    prevented: a fresh archive re-declaring a NOT NULL column that promises
+    "when was this raw's authority census taken" and can never answer it.
+
+    Anti-vacuity: restoring the column to the DDL makes the column-set
+    assertion red; the retained-column assertion is its partner, so a change
+    that dropped the whole table rather than the one dead column also fails.
+    """
+    conn = _connect(tmp_path / "source.db")
+    columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(raw_authority_parser_census)")}
+    assert "censused_at_ms" not in columns
+    assert columns == {"raw_id", "parser_fingerprint", "status", "logical_keys_json", "detail"}
+    # The sibling census table keeps its timestamp: it has real writers that
+    # bind acquired_at_ms/observed_at_ms, so the retirement is targeted.
+    membership_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(raw_membership_census)")}
+    assert "censused_at_ms" in membership_columns
+    conn.close()
+
+
+def test_parser_census_writers_persist_a_row_without_a_timestamp(tmp_path: Path) -> None:
+    """polylogue-48bos: both production writers still record their receipt.
+
+    Concrete input: a fresh source tier holding one raw session, driven
+    through the complete production writer set for
+    ``raw_authority_parser_census`` --
+    ``record_current_parser_source_census`` and
+    ``record_resource_blocked_revision_census``.
+
+    Wrong observable outcome prevented: a retirement that removed the column
+    from the DDL and left a writer naming it, which turns every authority
+    census into an ``OperationalError`` at the write boundary rather than a
+    recorded receipt.
+
+    Anti-vacuity: reinstating ``censused_at_ms`` in either INSERT makes
+    exactly that writer's arm red with "table raw_authority_parser_census
+    has no column named censused_at_ms"; asserting the receipt row's
+    contents keeps a writer that silently wrote nothing from passing.
+    """
+    from polylogue.sources.revision_backfill import record_resource_blocked_revision_census
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+
+    conn = _connect(tmp_path / "source.db")
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        capture_mode=Provider.CODEX,
+        source_path="/tmp/session.jsonl",
+        source_index=0,
+        native_id="session-1",
+        payload=b'{"kind":"session"}',
+        acquired_at_ms=1_767_000_000_000,
+        parsed_at_ms=1_767_000_000_050,
+        validation_status=ValidationStatus.PASSED,
+        validation_drift_count=0,
+    )
+    conn.commit()
+
+    record_current_parser_source_census(conn, raw_id, parser_sessions=[])
+    conn.commit()
+    row = conn.execute(
+        "SELECT parser_fingerprint, status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    assert row is not None
+    assert str(row["status"]) in {"complete", "failed"}
+    assert str(row["detail"])
+
+    conn.close()
+    record_resource_blocked_revision_census(
+        tmp_path,
+        (raw_id,),
+        max_payload_bytes=1,
+        total_payload_bytes=2,
+        stream_safe=True,
+    )
+    verify = sqlite3.connect(tmp_path / "source.db")
+    verify.row_factory = sqlite3.Row
+    blocked = verify.execute(
+        "SELECT status, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+    ).fetchone()
+    assert str(blocked["status"]) == "failed"
+    assert "exceeds envelope" in str(blocked["detail"])
+    verify.close()

@@ -291,19 +291,38 @@ def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
         return False
     if set(new_objects) - set(old_objects):
         return False
-    if any(old_objects[ref] != new_objects[ref] for ref in set(old_objects) & set(new_objects)):
-        return False
     retired_tables = {ref.split(":", 1)[1] for ref in retired if ref.startswith("table:")}
-    for ref in set(old_objects) - set(new_objects):
+    removed = set(old_objects) - set(new_objects)
+    # Tables that lost a declared-retired column of their own. Their
+    # ``CREATE TABLE`` text necessarily differs, so the table object's digest
+    # moves even though the table itself was not redefined (polylogue-48bos).
+    tables_losing_a_retired_column: set[str] = set()
+    for ref in removed:
         kind_and_name = ref.split(":", 1)[1]
+        owning_table = kind_and_name.split(":", 1)[1].split(".", 1)[0] if kind_and_name.startswith("column:") else ""
         if kind_and_name in retired:
+            if owning_table:
+                tables_losing_a_retired_column.add(owning_table)
             continue
-        if (
-            kind_and_name.startswith("column:")
-            and f"{kind_and_name.split(':', 1)[1].split('.', 1)[0]}" in retired_tables
-        ):
+        if owning_table and owning_table in retired_tables:
             continue
         return False
+    for ref in set(old_objects) & set(new_objects):
+        if old_objects[ref] == new_objects[ref]:
+            continue
+        _tier_token, kind, name = ref.split(":", 2)
+        # Only the owning table's own declaration may move, and only when
+        # every column it kept is byte-identical -- so the digest change is
+        # the retired column's removal and nothing else rode along with it.
+        if kind != "table" or name not in tables_losing_a_retired_column:
+            return False
+        prefix = f"{tier.value}:column:{name}."
+        if any(
+            old_objects[column_ref] != new_objects[column_ref]
+            for column_ref in set(old_objects) & set(new_objects)
+            if column_ref.startswith(prefix)
+        ):
+            return False
     return True
 
 

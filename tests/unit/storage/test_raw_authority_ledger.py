@@ -392,8 +392,8 @@ def _seed_ambiguous_membership_component(
             conn.execute(
                 """
                 INSERT INTO raw_authority_parser_census (
-                    raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-                ) VALUES (?, ?, 'complete', ?, 'test-seeded', 0)
+                    raw_id, parser_fingerprint, status, logical_keys_json, detail
+                ) VALUES (?, ?, 'complete', ?, 'test-seeded')
                 """,
                 (raw_id, parser_fingerprint, json.dumps([logical_source_key])),
             )

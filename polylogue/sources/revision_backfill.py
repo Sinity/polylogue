@@ -1218,15 +1218,13 @@ def record_resource_blocked_revision_census(
             conn.execute(
                 """
                 INSERT INTO raw_authority_parser_census (
-                    raw_id, parser_fingerprint, status, logical_keys_json,
-                    detail, censused_at_ms
-                ) VALUES (?, ?, 'failed', '[]', ?, 0)
+                    raw_id, parser_fingerprint, status, logical_keys_json, detail
+                ) VALUES (?, ?, 'failed', '[]', ?)
                 ON CONFLICT(raw_id) DO UPDATE SET
                     parser_fingerprint = excluded.parser_fingerprint,
                     status = excluded.status,
                     logical_keys_json = excluded.logical_keys_json,
-                    detail = excluded.detail,
-                    censused_at_ms = excluded.censused_at_ms
+                    detail = excluded.detail
                 """,
                 (raw_id, fingerprint, detail),
             )

@@ -100,8 +100,8 @@ def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path:
         conn.execute(
             """
             INSERT INTO raw_authority_parser_census (
-                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-            ) VALUES (?, ?, 'complete', '["codex-session:duplicate", "codex-session:duplicate"]', '', 1)
+                raw_id, parser_fingerprint, status, logical_keys_json, detail
+            ) VALUES (?, ?, 'complete', '["codex-session:duplicate", "codex-session:duplicate"]', '')
             """,
             (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
         )
@@ -134,8 +134,8 @@ def test_raw_materialization_snapshot_rejects_receipt_key_drift_from_durable_bin
         conn.execute(
             """
             INSERT INTO raw_authority_parser_census (
-                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-            ) VALUES (?, ?, 'complete', '["codex-session:wrong-binding"]', '', 1)
+                raw_id, parser_fingerprint, status, logical_keys_json, detail
+            ) VALUES (?, ?, 'complete', '["codex-session:wrong-binding"]', '')
             """,
             (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
         )
@@ -226,8 +226,8 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
         conn.execute(
             """
             INSERT INTO raw_authority_parser_census (
-                raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
-            ) VALUES (?, ?, 'complete', '["codex:stream-census"]', '', 1)
+                raw_id, parser_fingerprint, status, logical_keys_json, detail
+            ) VALUES (?, ?, 'complete', '["codex:stream-census"]', '')
             """,
             (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
         )
