@@ -9,6 +9,7 @@ is rejected.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
@@ -319,4 +320,35 @@ def strip_unpublishable_vocabularies(node: object) -> int:
     elif isinstance(node, list):
         for child in node:
             removed += strip_unpublishable_vocabularies(child)
+    return removed
+
+
+def sanitize_committed_elements(provider_root: Path) -> int:
+    """Apply the publication rule to every element file under a provider tree.
+
+    ``write_package`` only reaches the element files a package manifest
+    declares. An element file the manifest no longer lists stays on disk -- the
+    committed tree at b4dd14a82 held one, ``claude-code/v1``'s
+    ``subagent_session_stream`` -- and is still published bytes: the privacy
+    audit reads it, and so does anyone who clones the repository. Sweeping the
+    staged tree covers both, and rewriting is idempotent because the
+    serialization is byte-deterministic.
+
+    Returns the number of member lists removed.
+    """
+
+    import gzip
+    import json
+
+    removed = 0
+    for path in sorted(provider_root.rglob("*.schema.json.gz")):
+        try:
+            document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+        except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        stripped = strip_unpublishable_vocabularies(document)
+        if not stripped:
+            continue
+        removed += stripped
+        path.write_bytes(gzip.compress(json.dumps(document, indent=2, sort_keys=True).encode("utf-8"), mtime=0))
     return removed

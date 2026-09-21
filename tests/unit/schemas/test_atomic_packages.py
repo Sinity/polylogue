@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import gzip
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -398,3 +400,47 @@ def test_the_writer_strips_an_unjustified_vocabulary_from_every_version(tmp_path
     assert carried is not None
     carried_properties = json_document(carried["properties"])
     assert "x-polylogue-values" not in json_document(carried_properties["grep_pattern"])
+
+
+def test_an_element_file_no_manifest_declares_is_sanitized_too(tmp_path: Path) -> None:
+    """Published bytes the manifest forgot are still published bytes.
+
+    `claude-code/v1` carried an element file no package manifest listed, so
+    `write_package` never reached it and its vocabulary survived every
+    regeneration. Anti-vacuity: drop the `sanitize_committed_elements` sweep in
+    `replace_provider_packages` and the orphan keeps its members.
+    """
+
+    registry = SchemaRegistry(storage_root=tmp_path)
+    item = _vocabulary_package("v1")
+    orphan_dir = tmp_path / item.provider / "versions" / "v1" / "elements"
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    orphan = orphan_dir / "retired_element.schema.json.gz"
+    orphan.write_bytes(
+        gzip.compress(
+            json.dumps(
+                {
+                    "type": "object",
+                    "properties": {"branch": {"type": "string", "x-polylogue-values": ["private-branch"]}},
+                }
+            ).encode("utf-8")
+        )
+    )
+
+    registry.replace_provider_packages(
+        item.provider,
+        SchemaPackageCatalog(
+            provider=item.provider,
+            packages=[item],
+            generated_at="2026-01-01T00:00:00+00:00",
+            latest_version="v1",
+            default_version="v1",
+            recommended_version="v1",
+        ),
+        {"v1": {item.anchor_kind: {"type": "object", "properties": {"role": {"type": "string"}}}}},
+        package_workload_profiles={"v1": {"generation": 1}},
+    )
+
+    assert orphan.exists(), "the sweep must sanitize the orphan, not delete it"
+    persisted = json.loads(gzip.decompress(orphan.read_bytes()).decode("utf-8"))
+    assert "x-polylogue-values" not in persisted["properties"]["branch"]
