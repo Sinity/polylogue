@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config, PolylogueConfig
     from polylogue.core.protocols import VectorProvider
     from polylogue.storage.embeddings.identity import EmbeddingRecipe
+    from polylogue.storage.search.cache import ReadViewIdentity
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 
@@ -144,8 +145,18 @@ def execute_read_operation(
     archive: ArchiveStore,
     serving_identity: str,
     dependencies: DaemonReadDependencies | None = None,
+    read_view: ReadViewIdentity | None = None,
 ) -> dict[str, object]:
-    """Execute one declared read against ``archive``'s already-pinned snapshot."""
+    """Execute one declared read against ``archive``'s already-pinned snapshot.
+
+    ``read_view`` names the archive view the caller pinned.  One value is
+    carried from the cache lookup, through execution, to the insertion, so a
+    result is stored under the view that computed it and never relabelled
+    with whichever epoch is current when the query body finishes.  A caller
+    that cannot name a view is served without the cache rather than being
+    given a guessed one; cache loss is latency, a wrong view is a wrong
+    answer.
+    """
 
     dependencies = dependencies or DaemonReadDependencies()
     cacheable = _cacheable_read(name, payload)
@@ -161,14 +172,20 @@ def execute_read_operation(
         generation = str(archive.index_db_path.resolve())
     if cacheable:
         assert generation is not None
+        # The supplied view must describe the archive actually handed in.  A
+        # view captured against a different root or a different generation
+        # names something else entirely, and keying a result on it would
+        # reintroduce the mislabelling this parameter exists to remove.
+        cacheable = (
+            read_view is not None
+            and read_view.archive_root == str(archive.archive_root.resolve())
+            and read_view.generation == generation
+        )
+    if cacheable:
+        assert read_view is not None
         from polylogue.storage.search.cache import get_cached_result
 
-        cached = get_cached_result(
-            name,
-            cache_key_payload,
-            archive_root=archive.archive_root,
-            generation=generation,
-        )
+        cached = get_cached_result(name, cache_key_payload, view=read_view)
         if cached is not None:
             return cached
 
@@ -205,16 +222,10 @@ def execute_read_operation(
         raise ValueError(f"read operation is not declared: {name}")
 
     if cacheable:
-        assert generation is not None
+        assert read_view is not None
         from polylogue.storage.search.cache import put_cached_result
 
-        put_cached_result(
-            name,
-            cache_key_payload,
-            result,
-            archive_root=archive.archive_root,
-            generation=generation,
-        )
+        put_cached_result(name, cache_key_payload, result, view=read_view)
     return result
 
 
