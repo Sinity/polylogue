@@ -211,14 +211,24 @@ rules:
     description: >-
       Mutation authority — the daemon is the sole writer, so a CLI adapter
       lowers a write to a declared operation instead of driving the mutation
-      executor in its own process. The CLI's share of the baseline is empty:
-      any direct mutation executor import in the CLI is a violation.
+      executor in its own process.
+
+      ``polylogue/annotations/importer`` is in this list even though it is not
+      an executor module, because it *drives* one: it constructs
+      ``OperationExecutor`` and runs prepare/authorize/execute against
+      ``user.db`` itself. #5310 recorded the resulting hole verbatim --
+      ``polylogue annotations import`` was the last CLI in-process durable
+      writer and was invisible to both signals the acceptance used, because it
+      neither touches ``_execute_facade_mutation`` nor imports any of the four
+      executor modules named above. A rule that certifies sole-writer adoption
+      has to match the write, not one spelling of it (polylogue-gjwto).
     disallow:
       from:
         - polylogue/operations/mutation_transaction
         - polylogue/operations/mutation_actuators
         - polylogue/operations/delete_authorization
         - polylogue/operations/session_mutations
+        - polylogue/annotations/importer
       baseline: docs/plans/layering-cli-mutation-authority-baseline.json
 
   - target: polylogue/api

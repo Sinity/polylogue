@@ -971,3 +971,94 @@ class TestHybridAutoElevation:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["retrieval_lane"] == "dialogue"
+
+
+class TestBackfillRebuildOrdering:
+    """``--rebuild`` marks the archive stale only once a write can follow it."""
+
+    def test_rebuild_does_not_mark_when_the_provider_cannot_be_built(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An aborted ``--rebuild`` leaves the archive's reindex state alone.
+
+        ``mark_all_archive_sessions_needs_reindex`` ran ahead of the embeddings
+        tier open and the provider construction, so the two ordinary ways this
+        command fails -- sqlite-vec unavailable, or a Voyage key the provider
+        rejects -- each marked every session needs-reindex with nothing written
+        and no run-ledger row. The archive then reported itself stale until
+        another backfill succeeded (polylogue-d02y8 AC2).
+
+        Anti-vacuity: move the ``if rebuild:`` block back above
+        ``create_vector_provider`` in ``backfill_subcommand`` and this is red,
+        because the mark fires on the abort path. Asserting only the non-zero
+        exit would pass in both orderings, which is why the assertion is on the
+        mark and not on the exit code.
+        """
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        report = _make_report(pending_sessions=2, pending_messages=4)
+        index_db = tmp_path / "index.db"
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        marked = MagicMock()
+
+        with (
+            _patch_preflight(report),
+            patch(
+                "polylogue.cli.commands.embed._active_archive_location",
+                return_value=ArchiveLocation.resolve(index_db.parent),
+            ),
+            # The provider failing to construct is the abort this guards.
+            patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
+            patch(
+                "polylogue.storage.embeddings.materialization.mark_all_archive_sessions_needs_reindex",
+                marked,
+            ),
+        ):
+            result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--rebuild"], obj=stub_env)
+
+        assert result.exit_code != 0, result.output
+        marked.assert_not_called()
+
+    def test_rebuild_marks_once_the_write_path_is_established(
+        self,
+        cli_runner: CliRunner,
+        stub_env: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The reorder must not silently drop ``--rebuild``'s mark.
+
+        Anti-vacuity: delete the ``if rebuild:`` block entirely and the test
+        above still passes while this one goes red -- the pair is what pins the
+        mark to the successful path rather than to no path at all.
+        """
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        report = _make_report(pending_sessions=0, pending_messages=0)
+        index_db = tmp_path / "index.db"
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        marked = MagicMock()
+
+        with (
+            _patch_preflight(report),
+            patch(
+                "polylogue.cli.commands.embed._active_archive_location",
+                return_value=ArchiveLocation.resolve(index_db.parent),
+            ),
+            patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
+            patch(
+                "polylogue.storage.embeddings.materialization.mark_all_archive_sessions_needs_reindex",
+                marked,
+            ),
+            patch(
+                "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
+                return_value=[],
+            ),
+        ):
+            result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--rebuild"], obj=stub_env)
+
+        assert result.exit_code == 0, result.output
+        marked.assert_called_once()
+        assert marked.call_args.kwargs["embeddings_db_path"].name == "embeddings.db"

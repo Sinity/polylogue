@@ -37,6 +37,15 @@ RUNTIME_ERROR = "runtime_error"
 DEPENDENCY_MISSING = "dependency_missing"
 UNSUPPORTED_ENVIRONMENT = "unsupported_environment"
 NO_RESULTS = "no_results"
+#: The resident daemon is the only executor and none is answering.
+#:
+#: Distinct from :data:`RUNTIME_ERROR` on purpose. Every daemon-absent CLI
+#: refusal used to reach a machine caller as ``runtime_error`` -- the same code
+#: an unparseable option value, a corrupt tier and an unexpected exception all
+#: produce -- so a ``--format json`` client could not tell "start the daemon"
+#: apart from "something went wrong", and the remedy that the terminal format
+#: prints was not on the wire at all (polylogue-re6s3 AC4, polylogue-3eexy AC4).
+DAEMON_REQUIRED = "daemon_required"
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +169,33 @@ def error_unsupported_environment(
         code=UNSUPPORTED_ENVIRONMENT,
         message=message,
         command=tuple(command or ()),
+    )
+
+
+def error_daemon_required(
+    message: str,
+    *,
+    command: list[str] | None = None,
+    operation: str | None = None,
+    archive_root: str | None = None,
+) -> MachineError:
+    """Build the machine envelope for a refusal that only a daemon can satisfy.
+
+    ``operation`` and ``archive_root`` are carried in ``details`` rather than
+    folded into the message: a client that wants to start the right daemon
+    needs the archive it must serve as a field, not as prose it has to parse
+    back out.
+    """
+    details: JSONDocument = {"remedy": "polylogued run"}
+    if operation:
+        details["operation"] = operation
+    if archive_root:
+        details["archive_root"] = archive_root
+    return MachineError(
+        code=DAEMON_REQUIRED,
+        message=message,
+        command=tuple(command or ()),
+        details=details,
     )
 
 
@@ -306,6 +342,7 @@ def extract_command(argv: list[str]) -> list[str]:
 __all__ = [
     "MachineError",
     "MachineSuccess",
+    "error_daemon_required",
     "error_dependency_missing",
     "error_invalid_arguments",
     "error_invalid_path",
@@ -316,6 +353,7 @@ __all__ = [
     "emit_success",
     "success",
     "wants_json",
+    "DAEMON_REQUIRED",
     "INVALID_ARGUMENTS",
     "INVALID_PATH",
     "RUNTIME_ERROR",

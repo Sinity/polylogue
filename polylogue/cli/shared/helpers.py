@@ -19,7 +19,12 @@ from polylogue.cli.shared.helper_source_selection import (
     resolve_sources,
 )
 from polylogue.cli.shared.helper_source_state import load_last_source, save_last_source, source_state_path
-from polylogue.cli.shared.helper_support import fail, load_effective_config
+from polylogue.cli.shared.helper_support import (
+    DaemonRequiredError,
+    fail,
+    load_effective_config,
+    mutation_refusal,
+)
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -87,7 +92,9 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
 __all__ = [
     "complete_configured_source_names",
     "complete_run_source_names",
+    "DaemonRequiredError",
     "fail",
+    "mutation_refusal",
     "format_sources_summary",
     "get_origin_counts",
     "get_readiness",

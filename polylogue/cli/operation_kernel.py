@@ -36,8 +36,12 @@ class OperationUnavailableError(OperationKernelError):
 
     code = "daemon_required"
 
-    def __init__(self, detail: object = None) -> None:
+    def __init__(self, detail: object = None, *, operation: str | None = None) -> None:
         self.detail = detail
+        #: The declared operation that had no executor, carried as a field so
+        #: the machine envelope can name it without a client parsing it back
+        #: out of the message (polylogue-re6s3 AC4).
+        self.operation = operation
         super().__init__(str(detail) if detail is not None else self.code)
 
 
@@ -242,7 +246,9 @@ class OperationKernel:
                 envelope,
             )
 
-        raise OperationUnavailableError(f"daemon is unavailable for operation: {request.operation}")
+        raise OperationUnavailableError(
+            f"daemon is unavailable for operation: {request.operation}", operation=request.operation
+        )
 
 
 def _direct_execution_context(config: Any, *, archive_root: Any = None, read_control: Any = None) -> Any:
@@ -373,7 +379,7 @@ def dispatch(
 
     if daemon_disabled:
         if daemon_only or not spec.direct_allowed:
-            raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
+            raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}", operation=operation)
         envelope = _execute_directly(config, operation, payload, archive_root=root, read_control=read_control)
         return OperationKernel(lambda _request: envelope).execute(request)
 

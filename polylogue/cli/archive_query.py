@@ -1596,29 +1596,17 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
 
 
 def _mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
-    """Translate a typed operation failure into the mutation route's message."""
-    from polylogue.cli.operation_kernel import (
-        OperationFailedError,
-        OperationIndeterminateError,
-        OperationUnavailableError,
-    )
+    """Alias onto the CLI's one refusal translator.
 
-    if isinstance(exc, OperationIndeterminateError):
-        return click.ClickException(
-            f"{operation} outcome is indeterminate after the daemon accepted the request; "
-            "do not retry offline, inspect daemon audit state before retrying"
-        )
-    if isinstance(exc, OperationUnavailableError):
-        # The daemon is the standard, not an optional addon: there is no local
-        # fallback to offer, so the refusal names the one action that makes the
-        # command work instead of leaving the operator to guess.
-        return click.ClickException(
-            f"daemon is unavailable; it must execute {operation}. Start one with `polylogued run` "
-            "(and drop --no-daemon / POLYLOGUE_NO_DAEMON if either is set)."
-        )
-    if isinstance(exc, OperationFailedError):
-        return click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}")
-    return click.ClickException(f"{operation} failed: {exc}")
+    Kept as a module-local name because several tests and call sites reference
+    it; the message and the typing live in one place
+    (:func:`polylogue.cli.shared.helpers.mutation_refusal`) so a route cannot
+    drift into a refusal that withholds ``polylogued run`` or that reaches a
+    machine caller as ``runtime_error``.
+    """
+    from polylogue.cli.shared.helpers import mutation_refusal
+
+    return mutation_refusal(exc, operation)
 
 
 def submit_cli_mutation(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
@@ -1652,7 +1640,12 @@ def _delete_refusal(exc: Exception, stage: str) -> click.ClickException:
             "do not retry offline, inspect daemon audit state before retrying"
         )
     if isinstance(exc, OperationUnavailableError):
-        return click.ClickException(f"daemon is unavailable; it must {stage} the delete")
+        from polylogue.cli.shared.helpers import DaemonRequiredError
+
+        return DaemonRequiredError(
+            f"daemon is unavailable; it must {stage} the delete. Start one with `polylogued run`.",
+            operation=f"mutation.session.delete.{stage}",
+        )
     if isinstance(exc, OperationFailedError):
         if exc.code == "delete_partially_applied":
             return click.ClickException(

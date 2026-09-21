@@ -82,7 +82,9 @@ def run_machine_entry(
     argv: list[str],
 ) -> None:
     """Run the CLI, emitting JSON machine errors when requested."""
+    from polylogue.cli.shared.helper_support import DaemonRequiredError
     from polylogue.cli.shared.machine_errors import (
+        error_daemon_required,
         error_invalid_arguments,
         error_runtime,
         extract_command,
@@ -128,6 +130,17 @@ def run_machine_entry(
             command=command,
             option=option_hint,
         ).emit(exit_code=2)
+    except DaemonRequiredError as exc:
+        # Before the generic ``ClickException`` branch: the daemon-absent
+        # refusal is the one case a machine caller can act on directly, and
+        # folding it into ``runtime_error`` is exactly what made it
+        # unactionable.
+        error_daemon_required(
+            exc.format_message(),
+            command=command,
+            operation=exc.operation,
+            archive_root=exc.archive_root,
+        ).emit(exit_code=exc.exit_code)
     except click.ClickException as exc:
         error_runtime(
             exc.format_message(),
