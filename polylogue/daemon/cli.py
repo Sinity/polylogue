@@ -172,6 +172,17 @@ async def _run_startup_lineage_census() -> LineageStartupCensus:
     return await asyncio.to_thread(_census_lineage_startup_sync)
 
 
+def _lineage_startup_lifecycle_phase(census: LineageStartupCensus) -> str:
+    """A converged census is a ready component; a dangling edge is a degraded one.
+
+    Named rather than inlined so the mapping itself is assertable: the whole
+    point of the census is that a non-zero count reaches an operator as a
+    condition, and a component that reported ``ready`` regardless would put it
+    back where the deleted startup sweep left it.
+    """
+    return "component_ready" if census.converged else "component_degraded"
+
+
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
@@ -2768,7 +2779,7 @@ async def _run_daemon_services_under_active_writer_lease(
             lineage_census = await _run_startup_lineage_census()
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
-                    "component_ready" if lineage_census.converged else "component_degraded",
+                    _lineage_startup_lifecycle_phase(lineage_census),
                     archive_root_path=archive_root_path,
                     component="lineage_startup",
                 )
