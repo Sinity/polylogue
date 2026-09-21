@@ -23,6 +23,8 @@ from pathlib import Path
 
 from polylogue.archive.hydration import archive_summary_to_domain
 from polylogue.core.enums import BlockType, DisplayLabelSource, Provider, Role, TitleSource
+from polylogue.mcp.payloads import MCPArchiveSessionSummaryPayload
+from polylogue.operations.daemon_reads import _session_list_row
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
@@ -129,6 +131,17 @@ def test_heuristic_title_is_replaced_by_a_composed_label(tmp_path: Path) -> None
         assert row.title == summary.display_label
         assert row.title_is_synthesized is True
 
+        # MCP publishes the same composed string, so it needs the same marker.
+        mcp = MCPArchiveSessionSummaryPayload.from_summary(summary)
+        assert mcp.title == summary.display_label
+        assert mcp.title_is_synthesized is True
+
+        # ...and the terminal CLI row, which is a third serializer of the
+        # same value. All three agree or one of them is lying.
+        cli_row = _session_list_row(summary)
+        assert cli_row["title"] == summary.display_label
+        assert cli_row["title_is_synthesized"] is True
+
 
 def test_composed_label_names_the_dominant_action_family(tmp_path: Path) -> None:
     db_path = _bootstrap(tmp_path)
@@ -171,6 +184,9 @@ def test_origin_titled_sessions_are_unchanged(tmp_path: Path) -> None:
         envelope = session_summary_envelope_from_summary(domain)
         assert envelope.title == "Fix the flaky parser test"
         assert envelope.title_is_synthesized is False
+
+        assert MCPArchiveSessionSummaryPayload.from_summary(summary).title_is_synthesized is False
+        assert _session_list_row(summary)["title_is_synthesized"] is False
 
 
 def test_sibling_echo_sessions_do_not_collapse_to_one_label(tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from pydantic import Field, RootModel
 from typing_extensions import TypedDict
 
 from polylogue.context.compiler import ContextImage
+from polylogue.core.enums import DisplayLabelSource
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import source_name_to_origin
 from polylogue.core.user_state_targets import TARGET_SESSION
@@ -435,6 +436,11 @@ class MCPArchiveSessionSummaryPayload(SurfacePayloadModel):
     origin: str
     source: str
     title: str | None
+    # ``title`` is the read-time display label. When the archive composed it
+    # from structural evidence -- a session whose stored title is a recognized
+    # prompt echo, for instance -- no provider asserted that string, and an
+    # MCP consumer must be able to tell (polylogue-4p1.6).
+    title_is_synthesized: bool = False
     created_at: str | None
     updated_at: str | None
     message_count: int
@@ -449,6 +455,7 @@ class MCPArchiveSessionSummaryPayload(SurfacePayloadModel):
             origin=summary.origin,
             source=summary.origin,
             title=summary.display_label or summary.title,
+            title_is_synthesized=summary.display_label_source == DisplayLabelSource.SYNTHESIZED.value,
             created_at=summary.created_at,
             updated_at=summary.updated_at,
             message_count=summary.message_count,

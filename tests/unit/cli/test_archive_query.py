@@ -95,6 +95,59 @@ def test_session_list_row_renders_read_time_display_label() -> None:
     assert row["title"] == "polylogue · 2 files · 3 msgs · 2026-08-06"
 
 
+def test_session_list_row_marks_a_composed_title_as_synthesized() -> None:
+    """A terminal row says when its ``title`` is the archive's own composition.
+
+    ``title_source`` is deliberately absent from the CLI row -- it describes
+    the *stored* title. ``title_is_synthesized`` qualifies the value the row
+    actually prints, so without it the CLI publishes a derivation as though a
+    provider had asserted it (polylogue-4p1.6).
+
+    Anti-vacuity: drop ``title_is_synthesized`` from
+    ``daemon_reads._SESSION_LIST_ROW_FIELDS`` and the synthesized assertion
+    goes red with ``KeyError``.
+    """
+    from polylogue.operations.daemon_reads import _session_list_row
+
+    composed = ArchiveSessionSummary(
+        session_id="claude-code-session:echoed",
+        native_id="echoed",
+        origin="claude-code-session",
+        title="please fix the failing parser test",
+        title_source="heuristic",
+        created_at="2026-08-06T00:00:00+00:00",
+        updated_at="2026-08-06T00:00:00+00:00",
+        message_count=3,
+        word_count=10,
+        tags=(),
+        display_label="polylogue · 2 files · 3 msgs · 2026-08-06",
+        display_label_source="synthesized",
+    )
+    provider_named = ArchiveSessionSummary(
+        session_id="claude-code-session:named",
+        native_id="named",
+        origin="claude-code-session",
+        title="Parser refactor",
+        title_source="origin",
+        created_at="2026-08-06T00:00:00+00:00",
+        updated_at="2026-08-06T00:00:00+00:00",
+        message_count=3,
+        word_count=10,
+        tags=(),
+        display_label="Parser refactor",
+        display_label_source="origin",
+    )
+
+    composed_row = _session_list_row(composed)
+    named_row = _session_list_row(provider_named)
+
+    assert composed_row["title"] == "polylogue · 2 files · 3 msgs · 2026-08-06"
+    assert composed_row["title_is_synthesized"] is True
+    assert named_row["title"] == "Parser refactor"
+    # ``False`` is a real answer, not an absent field.
+    assert named_row["title_is_synthesized"] is False
+
+
 def test_emit_no_results_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
     warning = "Archive is converging: 3 index rebuild attempt(s) active; results may be partial."
 
