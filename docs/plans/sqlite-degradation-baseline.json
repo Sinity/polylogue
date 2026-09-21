@@ -208,10 +208,6 @@
       "digest": "0620e113494c05e43fc1853a07e36c6e65c56a0d"
     },
     {
-      "file": "polylogue/daemon/fts_status.py",
-      "digest": "69e2de7074db1c7c528bcf4b4ebe983163931d14"
-    },
-    {
       "file": "polylogue/daemon/http.py",
       "digest": "0b7f1787d1f214f365a0ce0cd39794a746b4c924"
     },

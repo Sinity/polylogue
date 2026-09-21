@@ -160,6 +160,28 @@ def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object
     }
 
 
+def _unreadable_fts_readiness(reason: str) -> dict[str, object]:
+    """The readiness payload for an index this probe could not read.
+
+    Every count is null and coverage is unknown. A ``coverage_pct`` of ``0.0``
+    here reported a measured empty index for a database nothing opened, and
+    reached ``/api/status`` and the plaintext CLI unaltered through
+    ``status_snapshot``'s minimal path, which publishes this dict directly
+    rather than through ``FTSReadiness`` (polylogue-20d.17.4 AC3).
+    """
+    return {
+        "indexed_surface": "messages_fts",
+        "messages_ready": False,
+        "invariant_ready": False,
+        "message_indexed_count": None,
+        "message_indexable_count": None,
+        "coverage_pct": None,
+        "coverage_exact": False,
+        "unavailable_reason": reason,
+        "surfaces": {},
+    }
+
+
 def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
     """Return FTS readiness for health/status probes.
 
@@ -201,9 +223,8 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return {
-            "messages_ready": False,
-            "invariant_ready": False,
-            "coverage_pct": 0.0,
-            "surfaces": {},
-        }
+        unreadable_reason = f"{type(exc).__name__}: {exc}"
+    # The handler records why the read failed; the payload is named once and
+    # fabricates nothing, so this site no longer improvises its own
+    # unavailable-as-a-value policy.
+    return _unreadable_fts_readiness(unreadable_reason)
