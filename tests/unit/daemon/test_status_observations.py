@@ -319,15 +319,30 @@ def test_a_detail_operation_is_named_rather_than_executed() -> None:
 
 
 def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path) -> None:
-    """The third leg of the halt property, on the production status route.
+    """The reported half of the halt property, on the production status route.
 
-    Mutation: drop ``and not halted_units`` from the payload's ``ok`` and a
-    daemon with a dead source reports healthy again.
+    The archive is initialized first and the payload is read **twice**. On a
+    bare directory ``ok`` is already ``False`` because the raw-failure
+    lifecycle is unavailable, so asserting ``False`` after recording a halt
+    proved nothing about halts at all -- dropping ``and not halted_units``
+    from the payload left this green. The green baseline is what makes the
+    second read evidence.
+
+    Mutation: drop ``and not halted_units`` from the payload's ``ok`` and the
+    post-halt assertion fails, because a daemon with a dead source reports
+    healthy again. Executed.
     """
     from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
     from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     archive_root = Path(polylogue_paths.archive_root())
+    initialize_active_archive_root(archive_root)
+
+    assert daemon_status_payload(sources=(), include_archive_debt=False)["ok"] is True, (
+        "the baseline is not green, so a not-ok answer afterwards would not be about the halt"
+    )
+
     halts = HaltRegistry(archive_root)
     halts.halt(
         unit_id(UnitKind.SOURCE, "claude-code"),
