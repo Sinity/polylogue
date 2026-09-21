@@ -58,7 +58,7 @@ from polylogue.daemon.lineage_startup import (
     ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
 from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
-from polylogue.daemon.service_halt import HaltRegistry
+from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.daemon.services import (
     PRODUCTION_PROFILE,
     DaemonServiceSpec,
@@ -2715,7 +2715,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             )
-            from polylogue.daemon.intake_adapters import RawMaterializationDiscovery
+            from polylogue.daemon.intake_adapters import RawMaterializationDiscovery, SubUnitHaltPolicy
 
             # Fair intake and the whale lane each retain their own bounded
             # traversal. A whale probe is selection work, not an intake
@@ -3005,12 +3005,34 @@ async def _run_daemon_services_under_active_writer_lease(
                     # registering here costs nothing and the class starts
                     # admitting as soon as the first acquisition commits.
                     raw_materialization_available = not watcher_blocked
+
+                    # A configured source that terminally refuses halts
+                    # *itself*, not the whole ``configured_local`` class it
+                    # shares with its siblings. The registry is the same
+                    # durable one the supervisor and the dispatcher read, so
+                    # status names the source and the next process still
+                    # refuses to plan it (polylogue-kqrbw).
+                    def _source_is_halted(name: str) -> bool:
+                        return halts.is_halted(unit_id(UnitKind.SOURCE, name))
+
+                    def _halt_source(name: str, message: str) -> None:
+                        halts.halt(
+                            unit_id(UnitKind.SOURCE, name),
+                            reason=HaltReason.TERMINAL_REFUSAL,
+                            message=message,
+                            frame=f"daemon:{os.getpid()}",
+                        )
+
                     adapter_pairs = build_intake_adapters(
                         DaemonIntakeContext(
                             archive_root=archive_root_path,
                             watcher=watcher,
                             sources=sources,
                             write_runner=run_intake_write,
+                        ),
+                        source_halts=SubUnitHaltPolicy(
+                            is_halted=_source_is_halted,
+                            halt=_halt_source,
                         ),
                         remote_callback=run_remote_intake
                         if enable_source_catchup and drive_sources_configured
