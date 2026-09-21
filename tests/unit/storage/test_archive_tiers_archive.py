@@ -2303,6 +2303,55 @@ def test_list_archive_debt_insights_correct_while_main_connection_holds_transact
             facade._conn.rollback()
 
 
+def test_debt_reads_honour_the_callers_read_budget(tmp_path: Path) -> None:
+    """The dedicated debt connection inherits the store's cancellation guard.
+
+    polylogue-3sic0. The cross-tier debt helpers must open their own
+    short-lived connection (the test above proves why: ATTACH/DETACH on the
+    long-lived handle races a caller's open transaction). But that handle
+    used to start with no progress handler, so it sat outside every
+    cancellation boundary: a disconnected caller or an expired query deadline
+    could not interrupt those scans. They now pass through
+    ``configure_operation_read_connection``, the hook that already extends the
+    current read budget to a sibling handle.
+
+    The guard is cleared from the main connection so only the debt helpers'
+    own connections stay armed -- otherwise the first two insights, which do
+    run on ``_conn``, would abort first and prove nothing about these two.
+
+    Anti-vacuity, verified by reverting: drop ``configure_connection`` from
+    either call site (or the ``configure_connection(conn)`` call inside the
+    helper) and this fails with no exception raised -- the debt report
+    completes normally while the caller's budget is exhausted.
+    """
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="debt-under-read-budget",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="debt target")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        write_index_session(facade, session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        # Sanity: with no budget armed, the report completes.
+        assert facade.list_archive_debt_insights()
+
+        facade.set_read_progress_guard(lambda: 1, n_opcodes=1)
+        facade._conn.set_progress_handler(None, 0)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="interrupted"):
+                facade.list_archive_debt_insights()
+        finally:
+            facade.clear_read_progress_guard()
+
+
 def test_root_filter_partitions_top_level_and_subagent_sessions(tmp_path: Path) -> None:
     """``root`` filters/counts sessions by whether they have a parent (polylogue-oqib).
 

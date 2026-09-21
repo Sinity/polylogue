@@ -163,6 +163,67 @@ async def test_run_projection_reads_source_rows_for_codex_session(tmp_path: Path
     assert [record.snapshot.run_ref.format() for record in snapshots] == [f"run:{session_id}"]
 
 
+async def test_a_reused_tool_id_pairs_by_rank_and_does_not_fan_out(tmp_path: Path) -> None:
+    """polylogue-3sic0: one tool_id used twice yields two events, not four.
+
+    ``tool_finished_base`` joined ``blocks`` to ``blocks`` on
+    ``(session_id, tool_id)`` alone. A provider that re-emits one tool_id --
+    a retry, a loop -- has N uses and M results under it, and the equality
+    join returned every N*M combination: extra tool_finished events, each
+    pairing a use with a result it never produced. ``action_pairs`` (the
+    canonical pairing behind the ``actions`` view) already ranks both sides
+    by transcript order and pairs same-rank rows; this relation now reads it.
+
+    Anti-vacuity, verified by reverting: restore the
+    ``JOIN blocks r ON r.session_id = u.session_id AND r.tool_id = u.tool_id
+    AND r.block_type = 'tool_result'`` join and this fails with four events
+    instead of two, and with the first (successful) retry reported as
+    ``failed`` because it cross-pairs onto the second result.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    (
+        SessionBuilder(db_path, "reused-tool-id")
+        .provider("codex")
+        .title("one tool_id, two attempts")
+        .add_message(
+            "m-first",
+            role="assistant",
+            text="First attempt.",
+            blocks=[
+                {"type": "tool_use", "id": "tool-retry", "name": "Bash", "tool_input": {"command": "first-attempt"}},
+                {"type": "tool_result", "tool_id": "tool-retry", "text": "ok", "tool_result_exit_code": 0},
+            ],
+        )
+        .add_message(
+            "m-second",
+            role="assistant",
+            text="Second attempt under the same id.",
+            blocks=[
+                {"type": "tool_use", "id": "tool-retry", "name": "Bash", "tool_input": {"command": "second-attempt"}},
+                {"type": "tool_result", "tool_id": "tool-retry", "text": "boom", "tool_result_exit_code": 1},
+            ],
+        )
+        .save()
+    )
+    session_id = "codex-session:ext-reused-tool-id"
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        events = await list_observed_events(
+            conn,
+            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
+        )
+
+    # Two uses, two results, two events -- and each use keeps its OWN result,
+    # so the successful first attempt is not reported through the second
+    # attempt's failure.
+    assert [(record.event.command, record.event.status) for record in events] == [
+        ("first-attempt", "ok"),
+        ("second-attempt", "failed"),
+    ]
+
+
 def test_subagent_and_child_main_runs_do_not_collide(tmp_path: Path) -> None:
     """A subagent session's run row is distinct from its own child main run.
 

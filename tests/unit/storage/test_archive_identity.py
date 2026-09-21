@@ -529,6 +529,52 @@ def test_assert_owns_archive_location_rejects_a_never_acquired_or_released_token
         assert_owns_archive_location(owned, location)
 
 
+def test_ownership_witness_reads_the_key_acquire_used_in_a_symlink_farm(tmp_path: Path) -> None:
+    """A live token in a generation farm is not mistaken for a released one.
+
+    polylogue-3sic0. ``acquire`` and ``release`` key the process-local owner
+    registry on ``anchor_identity`` -- the directory holding the resolved
+    durable tiers (``durable_anchor_directory``, polylogue-81v76) -- but
+    ``holds_ownership`` read it under ``root_identity``. Those agree in an
+    ordinary root, which is why the test above cannot see it. They are
+    DIFFERENT inodes in exactly the generation symlink farm the anchoring
+    exists for, and the product manufactures one on every promotion. The
+    lookup missed, and a token that had genuinely just taken the lock
+    reported no ownership, so ``assert_owns_archive_location`` refused its
+    own owner.
+
+    Anti-vacuity, verified by reverting: read ``_LOCAL_ARCHIVE_OWNERS`` under
+    ``self.root_identity`` again and this fails at ``holds_ownership is True``
+    -- and the assertion below raises "never acquired or has been released"
+    for a live owner.
+    """
+    real = tmp_path / "real"
+    generation = real / ".index-generations" / "gen-1"
+    generation.mkdir(parents=True)
+    (generation / "index.db").write_text("index", encoding="utf-8")
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (real / name).write_text(name, encoding="utf-8")
+
+    farm = tmp_path / "farm"
+    farm.mkdir()
+    for name in ("source.db", "user.db", "audit.db", "ops.db", "embeddings.db"):
+        (farm / name).symlink_to(real / name)
+    (farm / "index.db").symlink_to(generation / "index.db")
+    (farm / ".index-active-pointer").write_text(str(farm / "index.db"), encoding="utf-8")
+
+    location = ArchiveLocation.resolve(farm)
+    owned = OwnedArchiveLocation.acquire(location)
+    try:
+        # The two identities really do differ here; without that the test
+        # would be a duplicate of the ordinary-root case above.
+        assert owned.root_identity != owned.anchor_identity
+        assert owned.holds_ownership is True
+        assert_owns_archive_location(owned, location)
+    finally:
+        owned.release()
+    assert owned.holds_ownership is False
+
+
 def test_a_symlink_farm_generation_cannot_be_owned_beside_its_own_root(tmp_path: Path) -> None:
     """polylogue-81v76: ownership must anchor on the durable tiers, not the
     directory that names them.

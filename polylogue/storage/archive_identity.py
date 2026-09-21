@@ -485,11 +485,22 @@ class OwnedArchiveLocation:
         that distinguishes a real proof from a shaped-like-one token.  The
         process-local registry must still name this descriptor: a second token
         that released the last reference has already unlocked and closed it.
+
+        polylogue-3sic0: the registry is keyed on ``anchor_identity``, not on
+        ``root_identity`` -- ``acquire`` and ``release`` both use the anchor
+        (see ``durable_anchor_directory``).  Reading it under the root
+        identity agreed only in the ordinary layout where the two coincide.
+        In the generation symlink farm this anchoring exists FOR (polylogue-81v76;
+        the product manufactures one on every promotion) they are distinct
+        inodes, the lookup missed, and a live token that had genuinely just
+        acquired the lock reported ``False`` -- so
+        ``assert_owns_archive_location`` refused its own owner with "was never
+        acquired or has been released".
         """
         if self._fd is None or self._root_fd < 0:
             return False
         with _LOCAL_ARCHIVE_OWNERS_LOCK:
-            existing = _LOCAL_ARCHIVE_OWNERS.get(self.root_identity)
+            existing = _LOCAL_ARCHIVE_OWNERS.get(self.anchor_identity)
         return existing is not None and existing[0] == self._fd
 
     @property

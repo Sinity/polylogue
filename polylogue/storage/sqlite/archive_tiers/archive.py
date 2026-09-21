@@ -3680,8 +3680,16 @@ class ArchiveStore:
         insights = [
             _archive_messages_fts_debt(self._conn),
             _archive_profile_rows_debt(self._conn),
-            _archive_source_raw_link_debt(self.index_db_path, self.source_db_path),
-            _archive_user_overlay_debt(self.index_db_path, self.user_db_path),
+            _archive_source_raw_link_debt(
+                self.index_db_path,
+                self.source_db_path,
+                configure_connection=self.configure_operation_read_connection,
+            ),
+            _archive_user_overlay_debt(
+                self.index_db_path,
+                self.user_db_path,
+                configure_connection=self.configure_operation_read_connection,
+            ),
         ]
         insights.sort(key=lambda insight: (insight.category, insight.debt_name))
         if category is not None:
@@ -8440,13 +8448,28 @@ def _archive_profile_rows_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
     )
 
 
-def _archive_source_raw_link_debt(index_db_path: Path, source_db_path: Path) -> ArchiveDebtInsight:
+def _archive_source_raw_link_debt(
+    index_db_path: Path,
+    source_db_path: Path,
+    *,
+    configure_connection: Callable[[sqlite3.Connection], None] | None = None,
+) -> ArchiveDebtInsight:
     # Cross-tier debt reads use a dedicated connection.  The long-lived
     # ArchiveStore connection may already own a transaction; attaching and
     # detaching on that connection can fail with "database ... is locked".
     # Closing this short-lived connection releases the attached schema and all
     # statement cursors as one lifetime, so no DETACH race is possible.
+    #
+    # polylogue-3sic0: a dedicated connection is required, but it must not
+    # also be an uninterruptible one.  The caller's deadline and cancellation
+    # live in a progress handler installed on ArchiveStore's connections, and
+    # a handle opened here starts without it, so a disconnected caller or an
+    # expired query deadline could not stop these scans.  ``configure_connection``
+    # is ArchiveStore.configure_operation_read_connection -- the hook that
+    # already exists to extend the current read budget to a sibling handle.
     with closing(open_readonly_connection(index_db_path)) as conn:
+        if configure_connection is not None:
+            configure_connection(conn)
         raw_links = _count_scalar(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
         if not source_db_path.exists():
             issue_count = raw_links
@@ -8482,7 +8505,12 @@ def _archive_source_raw_link_debt(index_db_path: Path, source_db_path: Path) -> 
     )
 
 
-def _archive_user_overlay_debt(index_db_path: Path, user_db_path: Path) -> ArchiveDebtInsight:
+def _archive_user_overlay_debt(
+    index_db_path: Path,
+    user_db_path: Path,
+    *,
+    configure_connection: Callable[[sqlite3.Connection], None] | None = None,
+) -> ArchiveDebtInsight:
     if not user_db_path.exists():
         return _archive_debt(
             name="archive_user_overlay_orphans",
@@ -8492,8 +8520,11 @@ def _archive_user_overlay_debt(index_db_path: Path, user_db_path: Path) -> Archi
         )
     # See _archive_source_raw_link_debt: a dedicated short-lived connection
     # avoids ATTACH/DETACH racing the long-lived ArchiveStore connection's
-    # own transaction.
+    # own transaction, and inherits the caller's read budget rather than
+    # running outside every cancellation boundary.
     with closing(open_readonly_connection(index_db_path)) as conn:
+        if configure_connection is not None:
+            configure_connection(conn)
         conn.execute("ATTACH DATABASE ? AS user_debt", (f"file:{user_db_path}?mode=ro",))
         checks = (
             "SELECT COUNT(*) FROM user_debt.assertions u "
