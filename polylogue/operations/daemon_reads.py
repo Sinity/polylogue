@@ -18,6 +18,8 @@ from polylogue.operations.query_lowering import cli_query_spec, lower_cli_query_
 from polylogue.operations.session_evidence import (
     read_agent_policies_evidence,
     read_file_edits_evidence,
+    read_raw_artifacts_page,
+    read_session_events_page,
     read_web_content_constructs_evidence,
 )
 
@@ -1181,6 +1183,8 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     kind = str(payload.get("kind") or "transcript")
     if kind == "messages":
         return _session_messages_payload(payload, ref=ref, archive=archive)
+    if kind in _WINDOWED_EVIDENCE_READERS:
+        return _session_evidence_window_payload(payload, ref=ref, kind=kind, archive=archive)
     if kind != "transcript":
         return _session_evidence_payload(ref, kind=kind, archive=archive)
     raw_projection = payload.get("projection")
@@ -1439,6 +1443,98 @@ def _session_evidence_payload(ref: str, *, kind: str, archive: ArchiveStore) -> 
         "complete": True,
     }
     _require_deliverable_window(result, limit=total)
+    return result
+
+
+#: Per-session evidence relations that are *paged* rather than answered whole,
+#: keyed by the ``session.read`` kind that names them.  Each answers
+#: ``(rows, total)`` where ``total`` is the relation's own row count; the page
+#: and its continuation are decided by ``operations/evidence_window.py``.
+#:
+#: Separate from ``_SESSION_EVIDENCE_READERS`` because the two answer different
+#: contracts, not because they read different tables: a whole-evidence kind may
+#: never report a partial body, and a windowed one must report its bound.
+_WINDOWED_EVIDENCE_READERS: dict[str, Callable[[ArchiveStore, str, int, int], tuple[list[dict[str, object]], int]]] = {
+    "events": lambda archive, session_id, limit, offset: read_session_events_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "raw": lambda archive, session_id, limit, offset: read_raw_artifacts_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+}
+
+
+def _session_evidence_window_payload(
+    payload: Mapping[str, object],
+    *,
+    ref: str,
+    kind: str,
+    archive: ArchiveStore,
+) -> dict[str, object]:
+    """Read one bounded *page* of a per-session evidence relation.
+
+    The bound the caller asked for is reported back in the body -- ``total``
+    is the relation's own row count, ``returned`` is this page's -- and a page
+    that does not reach the total mints a continuation instead of claiming to
+    be complete.  That is the whole reason these two kinds could not be
+    lowered as whole-evidence reads: ``events`` answered a ``--limit`` with
+    the clipped count as its ``total``, so nothing in the payload separated a
+    truncated body from a finished one (polylogue-r3cuz).
+
+    The continuation is minted in this relation's own projection, never the
+    message window's, so the two families refuse each other's tokens by name.
+    """
+
+    from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES, read_evidence_window
+    from polylogue.surfaces.outcome import decide_outcome
+
+    family = EVIDENCE_WINDOW_FAMILIES[kind]
+    reader = _WINDOWED_EVIDENCE_READERS[kind]
+    try:
+        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
+    except KeyError as exc:
+        raise ValueError(f"session not found: {ref}") from exc
+
+    continuation_token = payload.get("continuation")
+
+    window = read_evidence_window(
+        archive,
+        family,
+        ref=ref,
+        # The declared request default (``SessionReadRequest.limit``) is the
+        # bound when the caller names none, exactly as it is for a transcript
+        # window: one declared default, reported back like any other.
+        limit=_non_negative_int(payload.get("limit"), default=_SESSION_READ_WINDOW) or _SESSION_READ_WINDOW,
+        offset=_non_negative_int(payload.get("offset"), default=0),
+        continuation=str(continuation_token) if continuation_token else None,
+        read=lambda page_limit, page_offset: reader(archive, session_id, page_limit, page_offset),
+    )
+
+    summary = archive.read_summary(session_id)
+    result: dict[str, object] = {
+        "outcome": decide_outcome(matched=int(cast(int, window["total"]))).to_dict(),
+        "session": {
+            "session_id": summary.session_id,
+            "native_id": summary.native_id,
+            "origin": summary.origin,
+            "title": summary.title,
+            "created_at": summary.created_at,
+            "updated_at": summary.updated_at,
+            # An evidence read is not a message window; see
+            # ``_session_evidence_payload`` for why the empty list is stated.
+            "messages": [],
+        },
+        "session_id": session_id,
+        "kind": kind,
+        "evidence_window": dict(window),
+        "total": window["total"],
+        "limit": window["limit"],
+        "offset": window["offset"],
+        "next_offset": window["next_offset"],
+        "continuation": window["continuation"],
+        "complete": window["complete"],
+    }
+    _require_deliverable_window(result, limit=int(cast(int, window["limit"])))
     return result
 
 

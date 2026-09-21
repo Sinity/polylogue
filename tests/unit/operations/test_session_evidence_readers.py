@@ -159,3 +159,104 @@ async def test_web_content_rows_match_the_facade_reader_they_replaced(seeded_roo
     assert facade_rows is not None
     assert evidence["web_content_constructs"] == facade_rows
     assert evidence["total"] == len(facade_rows)
+
+
+def _seed_events(archive_root: Path, count: int) -> str:
+    """One session carrying ``count`` timeline events, written the ordinary way."""
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+
+    with ArchiveStore(archive_root) as archive_db:
+        archive_db.write_raw_and_parsed(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="ext-evidence-window",
+                title="Windowed evidence",
+                messages=[ParsedMessage(provider_message_id="m0", role=Role.ASSISTANT, position=0, text="body")],
+                session_events=[
+                    ParsedSessionEvent(event_type="world_state", payload={"n": index}) for index in range(count)
+                ],
+            ),
+            payload=b'{"raw": "evidence window payload"}',
+            source_path="/tmp/evidence-window.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+    return "claude-code-session:ext-evidence-window"
+
+
+def test_clipped_evidence_page_is_not_complete(tmp_path: Path) -> None:
+    """A windowed evidence page separates truncated from finished in the body.
+
+    This is why ``events`` could not be lowered as a whole-evidence read: it
+    answered a ``--limit`` with the clipped count as its own ``total``, so
+    nothing in the payload distinguished a cut body from a complete one, and
+    ``SessionReadResult`` refuses a body that claims completeness it does not
+    have.
+
+    Anti-vacuity: return the page length as ``total`` from the reader (or drop
+    ``complete`` from the body) and the first three assertions go green
+    together while the page is still short -- which is exactly the shape this
+    contract exists to make impossible.  A ``limit`` at or above the relation's
+    own row count cannot witness it, so the window here is strictly smaller.
+    """
+    from polylogue.operations.daemon_reads import execute_read_operation
+
+    root = tmp_path / "archive"
+    session_id = _seed_events(root, 5)
+
+    with ArchiveStore.open_existing(root) as archive:
+        page = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{session_id}", "kind": "events", "limit": 2, "offset": 0},
+            archive=archive,
+            serving_identity="test",
+        )
+        whole = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{session_id}", "kind": "events", "limit": 5, "offset": 0},
+            archive=archive,
+            serving_identity="test",
+        )
+
+    assert page["total"] == 5, "total is the relation's own row count, not the page's"
+    assert page["complete"] is False
+    assert page["next_offset"] == 2
+    assert page["continuation"], "a short page mints a continuation instead of claiming completeness"
+    assert whole["complete"] is True
+    assert whole["next_offset"] is None
+    assert whole["continuation"] in (None, "")
+
+
+def test_evidence_token_cannot_resume_messages(tmp_path: Path) -> None:
+    """The two families refuse each other's tokens by name.
+
+    ``transcript_window`` owns the message window's projection token; a
+    windowed evidence relation mints its own.  Without that separation a token
+    minted for "events 2..4" would be resumable by a reader that composes
+    messages with it.
+
+    Anti-vacuity: mint the evidence continuation in the message family's
+    projection and this stops raising -- the transcript read accepts the token
+    and pages messages under an events cursor.
+    """
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError
+    from polylogue.operations.daemon_reads import execute_read_operation
+
+    root = tmp_path / "archive"
+    session_id = _seed_events(root, 5)
+
+    with ArchiveStore.open_existing(root) as archive:
+        page = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{session_id}", "kind": "events", "limit": 2, "offset": 0},
+            archive=archive,
+            serving_identity="test",
+        )
+        token = page["continuation"]
+        assert token
+        with pytest.raises((QueryContinuationInvalidError, ValueError)):
+            execute_read_operation(
+                "session.read",
+                {"ref": f"session:{session_id}", "kind": "transcript", "continuation": token},
+                archive=archive,
+                serving_identity="test",
+            )

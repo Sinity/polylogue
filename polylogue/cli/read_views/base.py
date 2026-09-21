@@ -87,9 +87,17 @@ class ReadViewChronicleOptions:
 
 @dataclass(frozen=True, slots=True)
 class ReadViewEventsOptions:
-    """Options owned by the raw session-events read view."""
+    """Options owned by the raw session-events read view.
+
+    The bound is now reported back rather than applied silently, so the view
+    also accepts the coordinates that page it: ``offset`` is the shared global
+    option, and ``continuation`` resumes the snapshot-bound page the last read
+    minted (polylogue-r3cuz).
+    """
 
     limit: int | None = None
+    offset: int = 0
+    continuation: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

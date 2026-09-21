@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.cli.messages import run_messages, run_raw, run_session_events
+from polylogue.cli.messages import run_messages
 from polylogue.cli.read_views.base import ReadViewInvocation
 from polylogue.cli.read_views.messages import _write_messages_file
 from polylogue.cli.read_views.session_evidence import run_read_hooks
@@ -588,42 +588,6 @@ def test_run_messages_markdown_uses_structural_shell_outcome(
     assert "FAILED" not in rendered
 
 
-def test_run_raw_emits_json_yaml_and_empty_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    api = _FakeApi(
-        raw_result=(
-            [
-                {
-                    "raw_id": "raw-1",
-                    "source_name": "codex",
-                    "source_path": "/tmp/source.jsonl",
-                    "blob_size": 42,
-                }
-            ],
-            1,
-        )
-    )
-    env = _env()
-
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_raw(env, _request(tmp_path), session_id="conv-raw", limit=3, offset=1)
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["artifacts"][0]["raw_id"] == "raw-1"
-    assert api.raw_kwargs == {"session_id": "conv-raw", "limit": 3, "offset": 1}
-    _ui_print(env).assert_not_called()
-
-    yaml_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_raw(yaml_env, _request(tmp_path), session_id="conv-raw", output_format="yaml")
-    assert "raw-1" in capsys.readouterr().out
-    _ui_print(yaml_env).assert_not_called()
-
-    empty_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(raw_result=([], 0))):
-        run_raw(empty_env, _request(tmp_path), session_id="missing")
-    _ui_error(empty_env).assert_called_once_with("No raw artifacts found for session: missing")
-
-
 def _hooks_invocation(*, output_format: str = "json", destination: str = "terminal") -> ReadViewInvocation:
     return ReadViewInvocation(
         view="hooks",
@@ -742,58 +706,3 @@ def test_read_hooks_names_the_daemon_refusal_without_a_traceback(
     assert "daemon is unavailable" in err
     assert "polylogued run" in err  # the remedy, not just the fault
     assert "Usage:" not in err
-
-
-def test_run_session_events_emits_json_and_missing_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Session-events read view (polylogue mission: 2026-07 evidence-gap close).
-
-    Codex ``world_state``/``agent_policy`` facts, Claude Code sidecar events,
-    and Hermes tool-availability spans all ride ``session_events`` -- this is
-    the generic reader that surfaces them without a bespoke view per
-    event_type.
-    """
-    api = _FakeApi(
-        session_events_result=[
-            {
-                "event_id": "codex-session:evt-0",
-                "event_index": 0,
-                "event_type": "agent_policy",
-                "timestamp": "2026-07-29T10:00:00Z",
-                "payload": {"sandbox_policy": "workspace-write", "approval_policy": "on-request"},
-            },
-            {
-                "event_id": "codex-session:evt-1",
-                "event_index": 1,
-                "event_type": "world_state",
-                "timestamp": "2026-07-29T10:00:01Z",
-                "payload": {"cwd": "/repo"},
-            },
-        ]
-    )
-    env = _env()
-
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_session_events(env, _request(tmp_path), session_id="conv-events")
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["total"] == 2
-    assert payload["events"][0]["event_type"] == "agent_policy"
-    assert payload["events"][1]["payload"]["cwd"] == "/repo"
-    assert api.session_events_kwargs == {"session_id": "conv-events", "event_type": None, "limit": None}
-    _ui_print(env).assert_not_called()
-
-    filtered_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_session_events(filtered_env, _request(tmp_path), session_id="conv-events", event_type="world_state")
-    assert api.session_events_kwargs["event_type"] == "world_state"
-
-    yaml_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_session_events(yaml_env, _request(tmp_path), session_id="conv-events", output_format="yaml")
-    assert "world_state" in capsys.readouterr().out
-    _ui_print(yaml_env).assert_not_called()
-
-    missing_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(session_events_result=None)):
-        run_session_events(missing_env, _request(tmp_path), session_id="missing")
-    _ui_error(missing_env).assert_called_once_with("Session not found: missing")
