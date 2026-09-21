@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -179,6 +180,161 @@ def test_a_block_cannot_claim_a_session_its_message_does_not_belong_to(tmp_path:
         conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:owner-a'")
         assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] == 0
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
+
+
+_OWNER_A = "codex-session:owner-a"
+_OWNER_B = "codex-session:other-b"
+
+
+def _seed_two_sessions(conn: sqlite3.Connection) -> tuple[str, list[str]]:
+    """Seed sessions A and B, one message in A, and two blocks on that message.
+
+    Returns A's message id and its two block ids. Every owner-bearing row the
+    cases below build hangs off A; B exists only to be claimed wrongly.
+    """
+    for native_id in ("owner-a", "other-b"):
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            (native_id, "codex-session", _HASH),
+        )
+    conn.execute(
+        "INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash) "
+        "VALUES (?, 'm0', 0, 'user', 'message', ?)",
+        (_OWNER_A, _HASH),
+    )
+    message_id = str(conn.execute("SELECT message_id FROM messages").fetchone()["message_id"])
+    for position in (0, 1):
+        conn.execute(
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, ?, 'text', 'b')",
+            (message_id, _OWNER_A, position),
+        )
+    block_ids = [str(row["block_id"]) for row in conn.execute("SELECT block_id FROM blocks ORDER BY position")]
+    conn.execute("INSERT INTO attachments (attachment_id) VALUES ('att-1')")
+    return message_id, block_ids
+
+
+# One row per table, built twice: ``slot`` 0 names its session honestly and
+# slot 1 claims session B while still pointing at session A's message. Slot
+# also separates the two rows on whatever the table's primary key is, so the
+# contradictory insert can only fail for the reason under test.
+_OWNER_ROWS: dict[str, Callable[[str, list[str], str, int], tuple[str, tuple[object, ...]]]] = {
+    "attachment_refs": lambda message_id, blocks, session_id, slot: (
+        "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position) VALUES ('att-1', ?, ?, ?)",
+        (session_id, message_id, slot),
+    ),
+    "paste_spans": lambda message_id, blocks, session_id, slot: (
+        "INSERT INTO paste_spans (message_id, session_id, position, boundary_state, content_hash) "
+        "VALUES (?, ?, ?, 'exact', ?)",
+        (message_id, session_id, slot, _HASH),
+    ),
+    "file_edits": lambda message_id, blocks, session_id, slot: (
+        "INSERT INTO file_edits (tool_use_block_id, session_id, message_id, file_path) VALUES (?, ?, ?, '/x')",
+        (blocks[slot], session_id, message_id),
+    ),
+    "web_content_constructs": lambda message_id, blocks, session_id, slot: (
+        "INSERT INTO web_content_constructs "
+        "(session_id, message_id, block_id, position, provider, construct_type) "
+        "VALUES (?, ?, ?, 0, 'openai', 'search_result')",
+        (session_id, message_id, blocks[slot]),
+    ),
+    "action_pairs": lambda message_id, blocks, session_id, slot: (
+        "INSERT INTO action_pairs (tool_use_block_id, session_id, message_id, tool_name) VALUES (?, ?, ?, 'Bash')",
+        (blocks[slot], session_id, message_id),
+    ),
+}
+
+
+@pytest.mark.parametrize("table", sorted(_OWNER_ROWS))
+def test_an_owner_bearing_row_cannot_claim_a_session_its_message_does_not_belong_to(tmp_path: Path, table: str) -> None:
+    """Each table's two owner keys must agree by construction (polylogue-dba5k).
+
+    ``blocks`` was constrained first (polylogue-asp4b); these five carried the
+    same shape -- ``session_id`` and ``message_id`` each referencing its own
+    parent independently, so a row could name session B while its message
+    belonged to session A. Both references held while their conjunction was
+    false: ``PRAGMA foreign_key_check`` stayed clean, a session-scoped read
+    counted the row under B and a message-joined read counted it under A, and
+    deleting session B cascaded away a row belonging to session A's message.
+
+    Anti-vacuity: replace this table's ``_MESSAGE_OWNER_FK`` with the previous
+    pair of single-column references and the contradictory INSERT succeeds
+    here with ``foreign_key_check`` clean. The agreeing insert fails if the fix
+    is "forbid the denormalized column"; the cascade assertion fails if it is
+    "stop cascading" -- the session no longer references the row directly, so
+    it must still reach it through ``messages``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _apply_tier(conn, ArchiveTier.INDEX)
+        message_id, block_ids = _seed_two_sessions(conn)
+        build = _OWNER_ROWS[table]
+
+        # A row whose owners agree is ordinary and must stay ordinary.
+        agreeing_sql, agreeing_params = build(message_id, block_ids, _OWNER_A, 0)
+        conn.execute(agreeing_sql, agreeing_params)
+
+        contradictory_sql, contradictory_params = build(message_id, block_ids, _OWNER_B, 1)
+        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY constraint failed"):
+            conn.execute(contradictory_sql, contradictory_params)
+
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 1
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+        # The owning session still reaches the row, now through messages.
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (_OWNER_A,))
+        assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    finally:
+        conn.close()
+
+
+def test_every_table_storing_both_owner_keys_references_them_as_a_pair(tmp_path: Path) -> None:
+    """The containment law is enumerated from the built schema, not from a list.
+
+    ``action_pairs`` was missing from the reported set of tables carrying the
+    unconstrained shape and was found this way. A table added later that stores
+    both owner keys gets caught here rather than after it admits a
+    contradiction, and a leftover single-column reference to ``messages`` or
+    ``sessions`` is reported as the redundant second statement of ownership it
+    is -- ``action_pairs`` carried both a column-level and a table-level
+    reference to ``messages(message_id)``.
+
+    Anti-vacuity: restore any one of the six tables' single-column references
+    and this fails naming that table. It is vacuous only if no index-tier
+    table stores both keys, which the non-empty assertion below rules out.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _apply_tier(conn, ArchiveTier.INDEX)
+        offenders: dict[str, list[str]] = {}
+        checked: list[str] = []
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'"):
+            table = str(row["name"])
+            columns = {str(info["name"]) for info in conn.execute(f"PRAGMA table_info({table})")}
+            if not {"session_id", "message_id"} <= columns:
+                continue
+            checked.append(table)
+            by_constraint: dict[int, tuple[str, list[str]]] = {}
+            for fk in conn.execute(f"PRAGMA foreign_key_list({table})"):
+                parent, children = by_constraint.setdefault(int(fk["id"]), (str(fk["table"]), []))
+                children.append(str(fk["from"]))
+            faults = []
+            if not any(
+                parent == "messages" and sorted(children) == ["message_id", "session_id"]
+                for parent, children in by_constraint.values()
+            ):
+                faults.append("no compound FK to messages(message_id, session_id)")
+            faults.extend(
+                f"redundant single-column FK {children[0]} -> {parent}"
+                for parent, children in by_constraint.values()
+                if parent in {"messages", "sessions"} and len(children) == 1
+            )
+            if faults:
+                offenders[table] = faults
+        assert checked, "no index-tier table stores both owner keys; this law would be vacuous"
+        assert offenders == {}, f"owner keys can disagree in: {offenders}"
     finally:
         conn.close()
 
