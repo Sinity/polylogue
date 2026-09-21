@@ -335,3 +335,59 @@ def test_ops_workload_throughput_rate_uses_the_advertised_wall_window(
     assert throughput["window_minutes"] == 1
     assert throughput["files"] == 240
     assert throughput["files_per_second"] == 4.0
+
+
+def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_path: Path) -> None:
+    """Default direct status reports ``ok`` on an archive with nothing wrong.
+
+    ``polylogue ops status`` runs the pinned direct producer with
+    ``include_archive_readiness=False``, and two stale operands made that
+    verdict unconditionally false once #5285 turned both into refutations:
+
+    * ``transforms`` was published UNKNOWN because the *exact* readiness probe
+      had been skipped, though the component is a function of the transform
+      registry and the session count -- operands this surface already holds;
+    * the user tier's declared relation inventory named ``settings``, which the
+      user DDL has never declared (it is ``user_settings``), so the tier
+      reported an inexact declared-relation count.
+
+    Anti-vacuity: restore either the UNKNOWN ``transforms`` branch or the
+    ``settings`` inventory name and ``ok`` goes back to ``False``; the
+    per-component assertions say which one moved.
+    """
+
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    bootstrap_archive_root(tmp_path)
+    # A transform component is MISSING on an archive with no sessions, and that
+    # is correct. The subject here is a populated, healthy archive.
+    with ArchiveStore(tmp_path) as archive:
+        write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="direct-status-healthy",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="status subject")],
+                    )
+                ],
+            ),
+        )
+    prepare_operation_journals(tmp_path)
+    with open_operation_read(tmp_path) as pinned:
+        payload = produce_direct_status(archive=pinned.archive, now_ms=1_700_000_000_000)
+
+    components = cast(dict[str, dict[str, object]], payload["component_readiness"])
+    assert components["transforms"]["state"] != "unknown"
+    tiers = cast(dict[str, dict[str, dict[str, str]]], payload["archive_tiers"])
+    assert set(tiers["user"]["table_count_precision"].values()) == {"exact"}
+    assert payload["ok"] is True, [
+        (name, component.get("state"), component.get("summary")) for name, component in components.items()
+    ]

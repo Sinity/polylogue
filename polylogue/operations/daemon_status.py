@@ -41,7 +41,11 @@ _TIER_STATUS_TABLES: dict[str, tuple[str, ...]] = {
         "thread_sessions",
     ),
     "embeddings": ("embedding_status", "message_embeddings_meta", "embedding_failures"),
-    "user": ("assertions", "settings", "annotation_schemas"),
+    # ``user_settings``, not ``settings``: the user tier has never declared a
+    # bare ``settings`` relation. The stale name counted as a missing declared
+    # relation, which ``tier_count_unavailable`` refutes the overall verdict
+    # on, so direct status reported ``ok: false`` on a healthy archive.
+    "user": ("assertions", "user_settings", "annotation_schemas"),
     "audit": ("operation_previews", "operation_authorizations", "operation_attempts"),
     "ops": ("ingest_cursor", "ingest_attempts", "convergence_debt", "schema_drift_samples", "embedding_catchup_runs"),
 }
@@ -143,6 +147,7 @@ def produce_direct_status(
         materialization=materialization,
         frontier=frontier,
         embedding_status=embedding_status,
+        session_count=(int(sessions) if isinstance(sessions := archive_stats.get("total_sessions"), int) else None),
         component_from_archive_surface=component_from_archive_surface,
         component_from_raw_materialization_readiness=component_from_raw_materialization_readiness,
         component_from_raw_frontier_integrity=component_from_raw_frontier_integrity,
@@ -678,6 +683,7 @@ def _components(
     materialization: Mapping[str, object],
     frontier: Mapping[str, object],
     embedding_status: Mapping[str, object],
+    session_count: int | None,
     component_from_archive_surface: Any,
     component_from_raw_materialization_readiness: Any,
     component_from_raw_frontier_integrity: Any,
@@ -735,27 +741,21 @@ def _components(
             counts={},
             caveats=("assertions_table_unavailable",),
         ).to_dict()
-    if archive_readiness.get("checked") is False:
-        reason = str(archive_readiness.get("reason") or "archive_readiness_unchecked")
-        components["transforms"] = ComponentReadiness(
-            component="transforms",
-            scope="session-analysis",
-            state=CapabilityReadinessState.UNKNOWN,
-            summary=reason,
-            counts={
-                "transform_count": len(TRANSFORM_REGISTRY),
-                "session_digest_transform_version": SESSION_DIGEST_TRANSFORM_VERSION,
-            },
-            caveats=(reason,),
-            evidence_refs=("transform_registry",),
-        ).to_dict()
-    else:
-        counts = archive_readiness.get("counts")
-        components["transforms"] = component_from_transform_registry(
-            transform_count=len(TRANSFORM_REGISTRY),
-            session_count=int(counts.get("session_count") or 0) if isinstance(counts, Mapping) else 0,
-            session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
-        ).to_dict()
+    # Transform readiness is a function of two operands this surface always
+    # holds: how many transforms are registered (a Python constant) and how
+    # many sessions the archive has (already counted for ``archive_stats``).
+    # The exact archive-readiness probe contributes neither, so skipping that
+    # probe is not a reason to publish this component as UNKNOWN. It was, and
+    # because ``transforms`` is in ``_component_readiness_ok``'s required set,
+    # every default direct ``polylogue ops status`` published ``ok: false``
+    # and exited 1 on a perfectly healthy archive.
+    counts = archive_readiness.get("counts")
+    readiness_sessions = int(counts.get("session_count") or 0) if isinstance(counts, Mapping) else None
+    components["transforms"] = component_from_transform_registry(
+        transform_count=len(TRANSFORM_REGISTRY),
+        session_count=readiness_sessions if readiness_sessions is not None else session_count,
+        session_digest_transform_version=SESSION_DIGEST_TRANSFORM_VERSION,
+    ).to_dict()
     return components
 
 
