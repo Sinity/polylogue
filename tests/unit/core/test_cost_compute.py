@@ -306,3 +306,72 @@ def test_compute_session_cost_honors_explicit_subscription_tier() -> None:
     assert pro_summary.total_credit_cost == max20_summary.total_credit_cost
     assert max20_summary.total_subscription_equivalent_usd < pro_summary.total_subscription_equivalent_usd
     assert max20_summary.total_subscription_equivalent_usd > 0
+
+
+def test_message_fallback_reports_partial_when_a_token_lane_was_never_captured() -> None:
+    """polylogue-qe194: the message-evidence fallback must not label a
+    partly-measured tally "reported".
+
+    ``_get_message_token_counts`` fires when *some* lane is present, then
+    coerced every ``None`` sibling to 0 and handed the result to
+    ``_add_provider_reported_tokens``, which stamped ``confidence="reported"``
+    -- a claim that the provider measured the whole breakdown. Here the
+    cache-write lane was never captured, so the summed dollars are a lower
+    bound and the disposition is ``partial``.
+
+    Anti-vacuity: the twin below keeps every lane captured (cache lanes at
+    zero) and must stay ``reported``; if both report the same confidence, the
+    unknown lane has been collapsed back onto a measured zero.
+    """
+
+    session = make_conv(
+        id="partial-lane-session",
+        provider="claude-code",
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                model_name="claude-sonnet-4-5",
+                input_tokens=1000,
+                output_tokens=500,
+                cache_read_tokens=200,
+                cache_write_tokens=None,
+            )
+        ],
+    )
+
+    summary = compute_session_cost(session, estimate_if_missing=False)
+
+    (breakdown,) = summary.per_model
+    assert breakdown.confidence == "partial"
+    assert summary.cost_confidence == "partial"
+    assert summary.total_api_cost_usd > 0.0
+
+
+def test_message_fallback_stays_reported_when_every_lane_was_captured() -> None:
+    """Anti-vacuity twin of the partial-lane case: captured zeros are real
+    measurements and keep the ``reported`` disposition (polylogue-qe194)."""
+
+    session = make_conv(
+        id="captured-lane-session",
+        provider="claude-code",
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                provider="claude-code",
+                model_name="claude-sonnet-4-5",
+                input_tokens=1000,
+                output_tokens=500,
+                cache_read_tokens=200,
+                cache_write_tokens=0,
+            )
+        ],
+    )
+
+    summary = compute_session_cost(session, estimate_if_missing=False)
+
+    (breakdown,) = summary.per_model
+    assert breakdown.confidence == "reported"
+    assert summary.cost_confidence == "reported"

@@ -27,8 +27,17 @@ def _msg_with_tokens(
     input_tokens: int,
     output_tokens: int,
     role: str = "assistant",
+    cache_read_tokens: int | None = 0,
+    cache_write_tokens: int | None = 0,
 ) -> Message:
-    """Build a hydrated message with typed model and token usage."""
+    """Build a hydrated message with typed model and token usage.
+
+    The cache lanes default to a *captured* zero, not ``None``: these tests
+    are about basis split and rollup arithmetic over a completely measured
+    message, and since polylogue-qe194 a never-captured lane makes the
+    estimate ``partial`` (see ``tests/unit/core/test_pricing.py``). Pass
+    ``None`` explicitly to build a partly-measured message.
+    """
 
     return make_msg(
         id=id,
@@ -38,6 +47,8 @@ def _msg_with_tokens(
         model_name=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
     )
 
 

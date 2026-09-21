@@ -284,8 +284,8 @@ Every estimate carries a discrete `status`:
 | Status | Meaning | Confidence |
 | --- | --- | --- |
 | `exact` | Derived from a provider-reported total | 0.95 |
-| `priced` | Every message had a known model and token usage | 0.85 |
-| `partial` | At least one priced row was missing a model or tokens | 0.55 |
+| `priced` | Every message had a known model, and every token lane was a captured counter | 0.85 |
+| `partial` | At least one priced row was missing a model or tokens, **or** a priced row carried a token lane the origin never captured | 0.55 |
 | `unavailable` | No priced row at all; `unavailable_reason` is set | 0.0 |
 
 The session-profile materialization layer propagates `status != 'exact'`
@@ -309,6 +309,18 @@ When `status == 'unavailable'`, the estimate carries a discrete
 
 Surfaces render `unavailable_reason` verbatim so users see *why* a cost
 is missing instead of an opaque `$0.00`.
+
+### Never-captured token lanes
+
+A message column of `NULL` means the origin reported no counter for that
+lane; `0` means it reported a measured zero (`archive/message/models.py`).
+Pricing keeps the two apart: `CostUsagePayload.unmeasured_lanes` names every
+lane that was never captured, the estimate becomes `partial` rather than
+`priced` whenever a paid model carries one, and `missing_reasons` gains an
+`unmeasured_<lane>` entry per gap. The dollars are still reported — they are
+a lower bound, and the gap is named rather than the number withheld. An
+aggregate inherits the lanes of everything it sums, so a session or rollup
+containing one partly-measured message reports `partial` too.
 
 ## Per-Model Breakdown
 

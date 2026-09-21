@@ -22,6 +22,25 @@ if TYPE_CHECKING:
 
 CostEstimateStatus = Literal["exact", "priced", "partial", "unavailable"]
 
+# The four billable token lanes, in report order. ``partial`` already means
+# "some of this scope is priced and some of it is not" for a session estimate;
+# polylogue-qe194 extends the same word to a single message whose usage was
+# only partly captured, rather than minting a second vocabulary for it.
+TokenLane = Literal["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"]
+TOKEN_LANES: tuple[TokenLane, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+
+
+def unmeasured_lane_reason(lane: TokenLane) -> str:
+    """Name one never-captured token lane as a `missing_reasons` entry."""
+
+    return f"unmeasured_{lane}"
+
+
 # Discrete reasons a session/message lacks a priced estimate. Surfaces in the
 # typed cost read model so consumers can show "why" instead of an opaque
 # `total_usd = 0.0`. See #1136.
@@ -63,10 +82,32 @@ class CostUsagePayload(PricingModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     total_tokens: int = 0
+    # polylogue-qe194: the lanes for which the origin reported no counter at
+    # all. The four token fields stay ``int`` because every consumer of this
+    # payload sums them (rollups, per-model breakdowns, the daemon cost
+    # panel), so an unmeasured lane contributes 0 to the arithmetic and names
+    # itself here instead. That is what keeps "this lane was never captured"
+    # distinguishable from "this lane was captured and was zero" -- the gap
+    # ``analysis/orchestration_evidence.py`` calls
+    # ``stored_usage_zero_and_missing_indistinguishable``. The read surface
+    # that carries it outward is the estimate's ``status``/``missing_reasons``
+    # pair, not a new status vocabulary (see ``_estimate_from_usage``).
+    unmeasured_lanes: tuple[TokenLane, ...] = ()
+
+    @field_validator("unmeasured_lanes", mode="after")
+    @classmethod
+    def _order_unmeasured_lanes(cls, value: tuple[TokenLane, ...]) -> tuple[TokenLane, ...]:
+        return tuple(lane for lane in TOKEN_LANES if lane in value)
 
     @property
     def billable_tokens(self) -> int:
         return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens
+
+    @property
+    def fully_measured(self) -> bool:
+        """True when every token lane carries a reported counter."""
+
+        return not self.unmeasured_lanes
 
     def plus(self, other: CostUsagePayload) -> CostUsagePayload:
         return CostUsagePayload(
@@ -75,6 +116,9 @@ class CostUsagePayload(PricingModel):
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
             total_tokens=self.total_tokens + other.total_tokens,
+            # A summed total inherits every gap in its addends: one unmeasured
+            # lane anywhere in the set leaves the aggregate a lower bound.
+            unmeasured_lanes=(*self.unmeasured_lanes, *other.unmeasured_lanes),
         )
 
 
@@ -273,9 +317,19 @@ def _coerce_float(value: object) -> float | None:
     return None
 
 
-def _coerce_int(value: object) -> int:
+def _coerce_int(value: object) -> int | None:
+    """Return a measured token count, or ``None`` when nothing was measured.
+
+    polylogue-qe194: this returned ``0`` for ``None`` and for every
+    unparseable value, which made "the provider reported no counter" identical
+    to "the provider reported zero" one line before the result was priced.
+    ``Message`` already carries the distinction as ``int | None``
+    (``archive/message/models.py``, polylogue-qgyuj); the cost path now carries
+    it through instead of flattening it here.
+    """
+
     if isinstance(value, bool) or value is None:
-        return 0
+        return None
     if isinstance(value, int):
         return max(value, 0)
     if isinstance(value, float):
@@ -284,8 +338,8 @@ def _coerce_int(value: object) -> int:
         try:
             return max(int(float(value)), 0)
         except ValueError:
-            return 0
-    return 0
+            return None
+    return None
 
 
 def _record(value: object) -> Mapping[str, object]:
@@ -693,21 +747,32 @@ def _estimate_from_usage(
     # hidden understatement. Gated on the model being paid so genuinely-free
     # models (e.g. local-llama, all lanes $0) are not flagged.
     missing_reasons: tuple[str, ...] = ()
-    if pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0:
+    unmeasured: tuple[TokenLane, ...] = ()
+    paid_model = pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0
+    if paid_model:
         unpriced: list[str] = []
         if usage.cache_read_tokens > 0 and pricing.cache_read_usd_per_1m == 0.0:
             unpriced.append("missing_cache_read_price")
         if usage.cache_write_tokens > 0 and pricing.cache_write_usd_per_1m == 0.0:
             unpriced.append("missing_cache_write_price")
         missing_reasons = tuple(unpriced)
+        # polylogue-qe194: some lane was never captured while the captured
+        # lanes are billable, so this total is a lower bound, not a price. The
+        # guard above cannot catch it -- it tests ``tokens > 0``, and an
+        # unmeasured lane is exactly the case that reads as 0. Gated on the
+        # model being paid for the same reason that guard is: on an all-$0
+        # model no missing counter can move the total, so there is nothing to
+        # report.
+        unmeasured = usage.unmeasured_lanes
+        missing_reasons = (*missing_reasons, *(unmeasured_lane_reason(lane) for lane in unmeasured))
     return CostEstimatePayload(
         origin=origin,
         session_id=session_id,
         message_id=message_id,
         model_name=model_name,
         normalized_model=normalized_model,
-        status="priced",
-        confidence=0.85,
+        status="partial" if unmeasured else "priced",
+        confidence=0.55 if unmeasured else 0.85,
         total_usd=total,
         basis=CostBasisPayload(
             api_equivalent_usd=total,
@@ -744,11 +809,17 @@ def estimate_message_cost(
         or (fallback_model.strip() if fallback_model else None)
         or None
     )
+    # The getattr default is ``None``, not ``0``: a message shape that carries
+    # no such attribute has supplied no measurement either, and defaulting it
+    # to ``0`` would reintroduce the false measured-zero one call below the
+    # point ``_coerce_int`` stopped producing it (polylogue-qe194).
+    measured = {lane: _coerce_int(getattr(message, lane, None)) for lane in TOKEN_LANES}
     usage = CostUsagePayload(
-        input_tokens=_coerce_int(getattr(message, "input_tokens", 0)),
-        output_tokens=_coerce_int(getattr(message, "output_tokens", 0)),
-        cache_read_tokens=_coerce_int(getattr(message, "cache_read_tokens", 0)),
-        cache_write_tokens=_coerce_int(getattr(message, "cache_write_tokens", 0)),
+        input_tokens=measured["input_tokens"] or 0,
+        output_tokens=measured["output_tokens"] or 0,
+        cache_read_tokens=measured["cache_read_tokens"] or 0,
+        cache_write_tokens=measured["cache_write_tokens"] or 0,
+        unmeasured_lanes=tuple(lane for lane in TOKEN_LANES if measured[lane] is None),
     )
     return _estimate_from_usage(
         origin=origin,
@@ -792,14 +863,10 @@ def _session_level_estimate(session: Session) -> CostEstimatePayload | None:
         message_estimate = estimate_message_cost(message, origin=origin, session_id=str(session.id))
         if message_estimate.model_name:
             model_counts[message_estimate.model_name] += 1
-        message_usage = message_estimate.usage
-        usage = CostUsagePayload(
-            input_tokens=usage.input_tokens + message_usage.input_tokens,
-            output_tokens=usage.output_tokens + message_usage.output_tokens,
-            cache_read_tokens=usage.cache_read_tokens + message_usage.cache_read_tokens,
-            cache_write_tokens=usage.cache_write_tokens + message_usage.cache_write_tokens,
-            total_tokens=usage.total_tokens + message_usage.total_tokens,
-        )
+        # ``plus`` carries the per-message unmeasured lanes into the summed
+        # usage, so the parallel catalog comparison this feeds stays labelled
+        # as the lower bound it is (polylogue-qe194).
+        usage = usage.plus(message_estimate.usage)
     dominant_model = model_counts.most_common(1)[0][0] if model_counts else None
 
     return _exact_estimate(
@@ -900,10 +967,15 @@ def estimate_session_cost(session: Session) -> CostEstimatePayload:
     )
     model_name, normalized_model = _dominant_model(message_estimates)
     missing_count = len(message_estimates) - len(priced)
+    # polylogue-qe194: a message priced over partly-captured usage is still
+    # counted as priced (it does carry a price), so ``missing_count`` alone
+    # cannot see it. An aggregate that contains one is a lower bound over the
+    # whole set and must say so rather than sum its way to "priced".
+    partial_count = sum(1 for estimate in priced if estimate.status == "partial")
     all_exact = missing_count == 0 and bool(priced) and all(e.status == "exact" for e in priced)
     if all_exact:
         status: CostEstimateStatus = "exact"
-    elif missing_count == 0:
+    elif missing_count == 0 and partial_count == 0:
         status = "priced"
     else:
         status = "partial"
@@ -955,6 +1027,8 @@ __all__ = [
     "CostUsagePayload",
     "ModelPricing",
     "PRICING",
+    "TOKEN_LANES",
+    "TokenLane",
     "_normalize_model",
     "model_cohort_key",
     "estimate_session_cost",
@@ -962,4 +1036,5 @@ __all__ = [
     "estimate_message_cost",
     "generated_at",
     "harmonize_session_cost",
+    "unmeasured_lane_reason",
 ]
