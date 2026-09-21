@@ -351,6 +351,23 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "schema reconcile",
+        "schema",
+        "Account for every declared schema subject after a generation pass.",
+        "devtools.schema_reconcile",
+        json_flag=True,
+        use_when=(
+            "After a provider schema generation pass: derives the provider denominator from the schema-subject "
+            "and OriginSpec declarations rather than from the run's own output, so a subject the pass never "
+            "reached is recorded as not-run instead of vanishing, and binds the matrix to the baseline digest, "
+            "code revision, generator semantics and resolved inference configuration."
+        ),
+        examples=(
+            "devtools schema reconcile --receipts /realm/tmp/work/schema-run/receipts",
+            "devtools schema reconcile --receipts ./receipts --write polylogue/schemas/providers/provider-matrix.json",
+        ),
+    ),
+    CommandSpec(
         "schema promote",
         "schema",
         "Promote a schema evidence cluster into a registered package version.",

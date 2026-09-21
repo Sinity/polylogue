@@ -1,6 +1,6 @@
 {
   "provider": "claude-ai",
-  "generated_at": "2026-09-16T00:40:30.351547+00:00",
+  "generated_at": "2026-09-21T14:49:17.425821+00:00",
   "latest_version": "v4",
   "default_version": "v4",
   "recommended_version": "v4",
@@ -1784,7 +1784,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-16T00:40:30.350404+00:00",
-      "last_seen": "2026-09-16T00:40:30.350404+00:00",
+      "last_seen": "2026-09-21T14:49:17.424692+00:00",
       "bundle_scope_count": 1005,
       "sample_count": 1005,
       "anchor_profile_family_id": "b3850db496484bab4899b3c5b93373ab4bb13e4d6234bb5c1bb439e081b5391a",
@@ -1798,7 +1798,7 @@
           "artifact_count": 1005,
           "supported": true,
           "first_seen": "2026-09-16T00:40:30.350404+00:00",
-          "last_seen": "2026-09-16T00:40:30.350404+00:00",
+          "last_seen": "2026-09-21T14:49:17.424692+00:00",
           "bundle_scope_count": 1005,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -2366,17 +2366,17 @@
       },
       "structure_fingerprint": "c1262f3659e657952425c837cf9bec53074bad4cdd5690dfc09cff4b009a7ef5",
       "statistics_fingerprint": "94ca41796d433a22ac78ffb9b1731a1c8421e02e14a7f2801627efcfd4694fe6",
-      "implementation_fingerprint": "54a335fdb190ecefc64ae13346a1aafabb2867b056b0b00d056b27b2feb09008"
+      "implementation_fingerprint": "a4705c9202e4a2afd4c23105d1da1e1ed6c8388d5c8f5544afebb2df14d37d63"
     },
-    "source_cache_phase_hits": {},
-    "source_cache_phase_misses": {
+    "source_cache_phase_hits": {
       "statistics": 5,
       "structure": 5
     },
+    "source_cache_phase_misses": {},
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 0,
-    "source_cache_misses": 10,
+    "source_cache_hits": 10,
+    "source_cache_misses": 0,
     "source_terminal_outcomes": {
       "included": 3866,
       "too_large": 1
@@ -2393,13 +2393,13 @@
       "too_large_unstreamable_document": 1
     },
     "source_phase_timings_ms": {
-      "collect": 124998.509,
-      "fold": 25356.282,
-      "hash": 172.845,
-      "inventory": 0.224,
-      "preliminary": 27259.568,
-      "revision_selection": 23.381,
-      "statistics": 72181.666
+      "collect": 56304.907,
+      "fold": 24681.712,
+      "hash": 2766.194,
+      "inventory": 0.261,
+      "preliminary": 15965.71,
+      "revision_selection": 16.722,
+      "statistics": 12869.385
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 5,

@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 from polylogue.core.json import json_document, json_document_list
 from polylogue.core.outcomes import OutcomeCheck as CheckResult
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.schemas.audit.walkers import _HEX_RE, _UUID_RE, SchemaNode, _walk_semantic_roles, _walk_values
-from polylogue.schemas.privacy import _is_safe_enum_value, _looks_high_entropy_token
+from polylogue.schemas.privacy import (
+    PUBLISHABLE_VOCABULARY_ROLES,
+    _is_safe_enum_value,
+    _looks_high_entropy_token,
+)
 
 
 def _redacted_value(value: str) -> str:
@@ -328,3 +333,141 @@ __all__ = [
     "check_schema_staleness",
     "check_semantic_roles",
 ]
+
+
+_EXEMPT_STRUCTURAL_KEYS = frozenset(
+    {
+        "$id",
+        "$ref",
+        "$schema",
+        "hash_algorithm",
+        "x-polylogue-anchor-profile-family-id",
+        "x-polylogue-exact-structure-ids",
+        "x-polylogue-package-profile-family-ids",
+        "x-polylogue-profile-family-ids",
+        "x-polylogue-ref",
+    }
+)
+
+_HOME_PATH_RE = re.compile(r"(?:^|[\s\"'=(:])(?:~/|/home/|/Users/|/realm/|/etc/|/var/|/opt/|[A-Za-z]:\\)")
+_ABSOLUTE_PATH_RE = re.compile(r"^/[A-Za-z0-9._-]")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_URL_SCHEME_RE = re.compile(r"\b[a-z][a-z0-9+.-]*://")
+
+
+def _leak_kind(value: str) -> str | None:
+    """Classify a published string that must never reach a public package."""
+
+    if _EMAIL_RE.search(value):
+        return "email address"
+    if _URL_SCHEME_RE.search(value):
+        return "absolute URL"
+    if _HOME_PATH_RE.search(value) or _ABSOLUTE_PATH_RE.match(value):
+        return "filesystem path"
+    return None
+
+
+def _iter_published_vocabularies(node: SchemaNode, path: str = "$") -> Iterator[tuple[str, list[str], object]]:
+    """Yield every published member list with its declaring node's semantic role.
+
+    The walk is structural rather than keyed on ``properties``: a committed
+    element embeds provider payload shapes whose own property names include
+    ``enum`` and ``const``, so a keyword-position walk would both miss nested
+    containers and mistake wire data for schema keywords.
+    """
+
+    values = node.get("x-polylogue-values")
+    if isinstance(values, list):
+        members = [item for item in values if isinstance(item, str)]
+        if members:
+            yield path, members, node.get("x-polylogue-semantic-role")
+    for key, child in node.items():
+        if key == "x-polylogue-values":
+            continue
+        if isinstance(child, dict):
+            yield from _iter_published_vocabularies(child, f"{path}.{key}")
+        elif isinstance(child, list):
+            for index, item in enumerate(child):
+                if isinstance(item, dict):
+                    yield from _iter_published_vocabularies(item, f"{path}.{key}[{index}]")
+
+
+def check_published_vocabulary(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
+    """Refuse a closed vocabulary published from an undeclared slot.
+
+    ``x-polylogue-values`` is the only annotation carrying *observed member
+    values* into a committed package, and a committed package is public. Value
+    shape cannot separate a provider protocol constant from a recurring private
+    token, so publication is an allowlist over declared semantic roles
+    (:data:`polylogue.schemas.privacy.PUBLISHABLE_VOCABULARY_ROLES`) and every
+    other slot publishes structure without members.
+    """
+
+    violations: list[str] = []
+    for path, members, role in _iter_published_vocabularies(json_document(schema)):
+        if isinstance(role, str) and role in PUBLISHABLE_VOCABULARY_ROLES:
+            continue
+        declared = role if isinstance(role, str) else "no declared semantic role"
+        violations.append(f"{path}: unjustified closed vocabulary ({declared}, {len(members)} member(s))")
+
+    if violations:
+        return CheckResult(
+            name="published_vocabulary",
+            status=OutcomeStatus.ERROR,
+            summary=f"{len(violations)} unjustified published vocabulary site(s)",
+            count=len(violations),
+            details=violations[:20],
+        )
+    return CheckResult(
+        name="published_vocabulary",
+        status=OutcomeStatus.OK,
+        summary="Every published vocabulary sits on a declared protocol slot",
+    )
+
+
+def _iter_published_strings(node: object, path: str = "$", key: str | None = None) -> Iterator[tuple[str, str]]:
+    if isinstance(node, dict):
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for name in properties:
+                if isinstance(name, str):
+                    yield f"{path}.properties", name
+        for child_key, child in node.items():
+            if child_key in _EXEMPT_STRUCTURAL_KEYS:
+                continue
+            yield from _iter_published_strings(child, f"{path}.{child_key}", child_key)
+    elif isinstance(node, list):
+        for index, item in enumerate(node):
+            yield from _iter_published_strings(item, f"{path}[{index}]", key)
+    elif isinstance(node, str):
+        yield path, node
+
+
+def check_published_paths(schema: Mapping[str, object] | SchemaNode) -> CheckResult:
+    """Refuse a filesystem path, mail address, or URL anywhere in a bundle.
+
+    Dynamic-key collapse and vocabulary publication both harvest strings out of
+    acquired material, so the leak can arrive as a property *name* as easily as
+    a value. This check reads the whole decompressed element rather than one
+    keyword, and reports a digest instead of the offending text.
+    """
+
+    violations: list[str] = []
+    for path, value in _iter_published_strings(json_document(schema)):
+        kind = _leak_kind(value)
+        if kind is not None:
+            violations.append(f"{path}: {kind} {_redacted_value(value)}")
+
+    if violations:
+        return CheckResult(
+            name="published_paths",
+            status=OutcomeStatus.ERROR,
+            summary=f"{len(violations)} published path/address leak(s)",
+            count=len(violations),
+            details=violations[:20],
+        )
+    return CheckResult(
+        name="published_paths",
+        status=OutcomeStatus.OK,
+        summary="No filesystem path, mail address, or URL is published",
+    )

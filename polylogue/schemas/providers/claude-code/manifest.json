@@ -1,8 +1,8 @@
 {
   "artifact_counts": {
-    "agent_sidecar_meta": 6964,
-    "agent_transcript": 1940568,
-    "coordinator_session_stream": 3046029,
+    "agent_sidecar_meta": 7259,
+    "agent_transcript": 2039296,
+    "coordinator_session_stream": 3070899,
     "session_index": 5,
     "session_record_stream": 1,
     "workflow_journal": 352,
@@ -10,7 +10,7 @@
   },
   "cluster_count": 0,
   "clusters": [],
-  "default_version": "v3",
-  "generated_at": "2026-09-15T22:16:13.512442+00:00",
+  "default_version": "v4",
+  "generated_at": "2026-09-21T15:16:34.670840+00:00",
   "provider": "claude-code"
 }

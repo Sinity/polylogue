@@ -4,7 +4,7 @@
   "anchor_kind": "agent_sidecar_meta",
   "default_element_kind": "agent_sidecar_meta",
   "first_seen": "2026-09-15T20:29:36.137264+00:00",
-  "last_seen": "2026-09-15T20:29:36.137264+00:00",
+  "last_seen": "2026-09-21T14:48:02.957827+00:00",
   "bundle_scope_count": 116,
   "sample_count": 116,
   "anchor_profile_family_id": "2db1d15ae65846284666edc0c8721dd6cb1b985fe7e7b3374281305e75055d1d",
@@ -18,7 +18,7 @@
       "artifact_count": 116,
       "supported": true,
       "first_seen": "2026-09-15T20:29:36.137264+00:00",
-      "last_seen": "2026-09-15T20:29:36.137264+00:00",
+      "last_seen": "2026-09-21T14:48:02.957827+00:00",
       "bundle_scope_count": 116,
       "bundle_scope_identities": [],
       "exact_structure_ids": [

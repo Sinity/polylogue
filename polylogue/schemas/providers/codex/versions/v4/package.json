@@ -545,5 +545,5 @@
   ],
   "orphan_adjunct_counts": {},
   "workload_profile_file": null,
-  "observation_status": "current"
+  "observation_status": "historical"
 }

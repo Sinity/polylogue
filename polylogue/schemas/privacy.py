@@ -9,10 +9,31 @@ is rejected.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
 _SAFE_ENUM_MAX_LEN = 50  # structural enums are short tokens, not content
+
+#: Declared semantic roles whose observed members may be published as a closed
+#: vocabulary in a committed provider package.
+#:
+#: Publication is an allowlist, and the default is refusal.  A committed package
+#: is public; an ``x-polylogue-values`` list is the only place a generated
+#: element carries *observed member values* rather than structure, so it is the
+#: one annotation that can carry operator content straight into a published
+#: artifact.  Shape heuristics cannot separate a provider protocol constant from
+#: a recurring private token -- ``sinex`` and ``sandbox`` are the same shape, and
+#: a grep pattern the operator typed recurs across sessions exactly like a wire
+#: constant does.  So the discriminator is a *declaration*: a field publishes its
+#: members only when this repository has classified the slot as a protocol
+#: vocabulary, and every other field publishes type, frequency and distribution
+#: with no member list.
+#:
+#: Adding a role here publishes every observed member of every field carrying it,
+#: for every provider, so it is an operator decision with a recorded reason --
+#: never a convenience widening.
+PUBLISHABLE_VOCABULARY_ROLES = frozenset({"message_role"})
 
 _FILE_EXTENSIONS = frozenset(
     {
@@ -274,3 +295,60 @@ def _is_safe_enum_value(
         return False
     # Block internal/private network hostnames (.local, .lan, .corp, .internal, .home)
     return "." not in value or not re.search(r"\.(local|lan|corp|internal|home)\b", lower)
+
+
+def strip_unpublishable_vocabularies(node: object) -> int:
+    """Remove every ``x-polylogue-values`` outside a declared protocol slot.
+
+    Applied at the package write boundary rather than only at annotation time,
+    because a package version that is merely *carried forward* is re-serialized
+    without being regenerated: without this, a vocabulary admitted under an
+    older rule would survive in every historical version forever.
+
+    Mutates ``node`` in place and returns the number of member lists removed.
+    """
+
+    removed = 0
+    if isinstance(node, dict):
+        values = node.get("x-polylogue-values")
+        role = node.get("x-polylogue-semantic-role")
+        if isinstance(values, list) and not (isinstance(role, str) and role in PUBLISHABLE_VOCABULARY_ROLES):
+            del node["x-polylogue-values"]
+            removed += 1
+        for child in node.values():
+            removed += strip_unpublishable_vocabularies(child)
+    elif isinstance(node, list):
+        for child in node:
+            removed += strip_unpublishable_vocabularies(child)
+    return removed
+
+
+def sanitize_committed_elements(provider_root: Path) -> int:
+    """Apply the publication rule to every element file under a provider tree.
+
+    ``write_package`` only reaches the element files a package manifest
+    declares. An element file the manifest no longer lists stays on disk -- the
+    committed tree at b4dd14a82 held one, ``claude-code/v1``'s
+    ``subagent_session_stream`` -- and is still published bytes: the privacy
+    audit reads it, and so does anyone who clones the repository. Sweeping the
+    staged tree covers both, and rewriting is idempotent because the
+    serialization is byte-deterministic.
+
+    Returns the number of member lists removed.
+    """
+
+    import gzip
+    import json
+
+    removed = 0
+    for path in sorted(provider_root.rglob("*.schema.json.gz")):
+        try:
+            document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+        except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        stripped = strip_unpublishable_vocabularies(document)
+        if not stripped:
+            continue
+        removed += stripped
+        path.write_bytes(gzip.compress(json.dumps(document, indent=2, sort_keys=True).encode("utf-8"), mtime=0))
+    return removed

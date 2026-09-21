@@ -96,6 +96,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema new` | Scaffold a typed declaration, adapter stub, contract skeleton, and landing plan. |
 | `devtools schema parser-diff` | List observed provider wire keys that no parser references. |
 | `devtools schema promote` | Promote a schema evidence cluster into a registered package version. |
+| `devtools schema reconcile` | Account for every declared schema subject after a generation pass. |
 
 ### Benchmarking
 
