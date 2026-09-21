@@ -54,27 +54,61 @@ class TestGitProjectStateRealRepo:
     def test_reads_branch_and_commits(self, tmp_path: Path) -> None:
         _init_git_repo(tmp_path, branch="feature/preamble-move")
 
-        state = _git_project_state(str(tmp_path))
+        state, failure = _git_project_state(str(tmp_path))
 
+        assert failure is None
         assert state is not None
         assert state.branch == "feature/preamble-move"
         assert len(state.recent_commits) == 1
         assert "initial commit" in state.recent_commits[0]
 
-    def test_non_git_directory_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_non_git_directory_returns_none_without_a_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # git discovers a repository by walking upward, and pytest's base
         # temporary directory may itself sit inside a checkout. Cap the walk so
         # the test describes the directory rather than where basetemp lives.
         monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.resolve().parent))
 
-        state = _git_project_state(str(tmp_path))
+        state, failure = _git_project_state(str(tmp_path))
+
+        # A directory that is simply not a checkout is an answer, not a gap.
+        assert state is None
+        assert failure is None
+
+    def test_missing_directory_never_raises_but_is_recorded(self) -> None:
+        """A git read that *broke* must not look like a clean non-repo build.
+
+        Anti-vacuity: restore the bare ``except Exception: pass`` and the
+        failure string goes back to ``None`` here while
+        ``test_non_git_directory_returns_none_without_a_failure`` keeps passing
+        -- the two cases become indistinguishable, which is the defect.
+        """
+        state, failure = _git_project_state(str(Path("/nonexistent/definitely-not-a-repo-path")))
 
         assert state is None
+        assert failure is not None
+        assert failure.startswith("FileNotFoundError") or failure.startswith("NotADirectoryError")
 
-    def test_missing_directory_never_raises(self) -> None:
-        state = _git_project_state(str(Path("/nonexistent/definitely-not-a-repo-path")))
+    @pytest.mark.asyncio
+    async def test_broken_git_read_reaches_component_failures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The recorded gap must reach the payload a caller actually reads."""
+        poly = MagicMock()
+        poly.get_session = AsyncMock(return_value=None)
+        poly.compact_lineage = AsyncMock(return_value=None)
+        poly.find_resume_candidates = AsyncMock(return_value=[])
+        poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
 
-        assert state is None
+        preamble = await build_context_preamble_payload(
+            poly,
+            session_id=None,
+            cwd=str(Path("/nonexistent/definitely-not-a-repo-path")),
+            require_session=False,
+        )
+
+        assert preamble is not None
+        assert "project_state" in preamble.component_failures
+        assert preamble.component_failures["project_state"]
 
 
 class TestBuildContextPreambleGitEnrichment:
