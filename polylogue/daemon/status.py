@@ -70,6 +70,12 @@ from polylogue.daemon.live_ingest_attempt_workload import (
 from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
+from polylogue.operations.daemon_status import overall_status_ok
+from polylogue.operations.quick_check import (
+    QuickCheckObservation,
+    observe_quick_check,
+    unmeasured_quick_check,
+)
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -471,7 +477,10 @@ class ArchiveStorageStatus(BaseModel):
     active_db_path: str = ""
     archive_root: str = ""
     configured_archive_root: str = ""
-    archive_root_matches_configured: bool = True
+    #: ``None`` when the storage probe did not run. A default ``True``
+    #: claimed the active root matched the configured one on behalf of a
+    #: collection that never resolved either (polylogue-20d.17.4).
+    archive_root_matches_configured: bool | None = None
     archive_ready: bool = False
     archive_materialization_ready: bool = False
     final_shape_ready: bool = False
@@ -497,10 +506,13 @@ class BlobPublicationReservationStatus(BaseModel):
     abandonment, not itself a bug.
     """
 
-    total_reserved_count: int = 0
-    retained_referenced_count: int = 0
-    retained_missing_count: int = 0
-    unresolved_count: int = 0
+    #: ``None`` when the receipt ledger was not inspected. Zero is a measured
+    #: empty ledger; the model default must not be able to publish one
+    #: (polylogue-20d.17.4).
+    total_reserved_count: int | None = None
+    retained_referenced_count: int | None = None
+    retained_missing_count: int | None = None
+    unresolved_count: int | None = None
     unresolved_oldest_age_s: float | None = None
 
 
@@ -653,6 +665,12 @@ class DaemonStatus(BaseModel):
         default_factory=BlobPublicationReservationStatus
     )
     archive_storage: ArchiveStorageStatus = Field(default_factory=ArchiveStorageStatus)
+    #: The bounded index-openability probe, produced once for every status
+    #: surface (polylogue-20d.17.2). Defaults to the explicit unavailable
+    #: state so a payload built without the component never reads as a pass.
+    quick_check: QuickCheckObservation = Field(
+        default_factory=lambda: unmeasured_quick_check("quick check not collected for this status build")
+    )
     component_readiness: dict[str, object] = Field(default_factory=dict)
     # Surface-neutral component snapshot metadata.  Adapters must render this
     # projection rather than recollecting their own status facts.
@@ -779,7 +797,16 @@ def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
     root = archive_root()
     source_db = root / "source.db"
     if not source_db.exists():
-        return BlobPublicationReservationStatus()
+        # A cold archive has no receipt ledger and no reservations, and this
+        # branch observed exactly that: the zeros here are a measurement, and
+        # are deliberately distinct from the model's unmeasured null default,
+        # which is what an uncollected component now publishes instead.
+        return BlobPublicationReservationStatus(
+            total_reserved_count=0,
+            retained_referenced_count=0,
+            retained_missing_count=0,
+            unresolved_count=0,
+        )
     inspections = inspect_blob_publication_receipts(source_db, root / "blob", index_db_path=index_db_path())
     now = datetime.now(UTC)
     unresolved = [item for item in inspections if not item.referenced and item.blob_present]
@@ -2554,6 +2581,35 @@ def _sinex_publication_status_info() -> dict[str, object]:
     return publication_status(source_db, mode).as_dict()
 
 
+def _quick_check_observation() -> QuickCheckObservation:
+    return observe_quick_check(_active_status_db_path())
+
+
+# Explicit not-measured substitutes for the collectors whose model or dict
+# default would otherwise read as a positive claim, or whose last-good value
+# would be served as a current reading. ``_v(..., unmeasured=...)`` below
+# substitutes one of these whenever the component's snapshot is stale,
+# refreshing, timed out, unavailable or degraded (polylogue-20d.17.4).
+_UNMEASURED_ARCHIVE_STORAGE = ArchiveStorageStatus()
+_UNMEASURED_BLOB_RESERVATIONS = BlobPublicationReservationStatus()
+_UNMEASURED_CURSOR_LAG = CursorLagSummary()
+_UNMEASURED_RAW_REPLAY_BACKLOG: dict[str, object] = {
+    "available": False,
+    "reason": "raw replay backlog collection did not complete",
+    "candidate_count": None,
+    "total_blob_bytes": None,
+    "top_raw_rows": [],
+    "origin_summary": [],
+    "source_path_summary": [],
+}
+_UNMEASURED_SINEX_PUBLICATION: dict[str, object] = {
+    "mode": "unavailable",
+    "reason": "sinex publication status collection did not complete",
+    "active_lag": None,
+    "blocking": None,
+}
+
+
 def _daemon_status_component_specs(
     *,
     checked_health: Callable[[set[HealthTier]], DaemonHealth],
@@ -2581,6 +2637,17 @@ def _daemon_status_component_specs(
         ),
         StatusComponentSpec(
             name="db_size", scope="archive", collector=_db_size_info, deadline_s=0.5, fingerprint=fingerprint
+        ),
+        # Budgeted like every other fact: the quick check used to be a
+        # hardcoded literal on this route, so a status build published
+        # "unknown" whether or not the index could be opened
+        # (polylogue-20d.17.2).
+        StatusComponentSpec(
+            name="quick_check",
+            scope="archive",
+            collector=_quick_check_observation,
+            deadline_s=0.5,
+            fingerprint=fingerprint,
         ),
         StatusComponentSpec(
             name="blob_size", scope="archive", collector=_blob_size_info, deadline_s=0.5, fingerprint=fingerprint
@@ -2951,10 +3018,19 @@ def build_daemon_status(
             return value
         return default_factory() if default_factory is not None else default
 
-    db_info: dict[str, object] = _v("db_size", {})
-    storage_info = _v("archive_storage", ArchiveStorageStatus())
-    fts: dict[str, object] = _v("fts_readiness", {})
-    freshness: dict[str, object] = _v("insight_freshness", {})
+    _quick_check_unmeasured = unmeasured_quick_check("quick-check collection did not complete")
+    quick_check = _v("quick_check", _quick_check_unmeasured, unmeasured=_quick_check_unmeasured)
+    if not isinstance(quick_check, QuickCheckObservation):
+        quick_check = _quick_check_unmeasured
+    # The age is the snapshot's, not the probe's: a fresh value served from
+    # inside its TTL is genuinely that many seconds old, and an unmeasured one
+    # has no age at all.
+    quick_check = quick_check.with_age(snapshots["quick_check"].age_s)
+
+    db_info: dict[str, object] = _v("db_size", {}, unmeasured={})
+    storage_info = _v("archive_storage", _UNMEASURED_ARCHIVE_STORAGE, unmeasured=_UNMEASURED_ARCHIVE_STORAGE)
+    fts: dict[str, object] = _v("fts_readiness", {}, unmeasured={})
+    freshness: dict[str, object] = _v("insight_freshness", {}, unmeasured={})
     _session_summary_unknown = ComponentReadiness(
         component="session_summary",
         scope="archive",
@@ -2986,8 +3062,8 @@ def build_daemon_status(
     if not isinstance(raw_materialization_readiness, RawMaterializationReadiness):
         raw_materialization_readiness = RawMaterializationReadiness(available=False)
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
-    raw_replay_backlog: dict[str, object] = _v("raw_replay_backlog", {})
-    sinex_publication: dict[str, object] = _v("sinex_publication", {})
+    raw_replay_backlog: dict[str, object] = _v("raw_replay_backlog", {}, unmeasured=_UNMEASURED_RAW_REPLAY_BACKLOG)
+    sinex_publication: dict[str, object] = _v("sinex_publication", {}, unmeasured=_UNMEASURED_SINEX_PUBLICATION)
     materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
         raw_materialization_readiness
     )
@@ -2997,7 +3073,14 @@ def build_daemon_status(
             "archive_ready": storage_info.archive_ready and materialization_ready,
         }
     )
-    live_cursor = _v("live_cursor", LiveCursorSummary())
+    live_cursor = _v(
+        "live_cursor",
+        LiveCursorSummary(),
+        unmeasured=LiveCursorSummary(
+            available=False,
+            unavailable_reason="live cursor collection did not complete",
+        ),
+    )
     live_ingest_attempts = _v(
         "live_ingest_attempts",
         LiveIngestAttemptSummary(),
@@ -3007,14 +3090,17 @@ def build_daemon_status(
         ),
     )
     convergence = _convergence_debt_from_snapshot(snapshots["convergence"])
-    cursor_lag = _v("cursor_lag", CursorLagSummary())
+    # Residual: ``CursorLagSummary`` has no availability marker, so its
+    # model default still renders as "no lag". ``unmeasured=`` at least
+    # stops a previous lag reading being served as a current one.
+    cursor_lag = _v("cursor_lag", _UNMEASURED_CURSOR_LAG, unmeasured=_UNMEASURED_CURSOR_LAG)
     catchup = catchup_status_info(
         active_db,
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
         convergence=convergence,
         ops_db=archive_root() / "ops.db",
     )
-    raw_failures: dict[str, object] = _v("raw_failures", {})
+    raw_failures: dict[str, object] = _v("raw_failures", {}, unmeasured={})
     raw_lifecycle_available = raw_failures.get("raw_failure_lifecycle_available") is True
     raw_lifecycle_state = raw_failures.get("raw_failure_lifecycle_state")
     if raw_lifecycle_state not in {"healthy", "degraded", "blocked", "unavailable"}:
@@ -3022,8 +3108,16 @@ def build_daemon_status(
     raw_lifecycle_reason = raw_failures.get("raw_failure_lifecycle_reason")
     if not raw_lifecycle_available and not raw_lifecycle_reason:
         raw_lifecycle_reason = "raw failure lifecycle evidence is unavailable"
-    blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())
-    embedding_info: dict[str, object] = _v("embedding_readiness", {})
+    blob_publication_reservations = _v(
+        "blob_publication_reservations",
+        _UNMEASURED_BLOB_RESERVATIONS,
+        unmeasured=_UNMEASURED_BLOB_RESERVATIONS,
+    )
+    embedding_info: dict[str, object] = _v("embedding_readiness", {}, unmeasured={})
+    # The one deliberate exemption from ``unmeasured=``: health keeps its
+    # collected value and is escalated explicitly below against the snapshot
+    # state, because a stale OK must become a WARNING/ERROR *alert* naming the
+    # component rather than silently disappearing (polylogue-20d.17.4).
     health = _v("health", default_factory=lambda: _checked_health(health_tiers))
     # Health is a separate projection.  It must not claim to be clean when
     # its own collector could not complete, but an unrelated optional status
@@ -3188,6 +3282,7 @@ def build_daemon_status(
         raw_replay_backlog=raw_replay_backlog,
         blob_publication_reservations=blob_publication_reservations,
         archive_storage=storage_info,
+        quick_check=quick_check,
         component_readiness=component_readiness,
         status_components=_status_component_metadata(snapshots),
         claim_guard=_daemon_claim_guard(
@@ -3209,6 +3304,11 @@ def build_daemon_status(
         gil_enabled=_gil_enabled(),
         checked_at=datetime.now(UTC).isoformat(),
     )
+
+
+def _format_optional(value: object) -> str:
+    """Render an unmeasured figure as ``unknown`` rather than as a number."""
+    return "unknown" if value is None else str(value)
 
 
 def halted_unit_status() -> list[dict[str, str]]:
@@ -3395,18 +3495,21 @@ def daemon_status_payload(
 
     return json_document(
         {
-            # A daemon holding a halted unit is not ok, whatever the rest of
-            # its components report: something it was asked to do has stopped
-            # being schedulable and will not resume on its own.
-            "ok": (
-                status.raw_frontier_integrity.overall_status == "healthy"
-                and status.raw_failure_lifecycle_available
-                and status.raw_failure_lifecycle_state == "healthy"
-                and not halted_units
-                # A stale cached frame is advisory evidence only. Direct
-                # status remains usable when no daemon snapshot exists, but a
-                # known stale snapshot must not certify a green answer.
-                and status_snapshot.get("state") != "stale"
+            # One producer for this verdict (polylogue-20d.17.1): the daemon
+            # payload and the operations layer used to apply different rules
+            # to the same snapshot. This route measures no per-tier declared
+            # relation counts, so that operand is passed as unobserved.
+            "ok": overall_status_ok(
+                component_readiness=cast(Mapping[str, Mapping[str, object]], status.component_readiness),
+                raw_failures={
+                    "raw_failure_lifecycle_available": status.raw_failure_lifecycle_available,
+                    "raw_failure_lifecycle_state": status.raw_failure_lifecycle_state,
+                    "raw_unexplained_failures": status.raw_unexplained_failures,
+                },
+                raw_frontier_integrity=status.raw_frontier_integrity.model_dump(),
+                tier_count_unavailable=None,
+                halted_units=halted_units,
+                status_snapshot=status_snapshot,
             ),
             "halted_units": halted_units,
             "services": supervised_service_states(),
@@ -3437,8 +3540,7 @@ def daemon_status_payload(
             "sinex_publication": status.sinex_publication,
             "archive_debt": archive_debt,
             "assertion_candidate_queue": assertion_candidate_queue,
-            "quick_check_result": "unknown",
-            "quick_check_age_s": None,
+            **status.quick_check.payload(),
             "watcher_roots": [str(s.root) for s in watch_sources],
             "browser_capture_active": status.browser_capture_active,
             "failing_files": status.failing_files,
@@ -3613,12 +3715,19 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         lines.append(line)
     publication = payload.get("sinex_publication")
     if isinstance(publication, dict):
-        lines.append(
-            "Sinex publication: "
-            f"{publication.get('mode', 'off')}, "
-            f"{publication.get('active_lag', 0)} lag, "
-            f"{publication.get('blocking', 0)} blocking"
-        )
+        # An absent payload is an uncollected probe, not a configured-off
+        # publication with zero lag (polylogue-20d.17.4).
+        mode = publication.get("mode") or "unavailable"
+        if not publication or mode == "unavailable":
+            reason = publication.get("reason") or "sinex publication status was not collected"
+            lines.append(f"Sinex publication: unavailable — {reason}")
+        else:
+            lines.append(
+                "Sinex publication: "
+                f"{mode}, "
+                f"{_format_optional(publication.get('active_lag'))} lag, "
+                f"{_format_optional(publication.get('blocking'))} blocking"
+            )
     queue = payload.get("assertion_candidate_queue")
     if isinstance(queue, dict):
         lines.append(

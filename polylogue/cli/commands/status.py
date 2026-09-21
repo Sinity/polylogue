@@ -326,6 +326,77 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
         _show_daemon_status(env, result.value, compact=True)
 
 
+def _component_collection(status: dict[str, Any], readiness_key: str) -> dict[str, Any] | None:
+    """Return the collection evidence the producer attached to one component.
+
+    ``daemon/status.py``'s ``_attach_collection_state`` records
+    ``{state, captured_at, age_s, deadline_s, fingerprint, error, last_good_at}``
+    under each readiness entry's ``collection`` key. Nothing on the plaintext
+    path read it, so a stale or timed-out component's last business value
+    rendered as a current reading (polylogue-20d.17.3).
+    """
+    components = status.get("component_readiness")
+    if not isinstance(components, dict):
+        return None
+    entry = components.get(readiness_key)
+    if not isinstance(entry, dict):
+        return None
+    collection = entry.get("collection")
+    return collection if isinstance(collection, dict) else None
+
+
+def _collection_age_text(collection: dict[str, Any]) -> str:
+    age = collection.get("age_s")
+    if not isinstance(age, int | float):
+        return "age unknown"
+    return f"{float(age):.1f}s old"
+
+
+def _collection_marker(status: dict[str, Any], readiness_key: str) -> str:
+    """Mark a figure whose collection did not complete for this read.
+
+    A value behind a non-fresh collection is advisory last-good evidence, not a
+    current measurement, and is labelled with the frame it came from. A
+    non-fresh collection that never produced a value has nothing advisory to
+    offer and says only that.
+    """
+    collection = _component_collection(status, readiness_key)
+    if collection is None:
+        return ""
+    state = str(collection.get("state") or "unknown")
+    if state == "fresh":
+        return ""
+    last_good = collection.get("last_good_at")
+    if last_good:
+        return (
+            f" [yellow](collection {state}; advisory last-good from "
+            f"{last_good}, {_collection_age_text(collection)})[/yellow]"
+        )
+    return f" [yellow](collection {state}; not measured)[/yellow]"
+
+
+def _render_component_collection_states(env: AppEnv, status: dict[str, Any]) -> None:
+    """Name every component this read could not freshly collect."""
+    components = status.get("component_readiness")
+    if not isinstance(components, dict):
+        return
+    stale: list[str] = []
+    for name in sorted(components):
+        collection = _component_collection(status, name)
+        if collection is None:
+            continue
+        state = str(collection.get("state") or "unknown")
+        if state == "fresh":
+            continue
+        detail = f"{name}: {state}, {_collection_age_text(collection)}"
+        error = collection.get("error")
+        if error:
+            detail += f" ({error})"
+        stale.append(detail)
+    if stale:
+        env.ui.console.print(f"  [yellow]Components not freshly collected:[/yellow] {'; '.join(stale)}")
+
+
 def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> bool:
     """Render daemon status from the real DaemonStatus payload."""
     status = normalize_raw_frontier_status_payload(status, require_fresh_snapshot=True)
@@ -394,15 +465,16 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     if isinstance(fts, dict):
         fts_color = "green" if fts.get("messages_ready") else "yellow"
         raw_pct = fts.get("coverage_pct")
+        marker = _collection_marker(status, "search")
         if raw_pct is None:
             # An unmeasured coverage_pct must never be silently rendered as
             # a fabricated percentage (polylogue-roax) -- say plainly that
             # coverage is unknown rather than defaulting to 100%/0% based on
             # the boolean readiness flag alone.
-            env.ui.console.print(f"  FTS: [{fts_color}]coverage unknown[/{fts_color}]")
+            env.ui.console.print(f"  FTS: [{fts_color}]coverage unknown[/{fts_color}]{marker}")
         else:
             pct = _safe_float(raw_pct, default=0.0)
-            env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
+            env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]{marker}")
 
     raw_frontier = status.get("raw_frontier_integrity")
     if isinstance(raw_frontier, dict):
@@ -420,7 +492,8 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     db_bytes = status.get("db_size_bytes", 0)
     disk_free = status.get("disk_free_bytes", 0)
     if db_bytes:
-        env.ui.console.print(f"  DB: {_fmt_bytes(db_bytes)}  Free: {_fmt_bytes(disk_free)}")
+        marker = _collection_marker(status, "archive_storage")
+        env.ui.console.print(f"  DB: {_fmt_bytes(db_bytes)}  Free: {_fmt_bytes(disk_free)}{marker}")
 
     raw_replay_backlog = status.get("raw_replay_backlog")
     if isinstance(raw_replay_backlog, dict):
@@ -437,6 +510,8 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
             f"  Raw failures: [{fail_color}]{total_raw} total ({raw_quarantined} quarantined)"
             f" [{fail_color}]({raw_parse} parse + {raw_val} validation)[/{fail_color}]"
         )
+
+    _render_component_collection_states(env, status)
 
     if not _raw_failure_lifecycle_is_healthy(status):
         lifecycle_state = str(status.get("raw_failure_lifecycle_state") or "unavailable")

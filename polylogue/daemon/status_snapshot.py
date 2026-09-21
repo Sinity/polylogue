@@ -21,6 +21,7 @@ from polylogue.core.evidence_value import (
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.refs import ObjectRef
 from polylogue.daemon.fts_status import fts_readiness_info
+from polylogue.operations.quick_check import observe_quick_check, unmeasured_quick_check
 from polylogue.paths import archive_root
 from polylogue.readiness.capability import (
     STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S,
@@ -228,7 +229,9 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     dbf = resolve_active_index_path(archive_root())
     wal = dbf.with_suffix(".db-wal")
     fts_payload: dict[str, object] = {}
+    quick_check = unmeasured_quick_check("minimal status path did not open the index database")
     if dbf.exists():
+        quick_check = observe_quick_check(dbf)
         try:
             fts_payload = fts_readiness_info(dbf)
         except Exception as exc:
@@ -258,8 +261,11 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         # Never measured on the minimal path; null says so.
         "blob_dir_size_bytes": None,
         "disk_free_bytes": _disk_free_bytes(dbf),
-        "quick_check_result": None,
-        "quick_check_age_s": None,
+        # One producer for this fact (polylogue-20d.17.2). The minimal path
+        # already opens the index for FTS readiness, so the probe it publishes
+        # is measured rather than a literal null; a route that could not open
+        # it renders the explicit unavailable state instead.
+        **quick_check.payload(),
         "watcher_roots": list(runtime.watcher_roots),
         "browser_capture_active": browser_capture_enabled,
         "failing_files": [],

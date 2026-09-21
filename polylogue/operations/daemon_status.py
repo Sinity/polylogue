@@ -8,7 +8,7 @@ It never resolves an archive root or opens another SQLite connection.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -239,19 +239,18 @@ def produce_direct_status(
             else ""
         ),
     ).to_dict()
-    # A declared relation whose count was missing or unreadable is an
-    # authority failure, not an empty relation. Keep the direct status verdict
-    # red even when the remaining readiness components happen to be green.
-    tier_count_unavailable = any(
-        info.get("exists") is True
-        and any(
-            precision != "exact"
-            for precision in cast(Mapping[str, object], info.get("table_count_precision", {})).values()
-        )
-        for info in tiers.values()
-    )
     payload: dict[str, object] = {
-        "ok": _status_ok(components, raw_failures) and not tier_count_unavailable,
+        # One producer for this verdict (polylogue-20d.17.1). A pinned read
+        # observes no halted units and no daemon snapshot frame, so it passes
+        # those operands as unobserved rather than as a measured "clean".
+        "ok": overall_status_ok(
+            component_readiness=components,
+            raw_failures=raw_failures,
+            raw_frontier_integrity=frontier,
+            tier_count_unavailable=tier_count_unavailable(tiers),
+            halted_units=None,
+            status_snapshot=None,
+        ),
         "daemon_liveness": False,
         "archive_root": str(configured_root),
         "active_archive_root": str(active_root),
@@ -376,7 +375,24 @@ def produce_operation_status(
     result.update({key: value for key, value in pinned.items() if key not in runtime_only})
     for key in runtime_only:
         result[key] = runtime_status.get(key, pinned[key])
-    result["ok"] = bool(pinned["ok"]) and bool(runtime_status.get("daemon_liveness"))
+    # The runtime payload carries refutations the pinned reader never sees --
+    # halted units and the cached snapshot frame -- and the pinned payload
+    # carries refutations the runtime never sees. Overwriting ``ok`` with the
+    # pinned verdict alone republished a daemon that had already reported
+    # itself not-ok as ok (polylogue-20d.17.1). The verdict is decided once,
+    # by the same function, over the union of both surfaces' evidence.
+    runtime_halted = runtime_status.get("halted_units")
+    runtime_snapshot = runtime_status.get("status_snapshot")
+    result["ok"] = overall_status_ok(
+        component_readiness=cast(Mapping[str, Mapping[str, object]], pinned["component_readiness"]),
+        raw_failures=cast(Mapping[str, object], pinned),
+        raw_frontier_integrity=cast("Mapping[str, object] | None", pinned.get("raw_frontier_integrity")),
+        tier_count_unavailable=tier_count_unavailable(
+            cast(Mapping[str, Mapping[str, object]], pinned["archive_tiers"])
+        ),
+        halted_units=runtime_halted if isinstance(runtime_halted, Sequence) else None,
+        status_snapshot=runtime_snapshot if isinstance(runtime_snapshot, Mapping) else None,
+    ) and bool(runtime_status.get("daemon_liveness"))
     result["status_observations"] = {
         "archive": {
             "state": "pinned",
@@ -950,8 +966,76 @@ def _not_observed(reason: str, **extra: object) -> dict[str, object]:
     return {"state": "not_observed", "reason": reason, **extra}
 
 
-def _status_ok(components: Mapping[str, Mapping[str, object]], raw_failures: Mapping[str, object]) -> bool:
+def overall_status_ok(
+    *,
+    component_readiness: Mapping[str, Mapping[str, object]],
+    raw_failures: Mapping[str, object],
+    raw_frontier_integrity: Mapping[str, object] | None,
+    tier_count_unavailable: bool | None,
+    halted_units: Sequence[object] | None,
+    status_snapshot: Mapping[str, object] | None,
+) -> bool:
+    """Decide the overall ``ok`` verdict for every status surface, once.
+
+    This used to be two rules. ``daemon/status.py`` derived ``ok`` from raw
+    frontier integrity, the raw-failure lifecycle, halted units and snapshot
+    staleness; this module derived it from component readiness plus tier-count
+    precision, and :func:`produce_operation_status` then *overwrote* the daemon
+    verdict with its own. One snapshot could therefore publish ``ok: false`` on
+    ``/api/status`` and ``ok: true`` through the operations layer -- a status
+    surface reporting a verdict it did not establish (polylogue-20d.17.1).
+
+    Every operand is required and keyword-only on purpose. A surface that
+    acquires new evidence has to decide what to pass, instead of inheriting a
+    permissive default the way the ``unmeasured=`` opt-in gap did
+    (polylogue-20d.17.4).
+
+    Operands a surface did not observe are passed as ``None`` (or an empty
+    ``halted_units``). Absence of evidence never refutes the verdict here --
+    refuting on it would make every direct/pinned read permanently not-ok --
+    but it never certifies it either: each rule below is a *refutation*, and
+    the verdict is ok only when no operand refutes it.
+    """
+    from polylogue.readiness.capability import raw_frontier_integrity_is_proven_healthy
+
+    if not _component_readiness_ok(component_readiness, raw_failures):
+        return False
+    if tier_count_unavailable:
+        return False
+    if halted_units:
+        # Something the daemon was asked to do stopped being schedulable and
+        # will not resume on its own, whatever the rest of the components say.
+        return False
+    if raw_frontier_integrity is not None and not raw_frontier_integrity_is_proven_healthy(raw_frontier_integrity):
+        return False
+    # A stale cached frame is advisory evidence only. Direct status stays
+    # usable when no daemon snapshot exists, but a known stale snapshot must
+    # not certify a green answer.
+    return not (isinstance(status_snapshot, Mapping) and status_snapshot.get("state") == "stale")
+
+
+def tier_count_unavailable(tiers: Mapping[str, Mapping[str, object]]) -> bool:
+    """Return whether any present tier reported an inexact declared-relation count.
+
+    A declared relation whose count was missing or unreadable is an authority
+    failure, not an empty relation, so it refutes the overall verdict even when
+    every readiness component happens to be green.
+    """
+    return any(
+        info.get("exists") is True
+        and any(
+            precision != "exact"
+            for precision in cast(Mapping[str, object], info.get("table_count_precision", {})).values()
+        )
+        for info in tiers.values()
+    )
+
+
+def _component_readiness_ok(components: Mapping[str, Mapping[str, object]], raw_failures: Mapping[str, object]) -> bool:
     if not raw_failures.get("raw_failure_lifecycle_available") or raw_failures.get("raw_unexplained_failures"):
+        return False
+    lifecycle_state = raw_failures.get("raw_failure_lifecycle_state")
+    if lifecycle_state is not None and lifecycle_state != "healthy":
         return False
     required_missing = {"archive_sessions", "raw_materialization", "search", "transforms", "assertions"}
     required_known = {"raw_frontier_integrity"}

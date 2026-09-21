@@ -87,6 +87,7 @@ from polylogue.logging import DEBUG, ERROR, WARNING, emit, propagate
 from polylogue.logging import span as log_span
 from polylogue.operations.authority import authority_for_config, authority_for_reader
 from polylogue.operations.origin_filters import unknown_origin_filter_tokens
+from polylogue.operations.quick_check import HEALTH_RESULT_KEY, observe_quick_check
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
     semantic_card_placement_for_messages,
@@ -3149,15 +3150,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         with contextlib.suppress(OSError):
             disk_free = disk_free_bytes(dbp.parent)
 
-        quick_check_ok = True
-        try:
-            if not dbp.exists():
-                quick_check_ok = False
-            else:
-                with one_shot_diagnostic_read(dbp, tier=ArchiveTier.INDEX) as conn:
-                    conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
-        except (OSError, sqlite3.Error):
-            quick_check_ok = False
+        # One producer for this fact across every status surface
+        # (polylogue-20d.17.2). The probe itself is unchanged; what moved is
+        # that ``quick_check_age_s`` is now rendered from the same observation
+        # instead of being a literal null beside a measured result.
+        quick_check = observe_quick_check(dbp)
 
         from polylogue.daemon.status import raw_failure_lifecycle_for_root
 
@@ -3172,7 +3169,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "terminal": raw_lifecycle.terminal,
             "unexplained": raw_lifecycle.unexplained,
         }
-        archive_health_ok = quick_check_ok and raw_lifecycle.healthy
+        archive_health_ok = quick_check.ok and raw_lifecycle.healthy
 
         overview: dict[str, object] = {
             "ok": archive_health_ok,
@@ -3182,8 +3179,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             # Never measured by this route. A literal 0 rendered as a figure
             # in the operator surface; null says "not measured here".
             "blob_dir_size_bytes": None,
-            "quick_check": "pass" if quick_check_ok else "error",
-            "quick_check_age_s": None,
+            **quick_check.payload(result_key=HEALTH_RESULT_KEY),
             "raw_failure_lifecycle_available": raw_lifecycle.available,
             "raw_failure_lifecycle_state": raw_lifecycle.state,
             "raw_failure_lifecycle_reason": raw_lifecycle.reason,

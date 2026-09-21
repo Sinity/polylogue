@@ -127,3 +127,65 @@ def test_unreadable_archive_index_reports_nothing_ready(tmp_path: Path, monkeypa
     assert payload["invariant_ready"] is False
     assert payload["coverage_pct"] is None
     assert payload["coverage_exact"] is False
+
+
+def test_unreadable_index_publishes_unknown_coverage_not_a_measured_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe that could not open the index never reports 0.0% coverage.
+
+    ``fts_readiness_info``'s own ``except sqlite3.Error`` handler returned
+    ``coverage_pct: 0.0`` -- a measured empty index for a database nothing
+    opened. The daemon status route happened to mask it through
+    ``FTSReadiness``' unreadable-coverage validator, but ``status_snapshot``'s
+    minimal path publishes this dict directly, so ``/api/status`` and the
+    plaintext CLI reported "0.0% indexed" for an unreadable archive
+    (polylogue-20d.17.4 AC3).
+
+    Anti-vacuity: restore ``"coverage_pct": 0.0`` in that handler and both the
+    producer assertion and the ``/api/status`` assertion below go red.
+    """
+    from unittest.mock import patch
+
+    from polylogue.daemon import fts_status, status_snapshot
+
+    index = tmp_path / "index.db"
+    index.write_bytes(b"not a sqlite database at all")
+
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.DatabaseError("file is not a database")
+
+    monkeypatch.setattr(fts_status, "open_readonly_connection", explode)
+
+    payload = fts_readiness_info(index)
+
+    assert payload["coverage_pct"] is None
+    assert payload["coverage_exact"] is False
+    assert payload["message_indexed_count"] is None
+    assert payload["message_indexable_count"] is None
+    assert payload["messages_ready"] is False
+    assert payload["invariant_ready"] is False
+    assert "file is not a database" in str(payload["unavailable_reason"])
+
+    # The same value, unaltered, on the surface that publishes it directly.
+    with patch.object(status_snapshot, "resolve_active_index_path", lambda *_a, **_k: index):
+        status_payload = status_snapshot._minimal_status_payload()
+    fts_readiness = status_payload["fts_readiness"]
+    assert isinstance(fts_readiness, dict)
+    assert fts_readiness["coverage_pct"] is None
+
+
+def test_a_genuinely_empty_index_still_reports_its_measured_coverage(tmp_path: Path) -> None:
+    """The control: an index that *was* read keeps its measured answer.
+
+    Without this, the test above could pass from a blanket "coverage is always
+    unknown" change.
+    """
+    index = tmp_path / "index.db"
+    initialize_archive_database(index, ArchiveTier.INDEX)
+
+    payload = fts_readiness_info(index, exact=True)
+
+    assert payload["message_indexable_count"] == 0
+    assert payload["message_indexed_count"] == 0
+    assert "unavailable_reason" not in payload
