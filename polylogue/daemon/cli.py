@@ -54,9 +54,8 @@ from polylogue.daemon.health import (
     resolve_health_tiers,
 )
 from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntakeDispatcher, IntakeClassSpec
-from polylogue.daemon.lineage_startup import (
-    ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
-)
+from polylogue.daemon.lineage_startup import LineageStartupCensus
+from polylogue.daemon.lineage_startup import census_lineage_startup_sync as _census_lineage_startup_sync
 from polylogue.daemon.periodic import daemon_periodic_runner, watcher_registered_gate
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.daemon.services import (
@@ -162,9 +161,15 @@ async def _run_startup_embedding_lifecycle(coordinator: DaemonWriteCoordinator, 
     )
 
 
-async def _run_startup_lineage_readiness(coordinator: DaemonWriteCoordinator) -> int:
-    """Run the real startup lineage writer on an exit-safe coordinator thread."""
-    return await coordinator.run_sync("startup.lineage_readiness", _ensure_lineage_startup_readiness_sync)
+async def _run_startup_lineage_census() -> LineageStartupCensus:
+    """Measure dangling lineage branch points at startup.
+
+    Read-only by construction: the census reports what the writer's own scoped
+    correction left behind, and a component that could repair it would hide
+    the producer defect instead (polylogue-6kur AC4). It therefore takes no
+    write lease and never enters the write coordinator.
+    """
+    return await asyncio.to_thread(_census_lineage_startup_sync)
 
 
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
@@ -2760,10 +2765,10 @@ async def _run_daemon_services_under_active_writer_lease(
                     archive_root_path=archive_root_path,
                     component="fts",
                 )
-            await _run_startup_lineage_readiness(write_coordinator)
+            lineage_census = await _run_startup_lineage_census()
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
-                    "component_ready",
+                    "component_ready" if lineage_census.converged else "component_degraded",
                     archive_root_path=archive_root_path,
                     component="lineage_startup",
                 )

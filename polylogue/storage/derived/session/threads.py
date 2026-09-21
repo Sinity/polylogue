@@ -1,4 +1,15 @@
-"""Thread row builders, queries, and lifecycle support for session insights."""
+"""Thread row builders, queries, and lifecycle support for session insights.
+
+Thread reads serve stored ``session_profiles`` rows as the profile producer
+wrote them. They deliberately do not re-derive any profile field at read time:
+``sessions.parent_session_id`` is already one of the value-complete inputs the
+profile's staleness binding covers (``session/input_binding.py``), so a profile
+whose lineage moved is reported ``stale`` and re-materialized by the ordinary
+derivation converger. Patching the field on the way out instead would make a
+producer that stopped writing it invisible (polylogue-6kur AC4) -- and the
+deleted patch also had to guess ``is_continuation``, turning every parented
+sidechain into a continuation.
+"""
 
 from __future__ import annotations
 
@@ -249,58 +260,6 @@ def _group_profile_records_by_root(
     return grouped
 
 
-def _repair_profile_parent_ids(
-    records: Sequence[SessionProfileRecord],
-    parent_ids_by_session: dict[str, str | None],
-) -> list[SessionProfileRecord]:
-    repaired: list[SessionProfileRecord] = []
-    for record in records:
-        parent_id = parent_ids_by_session.get(str(record.session_id))
-        if parent_id and not record.evidence_payload.parent_id:
-            repaired.append(
-                record.model_copy(
-                    update={
-                        "evidence_payload": record.evidence_payload.model_copy(
-                            update={"parent_id": parent_id, "is_continuation": True}
-                        )
-                    }
-                )
-            )
-        else:
-            repaired.append(record)
-    return repaired
-
-
-def _parent_ids_for_sessions_sync(
-    conn: sqlite3.Connection,
-    session_ids: Sequence[str],
-) -> dict[str, str | None]:
-    if not session_ids:
-        return {}
-    placeholders = ", ".join("?" for _ in session_ids)
-    rows = conn.execute(
-        f"SELECT session_id, parent_session_id FROM sessions WHERE session_id IN ({placeholders})",
-        tuple(session_ids),
-    ).fetchall()
-    return {str(row["session_id"]): str(row["parent_session_id"]) if row["parent_session_id"] else None for row in rows}
-
-
-async def _parent_ids_for_sessions_async(
-    conn: aiosqlite.Connection,
-    session_ids: Sequence[str],
-) -> dict[str, str | None]:
-    if not session_ids:
-        return {}
-    placeholders = ", ".join("?" for _ in session_ids)
-    rows = await (
-        await conn.execute(
-            f"SELECT session_id, parent_session_id FROM sessions WHERE session_id IN ({placeholders})",
-            tuple(session_ids),
-        )
-    ).fetchall()
-    return {str(row["session_id"]): str(row["parent_session_id"]) if row["parent_session_id"] else None for row in rows}
-
-
 def _thread_records_from_profile_records(
     profile_records: Sequence[SessionProfileRecord],
 ) -> dict[str, ThreadRecord]:
@@ -346,8 +305,7 @@ def load_thread_profile_records_by_root_sync(
             root_chunk,
         ).fetchall()
         for root_id, records in _group_profile_records_by_root(rows, root_ids=root_chunk).items():
-            parent_ids = _parent_ids_for_sessions_sync(conn, [str(record.session_id) for record in records])
-            grouped[root_id].extend(_repair_profile_parent_ids(records, parent_ids))
+            grouped[root_id].extend(records)
     return grouped
 
 
@@ -368,8 +326,7 @@ async def load_thread_profile_records_by_root_async(
             )
         ).fetchall()
         for root_id, records in _group_profile_records_by_root(rows, root_ids=root_chunk).items():
-            parent_ids = await _parent_ids_for_sessions_async(conn, [str(record.session_id) for record in records])
-            grouped[root_id].extend(_repair_profile_parent_ids(records, parent_ids))
+            grouped[root_id].extend(records)
     return grouped
 
 

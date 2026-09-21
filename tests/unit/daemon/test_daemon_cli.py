@@ -27,6 +27,7 @@ from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.derivation import DerivationReport
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
+from polylogue.daemon.lineage_startup import LineageStartupCensus
 from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import capture
@@ -39,6 +40,11 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
+
+
+def _converged_lineage_census() -> LineageStartupCensus:
+    """A startup census that saw a converged archive: nothing to report."""
+    return LineageStartupCensus(dangling_edges=0, dangling_sessions=0)
 
 
 async def _unused_session_profile_callback(_session_ids: Sequence[str] | None) -> DerivationReport:
@@ -2141,9 +2147,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         events.append("embedding-lifecycle")
         return tmp_path / "embeddings.db"
 
-    def fake_lineage_startup() -> int:
+    def fake_lineage_startup() -> LineageStartupCensus:
         events.append("lineage")
-        return 0
+        return LineageStartupCensus(dangling_edges=0, dangling_sessions=0)
 
     async def fake_reconcile_blob_publications() -> None:
         events.append("blob-publications")
@@ -2229,7 +2235,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
             patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", fake_embedding_lifecycle_startup)
         )
         stack.enter_context(patch("polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge", fake_fts_owner_run))
-        stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
+        stack.enter_context(patch.object(daemon_cli, "_census_lineage_startup_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
         stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
@@ -3023,7 +3029,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         patch.object(daemon_cli, "make_server", return_value=browser_server),
         patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", noop_sync),
         patch("polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge", ready_fts),
-        patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", noop_sync),
+        patch.object(daemon_cli, "_census_lineage_startup_sync", _converged_lineage_census),
         patch.object(daemon_cli, "_reconcile_blob_publications", noop),
         patch.object(daemon_cli, "_configure_fts_automerge", noop),
         patch.object(daemon_cli, "_run_drive_source_catchup_safely", no_drive_changes),
@@ -3958,7 +3964,7 @@ def _daemon_startup_stubs(
             _noop_fts,
         )
     )
-    stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", lambda: 0))
+    stack.enter_context(patch.object(daemon_cli, "_census_lineage_startup_sync", _converged_lineage_census))
     stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", _noop))
     stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", _noop))
     stack.enter_context(

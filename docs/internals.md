@@ -1250,8 +1250,11 @@ The report has a stable top-level shape carrying its `report_version`,
   `dangling_branch_point_session_count` — composing prefix-sharing edges whose
   `branch_point_message_id` names a message row that no longer exists, plus the
   distinct sessions that therefore compose to their own tail only. A non-zero
-  dangling count after a rebuild means that many sessions read short until
-  `repair_stale_prefix_branch_points` runs (daemon startup lineage readiness).
+  dangling count means that many sessions read short, and nothing repairs them
+  out of band: the only corrector is the writer's own scoped, in-transaction
+  call inside `_resolve_session_graph`. The daemon's startup lineage census
+  reports the count (`daemon.lineage.startup_census`, `degraded` when non-zero)
+  and the recovery route for the rebuildable index tier is reconvergence.
 - `gc_state` — high-water `gc_generations` row, `last_completed_at`,
   total generation count.
 - `fts_trigger_state` — the three expected FTS sync triggers

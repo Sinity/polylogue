@@ -1898,8 +1898,9 @@ def _topology_quarantine_state(conn: sqlite3.Connection) -> dict[str, Any]:
       — composing prefix-sharing edges whose ``branch_point_message_id`` names
       a message row that no longer exists, and the distinct sessions that
       therefore compose to their own tail only (polylogue-7xrv5). Non-zero
-      after a rebuild means that many sessions read short until
-      ``repair_stale_prefix_branch_points`` runs.
+      means that many sessions read short and the writer's own scoped
+      in-transaction correction did not catch it; no sweep will, so the
+      index tier reconverges instead (polylogue-ga6ib).
     - ``oldest_quarantined_at`` — oldest ``resolved_at_ms`` timestamp on a
       quarantined link (the field is repurposed as the
       "decision-recorded-at" timestamp for non-resolved terminal states)
