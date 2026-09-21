@@ -110,3 +110,32 @@ def test_polylogue_co2iz_preflight_refuses_when_a_declared_root_disappears(
     assert exit_code == 1
     assert refusal["outcome"] == "error"
     assert "root is missing or unavailable" in str(refusal["reason"])
+
+
+def test_polylogue_co2iz_refusal_reaches_the_process_exit_code(
+    cli_workspace: dict[str, Path],
+    configured_source_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal exits non-zero through the entrypoint the binary actually uses.
+
+    ``CliRunner`` invokes Click in standalone mode, where an explicit
+    ``click.exceptions.Exit`` becomes a process exit. ``polylogue`` does not:
+    ``polylogue/cli/machine_main.py`` runs Click with
+    ``standalone_mode=False``, and in that mode Click's own handler returns
+    the exit code as a value the entrypoint discards. Every assertion above
+    is therefore blind to whether the real binary refuses or reports success.
+
+    Anti-vacuity: restore ``raise click.exceptions.Exit(1)`` in
+    ``_wanted_sources.py`` and this refusal prints its reason and returns
+    normally -- no ``SystemExit`` at all, so ``pytest.raises`` below fails.
+    """
+    from polylogue.cli.machine_main import run_machine_entry
+
+    argv = ["ops", "maintenance", "wanted-sources", "--output-format", "json"]
+    monkeypatch.setattr("sys.argv", ["polylogue", *argv])
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_machine_entry(cli, argv)
+
+    assert exc_info.value.code == 1
