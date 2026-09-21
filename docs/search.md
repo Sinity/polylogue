@@ -141,7 +141,7 @@ Invalid examples found in shipped teaching surfaces at the snapshot boundary:
 | `polylogue/mcp/server_prompts.py:524` | `files where repo:example-repo AND path:src/mcp/server.py` | field 'repo' is not supported for file predicates | `files where session.repo:example-repo AND path:src/mcp/server.py` |
 | `docs/search.md:924` | `text:css {session_id example}: refactor` | unknown query field 'text'; recognized fields: action, action_sequence, action_text, assistant_messages, assistant_words, authored_user_messages, authored_user_words, contains, cwd, duration_ms, has, id, lane, lineage, messages, near, origin, paste_messages, path, project, repo, root, session, since, since_session, system_messages, tag, thinking_messages, title, tool, tool_messages, tool_use_messages, until, user_messages, user_words, words | `contains:"css refactor"` |
 
-Machine clients can request parser-gated positives with MCP/CLI `query_completions(kind="example")` and real diagnostics/corrections with `query_completions(kind="error")`. The query capability resource carries corpus counts and the six shared semantics contracts.
+Machine clients can request parser-gated positives with CLI `query_completions(kind="example")` or MCP `explain(subject="completions", kind="example")`, and real diagnostics/corrections with the same routes at `kind="error"`. Both reach one shared completion route. The query capability resource carries corpus counts and the six shared semantics contracts.
 <!-- END GENERATED: query-discovery -->
 
 When a pipeline starts with `sessions where ...`, the left stage is lowered into

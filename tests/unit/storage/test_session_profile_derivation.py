@@ -19,9 +19,11 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.daemon.derivation import DerivationFrame, DerivationReport
 from polylogue.storage.derived.session.derivation import (
     SESSION_PROFILE_DOMAIN,
     SESSION_PROFILE_RECIPE_VERSION,
+    SessionProfileDerivation,
     _marker_assertions_present,
     excess_session_profiles,
     inspect_session_profiles,
@@ -693,3 +695,156 @@ def test_a_session_row_value_change_makes_inspection_stale(
         conn.commit()
 
     assert _status(index_db, session_id) == "stale"
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-marker readiness, certified through the production derivation route
+# ---------------------------------------------------------------------------
+
+#: A block whose text carries the *same* marker twice. The parser gives
+#: identical markers in one block one durable identity, so two candidates
+#: resolve to one assertion id and one stored row.
+_DUPLICATE_MARKER_BLOCK = "::note: repeat\n::note: repeat\n"
+
+
+@pytest.fixture
+def marker_archive(tmp_path: Path) -> Iterator[tuple[Path, Path, str]]:
+    """A real archive root whose only session repeats one inline marker.
+
+    Every tier is created by ``initialize_active_archive_root``, so ``user.db``
+    carries the shipped user-tier schema rather than a stand-in ``assertions``
+    table. That is the point: a one-column stand-in agrees with itself.
+    """
+    root = tmp_path / "archive"
+    root.mkdir()
+    index_db = root / "index.db"
+    initialize_active_archive_root(root)
+    builder = SessionBuilder(index_db, "marker-dedup")
+    builder.add_message(role="user", text=_DUPLICATE_MARKER_BLOCK)
+    builder.save()
+    yield root, index_db, builder.native_session_id()
+
+
+def _converge_session_profile(
+    root: Path, index_db: Path, session_id: str
+) -> tuple[SessionProfileDerivation, DerivationFrame, DerivationReport]:
+    """Drive the same adapters, frame and kernel the daemon owner drives."""
+    from polylogue.daemon.derivation import DerivationRegistry, converge
+    from polylogue.operations.session_profile_convergence import (
+        make_session_profile_derivation,
+        make_session_profile_frame,
+        make_session_summary_derivation,
+        make_session_usage_rollup_derivation,
+    )
+
+    def now() -> float:
+        # The hot-file probe needs a clock, not wall time; a seeded archive has
+        # no raw source row, so nothing is deferred at any value.
+        return 0.0
+
+    registry = DerivationRegistry(
+        (
+            make_session_summary_derivation(index_db, archive_root=root),
+            make_session_usage_rollup_derivation(index_db, archive_root=root, now=now),
+            make_session_profile_derivation(index_db, archive_root=root, now=now),
+        )
+    )
+    frame = make_session_profile_frame(index_db, archive_root=root, scope=[session_id])
+    adapter = registry.get(SESSION_PROFILE_DOMAIN)
+    assert isinstance(adapter, SessionProfileDerivation)
+    return adapter, frame, converge(registry, frame)
+
+
+def test_a_repeated_marker_converges_to_valid_readiness_through_the_production_route(
+    marker_archive: tuple[Path, Path, str],
+) -> None:
+    """A complete marker import must leave readiness valid, not permanently stale.
+
+    The mechanism (``dict.fromkeys`` over the requested assertion ids in
+    ``_marker_assertions_present``) was only ever observed by a helper-level
+    test against a one-column in-memory ``assertions`` table. What actually
+    goes wrong is the readiness *outcome*: a session whose markers are fully
+    committed reporting ``stale`` forever, so the daemon re-derives it on every
+    pass and never converges.
+
+    Anti-vacuity: delete ``assertion_ids = tuple(dict.fromkeys(assertion_ids))``
+    from ``_marker_assertions_present``. Presence then compares ``COUNT(*) == 2``
+    against the one row two identical markers share, and this goes red three
+    times over -- the convergence pass reports FAILED ("publish reported success
+    but the output relation reports stale, not valid"), ``inspect`` reports
+    ``stale``, and ``selected_part_facts`` reports ``stale``.
+    """
+    from polylogue.daemon.derivation import Outcome
+    from polylogue.markers import candidates_for_block
+    from polylogue.markers.lowering import assertion_id_for_marker
+
+    root, index_db, session_id = marker_archive
+    adapter, frame, report = _converge_session_profile(root, index_db, session_id)
+
+    assert report.counts[Outcome.FAILED] == 0, [outcome.error for outcome in report.outcomes]
+    profile_outcomes = [outcome for outcome in report.outcomes if outcome.key.domain == SESSION_PROFILE_DOMAIN]
+    assert [outcome.outcome for outcome in profile_outcomes] == [Outcome.DONE]
+
+    # The two production readiness callers, not the private helper.
+    assert adapter.inspect(frame, [session_id]) == {session_id: "valid"}
+    facts = adapter.selected_part_facts(frame, session_id)
+    assert facts.status == "valid"
+    assert facts.profiles == 1
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        message_id, block_id, text = conn.execute(
+            "SELECT message_id, block_id, text FROM blocks WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    assert text == _DUPLICATE_MARKER_BLOCK
+    # Marker identity is provenance-bound, so the ids are recomputed from the
+    # stored block exactly as the lowering side computes them.
+    candidate_ids = tuple(
+        assertion_id_for_marker(candidate)
+        for candidate in candidates_for_block(str(message_id), str(block_id), str(text))
+    )
+    assert len(candidate_ids) == 2, "the fixture must present two marker candidates"
+    assert len(set(candidate_ids)) == 1, "identical markers in one block share one identity"
+
+    with closing(sqlite3.connect(f"file:{root / 'user.db'}?mode=ro", uri=True)) as conn:
+        stored = conn.execute(
+            "SELECT assertion_id, author_kind FROM assertions WHERE assertion_id = ?",
+            (candidate_ids[0],),
+        ).fetchall()
+        # Reading the durable columns proves this is the shipped user tier and
+        # not a one-column stand-in; a stand-in raises "no such column" here.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(assertions)")}
+    assert len(stored) == 1, "two identical markers must store exactly one assertion row"
+    assert stored[0][1] == "agent"
+    assert {"target_ref", "kind", "status", "author_kind", "visibility"} <= columns
+
+
+def test_a_second_pass_over_the_repeated_marker_publishes_nothing_new(
+    marker_archive: tuple[Path, Path, str],
+) -> None:
+    """Converged readiness must stay converged; that is what "not stale" buys.
+
+    The defect this guards is an endless re-derivation loop, which a single
+    pass cannot show. Anti-vacuity: the same ``dict.fromkeys`` deletion makes
+    the second pass republish and still report stale.
+    """
+    from polylogue.daemon.derivation import Outcome
+
+    root, index_db, session_id = marker_archive
+    _converge_session_profile(root, index_db, session_id)
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        first = conn.execute(
+            "SELECT materialized_at, input_content_hash FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+    adapter, frame, report = _converge_session_profile(root, index_db, session_id)
+    assert report.counts[Outcome.FAILED] == 0
+    assert adapter.inspect(frame, [session_id]) == {session_id: "valid"}
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        second = conn.execute(
+            "SELECT materialized_at, input_content_hash FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    assert tuple(first) == tuple(second), "an already-valid marker family must not be rewritten"

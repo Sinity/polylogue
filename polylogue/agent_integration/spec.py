@@ -452,13 +452,26 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "subject",
                 "string",
                 True,
-                "Declared explanation subject: query, field, value, ref, capability, result, or recovery.",
+                "Declared explanation subject: query, field, value, ref, capability, completions, result, or recovery.",
             ),
             _arg("expression", "string", False, "Query expression to parse and lower when subject=query."),
             _arg("ref", "string", False, "Object/ref whose authority or addressing needs explanation."),
             _arg("offset", "integer", False, "Offset into paged explanation results."),
-            _arg("search", "string", False, "Optional explanation search text."),
+            _arg(
+                "search",
+                "string",
+                False,
+                "Optional explanation search text; the incomplete prefix when subject=completions.",
+            ),
             _arg("limit", "integer", False, "Maximum explanation rows."),
+            _arg(
+                "kind",
+                "string",
+                False,
+                "Completion vocabulary to answer when subject=completions, such as example or error.",
+            ),
+            _arg("unit", "string", False, "Query unit the unit-scoped completion kinds require."),
+            _arg("field", "string", False, "Query field the operator completion kinds require."),
         ),
         examples=(
             _example(

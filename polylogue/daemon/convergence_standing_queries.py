@@ -14,7 +14,13 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 
-from polylogue.archive.query.evaluator import CanonicalPlanEvaluator, QueryEvaluation, QueryEvaluationRequest
+from polylogue.archive.query.evaluator import (
+    CanonicalPlanEvaluator,
+    QueryEvaluation,
+    QueryEvaluationRequest,
+    ScopedCanonicalPlanEvaluator,
+    session_origin,
+)
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.hashing import hash_payload
 from polylogue.core.query_identity import query_ref, result_set_ref
@@ -28,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 from polylogue.storage.sqlite.query_objects import (
+    QueryObject,
     get_query,
     get_result_set,
     get_watched_query_baseline,
@@ -66,9 +73,17 @@ def make_standing_query_stage(
             return set()
         try:
             with closing(open_readonly_connection(user_db)) as conn:
-                if list_watched_queries(conn) or _has_promoted_expected_findings(conn):
+                watched = list_watched_queries(conn)
+                if not watched and not _has_promoted_expected_findings(conn):
+                    return set()
+                scope = _narrowed_origin_scope(conn, evaluator, watched)
+                if scope is None:
                     return set(session_ids)
-                return set()
+                return {
+                    session_id
+                    for session_id in session_ids
+                    if (origin := session_origin(str(session_id))) is None or origin in scope
+                }
         except Exception as exc:
             emit(
                 "daemon.stage.check_failed",
@@ -155,6 +170,45 @@ def make_standing_query_stage(
 
 def _standing_user_db_path(db_path: Path) -> Path:
     return db_path.with_name("user.db")
+
+
+def _narrowed_origin_scope(
+    conn: sqlite3.Connection,
+    evaluator: CanonicalPlanEvaluator,
+    watched: Sequence[QueryObject],
+) -> frozenset[str] | None:
+    """Origins that can still affect a watch, or ``None`` for the global baseline.
+
+    Narrowing is an in-memory, per-tick decision derived from the planner and
+    the definitions themselves; nothing is persisted, so no stored fingerprint
+    can go stale and suppress a real firing. It is only ever the union of
+    *proved* per-definition bounds, and it is abandoned entirely -- keeping the
+    global corpus_epoch baseline -- whenever any of the following holds.
+
+    * The planner publishes no bounds, or cannot bound one watched definition.
+      An unbounded predicate can match any origin.
+    * A watched definition has no durable baseline yet. The first evaluation
+      establishes a baseline silently, so skipping the tick that would have
+      established it would move that silent first observation later and hide
+      the delta a subsequent tick should have reported.
+    * An accepted expected-count finding exists. Those drift against a stored
+      expectation rather than against the previous membership, so a definition
+      that is already drifting must be allowed to report it on the next tick
+      whatever changed.
+    """
+    if not watched or not isinstance(evaluator, ScopedCanonicalPlanEvaluator):
+        return None
+    if _has_promoted_expected_findings(conn):
+        return None
+    union: set[str] = set()
+    for query in watched:
+        bound = evaluator.session_origin_scope(query)
+        if bound is None:
+            return None
+        if get_watched_query_baseline(conn, query.query_hash) is None:
+            return None
+        union |= set(bound)
+    return frozenset(union)
 
 
 def _watch_result_set_id(query_hash: str, evaluation: QueryEvaluation) -> str:

@@ -1417,14 +1417,26 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         return await hooks.async_safe_call("get", run, session_id=session_id)
 
     async def explain(
-        subject: Literal["query", "capability", "ref", "result", "recovery", "session-operations"],
+        subject: Literal["query", "capability", "completions", "ref", "result", "recovery", "session-operations"],
         expression: str | None = None,
         ref: str | None = None,
         offset: int = 0,
         search: str | None = None,
         limit: int = 25,
+        kind: str | None = None,
+        unit: str | None = None,
+        field: str | None = None,
     ) -> str:
-        """Explain parser grammar, capabilities, refs, result semantics, or recovery.
+        """Explain parser grammar, capabilities, completions, refs, result semantics, or recovery.
+
+        ``subject="completions"`` answers one shared query-completion request
+        -- ``kind`` selects the vocabulary, ``search`` is the incomplete
+        prefix, and ``unit``/``field`` supply the context the unit-scoped and
+        operator kinds require. It is the MCP leg of the completion route the
+        CLI, HTTP daemon, and Python API already share
+        (``polylogue.archive.query.completions.query_completion_payload``), so
+        the ``*_via`` pointers the query capability resource publishes name a
+        tool that exists rather than one that does not.
 
         ``offset`` skips this many entries into the ``result``/``recovery``
         examples catalog or the ``capability`` read-view list before paging;
@@ -1436,6 +1448,28 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         offset = max(0, offset)
 
         async def run() -> str:
+            if subject == "completions":
+                from polylogue.archive.query.completions import QUERY_COMPLETION_KINDS, QueryCompletionError
+
+                requested = kind or "field"
+                if requested not in QUERY_COMPLETION_KINDS:
+                    return hooks.error_json(
+                        f"unsupported completion kind: {requested}; declared kinds are "
+                        + ", ".join(QUERY_COMPLETION_KINDS),
+                        code="invalid_argument",
+                        tool="explain",
+                    )
+                try:
+                    payload = await hooks.get_polylogue().query_completions(
+                        requested,
+                        incomplete=search or "",
+                        unit=unit,
+                        field=field,
+                    )
+                except QueryCompletionError as exc:
+                    return hooks.error_json(str(exc), code="invalid_argument", tool="explain")
+                return hooks.json_payload(MCPRootPayload(root={"subject": subject, **payload}))
+
             if subject == "session-operations":
                 from polylogue.operations.session_contracts import session_operation_contracts
 
@@ -1520,6 +1554,9 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 "offset": offset,
                 "search": search,
                 "limit": limit,
+                "kind": kind,
+                "unit": unit,
+                "field": field,
             },
         )
 
