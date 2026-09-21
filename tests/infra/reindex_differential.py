@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import inspect
 import json
 import re
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -149,6 +150,71 @@ class FinishedBuildRoute:
         if not isinstance(module, str) or not isinstance(qualname, str):
             raise ValueError("finished-build route callable has no stable Python identity")
         return cls(variant=variant, callable_identity=f"{module}.{qualname}")
+
+
+@dataclass(frozen=True, slots=True)
+class SealedRawInput:
+    """The raw population one finished-build comparison is measured over.
+
+    The identity is read back from the durable source tier rather than
+    declared by the builder: an arm that lost, gained, or rewrote a retained
+    raw cannot present itself as having run the same work.
+    """
+
+    digest: str
+    byte_count: int
+    raw_count: int
+
+    def __post_init__(self) -> None:
+        if not self.digest or self.raw_count < 1 or self.byte_count < 1:
+            raise ValueError("a sealed raw input requires a digest and a non-empty population")
+
+
+def seal_raw_input(archive_root: Path) -> SealedRawInput:
+    """Read the durable raw identity/byte manifest without changing it."""
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        rows = conn.execute("SELECT raw_id, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall()
+    digest = hashlib.sha256()
+    byte_count = 0
+    for raw_id, blob_hash in rows:
+        blob_hex = bytes(blob_hash).hex() if isinstance(blob_hash, bytes) else str(blob_hash)
+        size = (archive_root / "blob" / blob_hex[:2] / blob_hex[2:]).stat().st_size
+        byte_count += size
+        digest.update(f"{raw_id}:{blob_hex}:{size}\n".encode())
+    return SealedRawInput(digest=digest.hexdigest(), byte_count=byte_count, raw_count=len(rows))
+
+
+def clone_sealed_arm(template: Path, destination: Path, sealed: SealedRawInput) -> Path:
+    """Clone one sealed source tree into an isolated arm carrying that input."""
+    from tests.infra.archive_templates import clone_archive_template
+
+    clone_archive_template(template, destination)
+    cloned = seal_raw_input(destination)
+    if cloned != sealed:
+        raise AssertionError(f"cloned finished-build arm does not carry the sealed input: {cloned} != {sealed}")
+    return destination
+
+
+def finished_build_work_identity(
+    sealed: SealedRawInput,
+    *,
+    profile: str,
+    routes: Sequence[Callable[..., object] | type],
+) -> FinishedBuildWorkIdentity:
+    """Bind one sealed input, the exact route code, and one selected profile.
+
+    Every arm of a comparison takes the SAME identity: the work is what is
+    being held fixed, and each arm's own production callable is recorded
+    separately in its :class:`FinishedBuildRoute`.
+    """
+    if not routes:
+        raise ValueError("finished-build code identity requires at least one production route")
+    code_digest = hashlib.sha256("".join(inspect.getsource(route) for route in routes).encode()).hexdigest()
+    return FinishedBuildWorkIdentity(
+        source_identity=f"sha256:{sealed.digest}",
+        code_identity=f"sha256:{code_digest}",
+        profile_identity=profile,
+    )
 
 
 @dataclass(frozen=True, slots=True)

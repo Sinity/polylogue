@@ -5,6 +5,13 @@ artifact capability owners.  The fixtures stay lazy: importing this module
 does not generate bytes, open a database, or start a daemon.  A parser-only
 test requests ``pilot_provider_packages``; archive and transport tests opt in
 to the heavier resources explicitly.
+
+Nothing here owns construction, caching or cloning. The archive resources go
+through :func:`tests.infra.integration_profile.build_integration_archive`,
+which is the declared owner of this recipe and publishes into the shared
+artifact cache under the ``default/integration`` reachability key -- so a
+second module, worker or run reuses the published artifact instead of
+rebuilding one in a private cache root.
 """
 
 from __future__ import annotations
@@ -22,7 +29,6 @@ from tests.infra.workload_artifacts import (
     SeededArchiveClone,
     SeededArchiveQueryLease,
     acquire_query_only_seeded_archive,
-    build_seeded_archive,
     clone_seeded_archive,
     seeded_archive_key,
 )
@@ -39,17 +45,18 @@ def _pilot_selection() -> IntegrationSelection:
     return default_integration_selection()
 
 
-@pytest.fixture(scope="module")
-def pilot_provider_packages(tmp_path_factory: pytest.TempPathFactory) -> tuple[ProviderSourcePackage, ...]:
-    """Generate only the provider bytes requested by parser pilot tests."""
+def build_pilot_provider_packages(root: Path) -> tuple[ProviderSourcePackage, ...]:
+    """Write the pilot selection's provider bytes under *root*.
+
+    Exposed as a plain function, not only as a fixture, so a test can measure
+    or instrument one acquisition (bytes written, tiers opened) without
+    depending on whether a module-scoped fixture happened to run first.
+    """
     from polylogue.schemas.synthetic import SyntheticCorpus
 
-    selection = _pilot_selection()
-    root = tmp_path_factory.mktemp("pilot-provider-bytes")
     packages: list[ProviderSourcePackage] = []
-    for index, spec in enumerate(selection.corpus_specs()):
-        provider_root = root / spec.provider
-        written = SyntheticCorpus.write_spec_artifacts(spec, provider_root, prefix=f"pilot-{index:02d}")
+    for index, spec in enumerate(_pilot_selection().corpus_specs()):
+        written = SyntheticCorpus.write_spec_artifacts(spec, root / spec.provider, prefix=f"pilot-{index:02d}")
         packages.append(
             provider_source_package(
                 spec.provider,
@@ -60,6 +67,12 @@ def pilot_provider_packages(tmp_path_factory: pytest.TempPathFactory) -> tuple[P
             )
         )
     return tuple(packages)
+
+
+@pytest.fixture(scope="module")
+def pilot_provider_packages(tmp_path_factory: pytest.TempPathFactory) -> tuple[ProviderSourcePackage, ...]:
+    """Generate only the provider bytes requested by parser pilot tests."""
+    return build_pilot_provider_packages(tmp_path_factory.mktemp("pilot-provider-bytes"))
 
 
 @pytest.fixture(scope="module")
@@ -76,15 +89,11 @@ def pilot_parsed_sessions(pilot_provider_packages: tuple[ProviderSourcePackage, 
 
 
 @pytest.fixture(scope="module")
-def pilot_artifact(tmp_path_factory: pytest.TempPathFactory) -> SeededArchiveArtifact:
-    """Build one immutable multi-provider artifact through the canonical owner."""
-    selection = _pilot_selection()
-    cache_root = tmp_path_factory.mktemp("pilot-artifact-cache")
-    artifact = build_seeded_archive(selection.corpus_specs(), cache_root=cache_root)
-    reused = build_seeded_archive(selection.corpus_specs(), cache_root=cache_root)
-    if reused.root != artifact.root:
-        raise AssertionError("repeated pilot acquisition did not reuse its immutable artifact")
-    return artifact
+def pilot_artifact() -> SeededArchiveArtifact:
+    """Acquire the shared multi-provider artifact from its declared owner."""
+    from tests.infra.integration_profile import build_integration_archive
+
+    return build_integration_archive()
 
 
 @pytest.fixture(scope="module")
@@ -133,6 +142,7 @@ def pilot_daemon_operations(
 
 
 __all__ = [
+    "build_pilot_provider_packages",
     "pilot_artifact",
     "pilot_daemon_operations",
     "pilot_parsed_sessions",

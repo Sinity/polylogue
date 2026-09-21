@@ -8,15 +8,26 @@ assert parser, read, mutation-isolation, and transport behavior separately.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.daemon_operations import DaemonOperationStack
+from tests.infra.integration_profile import build_integration_archive, default_integration_selection
+from tests.infra.pilot_resources import build_pilot_provider_packages
 from tests.infra.pilot_scenarios import PilotScenario, pilot_scenarios, project_representation
 from tests.infra.source_builders import ProviderSourcePackage
-from tests.infra.workload_artifacts import SeededArchiveArtifact, SeededArchiveClone, SeededArchiveQueryLease
+from tests.infra.sqlite_work_counter import sqlite_work_counter
+from tests.infra.workload_artifacts import (
+    SeededArchiveArtifact,
+    SeededArchiveClone,
+    SeededArchiveQueryLease,
+    current_seeded_archive_reachability,
+    default_cache_root,
+    seeded_archive_key,
+)
 
 pytest_plugins = ("tests.infra.corpus_fixtures", "tests.infra.pilot_resources")
 
@@ -48,6 +59,62 @@ def test_parser_resource_needs_only_provider_bytes(
     assert observed == expected
     assert {package.provider for package in pilot_provider_packages} == {"chatgpt", "codex"}
     assert all(package.wire_hashes and package.generator_id for package in pilot_provider_packages)
+
+
+def test_pilot_reuses_the_declared_shared_artifact_instead_of_rebuilding_one(
+    pilot_artifact: SeededArchiveArtifact,
+) -> None:
+    """The pilot consumes the artifact the cache already protects and reuses it.
+
+    This is the migration's whole point, so it is asserted rather than left
+    to a fixture body: a pilot that builds into a private cache root (as this
+    one used to) republishes the same recipe per module and can never hit the
+    published artifact, while the GC reachability entry protecting that
+    recipe names a key nothing builds.
+    """
+    key = seeded_archive_key(default_integration_selection().corpus_specs())
+    declared = {(entry.kind, entry.name): entry.key.value for entry in current_seeded_archive_reachability().entries}
+    assert declared[("default", "integration")] == key.value
+
+    # Published into the shared cache, not a per-module temporary directory.
+    assert pilot_artifact.root.parent.name == "artifacts"
+    assert pilot_artifact.root.parent.parent == default_cache_root()
+    assert pilot_artifact.root.name == key.value.rsplit(":", 1)[-1]
+
+    reacquired = build_integration_archive()
+    assert reacquired.root == pilot_artifact.root
+    assert reacquired.manifest.manifest_id == pilot_artifact.manifest.manifest_id
+
+
+def test_parser_resource_acquisition_opens_no_archive_tier(tmp_path: Path) -> None:
+    """Acquiring AND parsing the pilot's bytes opens no SQLite tier at all.
+
+    ``test_parser_resource_needs_only_provider_bytes`` guards the parse; the
+    generation step ran inside a module fixture before any guard was armed.
+    This measures one complete cold acquisition instead, so a generator that
+    starts bootstrapping archive tiers to produce wire bytes is caught.
+    """
+    with sqlite_work_counter() as counter:
+        packages = build_pilot_provider_packages(tmp_path)
+        from polylogue.sources import iter_source_sessions
+
+        sessions = tuple(
+            session
+            for package in packages
+            for source in package.admitted_sources()
+            for session in iter_source_sessions(source)
+        )
+
+    assert sessions
+    assert sum(counter.connections_by_database.values()) == 0, (
+        f"parser-only pilot acquisition opened database connections: {dict(counter.connections_by_database)}"
+    )
+    written_bytes = sum(path.stat().st_size for path in tmp_path.rglob("*") if path.is_file())
+    assert written_bytes > 0
+    print(
+        "pilot-parser-acquisition="
+        f"{{'packages': {len(packages)}, 'sessions': {len(sessions)}, 'written_bytes': {written_bytes}}}"
+    )
 
 
 def test_query_resource_reuses_one_authenticated_immutable_artifact(
