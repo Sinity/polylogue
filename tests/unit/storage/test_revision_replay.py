@@ -3409,7 +3409,11 @@ def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path
                     break
                 threading.Event().wait(0.05)
             assert prefetched is not None, "the prefetch worker never produced a decode"
-            prefetch_sessions, _prefetch_bytes, from_reparse = prefetched
+            prefetch_sessions, _prefetch_bytes, from_reparse, needs_enrichment = prefetched
+            # A readable (WAL) index handle means the worker enriched the tree
+            # itself; only an EXCLUSIVE-locked owned generation defers that to
+            # the writer's pop (polylogue-cz17d).
+            assert needs_enrichment is False
         finally:
             prefetcher.close()
 

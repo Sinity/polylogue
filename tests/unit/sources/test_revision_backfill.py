@@ -40,7 +40,7 @@ from polylogue.sources.sqlite_snapshot import member_export_scope
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
@@ -4499,3 +4499,149 @@ def test_frozen_shard_replay_degrades_named_for_prefix_sharing_child(tmp_path: P
             conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", ("codex-session:achild0",)).fetchone()[0]
             == 1
         )
+
+
+def _owned_generation_corpus(root: Path, *, raw_count: int, snapshot: str) -> IndexGeneration:
+    """Seed ``raw_count`` byte-proven Codex raws and open an owned generation.
+
+    Codex is the provider whose replay enrichment reads the index tier
+    (``_replay_enrichment_reads_index``), which is what makes this the shape
+    that exposed polylogue-cz17d.
+    """
+    bootstrap_archive_root(root)
+    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=2_000, authoritative_source=True)
+    census_historical_revision_evidence(root)
+    return IndexGenerationStore.for_archive_root(root).create(source_snapshot=snapshot)
+
+
+def test_prefetchable_index_path_refuses_an_exclusive_locked_generation(tmp_path: Path) -> None:
+    """polylogue-cz17d mechanism: a prefetch worker gets no index handle to an
+    owned inactive generation.
+
+    That writer runs ``BULK_BUILD_WRITE_CONNECTION_PROFILE``
+    (``locking_mode=EXCLUSIVE``, held for the connection's whole lifetime), so
+    a second connection to the same file can never read it -- waiting on it can
+    only burn the busy timeout. The retained active-index writer (WAL) keeps
+    its handle, because there a snapshot read genuinely succeeds.
+
+    Anti-vacuity: the refusal is not "there is no index tier" -- the assertions
+    below pin that the generation's ``index.db`` exists, that its live lock
+    regime really reads ``exclusive``, and that the WAL arm of the same helper
+    returns a path.
+    """
+    root = tmp_path / "exclusive-generation"
+    generation = _owned_generation_corpus(root, raw_count=2, snapshot="prefetchable-index-path")
+
+    with ArchiveStore.open_owned_inactive_generation(
+        Path(generation.index_path).parent,
+        generation_id=generation.generation_id,
+        owner_id=generation.owner_id,
+    ) as archive:
+        connection = archive.index_connection
+        assert connection is not None
+        assert Path(generation.index_path).exists()
+        assert str(connection.execute("PRAGMA main.locking_mode").fetchone()[0]).lower() == "exclusive"
+        assert revision_backfill._prefetchable_index_path(archive) is None
+
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        assert archive.index_connection is not None
+        assert revision_backfill._prefetchable_index_path(archive) == archive.index_db_path
+
+
+@pytest.mark.uses_real_clock("the defect IS a 30 s wall-clock busy-timeout wait; a frozen clock cannot see it")
+def test_owned_generation_prefetch_never_waits_out_the_index_busy_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-cz17d anti-vacuity: the owned-generation replay must not pay a
+    SQLite busy timeout for the decode prefetcher.
+
+    Reverting ``_prefetchable_index_path`` to the old
+    ``archive.index_db_path if archive.index_connection is not None else None``
+    makes this exact fixture take **30.0 s** (measured three times at
+    0b1e99d69: 30.04 s / 30.05 s wall, ``spill_prefetch.decode_concurrent``
+    30.01 s, against 0.24 s of CPU) because the worker's first Codex reparse
+    blocks inside ``read_thread_titles`` until the 30 s ``busy_timeout``
+    expires, and ``start_phase`` joins that worker ON THE WRITER THREAD. With
+    the fix the same fixture runs in 0.118 s cold (``decode_concurrent``
+    0.005 s), so both bounds below carry ~100x headroom and both fail on a
+    revert. Neither is satisfiable by output inspection -- the output was
+    byte-identical while the stall was present.
+
+    Anti-vacuity against the other cheap "fix": deleting the prefetcher would
+    also make the timing bounds pass, so ``spill_prefetch.consumed > 0`` pins
+    that the writer really served replay decodes out of the prefetch buffer on
+    this route (0 before the fix, the worker having produced nothing usable).
+    """
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    root = tmp_path / "prefetch-stall"
+    generation = _owned_generation_corpus(
+        root,
+        raw_count=revision_backfill._PIPELINE_DECODE_MIN_COHORTS,
+        snapshot="prefetch-stall",
+    )
+    _give_prefetch_worker_a_head_start(monkeypatch)
+
+    started = time.monotonic()
+    result = backfill_historical_revision_evidence(
+        Path(generation.index_path).parent,
+        owned_inactive_generation=(generation.generation_id, generation.owner_id),
+        ingest_workers=2,
+        use_session_shards=True,
+    )
+    elapsed_s = time.monotonic() - started
+
+    timings = result.stage_timings_s
+    # The stated bounds, first: a revert fails HERE, at 30 s, before any
+    # assertion about what the prefetcher produced.
+    assert elapsed_s < 15.0, f"owned-generation replay took {elapsed_s:.2f}s; stage timings {timings}"
+    assert timings.get("spill_prefetch.decode_concurrent", 0.0) < 5.0, timings
+    assert result.replayed_logical_sources == revision_backfill._PIPELINE_DECODE_MIN_COHORTS
+    # AUTO engaged: this route is exactly the cohort count the default needs.
+    assert timings.get("spill_prefetch.consumed", 0.0) > 0
+
+
+def test_owned_generation_pipelined_decode_matches_serial_archive_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deferring the prefetcher's index-backed enrichment to the writer's pop
+    must keep the owned-generation route byte-identical to the serial decode.
+
+    The spill's RAM tiers and payload budget are shrunk to 1 byte so every
+    replay ``for_raw`` is a reparse -- the lane where the worker cannot enrich
+    (no readable index handle) and ``_ParsedSessionSpill.for_raw`` runs
+    ``_replay_safe_enrich_sessions`` on the writer's own handles instead.
+
+    Anti-vacuity: the pipelined arm must report a consumed prefetch entry, so
+    the comparison cannot pass by the buffer never being used.
+    """
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 1)
+    _give_prefetch_worker_a_head_start(monkeypatch)
+
+    manifests: list[dict[str, list[tuple[object, ...]]]] = []
+    results = []
+    for name, pipeline_decode in (("serial", False), ("pipelined", True)):
+        root = tmp_path / name
+        generation = _owned_generation_corpus(
+            root,
+            raw_count=revision_backfill._PIPELINE_DECODE_MIN_COHORTS,
+            snapshot=f"owned-equivalence-{name}",
+        )
+        results.append(
+            backfill_historical_revision_evidence(
+                Path(generation.index_path).parent,
+                owned_inactive_generation=(generation.generation_id, generation.owner_id),
+                use_session_shards=True,
+                max_cached_payload_bytes=1,
+                pipeline_decode=pipeline_decode,
+            )
+        )
+        manifests.append(_index_content_manifest(Path(generation.index_path).parent))
+
+    serial_result, pipelined_result = results
+    assert serial_result == pipelined_result
+    assert manifests[0] == manifests[1]
+    assert pipelined_result.stage_timings_s.get("spill_prefetch.consumed", 0.0) > 0
+    assert "spill_prefetch.consumed" not in serial_result.stage_timings_s

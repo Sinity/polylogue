@@ -27,12 +27,15 @@ Anti-vacuity: ``test_finished_build_comparison_rejects_a_diverged_or_indebted_ar
 executes both mutations a hollow comparator would survive -- one unresolved
 convergence-debt row and one deleted ``blocks`` row.
 
-The replacement arm's measured elapsed time is currently dominated by
-``spill_prefetch.decode_concurrent``, not by its own work: on this head the
-AUTO pipeline-decode prefetcher blocks for a full 30 s SQLite busy timeout on
-its first reparse inside the owned-generation bulk-build route (0.10 s with
-``pipeline_decode=False``, same output). The arms run the production default
-anyway, and the receipt names the phase rather than hiding it.
+The replacement arm's measured elapsed time was once dominated by
+``spill_prefetch.decode_concurrent`` rather than by its own work: the AUTO
+pipeline-decode prefetcher blocked for a full 30 s SQLite busy timeout on its
+first reparse inside the owned-generation bulk-build route (0.10 s with
+``pipeline_decode=False``, same output). polylogue-cz17d fixed that at the
+source -- a prefetch worker no longer opens a handle to an EXCLUSIVE-locked
+owned generation. Both arms still run the production default and this module
+still encodes no timing tolerance, so a regression re-appears as elapsed time
+in the receipt rather than being hidden by a bound.
 """
 
 from __future__ import annotations
