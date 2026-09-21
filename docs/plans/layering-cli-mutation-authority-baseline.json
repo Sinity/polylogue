@@ -2,11 +2,19 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.operations.mutation_actuators"
+    "import": "polylogue.operations.mutation_actuators",
+    "reason": "Reviewed 2026-09-21 (polylogue-r29bv AC5). Blocked on decision D2, not on effort. The facade's surviving in-process writers are all MCP-reached -- write(add_tag|add_mark|remove_mark|save_annotation) plus the saved-view, recall-pack, workspace, correction and blackboard methods -- and mutation.session.mark / mutation.annotation.save are deliberately session-scoped: a message- or block-targeted mark needs _resolve_user_state_target, which lives on the facade and which no daemon handler can call without a substrate-to-surface import. Lowering MCP therefore needs that resolver moved into polylogue/operations/ FIRST, and it also changes MCP's deployment requirement, because MCP writes work today with no daemon running. delete_session_safe is a further holder of this exact import: it authorizes with a caller-supplied actor and confirmation_strength='bound_token', so it never used _execute_facade_mutation and keeps the entry alive independently. This entry disappears when the LAST importer leaves the file, so it cannot register per-slice progress; the honest per-slice signal is the _execute_facade_mutation call-site count."
   },
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.operations.mutation_transaction"
+    "import": "polylogue.operations.mutation_transaction",
+    "reason": "Reviewed 2026-09-21 (polylogue-r29bv AC5). Same owner and same blocker as the mutation_actuators entry above: _execute_facade_mutation and delete_session_safe both construct OperationExecutor/MutationPrincipal here. Removing this import requires every facade mutation to have left, which decision D2 defers to the MCP owner."
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/annotations.py",
+    "import": "polylogue.annotations.importer",
+    "reason": "Reviewed 2026-09-21 (polylogue-gjwto / polylogue-r29bv AC3+AC5). ADDED BY A RULE EXTENSION, NOT BY NEW DEBT: the write predates this entry and was simply invisible. polylogue annotations import has always driven OperationExecutor against user.db from the CLI process; the mutation-authority disallow list named four executor modules and polylogue.annotations.importer is none of them, so the gate was green over a live CLI durable writer. #5310 recorded that hole verbatim. Extending the rule surfaces it; this entry records it as reviewed debt with a named predecessor rather than leaving it unobserved. Predecessor for lowering: import_annotation_batch validates every target_ref and evidence_ref through Polylogue.resolve_ref -- a surface method roughly 300 lines long, handling block anchors, annotation-batch refs and evidence-ref session membership. A daemon handler cannot import it (substrate-to-surface is forbidden outright), and reimplementing it handler-side would put a SECOND ref-resolution implementation behind a durable user.db admission decision, where a divergence silently changes which annotation rows are admitted. That is the same shape as decision D2's _resolve_user_state_target blocker. Resolve by moving resolve_ref into polylogue/operations/ so the facade and the daemon handler share one implementation, then lower this route and delete this entry."
   }
 ]
