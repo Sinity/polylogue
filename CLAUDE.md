@@ -228,7 +228,8 @@ from its run record; a green quick gate is static evidence only.
 
 Change cross-checks: parser/detection → origin specs + real fixtures + replay
 parity; storage/schema → fresh DDL + declared migration or moved identity +
-readers/writers + restart; query/read → CLI/API/MCP parity + pagination + cancellation; daemon →
+readers/writers + restart; query/read → equivalence between the generic read
+operation and the typed session-owner route + pagination + cancellation; daemon →
 lifecycle + cancellation + restart; MCP → registry + shared product route;
 fixture/harness → proves a production route.
 

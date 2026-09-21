@@ -2,6 +2,14 @@
 
 Polylogue owns indexed session listing, lexical search, transcript reads, orchestration evidence, resume context, event timelines, and explicit reads of original local session JSONL files. These operations share typed requests and result contracts in `polylogue/operations/session_contracts.py`. The archive operations run through controlled reads; raw fallback never ingests a file or assigns an archive session identity.
 
+## A second declared read executor, on purpose
+
+Indexed session reads have two declared executors, and this family is the second one. `polylogue/operations/daemon_reads.py:execute_read_operation` answers the generic, dict-keyed read operations (`cli.query`, `session.read`, `facets`, …) reached by the CLI, the daemon transport and the HTTP client. `polylogue/operations/session_reads.py:execute_session_operation` answers this typed family, and is reached by the MCP `query` tool and by `python -m polylogue.cli.session_operations execute`. Nothing under `polylogue/mcp/` calls the generic executor.
+
+The split is deliberate, not drift. This family declares per-operation request, result, error, authority and effects contracts generated from Pydantic models; the generic path carries untyped payload dictionaries keyed by an operation name. Half of the operations below — every `sessions.raw.*` and `memory.raw.*` read — answer from original local JSONL bytes with no archive authority at all, which the generic executor cannot express: it requires a pinned `ArchiveStore` snapshot and keys its result cache on the index generation. Collapsing this family into the generic read path would discard the contracts this document exists to declare.
+
+What must not diverge is the *mechanics* a read shares regardless of executor. `polylogue/operations/transcript_window.py` already owns window arithmetic, snapshot binding, epoch validation and continuation vocabulary for the transcript window, and `sessions.read` projects onto it rather than deciding a window itself. Where the two executors answer the same question — which sessions a filter selects, in what order, how many exist, where the next page starts — they are required to answer it identically, and that requirement is discharged by comparing the two executors against each other on one seeded archive (`tests/unit/operations/test_session_owner_route_equivalence.py`), not by driving two surfaces through one function.
+
 Generate exact per-operation JSON Schemas with:
 
 ```sh
