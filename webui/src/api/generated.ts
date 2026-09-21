@@ -346,7 +346,7 @@ export type QueryLoweringPlanAst = {
   readonly execution_legs?: ReadonlyArray<string>;
   readonly lowerer: string;
   readonly pipeline?: QueryUnitPipelineAst | null;
-  readonly pipeline_stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst> | null;
+  readonly pipeline_stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitAggStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst> | null;
   readonly plan_description?: ReadonlyArray<string>;
   readonly reference_lineage?: ReadonlyArray<string> | null;
   readonly selected_units?: ReadonlyArray<string>;
@@ -396,6 +396,17 @@ export type QueryTextPredicateAst = {
   readonly kind?: "fts";
   readonly text: string;
   readonly unit?: "session";
+};
+
+export type QueryUnitAggMetricAst = {
+  readonly field?: string | null;
+  readonly fn: string;
+  readonly label: string;
+};
+
+export type QueryUnitAggStageAst = {
+  readonly kind?: "agg";
+  readonly metrics?: ReadonlyArray<QueryUnitAggMetricAst>;
 };
 
 export type QueryUnitAggregateEnvelope = {
@@ -500,10 +511,11 @@ export type QueryUnitPipelineAst = {
   readonly result?: QueryUnitPipelineResultAst | null;
   readonly session_scope?: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst | null;
   readonly source: QueryUnitPipelineSourceAst;
-  readonly stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst>;
+  readonly stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitAggStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst>;
 };
 
 export type QueryUnitPipelineResultAst = {
+  readonly agg_metrics?: ReadonlyArray<QueryUnitAggMetricAst> | null;
   readonly aggregate?: "count" | null;
   readonly fields?: ReadonlyArray<string> | null;
   readonly group_by?: string | null;
@@ -537,12 +549,13 @@ export type QueryUnitSortStageAst = {
 };
 
 export type QueryUnitSourceAst = {
+  readonly agg_metrics?: ReadonlyArray<QueryUnitAggMetricAst> | null;
   readonly aggregate?: "count" | null;
   readonly group_by?: string | null;
   readonly limit?: number | null;
   readonly offset?: number | null;
   readonly pipeline: QueryUnitPipelineAst;
-  readonly pipeline_stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst>;
+  readonly pipeline_stages?: ReadonlyArray<QueryUnitSessionScopeStageAst | QueryUnitSortStageAst | QueryUnitLimitStageAst | QueryUnitOffsetStageAst | QueryUnitGroupStageAst | QueryUnitCountStageAst | QueryUnitAggStageAst | QueryUnitTransformStageAst | QueryUnitTerminalStageAst>;
   readonly predicate: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst;
   readonly session_predicate?: QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst | null;
   readonly sort?: QueryUnitSortSpecAst | null;
@@ -550,7 +563,7 @@ export type QueryUnitSourceAst = {
 };
 
 export type QueryUnitTerminalStageAst = {
-  readonly action: string;
+  readonly action: "rows" | "count" | "agg";
   readonly args?: ({
   readonly [key: string]: string;
 }) | null;

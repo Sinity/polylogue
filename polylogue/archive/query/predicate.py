@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import Literal, TypeAlias, cast
+from typing import Any, ClassVar, ForwardRef, Literal, TypeAlias, cast
+
+from polylogue.archive.query.payload_schema import PayloadField, PayloadSchema, render_payload
 
 QueryBoolOp: TypeAlias = Literal["and", "or"]
 QueryCompareOp: TypeAlias = Literal["=", ">", ">=", "<", "<="]
@@ -38,11 +40,20 @@ class QuerySequenceConstraint:
     kind: QuerySequenceConstraintKind = "ordered"
     within_ms: int | None = None
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"kind": self.kind}
-        if self.within_ms is not None:
-            payload["within_ms"] = self.within_ms
-        return payload
+        return render_payload(self, self.PAYLOAD)
+
+
+QuerySequenceConstraint.PAYLOAD = PayloadSchema(
+    "QuerySequenceConstraintAst",
+    (
+        PayloadField("kind", lambda: QuerySequenceConstraintKind, default="ordered"),
+        PayloadField("within_ms", lambda: int | None, omit="none", default=None),
+    ),
+    description="Constraint on the edge between two action-sequence steps.",
+)
 
 
 @dataclass(frozen=True)
@@ -54,15 +65,22 @@ class QueryFieldRef:
     source_name: str
     unit: str | None = None
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "scope": self.scope,
-            "name": self.name,
-            "source_name": self.source_name,
-        }
-        if self.unit is not None:
-            payload["unit"] = self.unit
-        return payload
+        return render_payload(self, self.PAYLOAD)
+
+
+QueryFieldRef.PAYLOAD = PayloadSchema(
+    "QueryFieldRefAst",
+    (
+        PayloadField("scope", lambda: QueryFieldScope),
+        PayloadField("name", lambda: str),
+        PayloadField("source_name", lambda: str),
+        PayloadField("unit", lambda: str | None, omit="none", default=None),
+    ),
+    description="Validated field identity carried by a field-predicate leaf.",
+)
 
 
 @dataclass(frozen=True)
@@ -84,11 +102,10 @@ class QueryFieldPredicate:
             field_ref=field_ref,
         )
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"kind": "field", "field": self.field, "op": self.op, "values": list(self.values)}
-        if self.field_ref is not None:
-            payload["field_ref"] = self.field_ref.to_payload()
-        return payload
+        return render_payload(self, self.PAYLOAD)
 
     def require_field_ref(self, *, context: str) -> QueryFieldRef:
         """Return the validated field identity or fail at an execution boundary."""
@@ -111,8 +128,10 @@ class QueryNotPredicate:
 
     child: QueryPredicate
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "not", "child": self.child.to_payload()}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -122,8 +141,10 @@ class QueryBoolPredicate:
     op: QueryBoolOp
     children: tuple[QueryPredicate, ...]
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": self.op, "children": [child.to_payload() for child in self.children]}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -133,8 +154,10 @@ class QueryExistsPredicate:
     unit: QueryExistsUnit
     child: QueryPredicate
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "exists", "unit": self.unit, "child": self.child.to_payload()}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -163,17 +186,10 @@ class QuerySequencePredicate:
         if len(self.constraints) != max(0, len(self.steps) - 1):
             raise ValueError("sequence constraints must describe every edge between steps")
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "kind": "sequence",
-            "unit": "action",
-            "steps": [step.to_payload() for step in self.steps],
-        }
-        if any(constraint.kind != "ordered" for constraint in self.constraints):
-            payload["constraints"] = [constraint.to_payload() for constraint in self.constraints]
-        if self.action_terms:
-            payload["actions"] = list(self.action_terms)
-        return payload
+        return render_payload(self, self.PAYLOAD)
 
 
 def _simple_sequence_action_terms(steps: tuple[QueryPredicate, ...]) -> tuple[str, ...]:
@@ -197,8 +213,21 @@ class QueryTextPredicate:
 
     text: str
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "fts", "unit": "session", "text": self.text}
+        return render_payload(self, self.PAYLOAD)
+
+
+QueryTextPredicate.PAYLOAD = PayloadSchema(
+    "QueryTextPredicateAst",
+    (
+        PayloadField("kind", lambda: Literal["fts"], const="fts"),
+        PayloadField("unit", lambda: Literal["session"], const="session"),
+        PayloadField("text", lambda: str),
+    ),
+    description="Lexical FTS predicate over session message/block text.",
+)
 
 
 @dataclass(frozen=True)
@@ -207,8 +236,21 @@ class QuerySemanticPredicate:
 
     text: str
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "semantic", "unit": "session", "text": self.text}
+        return render_payload(self, self.PAYLOAD)
+
+
+QuerySemanticPredicate.PAYLOAD = PayloadSchema(
+    "QuerySemanticPredicateAst",
+    (
+        PayloadField("kind", lambda: Literal["semantic"], const="semantic"),
+        PayloadField("unit", lambda: Literal["session"], const="session"),
+        PayloadField("text", lambda: str),
+    ),
+    description="Semantic vector predicate over session message/block text.",
+)
 
 
 @dataclass(frozen=True)
@@ -218,12 +260,27 @@ class QueryLineagePredicate:
     seed_session_id: str
     logical: bool = False
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
+    @property
+    def payload_kind(self) -> Literal["lineage", "logical"]:
+        """Wire tag: the lineage leaf publishes which topology it selects."""
+
+        return "logical" if self.logical else "lineage"
+
     def to_payload(self) -> dict[str, object]:
-        return {
-            "kind": "logical" if self.logical else "lineage",
-            "unit": "session",
-            "seed_session_id": self.seed_session_id,
-        }
+        return render_payload(self, self.PAYLOAD)
+
+
+QueryLineagePredicate.PAYLOAD = PayloadSchema(
+    "QueryLineagePredicateAst",
+    (
+        PayloadField("kind", lambda: Literal["lineage", "logical"], source="payload_kind", default="lineage"),
+        PayloadField("unit", lambda: Literal["session"], const="session"),
+        PayloadField("seed_session_id", lambda: str),
+    ),
+    description="Session-topology predicate selecting the seed's logical lineage.",
+)
 
 
 QueryPredicate: TypeAlias = (
@@ -235,6 +292,91 @@ QueryPredicate: TypeAlias = (
     | QueryTextPredicate
     | QuerySemanticPredicate
     | QueryLineagePredicate
+)
+
+
+#: Forward references to published models a declaration nests. The models are
+#: built in ``query_ast_schema`` and resolved by name once every member
+#: exists, so a node can declare a child of its own recursive union.
+PREDICATE_AST_REF: Any = ForwardRef("QueryPredicateAst")
+FIELD_REF_AST_REF: Any = ForwardRef("QueryFieldRefAst")
+SEQUENCE_CONSTRAINT_AST_REF: Any = ForwardRef("QuerySequenceConstraintAst")
+
+
+QueryFieldPredicate.PAYLOAD = PayloadSchema(
+    "QueryFieldPredicateAst",
+    (
+        PayloadField("kind", lambda: Literal["field"], const="field"),
+        PayloadField("field", lambda: str),
+        PayloadField("op", lambda: QueryCompareOp, default="="),
+        PayloadField("values", lambda: list[str], shape="scalar_list", default=[]),
+        PayloadField("field_ref", lambda: FIELD_REF_AST_REF | None, shape="node", omit="none", default=None),
+    ),
+    description="Leaf predicate over one supported session-query field.",
+)
+
+QueryNotPredicate.PAYLOAD = PayloadSchema(
+    "QueryNotPredicateAst",
+    (
+        PayloadField("kind", lambda: Literal["not"], const="not"),
+        PayloadField("child", lambda: PREDICATE_AST_REF, shape="node"),
+    ),
+    description="Boolean negation over a predicate subtree.",
+)
+
+QueryBoolPredicate.PAYLOAD = PayloadSchema(
+    "QueryBoolPredicateAst",
+    (
+        PayloadField("kind", lambda: QueryBoolOp, source="op"),
+        PayloadField("children", lambda: list[PREDICATE_AST_REF], shape="node_list", default=[]),
+    ),
+    description="N-ary Boolean operator over predicate subtrees.",
+)
+
+QueryExistsPredicate.PAYLOAD = PayloadSchema(
+    "QueryExistsPredicateAst",
+    (
+        PayloadField("kind", lambda: Literal["exists"], const="exists"),
+        PayloadField("unit", lambda: QueryExistsUnit),
+        PayloadField("child", lambda: PREDICATE_AST_REF, shape="node"),
+    ),
+    description="Correlated structural predicate over a child archive unit.",
+)
+
+QuerySequencePredicate.PAYLOAD = PayloadSchema(
+    "QuerySequencePredicateAst",
+    (
+        PayloadField("kind", lambda: Literal["sequence"], const="sequence"),
+        PayloadField("unit", lambda: Literal["action"], const="action"),
+        PayloadField("steps", lambda: list[PREDICATE_AST_REF], shape="node_list", default=[]),
+        PayloadField(
+            "constraints",
+            lambda: list[SEQUENCE_CONSTRAINT_AST_REF],
+            shape="node_list",
+            # Every edge carries a constraint internally; the wire omits them
+            # when they are all the default ordering, so an ordinary sequence
+            # predicate does not publish a list of empty edges.
+            omit_when=lambda node: all(constraint.kind == "ordered" for constraint in node.constraints),
+            default=[],
+        ),
+        PayloadField(
+            "actions", lambda: list[str], source="action_terms", shape="scalar_list", omit="falsy", default=[]
+        ),
+    ),
+    description="Ordered action-sequence predicate over a session.",
+)
+
+
+#: Declared predicate leaves and composites, in published union order.
+PREDICATE_PAYLOAD_SCHEMAS: tuple[PayloadSchema, ...] = (
+    QueryFieldPredicate.PAYLOAD,
+    QueryNotPredicate.PAYLOAD,
+    QueryBoolPredicate.PAYLOAD,
+    QueryExistsPredicate.PAYLOAD,
+    QuerySequencePredicate.PAYLOAD,
+    QueryTextPredicate.PAYLOAD,
+    QuerySemanticPredicate.PAYLOAD,
+    QueryLineagePredicate.PAYLOAD,
 )
 
 
@@ -405,6 +547,7 @@ def lineage_seed_from_predicate(predicate: QueryPredicate | None) -> str | None:
 
 
 __all__ = [
+    "PREDICATE_PAYLOAD_SCHEMAS",
     "QueryBoolOp",
     "QueryBoolPredicate",
     "QueryCompareOp",

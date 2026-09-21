@@ -1,188 +1,120 @@
-"""Canonical, versioned Pydantic projection of the query DSL's compiled AST.
+"""Canonical, versioned wire schema for the query DSL's compiled AST.
 
-``polylogue/archive/query/expression.py:explain_expression`` already computes
-a compiled predicate tree, a per-branch ``ast`` dict, and a ``lowering_plan``
-dict for every query DSL expression (fielded compact queries, ``sessions
-where ...`` Boolean expressions, terminal unit sources such as ``actions
-where ...``, and durable-reference pipelines). Those dicts are produced by
-hand-rolled ``to_payload()`` methods scattered across
-:mod:`polylogue.archive.query.predicate` and
-:mod:`polylogue.archive.query.expression` -- correct, but untyped and
-undocumented from an external consumer's point of view (an MCP client or
-OpenAPI-generated SDK sees ``dict[str, object] | None``).
+``polylogue.archive.query.expression.explain_expression`` computes a compiled
+predicate tree, a per-branch ``ast`` document, and a ``lowering_plan`` document
+for every query DSL expression (fielded compact queries, ``sessions where ...``
+Boolean expressions, terminal unit sources such as ``actions where ...``, and
+durable-reference pipelines). External consumers -- an MCP client, an
+OpenAPI-generated SDK, the generated webui client -- need those documents
+described, not handed to them as ``dict[str, object] | None``.
 
-This module does **not** introduce a second AST or a parallel intermediate
-representation. It defines Pydantic models that mirror the existing
-dataclasses' ``to_payload()`` shapes one-to-one, then *validates* the
-already-produced payload against them (see :func:`explanation_payload_to_ast`,
-:func:`predicate_to_ast`). If a producer's ``to_payload()`` ever drifts from
-the shape declared here, validation fails loudly in
-``tests/unit/archive/query/test_query_ast_schema.py`` rather than silently
-diverging -- that test is the parity gate the bead's design calls for
-("adding/removing a field ... fails one actionable check").
+This module publishes that description. It does **not** restate it: every
+model here is built from the payload declaration the producing node already
+owns (:mod:`polylogue.archive.query.payload_schema`), which is the same
+declaration the node serializes itself from. Adding a key to a node's payload
+therefore reaches the rendered OpenAPI and the generated client with no second
+edit, and a hand-written schema that could disagree with the serializer has
+nowhere to live.
 
 Two independent version axes are in play and must not be conflated:
 
 * :data:`polylogue.core.query_identity.QUERY_DEFINITION_PROTOCOL_VERSION`
   (``polylogue.query-definition.v1``) versions the *content-addressed*
-  predicate grammar used for query hashing/identity
-  (``predicate_from_payload`` / ``QueryPredicate.to_payload``). This module's
-  :data:`QueryPredicateAst` union is a typed, schema-validated *view* of that
-  same v1 grammar -- it does not define a new grammar version.
+  predicate grammar used for query hashing and identity
+  (``predicate_from_payload`` / ``QueryPredicate.to_payload``).
+  :data:`QueryPredicateAst` is a typed view of that same v1 grammar; it does
+  not define a new grammar version.
 * :data:`QUERY_AST_SCHEMA_VERSION` (``polylogue.query-explain-ast.v1``)
-  versions the broader *discovery/explain* envelope defined in this module
-  (clauses, unit sources, pipelines, lowering plan) that has no prior typed
-  home. Bump it when this envelope's shape changes non-additively.
-
-Reused, not reinvented: every leaf/composite predicate kind, pipeline stage
-kind, and terminal action here matches an existing closed vocabulary in
-:mod:`polylogue.archive.query.predicate` and
-:mod:`polylogue.archive.query.expression`. This module adds a stable,
-JSON-Schema-capable serialization shape on top of them for external tooling
-(OpenAPI generation, MCP-facing typed discovery) -- see
-``devtools/render_openapi.py`` and
-``polylogue/archive/query/expression.py:QueryExpressionExplanation.to_payload``.
+  versions the broader discovery/explain envelope (clauses, unit sources,
+  pipelines, lowering plan). Bump it when that envelope changes
+  non-additively.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, cast
+from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
-from polylogue.archive.query.metadata import QueryUnitName
+from polylogue.archive.query.expression import (
+    PIPELINE_STAGE_PAYLOAD_SCHEMAS,
+    QUERY_AST_PAYLOAD_SCHEMAS,
+    QUERY_AST_SCHEMA_VERSION,
+)
+from polylogue.archive.query.payload_schema import (
+    PayloadModelRegistry,
+    PayloadUnion,
+    union_annotation,
+)
 from polylogue.archive.query.predicate import (
-    QueryBoolOp,
-    QueryCompareOp,
-    QueryExistsUnit,
+    PREDICATE_PAYLOAD_SCHEMAS,
+    QueryFieldRef,
     QueryPredicate,
-    QuerySequenceConstraintKind,
+    QuerySequenceConstraint,
     predicate_from_payload,
 )
 
-#: Version stamp for the canonical query-explain AST envelope defined below
-#: (:class:`QueryExpressionExplanationAst` and everything it nests). See the
-#: module docstring for how this relates to
-#: ``QUERY_DEFINITION_PROTOCOL_VERSION``.
-QUERY_AST_SCHEMA_VERSION: Literal["polylogue.query-explain-ast.v1"] = "polylogue.query-explain-ast.v1"
+_registry = PayloadModelRegistry()
+
+#: Nested declarations that are reached only through another node.
+_NESTED_PAYLOAD_SCHEMAS = (QueryFieldRef.PAYLOAD, QuerySequenceConstraint.PAYLOAD)
+
+for _schema in (*_NESTED_PAYLOAD_SCHEMAS, *PREDICATE_PAYLOAD_SCHEMAS, *QUERY_AST_PAYLOAD_SCHEMAS):
+    _registry.build(_schema)
+
+_PREDICATE_UNION = PayloadUnion("QueryPredicateAst", PREDICATE_PAYLOAD_SCHEMAS)
+_PIPELINE_STAGE_UNION = PayloadUnion("QueryUnitPipelineStageAst", PIPELINE_STAGE_PAYLOAD_SCHEMAS)
+
+QueryPredicateAst: Any = union_annotation(_PREDICATE_UNION, _registry.models)
+QueryUnitPipelineStageAst: Any = union_annotation(_PIPELINE_STAGE_UNION, _registry.models)
+
+#: Every published model plus the two union aliases, so recursive forward
+#: references resolve without any of them being written down twice.
+_NAMESPACE: dict[str, Any] = {
+    **_registry.models,
+    "QueryPredicateAst": QueryPredicateAst,
+    "QueryUnitPipelineStageAst": QueryUnitPipelineStageAst,
+}
+_registry.rebuild(_NAMESPACE)
 
 
-class _AstModel(BaseModel):
-    """Shared strict base: unknown keys fail validation instead of being dropped."""
+def published_ast_models() -> dict[str, type[BaseModel]]:
+    """Return every published query-AST model, keyed by its schema name."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-# ---------------------------------------------------------------------------
-# Predicate tree -- mirrors polylogue.archive.query.predicate.QueryPredicate
-# ---------------------------------------------------------------------------
+    return dict(_registry.models)
 
 
-class QueryFieldRefAst(_AstModel):
-    """Validated field identity carried by a field-predicate leaf."""
-
-    scope: Literal["session", "unit"]
-    name: str
-    source_name: str
-    unit: str | None = None
-
-
-class QueryFieldPredicateAst(_AstModel):
-    """Leaf predicate over one supported session-query field."""
-
-    kind: Literal["field"] = "field"
-    field: str
-    op: QueryCompareOp = "="
-    values: list[str] = Field(default_factory=list)
-    field_ref: QueryFieldRefAst | None = None
-
-
-class QueryNotPredicateAst(_AstModel):
-    """Boolean negation over a predicate subtree."""
-
-    kind: Literal["not"] = "not"
-    child: QueryPredicateAst
-
-
-class QueryBoolPredicateAst(_AstModel):
-    """N-ary Boolean operator over predicate subtrees."""
-
-    kind: QueryBoolOp
-    children: list[QueryPredicateAst] = Field(default_factory=list)
-
-
-class QuerySequenceConstraintAst(_AstModel):
-    """Constraint on the edge between two action-sequence steps."""
-
-    kind: QuerySequenceConstraintKind = "ordered"
-    within_ms: int | None = None
-
-
-class QueryExistsPredicateAst(_AstModel):
-    """Correlated structural predicate over a child archive unit."""
-
-    kind: Literal["exists"] = "exists"
-    unit: QueryExistsUnit
-    child: QueryPredicateAst
-
-
-class QuerySequencePredicateAst(_AstModel):
-    """Ordered action-sequence predicate over a session."""
-
-    kind: Literal["sequence"] = "sequence"
-    unit: Literal["action"] = "action"
-    steps: list[QueryPredicateAst] = Field(default_factory=list)
-    constraints: list[QuerySequenceConstraintAst] = Field(default_factory=list)
-    actions: list[str] = Field(default_factory=list)
-
-
-class QueryTextPredicateAst(_AstModel):
-    """Lexical FTS predicate over session message/block text."""
-
-    kind: Literal["fts"] = "fts"
-    unit: Literal["session"] = "session"
-    text: str
-
-
-class QuerySemanticPredicateAst(_AstModel):
-    """Semantic vector predicate over session message/block text."""
-
-    kind: Literal["semantic"] = "semantic"
-    unit: Literal["session"] = "session"
-    text: str
-
-
-class QueryLineagePredicateAst(_AstModel):
-    """Session-topology predicate selecting the seed's logical lineage."""
-
-    kind: Literal["lineage", "logical"] = "lineage"
-    unit: Literal["session"] = "session"
-    seed_session_id: str
-
-
-QueryPredicateAst = Annotated[
-    QueryFieldPredicateAst
-    | QueryNotPredicateAst
-    | QueryBoolPredicateAst
-    | QueryExistsPredicateAst
-    | QuerySequencePredicateAst
-    | QueryTextPredicateAst
-    | QuerySemanticPredicateAst
-    | QueryLineagePredicateAst,
-    Field(discriminator="kind"),
-]
-
-for _predicate_model in (
-    QueryFieldPredicateAst,
-    QueryNotPredicateAst,
-    QueryBoolPredicateAst,
-    QueryExistsPredicateAst,
-    QuerySequencePredicateAst,
-    QueryTextPredicateAst,
-    QuerySemanticPredicateAst,
-    QueryLineagePredicateAst,
-):
-    _predicate_model.model_rebuild()
+QueryFieldRefAst = _registry.models["QueryFieldRefAst"]
+QuerySequenceConstraintAst = _registry.models["QuerySequenceConstraintAst"]
+QueryFieldPredicateAst = _registry.models["QueryFieldPredicateAst"]
+QueryNotPredicateAst = _registry.models["QueryNotPredicateAst"]
+QueryBoolPredicateAst = _registry.models["QueryBoolPredicateAst"]
+QueryExistsPredicateAst = _registry.models["QueryExistsPredicateAst"]
+QuerySequencePredicateAst = _registry.models["QuerySequencePredicateAst"]
+QueryTextPredicateAst = _registry.models["QueryTextPredicateAst"]
+QuerySemanticPredicateAst = _registry.models["QuerySemanticPredicateAst"]
+QueryLineagePredicateAst = _registry.models["QueryLineagePredicateAst"]
+RefOperandAst = _registry.models["RefOperandAst"]
+ReferenceQueryPipelineAst = _registry.models["ReferenceQueryPipelineAst"]
+QueryUnitSortSpecAst = _registry.models["QueryUnitSortSpecAst"]
+QueryUnitAggMetricAst = _registry.models["QueryUnitAggMetricAst"]
+QueryUnitSessionScopeStageAst = _registry.models["QueryUnitSessionScopeStageAst"]
+QueryUnitSortStageAst = _registry.models["QueryUnitSortStageAst"]
+QueryUnitLimitStageAst = _registry.models["QueryUnitLimitStageAst"]
+QueryUnitOffsetStageAst = _registry.models["QueryUnitOffsetStageAst"]
+QueryUnitGroupStageAst = _registry.models["QueryUnitGroupStageAst"]
+QueryUnitCountStageAst = _registry.models["QueryUnitCountStageAst"]
+QueryUnitAggStageAst = _registry.models["QueryUnitAggStageAst"]
+QueryUnitTransformStageAst = _registry.models["QueryUnitTransformStageAst"]
+QueryUnitTerminalStageAst = _registry.models["QueryUnitTerminalStageAst"]
+QueryUnitPipelineSourceAst = _registry.models["QueryUnitPipelineSourceAst"]
+QueryUnitPipelineResultAst = _registry.models["QueryUnitPipelineResultAst"]
+QueryUnitPipelineAst = _registry.models["QueryUnitPipelineAst"]
+QueryUnitSourceAst = _registry.models["QueryUnitSourceAst"]
+QueryExpressionClauseAst = _registry.models["QueryExpressionClauseAst"]
+QueryExpressionAstNodeAst = _registry.models["QueryExpressionAstNodeAst"]
+QueryLoweringPlanAst = _registry.models["QueryLoweringPlanAst"]
+QueryExpressionExplanationAst = _registry.models["QueryExpressionExplanationAst"]
 
 _predicate_adapter: TypeAdapter[Any] = TypeAdapter(QueryPredicateAst)
 
@@ -191,9 +123,10 @@ def predicate_to_ast(predicate: QueryPredicate) -> Any:
     """Project a compiled predicate node into the canonical, typed AST.
 
     This validates ``predicate``'s own lossless ``to_payload()`` projection
-    against :data:`QueryPredicateAst` -- it does not re-derive the payload by
-    walking the dataclass a second time, so the two shapes cannot drift apart
-    without a validation failure surfacing immediately.
+    against :data:`QueryPredicateAst`. Both sides are produced from the node's
+    one payload declaration, so a validation failure here means the payload
+    the node actually emitted disagrees with the declaration it emitted it
+    from -- a real defect, not a mirror falling behind.
     """
     return _predicate_adapter.validate_python(predicate.to_payload())
 
@@ -204,204 +137,8 @@ def ast_to_predicate(ast: Any) -> QueryPredicate:
     return predicate_from_payload(payload)
 
 
-# ---------------------------------------------------------------------------
-# Explain clause / reference-operand / pipeline projections
-# ---------------------------------------------------------------------------
-
-
-class QueryExpressionClauseAst(_AstModel):
-    """Mirrors ``QueryExpressionExplainClause.to_payload()``."""
-
-    kind: Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
-    field: str | None = None
-    value: str | None = None
-    negated: bool = False
-    quoted: bool = False
-    op: QueryCompareOp | None = None
-    number: int | None = None
-    min_number: int | None = None
-    max_number: int | None = None
-    min_value: str | None = None
-    max_value: str | None = None
-
-
-class RefOperandAst(_AstModel):
-    """Mirrors ``RefOperand.to_payload()``."""
-
-    kind: Literal["ref_operand"] = "ref_operand"
-    reference: str
-    reference_kind: str
-    evaluation_mode: Literal["re-evaluate", "retained", "resolver-defined"]
-    grain: str | None = None
-
-
-class ReferenceQueryPipelineAst(_AstModel):
-    """Mirrors ``ReferenceQueryPipeline.to_payload()``."""
-
-    source: RefOperandAst
-    stages: list[str] = Field(default_factory=list)
-
-
-class QueryUnitSortSpecAst(_AstModel):
-    """Mirrors ``QueryUnitSort`` (field/direction)."""
-
-    field: Literal["time", "count", "key"]
-    direction: Literal["asc", "desc"] = "asc"
-
-
-class QueryUnitSessionScopeStageAst(_AstModel):
-    kind: Literal["session_scope"] = "session_scope"
-    predicate: QueryPredicateAst
-
-
-class QueryUnitSortStageAst(_AstModel):
-    kind: Literal["sort"] = "sort"
-    sort: QueryUnitSortSpecAst
-
-
-class QueryUnitLimitStageAst(_AstModel):
-    kind: Literal["limit"] = "limit"
-    value: int
-
-
-class QueryUnitOffsetStageAst(_AstModel):
-    kind: Literal["offset"] = "offset"
-    value: int
-
-
-class QueryUnitGroupStageAst(_AstModel):
-    kind: Literal["group"] = "group"
-    field: str | None = None
-    fields: list[str] | None = None
-
-
-class QueryUnitCountStageAst(_AstModel):
-    kind: Literal["count"] = "count"
-    metric: Literal["count"] = "count"
-
-
-class QueryUnitTransformStageAst(_AstModel):
-    kind: Literal["transform"] = "transform"
-    name: str
-    args: dict[str, str] | None = None
-
-
-class QueryUnitTerminalStageAst(_AstModel):
-    kind: Literal["terminal"] = "terminal"
-    action: str
-    args: dict[str, str] | None = None
-
-
-QueryUnitPipelineStageAst = Annotated[
-    QueryUnitSessionScopeStageAst
-    | QueryUnitSortStageAst
-    | QueryUnitLimitStageAst
-    | QueryUnitOffsetStageAst
-    | QueryUnitGroupStageAst
-    | QueryUnitCountStageAst
-    | QueryUnitTransformStageAst
-    | QueryUnitTerminalStageAst,
-    Field(discriminator="kind"),
-]
-
-QueryUnitSessionScopeStageAst.model_rebuild()
-
-
-class QueryUnitPipelineSourceAst(_AstModel):
-    unit: QueryUnitName
-    predicate: QueryPredicateAst
-
-
-class QueryUnitPipelineResultAst(_AstModel):
-    sort: QueryUnitSortSpecAst | None = None
-    group_by: str | None = None
-    aggregate: Literal["count"] | None = None
-    limit: int | None = None
-    offset: int | None = None
-    fields: list[str] | None = None
-
-
-class QueryUnitPipelineAst(_AstModel):
-    """Mirrors ``QueryUnitPipeline.to_payload()``."""
-
-    source: QueryUnitPipelineSourceAst
-    stages: list[QueryUnitPipelineStageAst] = Field(default_factory=list)
-    session_scope: QueryPredicateAst | None = None
-    result: QueryUnitPipelineResultAst | None = None
-
-
-class QueryUnitSourceAst(_AstModel):
-    """Mirrors the ``unit_source`` branch of ``_ast_payload()``."""
-
-    unit: QueryUnitName
-    predicate: QueryPredicateAst
-    session_predicate: QueryPredicateAst | None = None
-    limit: int | None = None
-    offset: int | None = None
-    sort: QueryUnitSortSpecAst | None = None
-    group_by: str | None = None
-    aggregate: Literal["count"] | None = None
-    pipeline_stages: list[QueryUnitPipelineStageAst] = Field(default_factory=list)
-    pipeline: QueryUnitPipelineAst
-
-
-class QueryExpressionAstNodeAst(_AstModel):
-    """Mirrors ``_ast_payload()``'s dict shape: one entry-tagged AST node."""
-
-    entry: Literal["json", "reference_pipeline", "unit_source", "boolean", "compact"]
-    clauses: list[QueryExpressionClauseAst] | None = None
-    predicate: QueryPredicateAst | None = None
-    unit_source: QueryUnitSourceAst | None = None
-    reference_pipeline: ReferenceQueryPipelineAst | None = None
-
-
-class QueryLoweringPlanAst(_AstModel):
-    """Mirrors ``_lowering_plan_payload()``."""
-
-    lowerer: str
-    selected_units: list[str] = Field(default_factory=list)
-    execution_legs: list[str] = Field(default_factory=list)
-    plan_description: list[str] = Field(default_factory=list)
-    compatibility_selector: str | None = None
-    pipeline: QueryUnitPipelineAst | None = None
-    pipeline_stages: list[QueryUnitPipelineStageAst] | None = None
-    #: Durable-reference ancestry (formatted ``ObjectRef`` strings), present
-    #: only on the ``reference-operand-to-planner-relation`` lowerer branch
-    #: (``explain_expression``'s ``reference_pipeline`` entry).
-    reference_lineage: list[str] | None = None
-
-
-class QueryExpressionExplanationAst(_AstModel):
-    """Canonical, versioned projection of ``QueryExpressionExplanation.to_payload()``.
-
-    This is the schema published in ``docs/openapi/search.yaml`` and the
-    documented shape of the MCP ``explain`` operation's ``kind="query"``
-    result (``polylogue.mcp.server_cutover:explain`` ->
-    ``Polylogue.explain_query_expression``). It is deliberately additive over
-    history: every field already existed in the hand-rolled payload dict this
-    module validates against; ``schema_version`` is the only new key.
-    """
-
-    schema_version: Literal["polylogue.query-explain-ast.v1"] = QUERY_AST_SCHEMA_VERSION
-    source_text: str
-    clauses: list[QueryExpressionClauseAst] = Field(default_factory=list)
-    predicate: QueryPredicateAst | None = None
-    ast: QueryExpressionAstNodeAst | None = None
-    lowerer: str
-    lowering_plan: QueryLoweringPlanAst | None = None
-    selected_units: list[str] = Field(default_factory=list)
-    execution_legs: list[str] = Field(default_factory=list)
-    plan_description: list[str] = Field(default_factory=list)
-    unsupported_nodes: list[str] = Field(default_factory=list)
-
-
-def explanation_payload_to_ast(payload: dict[str, object]) -> QueryExpressionExplanationAst:
-    """Validate an already-built ``QueryExpressionExplanation.to_payload()`` dict.
-
-    This is the parity gate: any hand-rolled payload shape that does not
-    match this module's declared schema raises a Pydantic ``ValidationError``
-    here rather than silently reaching an agent or generated client.
-    """
+def explanation_payload_to_ast(payload: dict[str, object]) -> Any:
+    """Validate an already-built ``QueryExpressionExplanation.to_payload()`` dict."""
     return QueryExpressionExplanationAst.model_validate(payload)
 
 
@@ -422,6 +159,8 @@ __all__ = [
     "QuerySequenceConstraintAst",
     "QuerySequencePredicateAst",
     "QueryTextPredicateAst",
+    "QueryUnitAggMetricAst",
+    "QueryUnitAggStageAst",
     "QueryUnitCountStageAst",
     "QueryUnitGroupStageAst",
     "QueryUnitLimitStageAst",
@@ -441,4 +180,5 @@ __all__ = [
     "ast_to_predicate",
     "explanation_payload_to_ast",
     "predicate_to_ast",
+    "published_ast_models",
 ]

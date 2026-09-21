@@ -108,7 +108,7 @@ import math
 import re
 from dataclasses import dataclass, field, replace
 from difflib import get_close_matches
-from typing import Any, Literal, Protocol, cast
+from typing import Any, ClassVar, ForwardRef, Literal, Protocol, cast
 
 from lark import Lark, Token, Transformer, v_args
 from lark.exceptions import UnexpectedInput, VisitError
@@ -139,6 +139,7 @@ from polylogue.archive.query.metadata import (
     terminal_query_source_list,
     terminal_query_source_pairs,
 )
+from polylogue.archive.query.payload_schema import PayloadField, PayloadSchema, render_payload
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryCompareOp,
@@ -331,16 +332,20 @@ class RefOperand:
             return "retained"
         return "resolver-defined"
 
+    @property
+    def payload_reference(self) -> str:
+        """Wire form of the durable reference this operand names."""
+
+        return self.reference.format()
+
+    @property
+    def payload_reference_kind(self) -> str:
+        return self.reference.kind
+
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "kind": "ref_operand",
-            "reference": self.reference.format(),
-            "reference_kind": self.reference.kind,
-            "evaluation_mode": self.evaluation_mode,
-        }
-        if self.grain is not None:
-            payload["grain"] = self.grain
-        return payload
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -405,8 +410,10 @@ class ReferenceQueryPipeline:
     operand: RefOperand
     stages: tuple[str, ...] = ()
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"source": self.operand.to_payload(), "stages": list(self.stages)}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -415,6 +422,11 @@ class QueryUnitSort:
 
     field: Literal["time", "count", "key"]
     direction: Literal["asc", "desc"] = "asc"
+
+    PAYLOAD: ClassVar[PayloadSchema]
+
+    def to_payload(self) -> dict[str, object]:
+        return render_payload(self, self.PAYLOAD)
 
 
 QueryUnitPipelineStageKind = Literal[
@@ -482,8 +494,10 @@ class QueryUnitSessionScopeStage:
 
     predicate: QueryPredicate
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "session_scope", "predicate": self.predicate.to_payload()}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -492,14 +506,10 @@ class QueryUnitSortStage:
 
     sort: QueryUnitSort
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {
-            "kind": "sort",
-            "sort": {
-                "field": self.sort.field,
-                "direction": self.sort.direction,
-            },
-        }
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -508,8 +518,10 @@ class QueryUnitLimitStage:
 
     value: int
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "limit", "value": self.value}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -518,8 +530,10 @@ class QueryUnitOffsetStage:
 
     value: int
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "offset", "value": self.value}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -528,18 +542,26 @@ class QueryUnitGroupStage:
 
     fields: tuple[str, ...]
 
+    @property
+    def payload_field(self) -> str | None:
+        """Single-field groups publish ``field``; wider ones publish ``fields``."""
+
+        return self.fields[0] if len(self.fields) == 1 else None
+
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        if len(self.fields) == 1:
-            return {"kind": "group", "field": self.fields[0]}
-        return {"kind": "group", "fields": list(self.fields)}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
 class QueryUnitCountStage:
     """Count aggregation stage in a terminal query-unit pipeline."""
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "count", "metric": "count"}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -555,11 +577,10 @@ class QueryUnitAggMetric:
     field: str | None
     label: str
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"fn": self.fn, "label": self.label}
-        if self.field is not None:
-            payload["field"] = self.field
-        return payload
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -573,8 +594,10 @@ class QueryUnitAggStage:
 
     metrics: tuple[QueryUnitAggMetric, ...]
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        return {"kind": "agg", "metrics": [metric.to_payload() for metric in self.metrics]}
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -588,11 +611,10 @@ class QueryUnitTransformStage:
     name: str
     args: tuple[tuple[str, str], ...] = ()
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"kind": "transform", "name": self.name}
-        if self.args:
-            payload["args"] = dict(self.args)
-        return payload
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -609,11 +631,10 @@ class QueryUnitTerminalStage:
     action: QueryUnitTerminalAction
     args: tuple[tuple[str, str], ...] = ()
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"kind": "terminal", "action": self.action}
-        if self.args:
-            payload["args"] = dict(self.args)
-        return payload
+        return render_payload(self, self.PAYLOAD)
 
 
 QueryUnitPipelineStage = (
@@ -646,41 +667,22 @@ class QueryUnitPipeline:
     selected_fields: tuple[str, ...] = ()
     terminal: QueryUnitTerminalStage = QueryUnitTerminalStage(action="rows")
 
+    @property
+    def payload_stages(self) -> tuple[QueryUnitPipelineStage, ...]:
+        """Ordered stages ending in the terminal node.
+
+        The terminal node is the final element of the published stage sequence
+        (#2006 Pipeline AST: ``... Sort, Limit, Terminal(action)``), so
+        ``stages`` and the executed ``pipeline_stages`` page metadata stay
+        identical and always culminate in the terminal action.
+        """
+
+        return (*self.stages, self.terminal)
+
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        # The terminal node is the final element of the ordered stage sequence
-        # (#2006 Pipeline AST: ``... Sort, Limit, Terminal(action)``), so
-        # ``stages`` and the executed ``pipeline_stages`` page metadata stay
-        # identical and always culminate in the terminal action.
-        payload: dict[str, object] = {
-            "source": {
-                "unit": self.source_unit,
-                "predicate": self.predicate.to_payload(),
-            },
-            "stages": [stage.to_payload() for stage in self.stages] + [self.terminal.to_payload()],
-        }
-        if self.session_predicate is not None:
-            payload["session_scope"] = self.session_predicate.to_payload()
-        result: dict[str, object] = {}
-        if self.sort is not None:
-            result["sort"] = {
-                "field": self.sort.field,
-                "direction": self.sort.direction,
-            }
-        if self.group_by is not None:
-            result["group_by"] = self.group_by
-        if self.aggregate is not None:
-            result["aggregate"] = self.aggregate
-        if self.agg_metrics is not None:
-            result["agg_metrics"] = [metric.to_payload() for metric in self.agg_metrics]
-        if self.limit is not None:
-            result["limit"] = self.limit
-        if self.offset is not None:
-            result["offset"] = self.offset
-        if self.selected_fields:
-            result["fields"] = list(self.selected_fields)
-        if result:
-            payload["result"] = result
-        return payload
+        return render_payload(self, self.PAYLOAD)
 
 
 @dataclass(frozen=True)
@@ -758,6 +760,11 @@ class QueryUnitSource:
             terminal=QueryUnitTerminalStage(action=terminal_action),
         )
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
+    def to_payload(self) -> dict[str, object]:
+        return render_payload(self, self.PAYLOAD)
+
 
 ExplainClauseKind = Literal["field", "count", "count_range", "date", "date_range", "text", "json"]
 
@@ -778,29 +785,22 @@ class QueryExpressionExplainClause:
     min_value: str | None = None
     max_value: str | None = None
 
+    PAYLOAD: ClassVar[PayloadSchema]
+
     def to_payload(self) -> dict[str, object]:
-        payload: dict[str, object] = {"kind": self.kind}
-        if self.field is not None:
-            payload["field"] = self.field
-        if self.value is not None:
-            payload["value"] = self.value
-        if self.negated:
-            payload["negated"] = True
-        if self.quoted:
-            payload["quoted"] = True
-        if self.op is not None:
-            payload["op"] = self.op
-        if self.number is not None:
-            payload["number"] = self.number
-        if self.min_number is not None:
-            payload["min_number"] = self.min_number
-        if self.max_number is not None:
-            payload["max_number"] = self.max_number
-        if self.min_value is not None:
-            payload["min_value"] = self.min_value
-        if self.max_value is not None:
-            payload["max_value"] = self.max_value
-        return payload
+        return render_payload(self, self.PAYLOAD)
+
+
+#: Version stamp for the canonical query-explain AST envelope this module
+#: produces. Bump when the envelope's shape changes non-additively.
+#:
+#: This is **not** the content-addressed query grammar version. That is
+#: ``polylogue.core.query_identity.QUERY_DEFINITION_PROTOCOL_VERSION``
+#: (``polylogue.query-definition.v1``), which versions the predicate payloads
+#: used for query hashing and identity. This constant versions the broader
+#: discovery/explain envelope -- clauses, unit sources, pipelines, lowering
+#: plan -- and moves independently of it.
+QUERY_AST_SCHEMA_VERSION: Literal["polylogue.query-explain-ast.v1"] = "polylogue.query-explain-ast.v1"
 
 
 @dataclass(frozen=True)
@@ -819,28 +819,418 @@ class QueryExpressionExplanation:
     ast: dict[str, object] | None = None
     lowering_plan: dict[str, object] | None = None
 
-    def to_payload(self) -> dict[str, object]:
-        # Local import: query_ast_schema.py depends on expression.py's own
-        # QueryUnitName (via metadata.py, not expression.py directly), so a
-        # module-level import here would still be safe, but this stays local
-        # to keep the one-way dependency (schema module never imports this
-        # module) obvious at a glance -- see query_ast_schema's module
-        # docstring for the versioning rationale.
-        from polylogue.archive.query.query_ast_schema import QUERY_AST_SCHEMA_VERSION
+    PAYLOAD: ClassVar[PayloadSchema]
 
-        return {
-            "schema_version": QUERY_AST_SCHEMA_VERSION,
-            "source_text": self.source_text,
-            "clauses": [clause.to_payload() for clause in self.clauses],
-            "predicate": self.predicate.to_payload() if self.predicate is not None else None,
-            "ast": self.ast,
-            "lowerer": self.lowerer,
-            "lowering_plan": self.lowering_plan,
-            "selected_units": list(self.selected_units),
-            "execution_legs": list(self.execution_legs),
-            "plan_description": list(self.plan_description),
-            "unsupported_nodes": list(self.unsupported_nodes),
-        }
+    def to_payload(self) -> dict[str, object]:
+        return render_payload(self, self.PAYLOAD)
+
+
+# ---------------------------------------------------------------------------
+# Published payload declarations
+# ---------------------------------------------------------------------------
+#
+# Each node above serializes itself from the declaration below, and
+# ``polylogue.archive.query.query_ast_schema`` builds the published Pydantic
+# models from the same declarations. Read this block as the wire document: it
+# is the only statement of what the explain AST looks like.
+
+#: Forward references to published models these declarations nest. The models
+#: are built once every member exists, so a declaration may name a model that
+#: is still being defined.
+_PREDICATE_AST: Any = ForwardRef("QueryPredicateAst")
+_PIPELINE_STAGE_AST: Any = ForwardRef("QueryUnitPipelineStageAst")
+_SORT_AST: Any = ForwardRef("QueryUnitSortSpecAst")
+_AGG_METRIC_AST: Any = ForwardRef("QueryUnitAggMetricAst")
+_CLAUSE_AST: Any = ForwardRef("QueryExpressionClauseAst")
+_REF_OPERAND_AST: Any = ForwardRef("RefOperandAst")
+_UNIT_SOURCE_AST: Any = ForwardRef("QueryUnitSourceAst")
+_REFERENCE_PIPELINE_AST: Any = ForwardRef("ReferenceQueryPipelineAst")
+_PIPELINE_AST: Any = ForwardRef("QueryUnitPipelineAst")
+_AST_NODE_AST: Any = ForwardRef("QueryExpressionAstNodeAst")
+_LOWERING_PLAN_AST: Any = ForwardRef("QueryLoweringPlanAst")
+
+
+RefOperand.PAYLOAD = PayloadSchema(
+    "RefOperandAst",
+    (
+        PayloadField("kind", lambda: Literal["ref_operand"], const="ref_operand"),
+        PayloadField("reference", lambda: str, source="payload_reference"),
+        PayloadField("reference_kind", lambda: str, source="payload_reference_kind"),
+        PayloadField("evaluation_mode", lambda: RefEvaluationMode),
+        PayloadField("grain", lambda: str | None, omit="none", default=None),
+    ),
+    description="A provenance-preserving durable-reference operand.",
+)
+
+ReferenceQueryPipeline.PAYLOAD = PayloadSchema(
+    "ReferenceQueryPipelineAst",
+    (
+        PayloadField("source", lambda: _REF_OPERAND_AST, source="operand", shape="node"),
+        PayloadField("stages", lambda: list[str], shape="scalar_list", default=[]),
+    ),
+    description="A pipeline rooted in a durable reference whose grain is planner-resolved.",
+)
+
+QueryUnitSort.PAYLOAD = PayloadSchema(
+    "QueryUnitSortSpecAst",
+    (
+        PayloadField("field", lambda: Literal["time", "count", "key"]),
+        PayloadField("direction", lambda: Literal["asc", "desc"], default="asc"),
+    ),
+    description="Terminal query-unit sort field and direction.",
+)
+
+QueryUnitSessionScopeStage.PAYLOAD = PayloadSchema(
+    "QueryUnitSessionScopeStageAst",
+    (
+        PayloadField("kind", lambda: Literal["session_scope"], const="session_scope"),
+        PayloadField("predicate", lambda: _PREDICATE_AST, shape="node"),
+    ),
+    description="Session-source stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitSortStage.PAYLOAD = PayloadSchema(
+    "QueryUnitSortStageAst",
+    (
+        PayloadField("kind", lambda: Literal["sort"], const="sort"),
+        PayloadField("sort", lambda: _SORT_AST, shape="node"),
+    ),
+    description="Row or aggregate sort stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitLimitStage.PAYLOAD = PayloadSchema(
+    "QueryUnitLimitStageAst",
+    (
+        PayloadField("kind", lambda: Literal["limit"], const="limit"),
+        PayloadField("value", lambda: int),
+    ),
+    description="Limit stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitOffsetStage.PAYLOAD = PayloadSchema(
+    "QueryUnitOffsetStageAst",
+    (
+        PayloadField("kind", lambda: Literal["offset"], const="offset"),
+        PayloadField("value", lambda: int),
+    ),
+    description="Offset stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitGroupStage.PAYLOAD = PayloadSchema(
+    "QueryUnitGroupStageAst",
+    (
+        PayloadField("kind", lambda: Literal["group"], const="group"),
+        PayloadField("field", lambda: str | None, source="payload_field", omit="none", default=None),
+        PayloadField(
+            "fields",
+            lambda: list[str] | None,
+            shape="scalar_list",
+            omit_when=lambda node: len(node.fields) == 1,
+            default=None,
+        ),
+    ),
+    description="Aggregate grouping stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitCountStage.PAYLOAD = PayloadSchema(
+    "QueryUnitCountStageAst",
+    (
+        PayloadField("kind", lambda: Literal["count"], const="count"),
+        PayloadField("metric", lambda: Literal["count"], const="count"),
+    ),
+    description="Count aggregation stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitAggMetric.PAYLOAD = PayloadSchema(
+    "QueryUnitAggMetricAst",
+    (
+        PayloadField("fn", lambda: str),
+        PayloadField("label", lambda: str),
+        PayloadField("field", lambda: str | None, omit="none", default=None),
+    ),
+    description="One named reducer in an `agg` pipeline stage.",
+)
+
+QueryUnitAggStage.PAYLOAD = PayloadSchema(
+    "QueryUnitAggStageAst",
+    (
+        PayloadField("kind", lambda: Literal["agg"], const="agg"),
+        PayloadField("metrics", lambda: list[_AGG_METRIC_AST], shape="node_list", default=[]),
+    ),
+    description="Named-metric aggregation stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitTransformStage.PAYLOAD = PayloadSchema(
+    "QueryUnitTransformStageAst",
+    (
+        PayloadField("kind", lambda: Literal["transform"], const="transform"),
+        PayloadField("name", lambda: str),
+        PayloadField("args", lambda: dict[str, str] | None, shape="pair_map", omit="falsy", default=None),
+    ),
+    description="Named row-shaping transform stage in a terminal query-unit pipeline.",
+)
+
+QueryUnitTerminalStage.PAYLOAD = PayloadSchema(
+    "QueryUnitTerminalStageAst",
+    (
+        PayloadField("kind", lambda: Literal["terminal"], const="terminal"),
+        PayloadField("action", lambda: QueryUnitTerminalAction),
+        PayloadField("args", lambda: dict[str, str] | None, shape="pair_map", omit="falsy", default=None),
+    ),
+    description="Terminal action that emits the resolved query-unit set.",
+)
+
+#: Declared pipeline stages, in published union order.
+PIPELINE_STAGE_PAYLOAD_SCHEMAS: tuple[PayloadSchema, ...] = (
+    QueryUnitSessionScopeStage.PAYLOAD,
+    QueryUnitSortStage.PAYLOAD,
+    QueryUnitLimitStage.PAYLOAD,
+    QueryUnitOffsetStage.PAYLOAD,
+    QueryUnitGroupStage.PAYLOAD,
+    QueryUnitCountStage.PAYLOAD,
+    QueryUnitAggStage.PAYLOAD,
+    QueryUnitTransformStage.PAYLOAD,
+    QueryUnitTerminalStage.PAYLOAD,
+)
+
+_PIPELINE_SOURCE = PayloadSchema(
+    "QueryUnitPipelineSourceAst",
+    (
+        PayloadField("unit", lambda: QueryUnitName, source="source_unit"),
+        PayloadField("predicate", lambda: _PREDICATE_AST, shape="node"),
+    ),
+    description="The relation a terminal query-unit pipeline selects from.",
+)
+
+_PIPELINE_RESULT = PayloadSchema(
+    "QueryUnitPipelineResultAst",
+    (
+        PayloadField("sort", lambda: _SORT_AST | None, shape="node", omit="none", default=None),
+        PayloadField("group_by", lambda: str | None, omit="none", default=None),
+        PayloadField("aggregate", lambda: Literal["count"] | None, omit="none", default=None),
+        PayloadField(
+            "agg_metrics",
+            lambda: list[_AGG_METRIC_AST] | None,
+            shape="node_list",
+            omit="none",
+            default=None,
+        ),
+        PayloadField("limit", lambda: int | None, omit="none", default=None),
+        PayloadField("offset", lambda: int | None, omit="none", default=None),
+        PayloadField(
+            "fields",
+            lambda: list[str] | None,
+            source="selected_fields",
+            shape="scalar_list",
+            omit="falsy",
+            default=None,
+        ),
+    ),
+    description="Result shaping a terminal query-unit pipeline applies.",
+)
+
+QueryUnitPipeline.PAYLOAD = PayloadSchema(
+    "QueryUnitPipelineAst",
+    (
+        PayloadField("source", lambda: ForwardRef("QueryUnitPipelineSourceAst"), shape="group", group=_PIPELINE_SOURCE),
+        PayloadField(
+            "stages", lambda: list[_PIPELINE_STAGE_AST], source="payload_stages", shape="node_list", default=[]
+        ),
+        PayloadField(
+            "session_scope",
+            lambda: _PREDICATE_AST | None,
+            source="session_predicate",
+            shape="node",
+            omit="none",
+            default=None,
+        ),
+        PayloadField(
+            "result",
+            lambda: ForwardRef("QueryUnitPipelineResultAst") | None,
+            shape="group",
+            group=_PIPELINE_RESULT,
+            default=None,
+        ),
+    ),
+    description="Executable terminal-row pipeline parsed from the query DSL.",
+)
+
+QueryUnitSource.PAYLOAD = PayloadSchema(
+    "QueryUnitSourceAst",
+    (
+        PayloadField("unit", lambda: QueryUnitName),
+        PayloadField("predicate", lambda: _PREDICATE_AST, shape="node"),
+        PayloadField(
+            "session_predicate",
+            lambda: _PREDICATE_AST | None,
+            shape="node",
+            omit="none",
+            default=None,
+        ),
+        PayloadField("limit", lambda: int | None, omit="none", default=None),
+        PayloadField("offset", lambda: int | None, omit="none", default=None),
+        PayloadField("sort", lambda: _SORT_AST | None, shape="node", omit="none", default=None),
+        PayloadField("group_by", lambda: str | None, omit="none", default=None),
+        PayloadField("aggregate", lambda: Literal["count"] | None, omit="none", default=None),
+        PayloadField(
+            "agg_metrics",
+            lambda: list[_AGG_METRIC_AST] | None,
+            shape="node_list",
+            omit="none",
+            default=None,
+        ),
+        PayloadField(
+            "pipeline_stages",
+            lambda: list[_PIPELINE_STAGE_AST],
+            shape="node_list",
+            omit="falsy",
+            default=[],
+        ),
+        PayloadField("pipeline", lambda: _PIPELINE_AST, shape="node"),
+    ),
+    description="Explicit unit-changing source parsed from `<unit>s where ...`.",
+)
+
+QueryExpressionExplainClause.PAYLOAD = PayloadSchema(
+    "QueryExpressionClauseAst",
+    (
+        PayloadField("kind", lambda: ExplainClauseKind),
+        PayloadField("field", lambda: str | None, omit="none", default=None),
+        PayloadField("value", lambda: str | None, omit="none", default=None),
+        PayloadField("negated", lambda: bool, omit="falsy", default=False),
+        PayloadField("quoted", lambda: bool, omit="falsy", default=False),
+        PayloadField("op", lambda: QueryCompareOp | None, omit="none", default=None),
+        PayloadField("number", lambda: int | None, omit="none", default=None),
+        PayloadField("min_number", lambda: int | None, omit="none", default=None),
+        PayloadField("max_number", lambda: int | None, omit="none", default=None),
+        PayloadField("min_value", lambda: str | None, omit="none", default=None),
+        PayloadField("max_value", lambda: str | None, omit="none", default=None),
+    ),
+    description="Serializable clause view for parser/lowerer diagnostics.",
+)
+
+
+@dataclass(frozen=True)
+class QueryExpressionAstNode:
+    """One entry-tagged node of an explained expression's AST."""
+
+    entry: Literal["json", "reference_pipeline", "unit_source", "boolean", "compact"]
+    clauses: tuple[QueryExpressionExplainClause, ...] = ()
+    predicate: QueryPredicate | None = None
+    unit_source: QueryUnitSource | None = None
+    reference_pipeline: ReferenceQueryPipeline | None = None
+
+    PAYLOAD: ClassVar[PayloadSchema]
+
+    def to_payload(self) -> dict[str, object]:
+        return render_payload(self, self.PAYLOAD)
+
+
+QueryExpressionAstNode.PAYLOAD = PayloadSchema(
+    "QueryExpressionAstNodeAst",
+    (
+        PayloadField("entry", lambda: Literal["json", "reference_pipeline", "unit_source", "boolean", "compact"]),
+        PayloadField(
+            "clauses",
+            lambda: list[_CLAUSE_AST] | None,
+            shape="node_list",
+            omit="falsy",
+            default=None,
+        ),
+        PayloadField("predicate", lambda: _PREDICATE_AST | None, shape="node", omit="none", default=None),
+        PayloadField("unit_source", lambda: _UNIT_SOURCE_AST | None, shape="node", omit="none", default=None),
+        PayloadField(
+            "reference_pipeline",
+            lambda: _REFERENCE_PIPELINE_AST | None,
+            shape="node",
+            omit="none",
+            default=None,
+        ),
+    ),
+    description="One entry-tagged node of an explained expression's AST.",
+)
+
+
+@dataclass(frozen=True)
+class QueryLoweringPlan:
+    """The lowerer selection and execution plan an explained expression resolves to."""
+
+    lowerer: str
+    selected_units: tuple[str, ...] = ()
+    execution_legs: tuple[str, ...] = ()
+    plan_description: tuple[str, ...] = ()
+    compatibility_selector: str | None = None
+    pipeline: QueryUnitPipeline | None = None
+    pipeline_stages: tuple[QueryUnitPipelineStage, ...] = ()
+    #: Durable-reference ancestry (formatted ``ObjectRef`` strings), present
+    #: only on the ``reference-operand-to-planner-relation`` lowerer branch.
+    reference_lineage: tuple[str, ...] | None = None
+
+    PAYLOAD: ClassVar[PayloadSchema]
+
+    def to_payload(self) -> dict[str, object]:
+        return render_payload(self, self.PAYLOAD)
+
+
+QueryLoweringPlan.PAYLOAD = PayloadSchema(
+    "QueryLoweringPlanAst",
+    (
+        PayloadField("lowerer", lambda: str),
+        PayloadField("selected_units", lambda: list[str], shape="scalar_list", default=[]),
+        PayloadField("execution_legs", lambda: list[str], shape="scalar_list", default=[]),
+        PayloadField("plan_description", lambda: list[str], shape="scalar_list", default=[]),
+        PayloadField("compatibility_selector", lambda: str | None, omit="none", default=None),
+        PayloadField("reference_lineage", lambda: list[str] | None, shape="scalar_list", omit="none", default=None),
+        PayloadField("pipeline", lambda: _PIPELINE_AST | None, shape="node", omit="none", default=None),
+        PayloadField(
+            "pipeline_stages",
+            lambda: list[_PIPELINE_STAGE_AST] | None,
+            shape="node_list",
+            omit="falsy",
+            default=None,
+        ),
+    ),
+    description="The lowerer selection and execution plan an explained expression resolves to.",
+)
+
+QueryExpressionExplanation.PAYLOAD = PayloadSchema(
+    "QueryExpressionExplanationAst",
+    (
+        PayloadField(
+            "schema_version",
+            lambda: Literal["polylogue.query-explain-ast.v1"],
+            const=QUERY_AST_SCHEMA_VERSION,
+        ),
+        PayloadField("source_text", lambda: str),
+        PayloadField("clauses", lambda: list[_CLAUSE_AST], shape="node_list", default=[]),
+        PayloadField("predicate", lambda: _PREDICATE_AST | None, shape="node", default=None),
+        PayloadField("ast", lambda: _AST_NODE_AST | None, shape="passthrough", default=None),
+        PayloadField("lowerer", lambda: str),
+        PayloadField("lowering_plan", lambda: _LOWERING_PLAN_AST | None, shape="passthrough", default=None),
+        PayloadField("selected_units", lambda: list[str], shape="scalar_list", default=[]),
+        PayloadField("execution_legs", lambda: list[str], shape="scalar_list", default=[]),
+        PayloadField("plan_description", lambda: list[str], shape="scalar_list", default=[]),
+        PayloadField("unsupported_nodes", lambda: list[str], shape="scalar_list", default=[]),
+    ),
+    description="Canonical, versioned projection of an explained query expression.",
+)
+
+#: Declarations the published schema builds models for, in dependency order.
+QUERY_AST_PAYLOAD_SCHEMAS: tuple[PayloadSchema, ...] = (
+    RefOperand.PAYLOAD,
+    ReferenceQueryPipeline.PAYLOAD,
+    QueryUnitSort.PAYLOAD,
+    QueryUnitAggMetric.PAYLOAD,
+    *PIPELINE_STAGE_PAYLOAD_SCHEMAS,
+    _PIPELINE_SOURCE,
+    _PIPELINE_RESULT,
+    QueryUnitPipeline.PAYLOAD,
+    QueryUnitSource.PAYLOAD,
+    QueryExpressionExplainClause.PAYLOAD,
+    QueryExpressionAstNode.PAYLOAD,
+    QueryLoweringPlan.PAYLOAD,
+    QueryExpressionExplanation.PAYLOAD,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -3066,46 +3456,19 @@ def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, .
 
 def _ast_payload(
     *,
-    entry: str,
+    entry: Literal["json", "reference_pipeline", "unit_source", "boolean", "compact"],
     clauses: tuple[QueryExpressionExplainClause, ...] = (),
     predicate: QueryPredicate | None = None,
     unit_source: QueryUnitSource | None = None,
     reference_pipeline: ReferenceQueryPipeline | None = None,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {"entry": entry}
-    if clauses:
-        payload["clauses"] = [clause.to_payload() for clause in clauses]
-    if predicate is not None:
-        payload["predicate"] = predicate.to_payload()
-    if unit_source is not None:
-        unit_payload: dict[str, object] = {
-            "unit": unit_source.unit,
-            "predicate": unit_source.predicate.to_payload(),
-        }
-        if unit_source.session_predicate is not None:
-            unit_payload["session_predicate"] = unit_source.session_predicate.to_payload()
-        if unit_source.limit is not None:
-            unit_payload["limit"] = unit_source.limit
-        if unit_source.offset is not None:
-            unit_payload["offset"] = unit_source.offset
-        if unit_source.sort is not None:
-            unit_payload["sort"] = {
-                "field": unit_source.sort.field,
-                "direction": unit_source.sort.direction,
-            }
-        if unit_source.group_by is not None:
-            unit_payload["group_by"] = unit_source.group_by
-        if unit_source.aggregate is not None:
-            unit_payload["aggregate"] = unit_source.aggregate
-        if unit_source.agg_metrics is not None:
-            unit_payload["agg_metrics"] = [metric.to_payload() for metric in unit_source.agg_metrics]
-        if unit_source.pipeline_stages:
-            unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
-        unit_payload["pipeline"] = unit_source.pipeline.to_payload()
-        payload["unit_source"] = unit_payload
-    if reference_pipeline is not None:
-        payload["reference_pipeline"] = reference_pipeline.to_payload()
-    return payload
+    return QueryExpressionAstNode(
+        entry=entry,
+        clauses=clauses,
+        predicate=predicate,
+        unit_source=unit_source,
+        reference_pipeline=reference_pipeline,
+    ).to_payload()
 
 
 def _lowering_plan_payload(
@@ -3117,20 +3480,18 @@ def _lowering_plan_payload(
     compatibility_selector: str | None = None,
     pipeline: QueryUnitPipeline | None = None,
     pipeline_stages: tuple[QueryUnitPipelineStage, ...] = (),
+    reference_lineage: tuple[str, ...] | None = None,
 ) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "lowerer": lowerer,
-        "selected_units": list(selected_units),
-        "execution_legs": list(execution_legs),
-        "plan_description": list(plan_description),
-    }
-    if compatibility_selector is not None:
-        payload["compatibility_selector"] = compatibility_selector
-    if pipeline is not None:
-        payload["pipeline"] = pipeline.to_payload()
-    if pipeline_stages:
-        payload["pipeline_stages"] = [stage.to_payload() for stage in pipeline_stages]
-    return payload
+    return QueryLoweringPlan(
+        lowerer=lowerer,
+        selected_units=selected_units,
+        execution_legs=execution_legs,
+        plan_description=plan_description,
+        compatibility_selector=compatibility_selector,
+        pipeline=pipeline,
+        pipeline_stages=pipeline_stages,
+        reference_lineage=reference_lineage,
+    ).to_payload()
 
 
 def explain_expression(expression: str) -> QueryExpressionExplanation:
@@ -3184,13 +3545,13 @@ def explain_expression(expression: str) -> QueryExpressionExplanation:
             execution_legs=execution_legs,
             plan_description=plan_description,
             ast=_ast_payload(entry="reference_pipeline", reference_pipeline=reference_pipeline),
-            lowering_plan={
-                "lowerer": lowerer,
-                "selected_units": list(selected_units),
-                "execution_legs": list(execution_legs),
-                "plan_description": list(plan_description),
-                "reference_lineage": [operand.reference.format()],
-            },
+            lowering_plan=_lowering_plan_payload(
+                lowerer=lowerer,
+                selected_units=selected_units,
+                execution_legs=execution_legs,
+                plan_description=plan_description,
+                reference_lineage=(operand.reference.format(),),
+            ),
         )
     unit_source = parse_unit_source_expression(stripped)
     if unit_source is not None:
@@ -3936,6 +4297,11 @@ def build_session_terminal_pipeline(
 
 
 __all__ = [
+    "PIPELINE_STAGE_PAYLOAD_SCHEMAS",
+    "QUERY_AST_PAYLOAD_SCHEMAS",
+    "QUERY_AST_SCHEMA_VERSION",
+    "QueryExpressionAstNode",
+    "QueryLoweringPlan",
     "compile_expression",
     "compile_expression_into",
     "build_session_terminal_pipeline",
