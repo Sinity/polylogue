@@ -359,11 +359,11 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-eizc: v63 drops `threads_fts`, a maintained FTS surface with real
 # triggers and rebuild/repair/freshness machinery but no application-layer
 # consumers. Its only MATCH reader had zero production callers; the live
-# thread-search path already uses a LIKE substring scan. The sibling
-# Its sibling `blocks_command_trigram` was kept at v63 for
+# thread-search path already uses a LIKE substring scan. Its sibling
+# `blocks_command_trigram` was kept at v63 for
 # `devtools/affordance_usage.py`'s `_cli_action_rows`; that devtools module was
 # deleted 2026-08-25 (polylogue-9m6ry) with no product-surface replacement, and
-# v101 drops the trigram surface too (polylogue-nv356).
+# v104 drops the trigram surface too (polylogue-nv356).
 # polylogue-xselt: v64 adds parser/lowering semantic stamps consumed by the
 # reindex acceptance gate. They remain nullable only so pre-bootstrap index
 # generations can be opened long enough to undergo the semantic replay.
