@@ -72,7 +72,7 @@ provider (`docs/provider-origin-identity.md:15-30`;
 - Replaying identical normalized content is idempotent by content hash;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
-  write choke point (`polylogue/storage/sqlite/archive_tiers/write.py:4968`).
+  write choke point (`polylogue/storage/sqlite/archive_tiers/write.py:1053`).
 - Batch ingest keeps source membership and precedence checks read-only: the
   batch opens one read-only `source.db` handle for `raw_session_memberships`
   reads, while index publication and the later blob-publication receipt
