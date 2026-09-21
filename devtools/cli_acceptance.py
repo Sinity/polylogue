@@ -142,18 +142,43 @@ GALLERY_SAMPLES: tuple[GallerySample, ...] = (
 #: This is a recorded defect, not an accepted design: the numbers may fall,
 #: never rise. Adding an unwrapped paragraph to any help text turns the lane
 #: red at the width where it first does not fit.
+#:
+#: RAISED ONCE, 2026-09-21 (polylogue-1khzy), five rows. The raise is stated
+#: here because a falling-only ratchet is worth nothing if a red row can be
+#: re-recorded without a reason. The whole difference is f8a63f0b6 (#5249),
+#: "Output dialect normalization (--format/--json + --to/--out)", measured by
+#: capturing the same gallery at 44c5f868d -- the commit that recorded the
+#: original numbers -- and diffing the rendered lines. Nothing else widened:
+#:
+#: * ``root-help``: #5249 added three option lines that did not exist before
+#:   (``--to [terminal|stdout|browser|clipboard|file]`` at 47, its wrapped
+#:   help continuation at 78, ``--out PATH ... File path for --to file.`` at
+#:   58), which is +3 at width 40 and +1 at width 60; and it widened
+#:   ``-f, --format [...]`` from 74 to 89 by publishing the ``md`` and
+#:   ``jsonl`` short spellings, which is +1 at width 80.
+#: * ``read-help``: the same ``-f, --format`` line went 79 -> 88 (+1 at width
+#:   80) and ``--json  Alias for --format json.`` at 58 is new (+1 at 40).
+#:
+#: Why this is not narrowed back: every one of those lines is surface the CLI
+#: now genuinely accepts. ``--to``, ``--out`` and ``--json`` are options a
+#: reader needs to see, and ``md``/``jsonl`` are spellings the parser takes;
+#: hiding them from ``--help`` would trade a legible help screen for a green
+#: number. The help text also does not reflow at all -- every width renders
+#: the identical 80-column layout -- so narrowing means deleting words, not
+#: wrapping them. Fixing *that* is the ratchet's actual target and is not
+#: what this raise buys.
 REFLOW_OVERFLOW_BASELINE: Mapping[str, int] = {
-    "root-help@40": 156,
-    "root-help@60": 100,
-    "root-help@80": 9,
+    "root-help@40": 159,
+    "root-help@60": 101,
+    "root-help@80": 10,
     "root-help@120": 2,
     "find-help@40": 14,
     "find-help@60": 11,
     "find-help@80": 0,
     "find-help@120": 0,
-    "read-help@40": 54,
+    "read-help@40": 55,
     "read-help@60": 37,
-    "read-help@80": 2,
+    "read-help@80": 3,
     "read-help@120": 0,
     "unsignalled-query@40": 3,
     "unsignalled-query@60": 3,

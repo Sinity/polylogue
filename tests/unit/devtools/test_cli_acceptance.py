@@ -81,6 +81,35 @@ class TestLiveSurface:
         assert set(measured) == set(REFLOW_OVERFLOW_BASELINE)
         assert measured == dict(REFLOW_OVERFLOW_BASELINE)
 
+    def test_the_2026_09_21_raise_bought_surface_that_is_still_on_the_screen(
+        self, gallery: tuple[GalleryFrame, ...]
+    ) -> None:
+        """polylogue-1khzy: the five raised rows are paid for, not re-recorded.
+
+        The raise was attributed entirely to f8a63f0b6 (#5249). Each string
+        below is one of the lines that diff introduced, so the recorded
+        numbers stay tied to output a reader actually gets.
+
+        Anti-vacuity: withdraw any of this surface -- drop ``--to``/``--out``,
+        drop the ``--json`` alias, or stop publishing the ``md``/``jsonl``
+        short spellings -- and the corresponding assertion here goes red while
+        ``test_the_overflow_baseline_is_exact_for_every_sample_and_width``
+        independently goes red the other way, because the measured count then
+        falls below the recorded baseline. Neither can be silenced alone.
+        """
+        by_sample = {frame.sample: frame.text for frame in gallery if frame.lane == "default" and frame.width == 80}
+        root, read = by_sample["root-help"], by_sample["read-help"]
+
+        # root-help: three new option lines (+3 @40, +1 @60).
+        assert "--to [terminal|stdout|browser|clipboard|file]" in root
+        assert "--out PATH" in root
+        # root-help and read-help: the published short spellings (+1 @80 each).
+        for text in (root, read):
+            assert "|jsonl|" in text
+            assert "|md|" in text
+        # read-help: the --json alias line (+1 @40).
+        assert "Alias for --format json." in read
+
     def test_the_rendered_gallery_shows_each_sample_at_each_width(self, gallery: tuple[GalleryFrame, ...]) -> None:
         markdown = render_gallery_markdown(gallery)
         for sample in GALLERY_SAMPLES:
