@@ -40,6 +40,19 @@ def _sid(native_id: str, origin: str = "unknown-export") -> str:
     return f"{origin}:{native_id}"
 
 
+def _inspect_one(db_path: Path, session_id: str) -> str:
+    """The status convergence itself would read for one stored partition."""
+    from polylogue.storage.derived.session.derivation import inspect_session_profiles
+    from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+
+    with open_connection(db_path) as conn:
+        return inspect_session_profiles(
+            conn,
+            [session_id],
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+        )[session_id]
+
+
 def _chunk_metric(chunk_observation: object, key: str) -> float:
     value = getattr(chunk_observation, key)
     assert isinstance(value, int | float)
@@ -2290,3 +2303,121 @@ def test_bounded_tail_reports_the_block_budget_it_had_to_apply(
     assert evidence["tail_blocks_capped_at"] == 4
     # Four blocks kept, every one of them over the 64-char input cap.
     assert evidence["tail_tool_inputs_omitted"] == 4
+
+
+@pytest.mark.asyncio
+async def test_ingest_refresh_publishes_a_partition_convergence_reads_as_valid(
+    tmp_path: Path,
+) -> None:
+    """The ingest-time refresh must not write a profile that is stale on arrival.
+
+    ``refresh_session_insights_bulk`` (pipeline/services/ingest_batch/_core.py)
+    is the live materialize stage: it hydrates every changed session and writes
+    its profile family. When that row carried no ``input_content_hash``,
+    :func:`inspect_session_profiles` classified it ``stale`` -- a row that
+    cannot say what it was computed from never certifies itself -- so the
+    daemon converger hydrated, rebuilt and rewrote the identical family on its
+    next pass. Every ingested session was materialized twice by construction.
+
+    Anti-vacuity: drop ``input_content_hash=input_bindings.get(session_id)``
+    from ``_apply_session_insight_session_updates_async`` and this reads
+    ``stale``.
+    """
+    db_path = _current_index_db(tmp_path, "refresh-binding-bulk")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session("conv-binding", title="Binding Test"),
+            messages=[
+                make_message("conv-binding:msg-1", "conv-binding", text="first"),
+                make_message("conv-binding:msg-2", "conv-binding", role="assistant", text="second"),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    session_id = _sid("conv-binding")
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        await _apply_session_insight_session_updates_async(conn, [session_id], transaction_depth=1)
+        await conn.commit()
+
+    assert _inspect_one(db_path, session_id) == "valid"
+
+
+@pytest.mark.asyncio
+async def test_single_session_refresh_publishes_a_partition_convergence_reads_as_valid(
+    tmp_path: Path,
+) -> None:
+    """The single-session sibling of the bulk path stamps the same binding.
+
+    ``refresh_session_insights_for_session_async`` is the per-session route the
+    repository write helpers use; it built the identical bundle and left the
+    same unstamped row behind.
+
+    Anti-vacuity: drop the stamp from
+    ``_apply_session_insight_session_update_async`` and this reads ``stale``.
+    """
+    db_path = _current_index_db(tmp_path, "refresh-binding-single")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session("conv-binding-one", title="Binding Test"),
+            messages=[make_message("conv-binding-one:msg-1", "conv-binding-one", text="only")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    session_id = _sid("conv-binding-one")
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        await refresh_session_insights_for_session_async(conn, session_id, transaction_depth=1)
+        await conn.commit()
+
+    assert _inspect_one(db_path, session_id) == "valid"
+
+
+@pytest.mark.asyncio
+async def test_refresh_binding_still_goes_stale_when_an_input_value_moves(
+    tmp_path: Path,
+) -> None:
+    """The stamp must name the input, not merely silence the inspector.
+
+    Stamping a binding is only safe if it is the binding the computation read:
+    a constant, or one taken from a different read, would report ``valid``
+    forever and freeze a profile against inputs that moved. A role-only edit
+    changes no timestamp, no row count and no entity id, so it is exactly the
+    mutation an identity-shaped binding would miss.
+
+    Anti-vacuity: stamp any fixed string instead of
+    ``session_input_bindings_async`` and this reads ``valid``.
+    """
+    db_path = _current_index_db(tmp_path, "refresh-binding-moves")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session("conv-binding-move", title="Binding Test"),
+            messages=[
+                make_message("conv-binding-move:msg-1", "conv-binding-move", text="first"),
+                make_message("conv-binding-move:msg-2", "conv-binding-move", role="assistant", text="second"),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    session_id = _sid("conv-binding-move")
+    backend = SQLiteBackend(db_path=db_path)
+    async with backend.connection() as conn:
+        await _apply_session_insight_session_updates_async(conn, [session_id], transaction_depth=1)
+        await conn.commit()
+
+    assert _inspect_one(db_path, session_id) == "valid"
+
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "UPDATE messages SET role = 'user' WHERE session_id = ? AND role = 'assistant'",
+            (session_id,),
+        )
+        conn.commit()
+
+    assert _inspect_one(db_path, session_id) == "stale"
