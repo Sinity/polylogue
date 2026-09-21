@@ -107,8 +107,8 @@ writer_modules:
           interruption: replayable
       entrypoints:
         [rebuild_archive_messages_fts, refresh_and_sweep_attachment_rows,
-        repair_stale_prefix_branch_points, replace_parser_ingest_flag_tags,
-        upsert_parser_ingest_flag_tags, upsert_session_profile_costs, write_parsed_session_to_archive]
+        replace_parser_ingest_flag_tags, upsert_parser_ingest_flag_tags,
+        upsert_session_profile_costs, write_parsed_session_to_archive]
     - path: polylogue/storage/sqlite/archive_tiers/write_shard.py
       surfaces:
         - tier: index

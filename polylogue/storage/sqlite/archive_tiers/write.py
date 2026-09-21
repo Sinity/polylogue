@@ -8428,13 +8428,12 @@ def count_dangling_prefix_branch_points(conn: sqlite3.Connection) -> tuple[int, 
 
 def _repair_stale_prefix_branch_points_db(
     conn: sqlite3.Connection,
-    session_ids: set[str] | tuple[str, ...] | list[str] | None = None,
+    session_ids: set[str] | tuple[str, ...] | list[str],
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
-    limit: int | None = None,
 ) -> int:
-    """Repair stale immediate-parent branch-point IDs in prefix-sharing edges.
+    """Refine stale immediate-parent branch-point IDs for the sessions this write touched.
 
     Older lineage rows can name a branch point as ``<immediate-parent>:<suffix>``
     even after that parent has itself been normalized to tail-only storage. The
@@ -8442,22 +8441,21 @@ def _repair_stale_prefix_branch_points_db(
     rows make the child bail to its own tail. If the suffix maps to exactly one
     message in the resolved parent's composed transcript, update the edge to the
     composed message id. Ambiguous or unmappable rows stay visible to validation.
+
+    ``session_ids`` is required and is the write's own impacted set. This is a
+    producer-side refinement inside the write transaction that created the
+    stale row, never a sweep: an unscoped archive-wide variant would silently
+    correct whatever the producer got wrong on some *later* pass, and the
+    defect would never surface (polylogue-6kur AC4). A dangling edge that
+    survives this call is reported by
+    :func:`count_dangling_prefix_branch_points`, not repaired out of band.
     """
-    params: list[object] = []
-    scope_clause = ""
-    if session_ids is not None:
-        scoped = sorted(session_ids)
-        if not scoped:
-            return 0
-        placeholders = ",".join("?" for _ in scoped)
-        scope_clause = f"AND l.src_session_id IN ({placeholders})"
-        params.extend(scoped)
-    limit_clause = ""
-    if limit is not None:
-        if limit < 1:
-            return 0
-        limit_clause = "LIMIT ?"
-        params.append(limit)
+    scoped = sorted(session_ids)
+    if not scoped:
+        return 0
+    placeholders = ",".join("?" for _ in scoped)
+    scope_clause = f"AND l.src_session_id IN ({placeholders})"
+    params: list[object] = list(scoped)
     rows = conn.execute(
         f"""
         SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id
@@ -8465,7 +8463,6 @@ def _repair_stale_prefix_branch_points_db(
         WHERE {dangling_prefix_branch_point_sql()}
           {scope_clause}
         ORDER BY l.src_session_id
-        {limit_clause}
         """,
         tuple(params),
     ).fetchall()
@@ -8485,7 +8482,7 @@ def _repair_stale_prefix_branch_points_db(
           AND {topology_status_composes_sql("l.status")}
           {scope_clause}
         """,
-        tuple(params[: len(params) - (1 if limit is not None else 0)]),
+        tuple(params),
     ).fetchall()
     for src_session_id, parent_session_id, branch_point_message_id, content_address in stable_rows:
         conn.execute(
@@ -8529,11 +8526,6 @@ def _repair_stale_prefix_branch_points_db(
         )
         repaired += 1
     return repaired
-
-
-def repair_stale_prefix_branch_points(conn: sqlite3.Connection, *, limit: int | None = None) -> int:
-    """Repair stale prefix-sharing branch points across the current index tier."""
-    return _repair_stale_prefix_branch_points_db(conn, limit=limit)
 
 
 def clear_messages_parent_sql(placeholders: str) -> str:

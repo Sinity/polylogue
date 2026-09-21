@@ -35,9 +35,9 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     _MAX_LINEAGE_DEPTH,
     IDENTITY_INVALIDATION_DEBT_STAGE,
+    _repair_stale_prefix_branch_points_db,
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
-    repair_stale_prefix_branch_points,
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.queries import message_query_reads as _message_query_reads_module
@@ -1338,7 +1338,7 @@ def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_pa
         "child tail"
     ]
 
-    repaired = repair_stale_prefix_branch_points(conn)
+    repaired = _repair_stale_prefix_branch_points_db(conn, {child_id})
     conn.commit()
 
     assert repaired == 1
@@ -1406,7 +1406,7 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
         "child tail"
     ]
 
-    repaired = repair_stale_prefix_branch_points(conn)
+    repaired = _repair_stale_prefix_branch_points_db(conn, {child_id})
     conn.commit()
 
     assert repaired == 1
@@ -2713,8 +2713,9 @@ def test_three_generation_lineage_composes_identically_in_every_visit_order(
 
 def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) -> None:
     """polylogue-7xrv5: the archive-wide census is what makes a truncating
-    archive measurable after a rebuild, before the next daemon start runs the
-    repair.
+    archive measurable, and (polylogue-ga6ib) it is now the *only* archive-wide
+    thing there is -- the daemon reports this count at startup and corrects
+    nothing. The one corrector is the writer's own scoped, in-transaction call.
 
     Anti-vacuity: a census that ignored the branch point's existence (or scoped
     itself to one session) would report ``(0, 0)`` for the corrupted state
@@ -2737,7 +2738,7 @@ def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) 
     assert count_dangling_prefix_branch_points(conn) == (1, 1)
     assert [message.blocks[0].text for message in read_archive_session_envelope(conn, child_id).messages] == ["x2"]
 
-    assert repair_stale_prefix_branch_points(conn) == 1
+    assert _repair_stale_prefix_branch_points_db(conn, {child_id}) == 1
     conn.commit()
     assert count_dangling_prefix_branch_points(conn) == (0, 0)
     conn.close()
