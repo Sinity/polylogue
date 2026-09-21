@@ -183,8 +183,8 @@ class TestAttachBehaviour:
         session_id = _seed_session_with_assertion(tmp_path)
         with ArchiveStore.open_existing(tmp_path) as archive:
             attached = fetch_attached_units(archive, [session_id], ["assertion"])
-        assert set(attached) == {"assertion"}
-        rows = attached["assertion"][session_id]
+        assert set(attached.rows) == {"assertion"}
+        rows = attached.rows["assertion"][session_id]
         assert len(rows) == 1
         assert rows[0]["body_text"] == "Review findings not read yet."
         assert rows[0]["unit"] == "assertion"
@@ -194,8 +194,8 @@ class TestAttachBehaviour:
         with ArchiveStore.open_existing(tmp_path) as archive:
             attached = fetch_attached_units(archive, [session_id, "missing:session"], ["assertion"])
         # The session without assertions is simply absent from the bucket.
-        assert "missing:session" not in attached["assertion"]
-        assert session_id in attached["assertion"]
+        assert "missing:session" not in attached.rows["assertion"]
+        assert session_id in attached.rows["assertion"]
 
     def test_fetch_attached_evidence_units(self, tmp_path: Path) -> None:
         from tests.infra.storage_records import SessionBuilder
@@ -232,12 +232,12 @@ class TestAttachBehaviour:
         with ArchiveStore.open_existing(tmp_path) as archive:
             attached = fetch_attached_units(archive, [session_id], ["message", "action", "file"])
 
-        assert set(attached) == {"message", "action", "file"}
-        assert {row["message_id"] for row in attached["message"][session_id]} == {
+        assert set(attached.rows) == {"message", "action", "file"}
+        assert {row["message_id"] for row in attached.rows["message"][session_id]} == {
             archive_message_id("claude-code-session:ext-evidence", "m-user"),
             archive_message_id("claude-code-session:ext-evidence", "m-assistant"),
         }
-        action_payload = attached["action"][session_id][0]
+        action_payload = attached.rows["action"][session_id][0]
         output_text = action_payload["output_text"]
         truncated_chars = action_payload["output_text_truncated_chars"]
         assert action_payload["tool_name"] == "Edit"
@@ -246,7 +246,7 @@ class TestAttachBehaviour:
         assert isinstance(truncated_chars, int)
         assert len(output_text) == 2000
         assert truncated_chars > 0
-        assert attached["file"][session_id][0]["path"] == "polylogue/archive/query/expression.py"
+        assert attached.rows["file"][session_id][0]["path"] == "polylogue/archive/query/expression.py"
 
     def test_fetch_attached_units_applies_payload_field_selection(self, tmp_path: Path) -> None:
         from tests.infra.storage_records import SessionBuilder
@@ -269,7 +269,7 @@ class TestAttachBehaviour:
                 unit_fields={"message": ("message_id", "role")},
             )
 
-        assert attached["message"][session_id] == (
+        assert attached.rows["message"][session_id] == (
             {
                 "message_id": archive_message_id("claude-code-session:ext-field-select", "m-user"),
                 "role": "user",
@@ -417,7 +417,7 @@ class TestWithUnitBracketExecution:
                 ["message"],
                 unit_windows={"message": WithUnitWindow(predicates=(("role", "user"),))},
             )
-        rows = attached["message"][session_id]
+        rows = attached.rows["message"][session_id]
         assert [row["role"] for row in rows] == ["user", "user", "user"]
         assert [row["text"] for row in rows] == ["one", "four five six", "eight nine ten eleven"]
 
@@ -440,7 +440,7 @@ class TestWithUnitBracketExecution:
                 ["message"],
                 unit_windows={"message": WithUnitWindow(predicates=(("role", "user"),), window=("last", 2))},
             )
-        rows = attached["message"][session_id]
+        rows = attached.rows["message"][session_id]
         assert [row["text"] for row in rows] == ["four five six", "eight nine ten eleven"]
 
     def test_first_window_returns_head(self, tmp_path: Path) -> None:
@@ -452,7 +452,7 @@ class TestWithUnitBracketExecution:
                 ["message"],
                 unit_windows={"message": WithUnitWindow(predicates=(("role", "user"),), window=("first", 2))},
             )
-        rows = attached["message"][session_id]
+        rows = attached.rows["message"][session_id]
         assert [row["text"] for row in rows] == ["one", "four five six"]
 
     async def test_bracket_predicate_and_window_compose_end_to_end_via_dsl(self, tmp_path: Path) -> None:
@@ -471,3 +471,84 @@ class TestWithUnitBracketExecution:
             "four five six",
             "eight nine ten eleven",
         ]
+
+
+class TestAttachedRowCeilingIsReported:
+    """A projection cut by the attached-unit row ceiling names its gap.
+
+    ``_MAX_ROWS_PER_SESSION``/``_MAX_ROWS_PER_PAGE`` are real work protection
+    and stay. What changed is that reaching one is reported: the fetch used to
+    return a short row list with nothing anywhere saying it had been cut, so a
+    250-message session answered ``with messages`` with 200 rows inside an
+    ``ok`` envelope -- a complete-looking projection over a truncated row set.
+    """
+
+    @staticmethod
+    def _seed_messages(tmp_path: Path, count: int, name: str) -> str:
+        from tests.infra.storage_records import SessionBuilder
+
+        builder = SessionBuilder(tmp_path / "index.db", name).provider("claude-code").title(name)
+        for index in range(count):
+            builder = builder.add_message(
+                f"m-{index:04d}",
+                role="user" if index % 2 == 0 else "assistant",
+                text=f"body {index}",
+            )
+        builder.save()
+        return f"claude-code-session:ext-{name}"
+
+    def test_population_above_the_ceiling_names_the_gap(self, tmp_path: Path) -> None:
+        """250 rows -- strictly more than the 200-row ceiling -- degrade by name.
+
+        Anti-vacuity: fetch exactly ``fetch_limit`` rows again instead of
+        ``fetch_limit + 1`` (or drop the ``ceiling_reached`` branch) and the
+        result is 200 rows with ``gaps == ()``, which is the defect: a caller
+        cannot tell 200-of-250 from a session that holds exactly 200.
+        """
+        session_id = self._seed_messages(tmp_path, 250, "over-ceiling")
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(archive, [session_id], ["message"])
+        assert len(attached.rows["message"][session_id]) == 200
+        assert attached.gaps == ("attached_unit_truncated:message:200",)
+
+    def test_population_exactly_at_the_ceiling_is_not_a_gap(self, tmp_path: Path) -> None:
+        """A population equal to the bound is complete, and must not degrade.
+
+        Anti-vacuity: compare ``len(rows) >= fetch_limit`` instead of ``>`` and
+        this session -- which holds every row it was asked for -- is reported
+        as truncated, turning a correct answer into a false degradation.
+        """
+        session_id = self._seed_messages(tmp_path, 200, "at-ceiling")
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(archive, [session_id], ["message"])
+        assert len(attached.rows["message"][session_id]) == 200
+        assert attached.gaps == ()
+
+    def test_satisfied_window_over_a_bounded_fetch_is_complete(self, tmp_path: Path) -> None:
+        """``last:N`` the fetch can satisfy is exact, so it names no gap.
+
+        The descending fetch direction means the newest 200 rows are the ones
+        read, so the last 5 of a 250-message session are present and correct.
+
+        Anti-vacuity: drop the ``provably_complete`` suppression and this
+        exact answer is reported ``degraded``; break the descending fetch
+        direction and the returned ids become ``m-0195..m-0199`` instead of
+        ``m-0245..m-0249``.
+        """
+        session_id = self._seed_messages(tmp_path, 250, "tail-window")
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(
+                archive,
+                [session_id],
+                ["message"],
+                unit_windows={"message": WithUnitWindow(predicates=(), window=("last", 5))},
+            )
+        rows = attached.rows["message"][session_id]
+        assert [str(row["message_id"]).rsplit(":", 1)[-1] for row in rows] == [
+            "m-0245",
+            "m-0246",
+            "m-0247",
+            "m-0248",
+            "m-0249",
+        ]
+        assert attached.gaps == ()

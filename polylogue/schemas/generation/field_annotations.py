@@ -14,8 +14,6 @@ from polylogue.schemas.privacy import (
 )
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
-_ENUM_VALUE_CAP = 200
-_ENUM_OUTPUT_CAP = 20
 _ENUM_MIN_COUNT = 2
 _ENUM_MIN_FREQ = 0.03
 
@@ -26,11 +24,32 @@ def _enum_values(
     path: str,
     privacy_config: SchemaPrivacyConfig | None,
 ) -> list[JSONValue]:
+    """Every observed value of an enum-like leaf that clears the declared filters.
+
+    The population is bounded twice already: the caller publishes only from a
+    slot in ``PUBLISHABLE_VOCABULARY_ROLES``, and only when
+    ``FieldStats.is_enum_like`` holds -- ``len(observed_values) <=
+    ENUM_MAX_CARDINALITY``. Inside those bounds the list is exhaustive.
+
+    A third bound, a flat ceiling of 20 output entries, used to cut it in
+    silence. Measured on a ``message_role`` slot carrying 25 distinct tokens
+    each observed 20 times -- every one past ``_ENUM_MIN_COUNT`` and
+    ``_ENUM_MIN_FREQ``, none privacy-filtered -- the annotation recorded 20 and
+    dropped five, with nothing in ``loss_inventory`` saying so. A published
+    slot is a *declared protocol vocabulary*: the member list is the answer,
+    and a partial one is indistinguishable from a complete one to
+    :func:`polylogue.sources.origin_specs.schema_observed_leaf_values`, which
+    reads it as every value the committed schema recorded.
+
+    The frequency and privacy filters below stay. They are selection criteria
+    a reader can name and reason about; a flat output ceiling inside an
+    already-bounded population was not.
+    """
     total = max(field_stats.value_count, 1)
     min_count = _ENUM_MIN_COUNT if total >= 20 else 1
     min_freq = _ENUM_MIN_FREQ if total >= 50 else 0.0
     values: list[JSONValue] = []
-    for value, count in field_stats.observed_values.most_common(_ENUM_VALUE_CAP):
+    for value, count in field_stats.observed_values.most_common():
         if not _is_safe_enum_value(value, path=path, config=privacy_config):
             continue
         if count < min_count:
@@ -38,8 +57,6 @@ def _enum_values(
         if min_freq and (count / total) < min_freq:
             continue
         values.append(value)
-        if len(values) >= _ENUM_OUTPUT_CAP:
-            break
     return values
 
 
