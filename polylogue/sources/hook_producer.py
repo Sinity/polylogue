@@ -398,60 +398,136 @@ def _retire(path: Path, root: Path, bucket: str) -> None:
     os.replace(path, acknowledged / path.name)
 
 
-def compact_legacy_spool(root: Path, *, max_bytes: int = MAX_COMPACTED_CARRIER_BYTES) -> dict[str, object]:
+#: Envelopes folded between durability checkpoints. A checkpoint fsyncs the
+#: carriers and retires exactly the envelopes already in them, so an
+#: interrupted fold re-folds at most this many -- against the ~716k-envelope
+#: legacy spool, where a single unbounded pass re-folds everything and appends
+#: a second full copy of every event to the carriers.
+COMPACTION_CHECKPOINT_EVENTS = 10_000
+
+
+def _sorted_directory(directory: Path) -> list[os.DirEntry[str]]:
+    """One directory's entries in name order, or nothing when it is absent.
+
+    One directory at a time, never the whole tree: ``sorted(rglob("*"))`` holds
+    and sorts every path at once, measured at 1.37 GB resident for the
+    716,754-file legacy spool -- on the machine that also has to hold the
+    rebuild's headroom. This costs the widest single day shard instead.
+    """
+
+    try:
+        with os.scandir(directory) as scan:
+            return sorted(scan, key=lambda entry: entry.name)
+    except FileNotFoundError:
+        return []
+
+
+def compact_legacy_spool(
+    root: Path,
+    *,
+    max_bytes: int = MAX_COMPACTED_CARRIER_BYTES,
+    checkpoint_events: int = COMPACTION_CHECKPOINT_EVENTS,
+) -> dict[str, object]:
     """Fold the retired file-per-event spool into append-only carriers, once.
 
     Reads every ``pending/**/*.json`` envelope and every root-level
     ``<provider>-<session>.jsonl`` mirror, appends each as one carrier line,
-    fsyncs the carriers, and only then retires the originals under
-    ``acknowledged/``. Ordering is: durable carrier first, retirement second,
-    so an interrupted run re-folds at worst a prefix -- and a re-folded
-    envelope is the same content-derived event the archive already holds.
+    then checkpoints: fsync the carriers, and only then retire the envelopes
+    already in them under ``acknowledged/``. Ordering within a checkpoint is
+    durable carrier first, retirement second, so an interrupted run re-folds
+    at most one checkpoint's worth -- and a re-folded envelope is the same
+    content-derived event the archive already holds.
 
     Refusals are counted and named, never silently dropped: a hidden
     atomic-write tempname is not a published envelope, a zero-byte file is not
-    a record, and a payload this producer would refuse to write is not one it
-    will fold in through the back door.
+    a record, a member that is not a regular file is not a spool entry, and a
+    payload this producer would refuse to write is not one it will fold in
+    through the back door.
+
+    Every inspected member lands in exactly one of ``folded`` or ``refused``,
+    and its bytes in exactly one of ``folded_bytes`` or ``refused_bytes``, so
+    ``scanned``/``scanned_bytes`` conserve against the frozen manifest by
+    count *and* by size (k8wv AC4) rather than by filename count alone.
     """
 
     folded = 0
+    folded_bytes = 0
+    scanned = 0
+    scanned_bytes = 0
     refused: dict[str, int] = {}
+    refused_bytes: dict[str, int] = {}
 
-    def refuse(reason: str) -> None:
+    def refuse(reason: str, size: int) -> None:
         refused[reason] = refused.get(reason, 0) + 1
+        refused_bytes[reason] = refused_bytes.get(reason, 0) + size
 
     sink = _CompactionSink(root, max_bytes=max_bytes)
     retire: list[tuple[Path, str]] = []
+    retired = 0
 
-    pending = root / PENDING_DIRNAME
-    for path in sorted(pending.rglob("*")) if pending.is_dir() else []:
-        if not path.is_file():
-            continue
-        if path.name.startswith("."):
-            refuse("hidden atomic-write tempname is not a published envelope")
-            continue
-        if path.suffix != ".json":
-            refuse(f"unrecognized spool member suffix: {path.suffix or '(none)'}")
-            continue
+    def checkpoint() -> None:
+        """Make this batch's carriers durable, then retire what is in them."""
+        nonlocal retired
+        if not retire:
+            return
+        sink.seal()
+        for path, bucket in retire:
+            _retire(path, root, bucket)
+        retired += len(retire)
+        retire.clear()
+
+    def member_size(path: Path) -> int:
         try:
-            raw = path.read_text(encoding="utf-8")
+            return path.lstat().st_size
         except OSError:
-            refuse("unreadable")
-            continue
-        if not raw.strip():
-            refuse("zero-byte file carries no record")
-            continue
-        try:
-            value = json.loads(raw)
-            if not isinstance(value, dict):
-                raise HookSpoolRecordError("envelope must be an object")
-            record = validated_record(value)
-        except (json.JSONDecodeError, HookSpoolRecordError) as exc:
-            refuse(f"invalid envelope: {type(exc).__name__}")
-            continue
-        sink.append(record)
-        folded += 1
-        retire.append((path, day_shard()))
+            return 0
+
+    # Explicit stack, one directory's entries resident at a time. Descend into
+    # real subdirectories only: a symlink is classified as a member below
+    # instead of being followed out of the spool.
+    directories = [root / PENDING_DIRNAME]
+    while directories:
+        entries = _sorted_directory(directories.pop())
+        subdirectories = [Path(entry.path) for entry in entries if entry.is_dir(follow_symlinks=False)]
+        directories.extend(reversed(subdirectories))
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                continue
+            path = Path(entry.path)
+            size = member_size(path)
+            scanned += 1
+            scanned_bytes += size
+            if not path.is_file() or path.is_symlink():
+                refuse("spool member is not a regular file", size)
+                continue
+            if path.name.startswith("."):
+                refuse("hidden atomic-write tempname is not a published envelope", size)
+                continue
+            if path.suffix != ".json":
+                refuse(f"unrecognized spool member suffix: {path.suffix or '(none)'}", size)
+                continue
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError:
+                refuse("unreadable", size)
+                continue
+            if not raw.strip():
+                refuse("zero-byte file carries no record", size)
+                continue
+            try:
+                value = json.loads(raw)
+                if not isinstance(value, dict):
+                    raise HookSpoolRecordError("envelope must be an object")
+                record = validated_record(value)
+            except (json.JSONDecodeError, HookSpoolRecordError) as exc:
+                refuse(f"invalid envelope: {type(exc).__name__}", size)
+                continue
+            sink.append(record)
+            folded += 1
+            folded_bytes += size
+            retire.append((path, day_shard()))
+            if len(retire) >= checkpoint_events:
+                checkpoint()
 
     # The root-level ``<provider>-<session>.jsonl`` per-session journals are
     # the one remaining unowned member of the retired spool tree (k8wv AC6).
@@ -462,16 +538,21 @@ def compact_legacy_spool(root: Path, *, max_bytes: int = MAX_COMPACTED_CARRIER_B
     # for; reversing it is a decision, not a compaction detail.
     for path in sorted(root.glob("*.jsonl")):
         if path.is_file():
-            refuse("per-session journal mirror is not an ingest surface (docs/hooks.md)")
+            size = member_size(path)
+            scanned += 1
+            scanned_bytes += size
+            refuse("per-session journal mirror is not an ingest surface (docs/hooks.md)", size)
 
-    sink.seal()
-    for path, bucket in retire:
-        _retire(path, root, bucket)
+    checkpoint()
     return {
         "folded": folded,
+        "folded_bytes": folded_bytes,
+        "scanned": scanned,
+        "scanned_bytes": scanned_bytes,
         "carriers": sorted({str(path) for path in sink.carriers}),
         "refused": dict(sorted(refused.items())),
-        "retired": len(retire),
+        "refused_bytes": dict(sorted(refused_bytes.items())),
+        "retired": retired,
     }
 
 
