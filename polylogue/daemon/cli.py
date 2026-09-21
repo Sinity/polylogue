@@ -121,6 +121,11 @@ _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 #: Debt rows one retry tick inspects, shared by the admitted pass and the
 #: lease-free embedding pass that precedes it so both see the same window.
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
+#: Convergence-debt stages whose backlog has its own recurring domain owner.
+#: The generic drain neither retries nor reports on these: the owner does.
+#: ``raw_retention`` is drained by ``LiveBatchProcessor`` on every live-ingest
+#: pass (``polylogue.sources.live.batch.RAW_RETENTION_STAGE``).
+_OWNED_DEBT_STAGES = frozenset({"derived", "fts", "fts_readiness", "raw_parse_recovery", "embed", "raw_retention"})
 
 T = TypeVar("T")
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
@@ -1619,6 +1624,11 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     stage for the recorded subject and updates that same ops-ledger row on a
     further deferral/failure. The legacy ``convergence`` stage remains an
     all-stage fallback for older generic rows.
+
+    ``_OWNED_DEBT_STAGES`` names the stages whose backlog belongs to a domain
+    owner rather than to this generic drain. Retrying one here would run the
+    wrong executor, and reporting it as ``stage_unimplemented`` would claim the
+    row was never retried when its owner retries it every pass.
     """
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
@@ -1630,7 +1640,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
         debt
         for debt in cursor.list_convergence_debt(limit=limit)
         if debt.subject_type in {"source_path", "session_id"}
-        and debt.stage not in {"derived", "fts", "fts_readiness", "raw_parse_recovery", "embed"}
+        and debt.stage not in _OWNED_DEBT_STAGES
         and _debt_retry_due(debt, now=now)
     ]
     if not candidate_debt:

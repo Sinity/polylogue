@@ -1777,11 +1777,36 @@ class CursorStore:
         """Clear derived convergence debt after successful convergence."""
         self._clear_convergence_debt_from_ops(subject_type=subject_type, subject_id=subject_id, stage=stage)
 
-    def list_convergence_debt(self, *, limit: int = 20) -> list[LiveConvergenceDebt]:
-        """Return recent derived convergence debt records."""
+    def list_convergence_debt(
+        self,
+        *,
+        limit: int = 20,
+        stage: str | None = None,
+        retry_due_only: bool = False,
+    ) -> list[LiveConvergenceDebt]:
+        """Return recent derived convergence debt records.
+
+        ``stage`` and ``retry_due_only`` let a stage's own recurring owner
+        drain its own backlog without pulling the whole ledger into memory and
+        filtering it in Python: an owner that must stay bounded per pass has to
+        bound the query, not the result.
+        """
+        now = datetime.now(UTC).isoformat()
+        clauses: list[str] = []
+        params: list[object] = []
+        if stage is not None:
+            clauses.append("stage = ?")
+            params.append(stage)
+        if retry_due_only:
+            clauses.append("(next_retry_at IS NULL OR next_retry_at <= ?)")
+            params.append(now)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        # Placeholder order follows the statement text: the WHERE clauses, then
+        # the ORDER BY's retry-due discriminator, then LIMIT.
+        params.extend((now, limit))
         with self._connect_ops() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     stage,
                     target_type,
@@ -1794,6 +1819,7 @@ class CursorStore:
                     next_retry_at,
                     materializer_version
                 FROM convergence_debt
+                {where}
                 ORDER BY
                     CASE WHEN next_retry_at IS NULL OR next_retry_at <= ? THEN 0 ELSE 1 END,
                     priority DESC,
@@ -1801,7 +1827,7 @@ class CursorStore:
                     debt_id DESC
                 LIMIT ?
                 """,
-                (datetime.now(UTC).isoformat(), limit),
+                tuple(params),
             ).fetchall()
         return [
             LiveConvergenceDebt(

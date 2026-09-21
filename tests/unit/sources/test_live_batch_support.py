@@ -36,6 +36,8 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import (
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
+    RAW_RETENTION_LIMIT_PER_PATH,
+    RAW_RETENTION_STAGE,
     LiveBatchProcessor,
     _ArchiveFullWriteResult,
     append_capability_receipt,
@@ -1673,7 +1675,7 @@ def test_live_raw_compaction_holds_generation_lease_through_delete(
             with RebuildLease(tmp_path):
                 pass
         phases.append("delete")
-        return SimpleNamespace(errors=())
+        return SimpleNamespace(errors=(), residual_source_paths=())
 
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", assert_promotion_excluded)
     monkeypatch.setattr(raw_retention, "compact_paths_superseded_raw_snapshots", assert_delete_excluded)
@@ -8757,3 +8759,195 @@ def test_a_deferred_pass_reports_deferral_as_its_own_count_not_as_failures(
     final = payloads[-1]
     assert final["deferred_file_count"] == 1
     assert final.get("failed_file_count", 0) == 0
+
+
+# ── Raw retention: the recurring owner's bounded retry (polylogue-6kur AC5) ──
+
+
+def _seed_superseded_raw_snapshots(
+    processor: LiveBatchProcessor,
+    source_db: Path,
+    source_path: Path,
+    *,
+    count: int,
+    prefix: int = 0,
+) -> list[str]:
+    """Write ``count`` superseded append snapshots plus one surviving head.
+
+    ``source_index = -1`` is the append lane, the one
+    ``compact_paths_superseded_raw_snapshots`` compacts: it passes
+    ``keep_full_snapshots=1_000_000`` on purpose, so full snapshots are never
+    its subject. Acquisition times are anchored on the processor's own
+    ``_raw_compaction_min_acquired_at`` floor, which is the production rule --
+    retention only compacts what this watcher itself acquired.
+    """
+    from polylogue.core.timestamps import to_epoch_ms
+
+    floor_ms = to_epoch_ms(processor._raw_compaction_min_acquired_at, numeric_unit="milliseconds")
+    assert floor_ms is not None
+    raw_ids: list[str] = []
+    with closing(sqlite3.connect(source_db)) as conn:
+        for index in range(count + 1):
+            raw_id = f"{prefix + index:064x}"
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index,
+                    blob_hash, blob_size, acquired_at_ms
+                ) VALUES (?, 'codex-session', ?, ?, -1, ?, ?, ?)
+                """,
+                (raw_id, raw_id, str(source_path), bytes.fromhex(raw_id), 10, floor_ms + index),
+            )
+            raw_ids.append(raw_id)
+        conn.commit()
+    # The newest row is the surviving head; the rest are superseded.
+    return raw_ids[:-1]
+
+
+def _retention_processor(tmp_path: Path, root: Path) -> LiveBatchProcessor:
+    return LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "ops.db"),
+        parser_fingerprint="test-parser",
+    )
+
+
+def _retention_debt(cursor: CursorStore) -> list[Any]:
+    return [
+        debt
+        for debt in cursor.list_convergence_debt(limit=50, stage=RAW_RETENTION_STAGE)
+        if debt.subject_type == "source_path"
+    ]
+
+
+def _grant_full_retention_authority(monkeypatch: pytest.MonkeyPatch, raw_ids: list[str]) -> None:
+    from polylogue.storage import raw_retention
+
+    monkeypatch.setattr(
+        raw_retention,
+        "active_raw_retention_authority",
+        lambda *_a, **_k: raw_retention.RawRetentionAuthority(
+            protected_raw_ids=frozenset(),
+            eligible_raw_ids=frozenset(raw_ids),
+        ),
+    )
+
+
+def test_raw_retention_bound_is_retained_as_retryable_backlog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bounded retention pass names its remainder instead of dropping it.
+
+    Raw retention is one of polylogue-6kur AC5's four storage domains and it is
+    the one that had no bounded retry: a pass compacted at most
+    ``RAW_RETENTION_LIMIT_PER_PATH`` snapshots per path and the remainder was
+    left with no record that anything still owed it. It now lands in the
+    ordinary ``convergence_debt`` ledger, which carries the attempt count and
+    the shared exponential backoff.
+
+    Anti-vacuity: stop populating ``residual_source_paths`` in
+    ``compact_paths_superseded_raw_snapshots`` (or drop the
+    ``_record_raw_retention_outcome`` call) and the debt assertions go red
+    while the pass still reports the same deletions.
+    """
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    processor = _retention_processor(tmp_path, root)
+    superseded = _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=30)
+    _grant_full_retention_authority(monkeypatch, superseded)
+
+    processor._compact_superseded_raw_snapshots([path])
+
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        remaining = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    # 31 rows seeded, 30 superseded, one bounded pass compacts 25.
+    assert remaining == 31 - RAW_RETENTION_LIMIT_PER_PATH
+
+    debt = _retention_debt(processor._cursor)
+    assert [(item.subject_id, item.status) for item in debt] == [(str(path), "deferred")]
+    assert f"bounded at {RAW_RETENTION_LIMIT_PER_PATH}" in (debt[0].last_error or "")
+    assert debt[0].failure_count == 1
+
+
+def test_raw_retention_drains_its_due_backlog_and_clears_the_debt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner comes back to what its last bounded pass did not reach.
+
+    The backlog path is not in the next pass's own subjects: it is found
+    through the retry-due ``raw_retention`` debt rows, which is what makes this
+    a recurring owner with bounded retry rather than a one-shot best effort.
+
+    Anti-vacuity: drop the ``_raw_retention_backlog_paths`` extension of
+    ``scoped_paths`` and the remaining rows survive and the debt row stays.
+    """
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    backlog_path = root / "backlog.jsonl"
+    backlog_path.write_text("{}\n", encoding="utf-8")
+    other_path = root / "other.jsonl"
+    other_path.write_text("{}\n", encoding="utf-8")
+    processor = _retention_processor(tmp_path, root)
+    superseded = _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", backlog_path, count=30)
+    _grant_full_retention_authority(monkeypatch, superseded)
+
+    processor._compact_superseded_raw_snapshots([backlog_path])
+    assert [item.subject_id for item in _retention_debt(processor._cursor)] == [str(backlog_path)]
+
+    # The shared backoff put the row ~60 s out. Make it due, the way the clock
+    # would, without touching anything else the owner reads.
+    with closing(sqlite3.connect(tmp_path / "ops.db")) as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = ? WHERE stage = ?",
+            ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
+        )
+        conn.commit()
+
+    # A pass whose own subject is an unrelated path still drains the backlog.
+    processor._compact_superseded_raw_snapshots([other_path])
+
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        remaining = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+    assert remaining == 1
+    assert _retention_debt(processor._cursor) == []
+
+
+def test_raw_retention_refusal_is_recorded_not_only_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unsafe-evidence refusal leaves retryable debt, not just a log line.
+
+    Anti-vacuity: restore the bare ``return`` after the
+    ``RawRetentionSafetyError`` warning and this reports no debt at all, which
+    is exactly the state AC5 called unproven -- work owed with no owner
+    recorded anywhere.
+    """
+    from polylogue.storage import raw_retention
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text("{}\n", encoding="utf-8")
+    processor = _retention_processor(tmp_path, root)
+    _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=2)
+
+    def refuse(*_args: object, **_kwargs: object) -> raw_retention.RawRetentionAuthority:
+        raise raw_retention.RawRetentionSafetyError("index has no raw authority")
+
+    monkeypatch.setattr(raw_retention, "active_raw_retention_authority", refuse)
+
+    processor._compact_superseded_raw_snapshots([path])
+
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 3
+
+    debt = _retention_debt(processor._cursor)
+    assert [(item.subject_id, item.status) for item in debt] == [(str(path), "failed")]
+    assert "index has no raw authority" in (debt[0].last_error or "")
