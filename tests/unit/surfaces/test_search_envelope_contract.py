@@ -67,6 +67,17 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         "advisories",
         "authority",
         "outcome",
+        # polylogue-1c6j (landed in #5224): names what ``total`` counted, since
+        # a ``--no-root`` search counts subagent/branch rows too. It was a key
+        # bolted onto the dumped envelope until it was declared here, which is
+        # the only way the emitted document can satisfy the published
+        # ``additionalProperties: false`` schema this model generates. #5224
+        # regenerated docs/openapi/search.yaml and
+        # docs/schemas/cli-output/search-envelope.schema.json for it but did
+        # not update this roster, which is the whole of polylogue-2i96t's
+        # second cause: the field is part of the published contract and this
+        # list had simply not learned about it.
+        "total_unit",
     }
 )
 
