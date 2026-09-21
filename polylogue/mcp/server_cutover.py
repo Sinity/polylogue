@@ -245,10 +245,23 @@ async def _query_sessions(
 
     Ranked (top-k) search when ``expression`` is given as free text;
     otherwise an exhaustive session listing filtered by the other
-    parameters. Reuses the same ``archive_search_payload`` /
-    ``archive_session_list_payload`` machinery the retired ``search`` /
-    ``list_sessions`` tools used, since ``query_units`` (the DSL path)
-    explicitly rejects ``sessions`` as a terminal unit source.
+    parameters. ``query_units`` (the DSL path) explicitly rejects
+    ``sessions`` as a terminal unit source, so this projection is served
+    here instead.
+
+    The route is the typed session-owner family
+    (``operations/session_reads.execute_session_operation``,
+    ``docs/session-operations.md``), *not* the generic
+    ``execute_read_operation`` the CLI and daemon transport reach. That is
+    a declared second executor rather than drift, so the obligation it
+    carries is behavioural equivalence with the generic route on the reads
+    both answer -- selection, ordering, cardinality and page boundary --
+    proven by comparing the two executors in
+    ``tests/unit/operations/test_session_owner_route_equivalence.py``.
+    Plans the owner page cannot serve (post-filters, semantic or hybrid
+    retrieval, random sort, multi-origin) fall back to
+    ``_query_advanced_sessions`` below, which is a third implementation
+    over ``archive_search_payload`` / ``archive_session_list_payload``.
     """
     from polylogue.operations.session_contracts import SessionList, SessionSearch
     from polylogue.operations.session_reads import execute_session_operation
