@@ -842,23 +842,22 @@ def test_gc_recover_cli_requires_authority_and_emits_audited_blob_free_abandonme
     assert store.exists(blob_hash)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known defect: `ops maintenance gc-recover --abandon ... --yes` cannot execute in any daemon state. "
-        "With the daemon stopped the CLI refuses, because _blob_gc._submit goes through "
-        "configured_mutation_operation, which sends declared mutations to the resident daemon only "
-        "('daemon is unavailable; it must execute maintenance.blob-gc.recover'). With the daemon running "
-        "PendingBlobGCGenerationAbandonActuator._require_offline_writer_ownership refuses, because a daemon "
-        "writer lease is active ('pending blob-GC abandonment requires the daemon to be stopped'). Deleting "
-        "the CLI direct-writer bypasses (6be5d2fd7) left this operation's offline-only precondition "
-        "unreconciled with its new daemon-only transport. Remove this xfail when the two agree."
-    ),
-)
 def test_gc_recover_cli_emits_audited_blob_free_abandonment(
     cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The abandonment effect itself, pinned so that reconciling the two preconditions turns this red."""
+    """`gc-recover --abandon --yes` executes against the resident daemon.
+
+    This was a strict xfail: the operation had no satisfiable daemon state.
+    With the daemon stopped ``_blob_gc._submit`` goes through
+    ``configured_mutation_operation``, which sends declared mutations to the
+    resident daemon only; with the daemon running
+    ``PendingBlobGCGenerationAbandonActuator`` refused because a daemon writer
+    lease was active. Anti-vacuity: restore that actuator's
+    offline-writer-ownership precondition and this goes red at the CLI
+    invocation with "requires the daemon to be stopped", because the daemon
+    executing the operation is precisely the state it rejected -- the audit
+    row and the terminal ``failed`` member outcome asserted below never appear.
+    """
     archive_root = cli_workspace["archive_root"]
     store = BlobStore(archive_root / "blob")
     blob_hash, _ = store.write_from_bytes(b"pending CLI authority")
@@ -916,11 +915,7 @@ def test_gc_recover_cli_emits_audited_blob_free_abandonment(
         ).fetchone() == (1,)
 
 
-def test_blob_publications_cli_requires_confirmation_to_abandon(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    archive_root = cli_workspace["archive_root"]
+def _seed_unreferenced_publication_receipt(archive_root: Path) -> str:
     publisher = ArchiveBlobPublisher(
         archive_root / "source.db",
         archive_root / "blob",
@@ -929,6 +924,16 @@ def test_blob_publications_cli_requires_confirmation_to_abandon(
     receipt_id = publisher.receipt_id(blob_hash)
     publisher.flush()
     assert receipt_id is not None
+    return receipt_id
+
+
+def test_blob_publications_cli_inspects_and_refuses_unconfirmed_abandonment(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """Inspection is a read; abandonment still needs `--yes` before any dispatch."""
+    archive_root = cli_workspace["archive_root"]
+    receipt_id = _seed_unreferenced_publication_receipt(archive_root)
 
     inspected = cli_runner.invoke(
         cli,
@@ -946,8 +951,26 @@ def test_blob_publications_cli_requires_confirmation_to_abandon(
     )
     assert refused.exit_code != 0
     assert "--yes is required" in refused.output
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (1,)
 
-    abandoned = cli_runner.invoke(
+
+def test_blob_publications_abandonment_refuses_without_a_daemon(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """A confirmed abandonment with no daemon refuses and writes nothing.
+
+    Anti-vacuity: restore the deleted in-process call to
+    ``abandon_blob_publication_receipts`` in ``blob_publications_command`` and
+    this goes red -- the command exits 0 and the reservation row is gone,
+    which is exactly the durable ``source.db`` DELETE-and-commit this route
+    performed with no daemon, no write lease and no audited preview.
+    """
+    archive_root = cli_workspace["archive_root"]
+    receipt_id = _seed_unreferenced_publication_receipt(archive_root)
+
+    refused = cli_runner.invoke(
         cli,
         [
             "--plain",
@@ -960,12 +983,65 @@ def test_blob_publications_cli_requires_confirmation_to_abandon(
             "--output-format",
             "json",
         ],
-        catch_exceptions=False,
     )
-    assert abandoned.exit_code == 0
+    assert refused.exit_code != 0
+    assert "daemon is unavailable; it must execute maintenance.blob-publications.abandon" in refused.output
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM blob_publication_reservations WHERE publication_id = ?",
+            (receipt_id,),
+        ).fetchone() == (1,)
+
+
+def test_blob_publications_cli_abandons_through_the_resident_daemon(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon applies the abandonment, keeps the blob, and audits the attempt."""
+    archive_root = cli_workspace["archive_root"]
+    receipt_id = _seed_unreferenced_publication_receipt(archive_root)
+    store = BlobStore(archive_root / "blob")
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        blob_hash = conn.execute(
+            "SELECT blob_hash FROM blob_publication_reservations WHERE publication_id = ?",
+            (receipt_id,),
+        ).fetchone()[0]
+    assert store.exists(bytes(blob_hash).hex())
+
+    with cli_daemon_archive(archive_root, monkeypatch):
+        abandoned = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "blob-publications",
+                "--abandon",
+                receipt_id,
+                "--yes",
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert abandoned.exit_code == 0, abandoned.output
     payload = json.loads(abandoned.stdout)
     assert payload["abandonment"]["abandoned"] == 1
+    assert payload["abandonment"]["skipped_referenced"] == 0
+    assert payload["abandonment"]["blob_effect"] == "none"
+    assert payload["receipt_ref"] is not None
     assert payload["receipts"] == []
+    # The receipt is discharged; the blob it reserved is untouched.
+    assert store.exists(bytes(blob_hash).hex())
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM operation_attempts AS attempt "
+            "JOIN operation_runs AS run ON run.operation_id = attempt.operation_id "
+            "WHERE run.operation_name = ?",
+            ("mutate-abandon-blob-publication-receipts",),
+        ).fetchone() == (1,)
 
 
 def test_blob_reference_debt_cli_classifies_missing_refs(
@@ -1110,13 +1186,25 @@ def test_blob_reference_replace_from_source_preview_cli_does_not_require_manifes
     assert refs, "preview must not mutate blob_refs"
 
 
-def test_blob_reference_replace_from_source_cli_applies_with_manifest(
+def test_blob_reference_replace_from_source_refuses_without_a_daemon(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
-    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
-    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
-    manifest = cli_workspace["archive_root"] / "plans" / "replace.jsonl"
+    """The apply route is daemon-only; with no daemon nothing is rewritten.
+
+    Anti-vacuity: restore the deleted in-process call to
+    ``replace_raw_backed_blob_reference_debt_from_source(dry_run=False)`` in
+    ``blob_reference_replace_from_source_command`` and this goes red -- the
+    command exits 0, the manifest appears, and ``raw_sessions`` has been
+    UPDATE-ed and committed against the durable source tier by the CLI.
+    """
+    archive_root = cli_workspace["archive_root"]
+    source = archive_root / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(archive_root, source)
+    manifest = archive_root / "plans" / "replace.jsonl"
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        before = conn.execute("SELECT raw_id, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall()
 
     result = cli_runner.invoke(
         cli,
@@ -1130,10 +1218,42 @@ def test_blob_reference_replace_from_source_cli_applies_with_manifest(
             "--output-format",
             "json",
         ],
-        catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code != 0
+    assert "daemon is unavailable; it must execute maintenance.blob-refs.replace-from-source" in result.output
+    assert not manifest.exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT raw_id, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall() == before
+
+
+def test_blob_reference_replace_from_source_cli_applies_with_manifest(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = cli_workspace["archive_root"]
+    source = archive_root / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(archive_root, source)
+    manifest = archive_root / "plans" / "replace.jsonl"
+
+    with cli_daemon_archive(archive_root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "blob-reference-replace-from-source",
+                "--manifest-file",
+                str(manifest),
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mode"] == "blob_reference_replace_from_source"
     assert payload["mutates"] is True
@@ -1141,9 +1261,17 @@ def test_blob_reference_replace_from_source_cli_applies_with_manifest(
     assert payload["candidate_rows"] == 1
     assert payload["replaced_rows"] == 1
     assert payload["skipped_error"] == 0
+    assert payload["receipt_ref"] is not None
     manifest_rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
     assert len(manifest_rows) == 1
     assert manifest_rows[0]["old_blob_hash"] != manifest_rows[0]["new_blob_hash"]
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM operation_attempts AS attempt "
+            "JOIN operation_runs AS run ON run.operation_id = attempt.operation_id "
+            "WHERE run.operation_name = ?",
+            ("mutate-replace-blob-refs-from-source",),
+        ).fetchone() == (1,)
 
 
 def test_blob_reference_prune_orphans_preview_cli_keeps_refs(
@@ -1178,13 +1306,22 @@ def test_blob_reference_prune_orphans_preview_cli_keeps_refs(
     assert refs == [(str(source),), (str(cli_workspace["archive_root"] / "missing-browser-capture.json"),)]
 
 
-def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
+def test_blob_reference_prune_orphans_refuses_without_a_daemon(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
-    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
-    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
-    quarantine_file = cli_workspace["archive_root"] / "quarantine" / "blob-refs.jsonl"
+    """The prune route is daemon-only; with no daemon no ref is deleted.
+
+    Anti-vacuity: restore the deleted in-process call to
+    ``prune_orphan_blob_reference_debt(dry_run=False)`` in
+    ``blob_reference_prune_orphans_command`` and this goes red -- the command
+    exits 0, the quarantine file appears, and the orphan ``blob_refs`` row has
+    been DELETE-ed and committed by the CLI with no daemon and no audit row.
+    """
+    archive_root = cli_workspace["archive_root"]
+    source = archive_root / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(archive_root, source)
+    quarantine_file = archive_root / "quarantine" / "blob-refs.jsonl"
 
     result = cli_runner.invoke(
         cli,
@@ -1198,22 +1335,63 @@ def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
             "--output-format",
             "json",
         ],
-        catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    assert result.exit_code != 0
+    assert "daemon is unavailable; it must execute maintenance.blob-refs.prune-orphans" in result.output
+    assert not quarantine_file.exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        refs = conn.execute("SELECT source_path FROM blob_refs ORDER BY source_path").fetchall()
+    assert refs == [(str(source),), (str(archive_root / "missing-browser-capture.json"),)]
+
+
+def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_root = cli_workspace["archive_root"]
+    source = archive_root / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(archive_root, source)
+    quarantine_file = archive_root / "quarantine" / "blob-refs.jsonl"
+
+    with cli_daemon_archive(archive_root, monkeypatch):
+        result = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "blob-reference-prune-orphans",
+                "--quarantine-file",
+                str(quarantine_file),
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["mutates"] is True
     assert payload["dry_run"] is False
     assert payload["missing_orphan_refs"] == 1
     assert payload["pruned_refs"] == 1
     assert payload["quarantine_path"] == str(quarantine_file)
+    assert payload["receipt_ref"] is not None
     exported = [json.loads(line) for line in quarantine_file.read_text(encoding="utf-8").splitlines()]
     assert exported[0]["ref_id"] == "raw-gone"
     assert exported[0]["source_path"].endswith("missing-browser-capture.json")
-    with sqlite3.connect(cli_workspace["archive_root"] / "source.db") as conn:
+    with sqlite3.connect(archive_root / "source.db") as conn:
         refs = conn.execute("SELECT source_path FROM blob_refs ORDER BY source_path").fetchall()
     assert refs == [(str(source),)]
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM operation_attempts AS attempt "
+            "JOIN operation_runs AS run ON run.operation_id = attempt.operation_id "
+            "WHERE run.operation_name = ?",
+            ("mutate-prune-orphan-blob-refs",),
+        ).fetchone() == (1,)
 
 
 def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:

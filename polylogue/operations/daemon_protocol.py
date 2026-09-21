@@ -359,6 +359,26 @@ class BlobGCRecoverRequest(_OperationPayload):
     generation_id: str = Field(min_length=1)
 
 
+class BlobPublicationsAbandonRequest(_OperationPayload):
+    publication_ids: list[str] = Field(min_length=1, max_length=10_000)
+
+
+class BlobRefsReplaceFromSourceRequest(_OperationPayload):
+    manifest_path: str = Field(min_length=1)
+    max_count: int | None = Field(default=None, ge=1)
+    sample_size: int = Field(default=30, ge=0, le=1000)
+
+
+class BlobRefsPruneOrphansRequest(_OperationPayload):
+    #: Optional: the storage routine derives
+    #: ``<archive-root>/.maintenance-state/blob-ref-quarantine/<timestamp>.jsonl``
+    #: from the source tier when the caller names no destination, and that
+    #: derivation must happen on the daemon that owns the archive.
+    quarantine_path: str | None = None
+    max_count: int | None = Field(default=None, ge=1)
+    sample_size: int = Field(default=30, ge=0, le=1000)
+
+
 class DemoAugmentRequest(_OperationPayload):
     with_overlays: bool = False
 
@@ -583,6 +603,13 @@ class MutationResult(_OperationPayload):
     # clean, committed ingest fail its own await contract and surface to the
     # client as ``DaemonMutationIndeterminateError``.
     source_generation_id: str | None = None
+    #: The executor's durable handle for the audited attempt
+    #: (``mutation-operation:<operation_id>``).  ``OperationExecutor`` already
+    #: stamps it onto the :class:`MutationReceipt` it returns, but the
+    #: daemon-side envelope used to keep only ``receipt.domain_receipt``, so a
+    #: surface that declared a receipt reference could never populate one and
+    #: rendered ``null`` for every audited destructive mutation.
+    receipt_ref: str | None = None
 
     @model_validator(mode="after")
     def exact_result_family(self) -> MutationResult:
@@ -1178,6 +1205,48 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=BlobGCRecoverRequest,
         result_model=MutationResult,
         handler="maintenance_blob_gc_recover",
+    ),
+    DaemonOperationSpec(
+        "maintenance.blob-publications.abandon",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.blob_publication.abandon_receipts",
+        deadline_s=30.0,
+        request_contract="maintenance.blob-publications.abandon.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="BlobPublicationsAbandonRequest",
+        result_type="MutationResult",
+        request_model=BlobPublicationsAbandonRequest,
+        result_model=MutationResult,
+        handler="maintenance_blob_publications_abandon",
+    ),
+    DaemonOperationSpec(
+        "maintenance.blob-refs.replace-from-source",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.blob_refs.replace_from_source",
+        deadline_s=300.0,
+        request_contract="maintenance.blob-refs.replace-from-source.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="BlobRefsReplaceFromSourceRequest",
+        result_type="MutationResult",
+        request_model=BlobRefsReplaceFromSourceRequest,
+        result_model=MutationResult,
+        handler="maintenance_blob_refs_replace_from_source",
+    ),
+    DaemonOperationSpec(
+        "maintenance.blob-refs.prune-orphans",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.blob_refs.prune_orphans",
+        deadline_s=300.0,
+        request_contract="maintenance.blob-refs.prune-orphans.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="BlobRefsPruneOrphansRequest",
+        result_type="MutationResult",
+        request_model=BlobRefsPruneOrphansRequest,
+        result_model=MutationResult,
+        handler="maintenance_blob_refs_prune_orphans",
     ),
     DaemonOperationSpec(
         "maintenance.demo.augment",

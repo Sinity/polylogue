@@ -1,4 +1,12 @@
-"""``maintenance blob-publications``: inspect/abandon publication receipts."""
+"""``maintenance blob-publications``: inspect/abandon publication receipts.
+
+Inspection is an ordinary read. Abandonment is a durable ``source.db``
+mutation and is therefore the resident daemon's: this command lowers it to
+``maintenance.blob-publications.abandon`` and renders the typed result. It
+previously called ``abandon_blob_publication_receipts`` in the CLI's own
+process, which ``DELETE``s from and commits against the durable source tier
+with no daemon involved, no write lease, and no audited preview.
+"""
 
 from __future__ import annotations
 
@@ -6,8 +14,28 @@ import json
 
 import click
 
-from polylogue.paths import archive_root
-from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
+from polylogue.config import Config
+from polylogue.paths import archive_root, render_root
+from polylogue.storage.blob_publication import inspect_blob_publication_receipts
+
+
+def _submit_abandonment(config: Config, publication_ids: tuple[str, ...]) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+        configured_mutation_operation,
+    )
+
+    operation = "maintenance.blob-publications.abandon"
+    try:
+        return configured_mutation_operation(config, operation, {"publication_ids": list(publication_ids)})
+    except OperationUnavailableError as exc:
+        raise click.ClickException(f"daemon is unavailable; it must execute {operation}") from exc
+    except OperationIndeterminateError as exc:
+        raise click.ClickException(f"{operation} outcome is indeterminate; inspect daemon audit state") from exc
+    except OperationFailedError as exc:
+        raise click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}") from exc
 
 
 @click.command("blob-publications")
@@ -30,15 +58,15 @@ def blob_publications_command(publication_ids: tuple[str, ...], yes: bool, outpu
     source_db = root / "source.db"
     if publication_ids and not yes:
         raise click.UsageError("--yes is required with --abandon")
-    abandonment = None
+    abandonment: dict[str, object] | None = None
+    receipt_ref: str | None = None
     if publication_ids:
-        abandonment = abandon_blob_publication_receipts(
-            source_db,
-            root / "blob",
-            publication_ids,
-            confirmed=True,
-            index_db_path=root / "index.db",
-        )
+        config = Config(archive_root=root, render_root=render_root(), sources=[])
+        result = _submit_abandonment(config, publication_ids)
+        value = result.get("result")
+        abandonment = value if isinstance(value, dict) else {}
+        receipt_ref_value = result.get("receipt_ref")
+        receipt_ref = str(receipt_ref_value) if receipt_ref_value is not None else None
     receipts = inspect_blob_publication_receipts(
         source_db,
         root / "blob",
@@ -47,15 +75,8 @@ def blob_publications_command(publication_ids: tuple[str, ...], yes: bool, outpu
     payload = {
         "mode": "blob_publications",
         "mutates": bool(publication_ids),
-        "abandonment": (
-            {
-                "abandoned": abandonment.abandoned,
-                "skipped_referenced": abandonment.skipped_referenced,
-                "missing_receipts": abandonment.missing_receipts,
-            }
-            if abandonment is not None
-            else None
-        ),
+        "abandonment": abandonment,
+        "receipt_ref": receipt_ref,
         "receipts": [
             {
                 "publication_id": item.publication_id,
@@ -75,10 +96,13 @@ def blob_publications_command(publication_ids: tuple[str, ...], yes: bool, outpu
     if abandonment is not None:
         click.echo(
             "Abandoned: "
-            f"{abandonment.abandoned} receipt(s); "
-            f"referenced={abandonment.skipped_referenced}, missing={abandonment.missing_receipts}"
+            f"{abandonment['abandoned']} receipt(s); "
+            f"referenced={abandonment['skipped_referenced']}, missing={abandonment['missing_receipts']}"
         )
     click.echo(f"Publication receipts: {len(receipts)}")
     for item in receipts:
         state = "referenced" if item.referenced else "present" if item.blob_present else "missing"
         click.echo(f"  {item.publication_id} {item.blob_hash} {item.size_bytes}B {state}")
+
+
+__all__ = ["blob_publications_command"]

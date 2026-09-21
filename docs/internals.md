@@ -1127,7 +1127,13 @@ default, including missing-path receipts: absence is not proof that a paused
 publisher died. Automatic clearing requires archive-wide writer exclusion.
 Existing blob-without-reference rows remain explicit recoverable acquisition
 debt until reacquisition or confirmed operator abandonment through
-`polylogue ops maintenance blob-publications`. Age is never treated as proof
+`polylogue ops maintenance blob-publications --abandon ... --yes`. The
+decision is the operator's; the write is the daemon's. That command lowers to
+the declared `maintenance.blob-publications.abandon` operation
+(`DaemonAuthority.WRITE`, no fallback), so a confirmed abandonment with no
+resident daemon refuses instead of deleting reservation rows in the CLI's own
+process, and an applied one leaves an audited preview/authorization/attempt
+chain. Age is never treated as proof
 that a publisher is dead. Archive backup holds the same writer exclusion and
 copies an exact hash/size inventory for the union of durable references and
 publication receipts. Its blob-reference evidence records source resolution

@@ -155,6 +155,20 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.commands.maintenance._blob_gc:_submit",
         renderers=("polylogue.cli.commands.maintenance._blob_gc:blob_gc_command",),
     ),
+    "maintenance.blob-publications.abandon": CliOperationBinding(
+        lowering="polylogue.cli.commands.maintenance._blob_publications:_submit_abandonment",
+        renderers=("polylogue.cli.commands.maintenance._blob_publications:blob_publications_command",),
+    ),
+    "maintenance.blob-refs.replace-from-source": CliOperationBinding(
+        lowering="polylogue.cli.commands.maintenance._blob_integrity:_submit_replace_from_source",
+        renderers=(
+            "polylogue.cli.commands.maintenance._blob_integrity:_render_blob_reference_replace_from_source_plain",
+        ),
+    ),
+    "maintenance.blob-refs.prune-orphans": CliOperationBinding(
+        lowering="polylogue.cli.commands.maintenance._blob_integrity:_submit_prune_orphans",
+        renderers=("polylogue.cli.commands.maintenance._blob_integrity:_render_blob_reference_prune_orphans_plain",),
+    ),
     "ingest": CliOperationBinding(
         lowering="polylogue.cli.commands.import_command:_submit_ingest",
         renderers=("polylogue.cli.commands.import_command:import_command",),
