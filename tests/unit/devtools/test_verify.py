@@ -366,7 +366,12 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert affected["cache"] == "tree+environment"
     assert affected["timeout_seconds"] == 7200
     assert complete["exec"] == ["devtools", "verify", "--all"]
-    assert complete["checkout"] == "default"
+    # polylogue-p2mbi: no `checkout` key. "default" does not select a tree, it
+    # REFUSES every workspace but the project root -- which is the operator's
+    # working checkout and deliberately divergent, so the corpus run could
+    # only ever qualify that branch and a coordinator could not point it at an
+    # integrated candidate. Anti-vacuity: restoring the key makes this red.
+    assert "checkout" not in complete
     assert complete["pool"] == "pytest-heavy"
     assert complete["result"] == "pytest"
     assert complete["cache"] == "tree+environment"
@@ -428,7 +433,11 @@ print(json.dumps({
             "pool": "pytest-heavy",
             "result": "pytest",
             "timeout": 14400,
-            "checkout": "default",
+            # The production parser's own default for an undeclared key
+            # (polylogue-p2mbi). Asserted through agentctl rather than through
+            # the TOML so the meaning of "no checkout key" is the parser's,
+            # not this test's guess at it.
+            "checkout": "any",
         },
     }
 
