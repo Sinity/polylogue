@@ -212,10 +212,6 @@
       "digest": "fd7823b9f662916d5ec22cae1677b226e83e29f3"
     },
     {
-      "file": "polylogue/daemon/health.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
-    },
-    {
       "file": "polylogue/daemon/http.py",
       "digest": "0b7f1787d1f214f365a0ce0cd39794a746b4c924"
     },

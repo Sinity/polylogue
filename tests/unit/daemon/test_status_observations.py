@@ -39,6 +39,57 @@ def test_raw_failure_read_error_does_not_become_zero_or_ok(tmp_path: Path) -> No
     assert result["samples"] == []
 
 
+def test_direct_status_raw_failure_counts_are_null_when_the_source_tier_is_unavailable() -> None:
+    """The direct-status producer must not publish zeros it never counted.
+
+    polylogue-20d.17 AC3/AC9, second producer: ``daemon/status.py``'s
+    ``_archive_raw_failure_info`` already answered ``None`` (the test above),
+    but ``operations/status_workload.raw_failure_status_from_connection`` --
+    the route ``produce_direct_status`` uses -- still filled the same six
+    counts with ``0``, so an unreadable source tier published "0 parse
+    failures, 0 quarantined" as if it had been measured clean.
+
+    Anti-vacuity: restore any of those ``None`` values to ``0`` and this is
+    red.
+    """
+    from polylogue.operations.status_workload import raw_failure_status_from_connection
+
+    result = raw_failure_status_from_connection(None)
+
+    assert result["raw_failure_lifecycle_available"] is False
+    assert result["raw_failure_lifecycle_state"] == "unavailable"
+    for key in (
+        "raw_parse_failures",
+        "raw_validation_failures",
+        "raw_quarantined",
+        "raw_deferred_failures",
+        "raw_terminal_rejections",
+        "raw_unexplained_failures",
+    ):
+        assert result[key] is None, f"{key} published a count nothing measured"
+
+
+def test_direct_status_raw_failure_counts_are_null_when_the_source_read_fails(tmp_path: Path) -> None:
+    """A present-but-unreadable source connection takes the same route.
+
+    Anti-vacuity: return the measured branch's zeros from the read-failure
+    path and this is red.
+    """
+    from polylogue.operations.status_workload import raw_failure_status_from_connection
+
+    path = tmp_path / "source.db"
+    path.write_bytes(b"not a SQLite database" * 64)
+    conn = sqlite3.connect(str(path))
+    try:
+        result = raw_failure_status_from_connection(conn)
+    finally:
+        conn.close()
+
+    assert result["raw_failure_lifecycle_available"] is False
+    assert result["raw_parse_failures"] is None
+    assert result["raw_quarantined"] is None
+
+
 def test_minimal_snapshot_does_not_invent_raw_failure_warning_count() -> None:
     """The request-safe path has no rich source evidence to count."""
     from polylogue.daemon.status_snapshot import _minimal_status_payload

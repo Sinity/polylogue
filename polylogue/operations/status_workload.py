@@ -330,13 +330,17 @@ def raw_failure_status_from_connection(
     """
 
     _require_reader_schema(schema)
-    unavailable = {
-        "raw_parse_failures": 0,
-        "raw_validation_failures": 0,
-        "raw_quarantined": 0,
-        "raw_deferred_failures": 0,
-        "raw_terminal_rejections": 0,
-        "raw_unexplained_failures": 0,
+    # polylogue-20d.17 AC3: nothing was counted, so no count may be published.
+    # A zero here is indistinguishable from "the source tier is clean" in every
+    # downstream renderer and aggregate; ``None`` is the only honest value for
+    # a tier, table or probe that was never read.
+    unavailable: dict[str, object] = {
+        "raw_parse_failures": None,
+        "raw_validation_failures": None,
+        "raw_quarantined": None,
+        "raw_deferred_failures": None,
+        "raw_terminal_rejections": None,
+        "raw_unexplained_failures": None,
         "raw_failure_lifecycle_available": False,
         "raw_failure_lifecycle_state": "unavailable",
         "raw_failure_lifecycle_reason": "source tier unavailable",

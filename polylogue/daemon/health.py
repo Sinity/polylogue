@@ -1033,73 +1033,49 @@ def _check_schema_drift_medium() -> HealthAlert:
 
 
 def _check_repeated_stage_failures_medium() -> HealthAlert:
-    """Check for repeated stage failures in live ingest attempts.
+    """Check for repeated stage failures in recent ingest attempts.
 
-    Looks at recent ingest attempts and flags when a non-trivial portion
-    have failed — indicating a persistent stage-level problem rather than
-    a transient source-file issue.
+    Reads ``ops.ingest_attempts`` -- the only declared home for attempt rows.
+    A read that fails is reported as a failed check, never laundered into an
+    OK "no history" answer: an unreadable table is not an empty one
+    (polylogue-20d.17 AC3/AC9), so the reader below deliberately raises rather
+    than degrading to a value this check cannot tell apart from a measurement.
     """
     now = datetime.now(UTC).isoformat()
-    dbf = _active_health_db_path()
-    ops_info = _archive_repeated_stage_failure_info(archive_root() / "ops.db")
-    if ops_info is not None and (ops_info[0] > 0 or not dbf.exists()):
-        total_recent, failed_recent, error_row = ops_info
-        return _repeated_stage_failure_alert(now, total_recent, failed_recent, error_row)
-    if not dbf.exists():
-        return HealthAlert(
-            check_name="repeated_stage_failures",
-            tier=HealthTier.MEDIUM,
-            severity=HealthSeverity.ERROR,
-            message="database not found",
-            checked_at=now,
-            consecutive_failures=_record_failure("repeated_stage_failures", False),
-        )
-
     try:
-        conn = open_readonly_connection(dbf, validate_schema=False)
-        try:
-            has_table = bool(
-                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_ingest_attempt'").fetchone()
-            )
-            if not has_table:
-                return HealthAlert(
-                    check_name="repeated_stage_failures",
-                    tier=HealthTier.MEDIUM,
-                    severity=HealthSeverity.OK,
-                    message="no ingest attempt history",
-                    checked_at=now,
-                    consecutive_failures=_record_failure("repeated_stage_failures", True),
-                )
-
-            total_recent = conn.execute(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM live_ingest_attempt ORDER BY started_at DESC LIMIT 20)"
-            ).fetchone()[0]
-            failed_recent = conn.execute(
-                "SELECT COUNT(*) FROM ("
-                "SELECT 1 FROM live_ingest_attempt "
-                "WHERE status = 'failed' "
-                "ORDER BY started_at DESC LIMIT 20"
-                ")"
-            ).fetchone()[0]
-
-            error_row = conn.execute(
-                "SELECT phase, error FROM live_ingest_attempt "
-                "WHERE status = 'failed' AND error IS NOT NULL "
-                "ORDER BY started_at DESC LIMIT 1"
-            ).fetchone()
-
-            return _repeated_stage_failure_alert(now, total_recent, failed_recent, error_row)
-        finally:
-            conn.close()
+        counts = _archive_repeated_stage_failure_info(archive_root() / "ops.db")
     except Exception as exc:
+        emit(
+            "daemon.health.check_failed",
+            level=ERROR,
+            outcome="error",
+            check_name="repeated_stage_failures",
+            reason="ingest_attempts_unreadable",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
         return HealthAlert(
             check_name="repeated_stage_failures",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"stage failure check failed: {exc}",
+            message=f"ingest attempt history unreadable: {exc}",
             checked_at=now,
             consecutive_failures=_record_failure("repeated_stage_failures", False),
         )
+    if counts is None:
+        # Every declared tier is bootstrapped, so an absent ops.db (or an
+        # ops.db without the table) is not a measured "no attempts yet":
+        # nothing was read at all.
+        return HealthAlert(
+            check_name="repeated_stage_failures",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.WARNING,
+            message="ingest attempt history unavailable: ops tier is absent",
+            checked_at=now,
+            consecutive_failures=_record_failure("repeated_stage_failures", False),
+        )
+    total_recent, failed_recent, error_row = counts
+    return _repeated_stage_failure_alert(now, total_recent, failed_recent, error_row)
 
 
 def _check_secret_scan_sweep_medium() -> HealthAlert:
@@ -1156,44 +1132,48 @@ def _check_secret_scan_sweep_medium() -> HealthAlert:
 def _archive_repeated_stage_failure_info(
     ops_db: Path,
 ) -> tuple[int, int, sqlite3.Row | tuple[object, ...] | None] | None:
+    """Return the recent attempt window, or ``None`` when there is none to read.
+
+    ``None`` means the ops tier or its ``ingest_attempts`` table is absent --
+    a fact this reader established. A read that *fails* raises: converting it
+    here would hand the caller a value indistinguishable from a measurement,
+    which is the defect polylogue-20d.17 AC3 names.
+    """
     if not ops_db.exists():
         return None
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
+    conn = open_readonly_connection(ops_db)
     try:
-        conn = open_readonly_connection(ops_db)
-        try:
-            has_table = bool(
-                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_attempts'").fetchone()
-            )
-            if not has_table:
-                return None
-            total_recent = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM (SELECT 1 FROM ingest_attempts ORDER BY started_at_ms DESC LIMIT 20)"
-                ).fetchone()[0]
-                or 0
-            )
-            failed_recent = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM ("
-                    "SELECT 1 FROM ingest_attempts "
-                    "WHERE status = 'failed' "
-                    "ORDER BY started_at_ms DESC LIMIT 20"
-                    ")"
-                ).fetchone()[0]
-                or 0
-            )
-            error_row = conn.execute(
-                "SELECT phase, error_message FROM ingest_attempts "
-                "WHERE status = 'failed' AND error_message IS NOT NULL "
-                "ORDER BY started_at_ms DESC LIMIT 1"
-            ).fetchone()
-            return total_recent, failed_recent, error_row
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
+        has_table = bool(
+            conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ingest_attempts'").fetchone()
+        )
+        if not has_table:
+            return None
+        total_recent = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM ingest_attempts ORDER BY started_at_ms DESC LIMIT 20)"
+            ).fetchone()[0]
+            or 0
+        )
+        failed_recent = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM ("
+                "SELECT 1 FROM ingest_attempts "
+                "WHERE status = 'failed' "
+                "ORDER BY started_at_ms DESC LIMIT 20"
+                ")"
+            ).fetchone()[0]
+            or 0
+        )
+        error_row = conn.execute(
+            "SELECT phase, error_message FROM ingest_attempts "
+            "WHERE status = 'failed' AND error_message IS NOT NULL "
+            "ORDER BY started_at_ms DESC LIMIT 1"
+        ).fetchone()
+        return total_recent, failed_recent, error_row
+    finally:
+        conn.close()
 
 
 def _repeated_stage_failure_alert(
