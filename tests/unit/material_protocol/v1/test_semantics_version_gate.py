@@ -101,7 +101,7 @@ def test_attachment_record_fields_are_pinned_to_the_declared_semantics_version(
     attachments = [record for record in records if record["kind"] == "attachment"]
     assert attachments, "fixture encodes no attachment record to pin"
 
-    assert SEMANTICS_VERSION == 4
+    assert SEMANTICS_VERSION == 5
     assert set(attachments[0]) == {
         "kind",
         "record_id",
@@ -121,6 +121,76 @@ def test_attachment_record_fields_are_pinned_to_the_declared_semantics_version(
         "caption",
         "source_url",
     }
+
+
+def test_message_usage_distinguishes_unknown_from_measured_zero(encoded: EncodedRevision) -> None:
+    """v5's value domain: an absent counter is ``null``, a declared zero is ``0``.
+
+    The keys of the message record's ``usage`` object did not change in v5 --
+    only what an absent counter serializes to -- so the attachment key-set pin
+    above cannot see this drift. A consumer that reads ``input_tokens`` as an
+    integer is broken by ``null`` exactly as it would be by a renamed key, so
+    the distinction is pinned to the declared version here.
+
+    Anti-vacuity: restore ``input_tokens: int = 0`` (and its three siblings) on
+    ``MessageInput`` -- the pre-#5293 defaults -- and the unknown-counter
+    assertions fail with ``0 is not None``, because the encoder then fabricates
+    a measured zero for a message the fixture never gave counters to.
+    """
+    assert SEMANTICS_VERSION == 5
+
+    messages = {
+        record["record_id"]: record
+        for raw in encoded.segments.values()
+        for line in raw.decode("utf-8").splitlines()
+        if line
+        for record in [json.loads(line)]
+        if record["kind"] == "message"
+    }
+
+    # msg-1 declares no per-message counters at all.
+    unknown = messages["claude-code-session:demo-session-1:n:msg-1"]["usage"]
+    assert set(unknown) == {
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "duration_ms",
+    }
+    assert unknown == dict.fromkeys(unknown, None)
+
+    # msg-2 declares input/output but no cache counters: known and unknown
+    # coexist inside one usage object.
+    partial = messages["claude-code-session:demo-session-1:n:msg-2"]["usage"]
+    assert partial["input_tokens"] == 120
+    assert partial["output_tokens"] == 40
+    assert partial["cache_read_tokens"] is None
+    assert partial["cache_write_tokens"] is None
+
+
+def test_a_declared_zero_counter_is_not_encoded_as_unknown() -> None:
+    """The other half of v5: an explicit 0 must survive as ``0``, not ``null``.
+
+    Anti-vacuity: make ``message_record`` coerce falsy counters
+    (``message.input_tokens or None``) and this fails with ``None == 0``, which
+    is the mirror defect -- a measured zero laundered back into unknown.
+    """
+    material = build_small_session_material()
+    zeroed = dataclasses.replace(material.messages[0], input_tokens=0, output_tokens=0)
+    material = dataclasses.replace(material, messages=(zeroed, *material.messages[1:]))
+
+    encoded = encode_session_revision(
+        material, revision_created_at=SMALL_SESSION_REVISION_CREATED_AT, max_records_per_segment=4
+    )
+    record = next(
+        json.loads(line)
+        for raw in encoded.segments.values()
+        for line in raw.decode("utf-8").splitlines()
+        if line and json.loads(line)["record_id"] == "claude-code-session:demo-session-1:n:msg-1"
+    )
+    assert record["usage"]["input_tokens"] == 0
+    assert record["usage"]["output_tokens"] == 0
+    assert record["usage"]["cache_read_tokens"] is None
 
 
 def test_checked_in_fixture_declares_the_current_semantics_version() -> None:
