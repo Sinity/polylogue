@@ -4,9 +4,12 @@ One compact, shareable artifact over a matched session scope. Every headline
 metric carries at least one drillable :class:`EvidenceRef`. The ``failure_mode``
 and ``wasted_loop`` fields are populated by the #2383 pathology detectors
 (:mod:`polylogue.analysis.pathology`) run over the session-digest run
-projections; they report ``detected``/``clean``/``unavailable`` rather than
-fabricating a signal. ``longest_tool_gap`` still degrades in v0 because the
-session profile and session digest do not carry per-tool-call timestamps.
+projections; they report ``detected``/``clean``/``partial``/``unavailable``
+rather than fabricating a signal, and every pathology field carries the
+coverage it is a statement about (:class:`PathologyCoverage`) so a sweep over
+part of the scope can never read as a swept-clean scope.
+``longest_tool_gap`` still degrades in v0 because the session profile and
+session digest do not carry per-tool-call timestamps.
 
 The aggregator :func:`compile_postmortem_bundle` is pure: it consumes
 already-fetched profiles and digests and performs no I/O, so it is unit-testable
@@ -17,6 +20,7 @@ fetching and constructs the :class:`PostmortemScope`.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -28,7 +32,7 @@ if TYPE_CHECKING:
     from polylogue.analysis.transforms import SessionDigest
     from polylogue.archive.session.models import SessionProfile
 
-POSTMORTEM_SCHEMA_VERSION = 2
+POSTMORTEM_SCHEMA_VERSION = 3
 
 # Bounded number of evidence refs attached to an aggregate metric so a
 # whole-archive scope does not emit an unbounded ref list.
@@ -145,20 +149,139 @@ class DegradedField(ArchiveInsightModel):
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class PathologyCoverage:
+    """What population the detectors actually swept, bucket by bucket.
+
+    A pathology sweep answers an *existential* question -- "does this scope
+    contain a pathology?" -- and an existential answer does not survive
+    partial coverage the way a rate does. The coverage floor in
+    :mod:`polylogue.analysis.measurement.outcome_coverage` works because at
+    coverage ``c`` a published rate can be wrong by at most ``1 - c``; a single
+    unswept session, by contrast, flips ``no pathology found`` outright no
+    matter how small a share of the scope it is. So there is no floor below
+    ``1.0`` at which ``clean`` is honest, and this type declares strict
+    coverage rather than a second tunable threshold.
+
+    Following ``outcome_coverage``'s discipline, the unswept sessions are kept
+    in two distinct buckets rather than folded into one number: a session whose
+    digest is missing was fetched and had no run projection to give, which is
+    not the same fact as a session the analysis cap never reached at all.
+    """
+
+    swept_session_count: int
+    missing_digest_count: int
+    unanalyzed_session_count: int
+
+    @property
+    def scope_session_count(self) -> int:
+        """Every session in the declared scope, swept or not."""
+
+        return self.swept_session_count + self.missing_digest_count + self.unanalyzed_session_count
+
+    @property
+    def unswept_session_count(self) -> int:
+        """Sessions the detectors never saw: missing digest plus unanalyzed."""
+
+        return self.missing_digest_count + self.unanalyzed_session_count
+
+    @property
+    def is_complete(self) -> bool:
+        """True only when every session in scope supplied a run projection."""
+
+        return self.swept_session_count > 0 and self.unswept_session_count == 0
+
+    @property
+    def coverage(self) -> float | None:
+        """Share of the scope the detectors swept, or ``None`` when undefined."""
+
+        total = self.scope_session_count
+        if total <= 0:
+            return None
+        return self.swept_session_count / total
+
+    def gap_detail(self) -> str:
+        """Name the unswept portion, bucket by bucket, for the payload."""
+
+        buckets = []
+        if self.missing_digest_count:
+            buckets.append(f"{self.missing_digest_count} without a session digest")
+        if self.unanalyzed_session_count:
+            buckets.append(f"{self.unanalyzed_session_count} never analyzed")
+        gap = "; ".join(buckets) if buckets else f"{self.unswept_session_count} unswept"
+        return f"swept {self.swept_session_count} of {self.scope_session_count} sessions in scope ({gap})"
+
+
+def _coverage_for(
+    profiles: Sequence[SessionProfile],
+    digests: Mapping[str, SessionDigest],
+    *,
+    scope: PostmortemScope,
+) -> PathologyCoverage:
+    """Split the declared scope into swept and the two unswept buckets."""
+
+    swept = sum(1 for profile in profiles if profile.session_id in digests)
+    missing_digest = len(profiles) - swept
+    # Sessions the scope matched but that never reached this aggregator at all:
+    # the analysis cap dropped them, or their profile failed to hydrate.
+    unanalyzed = max(int(scope.matched_session_count) - len(profiles), 0)
+    return PathologyCoverage(
+        swept_session_count=swept,
+        missing_digest_count=missing_digest,
+        unanalyzed_session_count=unanalyzed,
+    )
+
+
 class PathologyField(ArchiveInsightModel):
     """A pathology headline field populated by the #2383 detectors.
 
-    ``status`` is ``detected`` when one or more findings exist, ``clean`` when the
-    detectors ran but found nothing, and ``unavailable`` when there was no run
-    projection to analyze. ``count`` is the number of findings; ``by_kind`` and
-    ``detail`` describe the distribution; ``evidence_refs`` drill into examples.
+    ``status`` always answers "over WHAT population":
+
+    * ``detected`` -- one or more findings exist. True under any coverage, but
+      ``count`` is a *lower bound* whenever the coverage counts below show an
+      unswept remainder.
+    * ``clean`` -- the detectors ran over **every** session in the declared
+      scope and found nothing. This is the only status that licenses "the scope
+      contains no pathology".
+    * ``partial`` -- the detectors ran over a strict subset and found nothing
+      *in the part they saw*. The unswept remainder is unexamined, not clean.
+    * ``unavailable`` -- no run projection was available anywhere in scope, so
+      the detectors never ran.
+
+    ``partial`` is a genuine vocabulary addition because none of the other
+    three can carry the fact. ``clean``'s own contract is "the detectors ran
+    but found nothing", read by every consumer as a statement about the scope;
+    ``detected`` is false when there are no findings; and ``unavailable`` means
+    the detectors never ran, which discards the real evidence that a subset was
+    in fact swept and came back empty. Collapsing a partial sweep into any of
+    them either overclaims or throws away measurement.
+
+    ``count`` is the number of findings; ``by_kind`` and ``detail`` describe the
+    distribution; ``evidence_refs`` drill into examples. The
+    ``*_session_count`` fields are the coverage receipt described by
+    :class:`PathologyCoverage`.
     """
 
-    status: Literal["detected", "clean", "unavailable"]
+    status: Literal["detected", "clean", "partial", "unavailable"]
     count: int = 0
     detail: str = ""
     by_kind: dict[str, int] = {}
+    # Coverage receipt: which population the status above is a statement about.
+    swept_session_count: int = 0
+    scope_session_count: int = 0
+    missing_digest_count: int = 0
+    unanalyzed_session_count: int = 0
     evidence_refs: tuple[EvidenceRef, ...] = ()
+
+    @property
+    def unswept_session_count(self) -> int:
+        return self.missing_digest_count + self.unanalyzed_session_count
+
+    @property
+    def covers_whole_scope(self) -> bool:
+        """Whether the status is a claim about the entire declared scope."""
+
+        return self.scope_session_count > 0 and self.unswept_session_count == 0
 
 
 class PostmortemBundle(ArchiveInsightModel):
@@ -177,10 +300,58 @@ class PostmortemBundle(ArchiveInsightModel):
     failure_mode: PathologyField
 
 
-def _pathology_field(findings: Sequence[PathologyFinding]) -> PathologyField:
-    """Build a postmortem pathology field from detector findings."""
+def _coverage_field(
+    status: Literal["detected", "clean", "partial", "unavailable"],
+    *,
+    detail: str,
+    coverage: PathologyCoverage,
+    count: int = 0,
+    by_kind: dict[str, int] | None = None,
+    evidence_refs: tuple[EvidenceRef, ...] = (),
+) -> PathologyField:
+    """Attach the coverage receipt to every field, whatever its status."""
+
+    return PathologyField(
+        status=status,
+        count=count,
+        detail=detail,
+        by_kind=by_kind if by_kind is not None else {},
+        swept_session_count=coverage.swept_session_count,
+        scope_session_count=coverage.scope_session_count,
+        missing_digest_count=coverage.missing_digest_count,
+        unanalyzed_session_count=coverage.unanalyzed_session_count,
+        evidence_refs=evidence_refs,
+    )
+
+
+def _pathology_field(
+    findings: Sequence[PathologyFinding],
+    *,
+    coverage: PathologyCoverage,
+) -> PathologyField:
+    """Build a postmortem pathology field from detector findings.
+
+    ``coverage`` is required: a findings list alone cannot distinguish "nothing
+    exists in this scope" from "nothing exists in the fraction of it that was
+    examined", and the caller is the only party that knows which.
+    """
     if not findings:
-        return PathologyField(status="clean", detail="detectors ran; no pathology found")
+        if coverage.swept_session_count <= 0:
+            return _coverage_field("unavailable", detail=_PATHOLOGY_UNAVAILABLE_REASON, coverage=coverage)
+        if coverage.is_complete:
+            return _coverage_field(
+                "clean",
+                detail=f"detectors ran over all {coverage.scope_session_count} sessions in scope; no pathology found",
+                coverage=coverage,
+            )
+        return _coverage_field(
+            "partial",
+            detail=(
+                f"no pathology found in the swept subset; {coverage.gap_detail()}. "
+                "The unswept remainder is unexamined, not clean"
+            ),
+            coverage=coverage,
+        )
     by_kind: dict[str, int] = {}
     refs: list[EvidenceRef] = []
     seen: set[tuple[str, str | None]] = set()
@@ -192,10 +363,14 @@ def _pathology_field(findings: Sequence[PathologyFinding]) -> PathologyField:
                 seen.add(key)
                 refs.append(ref)
     detail = ", ".join(f"{kind}={count}" for kind, count in sorted(by_kind.items()))
-    return PathologyField(
-        status="detected",
-        count=len(findings),
+    if not coverage.is_complete:
+        # The count is a floor, not a total: the unswept remainder may hold more.
+        detail = f"{detail} (lower bound: {coverage.gap_detail()})"
+    return _coverage_field(
+        "detected",
         detail=detail,
+        coverage=coverage,
+        count=len(findings),
         by_kind=by_kind,
         evidence_refs=tuple(refs),
     )
@@ -349,14 +524,15 @@ def compile_postmortem_bundle(
 
     # --- pathology detection (#2383) ----------------------------------------
     # The session digests carry the typed run projection the detectors need.
+    # The detectors see only the sessions that supplied a run projection, so the
+    # coverage receipt travels with each field: "no findings" is a claim about
+    # the swept population, never about the declared scope by default.
+    coverage = _coverage_for(profiles, digests, scope=scope)
     projections = [digests[p.session_id].run_projection for p in profiles if p.session_id in digests]
-    if projections:
-        report = compile_pathology_report(projections)
-        wasted_loop = _pathology_field([f for f in report.findings if f.kind == "wasted_loop"])
-        failure_mode = _pathology_field([f for f in report.findings if f.kind == "stale_context"])
-    else:
-        wasted_loop = PathologyField(status="unavailable", detail=_PATHOLOGY_UNAVAILABLE_REASON)
-        failure_mode = PathologyField(status="unavailable", detail=_PATHOLOGY_UNAVAILABLE_REASON)
+    report = compile_pathology_report(projections) if projections else None
+    findings = report.findings if report is not None else ()
+    wasted_loop = _pathology_field([f for f in findings if f.kind == "wasted_loop"], coverage=coverage)
+    failure_mode = _pathology_field([f for f in findings if f.kind == "stale_context"], coverage=coverage)
 
     return PostmortemBundle(
         scope=scope,
@@ -380,7 +556,12 @@ def _fmt_pathology(field: PathologyField) -> str:
     if field.status == "detected":
         return f"detected ({field.count}: {field.detail})"
     if field.status == "clean":
-        return "clean (no pathology found)"
+        return f"clean (no pathology found across all {field.scope_session_count} sessions in scope)"
+    if field.status == "partial":
+        return (
+            f"partial (no pathology found in {field.swept_session_count} of "
+            f"{field.scope_session_count} sessions; {field.unswept_session_count} unswept)"
+        )
     return f"unavailable ({field.detail})"
 
 
@@ -521,6 +702,8 @@ __all__ = [
     "POSTMORTEM_SCHEMA_VERSION",
     "CostMetric",
     "DegradedField",
+    "PathologyCoverage",
+    "PathologyField",
     "PostmortemBundle",
     "PostmortemScope",
     "RepoTouchedMetric",

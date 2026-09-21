@@ -215,10 +215,15 @@ def test_compile_postmortem_bundle_populates_every_headline_field() -> None:
     assert bundle.longest_tool_gap.value is None
     assert bundle.longest_tool_gap.status == "unavailable"
     assert bundle.longest_tool_gap.reason
-    # pathology fields: detectors ran over the digest run projection (a subagent
-    # with no failed tests / unaddressed reviews / lossy context) → clean
-    assert bundle.wasted_loop.status == "clean"
-    assert bundle.failure_mode.status == "clean"
+    # pathology fields: the detectors ran over the one digest supplied (a
+    # subagent with no failed tests / lossy context) and found nothing — but
+    # that is one of three sessions in scope, so the honest status is
+    # ``partial``, never ``clean``.
+    assert bundle.wasted_loop.status == "partial"
+    assert bundle.failure_mode.status == "partial"
+    assert bundle.wasted_loop.swept_session_count == 1
+    assert bundle.wasted_loop.scope_session_count == 3
+    assert bundle.wasted_loop.missing_digest_count == 2
 
     # AC1: every headline metric that carries a value has >=1 drillable ref.
     for metric in (
@@ -311,8 +316,142 @@ def test_postmortem_bundle_json_envelope_has_stable_headline_keys() -> None:
     assert gap["status"] in {"no_signal", "unavailable"}
     assert gap["reason"]
     assert gap.get("value") is None
-    # pathology fields carry an explicit detected/clean/unavailable status
+    # pathology fields carry an explicit detected/clean/partial/unavailable status
     for field in ("wasted_loop", "failure_mode"):
         pathology = shipped[field]
         assert isinstance(pathology, dict)
-        assert pathology["status"] in {"detected", "clean", "unavailable"}
+        assert pathology["status"] in {"detected", "clean", "partial", "unavailable"}
+
+
+def _clean_digest(session_id: str) -> SessionDigest:
+    """A real digest whose run projection carries no pathology at all."""
+    session = Session(
+        id=SessionId(session_id),
+        origin=Origin.CODEX_SESSION,
+        title="clean run",
+        working_directories=("/realm/project/polylogue",),
+        messages=MessageCollection(
+            messages=[
+                Message(id=f"{session_id}-m1", role=Role.USER, text="do the work"),
+                Message(id=f"{session_id}-m2", role=Role.ASSISTANT, text="done"),
+            ]
+        ),
+    )
+    return compile_session_digest(session)
+
+
+def test_pathology_sweep_over_a_subset_is_not_reported_as_clean() -> None:
+    """A subset sweep and a whole-scope sweep must not read the same (polylogue-oimqc).
+
+    Anti-vacuity: revert ``_pathology_field`` to returning ``clean`` whenever
+    the findings list is empty and the ``partial`` half of this test goes red
+    while the ``clean`` half keeps passing — which is exactly the state that
+    shipped, and exactly why a full-coverage-only test proves nothing.
+    """
+    profiles = [_profile(f"codex-session:{n}") for n in "abcde"]
+
+    swept_all = compile_postmortem_bundle(
+        profiles,
+        {p.session_id: _clean_digest(p.session_id) for p in profiles},
+        scope=_scope(matched=5, analyzed=5),
+    )
+    swept_one = compile_postmortem_bundle(
+        profiles,
+        {"codex-session:a": _clean_digest("codex-session:a")},
+        scope=_scope(matched=5, analyzed=5),
+    )
+
+    # Full coverage is the only case that licenses "this scope is clean".
+    assert swept_all.wasted_loop.status == "clean"
+    assert swept_all.failure_mode.status == "clean"
+    assert swept_all.wasted_loop.swept_session_count == 5
+    assert swept_all.wasted_loop.scope_session_count == 5
+    assert swept_all.wasted_loop.unswept_session_count == 0
+    assert swept_all.wasted_loop.covers_whole_scope is True
+
+    # One digest over five profiles found nothing in the part it saw.
+    assert swept_one.wasted_loop.status == "partial"
+    assert swept_one.failure_mode.status == "partial"
+    assert swept_one.wasted_loop.swept_session_count == 1
+    assert swept_one.wasted_loop.scope_session_count == 5
+    assert swept_one.wasted_loop.missing_digest_count == 4
+    assert swept_one.wasted_loop.covers_whole_scope is False
+    # The uncovered portion is named in the payload, not merely countable.
+    assert "4 without a session digest" in swept_one.wasted_loop.detail
+    assert "swept 1 of 5" in swept_one.wasted_loop.detail
+
+    # The two sweeps are distinguishable by status alone.
+    statuses = {swept_all.wasted_loop.status, swept_one.wasted_loop.status}
+    assert len(statuses) == 2
+
+
+def test_pathology_sweep_names_the_analysis_cap_as_a_distinct_gap() -> None:
+    """Sessions the analysis cap never reached are their own uncounted bucket.
+
+    Anti-vacuity: fold ``unanalyzed_session_count`` into ``missing_digest_count``
+    (or drop it, reading coverage off ``profiles`` alone) and this goes red —
+    every analyzed profile here has a digest, so digest coverage is 100% while
+    scope coverage is 40%.
+    """
+    profiles = [_profile(f"codex-session:{n}") for n in "ab"]
+    bundle = compile_postmortem_bundle(
+        profiles,
+        {p.session_id: _clean_digest(p.session_id) for p in profiles},
+        scope=_scope(matched=5, analyzed=2),
+    )
+
+    field = bundle.wasted_loop
+    assert field.status == "partial"
+    assert field.swept_session_count == 2
+    assert field.missing_digest_count == 0
+    assert field.unanalyzed_session_count == 3
+    assert field.scope_session_count == 5
+    assert "3 never analyzed" in field.detail
+    # The renderers say so too, so a human reading the artifact sees the gap.
+    assert "partial (no pathology found in 2 of 5 sessions; 3 unswept)" in render_postmortem_plain(bundle)
+    assert "partial" in render_postmortem_markdown(bundle)
+
+
+def test_detected_count_is_declared_a_lower_bound_under_partial_coverage() -> None:
+    """``detected`` survives partial coverage, but its count does not.
+
+    Anti-vacuity: drop the coverage-aware branch from the ``detected`` path and
+    the lower-bound wording disappears from the payload, leaving ``count`` to
+    read as a total over a scope that was never swept.
+    """
+    from polylogue.analysis.pathology import PathologyFinding
+    from polylogue.analysis.postmortem import PathologyCoverage, _pathology_field
+
+    finding = PathologyFinding(
+        kind="wasted_loop",
+        session_id="codex-session:a",
+        severity="high",
+        detail="edit/test loop",
+        occurrence_count=3,
+    )
+    partial = _pathology_field(
+        [finding],
+        coverage=PathologyCoverage(swept_session_count=1, missing_digest_count=4, unanalyzed_session_count=0),
+    )
+    complete = _pathology_field(
+        [finding],
+        coverage=PathologyCoverage(swept_session_count=5, missing_digest_count=0, unanalyzed_session_count=0),
+    )
+
+    assert partial.status == "detected" == complete.status
+    assert partial.count == complete.count == 1
+    assert "lower bound" in partial.detail
+    assert "lower bound" not in complete.detail
+
+
+def test_pathology_field_stays_unavailable_when_nothing_was_swept() -> None:
+    """Zero swept sessions is still ``unavailable``, with the scope named."""
+    from polylogue.analysis.postmortem import PathologyCoverage, _pathology_field
+
+    field = _pathology_field(
+        [],
+        coverage=PathologyCoverage(swept_session_count=0, missing_digest_count=3, unanalyzed_session_count=2),
+    )
+    assert field.status == "unavailable"
+    assert field.swept_session_count == 0
+    assert field.scope_session_count == 5
