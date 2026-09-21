@@ -359,6 +359,10 @@ class BlobGCRecoverRequest(_OperationPayload):
     generation_id: str = Field(min_length=1)
 
 
+class BlobPublicationsAbandonRequest(_OperationPayload):
+    publication_ids: list[str] = Field(min_length=1, max_length=10_000)
+
+
 class DemoAugmentRequest(_OperationPayload):
     with_overlays: bool = False
 
@@ -583,6 +587,13 @@ class MutationResult(_OperationPayload):
     # clean, committed ingest fail its own await contract and surface to the
     # client as ``DaemonMutationIndeterminateError``.
     source_generation_id: str | None = None
+    #: The executor's durable handle for the audited attempt
+    #: (``mutation-operation:<operation_id>``).  ``OperationExecutor`` already
+    #: stamps it onto the :class:`MutationReceipt` it returns, but the
+    #: daemon-side envelope used to keep only ``receipt.domain_receipt``, so a
+    #: surface that declared a receipt reference could never populate one and
+    #: rendered ``null`` for every audited destructive mutation.
+    receipt_ref: str | None = None
 
     @model_validator(mode="after")
     def exact_result_family(self) -> MutationResult:
@@ -1178,6 +1189,20 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=BlobGCRecoverRequest,
         result_model=MutationResult,
         handler="maintenance_blob_gc_recover",
+    ),
+    DaemonOperationSpec(
+        "maintenance.blob-publications.abandon",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.blob_publication.abandon_receipts",
+        deadline_s=30.0,
+        request_contract="maintenance.blob-publications.abandon.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="BlobPublicationsAbandonRequest",
+        result_type="MutationResult",
+        request_model=BlobPublicationsAbandonRequest,
+        result_model=MutationResult,
+        handler="maintenance_blob_publications_abandon",
     ),
     DaemonOperationSpec(
         "maintenance.demo.augment",

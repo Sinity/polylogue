@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from time import time
@@ -53,6 +54,11 @@ def _execute_named_mutation(
         "sequence": 1,
         "effect": "committed" if receipt.affected_count else "no-effect",
         "affected_count": receipt.affected_count,
+        # ``execute_bound`` stamps ``mutation-operation:<operation_id>`` onto
+        # the finalized receipt. Dropping it here left every surface of every
+        # actuator routed through this helper without a handle onto the
+        # operation_runs/operation_attempts rows the mutation just wrote.
+        "receipt_ref": receipt.receipt_ref,
         "result": dict(receipt.domain_receipt),
     }
 
@@ -244,6 +250,32 @@ def maintenance_blob_gc_recover(
         audit,
         snapshot,
         PendingBlobGCGenerationAbandonActuator(),
+        args,
+    )
+
+
+def maintenance_blob_publications_abandon(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Discharge named publication-reservation debt under daemon write authority."""
+    from polylogue.operations.mutation_actuators import (
+        BlobPublicationAbandonActuator,
+        BlobPublicationAbandonArgs,
+    )
+
+    args = BlobPublicationAbandonArgs(
+        archive_root=context.archive_root,
+        publication_ids=tuple(str(value) for value in cast(Sequence[object], request.payload["publication_ids"])),
+    )
+    return _execute_named_mutation(
+        request,
+        context,
+        audit,
+        snapshot,
+        BlobPublicationAbandonActuator(),
         args,
     )
 

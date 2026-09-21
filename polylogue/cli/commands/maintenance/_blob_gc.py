@@ -207,7 +207,10 @@ def gc_recover_command(generation_id: str | None, yes: bool, output_format: str)
         result = _submit(config, generation_id)
         value = result.get("result")
         adjudication = value if isinstance(value, dict) else {}
-        receipt_ref_value = adjudication.get("receipt_ref")
+        # The audit handle lives on the operation envelope, not inside the
+        # domain receipt: the actuator reports blob/namespace effects, and the
+        # executor reports which audited attempt applied them.
+        receipt_ref_value = result.get("receipt_ref")
         receipt_ref = str(receipt_ref_value) if receipt_ref_value is not None else None
     pending = inspect_pending_gc_generations(root / "source.db")
     payload = {

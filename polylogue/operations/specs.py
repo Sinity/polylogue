@@ -956,8 +956,9 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         kind=OperationKind.MAINTENANCE,
         description=(
             "Terminalize one exact blocked, namespace-bound blob-GC generation through OperationExecutor. "
-            "The offline route requires the daemon stopped, confirm-flag authorization, and a durable audit receipt; "
-            "it never unlinks blobs or rebinds the namespace marker."
+            "The resident daemon is the only executor (maintenance.blob-gc.recover is daemon-authority WRITE with "
+            "no fallback); it requires confirm-flag authorization and a durable audit receipt, and never unlinks "
+            "blobs or rebinds the namespace marker."
         ),
         surfaces=("cli",),
         mutates_state=True,
@@ -973,6 +974,36 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
                 key="pending-blob-gc-generation",
                 target_kinds=("source",),
                 required_capabilities=("archive.blob_gc.abandon_pending_generation",),
+                destructive_class="reset",
+                required_confirmation="confirm_flag",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("reconcile_required",),
+            ),
+        ),
+    ),
+    OperationSpec(
+        name="mutate-abandon-blob-publication-receipts",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Terminalize named blob publication reservations through OperationExecutor after re-checking each "
+            "receipt's liveness under archive-wide publisher exclusion. The resident daemon is the only executor "
+            "(maintenance.blob-publications.abandon is daemon-authority WRITE with no fallback); a receipt whose "
+            "blob became referenced is retained, and no blob bytes are unlinked."
+        ),
+        surfaces=("cli",),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite", "Destructive"),
+        safety_guards=("write_role_required", "confirmed_before_execute"),
+        executor_status="executor-routed",
+        allowed_surfaces=("cli",),
+        affected_tiers=("source", "audit"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="blob-publication-receipt",
+                target_kinds=("source",),
+                required_capabilities=("archive.blob_publication.abandon_receipts",),
                 destructive_class="reset",
                 required_confirmation="confirm_flag",
                 allowed_durabilities=("durable",),

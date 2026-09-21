@@ -541,7 +541,7 @@ class FilesystemResetActuator(_FailClosedRecovery):
 
 @dataclass(frozen=True, slots=True)
 class PendingBlobGCGenerationAbandonArgs:
-    """Exact offline disposition request for one namespace-bound GC intent."""
+    """Exact disposition request for one namespace-bound GC intent."""
 
     archive_root: Path
     generation_id: str
@@ -549,25 +549,29 @@ class PendingBlobGCGenerationAbandonArgs:
 
 @dataclass(frozen=True, slots=True)
 class PendingBlobGCGenerationAbandonActuator(_FailClosedRecovery):
-    """Terminalize a blocked GC intent without touching blob namespace bytes."""
+    """Terminalize a blocked GC intent without touching blob namespace bytes.
+
+    This used to open each of ``prepare``/``apply`` with an offline-writer
+    ownership check that refused whenever a daemon write lease was held or a
+    live ``polylogued`` pidfile existed.  That precondition was written for the
+    era when ``ops maintenance gc-recover --abandon`` opened the source tier in
+    the CLI's own process.  ``maintenance.blob-gc.recover`` is now declared
+    ``DaemonAuthority.WRITE`` / ``DaemonFallback.NEVER``, so the only caller is
+    :func:`polylogue.operations.daemon_mutations.maintenance_blob_gc_recover`
+    running inside the resident daemon -- exactly the state the guard refused.
+    The two preconditions had no common satisfiable point, which made the
+    operation unexecutable in every daemon state.  Exclusion is the daemon
+    write coordinator's, which serializes this against every other archive
+    writer in the process that owns the tier.
+    """
 
     operation: str = "mutate-abandon-pending-blob-gc-generation"
     destructive_class: DestructiveClass = "reset"
     required_confirmation: ConfirmationStrength = "confirm_flag"
 
-    def _require_offline_writer_ownership(self, archive_root: Path) -> None:
-        from polylogue.config import Config
-        from polylogue.maintenance.offline_guard import offline_writer_block_reason
-        from polylogue.paths import render_root
-
-        reason = offline_writer_block_reason(Config(archive_root=archive_root, render_root=render_root(), sources=[]))
-        if reason is not None:
-            raise RuntimeError(f"pending blob-GC abandonment requires the daemon to be stopped; {reason}")
-
     def prepare(self, args: PendingBlobGCGenerationAbandonArgs) -> MutationPlan:
         from polylogue.storage.blob_gc import inspect_gc_generation_abandonment
 
-        self._require_offline_writer_ownership(args.archive_root)
         state = inspect_gc_generation_abandonment(args.archive_root / "source.db", args.generation_id)
         return build_plan(
             operation=self.operation,
@@ -586,7 +590,6 @@ class PendingBlobGCGenerationAbandonActuator(_FailClosedRecovery):
     def apply(self, plan: MutationPlan, args: PendingBlobGCGenerationAbandonArgs) -> MutationReceipt:
         from polylogue.storage.blob_gc import _abandon_pending_gc_generation
 
-        self._require_offline_writer_ownership(args.archive_root)
         adjudication = _abandon_pending_gc_generation(
             args.archive_root / "source.db", args.generation_id, confirmed=True
         )
@@ -605,6 +608,99 @@ class PendingBlobGCGenerationAbandonActuator(_FailClosedRecovery):
                 "completed": adjudication.completed,
                 "blob_effect": "none",
                 "namespace_rebound": False,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# Blob publication receipt abandonment
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BlobPublicationAbandonArgs:
+    """Exact operator disposition for a named set of publication receipts."""
+
+    archive_root: Path
+    publication_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BlobPublicationAbandonActuator(_FailClosedRecovery):
+    """Discharge named publication-reservation debt without touching blob bytes.
+
+    Publication reconciliation has no TTL and never treats age as proof that a
+    publisher died, so a retained receipt for a blob nothing references is
+    debt only an operator can terminalize (``docs/internals.md``). That made it
+    the last durable mutation ``ops maintenance`` performed in the CLI's own
+    process: ``blob_publications_command`` called
+    ``abandon_blob_publication_receipts`` directly, which ``DELETE``s from and
+    commits against ``source.db`` with no daemon involved at all. The decision
+    stays an operator's; the write is the daemon's.
+
+    ``prepare`` re-classifies every requested receipt against current
+    reference evidence and never mutates. APPLY re-checks liveness itself
+    under archive-wide publisher exclusion, so a receipt that became
+    referenced between PREPARE and APPLY is retained, not deleted.
+    """
+
+    operation: str = "mutate-abandon-blob-publication-receipts"
+    destructive_class: DestructiveClass = "reset"
+    required_confirmation: ConfirmationStrength = "confirm_flag"
+
+    def prepare(self, args: BlobPublicationAbandonArgs) -> MutationPlan:
+        from polylogue.storage.blob_publication import inspect_blob_publication_receipts
+
+        requested = set(args.publication_ids)
+        receipts = inspect_blob_publication_receipts(
+            args.archive_root / "source.db",
+            args.archive_root / "blob",
+            index_db_path=_index_db_path(args.archive_root),
+        )
+        present = {item.publication_id: item for item in receipts if item.publication_id in requested}
+        unreferenced = sorted(pid for pid, item in present.items() if not item.referenced)
+        referenced = sorted(pid for pid, item in present.items() if item.referenced)
+        return build_plan(
+            operation=self.operation,
+            destructive_class=self.destructive_class,
+            target_refs=tuple(make_target_ref("source", f"blob-publication:{pid}") for pid in args.publication_ids),
+            affected_tiers=("source", "audit"),
+            reversible=False,
+            context={
+                "requested": list(args.publication_ids),
+                "unreferenced": unreferenced,
+                "referenced": referenced,
+                "missing": sorted(requested - set(present)),
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: BlobPublicationAbandonArgs) -> MutationReceipt:
+        from polylogue.storage.blob_publication import abandon_blob_publication_receipts
+
+        abandonment = abandon_blob_publication_receipts(
+            args.archive_root / "source.db",
+            args.archive_root / "blob",
+            args.publication_ids,
+            confirmed=True,
+            index_db_path=_index_db_path(args.archive_root),
+        )
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied" if abandonment.abandoned else "already_satisfied",
+            target_refs=plan.target_refs,
+            affected_count=abandonment.abandoned,
+            detail=None if abandonment.abandoned else "no_unreferenced_receipts",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={
+                "abandoned": abandonment.abandoned,
+                # Named rather than folded into the count: a receipt retained
+                # because it became referenced, and one that was never there,
+                # are different evidence about the archive.
+                "skipped_referenced": abandonment.skipped_referenced,
+                "missing_receipts": abandonment.missing_receipts,
+                "blob_effect": "none",
             },
         )
 
