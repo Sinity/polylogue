@@ -40,7 +40,6 @@ from polylogue.storage.runtime import (
     MessageRecord,
     RawSessionRecord,
     SessionRecord,
-    _make_ref_id,
 )
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import connection_context, open_connection
@@ -66,6 +65,16 @@ class _AutoMessageIdSentinel:
 _WRITE_LOCK = threading.Lock()
 _AUTO_TIMESTAMP: Final = _AutoTimestampSentinel()
 _AUTO_MESSAGE_ID: Final = _AutoMessageIdSentinel()
+
+#: ``MessageRecord.identity_source`` values, matching the two branches of the
+#: computed ``messages.message_id``. The builders below synthesize a provider
+#: message id, so they declare ``NATIVE_IDENTITY``; pass
+#: ``identity_source=CONTENT_DERIVED_IDENTITY`` to seed the other shape -- an
+#: id-less export whose identity is the digest of its own declared semantics.
+#: That digest covers ``timestamp``/``occurred_at_ms``, so a content-derived
+#: message needs an explicit timestamp to get a reproducible id.
+NATIVE_IDENTITY: Final = "native"
+CONTENT_DERIVED_IDENTITY: Final = "content"
 
 
 def _session_id(value: str) -> SessionId:
@@ -309,390 +318,6 @@ def make_content_block(
 # =============================================================================
 
 
-def _prune_attachment_refs(conn: sqlite3.Connection, session_id: str, keep_ref_ids: set[str]) -> None:
-    """Prune old attachment references for a session."""
-    query = "SELECT ref_id, attachment_id FROM attachment_refs WHERE session_id = ?"
-    params: list[str] = [session_id]
-    if keep_ref_ids:
-        placeholders = ", ".join("?" for _ in keep_ref_ids)
-        query += f" AND ref_id NOT IN ({placeholders})"
-        params.extend(sorted(keep_ref_ids))
-    rows = conn.execute(query, tuple(params)).fetchall()
-    if not rows:
-        return
-
-    ref_ids = [row["ref_id"] for row in rows]
-    attachments = {row["attachment_id"] for row in rows}
-
-    # Use SAVEPOINT for atomic multi-step ref_count operations
-    # If interrupted, all changes rollback to prevent incorrect ref_count
-    conn.execute("SAVEPOINT prune_attachment_refs")
-    try:
-        placeholders = ", ".join("?" for _ in ref_ids)
-        conn.execute(
-            f"DELETE FROM attachment_refs WHERE ref_id IN ({placeholders})",
-            tuple(ref_ids),
-        )
-
-        # Recalculate ref_count from actual attachment_refs table
-        # This is race-safe: instead of decrementing (which could race),
-        # we recompute from source of truth using COUNT(*)
-        # Single UPDATE query with IN clause instead of N individual queries
-        if attachments:
-            att_placeholders = ", ".join("?" for _ in attachments)
-            conn.execute(
-                f"""
-                UPDATE attachments
-                SET ref_count = (
-                    SELECT COUNT(*)
-                    FROM attachment_refs
-                    WHERE attachment_refs.attachment_id = attachments.attachment_id
-                )
-                WHERE attachment_id IN ({att_placeholders})
-                """,
-                tuple(attachments),
-            )
-        conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
-        conn.execute("RELEASE SAVEPOINT prune_attachment_refs")
-    except Exception:
-        conn.execute("ROLLBACK TO SAVEPOINT prune_attachment_refs")
-        raise
-
-
-def upsert_session(conn: sqlite3.Connection, record: SessionRecord) -> bool:
-    """Upsert a session record."""
-    from polylogue.core.timestamps import to_epoch_ms
-
-    res = conn.execute(
-        """
-        INSERT INTO sessions (
-            native_id,
-            origin,
-            title,
-            content_hash,
-            parent_session_id,
-            branch_type,
-            raw_id,
-            git_branch,
-            git_repository_url,
-            provider_project_ref,
-            created_at_ms,
-            updated_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(origin, native_id) DO UPDATE SET
-            title = excluded.title,
-            content_hash = excluded.content_hash,
-            parent_session_id = excluded.parent_session_id,
-            branch_type = excluded.branch_type,
-            raw_id = COALESCE(excluded.raw_id, sessions.raw_id),
-            git_branch = excluded.git_branch,
-            git_repository_url = excluded.git_repository_url,
-            provider_project_ref = excluded.provider_project_ref,
-            created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
-            updated_at_ms = excluded.updated_at_ms
-        WHERE
-            content_hash != excluded.content_hash
-            OR IFNULL(title, '') != IFNULL(excluded.title, '')
-            OR IFNULL(parent_session_id, '') != IFNULL(excluded.parent_session_id, '')
-            OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
-            OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
-            OR IFNULL(git_branch, '') != IFNULL(excluded.git_branch, '')
-            OR IFNULL(git_repository_url, '') != IFNULL(excluded.git_repository_url, '')
-            OR IFNULL(provider_project_ref, '') != IFNULL(excluded.provider_project_ref, '')
-            OR IFNULL(updated_at_ms, 0) != IFNULL(excluded.updated_at_ms, 0)
-        """,
-        (
-            record.native_id,
-            record.origin.value,
-            record.title,
-            bytes.fromhex(_writer_hash(record.content_hash)),
-            record.parent_session_id,
-            record.branch_type.value if record.branch_type is not None else None,
-            record.raw_id,
-            record.git_branch,
-            record.git_repository_url,
-            record.provider_project_ref,
-            to_epoch_ms(record.created_at, numeric_unit="seconds"),
-            to_epoch_ms(record.updated_at, numeric_unit="seconds"),
-        ),
-    )
-    return bool(res.rowcount > 0)
-
-
-def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
-    """Upsert a message record into the current archive schema."""
-    session_row = conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id = ? OR native_id = ? ORDER BY session_id LIMIT 2",
-        (record.session_id, record.session_id),
-    ).fetchall()
-    if len(session_row) != 1:
-        raise ValueError(f"Cannot write message for unknown or ambiguous session {record.session_id!r}")
-    session_id = str(session_row[0]["session_id"])
-    native_id = record.provider_message_id or str(record.message_id).removeprefix(f"{session_id}:")
-    existing = conn.execute(
-        "SELECT position, variant_index FROM messages WHERE session_id = ? AND native_id = ?",
-        (session_id, native_id),
-    ).fetchone()
-    if existing is None:
-        position_row = conn.execute(
-            "SELECT COALESCE(MAX(position) + 1, 0) FROM messages WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        position = int(position_row[0] or 0)
-        variant_index = record.branch_index
-    else:
-        position = int(existing["position"])
-        variant_index = int(existing["variant_index"])
-    res = conn.execute(
-        """
-        INSERT INTO messages (
-            session_id,
-            native_id,
-            parent_message_id,
-            position,
-            role,
-            message_type,
-            model_name,
-            has_tool_use,
-            has_thinking,
-            has_paste,
-            paste_boundary,
-            variant_index,
-            word_count,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
-            duration_ms,
-            content_hash,
-            occurred_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(session_id, position, variant_index) DO UPDATE SET
-            native_id = excluded.native_id,
-            parent_message_id = excluded.parent_message_id,
-            role = excluded.role,
-            message_type = excluded.message_type,
-            model_name = excluded.model_name,
-            has_tool_use = excluded.has_tool_use,
-            has_thinking = excluded.has_thinking,
-            has_paste = excluded.has_paste,
-            paste_boundary = excluded.paste_boundary,
-            word_count = excluded.word_count,
-            input_tokens = excluded.input_tokens,
-            output_tokens = excluded.output_tokens,
-            cache_read_tokens = excluded.cache_read_tokens,
-            cache_write_tokens = excluded.cache_write_tokens,
-            duration_ms = excluded.duration_ms,
-            content_hash = excluded.content_hash,
-            occurred_at_ms = excluded.occurred_at_ms
-        WHERE
-            content_hash != excluded.content_hash
-            OR IFNULL(role, '') != IFNULL(excluded.role, '')
-            OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
-            OR has_paste != excluded.has_paste
-            OR input_tokens != excluded.input_tokens
-            OR output_tokens != excluded.output_tokens
-            OR cache_read_tokens != excluded.cache_read_tokens
-            OR cache_write_tokens != excluded.cache_write_tokens
-            OR IFNULL(duration_ms, -1) != IFNULL(excluded.duration_ms, -1)
-            OR IFNULL(model_name, '') != IFNULL(excluded.model_name, '')
-            OR IFNULL(message_type, '') != IFNULL(excluded.message_type, '')
-        """,
-        (
-            session_id,
-            native_id,
-            record.parent_message_id,
-            position,
-            record.role.value if record.role is not None else "unknown",
-            record.message_type.value,
-            record.model_name,
-            record.has_tool_use,
-            record.has_thinking,
-            record.has_paste,
-            record.paste_boundary_state,
-            variant_index,
-            record.word_count,
-            record.input_tokens,
-            record.output_tokens,
-            record.cache_read_tokens,
-            record.cache_write_tokens,
-            record.duration_ms,
-            bytes.fromhex(_writer_hash(record.content_hash)),
-            int(record.sort_key * 1000) if record.sort_key is not None else None,
-        ),
-    )
-    updated = bool(res.rowcount > 0)
-    row = conn.execute(
-        "SELECT message_id FROM messages WHERE session_id = ? AND position = ? AND variant_index = ?",
-        (session_id, position, variant_index),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("message upsert did not produce a message_id")
-    message_id = str(row["message_id"])
-
-    if record.text:
-        conn.execute(
-            """
-            INSERT INTO blocks (message_id, session_id, position, block_type, text, content_hash)
-            VALUES (?, ?, 0, 'text', ?, ?)
-            ON CONFLICT(message_id, position) DO UPDATE SET
-                text = excluded.text,
-                content_hash = excluded.content_hash
-            """,
-            (message_id, session_id, record.text, _block_hash_bytes("text", record.text)),
-        )
-
-    # Persist message blocks if any.
-    for blk in record.blocks:
-        conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type,
-                text, tool_name, tool_id, tool_input, semantic_type,
-                tool_result_is_error, tool_result_exit_code, content_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(message_id, position) DO UPDATE SET
-                block_type = excluded.block_type,
-                text = excluded.text,
-                tool_name = excluded.tool_name,
-                tool_id = excluded.tool_id,
-                tool_input = excluded.tool_input,
-                semantic_type = excluded.semantic_type,
-                tool_result_is_error = excluded.tool_result_is_error,
-                tool_result_exit_code = excluded.tool_result_exit_code,
-                content_hash = excluded.content_hash
-            """,
-            (
-                message_id,
-                session_id,
-                blk.block_index,
-                blk.type.value,
-                blk.text,
-                blk.tool_name,
-                blk.tool_id,
-                blk.tool_input,
-                blk.semantic_type.value if blk.semantic_type is not None else None,
-                blk.tool_result_is_error,
-                blk.tool_result_exit_code,
-                _block_hash_bytes(blk.type.value, blk.text, blk.tool_name, blk.tool_input, blk.semantic_type),
-            ),
-        )
-
-    return updated
-
-
-def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> bool:
-    """Upsert an attachment record."""
-    if record.message_id is None:
-        raise ValueError("attachment refs require message_id in the current archive schema")
-    session_row = conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id = ? OR native_id = ? ORDER BY session_id LIMIT 2",
-        (record.session_id, record.session_id),
-    ).fetchall()
-    if len(session_row) != 1:
-        raise ValueError(f"Cannot write attachment for unknown or ambiguous session {record.session_id!r}")
-    session_id = str(session_row[0]["session_id"])
-    message_row = conn.execute(
-        """
-        SELECT message_id FROM messages
-        WHERE message_id = ? OR (session_id = ? AND native_id = ?)
-        ORDER BY message_id LIMIT 2
-        """,
-        (record.message_id, session_id, record.message_id),
-    ).fetchall()
-    if len(message_row) != 1:
-        raise ValueError(f"Cannot write attachment for unknown or ambiguous message {record.message_id!r}")
-    message_id = str(message_row[0]["message_id"])
-    attachment_id = _writer_hash(record.attachment_id)
-
-    # Ensure attachment metadata exists (idempotent, doesn't touch ref_count)
-    conn.execute(
-        """
-        INSERT INTO attachments (
-            attachment_id,
-            display_name,
-            media_type,
-            byte_count,
-            blob_hash,
-            ref_count
-        ) VALUES (?, ?, ?, ?, ?, 0)
-        ON CONFLICT(attachment_id) DO UPDATE SET
-            display_name = COALESCE(excluded.display_name, attachments.display_name),
-            media_type = COALESCE(excluded.media_type, attachments.media_type),
-            byte_count = MAX(attachments.byte_count, excluded.byte_count),
-            blob_hash = excluded.blob_hash
-        """,
-        (
-            attachment_id,
-            Path(record.path).name if record.path else None,
-            record.mime_type,
-            record.size_bytes or 0,
-            bytes.fromhex(attachment_id),
-        ),
-    )
-
-    ref_position_row = conn.execute(
-        "SELECT COALESCE(MAX(position) + 1, 0) FROM attachment_refs WHERE message_id = ?",
-        (message_id,),
-    ).fetchone()
-    ref_position = int(ref_position_row[0] or 0)
-    existing_ref = conn.execute(
-        """
-        SELECT ar.ref_id FROM attachment_refs ar
-        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id
-        WHERE ar.message_id = ? AND ani.id_kind = 'attachment' AND ani.native_id = ?
-        """,
-        (message_id, record.attachment_id),
-    ).fetchone()
-    if existing_ref is not None:
-        ref_id = str(existing_ref["ref_id"])
-        res = conn.execute("SELECT 0")
-    else:
-        res = conn.execute(
-            """
-            INSERT INTO attachment_refs (
-                attachment_id,
-                session_id,
-                message_id,
-                position,
-                upload_origin,
-                source_url
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                attachment_id,
-                session_id,
-                message_id,
-                ref_position,
-                record.upload_origin,
-                record.path if record.path and record.path.startswith(("http://", "https://")) else None,
-            ),
-        )
-        ref_id = f"{message_id}:attachment:{ref_position}"
-        native_rows = [(ref_id, "attachment", str(record.attachment_id))]
-        if record.file_native_id:
-            native_rows.append((ref_id, "file", record.file_native_id))
-        if record.drive_native_id:
-            native_rows.append((ref_id, "drive", record.drive_native_id))
-        conn.executemany(
-            """
-            INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
-            VALUES (?, ?, ?)
-            """,
-            native_rows,
-        )
-
-    # Only increment if we actually inserted a new ref
-    # Use atomic increment to avoid read-modify-write race
-    if res.rowcount > 0:
-        conn.execute(
-            "UPDATE attachments SET ref_count = ref_count + 1 WHERE attachment_id = ?",
-            (attachment_id,),
-        )
-        return True
-    return False
-
-
 def store_records(
     *,
     session: SessionRecord,
@@ -700,142 +325,41 @@ def store_records(
     attachments: list[AttachmentRecord],
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, int]:
-    """Store session records (session, messages, attachments).
+    """Store session records through the one production archive writer.
+
+    There is deliberately no record-level SQL route here.  A second index-tier
+    writer can only seed rows the real writer could not produce --
+    ``identity_source``/``native_id`` disagreement and hand-summed
+    ``authored_user_*`` counters were exactly that (polylogue-ugkho) -- so
+    seeding goes through ``write_parsed_session_to_archive``, the choke point
+    live ingest and replay share, and every derived column on a seeded row is
+    the one production derives.
 
     Thread-safe with write lock. Returns count of inserted/updated records.
     """
-    counts = {
-        "sessions": 0,
-        "messages": 0,
-        "attachments": 0,
-        "skipped_sessions": 0,
-        "skipped_messages": 0,
-        "skipped_attachments": 0,
-    }
-
     with connection_context(conn) as db_conn, _WRITE_LOCK:
-        columns = {str(row["name"]) for row in db_conn.execute("PRAGMA table_xinfo(sessions)").fetchall()}
-        if {"origin", "native_id", "session_id"}.issubset(columns):
-            existing = db_conn.execute(
-                "SELECT lower(hex(content_hash)) AS content_hash FROM sessions WHERE origin = ? AND native_id = ?",
-                (session.origin.value, session.native_id),
-            ).fetchone()
-            new_hash = _writer_hash(session.content_hash)
-            parsed = _record_to_parsed_session(session, messages, attachments)
-            write_parsed_session_to_archive(
-                db_conn,
-                parsed,
-                content_hash=new_hash,
-            )
-            db_conn.commit()
-            if existing is not None and str(existing["content_hash"]) == new_hash:
-                written_attachments = sum(1 for attachment in attachments if attachment.message_id is not None)
-                return {
-                    "sessions": 0,
-                    "messages": 0,
-                    "attachments": written_attachments,
-                    "skipped_sessions": 1,
-                    "skipped_messages": len(messages),
-                    "skipped_attachments": len(attachments) - written_attachments,
-                }
-            written_attachments = sum(1 for attachment in attachments if attachment.message_id is not None)
-            return {
-                "sessions": 1,
-                "messages": len(messages),
-                "attachments": written_attachments,
-                "skipped_sessions": 0,
-                "skipped_messages": 0,
-                "skipped_attachments": len(attachments) - written_attachments,
-            }
-        if upsert_session(db_conn, session):
-            counts["sessions"] += 1
-        else:
-            counts["skipped_sessions"] += 1
-        for message in messages:
-            if upsert_message(db_conn, message):
-                counts["messages"] += 1
-            else:
-                counts["skipped_messages"] += 1
-        seen_ref_ids: set[str] = set()
-        for attachment in attachments:
-            ref_id = _make_ref_id(attachment.attachment_id, attachment.session_id, attachment.message_id)
-            seen_ref_ids.add(ref_id)
-            if upsert_attachment(db_conn, attachment):
-                counts["attachments"] += 1
-            else:
-                counts["skipped_attachments"] += 1
-        _prune_attachment_refs(db_conn, session.session_id, seen_ref_ids)
-        # Mirror the production write path's aggregate projection so filters
-        # on min_messages/max_messages/min_words/has_tool_use see the same
-        # precomputed session values as production ingest.
-        _upsert_session_stats_sync(db_conn, session=session, messages=messages)
-        # User marks/annotations are keyed by the deterministic public target id
-        # (origin:native_id), which is stable across reset+reimport, so there is
-        # no identity-repoint pass to mirror (#1114 obsoleted by deterministic IDs).
-        # Commit inside lock to ensure atomic transaction boundaries
+        existing = db_conn.execute(
+            "SELECT lower(hex(content_hash)) AS content_hash FROM sessions WHERE origin = ? AND native_id = ?",
+            (session.origin.value, session.native_id),
+        ).fetchone()
+        new_hash = _writer_hash(session.content_hash)
+        parsed = _record_to_parsed_session(session, messages, attachments)
+        write_parsed_session_to_archive(
+            db_conn,
+            parsed,
+            content_hash=new_hash,
+        )
         db_conn.commit()
-
-    return counts
-
-
-def _upsert_session_stats_sync(
-    conn: sqlite3.Connection,
-    *,
-    session: SessionRecord,
-    messages: list[MessageRecord],
-) -> None:
-    """Sync mirror of aggregate-column maintenance for test seeding."""
-    from polylogue.archive.message.roles import Role
-    from polylogue.core.enums import MaterialOrigin
-
-    message_count = len(messages)
-    word_count = sum(m.word_count for m in messages)
-    tool_use_count = sum(1 for m in messages if m.has_tool_use)
-    thinking_count = sum(1 for m in messages if m.has_thinking)
-    paste_count = sum(1 for m in messages if m.has_paste)
-    user_msg_count = sum(1 for m in messages if m.role == Role.USER)
-    authored_user_msg_count = sum(1 for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
-    assistant_msg_count = sum(1 for m in messages if m.role == Role.ASSISTANT)
-    system_msg_count = sum(1 for m in messages if m.role == Role.SYSTEM)
-    tool_msg_count = sum(1 for m in messages if m.role == Role.TOOL)
-    user_word_count = sum(m.word_count for m in messages if m.role == Role.USER)
-    authored_user_word_count = sum(m.word_count for m in messages if m.material_origin == MaterialOrigin.HUMAN_AUTHORED)
-    assistant_word_count = sum(m.word_count for m in messages if m.role == Role.ASSISTANT)
-    conn.execute(
-        """
-        UPDATE sessions
-        SET message_count = ?,
-            word_count = ?,
-            tool_use_count = ?,
-            thinking_count = ?,
-            paste_count = ?,
-            user_message_count = ?,
-            authored_user_message_count = ?,
-            assistant_message_count = ?,
-            system_message_count = ?,
-            tool_message_count = ?,
-            user_word_count = ?,
-            authored_user_word_count = ?,
-            assistant_word_count = ?
-        WHERE session_id = ?
-        """,
-        (
-            message_count,
-            word_count,
-            tool_use_count,
-            thinking_count,
-            paste_count,
-            user_msg_count,
-            authored_user_msg_count,
-            assistant_msg_count,
-            system_msg_count,
-            tool_msg_count,
-            user_word_count,
-            authored_user_word_count,
-            assistant_word_count,
-            session.session_id,
-        ),
-    )
+        written_attachments = sum(1 for attachment in attachments if attachment.message_id is not None)
+        unchanged = existing is not None and str(existing["content_hash"]) == new_hash
+        return {
+            "sessions": 0 if unchanged else 1,
+            "messages": 0 if unchanged else len(messages),
+            "attachments": written_attachments,
+            "skipped_sessions": 1 if unchanged else 0,
+            "skipped_messages": len(messages) if unchanged else 0,
+            "skipped_attachments": len(attachments) - written_attachments,
+        }
 
 
 # =============================================================================
@@ -868,7 +392,22 @@ def _record_to_parsed_session(
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
 ) -> ParsedSession:
-    """Convert builder records into the parser envelope the archive ingests."""
+    """Convert builder records into the parser envelope the archive ingests.
+
+    ``MessageRecord.identity_source`` selects which branch of the computed
+    ``messages.message_id`` a seeded row takes, mirroring what a real export
+    decides by supplying or withholding a provider message id:
+
+    * ``"native"`` -- hand the writer a provider id, so the row is
+      ``session_id:n:<native_id>`` with ``identity_source = 'native'``.
+    * ``"content"`` -- hand the writer no provider id, so the row falls back to
+      ``session_id:c:<content_identity>.<content_occurrence>`` with
+      ``identity_source = 'content'``, exactly as an id-less export does.
+
+    Both columns are written by ``write_parsed_session_to_archive`` alone, so a
+    seeded row can never carry a native id with a ``content`` marker or the
+    reverse (polylogue-ugkho).
+    """
 
     def _provider_message_id(value: object | None) -> str | None:
         if value is None:
@@ -918,10 +457,17 @@ def _record_to_parsed_session(
             )
         return parsed_blocks
 
+    def _seeded_provider_message_id(message: MessageRecord) -> str:
+        if message.identity_source == CONTENT_DERIVED_IDENTITY:
+            # The empty provider id is how a real id-less export reaches the
+            # writer (``sources/parsers/codex.py`` emits exactly this), and
+            # ``_stored_message_native_id`` maps it to a NULL ``native_id``.
+            return ""
+        return _provider_message_id(message.provider_message_id or message.message_id) or str(message.message_id)
+
     parsed_messages = [
         ParsedMessage(
-            provider_message_id=_provider_message_id(message.provider_message_id or message.message_id)
-            or str(message.message_id),
+            provider_message_id=_seeded_provider_message_id(message),
             role=message.role if message.role is not None else Role.USER,
             text=message.text,
             blocks=_blocks(message),
@@ -986,23 +532,6 @@ def _record_to_parsed_session(
         git_repository_url=session.git_repository_url,
         provider_project_ref=session.provider_project_ref,
     )
-
-
-def _block_hash_bytes(*parts: object) -> bytes:
-    """Deterministic 32-byte digest for this fixture builder's raw block INSERTs.
-
-    Not required to match production's ``_block_content_hash`` bit-for-bit
-    (production excludes tool_id/position; this fixture path is a raw SQL
-    shortcut used by tests unrelated to citation-anchor semantics) -- only
-    needs to satisfy blocks.content_hash's NOT NULL constraint with a stable,
-    content-derived value.
-    """
-
-    digest = hashlib.sha256()
-    for part in parts:
-        digest.update(str(part).encode("utf-8", errors="surrogatepass"))
-        digest.update(b"\0")
-    return digest.digest()
 
 
 def _writer_hash(value: object) -> str:
@@ -1183,6 +712,11 @@ class SessionBuilder:
             "word_count": _coerce_int(kwargs.pop("word_count", word_count), word_count),
             "has_tool_use": _coerce_int(kwargs.pop("has_tool_use", has_tool_use), has_tool_use),
             "has_thinking": _coerce_int(kwargs.pop("has_thinking", has_thinking), has_thinking),
+            # This builder synthesizes a provider message id, so the row it
+            # seeds takes the native branch. Declared rather than implied, so
+            # a caller can ask for CONTENT_DERIVED_IDENTITY instead and get a
+            # row with no native_id at all.
+            "identity_source": NATIVE_IDENTITY,
         }
         payload.update(kwargs)
         msg = MessageRecord.model_validate(payload)
@@ -1316,6 +850,9 @@ def make_message(
         "word_count": _coerce_int(kwargs.pop("word_count", word_count), word_count),
         "has_tool_use": _coerce_int(kwargs.pop("has_tool_use", has_tool_use), has_tool_use),
         "has_thinking": _coerce_int(kwargs.pop("has_thinking", has_thinking), has_thinking),
+        # See SessionBuilder.add_message: the synthesized provider id makes
+        # this the native branch unless the caller overrides.
+        "identity_source": NATIVE_IDENTITY,
     }
     payload.update(kwargs)
     return MessageRecord.model_validate(payload)

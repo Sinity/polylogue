@@ -39,15 +39,11 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
-    _prune_attachment_refs,
     make_attachment,
     make_message,
     make_session,
     save_session_to_archive,
     store_records,
-    upsert_attachment,
-    upsert_message,
-    upsert_session,
 )
 from tests.infra.strategies.messages import session_strategy
 from tests.infra.strategies.storage import (
@@ -404,16 +400,17 @@ async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Pa
     initialize_active_archive_root(tmp_path)
     db_path = tmp_path / "index.db"
     with open_connection(db_path) as conn:
-        upsert_session(
-            conn,
-            make_session(
+        store_records(
+            session=make_session(
                 "conv-large-meta",
                 source_name="codex",
                 title="Large Meta Session",
                 metadata={"tag": "kept"},
             ),
+            messages=[],
+            attachments=[],
+            conn=conn,
         )
-        conn.commit()
 
     backend = SQLiteBackend(db_path=db_path)
     repo = SessionRepository(backend=backend)
@@ -814,118 +811,6 @@ def test_store_records_roundtrip_contract(test_conn: sqlite3.Connection) -> None
     assert sparse["skipped_attachments"] == 1
     sparse_attachment = _attachment_row(test_conn, "att-empty")
     assert sparse_attachment is None
-
-
-def test_prune_attachment_refs_contract(test_conn: sqlite3.Connection) -> None:
-    """Pruning refs must keep requested refs, recalculate counts, and delete zero-ref attachments."""
-    conv = make_session("conv-prune", title="Prune Test")
-    msg1 = make_message("msg-prune-1", "conv-prune", text="First")
-    msg2 = make_message("msg-prune-2", "conv-prune", text="Second")
-    att1 = make_attachment("att-prune-1", "conv-prune", "msg-prune-1", mime_type="image/png")
-    att2 = make_attachment("att-prune-2", "conv-prune", "msg-prune-2", mime_type="image/jpeg", size_bytes=2048)
-    shared_att_1 = make_attachment("att-shared", "conv-prune", "msg-prune-1", mime_type="image/png")
-    shared_att_2 = make_attachment("att-shared", "conv-prune", "msg-prune-2", mime_type="image/png")
-    store_records(
-        session=conv,
-        messages=[msg1, msg2],
-        attachments=[att1, att2, shared_att_1, shared_att_2],
-        conn=test_conn,
-    )
-
-    current_session_id = "unknown-export:conv-prune"
-    keep_rows = test_conn.execute(
-        """
-        SELECT ar.ref_id, ani.native_id
-        FROM attachment_refs ar
-        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id AND ani.id_kind = 'attachment'
-        WHERE ar.session_id = ? AND ar.message_id = ? AND ani.native_id IN ('att-prune-1', 'att-shared')
-        ORDER BY ani.native_id
-        """,
-        (current_session_id, archive_message_id(current_session_id, "msg-prune-1")),
-    ).fetchall()
-    keep_refs = {str(row["ref_id"]) for row in keep_rows}
-    assert len(keep_refs) == 2
-    _prune_attachment_refs(test_conn, current_session_id, keep_refs)
-
-    remaining_refs = test_conn.execute(
-        "SELECT ref_id FROM attachment_refs WHERE session_id = ? ORDER BY ref_id",
-        (current_session_id,),
-    ).fetchall()
-    assert [row["ref_id"] for row in remaining_refs] == sorted(keep_refs)
-    pruned_attachment = _attachment_row(test_conn, "att-prune-1")
-    shared_attachment = _attachment_row(test_conn, "att-shared")
-    assert pruned_attachment is not None
-    assert shared_attachment is not None
-    assert pruned_attachment["ref_count"] == 1
-    assert shared_attachment["ref_count"] == 1
-    assert _attachment_row(test_conn, "att-prune-2") is None
-
-
-def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection) -> None:
-    """Optional-field upserts and attachment metadata updates must round-trip cleanly."""
-    session = _session_record(
-        session_id="conv-optional",
-        origin=origin_from_provider(Provider.from_string("test")).value,
-        native_id="conv-optional",
-        title=None,
-        created_at=None,
-        updated_at=None,
-        content_hash="hash1",
-    )
-    assert upsert_session(test_conn, session) is True
-    conv_row = _session_row(test_conn, "conv-optional")
-    assert conv_row is not None
-    assert conv_row["title"] is None
-    assert conv_row["created_at_ms"] is None
-    assert "provider_meta" not in conv_row.keys()  # noqa: SIM118 — sqlite3.Row membership is over values
-
-    message = MessageRecord(
-        message_id=_message_id("msg-optional"),
-        session_id=_session_id("conv-optional"),
-        provider_message_id=None,
-        role=None,
-        text=None,
-        sort_key=None,
-        content_hash=_content_hash("msg-optional-hash"),
-        source_name="",
-        word_count=0,
-        has_tool_use=0,
-        has_thinking=0,
-    )
-    assert upsert_message(test_conn, message) is True
-    msg_row = test_conn.execute(
-        "SELECT * FROM messages WHERE native_id = ?",
-        ("msg-optional",),
-    ).fetchone()
-    assert msg_row is not None
-    assert msg_row["message_id"] == archive_message_id("unknown-export:conv-optional", "msg-optional")
-    assert msg_row["role"] == "unknown"
-    assert msg_row["native_id"] == "msg-optional"
-    assert (
-        test_conn.execute("SELECT COUNT(*) FROM blocks WHERE message_id = ?", (msg_row["message_id"],)).fetchone()[0]
-        == 0
-    )
-
-    msg2 = make_message("msg-attachment-2", "conv-optional", text="Second")
-    assert upsert_message(test_conn, msg2) is True
-    first = make_attachment("att-meta", "conv-optional", "msg-optional", mime_type="image/png")
-    second = make_attachment(
-        "att-meta",
-        "conv-optional",
-        "msg-attachment-2",
-        mime_type="image/jpeg",
-        size_bytes=2048,
-        path="new/path.jpg",
-    )
-    assert upsert_attachment(test_conn, first) is True
-    assert upsert_attachment(test_conn, first) is False
-    assert upsert_attachment(test_conn, second) is True
-    att_row = _attachment_row(test_conn, "att-meta")
-    assert att_row is not None
-    assert att_row["mime_type"] == "image/jpeg"
-    assert att_row["size_bytes"] == 2048
-    assert att_row["path"] == "path.jpg"
-    assert att_row["ref_count"] == 2
 
 
 def test_json_or_none_contract() -> None:
