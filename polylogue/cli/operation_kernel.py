@@ -71,7 +71,20 @@ class OperationIndeterminateError(OperationKernelError):
 
     Distinct from :class:`OperationUnavailableError`: the daemon may have
     applied the write, so retrying is not safe.
+
+    ``request_id`` is the transport's call id for the unresolved write, and it
+    is the only recovery authority a caller has: the daemon's durable
+    lifecycle, ``DaemonClient.await_operation`` and ``DaemonClient.cancel`` are
+    all keyed on it. Dropping it turns "inspect daemon audit state before
+    retrying" into a lookup with no key, which is how the sibling REST defect
+    in polylogue-8r4zq reads on this side of the socket.
     """
+
+    def __init__(self, detail: object = None, *, request_id: str | None = None) -> None:
+        self.detail = detail
+        self.request_id = request_id or None
+        message = str(detail) if detail is not None else "daemon outcome is indeterminate"
+        super().__init__(f"{message} (request {self.request_id})" if self.request_id else message)
 
 
 class OperationCancelledError(OperationKernelError):
@@ -155,7 +168,10 @@ class OperationKernel:
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
         except DaemonMutationIndeterminateError as exc:
             # A confirmed mutation may already have landed; never re-issue it.
-            raise OperationIndeterminateError(str(exc)) from exc
+            # The transport knows which call is unresolved, so carry that id
+            # instead of flattening the exception to its message: it is what
+            # settles the write.
+            raise OperationIndeterminateError(str(exc), request_id=exc.request_id) from exc
         except DaemonOperationProtocolError as exc:
             if "size" in str(exc):
                 raise OperationFailedError("result_too_large", str(exc)) from exc
@@ -172,7 +188,8 @@ class OperationKernel:
             # to an ordinary failure that callers may safely retry.
             if outcome in {"indeterminate", "disconnected-after-acceptance", "restarted"}:
                 raise OperationIndeterminateError(
-                    f"{request.operation} requires receipt recovery for request {envelope.get('request_id')}"
+                    f"{request.operation} requires receipt recovery",
+                    request_id=call_id,
                 )
             error = envelope.get("error")
             if outcome in {"cancelled", OperationStatus.INTERRUPTED.value}:

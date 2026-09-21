@@ -195,3 +195,60 @@ def test_deadline_and_cancellation_aborts_keep_their_code_and_call_id(
     assert abort.code == code
     assert str(abort.detail) == detail
     assert "interrupted" not in str(abort.detail)
+
+
+def test_envelope_indeterminate_outcome_keeps_its_recovery_request_id() -> None:
+    """An unresolved write reaches the surface with the id that can settle it.
+
+    ``operation_to_completion`` returns ``outcome="indeterminate"`` when its
+    receipt wait runs out of deadline. The only way a caller can then decide
+    whether the write landed is to re-ask the daemon about *that request*, so
+    the kernel must publish the id as state, not bury it in prose.
+
+    Anti-vacuity: interpolating the id into the message and leaving
+    ``request_id`` unset -- the shape this branch shipped with -- fails the
+    attribute assertion below while still passing a ``match=`` on the text.
+    """
+    with pytest.raises(OperationIndeterminateError) as raised:
+        OperationKernel(
+            lambda _request: {
+                "outcome": "indeterminate",
+                "request_id": "unsettled-write",
+                "result": {"sequence": 3},
+            }
+        ).execute(OperationRequest("mutation.session.tag", {}))
+    assert raised.value.request_id == "unsettled-write"
+    assert "unsettled-write" in str(raised.value)
+
+
+def test_a_raised_indeterminate_mutation_keeps_its_recovery_request_id() -> None:
+    """The transport's call id survives the hop into the kernel's typed error.
+
+    Anti-vacuity: the branch used to raise ``OperationIndeterminateError(str(exc))``.
+    ``DaemonMutationIndeterminateError.__str__`` names only the method and path,
+    so flattening it to text loses the id outright and both assertions go red.
+    """
+    with pytest.raises(OperationIndeterminateError) as raised:
+        _raising(
+            DaemonMutationIndeterminateError(method="POST", path="/api/operation", request_id="in-flight-write")
+        ).execute(OperationRequest("mutation.session.tag", {}))
+    assert raised.value.request_id == "in-flight-write"
+    assert "in-flight-write" in str(raised.value)
+
+
+def test_an_empty_transport_request_id_is_not_reported_as_recovery_authority() -> None:
+    """``""`` is absence, not a key. Reporting it would send a caller to no row.
+
+    ``DaemonClient._request_json_response`` builds the id with
+    ``str((body or {}).get("request_id", ""))``, so a body without one yields an
+    empty string rather than ``None``.
+
+    Anti-vacuity: assigning ``exc.request_id`` straight through makes
+    ``request_id`` the empty string and puts "(request )" in the message.
+    """
+    with pytest.raises(OperationIndeterminateError) as raised:
+        _raising(DaemonMutationIndeterminateError(method="POST", path="/api/operation", request_id="")).execute(
+            OperationRequest("mutation.session.tag", {})
+        )
+    assert raised.value.request_id is None
+    assert "(request" not in str(raised.value)
