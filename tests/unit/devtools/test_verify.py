@@ -668,8 +668,18 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    # `devtools.verify.subprocess` IS the stdlib module, so patching `.run`
+    # replaces it for every caller in the process, including
+    # `platform.processor()`'s `uname -p` fallback. A real captured run never
+    # returns `stdout=None`; a stub that does made
+    # `environment_fingerprint` -> `platform.platform()` raise
+    # `AttributeError: 'NoneType' object has no attribute 'strip'` whenever
+    # the random test order reached this test before anything had cached
+    # `platform.processor`. Reproduced on clean origin/master (217e9e982) with
+    # --randomly-seed=2442806215.
     monkeypatch.setattr(
-        "devtools.verify.subprocess.run", lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0)
+        "devtools.verify.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0, stdout="", stderr=""),
     )
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
