@@ -541,7 +541,17 @@ def _emit_continue_candidates(
     limit: int,
     output_format: str | None,
 ) -> None:
-    """Rank archived sessions for continuation from the current work context."""
+    """Rank archived sessions for continuation from the current work context.
+
+    The payload states the page it holds, not a total it never read.
+    ``find_resume_candidates`` ranks every profile and returns
+    ``candidates[:limit]``, so ``"total": len(candidates)`` reported the page
+    size as the number of matching sessions: with the default ``--limit 10`` an
+    archive holding 200 continuable sessions answered ``total: 10``, and the
+    number changed with the limit, which a total may not do (polylogue-vbsc0).
+    The ranking reports no total, so this names the window instead of inventing
+    one; a caller that wants more raises ``--limit``.
+    """
 
     from polylogue.cli.shared.machine_errors import emit_success
 
@@ -555,7 +565,8 @@ def _emit_continue_candidates(
     )
     payload = {
         "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-        "total": len(candidates),
+        "returned": len(candidates),
+        "limit": limit,
     }
     if _wants_json(request, output_format=output_format):
         emit_success(payload)
