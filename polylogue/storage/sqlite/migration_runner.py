@@ -13,6 +13,7 @@ import time
 import types
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
@@ -2118,8 +2119,84 @@ def _schema_pragma_rows(conn: sqlite3.Connection, pragma: str, object_name: str)
     return [list(row) for row in conn.execute(f"PRAGMA {pragma}({quoted})")]
 
 
-def capture_durable_schema_inventory(conn: sqlite3.Connection) -> DurableSchemaInventory:
-    """Capture the canonical object universe from SQLite itself, not a hand list."""
+def _retired_columns_by_table(retired_refs: AbstractSet[str]) -> dict[str, frozenset[str]]:
+    """Group the declared ``column:<table>.<name>`` retirements by owning table.
+
+    ``RETIRED_SOURCE_SCHEMA_OBJECTS`` is maintained by hand beside the DDL it
+    documents, so its members stay unqualified: the tier is already decided by
+    whoever asked for the set. That is also the shape
+    ``DurableSchemaObjectEvidence.object_ref`` emits, so table/index/trigger/view
+    retirements compare by plain set intersection. Columns are the one grain
+    ``capture_durable_schema_inventory`` never emits as its own object -- a
+    retired column shows up as a changed *table* declaration -- so they are
+    projected out of the migrated table instead of subtracted from a ref set.
+    """
+    by_table: dict[str, set[str]] = {}
+    for ref in retired_refs:
+        if not ref.startswith("column:"):
+            continue
+        qualified = ref.split(":", 1)[1]
+        table_name, _, column_name = qualified.partition(".")
+        if not table_name or not column_name:
+            continue
+        by_table.setdefault(table_name, set()).add(column_name)
+    return {table: frozenset(columns) for table, columns in by_table.items()}
+
+
+def _project_retired_columns(
+    conn: sqlite3.Connection,
+    table_name: str,
+    sql: str,
+    retired_columns: AbstractSet[str],
+) -> sqlite3.Connection | None:
+    """Re-declare one table without its declared-retired columns.
+
+    SQLite performs the removal itself -- the migrated ``CREATE TABLE`` text is
+    replayed into a scratch database and each retired column is dropped there --
+    so the projected declaration, ``table_xinfo`` and ``foreign_key_list`` are
+    exactly what SQLite would have stored had the column never been declared.
+    No text surgery happens here.
+
+    Returns ``None`` when this table carries none of the declared retirements.
+    Only the table is replayed, so an index over a retired column is not
+    projected away with it: that index has to be declared retired in its own
+    right or parity still reports it. When SQLite refuses the drop -- a column
+    another column's CHECK or generated expression reads -- the declaration is
+    wrong rather than the database, so this raises instead of exempting a
+    retirement the engine cannot perform.
+    """
+    present = {str(row[1]) for row in conn.execute(f"PRAGMA table_xinfo({_quote_sqlite_identifier(table_name)})")}
+    retained = sorted(retired_columns & present)
+    if not retained:
+        return None
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.executescript(sql)
+        for column_name in retained:
+            scratch.execute(
+                f"ALTER TABLE {_quote_sqlite_identifier(table_name)} "
+                f"DROP COLUMN {_quote_sqlite_identifier(column_name)}"
+            )
+    except sqlite3.Error as error:
+        scratch.close()
+        raise MigrationError(
+            f"declared retired columns {retained} cannot be removed from {table_name}: {error}"
+        ) from error
+    return scratch
+
+
+def capture_durable_schema_inventory(
+    conn: sqlite3.Connection,
+    *,
+    retired_columns: Mapping[str, frozenset[str]] | None = None,
+) -> DurableSchemaInventory:
+    """Capture the canonical object universe from SQLite itself, not a hand list.
+
+    ``retired_columns`` maps a table to columns that fresh DDL no longer
+    declares but a migrated historical tier still carries. Those tables are
+    fingerprinted from the projection in ``_project_retired_columns``; every
+    other object is read straight from this connection.
+    """
     rows = conn.execute(
         """
         SELECT type, name, tbl_name, sql
@@ -2134,17 +2211,30 @@ def capture_durable_schema_inventory(conn: sqlite3.Connection) -> DurableSchemaI
         object_type = str(raw_type)
         name = str(raw_name)
         table_name = str(raw_table_name)
+        sql_text = str(raw_sql) if raw_sql is not None else None
+        source_conn = conn
+        projection: sqlite3.Connection | None = None
+        if object_type == "table" and retired_columns and sql_text is not None:
+            projection = _project_retired_columns(conn, name, sql_text, retired_columns.get(name, frozenset()))
+            if projection is not None:
+                source_conn = projection
+                projected_sql = projection.execute(
+                    "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?", (name,)
+                ).fetchone()
+                sql_text = str(projected_sql[0]) if projected_sql and projected_sql[0] is not None else sql_text
         payload: dict[str, object] = {
             "type": object_type,
             "name": name,
             "table_name": table_name,
-            "sql": _normalize_schema_sql(str(raw_sql) if raw_sql is not None else None),
+            "sql": _normalize_schema_sql(sql_text),
         }
         if object_type == "table":
-            payload["table_xinfo"] = _schema_pragma_rows(conn, "table_xinfo", name)
-            payload["foreign_key_list"] = _schema_pragma_rows(conn, "foreign_key_list", name)
+            payload["table_xinfo"] = _schema_pragma_rows(source_conn, "table_xinfo", name)
+            payload["foreign_key_list"] = _schema_pragma_rows(source_conn, "foreign_key_list", name)
         elif object_type == "index":
-            payload["index_xinfo"] = _schema_pragma_rows(conn, "index_xinfo", name)
+            payload["index_xinfo"] = _schema_pragma_rows(source_conn, "index_xinfo", name)
+        if projection is not None:
+            projection.close()
         objects.append(
             DurableSchemaObjectEvidence(
                 object_type=object_type,
@@ -2179,12 +2269,17 @@ def prove_durable_fresh_ddl_parity(
     evidence = _require_nonempty(evidence_ref, label="fresh-DDL parity evidence")
     migrated_version = int(migrated_connection.execute("PRAGMA user_version").fetchone()[0] or 0)
     fresh_version = int(fresh_connection.execute("PRAGMA user_version").fetchone()[0] or 0)
-    migrated = capture_durable_schema_inventory(migrated_connection)
+    retired_refs = _retired_schema_objects_for_parity(tier)
+    # Fresh DDL already omits every retirement, so only the migrated side is
+    # projected. Both sides then key on the same unqualified object_ref shape.
+    migrated = capture_durable_schema_inventory(
+        migrated_connection, retired_columns=_retired_columns_by_table(retired_refs)
+    )
     fresh = capture_durable_schema_inventory(fresh_connection)
     migrated_by_ref = {item.object_ref: item for item in migrated.objects}
     fresh_by_ref = {item.object_ref: item for item in fresh.objects}
     missing = tuple(sorted(set(fresh_by_ref) - set(migrated_by_ref)))
-    retired_extras = (set(migrated_by_ref) - set(fresh_by_ref)) & _retired_schema_objects_for_parity(tier)
+    retired_extras = (set(migrated_by_ref) - set(fresh_by_ref)) & retired_refs
     unexpected = tuple(sorted((set(migrated_by_ref) - set(fresh_by_ref)) - retired_extras))
     parity_migrated_objects = tuple(item for item in migrated.objects if item.object_ref not in retired_extras)
     parity_migrated = _schema_inventory_from_objects(parity_migrated_objects)
@@ -2219,7 +2314,14 @@ def prove_durable_fresh_ddl_parity(
 
 
 def _retired_schema_objects_for_parity(tier: ArchiveTier) -> frozenset[str]:
-    """Return migrated-only objects explicitly retired from fresh DDL."""
+    """Return migrated-only objects explicitly retired from fresh DDL.
+
+    Members are unqualified ``<type>:<name>`` or ``column:<table>.<name>``: the
+    tier is the argument, not part of the ref. That matches
+    ``DurableSchemaObjectEvidence.object_ref`` exactly, so callers intersect
+    directly; callers keyed on the tier-qualified
+    ``SchemaObject.object_ref`` strip the leading tier token first.
+    """
     return RETIRED_SOURCE_SCHEMA_OBJECTS if tier is ArchiveTier.SOURCE else frozenset()
 
 
