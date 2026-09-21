@@ -132,6 +132,7 @@ def compute_session_cost(
     has_estimates = False
     has_reported = False
     has_unknown = False
+    has_partial = False
     all_catalog_priced = True
 
     for _key, breakdown in sorted(per_model.items()):
@@ -198,6 +199,8 @@ def compute_session_cost(
             has_reported = True
         elif updated.confidence == "unknown":
             has_unknown = True
+        elif updated.confidence == "partial":
+            has_partial = True
 
     if not breakdowns:
         agg_confidence = "unknown"
@@ -211,6 +214,12 @@ def compute_session_cost(
         # this branch, has_reported=True from the genuine row silently
         # overrode the fact that another per-model breakdown was separately
         # marked unknown).
+        agg_confidence = "partial"
+    elif has_partial:
+        # At least one breakdown summed lanes the provider never reported
+        # (polylogue-qe194). The dollars are a lower bound over real evidence,
+        # so the aggregate is "partial" -- neither a clean "reported" nor the
+        # "unknown" that a no-evidence session earns.
         agg_confidence = "partial"
     elif has_estimates:
         agg_confidence = "estimated"
@@ -387,7 +396,7 @@ def _get_message_token_counts(message: object) -> object | None:
         for name in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
     )
     if any(value is not None for value in raw_counts):
-        from polylogue.archive.semantic.pricing import CostUsagePayload
+        from polylogue.archive.semantic.pricing import TOKEN_LANES, CostUsagePayload
 
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = (int(value or 0) for value in raw_counts)
         return CostUsagePayload(
@@ -396,6 +405,11 @@ def _get_message_token_counts(message: object) -> object | None:
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             total_tokens=input_tokens + output_tokens + cache_read_tokens + cache_write_tokens,
+            # This branch fires precisely when *some* lane was reported, so a
+            # ``None`` here is a partial measurement, not an absent message
+            # counter set. Name the gap instead of letting ``int(value or 0)``
+            # bury it (polylogue-qe194).
+            unmeasured_lanes=tuple(lane for lane, value in zip(TOKEN_LANES, raw_counts, strict=True) if value is None),
         )
     return None
 
@@ -417,7 +431,13 @@ def _add_provider_reported_tokens(
             + int(getattr(tokens, "cache_read_tokens", 0) or 0)
             + int(getattr(tokens, "cache_write_tokens", 0) or 0)
         ),
-        confidence="reported",
+        # polylogue-qe194: "reported" claims the provider measured this
+        # breakdown. When one lane was never captured, part of the tally is
+        # real evidence and part is unaccounted for -- which is what "partial"
+        # already means for a mixed session two functions down.
+        confidence="partial"
+        if getattr(tokens, "unmeasured_lanes", ()) or breakdown.confidence == "partial"
+        else "reported",
         provenance="provider_reported",
     )
 

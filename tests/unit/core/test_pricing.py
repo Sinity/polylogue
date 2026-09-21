@@ -51,6 +51,11 @@ def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
     Token/model facts are sourced from the typed per-message
     ``model_name``/``input_tokens``/``output_tokens`` columns, not from a
     metadata bag.
+
+    polylogue-qe194: every lane here is a *captured* counter, the cache lanes
+    captured at zero. That is the half of the distinction that must stay
+    ``priced`` with empty ``missing_reasons`` -- the never-captured half is
+    ``test_partial_message_usage_is_partial_not_priced``.
     """
 
     message = make_msg(
@@ -60,11 +65,16 @@ def test_token_usage_prices_known_model_with_catalog_provenance() -> None:
         model_name="openai/gpt-4o-2024-08-06",
         input_tokens=1000,
         output_tokens=500,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
     )
 
     estimate = estimate_message_cost(message, origin="chatgpt-export")
 
     assert estimate.status == "priced"
+    assert estimate.missing_reasons == ()
+    assert estimate.usage.unmeasured_lanes == ()
+    assert estimate.usage.fully_measured
     # The dated snapshot is itself a catalog key, so it resolves exactly.
     assert estimate.normalized_model == "gpt-4o-2024-08-06"
     assert estimate.total_usd == pytest.approx(0.0075)
@@ -108,6 +118,12 @@ def test_session_cost_aggregates_typed_message_facts() -> None:
     There is no session-level reported-cost short-circuit: the ``costUSD``
     metadata key is ignored, and the total comes from the per-message
     ``model_name``/token columns.
+
+    Both messages carry all four lanes as captured counters (the cache lanes
+    captured at zero), so the aggregate is a complete price. The aggregate
+    over a set that contains a never-captured lane is
+    ``test_session_aggregate_is_partial_when_one_message_lane_is_unmeasured``
+    (polylogue-qe194).
     """
 
     session = make_conv(
@@ -123,6 +139,8 @@ def test_session_cost_aggregates_typed_message_facts() -> None:
                     model_name="gpt-4o",
                     input_tokens=1000,
                     output_tokens=500,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
                 ),
                 make_msg(
                     id="m2",
@@ -131,6 +149,8 @@ def test_session_cost_aggregates_typed_message_facts() -> None:
                     model_name="gpt-4o",
                     input_tokens=1000,
                     output_tokens=500,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
                 ),
             ]
         ),
@@ -163,6 +183,135 @@ def test_missing_price_is_unavailable_not_zero_precision() -> None:
     assert estimate.total_usd is None
     assert estimate.missing_reasons == ("missing_price",)
     assert estimate.unavailable_reason == "no_price"
+
+
+def test_partial_message_usage_is_partial_not_priced() -> None:
+    """polylogue-qe194: one never-captured lane makes the price a lower bound.
+
+    The fixture is deliberately PARTIAL -- ``cache_write_tokens`` is ``None``
+    while the billable lanes carry real counters. That is the case the
+    existing guards cannot see: the all-absent case already returns
+    ``unavailable``, and the cache-price guard tests ``tokens > 0``, which a
+    coerced zero never trips. Before the fix this estimate came back
+    ``status='priced'`` with empty ``missing_reasons``.
+
+    Anti-vacuity: reverting ``_coerce_int``'s ``None`` branch to ``return 0``
+    turns this red, because the lane would read as a measured zero and the
+    estimate would claim a complete price again.
+    """
+
+    message = make_msg(
+        id="m1",
+        role="assistant",
+        provider="claude-code",
+        model_name="claude-sonnet-4-5",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=200,
+        cache_write_tokens=None,
+    )
+
+    estimate = estimate_message_cost(message, origin="claude-code-session")
+
+    assert estimate.status == "partial"
+    assert estimate.usage.unmeasured_lanes == ("cache_write_tokens",)
+    assert not estimate.usage.fully_measured
+    assert "unmeasured_cache_write_tokens" in estimate.missing_reasons
+    # The lower bound is still reported -- the gap is named, not the number
+    # withheld.
+    assert estimate.total_usd is not None
+    assert estimate.total_usd > 0.0
+    assert estimate.confidence < 0.85
+
+
+def test_captured_zero_lane_stays_priced_next_to_the_unmeasured_one() -> None:
+    """polylogue-qe194: the pair that makes the distinction observable.
+
+    Identical usage, except the cache-write lane is a captured ``0`` instead
+    of ``None``. Same dollars, different disposition: this one is a complete
+    price. If the two ever report the same status again, unknown usage has
+    been collapsed back onto measured zero.
+    """
+
+    measured = make_msg(
+        id="m1",
+        role="assistant",
+        provider="claude-code",
+        model_name="claude-sonnet-4-5",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=200,
+        cache_write_tokens=0,
+    )
+    unmeasured = make_msg(
+        id="m2",
+        role="assistant",
+        provider="claude-code",
+        model_name="claude-sonnet-4-5",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=200,
+        cache_write_tokens=None,
+    )
+
+    measured_estimate = estimate_message_cost(measured, origin="claude-code-session")
+    unmeasured_estimate = estimate_message_cost(unmeasured, origin="claude-code-session")
+
+    assert measured_estimate.status == "priced"
+    assert measured_estimate.missing_reasons == ()
+    assert measured_estimate.usage.unmeasured_lanes == ()
+    assert unmeasured_estimate.status == "partial"
+    # Same dollars, different disposition: the asserted statuses above are the
+    # whole point, so they must not be collapsed into one claim.
+    assert measured_estimate.total_usd == pytest.approx(unmeasured_estimate.total_usd)
+    assert unmeasured_estimate.missing_reasons == ("unmeasured_cache_write_tokens",)
+
+
+def test_session_aggregate_is_partial_when_one_message_lane_is_unmeasured() -> None:
+    """polylogue-qe194 AC2: an aggregate over a partly-measured set reports
+    the gap instead of summing its way to a confident total.
+
+    A partially-priced message still counts as priced (it does carry a price),
+    so the pre-existing ``missing_count`` arithmetic saw nothing wrong and
+    stamped the session ``priced``. The session total here is a lower bound
+    over two messages, one of which never reported its cache-write lane.
+    """
+
+    session = make_conv(
+        id="conv-partial-usage",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                make_msg(
+                    id="m1",
+                    role="assistant",
+                    provider="claude-code",
+                    model_name="claude-sonnet-4-5",
+                    input_tokens=1000,
+                    output_tokens=500,
+                    cache_read_tokens=0,
+                    cache_write_tokens=0,
+                ),
+                make_msg(
+                    id="m2",
+                    role="assistant",
+                    provider="claude-code",
+                    model_name="claude-sonnet-4-5",
+                    input_tokens=1000,
+                    output_tokens=500,
+                    cache_read_tokens=0,
+                    cache_write_tokens=None,
+                ),
+            ]
+        ),
+    )
+
+    estimate = estimate_session_cost(session)
+
+    assert estimate.status == "partial"
+    assert "unmeasured_cache_write_tokens" in estimate.missing_reasons
+    assert estimate.usage.unmeasured_lanes == ("cache_write_tokens",)
+    assert estimate.total_usd is not None
 
 
 def test_tokencost_is_not_a_dependency_or_import_anywhere() -> None:
@@ -463,12 +612,17 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
 
     # Price the values that survived parser -> archive writer, not a second
     # hand-built representation of the corrected usage.
-    # Pricing treats an unreported counter as zero cost (``_coerce_int`` on
-    # the production route does the same); the stored value stays unknown.
+    # An unreported counter costs zero dollars, but polylogue-qe194 keeps it
+    # named rather than folded into a measured zero: the production route
+    # (``_coerce_int`` -> ``unmeasured_lanes``) does the same, which is why
+    # the fallback estimate below compares equal to this payload.
     disjoint = _estimate_from_usage(
         origin="unknown-export",
         model_name="test-codex-like",
-        usage=CostUsagePayload(**{key: value or 0 for key, value in dict(message_usage).items()}),
+        usage=CostUsagePayload(
+            **{key: value or 0 for key, value in dict(message_usage).items()},
+            unmeasured_lanes=tuple(key for key, value in dict(message_usage).items() if value is None),
+        ),
         provenance=("message_token_usage",),
     )
     # Pre-fix parser output: input stored inclusive of cache (the bug).
