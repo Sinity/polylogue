@@ -322,3 +322,78 @@ def test_numeric_publication_projection_is_idempotent_and_preserves_constraints(
     assert isinstance(properties, dict)
     assert properties["x-polylogue-range"] == {"type": "number", "minimum": 5, "maximum": 9}
     assert properties["value"] == {"anyOf": [{"type": "number"}, {"type": "null"}]}
+
+
+def _vocabulary_package(version: str) -> SchemaVersionPackage:
+    return package(version, family=f"family-{version}")
+
+
+def test_the_writer_strips_an_unjustified_vocabulary_from_every_version(tmp_path: Path) -> None:
+    """A carried-forward version is sanitized too, not only the regenerated one.
+
+    Regenerating a provider rewrites the versions the generator produced and
+    re-serializes the rest untouched, so a vocabulary admitted under an older
+    rule would survive forever in v1. The rule therefore lives at
+    ``write_package``, the one physical element writer.
+
+    Anti-vacuity: drop the ``strip_unpublishable_vocabularies`` call in
+    ``SchemaRegistry.write_package`` and both assertions below fail -- the
+    undeclared slot keeps its members, in the regenerated version and in the
+    carried-forward one.
+    """
+
+    registry = SchemaRegistry(storage_root=tmp_path)
+    item = _vocabulary_package("v1")
+
+    def element(marker: str) -> JSONDocument:
+        return {
+            "type": "object",
+            "properties": {
+                "grep_pattern": {"type": "string", "x-polylogue-values": [marker, "banner|panel"]},
+                "role": {
+                    "type": "string",
+                    "x-polylogue-semantic-role": "message_role",
+                    "x-polylogue-values": ["assistant", "user"],
+                },
+            },
+        }
+
+    registry.replace_provider_packages(
+        item.provider,
+        SchemaPackageCatalog(
+            provider=item.provider,
+            packages=[item],
+            generated_at="2026-01-01T00:00:00+00:00",
+            latest_version="v1",
+            default_version="v1",
+            recommended_version="v1",
+        ),
+        {"v1": {item.anchor_kind: element("first")}},
+        package_workload_profiles={"v1": {"generation": 1}},
+    )
+
+    persisted_v1 = registry.get_schema(item.provider, "v1")
+    assert persisted_v1 is not None
+    properties = persisted_v1["properties"]
+    assert "x-polylogue-values" not in properties["grep_pattern"]
+    assert properties["role"]["x-polylogue-values"] == ["assistant", "user"]
+
+    # A second generation that produces only v2 carries v1 forward.
+    second = _vocabulary_package("v2")
+    registry.replace_provider_packages(
+        second.provider,
+        SchemaPackageCatalog(
+            provider=second.provider,
+            packages=[second],
+            generated_at="2026-01-02T00:00:00+00:00",
+            latest_version="v2",
+            default_version="v2",
+            recommended_version="v2",
+        ),
+        {"v2": {second.anchor_kind: element("second")}},
+        package_workload_profiles={"v2": {"generation": 2}},
+    )
+
+    carried = registry.get_schema(second.provider, "v1")
+    assert carried is not None
+    assert "x-polylogue-values" not in carried["properties"]["grep_pattern"]

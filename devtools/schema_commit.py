@@ -123,7 +123,33 @@ def main(argv: list[str] | None = None) -> int:
                         f"schema-commit: frontier {finding.kind}: {finding.root} -- {finding.detail}", file=sys.stderr
                     )
                 raise SchemaFrontierError("the declared frontier does not match the live roots")
-            source_inputs = source_inputs + frontier_source_inputs(frontier, provider_token)
+            declared_inputs = frontier_source_inputs(frontier, provider_token)
+            declared_subject = frontier.subject(provider_token)
+            if not declared_inputs and declared_subject is not None:
+                # A subject whose declared roots admit nothing has a complete
+                # zero denominator, not an empty sample set. Falling through
+                # here would hand the subject to the archive-backed route and
+                # report whatever the live archive happens to hold, which is a
+                # different population and a different claim.
+                reasons = [root.zero_material_reason for root in declared_subject.roots if root.zero_material_reason]
+                if len(reasons) != len(declared_subject.roots):
+                    raise SchemaFrontierError(
+                        f"the declared frontier admits no member for {provider_token} and no root explains why"
+                    )
+                terminal = {
+                    "provider": str(args.provider),
+                    "success": False,
+                    "terminal": "zero_eligible_material",
+                    "reason": "; ".join(reasons),
+                    "sample_count": 0,
+                    "versions": [],
+                }
+                if args.json:
+                    print(json.dumps(terminal, sort_keys=True, indent=2))
+                else:
+                    print(f"schema-commit: {provider_token} -- zero eligible material: {terminal['reason']}")
+                return 0
+            source_inputs = source_inputs + declared_inputs
         except SchemaFrontierError as exc:
             print(f"schema-commit: {exc}", file=sys.stderr)
             return 1
