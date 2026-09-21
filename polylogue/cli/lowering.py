@@ -217,24 +217,34 @@ def lower_session_read(
 
     A continuation supersedes the window coordinates it was minted from, so
     passing both is a caller error rather than a silently ignored argument.
-    Evidence kinds are answered whole and take no window at all; passing one
-    is a caller error for the same reason.
+    Whole-evidence kinds take no window at all; passing one is a caller error
+    for the same reason.
 
-    The windowed and anchored kinds are named by the operation contract rather
-    than spelled again here: a kind that graduates to a window would otherwise
-    keep being refused a window by this adapter.
+    The windowed, windowed-evidence and anchored kinds are named by the
+    operation contract rather than spelled again here: a kind that graduates
+    to a window would otherwise keep being refused a window by this adapter --
+    which is exactly what happened to ``events`` and ``raw`` before the
+    windowed-evidence contract existed.
 
     ``around`` names a message instead of a coordinate.  It decides the offset,
     so supplying either an offset or a continuation alongside it names two
     different windows and is refused rather than silently resolved one way.
     """
 
-    from polylogue.operations.read_contracts import ANCHORED_SESSION_READ_KINDS, WINDOWED_SESSION_READ_KINDS
+    from polylogue.operations.read_contracts import (
+        ANCHORED_SESSION_READ_KINDS,
+        CONTINUABLE_SESSION_READ_KINDS,
+        WINDOWED_EVIDENCE_KINDS,
+        WINDOWED_SESSION_READ_KINDS,
+    )
 
+    windowed = WINDOWED_SESSION_READ_KINDS | WINDOWED_EVIDENCE_KINDS
     if continuation is not None and (limit is not None or offset):
-        raise click.UsageError("A transcript continuation already carries its window coordinates.")
-    if kind not in WINDOWED_SESSION_READ_KINDS and (limit is not None or offset or continuation is not None):
+        raise click.UsageError("A read continuation already carries its window coordinates.")
+    if kind not in windowed and (limit is not None or offset):
         raise click.UsageError(f"A {kind} read is answered whole and takes no window coordinates.")
+    if kind not in CONTINUABLE_SESSION_READ_KINDS and continuation is not None:
+        raise click.UsageError(f"A {kind} read is answered whole and issues no continuation.")
     if around is not None:
         if kind not in ANCHORED_SESSION_READ_KINDS:
             raise click.UsageError(f"A {kind} read does not serve a window around a message.")

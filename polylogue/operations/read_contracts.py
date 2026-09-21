@@ -95,6 +95,8 @@ SessionReadKind = Literal[
     "file-edits",
     "agent-policies",
     "web-content",
+    "events",
+    "raw",
 ]
 
 #: Kinds that answer a bounded ``[offset, offset + limit)`` message window and
@@ -107,6 +109,31 @@ WINDOWED_SESSION_READ_KINDS: frozenset[str] = frozenset({"transcript", "messages
 #: evidence body instead of allowing one.
 _WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks", "file-edits", "agent-policies", "web-content"})
 
+#: Evidence relations that are *larger than one answer*: they carry a row
+#: bound that is declared by the caller and **reported back**, plus a
+#: continuation for the next page.  This is the graduation path the whole
+#: contract names -- the third body vocabulary, distinct from both the message
+#: window (``messages``) and a relation answered whole (``evidence``).
+#:
+#: It exists because ``events`` accepted ``--limit`` and reported the
+#: *truncated* row count as its ``total``: a caller could not tell a whole
+#: relation from a clipped one, and lowering it onto a whole-evidence kind
+#: would have made ``session.read`` report ``complete`` for a partial body.
+#: A bound must be declared and reported, never a silent truncation, so the
+#: body below carries ``total`` (the relation's own row count), ``returned``
+#: (what this page holds) and ``complete``, and
+#: :class:`EvidenceWindowBody` refuses any combination of the three that
+#: would let a clipped body read as a whole one (polylogue-r3cuz).
+WINDOWED_EVIDENCE_KINDS: frozenset[str] = frozenset({"events", "raw"})
+
+#: Kinds that issue and accept a continuation.  Two families mint tokens here
+#: and they are deliberately not interchangeable: the message window's
+#: ``session-owner-v1`` projection (``operations/transcript_window.py``) and
+#: the per-relation evidence-window projections
+#: (``operations/evidence_window.py``).  Each refuses the other's token by
+#: name rather than resuming a window the caller never asked for.
+CONTINUABLE_SESSION_READ_KINDS: frozenset[str] = WINDOWED_SESSION_READ_KINDS | WINDOWED_EVIDENCE_KINDS
+
 
 #: Kinds that accept ``around`` -- a *message* naming its own window instead
 #: of a coordinate naming it.  It is sugar over ``offset``: the handler
@@ -116,6 +143,66 @@ _WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks", "file-edits", "agent
 #: reports.  Only the ``messages`` kind carries it, matching the HTTP messages
 #: read-view capability that declared it first (polylogue-i5vqc).
 ANCHORED_SESSION_READ_KINDS: frozenset[str] = frozenset({"messages"})
+
+
+class EvidenceWindowBody(BaseModel):
+    """One bounded page of a per-session evidence relation.
+
+    The third body vocabulary on :class:`SessionReadResult`.  Its whole
+    purpose is that a bound is *observable in the payload*: ``total`` is the
+    relation's own row count, ``returned`` is what this page holds, and the
+    validators below make "fewer rows than the relation holds, reported as
+    complete" unrepresentable rather than merely discouraged.
+
+    Surfaces that render the evidence body alone -- the CLI evidence read
+    views print exactly this document -- therefore cannot lose the bound on
+    the way out, which is why it is restated here rather than left to the
+    envelope that wraps it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    #: The ``session.read`` kind these rows are rows *of*.  Two relations share
+    #: this body, so a page that did not name its relation could be rendered
+    #: under the wrong one.
+    relation: str = Field(min_length=1)
+    rows: list[dict[str, object]]
+    #: The relation's own row count, *not* the returned count.
+    total: int = Field(ge=0)
+    #: How many rows this page actually carries.
+    returned: int = Field(ge=0)
+    limit: int = Field(ge=1)
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    continuation: str | None = None
+    complete: bool
+
+    @model_validator(mode="after")
+    def the_reported_count_is_the_delivered_count(self) -> EvidenceWindowBody:
+        if self.returned != len(self.rows):
+            raise ValueError("returned disagrees with the number of rows delivered")
+        return self
+
+    @model_validator(mode="after")
+    def completeness_is_decided_by_the_rows_still_owed(self) -> EvidenceWindowBody:
+        """A clipped body cannot claim to be whole.
+
+        This is the validator the ``events`` view could not satisfy before the
+        windowed-evidence contract existed: it reported the truncated count as
+        ``total``, which made ``offset + returned >= total`` trivially true
+        and every clipped read indistinguishable from a whole one.
+        """
+
+        delivered_through = self.offset + self.returned
+        if self.complete != (delivered_through >= self.total):
+            raise ValueError("a body that does not reach the relation's total is not complete")
+        if (self.next_offset is None) != self.complete:
+            raise ValueError("a next page and completeness are two spellings of one fact")
+        if self.next_offset is not None and self.next_offset != delivered_through:
+            raise ValueError("the next page must start where this one ended")
+        if (self.continuation is None) != (self.next_offset is None):
+            raise ValueError("a next page and its continuation are issued together")
+        return self
 
 
 class SessionReadRequest(_ReadRequest):
@@ -141,8 +228,8 @@ class SessionReadRequest(_ReadRequest):
     continuation: str | None = None
 
     @model_validator(mode="after")
-    def only_a_windowed_kind_continues(self) -> SessionReadRequest:
-        if self.kind not in WINDOWED_SESSION_READ_KINDS and self.continuation is not None:
+    def only_a_continuable_kind_continues(self) -> SessionReadRequest:
+        if self.kind not in CONTINUABLE_SESSION_READ_KINDS and self.continuation is not None:
             raise ValueError(f"{self.kind} is answered whole and issues no continuation")
         return self
 
@@ -174,6 +261,11 @@ class SessionReadResult(_ReadResult):
     #: A transcript window carries its rows inside ``session`` instead, in the
     #: archive's identity vocabulary; the two never both appear.
     messages: list[dict[str, object]] | None = None
+    #: The windowed-evidence kinds' page.  The third body vocabulary: neither
+    #: a message window nor a relation answered whole, so it carries its own
+    #: reported bound and its continuation is minted in its relation's own
+    #: projection rather than the message family's.
+    evidence_window: EvidenceWindowBody | None = None
     #: Whether the composed lineage the window was sliced from is the full
     #: logical transcript (polylogue-ppkj).  A short window behind a dangling
     #: branch point must not read as a short conversation.
@@ -199,11 +291,39 @@ class SessionReadResult(_ReadResult):
         if self.kind in WINDOWED_SESSION_READ_KINDS:
             if self.evidence is not None:
                 raise ValueError(f"a {self.kind} window carries no evidence body")
+            if self.evidence_window is not None:
+                raise ValueError(f"a {self.kind} window carries no evidence-window body")
             if (self.messages is None) != (self.kind != "messages"):
                 raise ValueError(f"a {self.kind} window must carry exactly its own row body")
             return self
         if self.messages is not None:
             raise ValueError(f"{self.kind} is not a message window and carries no message rows")
+        if self.kind in WINDOWED_EVIDENCE_KINDS:
+            if self.evidence is not None:
+                raise ValueError(f"{self.kind} is windowed and carries no whole-evidence body")
+            window = self.evidence_window
+            if window is None:
+                raise ValueError(f"{self.kind} result is missing its evidence-window body")
+            if window.relation != self.kind:
+                raise ValueError(f"{self.kind} result carries a {window.relation} page")
+            # The envelope and the body must agree, because the two are read by
+            # different callers: the operation kernel reads the envelope, and
+            # the CLI evidence views render the body alone.  A bound reported
+            # in only one of them is a bound one surface silently drops.
+            envelope = (self.total, self.limit, self.offset, self.next_offset, self.continuation, self.complete)
+            reported = (
+                window.total,
+                window.limit,
+                window.offset,
+                window.next_offset,
+                window.continuation,
+                window.complete,
+            )
+            if envelope != reported:
+                raise ValueError(f"the {self.kind} window body and its envelope disagree about the bound")
+            return self
+        if self.evidence_window is not None:
+            raise ValueError(f"{self.kind} is answered whole and carries no evidence-window body")
         if self.evidence is None:
             raise ValueError(f"{self.kind} result is missing its evidence body")
         if self.kind in _WHOLE_EVIDENCE_KINDS and not self.complete:
@@ -238,8 +358,11 @@ class SessionReferenceResult(_ReadResult):
 
 __all__ = [
     "ANCHORED_SESSION_READ_KINDS",
+    "CONTINUABLE_SESSION_READ_KINDS",
+    "WINDOWED_EVIDENCE_KINDS",
     "WINDOWED_SESSION_READ_KINDS",
     "AggregateMode",
+    "EvidenceWindowBody",
     "QueryAggregateRequest",
     "QueryAggregateResult",
     "SessionReadKind",

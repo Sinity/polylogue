@@ -159,22 +159,23 @@ def test_session_read_projections_name_a_kind_the_operation_actually_serves() ->
     """The second mirror: what ``session.read`` serves, not what a row claims.
 
     ``_session_read_payload`` answers the windowed kinds itself and delegates
-    every other kind to ``_SESSION_EVIDENCE_READERS``, raising for anything
-    absent from it.  A view declared as a ``session.read`` projection must
-    therefore name a kind in that union -- which is how four views (``hooks``,
-    ``file-edits``, ``agent-policies``, ``web-content``) can share one adapter
-    without any of them being able to claim a relation the operation does not
-    serve.
+    every other kind to ``_WINDOWED_EVIDENCE_READERS`` or
+    ``_SESSION_EVIDENCE_READERS``, raising for anything absent from both.  A
+    view declared as a ``session.read`` projection must therefore name a kind
+    in that union -- which is how six views (``hooks``, ``file-edits``,
+    ``agent-policies``, ``web-content``, ``events``, ``raw``) can share one
+    adapter without any of them being able to claim a relation the operation
+    does not serve.
 
-    Anti-vacuity: re-declare ``raw`` (or any other surviving in-process view)
-    as a ``session.read`` projection and this goes red, because ``session.read``
-    raises "does not serve kind 'raw'".
+    Anti-vacuity: re-declare ``dialogue`` (or any other surviving in-process
+    view) as a ``session.read`` projection and this goes red, because
+    ``session.read`` raises "does not serve kind 'dialogue'".
     """
 
-    from polylogue.operations.daemon_reads import _SESSION_EVIDENCE_READERS
+    from polylogue.operations.daemon_reads import _SESSION_EVIDENCE_READERS, _WINDOWED_EVIDENCE_READERS
     from polylogue.operations.read_contracts import WINDOWED_SESSION_READ_KINDS
 
-    served = {*WINDOWED_SESSION_READ_KINDS, *_SESSION_EVIDENCE_READERS}
+    served = {*WINDOWED_SESSION_READ_KINDS, *_SESSION_EVIDENCE_READERS, *_WINDOWED_EVIDENCE_READERS}
     declared = {
         view_id
         for view_id, metadata in READ_VIEW_HANDLER_METADATA.items()

@@ -1,4 +1,4 @@
-"""CLI execution for messages and raw verbs."""
+"""CLI execution for the messages verb."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from typing import Any, Literal, cast
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.cli.operation_kernel import OperationKernelError
 from polylogue.cli.read_dispatch import ServedBy, daemon_route_disabled, dispatch_read
@@ -308,114 +307,8 @@ def _message_lineage(
     )
 
 
-def run_raw(
-    env: AppEnv,
-    request: RootModeRequest,
-    *,
-    session_id: str,
-    limit: int = DEFAULT_MESSAGE_PAGE_LIMIT,
-    offset: int = 0,
-    output_format: str = "json",
-) -> None:
-    """Execute the raw verb."""
-    from polylogue.api import Polylogue
-
-    async def _run() -> None:
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            artifacts, total = await api.get_raw_artifacts_for_session(
-                session_id,
-                limit=limit,
-                offset=offset,
-            )
-
-            if not artifacts:
-                env.ui.error(f"No raw artifacts found for session: {session_id}")
-                return
-
-            if output_format == "json":
-                import json as _json
-
-                payload = {
-                    "session_id": session_id,
-                    "artifacts": [
-                        {
-                            "raw_id": r.get("raw_id", ""),
-                            "source_name": r.get("source_name", ""),
-                            "source_path": r.get("source_path", ""),
-                            "blob_size": r.get("blob_size", 0),
-                        }
-                        for r in artifacts
-                    ],
-                    "total": total,
-                    "limit": limit,
-                    "offset": offset,
-                }
-                # Machine output uses raw stdout so Rich markup never rewrites
-                # JSON bytes and read-view delivery can capture file/clipboard
-                # targets consistently.
-                click.echo(_json.dumps(payload, indent=2))
-            else:
-                import yaml
-
-                click.echo(yaml.dump(artifacts))
-
-    run_coroutine_sync(_run())
-
-
-def run_session_events(
-    env: AppEnv,
-    request: RootModeRequest,
-    *,
-    session_id: str,
-    event_type: str | None = None,
-    limit: int | None = None,
-    output_format: str = "json",
-) -> None:
-    """Execute the events verb.
-
-    Renders the raw session-timeline evidence (``Session.session_events``):
-    provider evidence that rides the session timeline instead of a dialogue
-    message -- Codex ``world_state``/``agent_policy``/``turn_context`` policy
-    facts, Claude Code sidecar events, Hermes tool-availability/step spans,
-    and similar. Previously populated on every full session read but never
-    rendered on any surface (this read view is the fix).
-    """
-    from polylogue.api import Polylogue
-
-    async def _run() -> None:
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            events = await api.get_session_events(session_id, event_type=event_type, limit=limit)
-
-            if events is None:
-                env.ui.error(f"Session not found: {session_id}")
-                return
-
-            payload = {
-                "session_id": session_id,
-                "event_type": event_type,
-                "total": len(events),
-                "events": events,
-            }
-
-            if output_format == "json":
-                import json as _json
-
-                # Machine output uses raw stdout so Rich markup never rewrites
-                # JSON bytes and read-view delivery can capture file/clipboard
-                # targets consistently.
-                click.echo(_json.dumps(payload, indent=2))
-            else:
-                import yaml
-
-                click.echo(yaml.dump(payload))
-
-    run_coroutine_sync(_run())
-
-
 __all__ = [
     "message_read_failure",
     "read_message_windows",
     "run_messages",
-    "run_raw",
-    "run_session_events",
 ]

@@ -145,7 +145,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="raw",
         label="Raw",
-        owner="polylogue.cli.messages.run_raw",
+        owner="polylogue.cli.read_views.session_evidence.run_read_raw",
         purpose="Raw archived provider/source record inspection for one session.",
         input_scope="single session id",
         included_kinds=("raw payload", "raw messages", "source metadata"),
@@ -173,7 +173,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="events",
         label="Events",
-        owner="polylogue.cli.read_views.events.run_read_events",
+        owner="polylogue.cli.read_views.session_evidence.run_read_events",
         purpose=(
             "Raw session-timeline evidence (session_events): provider evidence that rides the "
             "timeline instead of a dialogue message, e.g. Codex world_state/agent_policy/turn_context "

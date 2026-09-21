@@ -69,7 +69,10 @@ CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
 NEIGHBOR_READ_VIEW_OPTION_NAMES = frozenset({"limit", "window_hours"})
 CORRELATION_READ_VIEW_OPTION_NAMES = frozenset({"confidence_threshold", "github_api", "repo_path", "since_hours"})
 CHRONICLE_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
-EVENTS_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
+#: The events view pages a relation whose bound is now *reported*, so it takes
+#: the continuation that resumes the page it minted.  ``limit``/``offset`` are
+#: the shared global coordinates.
+EVENTS_READ_VIEW_OPTION_NAMES = frozenset({"limit", "continuation"})
 EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"at_position"})
 LINEAGE_READ_VIEW_OPTION_NAMES = frozenset({"node_offset", "node_limit", "edge_offset", "edge_limit"})
 # Topology pages by node window plus an edge bound. These reuse the Click
@@ -102,9 +105,7 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
         "correlation",
         "dialogue",
         "effective_context",
-        "events",
         "neighbors",
-        "raw",
         "temporal",
     }
 )
@@ -120,21 +121,24 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
 # structured ``file_edits`` diffs -- so none of them lowers to ``query.units``
 # with a ``session:`` filter, and ``query-units-projection`` is unpopulated.
 # ``hooks``, ``file-edits``, ``agent-policies`` and ``web-content`` have been
-# moved onto ``session.read`` as evidence kinds
-# (``daemon_reads._SESSION_EVIDENCE_READERS``), and ``messages`` as the
-# message-row window kind.
+# moved onto ``session.read`` as whole-evidence kinds
+# (``daemon_reads._SESSION_EVIDENCE_READERS``), ``messages`` as the
+# message-row window kind, and ``events``/``raw`` as the *windowed*-evidence
+# kinds (``daemon_reads._WINDOWED_EVIDENCE_READERS``).  The last two needed a
+# contract before they could move at all: ``events`` accepted ``--limit`` and
+# reported the *truncated* row count as its ``total``, so a whole-evidence
+# lowering would have reported ``complete`` for a clipped body; and ``raw``,
+# though genuinely windowed, cannot mint artifact continuations into the
+# message window's family.  ``read_contracts.EvidenceWindowBody`` supplies the
+# reported bound and ``operations/evidence_window.py`` the per-relation
+# continuation family.
 #
-# Of what remains, two are held back for stated reasons rather than for want of
-# effort.  ``events`` accepts ``--limit`` and reports the *truncated* row count
-# as its ``total``; an evidence kind is answered whole, so lowering it as it
-# stands would make the operation report ``complete`` for a truncated body,
-# which the result contract refuses outright.  ``raw`` windows source-tier
-# artifacts with a real ``limit``/``offset`` and a real total, so it is a
-# windowed kind -- but ``transcript_window`` owns the *message* window
-# vocabulary, and minting artifact continuations in the message continuation
-# family is exactly the mixing that family exists to prevent.  Both need a
-# windowed-evidence contract of their own.  The rest are ``in-process`` until
-# S8/S9 declare their operations.
+# What remains is not a ``session.read`` projection at all.  ``dialogue``,
+# ``temporal`` and ``chronicle`` accept query sets rather than one exact
+# reference; ``effective_context`` is a compaction-aware replay with an
+# ``--at-position`` parameter; ``neighbors`` and ``correlation`` reach other
+# subsystems.  Each needs an operation declaration of its own, which is the
+# work S8/S9 still owe.
 READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
@@ -167,7 +171,8 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "raw",
         "required",
         RAW_READ_VIEW_OPTION_NAMES,
-        execution_kind="in-process",
+        execution_kind="session-read-projection",
+        operations=("session.read",),
     ),
     "hooks": ReadViewHandlerMetadata(
         "hooks",
@@ -179,7 +184,8 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "events",
         "required",
         EVENTS_READ_VIEW_OPTION_NAMES,
-        execution_kind="in-process",
+        execution_kind="session-read-projection",
+        operations=("session.read",),
     ),
     "effective_context": ReadViewHandlerMetadata(
         "effective_context",
