@@ -244,11 +244,13 @@ class ProviderMatrix:
         for item in self.subjects:
             counts = item.counts
             suffix = ""
-            if counts is not None:
+            if counts is not None and counts.candidates_inventoried is not None:
                 suffix = (
                     f" denominator={counts.candidates_inventoried}/{counts.live_members}"
                     f" conserves={'yes' if counts.conserves else 'NO'}"
                 )
+            elif counts is not None:
+                suffix = f" denominator=0/{counts.live_members}"
             lines.append(f"  {item.subject}: {item.outcome} samples={item.sample_count}{suffix}")
             lines.append(f"      {item.reason}")
         for blocker in self.blockers:
