@@ -141,6 +141,32 @@ class ChargeProfile:
         """What a run of ``workers`` charges the slice at peak, controller included."""
         return self.controller_mib + workers * self.worker_charge_mib
 
+    def admission_estimate(self, workers: int, budget_mib: float) -> dict[str, float]:
+        """The predicted peak charge and what it leaves under ``budget_mib``.
+
+        polylogue-k1o3t asks for the estimate a run is admitted on and the
+        margin it carries, recorded rather than recomputed. Both numbers are
+        derived from the same profile the width was chosen with, so a run's
+        measured cgroup peak can be compared against what was predicted for it
+        without reconstructing the arithmetic from the components.
+
+        The margin is worth reading, not just recording: ``width_within``
+        deliberately holds nothing back beyond the controller, so the chosen
+        width fills the ceiling. At the 2026-09-20 profile and a 12 GiB
+        ``memory.high`` that is 11,725 MiB predicted at width 3 -- a 563 MiB,
+        4.6% margin, which is the condition the 2026-09-17 run stalled in
+        (~11.5 GiB of charge at width 3, pinned at ``memory.high``, throttled
+        into continuous reclaim). Widening the margin is a Sinnix change to
+        the slice budget, not an arithmetic change here.
+        """
+        predicted = self.charge_mib(workers)
+        return {
+            "predicted_charge_mib": round(predicted, 1),
+            "budget_mib": round(float(budget_mib), 1),
+            "margin_mib": round(budget_mib - predicted, 1),
+            "margin_fraction": round((budget_mib - predicted) / budget_mib, 4) if budget_mib else 0.0,
+        }
+
 
 #: The profile every default width is derived from.
 MEASURED_CHARGE: Final = ChargeProfile(
@@ -342,6 +368,7 @@ def memory_bounded_worker_cap(
             "workers": workers,
             "requested_workers": requested,
             "narrowed": workers < requested,
+            **MEASURED_CHARGE.admission_estimate(workers, PYTEST_SLICE_MEMORY_HIGH_MIB),
         }
     workers = max(1, min(requested, width_within(cgroup)))
     return workers, {
@@ -357,6 +384,7 @@ def memory_bounded_worker_cap(
         "workers": workers,
         "requested_workers": requested,
         "narrowed": workers < requested,
+        **MEASURED_CHARGE.admission_estimate(workers, cgroup),
     }
 
 

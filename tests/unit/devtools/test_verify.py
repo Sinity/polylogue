@@ -366,7 +366,12 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert affected["cache"] == "tree+environment"
     assert affected["timeout_seconds"] == 7200
     assert complete["exec"] == ["devtools", "verify", "--all"]
-    assert complete["checkout"] == "default"
+    # polylogue-p2mbi: no `checkout` key. "default" does not select a tree, it
+    # REFUSES every workspace but the project root -- which is the operator's
+    # working checkout and deliberately divergent, so the corpus run could
+    # only ever qualify that branch and a coordinator could not point it at an
+    # integrated candidate. Anti-vacuity: restoring the key makes this red.
+    assert "checkout" not in complete
     assert complete["pool"] == "pytest-heavy"
     assert complete["result"] == "pytest"
     assert complete["cache"] == "tree+environment"
@@ -428,7 +433,11 @@ print(json.dumps({
             "pool": "pytest-heavy",
             "result": "pytest",
             "timeout": 14400,
-            "checkout": "default",
+            # The production parser's own default for an undeclared key
+            # (polylogue-p2mbi). Asserted through agentctl rather than through
+            # the TOML so the meaning of "no checkout key" is the parser's,
+            # not this test's guess at it.
+            "checkout": "any",
         },
     }
 
@@ -659,8 +668,18 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    # `devtools.verify.subprocess` IS the stdlib module, so patching `.run`
+    # replaces it for every caller in the process, including
+    # `platform.processor()`'s `uname -p` fallback. A real captured run never
+    # returns `stdout=None`; a stub that does made
+    # `environment_fingerprint` -> `platform.platform()` raise
+    # `AttributeError: 'NoneType' object has no attribute 'strip'` whenever
+    # the random test order reached this test before anything had cached
+    # `platform.processor`. Reproduced on clean origin/master (217e9e982) with
+    # --randomly-seed=2442806215.
     monkeypatch.setattr(
-        "devtools.verify.subprocess.run", lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0)
+        "devtools.verify.subprocess.run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0, stdout="", stderr=""),
     )
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
@@ -1330,3 +1349,38 @@ def test_two_verify_runs_in_one_checkout_do_not_share_a_report_spool(
 
     assert spool.exists()
     assert all(not argument.endswith("verify-latest.xml") for argument in first)
+
+
+def test_a_focused_run_does_not_inherit_the_broad_archive_prewarm() -> None:
+    """polylogue-62j1f: a focused selection builds only what it asked for.
+
+    ``tests/conftest.py``'s ``pytest_sessionstart`` warms all seven shared
+    archives when ``POLYLOGUE_BROAD_PREWARM`` is set, which is right for the
+    broad verifier and wrong for a named selection. Measured on one head with
+    a warm artifact cache, interleaved off/on/off/on over a 12-test
+    devtools-only selection: 13.37 s / 26.29 s / 10.36 s / 25.65 s, and 24 vs
+    36 archive-tier initializations. The selection needs none of it.
+
+    The invariant is fragile by construction: ``run_tests`` and ``verify``
+    each define a ``_normalize_managed_pytest_environment``, and verify's SETS
+    the variable that run_tests' caller just popped. Routing the focused
+    runner through the wrong one of two identically-named functions would
+    reinstate the prewarm silently.
+
+    Anti-vacuity: call ``verify._normalize_managed_pytest_environment`` below
+    instead of ``run_tests``', or delete the pop in ``run_tests.run_focused``,
+    and the focused assertion goes red while the broad one still passes.
+    """
+    from devtools import run_tests
+
+    ambient = {"POLYLOGUE_BROAD_PREWARM": "1", "PATH": "/usr/bin"}
+
+    focused = dict(ambient)
+    focused.pop("POLYLOGUE_BROAD_PREWARM", None)
+    run_tests._normalize_managed_pytest_environment(focused)
+    assert "POLYLOGUE_BROAD_PREWARM" not in focused
+
+    # The broad verifier opts in deliberately, and must keep doing so.
+    broad = dict(ambient)
+    verify._normalize_managed_pytest_environment(broad)
+    assert broad["POLYLOGUE_BROAD_PREWARM"] == "1"

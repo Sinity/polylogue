@@ -11,12 +11,13 @@ import ast
 import dataclasses
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from devtools import verify_layering
+from devtools import required_gate, verify_layering
 
 
 def test_layering_no_violations_passes(tmp_path: Path) -> None:
@@ -453,3 +454,110 @@ def test_layering_census_baseline_entry_that_stopped_mutating_is_stale(tmp_path:
 def test_layering_production_census_baseline_is_exact() -> None:
     """The checked-in census matches the tree, so the ratchet is real today."""
     assert verify_layering._collect_writer_module_census_violations(_REPO_ROOT, _production_writer_policy()) == []
+
+
+def _break_grimp_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reproduce a checkout synced without the ``audit`` dependency group.
+
+    ``sys.modules[name] = None`` is exactly what CPython's import machinery
+    consults first, so ``import grimp`` raises the same ``ImportError`` a
+    pruned group produces -- the failure is not simulated by stubbing the
+    gate's own helper.
+    """
+    monkeypatch.setitem(sys.modules, "grimp", None)
+
+
+def test_a_pruned_audit_group_refuses_instead_of_reporting_a_layering_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """polylogue-mkucv: the environment problem must not arrive as a finding.
+
+    Anti-vacuity: routing the missing checker back through ``violations`` --
+    which is what the gate did before, as a ``grimp_unavailable`` entry --
+    restores exit 1, a non-empty ``violations`` list and a
+    ``gate_semantic_violation`` diagnosis, and every assertion here goes red.
+    """
+    # A tree that *would* produce a real finding, so a refusal that leaked
+    # findings would be visible rather than trivially empty.
+    _write_ratchet_fixture(tmp_path, baseline_entries=[])
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    _break_grimp_import(monkeypatch)
+
+    assert verify_layering.main(["--json"]) == verify_layering.ENVIRONMENT_REFUSAL_EXIT
+    payload = json.loads(capsys.readouterr().out)
+
+    # The refusal is its own channel, not an entry in the findings channel.
+    assert payload["violations"] == []
+    assert payload["count"] == 0
+    assert payload["inspected"] is False
+    refusal = payload["environment_refusal"]
+    assert refusal["dependency"] == "grimp"
+    assert refusal["group"] == "audit"
+    assert refusal["remedy"] == "uv sync --extra dev --group audit --frozen"
+
+    gate = payload["required_gate"]
+    assert gate["gate_passed"] is False
+    assert gate["diagnosis"] == "gate_missing_analysis_dependency"
+    # The distinguishing fact: nothing was inspected, so nothing was violated.
+    assert gate["semantic_violation_count"] == 0
+    assert gate["inspected_count"] == 0
+    assert "uv sync --extra dev --group audit --frozen" in gate["details"][0]
+
+
+def test_the_pruned_audit_group_banner_names_the_remedy_before_anything_else(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """What a reader sees first must not read as a code problem.
+
+    Anti-vacuity: printing the refusal through ``_format_violation`` alongside
+    real findings (the prior behaviour) drops the banner and the remedy line,
+    so both assertions fail.
+    """
+    _write_ratchet_fixture(tmp_path, baseline_entries=[])
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    _break_grimp_import(monkeypatch)
+
+    assert verify_layering.main([]) == verify_layering.ENVIRONMENT_REFUSAL_EXIT
+    captured = capsys.readouterr()
+    first_line = captured.err.splitlines()[0]
+    assert first_line == "ENVIRONMENT REFUSAL -- this is NOT a layering finding."
+    assert "uv sync --extra dev --group audit --frozen" in captured.err
+    # No finding was printed, so nobody is sent looking for an offending import.
+    assert "imports polylogue.storage" not in captured.err
+    assert "imports polylogue.storage" not in captured.out
+
+
+def test_the_refusal_exit_code_is_distinct_from_the_finding_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Exit classification separates the two, on the same tree.
+
+    Anti-vacuity: collapsing ``ENVIRONMENT_REFUSAL_EXIT`` back to 1 makes the
+    two codes equal and the inequality assertion red.
+    """
+    _write_ratchet_fixture(tmp_path, baseline_entries=[])
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    with_grimp = verify_layering.main([])
+    capsys.readouterr()
+    _break_grimp_import(monkeypatch)
+    without_grimp = verify_layering.main([])
+    capsys.readouterr()
+
+    assert with_grimp == 1, "the same tree carries a real layering finding"
+    assert without_grimp == verify_layering.ENVIRONMENT_REFUSAL_EXIT
+    assert without_grimp != with_grimp
+
+
+def test_the_audit_sync_command_is_the_one_that_actually_provisions_the_group() -> None:
+    """The remedy must not reproduce the trap it exists to prevent.
+
+    ``uv sync --extra dev --frozen`` prunes the group and ``--extra audit``
+    errors, so a remedy missing ``--group audit`` sends the reader back into
+    the same failure. Anti-vacuity: dropping ``--group audit`` from the
+    constant makes this red.
+    """
+    command = required_gate.AUDIT_GROUP_SYNC_COMMAND
+    assert "--group audit" in command
+    assert "--extra audit" not in command
+    assert "--extra dev" in command

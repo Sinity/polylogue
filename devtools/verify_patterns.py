@@ -20,7 +20,7 @@ from typing import Any, TypeAlias
 import yaml
 
 from devtools import repo_root
-from devtools.required_gate import evidence_gate_result
+from devtools.required_gate import AUDIT_GROUP_SYNC_COMMAND, evidence_gate_result
 
 Anchor: TypeAlias = tuple[str, str]
 
@@ -159,8 +159,9 @@ def _payload(root: Path) -> dict[str, Any]:
             required_count=sum(rule.status == "enforcing" for rule in rules),
             inspected_count=0,
             details=(
-                "ast-grep is required for the patterns gate; install it with "
-                "`uv sync --group audit` and ensure the resulting executable is on PATH",
+                "ast-grep is required for the patterns gate; nothing was inspected, so this is "
+                "an unprovisioned checkout rather than a pattern finding. Install it with "
+                f"`{AUDIT_GROUP_SYNC_COMMAND}` and ensure the resulting executable is on PATH",
             ),
         )
         return {"blocking": True, "new_matches": [], "stale_matches": [], "required_gate": gate.to_payload()}

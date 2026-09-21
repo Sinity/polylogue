@@ -1,10 +1,23 @@
-"""Require test evidence in the receipt of one ``devtools verify`` run.
+"""Require test evidence, for the right tree, in one ``devtools verify`` run.
 
 A hosted ``verify`` job that exits zero has not shown that tests ran: pytest
 may have been skipped, refused, or never started. The receipt at
 ``.cache/verify/runs/<id>/run.json`` records what happened, and this check
 accepts it only when the run succeeded and either a pytest step ran to success
 or the selection was ``none`` for a recorded reason.
+
+A green run is also not evidence for a tree it did not execute in
+(polylogue-p2mbi). ``devtools verify`` records the tested tree as ``git_head``
+and ``final_git_head``; this check compares them against the candidate and
+REFUSES a mismatch, naming both SHAs, rather than reporting it. Four ways a
+receipt fails to be evidence for the candidate:
+
+* it records no tested SHA at all, so it is evidence for no tree;
+* its tested SHA is not the candidate's;
+* the tree moved under the run (``final_git_head`` differs from ``git_head``),
+  so the receipt covers no single tree;
+* the tree carried uncommitted or untracked changes, so what ran was not the
+  named SHA.
 
 The run is named explicitly (``--run-id``) or read from
 ``.cache/verify/current-run.json``, which ``devtools verify`` writes for the
@@ -20,9 +33,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from devtools.verify_runs import CURRENT_RUN_PATH, VERIFY_RUNS_DIR
+from devtools.verify_runs import CURRENT_RUN_PATH, VERIFY_RUNS_DIR, git_head
 
-__all__ = ["current_run_id", "main", "refusal", "run_receipt_path"]
+__all__ = [
+    "candidate_tree_refusal",
+    "current_run_id",
+    "main",
+    "refusal",
+    "run_receipt_path",
+]
 
 
 def current_run_id(root: Path) -> str:
@@ -42,6 +61,35 @@ def run_receipt_path(root: Path, run_id: str) -> Path:
     if not run_id or "/" in run_id or run_id in {".", ".."}:
         raise ValueError(f"not a run id: {run_id!r}")
     return root / VERIFY_RUNS_DIR / run_id / "run.json"
+
+
+def candidate_tree_refusal(payload: Mapping[str, Any], candidate: str) -> str | None:
+    """Why the receipt is not evidence for ``candidate``, or None when it is.
+
+    Separate from :func:`refusal` because the two answer different questions:
+    ``refusal`` asks whether tests ran, this asks which tree they ran on. A run
+    can be flawlessly green and still describe another tree entirely -- which
+    is exactly what the 03:00 corpus run produced while it executed on the
+    operator's divergent working branch.
+    """
+
+    tested = payload.get("git_head")
+    if not isinstance(tested, str) or not tested:
+        return f"receipt records no tested tree SHA, so it is evidence for no tree (candidate {candidate})"
+    if tested != candidate:
+        return f"receipt tested tree {tested}, not the candidate {candidate}"
+    final = payload.get("final_git_head")
+    if isinstance(final, str) and final and final != tested:
+        return (
+            f"the tree moved under the run -- started at {tested}, finished at {final} -- "
+            f"so the receipt covers no single tree (candidate {candidate})"
+        )
+    if payload.get("git_dirty") is True or payload.get("final_git_dirty") is True:
+        return (
+            f"the tested tree carried uncommitted or untracked changes, so what ran was not "
+            f"{tested} (candidate {candidate})"
+        )
+    return None
 
 
 def refusal(payload: Mapping[str, Any]) -> str | None:
@@ -83,8 +131,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="verify_receipt_check")
     parser.add_argument("root", nargs="?", type=Path, default=None)
     parser.add_argument("--run-id", help="the verify run to check (default: the run current-run.json names)")
+    parser.add_argument(
+        "--candidate",
+        help=(
+            "the tree SHA this receipt is being read as evidence for "
+            "(default: HEAD of the checked root; skipped when the root is not a git tree)"
+        ),
+    )
     arguments = parser.parse_args(sys.argv[1:] if argv is None else argv)
     root = arguments.root or Path.cwd()
+    candidate = arguments.candidate or git_head(root)
     try:
         run_id = arguments.run_id or current_run_id(root)
         receipt = run_receipt_path(root, run_id)
@@ -102,13 +158,21 @@ def main(argv: list[str] | None = None) -> int:
     if payload.get("run_id") != run_id:
         sys.stderr.write(f"verify receipt check: {receipt} records run {payload.get('run_id')!r}, not {run_id!r}\n")
         return 1
+    # Which tree ran comes first: a receipt for another tree is not made into
+    # evidence by having passed.
+    if candidate:
+        tree_reason = candidate_tree_refusal(payload, candidate)
+        if tree_reason is not None:
+            sys.stderr.write(f"verify receipt check: {receipt}: {tree_reason}\n")
+            return 1
     reason = refusal(payload)
     if reason is not None:
         sys.stderr.write(f"verify receipt check: {receipt}: {reason}\n")
         return 1
     selection = payload.get("testmon_selection") or {}
+    tree = f"tree {candidate}" if candidate else "tree not compared (root is not a git checkout)"
     sys.stderr.write(
-        f"verify receipt check: {receipt}: success, selection {selection.get('selection_mode')!r}, "
+        f"verify receipt check: {receipt}: success, {tree}, selection {selection.get('selection_mode')!r}, "
         f"{sum(str(step.get('name', '')).startswith('pytest') for step in payload.get('steps') or [])} pytest step(s)\n"
     )
     return 0

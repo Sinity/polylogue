@@ -75,7 +75,9 @@ def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatc
     assert payload["blocking"] is True
     gate = payload["required_gate"]
     assert gate["diagnosis"] == "gate_missing_executable"
-    assert "uv sync --group audit" in gate["details"][0]
+    # The remedy must be the command that actually provisions the group:
+    # `uv sync --group audit` alone prunes the dev extra back out.
+    assert "uv sync --extra dev --group audit --frozen" in gate["details"][0]
 
 
 def test_scan_converts_ast_grep_zero_based_lines_to_one_based(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -27,7 +27,11 @@ from pathlib import Path
 
 from devtools import repo_root as _get_root
 from devtools.manifest_models import validate_layering_manifest
-from devtools.required_gate import evidence_gate_result
+from devtools.required_gate import (
+    AUDIT_GROUP_SYNC_COMMAND,
+    evidence_gate_result,
+    missing_analysis_dependency_gate_result,
+)
 from devtools.sqlite_degradation import (
     anchor_text,
     census_sqlite_degradation_anchors,
@@ -216,6 +220,20 @@ def _collect_imports(package_dir: Path, *, repo_root: Path) -> tuple[dict[str, s
     return imports, tuple(unreadable)
 
 
+def audit_checker_unavailable() -> str | None:
+    """Return why grimp cannot be imported, or ``None`` when it can.
+
+    This is a provisioning fact about the checkout, never a fact about the
+    code under inspection, so ``main`` probes it before any import is read.
+    """
+
+    try:
+        import grimp  # noqa: F401
+    except ImportError as exc:
+        return str(exc)
+    return None
+
+
 def _grimp_import_edges(
     *,
     repo_root: Path,
@@ -226,19 +244,12 @@ def _grimp_import_edges(
     The gate's AST walker is intentionally retained as the diagnostic source
     of file/line details. Grimp supplies a second graph implementation so a
     change to either extractor cannot silently widen the enforced boundary.
-    A missing audit installation is a gate error rather than an implicit skip.
+    Availability is established by ``audit_checker_unavailable`` before the
+    gate starts, so reaching here without grimp is a programming error rather
+    than a finding.
     """
 
-    try:
-        import grimp
-    except ImportError as exc:
-        return set(), (
-            {
-                "rule": "grimp_unavailable",
-                "file": "pyproject.toml",
-                "detail": f"install the audit group before running layering: {exc}",
-            },
-        )
+    import grimp
 
     disallowed_by_target: dict[str, tuple[str, ...]] = {}
     for rule in rules:
@@ -972,7 +983,7 @@ def _sqlite_degradation_findings(
 
 def _format_violation(violation: dict[str, object]) -> str:
     rule = str(violation.get("rule"))
-    if rule in {"grimp_unavailable", "grimp_failed"}:
+    if rule == "grimp_failed":
         return f"  {violation.get('file', 'polylogue')}: {rule} ({violation.get('detail', '')})"
     if rule == "grimp_disagreement":
         return (
@@ -1003,9 +1014,64 @@ def _format_violation(violation: dict[str, object]) -> str:
     return f"  {violation['file']}: imports {violation['import']} ({violation['rule']})"
 
 
+#: Exit code for "this checkout cannot run the check", kept distinct from the
+#: ``1`` that means "the check ran and found a layering violation". A caller
+#: that only distinguishes zero from non-zero still fails closed; a caller that
+#: reads the code can tell an unprovisioned environment from a real finding
+#: without parsing prose.
+ENVIRONMENT_REFUSAL_EXIT = 3
+
+
+def _environment_refusal(reason: str) -> tuple[dict[str, object], str]:
+    """Build the payload and the human banner for an unprovisioned checkout."""
+
+    gate = missing_analysis_dependency_gate_result(
+        gate="layering",
+        dependency="grimp",
+        reason=reason,
+        remedy=AUDIT_GROUP_SYNC_COMMAND,
+    )
+    payload: dict[str, object] = {
+        "environment_refusal": {
+            "dependency": "grimp",
+            "group": "audit",
+            "reason": reason,
+            "remedy": AUDIT_GROUP_SYNC_COMMAND,
+        },
+        "violations": [],
+        "count": 0,
+        "inspected": False,
+        "required_gate": gate.to_payload(),
+    }
+    banner = "\n".join(
+        (
+            "ENVIRONMENT REFUSAL -- this is NOT a layering finding.",
+            "  devtools gate layering needs grimp, which ships in the `audit` dependency group.",
+            f"  This checkout cannot import it: {reason}",
+            f"  Remedy: {AUDIT_GROUP_SYNC_COMMAND}",
+            "  `uv sync --extra dev --frozen` prunes the audit group back out, and",
+            "  `uv sync --extra audit` errors -- audit is a dependency-group, not an extra.",
+            "  No import was inspected, so this run says nothing about layering. Do not read",
+            "  it as a code problem and do not go looking for the offending import.",
+        )
+    )
+    return payload, banner
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # Provisioning is established before anything is read, so an unprovisioned
+    # checkout can never emit a partial finding list alongside its refusal.
+    unavailable = audit_checker_unavailable()
+    if unavailable is not None:
+        payload, banner = _environment_refusal(unavailable)
+        if args.json:
+            print(dumps(payload))
+        else:
+            print(banner, file=sys.stderr)
+        return ENVIRONMENT_REFUSAL_EXIT
 
     repo_root = _get_root()
     rules_path = repo_root / "docs" / "plans" / "layering.yaml"
