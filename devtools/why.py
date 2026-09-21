@@ -182,6 +182,17 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
     if argv:
         print(f"  invoked: devtools verify {' '.join(str(a) for a in argv)}", file=stream)
 
+    # Which tree the run executed in. A receipt read without this is a result
+    # detached from the thing it is evidence about (polylogue-p2mbi).
+    tested = payload.get("git_head")
+    if isinstance(tested, str) and tested:
+        final = payload.get("final_git_head")
+        moved = f" -> {final}" if isinstance(final, str) and final and final != tested else ""
+        dirty = " (dirty)" if payload.get("git_dirty") or payload.get("final_git_dirty") else ""
+        print(f"  tested tree: {tested}{moved}{dirty}", file=stream)
+    else:
+        print("  tested tree: not recorded -- this receipt is evidence for no tree", file=stream)
+
     diagnosis = payload.get("diagnosis") or payload.get("checkout_diagnosis")
     if diagnosis:
         print(f"\ndiagnosis: {diagnosis}", file=stream)

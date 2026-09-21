@@ -172,3 +172,41 @@ def test_history_projection_carries_the_receipt_columns() -> None:
         "outcome": "failed",
         "diagnosis": None,
     }
+
+
+def test_why_names_the_tree_a_receipt_covers() -> None:
+    """polylogue-p2mbi: a result detached from its tree is not readable evidence.
+
+    Anti-vacuity: drop the line and a reader of `devtools why` gets a verdict
+    with no way to tell which commit it is about -- which is how 53 commits of
+    drift went unnoticed on the 03:00 corpus run.
+    """
+    stream = io.StringIO()
+    _render({"tier": "all", "status": "success", "git_head": "a" * 40, "final_git_head": "a" * 40}, stream)
+    assert f"tested tree: {'a' * 40}" in stream.getvalue()
+
+
+def test_why_says_so_when_a_receipt_records_no_tree() -> None:
+    """Anti-vacuity: printing nothing here makes an unattributable receipt look ordinary."""
+    stream = io.StringIO()
+    _render({"tier": "all", "status": "success"}, stream)
+    assert "tested tree: not recorded" in stream.getvalue()
+
+
+def test_why_shows_a_tree_that_moved_under_the_run() -> None:
+    """A merge landing mid-run is visible, not averaged into one SHA.
+
+    Anti-vacuity: print only `git_head` and a run that straddled a merge reads
+    as a run on one tree.
+    """
+    stream = io.StringIO()
+    _render({"tier": "all", "status": "success", "git_head": "a" * 40, "final_git_head": "b" * 40}, stream)
+    output = stream.getvalue()
+    assert f"{'a' * 40} -> {'b' * 40}" in output
+
+
+def test_why_marks_a_dirty_tested_tree() -> None:
+    """Anti-vacuity: hide the flag and a receipt from a modified tree reads as a commit."""
+    stream = io.StringIO()
+    _render({"tier": "all", "status": "success", "git_head": "a" * 40, "git_dirty": True}, stream)
+    assert "(dirty)" in stream.getvalue()
