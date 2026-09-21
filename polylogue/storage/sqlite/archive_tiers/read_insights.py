@@ -473,9 +473,6 @@ class ArchiveReadInsights:
                     if int(row["session_count"] or 0)
                     else None
                 ),
-                work_event_breakdown=_coverage_work_event_breakdown(
-                    self._conn, str(row["bucket"]), bucket_format, origin=origin, since_ms=since_ms, until_ms=until_ms
-                ),
                 repos_active=_coverage_repos_active(
                     self._conn, str(row["bucket"]), bucket_format, origin=origin, since_ms=since_ms, until_ms=until_ms
                 ),
@@ -563,30 +560,6 @@ def _coverage_bucket_filter(
         clauses.append("s.sort_key_ms <= ?")
         params.append(until_ms)
     return "WHERE " + " AND ".join(clauses), tuple(params)
-
-
-def _coverage_work_event_breakdown(
-    conn: sqlite3.Connection,
-    bucket: str,
-    bucket_format: str,
-    *,
-    origin: str | None,
-    since_ms: int | None,
-    until_ms: int | None,
-) -> dict[str, int]:
-    where, params = _coverage_bucket_filter(bucket, bucket_format, origin=origin, since_ms=since_ms, until_ms=until_ms)
-    rows = conn.execute(
-        f"""
-        SELECT e.work_event_type, COUNT(*) AS count
-        FROM sessions s
-        JOIN session_work_events e ON e.session_id = s.session_id
-        {where}
-        GROUP BY e.work_event_type
-        ORDER BY count DESC, e.work_event_type
-        """,
-        params,
-    ).fetchall()
-    return {str(row["work_event_type"]): int(row["count"] or 0) for row in rows}
 
 
 def _coverage_repos_active(

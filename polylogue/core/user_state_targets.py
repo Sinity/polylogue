@@ -28,7 +28,6 @@ from typing import Final
 
 TARGET_SESSION: Final = "session"
 TARGET_MESSAGE: Final = "message"
-TARGET_WORK_EVENT: Final = "work_event"
 TARGET_THREAD: Final = "thread"
 TARGET_BLOCK: Final = "block"
 TARGET_ATTACHMENT: Final = "attachment"
@@ -61,12 +60,6 @@ _KINDS: Final[tuple[TargetKind, ...]] = (
         unit="message_id",
         requires_message_id=True,
         identity_template="message:{session_id}:{target_id}",
-    ),
-    TargetKind(
-        name=TARGET_WORK_EVENT,
-        unit="event_id from session_work_events",
-        requires_message_id=False,
-        identity_template="work_event:{session_id}:{target_id}",
     ),
     TargetKind(
         name=TARGET_THREAD,
@@ -105,14 +98,13 @@ STORAGE_TARGET_KIND_NAMES: Final[tuple[str, ...]] = (
     TARGET_BLOCK,
     TARGET_ATTACHMENT,
     TARGET_PASTE_SPAN,
-    TARGET_WORK_EVENT,
-    "phase",
     TARGET_THREAD,
 )
 """Target tokens admitted by the user-tier CHECK constraints.
 
-``phase`` remains storage-only until there is a stable public target identity
-for it.
+polylogue-cuxz.7 removed ``work_event`` and ``phase``: the relations that gave
+their ids meaning (``session_work_events``, ``session_phases``) are gone, so a
+stored assertion against one could never be resolved back to a target.
 """
 
 MARK_TYPE_NAMES: Final[tuple[str, ...]] = (MARK_STAR, MARK_PIN, MARK_ARCHIVE)
@@ -189,7 +181,6 @@ __all__ = [
     "TARGET_PASTE_SPAN",
     "TARGET_SESSION",
     "TARGET_THREAD",
-    "TARGET_WORK_EVENT",
     "TargetKind",
     "get_kind",
     "identity_key",

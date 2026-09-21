@@ -13,7 +13,6 @@ from polylogue.analysis.archive import (
     ArchiveDebtInsightQuery,
     CostRollupInsightQuery,
     SessionCostInsightQuery,
-    SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
     ThreadInsightQuery,
@@ -677,9 +676,6 @@ class TestPolylogueArchiveInsights:
                 limit=10,
             )
         )
-        phases = await archive.list_session_phase_insights(
-            SessionPhaseInsightQuery(origin="claude-code-session", limit=10)
-        )
         threads = await archive.list_thread_insights(ThreadInsightQuery(limit=10))
 
         assert profile is not None
@@ -705,7 +701,6 @@ class TestPolylogueArchiveInsights:
         assert inference_only.enrichment is None
 
         assert any(item.session_id == root_id for item in profiles)
-        assert any(item.session_id == root_id for item in phases)
         assert len(threads) == 1
         assert threads[0].thread.session_count == 2
         assert threads[0].thread.support_level == "strong"

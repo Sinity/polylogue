@@ -184,16 +184,13 @@ This pass investigated extraction candidates in #3 and #1 before choosing
 ## What landed (this bead, slice 1 of N)
 
 - **New module**: `polylogue/storage/sqlite/archive_tiers/session_annotations_write.py`
-  — the `ArchiveSessionTag`/`ArchiveSessionWorkEvent`/`ArchiveSessionPhase`
-  dataclasses and their `upsert_session_tag`/`read_session_tags`/
-  `upsert_session_work_event`/`read_session_work_events`/
-  `upsert_session_phase`/`read_session_phases` functions, plus the four
-  small helpers only they use (`_json_loads`, `_json_tuple`, `_json_int`,
-  `_refresh_session_profile_count`, `_table_exists`).
-- **`write.py`** re-exports all nine public names unchanged (same import
-  path for every external caller — `archive_tiers/archive.py` and the test
-  suite import `ArchiveSessionPhase`/`ArchiveSessionWorkEvent` from
-  `polylogue.storage.sqlite.archive_tiers.write` exactly as before) and no
+  — the `ArchiveSessionTag` dataclass and its
+  `upsert_session_tag`/`read_session_tags` functions, plus the small helpers
+  only they use (`_json_loads`, `_json_tuple`, `_json_int`, `_table_exists`).
+  (polylogue-cuxz.7 later deleted the work-event/phase members of this slice
+  with their tables.)
+- **`write.py`** re-exports the public names unchanged (same import
+  path for every external caller) and no
   longer contains the moved code: **4,595 → 4,210 lines (−385, −8.4%)**.
 - **No duplicate execution path**: the moved functions are the same
   functions, same bodies, at a new import path; `write.py` does not keep a

@@ -103,8 +103,6 @@ class InsightReadinessSpec:
 
 _SPECS: tuple[InsightReadinessSpec, ...] = (
     InsightReadinessSpec("session_profiles", "Session Profiles"),
-    InsightReadinessSpec("session_work_events", "Work Events"),
-    InsightReadinessSpec("session_phases", "Session Phases"),
     InsightReadinessSpec("session_runs", "Session Runs"),
     InsightReadinessSpec("session_observed_events", "Observed Events"),
     InsightReadinessSpec("session_context_snapshots", "Context Snapshots"),
@@ -122,8 +120,6 @@ _SPEC_BY_NAME = {spec.insight_name: spec for spec in _SPECS}
 _ALIASES = {
     **{spec.insight_name.replace("_", "-"): spec.insight_name for spec in _SPECS},
     "profiles": "session_profiles",
-    "work-events": "session_work_events",
-    "phases": "session_phases",
     "runs": "session_runs",
     "run-projection": "session_runs",
     "observed-events": "session_observed_events",

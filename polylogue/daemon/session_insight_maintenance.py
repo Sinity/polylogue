@@ -152,11 +152,7 @@ class SessionInsightMaintenance:
                     disposition=outcome.state,
                     input_binding=outcome.input_binding,
                     output_binding=outcome.output_binding,
-                    certified_counts=InsightCertifiedCounts(
-                        profiles=outcome.certified_counts.profiles,
-                        work_events=outcome.certified_counts.work_events,
-                        phases=outcome.certified_counts.phases,
-                    ),
+                    certified_counts=InsightCertifiedCounts(profiles=outcome.certified_counts.profiles),
                     publication_known_committed=outcome.publication_known_committed,
                 )
             )

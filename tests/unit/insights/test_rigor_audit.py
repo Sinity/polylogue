@@ -9,10 +9,8 @@ import pytest
 
 from polylogue.analysis.archive import (
     CostRollupInsight,
-    SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
-    SessionWorkEventInsight,
 )
 from polylogue.analysis.archive_models import (
     ArchiveEnrichmentProvenance,
@@ -21,9 +19,6 @@ from polylogue.analysis.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
-    SessionPhaseEvidencePayload,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
 )
 from polylogue.analysis.audit import (
     InsightRigorAuditQuery,
@@ -31,6 +26,7 @@ from polylogue.analysis.audit import (
     build_insight_rigor_audit_report,
 )
 from polylogue.analysis.confidence import ConfidenceBand
+from polylogue.analysis.fallback import FallbackReason
 from polylogue.analysis.registry import INSIGHT_REGISTRY
 from polylogue.analysis.rigor import (
     RigorFieldContract,
@@ -89,33 +85,22 @@ def _profile(session_id: str = "c1") -> SessionProfileInsight:
     )
 
 
-def _work_event(*, fallback: bool, confidence: float) -> SessionWorkEventInsight:
-    return SessionWorkEventInsight(
-        event_id="e1",
-        session_id="c1",
-        origin="claude-code",
-        event_index=0,
-        provenance=_provenance(),
-        inference_provenance=_inference_provenance(),
-        evidence=WorkEventEvidencePayload(start_index=0, end_index=5, duration_ms=1000),
-        inference=WorkEventInferencePayload(
-            heuristic_label="edit",
-            summary="edited two files",
-            confidence=confidence,
-            fallback_inference=fallback,
-        ),
-    )
+def _degraded_profile(*, fallback: bool, confidence: float, session_id: str = "c1") -> SessionProfileInsight:
+    """A profile row whose enrichment payload carries the audit's markers.
 
-
-def _phase(*, fallback: bool, confidence: float) -> SessionPhaseInsight:
-    _ = (fallback, confidence)
-    return SessionPhaseInsight(
-        phase_id="p1",
-        session_id="c1",
-        origin="claude-code",
-        phase_index=0,
-        provenance=_provenance(),
-        evidence=SessionPhaseEvidencePayload(),
+    ``session_profiles`` is the contract that declares
+    ``fallback_markers=(("enrichment", "fallback_reasons"),)`` and
+    ``confidence_field=("enrichment", "confidence")``; the audit runner reads
+    exactly those paths.
+    """
+    return _profile(session_id).model_copy(
+        update={
+            "enrichment": SessionEnrichmentPayload(
+                confidence=confidence,
+                support_level=ConfidenceBand.STRONG,
+                fallback_reasons=(FallbackReason.NO_USER_TURNS,) if fallback else (),
+            )
+        }
     )
 
 
@@ -139,8 +124,6 @@ def test_rigor_matrix_covers_all_session_products() -> None:
 
     required = {
         "session_profiles",
-        "session_work_events",
-        "session_phases",
         "threads",
         "session_tag_rollups",
     }
@@ -172,10 +155,10 @@ def test_rigor_matrix_entries_reference_registry_names() -> None:
 
 
 def test_rigor_contract_lookup_round_trips() -> None:
-    contract = get_rigor_contract("session_work_events")
+    contract = get_rigor_contract("session_profiles")
     assert contract is not None
-    assert contract.fallback_markers == (("inference", "fallback_inference"),)
-    assert contract.confidence_field == ("inference", "confidence")
+    assert contract.fallback_markers == (("enrichment", "fallback_reasons"),)
+    assert contract.confidence_field == ("enrichment", "confidence")
     assert get_rigor_contract("not-a-real-insight") is None
 
 
@@ -267,20 +250,11 @@ def test_every_registered_insight_declares_its_item_model() -> None:
     assert missing_numeric_item_models() == ()
 
 
-def test_phase_rigor_contract_is_evidence_only() -> None:
-    contract = get_rigor_contract("session_phases")
-    assert contract is not None
-    assert contract.evidence_payload == ("evidence",)
-    assert contract.inference_payload == ()
-    assert contract.fallback_markers == ()
-    assert contract.confidence_field == ()
-
-
 def test_resolve_payload_walks_attributes_and_dicts() -> None:
-    event = _work_event(fallback=True, confidence=0.42)
-    assert resolve_payload(event, ("inference", "fallback_inference")) is True
-    assert resolve_payload(event, ("inference", "confidence")) == 0.42
-    assert resolve_payload(event, ("inference", "missing")) is None
+    row = _degraded_profile(fallback=True, confidence=0.42)
+    assert resolve_payload(row, ("enrichment", "fallback_reasons")) == (FallbackReason.NO_USER_TURNS,)
+    assert resolve_payload(row, ("enrichment", "confidence")) == 0.42
+    assert resolve_payload(row, ("enrichment", "missing")) is None
     # Dict pathway:
     assert resolve_payload({"a": {"b": 1}}, ("a", "b")) == 1
     assert resolve_payload(None, ("a",)) is None
@@ -290,12 +264,12 @@ def test_resolve_payload_walks_attributes_and_dicts() -> None:
 
 
 def test_audit_one_classifies_evidence_inference_and_fallback() -> None:
-    contract = get_rigor_contract("session_work_events")
+    contract = get_rigor_contract("session_profiles")
     assert contract is not None
     rows = [
-        _work_event(fallback=False, confidence=0.9),
-        _work_event(fallback=False, confidence=0.5),
-        _work_event(fallback=True, confidence=0.1),
+        _degraded_profile(fallback=False, confidence=0.9),
+        _degraded_profile(fallback=False, confidence=0.5),
+        _degraded_profile(fallback=True, confidence=0.1),
     ]
     entry = _audit_one(rows, contract)
     assert entry.sample_size == 3
@@ -319,9 +293,9 @@ def test_audit_one_handles_empty_sample() -> None:
 
 
 def test_audit_one_detects_stale_version_rows() -> None:
-    contract = get_rigor_contract("session_work_events")
+    contract = get_rigor_contract("session_profiles")
     assert contract is not None
-    fresh = _work_event(fallback=False, confidence=0.9)
+    fresh = _degraded_profile(fallback=False, confidence=0.9)
     stale = fresh.model_copy(
         update={
             "inference_provenance": ArchiveInferenceProvenance(
@@ -374,14 +348,10 @@ class _FakeOperations:
     def __init__(
         self,
         profiles: list[object],
-        work_events: list[object],
-        phases: list[object],
         tags: list[object],
     ) -> None:
         self._payload = {
             "list_session_profile_insights": profiles,
-            "list_session_work_event_insights": work_events,
-            "list_session_phase_insights": phases,
             "list_session_tag_rollup_insights": tags,
             "list_thread_insights": [],
         }
@@ -399,22 +369,20 @@ class _FakeOperations:
 
 def test_build_insight_rigor_audit_report_aggregates_across_products() -> None:
     operations = _FakeOperations(
-        profiles=[_profile("c1"), _profile("c2")],
-        work_events=[
-            _work_event(fallback=False, confidence=0.9),
-            _work_event(fallback=True, confidence=0.2),
+        profiles=[
+            _degraded_profile(fallback=False, confidence=0.9, session_id="c1"),
+            _degraded_profile(fallback=True, confidence=0.2, session_id="c2"),
         ],
-        phases=[_phase(fallback=False, confidence=0.8)],
         tags=[_tag_rollup()],
     )
     report = asyncio.run(build_insight_rigor_audit_report(operations, InsightRigorAuditQuery()))
     by_name = {entry.insight_name: entry for entry in report.entries}
-    assert by_name["session_profiles"].sample_size == 2
-    assert by_name["session_profiles"].evidence_count == 2
-    assert by_name["session_profiles"].inference_count == 2
-    we = by_name["session_work_events"]
-    assert we.fallback_count == 1
-    assert we.has_fallback_markers is True
+    profiles = by_name["session_profiles"]
+    assert profiles.sample_size == 2
+    assert profiles.evidence_count == 2
+    assert profiles.inference_count == 2
+    assert profiles.fallback_count == 1
+    assert profiles.has_fallback_markers is True
     tag = by_name["session_tag_rollups"]
     assert tag.sample_size == 1
     assert tag.has_evidence_payload is False  # tag rollups are aggregate
@@ -422,12 +390,7 @@ def test_build_insight_rigor_audit_report_aggregates_across_products() -> None:
 
 
 def test_audit_runner_respects_insight_filter() -> None:
-    operations = _FakeOperations(
-        profiles=[_profile("c1")],
-        work_events=[_work_event(fallback=False, confidence=0.9)],
-        phases=[],
-        tags=[],
-    )
+    operations = _FakeOperations(profiles=[_profile("c1")], tags=[])
     report = asyncio.run(
         build_insight_rigor_audit_report(
             operations,
@@ -471,7 +434,7 @@ def test_build_report_covers_every_registered_insight_not_just_contracted_ones(
     "uncovered", never silently vanish from the report."""
     import polylogue.analysis.audit as audit_mod
 
-    operations = _FakeOperations(profiles=[_profile("c1")], work_events=[], phases=[], tags=[])
+    operations = _FakeOperations(profiles=[_profile("c1")], tags=[])
     monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)
     report = asyncio.run(
         build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(insights=("session_profiles",)))
@@ -486,7 +449,7 @@ def test_build_report_covers_every_registered_insight_not_just_contracted_ones(
 def test_build_report_marks_exempt_products_distinctly_from_uncovered(monkeypatch: pytest.MonkeyPatch) -> None:
     import polylogue.analysis.audit as audit_mod
 
-    operations = _FakeOperations(profiles=[], work_events=[], phases=[], tags=[])
+    operations = _FakeOperations(profiles=[], tags=[])
     monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)
     monkeypatch.setattr(audit_mod, "rigor_exemption_reason", lambda name: "test-only exemption justification")
     report = asyncio.run(
@@ -501,7 +464,7 @@ def test_build_report_covers_all_11_registered_insights_by_default() -> None:
     """Every currently-registered insight shows up in an unfiltered report,
     each either genuinely audited (covered, has a contract) or a stub
     (uncovered/exempt) -- none are silently skipped."""
-    operations = _FakeOperations(profiles=[], work_events=[], phases=[], tags=[])
+    operations = _FakeOperations(profiles=[], tags=[])
     report = asyncio.run(build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(sample_limit=1)))
     names = {entry.insight_name for entry in report.entries}
     assert names == set(INSIGHT_REGISTRY.keys())
@@ -516,11 +479,11 @@ def test_build_report_records_per_product_error_without_aborting() -> None:
     report = asyncio.run(
         build_insight_rigor_audit_report(
             operations,
-            InsightRigorAuditQuery(insights=("session_profiles", "session_work_events")),
+            InsightRigorAuditQuery(insights=("session_profiles", "threads")),
         )
     )
     by_name = {entry.insight_name: entry for entry in report.entries}
-    assert set(by_name) == {"session_profiles", "session_work_events"}
+    assert set(by_name) == {"session_profiles", "threads"}
     for entry in by_name.values():
         assert entry.error is not None
         assert entry.sample_size == 0

@@ -40,35 +40,6 @@ def _matches_version(metrics: Metrics, *debt_keys: str) -> bool:
     return all(_metric_int(metrics, key) == 0 for key in debt_keys)
 
 
-def _fts_status(
-    metrics: Metrics,
-    *,
-    name: str,
-    label: str,
-    ready_key: str,
-    source_rows_key: str,
-    materialized_rows_key: str,
-    duplicate_key: str,
-) -> DerivedModelStatus:
-    ready = _metric_bool(metrics, ready_key)
-    source_rows = _metric_int(metrics, source_rows_key)
-    materialized_rows = _metric_int(metrics, materialized_rows_key)
-    duplicate_rows = _metric_int(metrics, duplicate_key)
-    return DerivedModelStatus(
-        name=name,
-        ready=ready,
-        detail=_ready_detail(
-            ready=ready,
-            ready_detail=f"{label} ready ({materialized_rows:,}/{source_rows:,} rows)",
-            pending_detail=f"{label} pending ({materialized_rows:,}/{source_rows:,} rows, duplicates {duplicate_rows:,})",
-        ),
-        source_rows=source_rows,
-        materialized_rows=materialized_rows,
-        pending_rows=pending_rows(source_rows, materialized_rows),
-        stale_rows=duplicate_rows,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Action/search statuses
 # ---------------------------------------------------------------------------
@@ -147,41 +118,6 @@ def build_profile_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
 # ---------------------------------------------------------------------------
 
 
-def _session_timeline_status(
-    metrics: Metrics,
-    *,
-    name: str,
-    label: str,
-    ready_key: str,
-    rows_key: str,
-    expected_rows_key: str,
-    stale_key: str,
-    orphan_key: str,
-) -> DerivedModelStatus:
-    ready = _metric_bool(metrics, ready_key)
-    rows = _metric_int(metrics, rows_key)
-    expected_rows = _metric_int(metrics, expected_rows_key)
-    profile_rows = _metric_int(metrics, "profile_rows")
-    return DerivedModelStatus(
-        name=name,
-        ready=ready,
-        detail=_ready_detail(
-            ready=ready,
-            ready_detail=f"{label} ready ({rows:,}/{expected_rows:,} rows)",
-            pending_detail=f"{label} pending ({rows:,}/{expected_rows:,} rows)",
-        ),
-        source_documents=profile_rows,
-        materialized_documents=profile_rows if profile_rows else 0,
-        source_rows=expected_rows,
-        materialized_rows=rows,
-        pending_rows=pending_rows(expected_rows, rows),
-        stale_rows=_metric_int(metrics, stale_key),
-        orphan_rows=_metric_int(metrics, orphan_key),
-        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-        matches_version=_matches_version(metrics, stale_key, orphan_key),
-    )
-
-
 def _threads_status(metrics: Metrics) -> DerivedModelStatus:
     ready = _metric_bool(metrics, "threads_ready")
     rows = _metric_int(metrics, "thread_rows")
@@ -206,35 +142,6 @@ def _threads_status(metrics: Metrics) -> DerivedModelStatus:
 
 def build_timeline_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
     return {
-        "session_work_events": _session_timeline_status(
-            metrics,
-            name="session_work_events",
-            label="Session work events",
-            ready_key="work_event_rows_ready",
-            rows_key="work_event_rows",
-            expected_rows_key="expected_work_event_rows",
-            stale_key="stale_work_event_rows",
-            orphan_key="orphan_work_event_rows",
-        ),
-        "session_work_events_fts": _fts_status(
-            metrics,
-            name="session_work_events_fts",
-            label="Session work events FTS",
-            ready_key="work_event_fts_ready",
-            source_rows_key="work_event_rows",
-            materialized_rows_key="work_event_fts_rows",
-            duplicate_key="work_event_fts_duplicates",
-        ),
-        "session_phases": _session_timeline_status(
-            metrics,
-            name="session_phases",
-            label="Session phase intervals",
-            ready_key="phase_rows_ready",
-            rows_key="phase_rows",
-            expected_rows_key="expected_phase_rows",
-            stale_key="stale_phase_rows",
-            orphan_key="orphan_phase_rows",
-        ),
         "threads": _threads_status(metrics),
     }
 

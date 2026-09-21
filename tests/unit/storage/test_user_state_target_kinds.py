@@ -1,8 +1,7 @@
 """Archive storage contracts for user-state target kinds (#1113, archive).
 
-The user-state target registry (``session``, ``message``, ``session``,
-``work_event``, ``thread``, ``block``, ``attachment``, ``paste_span``)
-is exercised here against the archive: seeding writes through
+The user-state target registry (``session``, ``message``, ``thread``,
+``block``, ``attachment``, ``paste_span``) is exercised here against the archive: seeding writes through
 ``ArchiveStore`` / ``SessionBuilder``, insight rows are seeded into the native
 ``index.db`` tables, and marks/annotations/recall-packs/workspaces are driven
 through the async ``Polylogue`` facade.
@@ -16,9 +15,6 @@ Archive target ids are the deterministic public ids:
 All insight kinds are now writable as marks/annotations directly:
   * ``block`` — the resolver emits ``block`` and assertions persist the same
     public target vocabulary.
-  * ``work_event`` — the resolver probes the native ``session_work_events``
-    generated ``event_id`` column (``session_id || ':work_event:' ||
-    position``).
 The recall-pack / workspace resolution path resolves ``block`` correctly and is
 asserted.
 """
@@ -74,7 +70,6 @@ def test_target_kinds_registry_admits_documented_kinds() -> None:
     expected = {
         "session",
         "message",
-        "work_event",
         "thread",
         "block",
         "attachment",
@@ -101,7 +96,6 @@ def test_user_tier_assertions_store_public_target_refs() -> None:
 
 def test_identity_key_renders_distinct_keys_per_kind() -> None:
     assert identity_key("session", session_id="conv", target_id="conv") == "session:conv"
-    assert identity_key("work_event", session_id="conv", target_id="evt-1") == "work_event:conv:evt-1"
     assert identity_key("thread", session_id="conv", target_id="thr-1") == "thread:thr-1"
     assert identity_key("block", session_id="conv", target_id="msg-1:0") == "block:conv:msg-1:0"
 

@@ -3778,8 +3778,6 @@ async def test_refresh_session_insights_bulk_dedupes_related_refreshes(
         return SimpleNamespace(
             counts={
                 "profiles": 3,
-                "work_events": 0,
-                "phases": 0,
                 "threads": 0,
                 "tag_rollups": 0,
                 "day_summaries": 0,
@@ -3796,8 +3794,6 @@ async def test_refresh_session_insights_bulk_dedupes_related_refreshes(
                     max_estimated_session_messages=1,
                     hydrated_count=3,
                     profiles_written=3,
-                    work_events_written=0,
-                    phases_written=0,
                     load_ms=12.5,
                     hydrate_ms=3.1,
                     build_ms=9.9,

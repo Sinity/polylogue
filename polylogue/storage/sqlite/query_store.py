@@ -29,9 +29,6 @@ from polylogue.storage.sqlite.query_store_insight_profiles import (
 from polylogue.storage.sqlite.query_store_insight_run_projection import (
     SQLiteQueryStoreInsightRunProjectionMixin,
 )
-from polylogue.storage.sqlite.query_store_insight_timelines import (
-    SQLiteQueryStoreInsightTimelinesMixin,
-)
 from polylogue.storage.sqlite.query_store_maintenance import SQLiteQueryStoreMaintenanceMixin
 from polylogue.storage.sqlite.query_store_work_evidence import SQLiteQueryStoreWorkEvidenceMixin
 
@@ -39,7 +36,6 @@ from polylogue.storage.sqlite.query_store_work_evidence import SQLiteQueryStoreW
 class SQLiteQueryStore(
     SQLiteQueryStoreArchiveMixin,
     SQLiteQueryStoreInsightProfilesMixin,
-    SQLiteQueryStoreInsightTimelinesMixin,
     SQLiteQueryStoreInsightRunProjectionMixin,
     SQLiteQueryStoreWorkEvidenceMixin,
     SQLiteQueryStoreMaintenanceMixin,

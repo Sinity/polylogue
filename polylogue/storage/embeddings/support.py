@@ -68,12 +68,9 @@ def build_retrieval_bands_from_status(
     evidence_materialized_rows = session_status.profile_row_count
     evidence_ready = True
 
-    inference_source_rows = session_status.profile_row_count + session_status.work_event_inference_count
-    inference_materialized_rows = session_status.profile_row_count + session_status.work_event_inference_fts_count
-    inference_ready = (
-        session_status.work_event_inference_fts_count == session_status.work_event_inference_count
-        and session_status.work_event_inference_fts_duplicate_count == 0
-    )
+    inference_source_rows = session_status.profile_row_count
+    inference_materialized_rows = session_status.profile_row_count
+    inference_ready = session_status.profile_inference_fts_duplicate_count == 0
     enrichment_source_rows = session_status.profile_row_count
     enrichment_materialized_rows = session_status.profile_row_count
     enrichment_ready = True
@@ -119,17 +116,13 @@ def build_retrieval_bands_from_status(
             "source_rows": inference_source_rows,
             "materialized_rows": inference_materialized_rows,
             "pending_rows": max(0, inference_source_rows - inference_materialized_rows),
-            "stale_rows": (
-                session_status.profile_inference_fts_duplicate_count
-                + session_status.work_event_inference_fts_duplicate_count
-                + session_status.stale_work_event_inference_count
-            ),
+            "stale_rows": session_status.profile_inference_fts_duplicate_count,
             "detail": (
                 f"Inference retrieval ready ({inference_materialized_rows:,}/{inference_source_rows:,} supporting rows)"
                 if inference_ready
                 else (
                     f"Inference retrieval pending ({inference_materialized_rows:,}/{inference_source_rows:,} supporting rows; "
-                    f"work_event_inference_fts={session_status.work_event_inference_fts_count:,}/{session_status.work_event_inference_count:,})"
+                    "profile inference FTS pending)"
                 )
             ),
         },

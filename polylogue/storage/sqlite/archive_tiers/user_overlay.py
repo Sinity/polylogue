@@ -24,8 +24,6 @@ _ARCHIVE_TARGETS: dict[str, tuple[str, str]] = {
     "block": ("blocks", "block_id"),
     "attachment": ("attachments", "attachment_id"),
     "paste_span": ("paste_spans", "paste_id"),
-    "work_event": ("session_work_events", "event_id"),
-    "phase": ("session_phases", "phase_id"),
     "thread": ("threads", "thread_id"),
 }
 

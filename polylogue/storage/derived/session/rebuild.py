@@ -49,15 +49,9 @@ from polylogue.storage.derived.session.profiles import (
 from polylogue.storage.derived.session.runtime import SessionInsightCounts
 from polylogue.storage.derived.session.storage import (
     replace_session_latency_profiles_bulk_sync,
-    replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
-    replace_session_work_events_bulk_sync,
 )
 from polylogue.storage.derived.session.threads import thread_root_ids_async, thread_root_ids_sync
-from polylogue.storage.derived.session.timeline_rows import (
-    build_session_phase_records,
-    build_session_work_event_records,
-)
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.runtime import (
     AttachmentRecord,
@@ -65,10 +59,8 @@ from polylogue.storage.runtime import (
     MessageRecord,
     SessionEventRecord,
     SessionLatencyProfileRecord,
-    SessionPhaseRecord,
     SessionProfileRecord,
     SessionRecord,
-    SessionWorkEventRecord,
 )
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.queries.attachments import get_attachments_batch
@@ -379,8 +371,6 @@ class SessionInsightArchiveBatch:
 class SessionInsightRecordBundle:
     profile_record: SessionProfileRecord
     latency_profile_record: SessionLatencyProfileRecord
-    work_event_records: list[SessionWorkEventRecord]
-    phase_records: list[SessionPhaseRecord]
     # polylogue-dab/itvd: run/observed-event/context-snapshot rows are no
     # longer materialized into tables (they are computed on read by
     # run_projection_relations.py's CTEs), so the bundle only needs counts
@@ -402,14 +392,6 @@ class SessionInsightRecordBundle:
     @property
     def session_id(self) -> SessionId:
         return self.profile_record.session_id
-
-    @property
-    def work_event_count(self) -> int:
-        return len(self.work_event_records)
-
-    @property
-    def phase_count(self) -> int:
-        return len(self.phase_records)
 
 
 @dataclass(frozen=True, slots=True)
@@ -962,12 +944,6 @@ def build_session_insight_records(
     )
     add_timing("build_records.latency_profile_record", t0)
     t0 = time.perf_counter()
-    work_event_records = build_session_work_event_records(profile, materialized_at=materialized_at)
-    add_timing("build_records.work_event_records", t0)
-    t0 = time.perf_counter()
-    phase_records = build_session_phase_records(profile, materialized_at=materialized_at)
-    add_timing("build_records.phase_records", t0)
-    t0 = time.perf_counter()
     # The run projection is computed from the same hydrated Session, with no
     # cross-session links (session_links=()), so its counts match what the
     # runtime CTE query path (run_projection_relations.py) would return. The
@@ -986,8 +962,6 @@ def build_session_insight_records(
     return SessionInsightRecordBundle(
         profile_record=profile_record,
         latency_profile_record=latency_profile_record,
-        work_event_records=work_event_records,
-        phase_records=phase_records,
         run_count=len(run_projection.runs),
         observed_event_count=len(run_projection.events),
         context_snapshot_count=len(run_projection.context_snapshots),
@@ -1446,18 +1420,13 @@ def _large_session_profile_record_from_row(
     inference = SessionInferencePayload(
         inferred_topic=title or None,
         inferred_topic_source="title_bounded_fallback" if title else "absent",
-        work_event_count=0,
-        phase_count=0,
         workflow_shape="bounded_large_session",
         workflow_shape_confidence=0.35,
         terminal_state=terminal_state,
         terminal_state_confidence=terminal_state_confidence,
         terminal_state_method=terminal_state_method,
         auto_tags=(f"origin:{origin}", "degraded:large-session"),
-        fallback_reasons=(
-            FallbackReason.LARGE_SESSION_BOUNDED,
-            FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES,
-        ),
+        fallback_reasons=(FallbackReason.LARGE_SESSION_BOUNDED,),
     )
     enrichment = SessionEnrichmentPayload(
         intent_summary=title or None,
@@ -1503,8 +1472,6 @@ def _large_session_profile_record_from_row(
         message_count=message_count,
         substantive_count=evidence.substantive_count,
         attachment_count=0,
-        work_event_count=0,
-        phase_count=0,
         word_count=word_count,
         tool_use_count=tool_use_count,
         thinking_count=thinking_count,
@@ -1602,8 +1569,6 @@ def build_large_session_insight_record_bundle_sync(
     return SessionInsightRecordBundle(
         profile_record=profile,
         latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
-        work_event_records=[],
-        phase_records=[],
         run_count=0,
         observed_event_count=0,
         context_snapshot_count=0,
@@ -1636,8 +1601,6 @@ async def build_large_session_insight_record_bundle_async(
     return SessionInsightRecordBundle(
         profile_record=profile,
         latency_profile_record=_large_session_latency_profile_record(profile, materialized_at=built_at),
-        work_event_records=[],
-        phase_records=[],
         run_count=0,
         observed_event_count=0,
         context_snapshot_count=0,
@@ -1775,14 +1738,8 @@ async def _stamp_refreshed_usage_bindings_async(conn: aiosqlite.Connection, sess
         )
 
 
-def _count_record_bundles(
-    bundles: Sequence[SessionInsightRecordBundle],
-) -> tuple[int, int, int]:
-    return (
-        len(bundles),
-        sum(bundle.work_event_count for bundle in bundles),
-        sum(bundle.phase_count for bundle in bundles),
-    )
+def _count_record_bundles(bundles: Sequence[SessionInsightRecordBundle]) -> int:
+    return len(bundles)
 
 
 def _materialize_progress_desc(
@@ -1890,7 +1847,7 @@ def publish_prepared_session_insight_partition(
     """Atomically replace a prepared profile family after exact revalidation.
 
     The caller has already acquired the daemon writer.  This function owns no
-    internal commits: either all profile/work-event/phase/latency rows move in
+    internal commits: either all profile/latency rows move in
     one ``BEGIN IMMEDIATE`` transaction, or none do.  Marker lowering remains
     intentionally outside this index-tier transaction because user assertions
     are a separate durable owner and are idempotent by provenance.
@@ -1902,7 +1859,7 @@ def publish_prepared_session_insight_partition(
             if exists is not None:
                 conn.rollback()
                 return False
-            for table in ("session_work_events", "session_phases", "session_latency_profiles", "session_profiles"):
+            for table in ("session_latency_profiles", "session_profiles"):
                 conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (prepared.session_id,))
             conn.commit()
             return True
@@ -1919,8 +1876,6 @@ def publish_prepared_session_insight_partition(
         bundle = prepared.bundle
         replace_session_profiles_bulk_sync(conn, (bundle.profile_record,))
         replace_session_latency_profiles_bulk_sync(conn, (bundle.latency_profile_record,))
-        replace_session_work_events_bulk_sync(conn, {str(bundle.session_id): bundle.work_event_records})
-        replace_session_phases_bulk_sync(conn, {str(bundle.session_id): bundle.phase_records})
     except BaseException:
         conn.rollback()
         raise
@@ -1935,15 +1890,11 @@ def _empty_rebuild_counts() -> SessionInsightCounts:
 def _finalize_rebuild_counts(
     *,
     profiles: int,
-    work_events: int,
-    phases: int,
     threads: int,
     tag_rollups: int,
 ) -> SessionInsightCounts:
     return SessionInsightCounts(
         profiles=profiles,
-        work_events=work_events,
-        phases=phases,
         threads=threads,
         tag_rollups=tag_rollups,
     )
@@ -1962,8 +1913,6 @@ def _finalize_rebuild_counts(
 # from sessions/blocks), so there is nothing to orphan-prune. Listing them
 # here crashed every full rebuild with "no such table: session_runs".
 _PER_SESSION_INSIGHT_TABLES: tuple[str, ...] = (
-    "session_work_events",
-    "session_phases",
     "session_latency_profiles",
     "session_profiles",
 )
@@ -2112,8 +2061,6 @@ def rebuild_session_insights_sync(
         return _empty_rebuild_counts()
 
     profile_count = 0
-    work_event_count = 0
-    phase_count = 0
     degraded_session_ids: set[str] = set()
     heavy_session_ids = _heavy_session_ids_sync(conn, session_ids) if session_ids is not None else set()
     saw_session_ids = False
@@ -2192,7 +2139,7 @@ def rebuild_session_insights_sync(
             )
             add_timing("build_records", t0)
         t0 = time.perf_counter()
-        chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+        chunk_profiles = _count_record_bundles(record_bundles)
         add_timing("count_records", t0)
         t0 = time.perf_counter()
         replace_session_profiles_bulk_sync(conn, [bundle.profile_record for bundle in record_bundles])
@@ -2203,25 +2150,11 @@ def rebuild_session_insights_sync(
             [bundle.latency_profile_record for bundle in record_bundles],
         )
         add_timing("write_latency_profiles", t0)
-        t0 = time.perf_counter()
-        replace_session_work_events_bulk_sync(
-            conn,
-            {bundle.session_id: bundle.work_event_records for bundle in record_bundles},
-        )
-        add_timing("write_work_events", t0)
-        t0 = time.perf_counter()
-        replace_session_phases_bulk_sync(
-            conn,
-            {bundle.session_id: bundle.phase_records for bundle in record_bundles},
-        )
-        add_timing("write_phases", t0)
         if marker_conn is not None:
             _lower_marker_candidates(marker_conn, record_bundles)
         # Run-projection cache tables are no longer materialized (polylogue-dab).
         # Reads fall back to source-derived CTEs when the tables are absent.
         profile_count += chunk_profiles
-        work_event_count += chunk_work_events
-        phase_count += chunk_phases
         if progress_callback is not None and chunk_profiles:
             progress_callback(
                 chunk_profiles,
@@ -2266,8 +2199,6 @@ def rebuild_session_insights_sync(
         add_timing("commit", t0)
         return _finalize_rebuild_counts(
             profiles=profile_count,
-            work_events=work_event_count,
-            phases=phase_count,
             threads=thread_count,
             tag_rollups=int(tag_rollup_count),
         )
@@ -2282,8 +2213,6 @@ def rebuild_session_insights_sync(
     conn.commit()
     return _finalize_rebuild_counts(
         profiles=profile_count,
-        work_events=work_event_count,
-        phases=phase_count,
         threads=thread_count,
         tag_rollups=int(tag_rollup_count),
     )
@@ -2342,10 +2271,6 @@ async def rebuild_session_insights_async(
         replace_session_latency_profile,
         replace_session_profile,
     )
-    from polylogue.storage.sqlite.queries.session_insight_timeline_writes import (
-        replace_session_phases,
-        replace_session_work_events,
-    )
 
     # Bounded-WAL parity with rebuild_session_insights_sync (#1607): the full
     # rebuild no longer clears the per-session insight tables upfront. Each
@@ -2363,25 +2288,11 @@ async def rebuild_session_insights_async(
     commit_per_chunk = transaction_depth == 0
 
     profile_count = 0
-    work_event_count = 0
-    phase_count = 0
 
     async def write_record_bundles(record_bundles: Sequence[SessionInsightRecordBundle]) -> None:
         for bundle in record_bundles:
             await replace_session_profile(conn, bundle.profile_record, transaction_depth)
             await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
-            await replace_session_work_events(
-                conn,
-                bundle.session_id,
-                bundle.work_event_records,
-                transaction_depth,
-            )
-            await replace_session_phases(
-                conn,
-                bundle.session_id,
-                bundle.phase_records,
-                transaction_depth,
-            )
             # Run-projection cache tables are no longer materialized (polylogue-dab).
             # Reads fall back to source-derived CTEs when the tables are absent.
 
@@ -2446,11 +2357,9 @@ async def rebuild_session_insights_async(
                 )
             )
 
-        chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
+        chunk_profiles = _count_record_bundles(record_bundles)
         await write_record_bundles(record_bundles)
         profile_count += chunk_profiles
-        work_event_count += chunk_work_events
-        phase_count += chunk_phases
         if progress_callback is not None and chunk_profiles:
             progress_callback(
                 chunk_profiles,
@@ -2487,8 +2396,6 @@ async def rebuild_session_insights_async(
             await conn.commit()
         return _finalize_rebuild_counts(
             profiles=profile_count,
-            work_events=work_event_count,
-            phases=phase_count,
             threads=thread_count,
             tag_rollups=int(tag_rollup_count),
         )
@@ -2507,8 +2414,6 @@ async def rebuild_session_insights_async(
         await conn.commit()
     return _finalize_rebuild_counts(
         profiles=profile_count,
-        work_events=work_event_count,
-        phases=phase_count,
         threads=thread_count,
         tag_rollups=int(tag_rollup_count),
     )

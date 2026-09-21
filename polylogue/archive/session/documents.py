@@ -5,38 +5,6 @@ from __future__ import annotations
 from typing_extensions import TypedDict
 
 
-class WorkEventDocument(TypedDict):
-    heuristic_label: str
-    start_index: int
-    end_index: int
-    start_time: str | None
-    end_time: str | None
-    canonical_session_date: str | None
-    timing_provenance: str
-    date_provenance: str
-    duration_ms: int
-    confidence: float
-    evidence: list[str]
-    file_paths: list[str]
-    tools_used: list[str]
-    summary: str
-
-
-class SessionPhaseDocument(TypedDict):
-    start_time: str | None
-    end_time: str | None
-    canonical_session_date: str | None
-    timing_provenance: str
-    date_provenance: str
-    message_range: list[int]
-    duration_ms: int
-    phase_idle_threshold_ms: int
-    tool_counts: dict[str, int]
-    word_count: int
-    confidence: float
-    evidence: list[str]
-
-
 class SessionProfileDocument(TypedDict):
     session_id: str
     origin: str
@@ -60,8 +28,6 @@ class SessionProfileDocument(TypedDict):
     file_paths_touched: list[str]
     languages_detected: list[str]
     repo_names: list[str]
-    work_events: list[WorkEventDocument]
-    phases: list[SessionPhaseDocument]
     first_message_at: str | None
     last_message_at: str | None
     timestamp_source: str
@@ -134,7 +100,6 @@ class ThreadDocument(TypedDict):
     total_cost_usd: float
     dominant_repo: str | None
     origin_breakdown: dict[str, int]
-    work_event_breakdown: dict[str, int]
     confidence: float
     support_level: str
     support_signals: list[str]
@@ -142,9 +107,7 @@ class ThreadDocument(TypedDict):
 
 
 __all__ = [
-    "SessionPhaseDocument",
     "SessionProfileDocument",
-    "WorkEventDocument",
     "ThreadDocument",
     "ThreadMemberEvidenceDocument",
 ]

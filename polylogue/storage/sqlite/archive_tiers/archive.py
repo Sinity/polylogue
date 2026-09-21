@@ -56,15 +56,10 @@ from polylogue.analysis.archive import (
     SessionInferencePayload,
     SessionLatencyProfileInsight,
     SessionLatencyProfilePayload,
-    SessionPhaseEvidencePayload,
-    SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
-    SessionWorkEventInsight,
     ThreadInsight,
     UsageTimelineInsight,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
 )
 from polylogue.analysis.archive_models import ThreadMemberEvidencePayload, ThreadPayload
 from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
@@ -316,16 +311,12 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
-    ArchiveSessionPhase,
-    ArchiveSessionWorkEvent,
     PreparedRows,
     PreparedSessionShardRows,
     PreparedSessionWrite,
     bind_session_shard,
     read_archive_session_envelope,
     read_archive_session_page,
-    read_session_phases,
-    read_session_work_events,
     refresh_and_sweep_attachment_rows,
     search_archive_blocks,
     session_attachment_ids,
@@ -1255,7 +1246,6 @@ class ArchiveStore:
             raise RuntimeError("a readiness pass is only meaningful for an owned inactive generation")
         from polylogue.storage.fts.fts_lifecycle import (
             rebuild_fts_index_sync,
-            rebuild_session_insight_fts_sync,
         )
         from polylogue.storage.sqlite.runtime_indexes import restore_deferred_secondary_indexes_sync
 
@@ -1263,7 +1253,6 @@ class ArchiveStore:
         self._deferred_secondary_indexes = ()
         self._conn.commit()
         rebuild_fts_index_sync(self._conn)
-        rebuild_session_insight_fts_sync(self._conn)
         self._conn.commit()
         violations = self._conn.execute("PRAGMA foreign_key_check").fetchmany(8)
         if violations:
@@ -2839,157 +2828,6 @@ class ArchiveStore:
             "last_observed_at": _iso_from_ms(max(observed_ms)) if observed_ms else None,
         }
 
-    def get_session_work_event_insights(self, session_id: str) -> list[SessionWorkEventInsight]:
-        """Read archive work-event insights for one session."""
-        try:
-            resolved_session_id = self.resolve_session_id(session_id)
-        except KeyError:
-            return []
-        return self.list_session_work_event_insights(session_id=resolved_session_id)
-
-    def list_session_work_event_insights(
-        self,
-        *,
-        session_id: str | None = None,
-        origin: str | None = None,
-        heuristic_label: str | None = None,
-        query: str | None = None,
-        since_ms: int | None = None,
-        until_ms: int | None = None,
-        limit: int | None = 50,
-        offset: int = 0,
-    ) -> list[SessionWorkEventInsight]:
-        """List archive work-event insights with the public insight contract."""
-        where: list[str] = []
-        params: list[object] = []
-        if session_id is not None:
-            where.append("we.session_id = ?")
-            params.append(self.resolve_session_id(session_id))
-        origin = _origin_value(origin)
-        if origin is not None:
-            where.append("s.origin = ?")
-            params.append(origin)
-        if heuristic_label is not None:
-            where.append("we.work_event_type = ?")
-            params.append(heuristic_label)
-        if query:
-            where.append("we.search_text LIKE ?")
-            params.append(f"%{query}%")
-        # A work event with no reliable timestamp anywhere in its fallback
-        # chain (COALESCE(...) IS NULL) is not evidence it falls outside a
-        # since/until window -- include it rather than let SQL's NULL
-        # propagation silently exclude it (polylogue-2seq, sort_key_ms
-        # COALESCE audit).
-        if since_ms is not None:
-            where.append(
-                "(COALESCE(we.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(we.started_at_ms, s.sort_key_ms) >= ?)"
-            )
-            params.append(since_ms)
-        if until_ms is not None:
-            where.append(
-                "(COALESCE(we.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(we.started_at_ms, s.sort_key_ms) <= ?)"
-            )
-            params.append(until_ms)
-        clause = "WHERE " + " AND ".join(where) if where else ""
-        pagination = "" if limit is None else " LIMIT ? OFFSET ?"
-        if limit is not None:
-            params.extend([max(int(limit), 0), max(int(offset), 0)])
-        rows = self._conn.execute(
-            f"""
-            SELECT we.session_id, we.position
-            FROM session_work_events we
-            JOIN sessions s ON s.session_id = we.session_id
-            {clause}
-            ORDER BY COALESCE(we.started_at_ms, s.sort_key_ms) DESC, we.session_id, we.position
-            {pagination}
-            """,
-            tuple(params),
-        ).fetchall()
-        events_by_session = {str(row["session_id"]) for row in rows}
-        indexed: dict[tuple[str, int], SessionWorkEventInsight] = {}
-        for event_session_id in events_by_session:
-            provenance = _read_session_insight_provenance(self._conn, event_session_id)
-            session_origin = _session_origin(self._conn, event_session_id)
-            for event in read_session_work_events(self._conn, session_id=event_session_id).values():
-                if heuristic_label is None or event.work_event_type == heuristic_label:
-                    indexed[(event.session_id, event.position)] = _work_event_insight_from_archive_row(
-                        event,
-                        origin=session_origin,
-                        provenance=provenance,
-                    )
-        return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
-
-    def get_session_phase_insights(self, session_id: str) -> list[SessionPhaseInsight]:
-        """Read archive phase insights for one session."""
-        try:
-            resolved_session_id = self.resolve_session_id(session_id)
-        except KeyError:
-            return []
-        return self.list_session_phase_insights(session_id=resolved_session_id)
-
-    def list_session_phase_insights(
-        self,
-        *,
-        session_id: str | None = None,
-        origin: str | None = None,
-        since_ms: int | None = None,
-        until_ms: int | None = None,
-        limit: int | None = 50,
-        offset: int = 0,
-    ) -> list[SessionPhaseInsight]:
-        """List archive phase insights with the public insight contract."""
-        where: list[str] = []
-        params: list[object] = []
-        if session_id is not None:
-            where.append("sp.session_id = ?")
-            params.append(self.resolve_session_id(session_id))
-        origin = _origin_value(origin)
-        if origin is not None:
-            where.append("s.origin = ?")
-            params.append(origin)
-        # A phase with no reliable timestamp anywhere in its fallback chain
-        # (COALESCE(...) IS NULL) is not evidence it falls outside a
-        # since/until window -- include it rather than let SQL's NULL
-        # propagation silently exclude it (polylogue-2seq, sort_key_ms
-        # COALESCE audit).
-        if since_ms is not None:
-            where.append(
-                "(COALESCE(sp.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(sp.started_at_ms, s.sort_key_ms) >= ?)"
-            )
-            params.append(since_ms)
-        if until_ms is not None:
-            where.append(
-                "(COALESCE(sp.started_at_ms, s.sort_key_ms) IS NULL OR COALESCE(sp.started_at_ms, s.sort_key_ms) <= ?)"
-            )
-            params.append(until_ms)
-        clause = "WHERE " + " AND ".join(where) if where else ""
-        pagination = "" if limit is None else " LIMIT ? OFFSET ?"
-        if limit is not None:
-            params.extend([max(int(limit), 0), max(int(offset), 0)])
-        rows = self._conn.execute(
-            f"""
-            SELECT sp.session_id, sp.position
-            FROM session_phases sp
-            JOIN sessions s ON s.session_id = sp.session_id
-            {clause}
-            ORDER BY COALESCE(sp.started_at_ms, s.sort_key_ms) DESC, sp.session_id, sp.position
-            {pagination}
-            """,
-            tuple(params),
-        ).fetchall()
-        phases_by_session = {str(row["session_id"]) for row in rows}
-        indexed: dict[tuple[str, int], SessionPhaseInsight] = {}
-        for phase_session_id in phases_by_session:
-            provenance = _read_session_insight_provenance(self._conn, phase_session_id)
-            session_origin = _session_origin(self._conn, phase_session_id)
-            for phase in read_session_phases(self._conn, session_id=phase_session_id).values():
-                indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
-                    phase,
-                    origin=session_origin,
-                    provenance=provenance,
-                )
-        return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
-
     def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
         """Read one archive thread projection as a public thread insight."""
         row = self._conn.execute(
@@ -3827,7 +3665,6 @@ class ArchiveStore:
         insights = [
             _archive_messages_fts_debt(self._conn),
             _archive_profile_rows_debt(self._conn),
-            _archive_profile_counts_debt(self._conn),
             _archive_source_raw_link_debt(self.index_db_path, self.source_db_path),
             _archive_user_overlay_debt(self.index_db_path, self.user_db_path),
         ]
@@ -3969,7 +3806,7 @@ class ArchiveStore:
                    sp.workflow_shape, sp.workflow_shape_confidence, sp.terminal_state,
                    sp.terminal_state_method,
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
-                   sp.attachment_count, sp.work_event_count, sp.phase_count,
+                   sp.attachment_count,
                    sp.tool_calls_per_minute,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
@@ -4113,7 +3950,7 @@ class ArchiveStore:
                    sp.workflow_shape, sp.workflow_shape_confidence, sp.terminal_state,
                    sp.terminal_state_method,
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
-                   sp.attachment_count, sp.work_event_count, sp.phase_count,
+                   sp.attachment_count,
                    sp.tool_calls_per_minute,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
@@ -5948,10 +5785,6 @@ class ArchiveStore:
     def _rigor_audit_rows(self, insight_name: str, *, limit: int) -> list[object]:
         if insight_name == "session_profiles":
             return list(self.list_session_profile_insights(limit=limit))
-        if insight_name == "session_work_events":
-            return list(self.list_session_work_event_insights(limit=limit))
-        if insight_name == "session_phases":
-            return list(self.list_session_phase_insights(limit=limit))
         if insight_name == "threads":
             return list(self.list_thread_insights(limit=limit))
         if insight_name == "session_tag_rollups":
@@ -6092,24 +5925,6 @@ class ArchiveStore:
                 status.stale_profile_row_count,
                 status.orphan_profile_row_count,
                 ("session_profiles",),
-            ),
-            "session_work_events": (
-                "session_work_events",
-                status.work_event_inference_count,
-                status.expected_work_event_inference_count,
-                0,
-                status.stale_work_event_inference_count,
-                status.orphan_work_event_inference_count,
-                ("session_work_events",),
-            ),
-            "session_phases": (
-                "session_phases",
-                status.phase_count,
-                status.expected_phase_count,
-                0,
-                status.stale_phase_count,
-                status.orphan_phase_count,
-                ("session_phases",),
             ),
             # polylogue-dab/itvd: runs, observed events and context snapshots are
             # source-derived CTE relations, never tables, so they can never appear
@@ -8031,78 +7846,6 @@ def _archive_enrichment_provenance(
     )
 
 
-def _work_event_insight_from_archive_row(
-    event: ArchiveSessionWorkEvent,
-    *,
-    origin: str,
-    provenance: ArchiveInsightProvenance | None,
-) -> SessionWorkEventInsight:
-    evidence_payload = {
-        **event.evidence,
-        "start_index": event.start_index,
-        "end_index": event.end_index,
-        "start_time": _iso_from_ms(event.started_at_ms),
-        "end_time": _iso_from_ms(event.ended_at_ms),
-        "duration_ms": event.duration_ms,
-        "file_paths": event.file_paths,
-        "tools_used": event.tools_used,
-    }
-    inference_payload = {
-        **event.inference,
-        "heuristic_label": event.work_event_type,
-        "summary": event.summary,
-        "confidence": event.confidence,
-        "support_level": confidence_from_score(event.confidence),
-    }
-    return SessionWorkEventInsight(
-        event_id=event.event_id,
-        session_id=event.session_id,
-        origin=origin,
-        event_index=event.position,
-        provenance=_archive_provenance(
-            provenance,
-            input_high_water_mark=event.input_high_water_mark,
-            input_high_water_mark_source=event.input_high_water_mark_source,
-        ),
-        inference_provenance=_archive_inference_provenance(
-            provenance,
-            input_high_water_mark=event.input_high_water_mark,
-            input_high_water_mark_source=event.input_high_water_mark_source,
-        ),
-        evidence=WorkEventEvidencePayload.model_validate(evidence_payload),
-        inference=WorkEventInferencePayload.model_validate(inference_payload),
-    )
-
-
-def _phase_insight_from_archive_row(
-    phase: ArchiveSessionPhase,
-    *,
-    origin: str,
-    provenance: ArchiveInsightProvenance | None,
-) -> SessionPhaseInsight:
-    evidence_payload = {
-        **phase.evidence,
-        "start_time": _iso_from_ms(phase.started_at_ms),
-        "end_time": _iso_from_ms(phase.ended_at_ms),
-        "message_range": (phase.start_index, phase.end_index),
-        "duration_ms": phase.duration_ms,
-        "tool_counts": phase.tool_counts,
-        "word_count": phase.word_count,
-    }
-    return SessionPhaseInsight(
-        phase_id=phase.phase_id,
-        session_id=phase.session_id,
-        origin=origin,
-        phase_index=phase.position,
-        provenance=_archive_provenance(
-            provenance,
-            input_high_water_mark=phase.input_high_water_mark,
-            input_high_water_mark_source=phase.input_high_water_mark_source,
-        ),
-        evidence=SessionPhaseEvidencePayload.model_validate(evidence_payload),
-    )
-
-
 @dataclass(frozen=True)
 class _SessionProfileComponents:
     """Extracted session-profile payloads shared by the insight and record builders."""
@@ -8170,8 +7913,6 @@ def _session_profile_components_from_archive_row(
     if inference is None:
         inference = SessionInferencePayload.model_validate(
             {
-                "work_event_count": int(row["work_event_count"] or 0),
-                "phase_count": int(row["phase_count"] or 0),
                 "engaged_duration_ms": 0,
                 "engaged_minutes": 0.0,
                 "engaged_duration_source": "unknown",
@@ -8312,8 +8053,6 @@ def _session_profile_record_from_archive_row(
         message_count=int(row["message_count"] or 0),
         substantive_count=int(row["substantive_count"] or 0),
         attachment_count=int(row["attachment_count"] or 0),
-        work_event_count=int(row["work_event_count"] or 0),
-        phase_count=int(row["phase_count"] or 0),
         word_count=int(row["word_count"] or 0),
         tool_use_count=int(row["tool_use_count"] or 0),
         thinking_count=int(row["thinking_count"] or 0),
@@ -8680,41 +8419,6 @@ def _archive_profile_rows_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
     )
     return _archive_debt(
         name="archive_session_profile_rows",
-        category="derived_repair",
-        issue_count=issue_count,
-        detail=detail,
-    )
-
-
-def _archive_profile_counts_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
-    work_event_mismatch = _count_scalar(
-        conn,
-        """
-        SELECT COUNT(*)
-        FROM session_profiles AS p
-        WHERE p.work_event_count != (
-            SELECT COUNT(*) FROM session_work_events AS e WHERE e.session_id = p.session_id
-        )
-        """,
-    )
-    phase_mismatch = _count_scalar(
-        conn,
-        """
-        SELECT COUNT(*)
-        FROM session_profiles AS p
-        WHERE p.phase_count != (
-            SELECT COUNT(*) FROM session_phases AS ph WHERE ph.session_id = p.session_id
-        )
-        """,
-    )
-    issue_count = work_event_mismatch + phase_mismatch
-    detail = (
-        "archive profile derived counts match timeline rows"
-        if issue_count == 0
-        else f"{work_event_mismatch:,} work-event and {phase_mismatch:,} phase count mismatches"
-    )
-    return _archive_debt(
-        name="archive_profile_counts",
         category="derived_repair",
         issue_count=issue_count,
         detail=detail,

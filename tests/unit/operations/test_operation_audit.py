@@ -1903,7 +1903,7 @@ def test_closed_historical_receipt_replays_through_source_wal(tmp_path: Path, mo
                 disposition="published",
                 input_binding="input:fixture",
                 output_binding="output:fixture",
-                certified_counts=InsightCertifiedCountsHistorical(profiles=1, work_events=0, phases=0),
+                certified_counts=InsightCertifiedCountsHistorical(profiles=1),
                 publication_known_committed=True,
             )
         ],

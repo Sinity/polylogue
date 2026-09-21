@@ -31,10 +31,8 @@ from polylogue.analysis.archive import (
     CostRollupInsightQuery,
     SessionCostInsightQuery,
     SessionLatencyProfileInsightQuery,
-    SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
-    SessionWorkEventInsightQuery,
     ThreadInsightQuery,
     UsageTimelineInsightQuery,
 )
@@ -95,18 +93,6 @@ def _archive_spec(method_name: str, request_model: type[BaseModel]) -> FacadeCon
 # case without a second hand-maintained list.
 FACADE_CONSERVATION_REGISTRY: tuple[FacadeConservationSpec, ...] = (
     _insight_spec("list_session_tag_rollup_insights", SessionTagRollupQuery),
-    _insight_spec(
-        "list_session_work_event_insights",
-        SessionWorkEventInsightQuery,
-        facade_effect_fields=frozenset({"session_date_since", "session_date_until"}),
-        # polylogue-3nah4: accepted query is currently not forwarded.
-        dropped_fields=frozenset({"query"}),
-    ),
-    _insight_spec(
-        "list_session_phase_insights",
-        SessionPhaseInsightQuery,
-        facade_effect_fields=frozenset({"session_date_since", "session_date_until"}),
-    ),
     _insight_spec("list_thread_insights", ThreadInsightQuery),
     _insight_spec("list_archive_coverage_insights", ArchiveCoverageInsightQuery),
     _insight_spec("list_tool_usage_insights", ToolUsageInsightQuery),

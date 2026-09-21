@@ -892,8 +892,8 @@ def _empty_cost_payload(session_id: str, origin: str | None) -> dict[str, object
 # ---------------------------------------------------------------------------
 # Insights browser helpers (#1120)
 #
-# The insights browser endpoint surfaces the four per-session insight kinds
-# (profile, work-event timeline, phases, work threads) as a single JSON
+# The insights browser endpoint surfaces the per-session insight kinds
+# (profile, work threads) as a single JSON
 # envelope so the reader inspector can render them inline. Each kind carries
 # a readiness chip from the closed vocabulary ``q-ready`` / ``q-partial`` /
 # ``q-missing`` driven by:
@@ -902,14 +902,14 @@ def _empty_cost_payload(session_id: str, origin: str | None) -> dict[str, object
 # - ``q-missing``  — the insight has no materialized row for this session
 #   (the substrate is empty for this scope, not the whole archive).
 # - ``q-partial``  — the insight is materialized but the row count is zero
-#   (e.g. a session profile exists but has no work events recorded).
+#   (e.g. a session profile exists but has no threads recorded).
 #
 # The endpoint never imports insight storage modules directly — it routes
 # through the same public ``Polylogue`` facade adapters that CLI and MCP use
 # (AC#1120, AC#1018).
 # ---------------------------------------------------------------------------
 
-INSIGHT_KINDS: tuple[str, ...] = ("profile", "timeline", "phases", "threads")
+INSIGHT_KINDS: tuple[str, ...] = ("profile", "threads")
 
 
 def _readiness_tag(outcome: OutcomeEnvelope, *, materialized: bool, row_count: int | None = None) -> str:
@@ -1019,52 +1019,6 @@ def _empty_profile_panel_payload(outcome: OutcomeEnvelope) -> dict[str, object]:
         "materialized": False,
         "profile": None,
         "provenance": None,
-    }
-
-
-def _work_event_panel_payload(events: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
-    items: list[dict[str, object]] = []
-    for ev in events:
-        items.append(
-            {
-                "event_id": ev.event_id,
-                "event_index": int(ev.event_index),
-                "session_id": ev.session_id,
-                "origin": ev.origin,
-                "evidence": ev.evidence.model_dump(mode="json"),
-                "inference": ev.inference.model_dump(mode="json"),
-                "provenance": _provenance_dict(ev.provenance),
-            }
-        )
-    return {
-        "outcome": outcome.to_dict(),
-        "readiness_tag": _readiness_tag(outcome, materialized=bool(events), row_count=len(events)),
-        "materialized": bool(events),
-        "count": len(items),
-        "events": items,
-    }
-
-
-def _phase_panel_payload(phases: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
-    items: list[dict[str, object]] = []
-    for ph in phases:
-        items.append(
-            {
-                "phase_id": ph.phase_id,
-                "phase_index": int(ph.phase_index),
-                "session_id": ph.session_id,
-                "origin": ph.origin,
-                "evidence": ph.evidence.model_dump(mode="json"),
-                "inference": _optional_model_dump(ph.inference),
-                "provenance": _provenance_dict(ph.provenance),
-            }
-        )
-    return {
-        "outcome": outcome.to_dict(),
-        "readiness_tag": _readiness_tag(outcome, materialized=bool(phases), row_count=len(phases)),
-        "materialized": bool(phases),
-        "count": len(items),
-        "phases": items,
     }
 
 
@@ -4420,11 +4374,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_get_session_insights(self, conv_id: str, params: dict[str, list[str]]) -> None:
-        """``GET /api/insights/sessions/{id}?include=profile,timeline,phases,threads``.
+        """``GET /api/insights/sessions/{id}?include=profile,threads``.
 
-        Returns a single typed envelope joining the four per-session insight
-        kinds for *conv_id* — session profile (#1018), work-event timeline
-        (#1133/#1135), phases, and work threads. Each section carries a
+        Returns a single typed envelope joining the per-session insight
+        kinds for *conv_id* — session profile (#1018) and work threads.
+        Each section carries a
         readiness chip drawn from the closed vocabulary
         (``q-ready`` / ``q-partial`` / ``q-missing``).
 
@@ -4452,8 +4406,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     ) -> object:
         from polylogue.analysis.archive import (
             ArchiveInsightUnavailableError,
-            SessionPhaseInsightQuery,
-            SessionWorkEventInsightQuery,
             ThreadInsightQuery,
         )
 
@@ -4527,31 +4479,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 if staleness is not None:
                     panel["staleness"] = staleness
             kinds["profile"] = panel
-
-        if "timeline" in includes:
-            try:
-                # Per-session list adapter — same path as MCP `session_work_events`.
-                events = await poly.list_session_work_event_insights(
-                    SessionWorkEventInsightQuery(session_id=conv_id, limit=None)
-                )
-                timeline_outcome = decide_outcome(matched=len(events))
-            except ArchiveInsightUnavailableError as exc:
-                events = []
-                timeline_outcome = _unavailable("timeline", exc)
-            panel_outcomes.append(timeline_outcome)
-            kinds["timeline"] = _work_event_panel_payload(events, timeline_outcome)
-
-        if "phases" in includes:
-            try:
-                phases = await poly.list_session_phase_insights(
-                    SessionPhaseInsightQuery(session_id=conv_id, limit=None)
-                )
-                phases_outcome = decide_outcome(matched=len(phases))
-            except ArchiveInsightUnavailableError as exc:
-                phases = []
-                phases_outcome = _unavailable("phases", exc)
-            panel_outcomes.append(phases_outcome)
-            kinds["phases"] = _phase_panel_payload(phases, phases_outcome)
 
         if "threads" in includes:
             try:

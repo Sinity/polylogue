@@ -11,13 +11,9 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
-from polylogue.analysis.archive import ArchiveCoverageInsight, SessionWorkEventInsight
+from polylogue.analysis.archive import ArchiveCoverageInsight
 from polylogue.analysis.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
-    ArchiveInferenceProvenance,
-    ArchiveInsightProvenance,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
 )
 from polylogue.analysis.registry import get_insight_type, insight_items_payload
 from polylogue.cli.click_app import cli
@@ -64,8 +60,8 @@ def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
 
     This is the archive equivalent of ``rebuild_session_insights_sync``
     over a v22 connection: it opens the archive at ``db_path``'s root
-    and runs the archive session-insight materializer, populating ``session_profiles``,
-    ``session_work_events``, ``session_phases``, and ``threads``.
+    and runs the archive session-insight materializer, populating
+    ``session_profiles``, ``session_latency_profiles`` and ``threads``.
     """
     with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
         return rebuild_archive_session_insights(archive, **kwargs)
@@ -109,44 +105,6 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     assert json_object_list(cli_payload["archive_coverage"])[0]["insight_kind"] == "archive_coverage"
     assert mcp_payload["total"] == 1
     assert json_object_list(mcp_payload["items"])[0]["origin"] == "claude-code-session"
-
-    temporal = SessionWorkEventInsight(
-        event_id="temporal-event",
-        session_id="codex-session:temporal",
-        origin="codex-session",
-        event_index=0,
-        provenance=ArchiveInsightProvenance(
-            materializer_version=1,
-            materialized_at=None,
-            input_high_water_mark="2026-08-04T09:30:00Z",
-            input_high_water_mark_source="provider_ts",
-            time_confidence="recorded",
-        ),
-        inference_provenance=ArchiveInferenceProvenance(
-            materializer_version=1,
-            materialized_at=None,
-            input_high_water_mark="2026-08-04T09:30:00Z",
-            input_high_water_mark_source="provider_ts",
-            time_confidence="recorded",
-            inference_version=1,
-            inference_family="archive",
-        ),
-        evidence=WorkEventEvidencePayload(start_index=0, end_index=0),
-        inference=WorkEventInferencePayload(
-            heuristic_label="implementation",
-            summary="timeless event",
-            confidence=0.5,
-        ),
-    )
-    temporal_mcp_payload = insight_items_payload(
-        [temporal],
-        get_insight_type("session_work_events"),
-        item_key="items",
-    )
-    temporal_provenance = json_object(json_object_list(temporal_mcp_payload["items"])[0]["provenance"])
-    assert temporal_provenance["materialized_at"] is None
-    assert temporal_provenance["input_high_water_mark_source"] == "provider_ts"
-    assert temporal_provenance["time_confidence"] == "recorded"
 
 
 def _seed_products(cli_workspace: CliWorkspace) -> None:
@@ -540,15 +498,16 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
     insights = {item["insight_name"]: item for item in json_object_list(payload["insights"])}
     assert set(insights) >= {
         "session_profiles",
-        "session_work_events",
-        "session_phases",
         "threads",
         "session_tag_rollups",
         "archive_coverage",
     }
     assert insights["session_profiles"]["table_present"] is True
-    assert json_int(insights["session_profiles"]["degraded_count"]) == 2
-    assert json_int(insights["session_work_events"]["row_count"]) >= 1
+    # polylogue-cuxz.7 retired the work-event/phase fallback markers; the
+    # seeded profiles have user turns and a live analysis, so no enrichment
+    # marker fires and none of them is degraded.
+    assert json_int(insights["session_profiles"]["degraded_count"]) == 0
+    assert json_int(insights["threads"]["row_count"]) >= 1
 
 
 def test_insights_status_inherits_root_format_and_filters(cli_workspace: CliWorkspace) -> None:
@@ -566,7 +525,7 @@ def test_insights_status_inherits_root_format_and_filters(cli_workspace: CliWork
             "insights",
             "status",
             "--insight",
-            "session-work-events",
+            "threads",
         ],
         catch_exceptions=False,
     )
@@ -576,7 +535,7 @@ def test_insights_status_inherits_root_format_and_filters(cli_workspace: CliWork
     assert payload["origin"] == "claude-code-session"
     insights = json_object_list(payload["insights"])
     assert len(insights) == 1
-    assert insights[0]["insight_name"] == "session_work_events"
+    assert insights[0]["insight_name"] == "threads"
     coverage = json_object_list(insights[0]["origin_coverage"])
     assert coverage[0]["origin"] == "claude-code-session"
 
@@ -637,16 +596,14 @@ def test_insights_audit_json(cli_workspace: CliWorkspace) -> None:
     payload = extract_json_result(result.output)
     entries = {item["insight_name"]: item for item in json_object_list(payload["entries"])}
     assert "session_profiles" in entries
-    assert "session_work_events" in entries
     profiles = entries["session_profiles"]
     assert profiles["has_evidence_payload"] is True
     assert profiles["has_inference_payload"] is True
     assert json_int(profiles["sample_size"]) >= 1
     assert json_int(profiles["evidence_count"]) >= 1
-    # Fallback markers are declared for work events.
-    we = entries["session_work_events"]
-    assert we["has_fallback_markers"] is True
-    assert "confidence_distribution" in we
+    # Fallback markers are declared for session profiles (enrichment tier).
+    assert profiles["has_fallback_markers"] is True
+    assert "confidence_distribution" in profiles
     assert "version_targets" in profiles
 
 
@@ -795,48 +752,7 @@ def test_insights_profiles_json_handles_blank_tier_search_text_from_migrated_row
 # reconstruction fallback), so blanking them is not a supported state to recover.
 
 
-def test_insights_work_events_filter_by_canonical_session_date(cli_workspace: CliWorkspace) -> None:
-    _seed_products(cli_workspace)
-
-    runner = CliRunner()
-    matched = runner.invoke(
-        cli,
-        [
-            "analyze",
-            "insights",
-            "work-events",
-            "--session-date-since",
-            "2026-03-01",
-            "--session-date-until",
-            "2026-03-01",
-            "--format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-    missed = runner.invoke(
-        cli,
-        [
-            "analyze",
-            "insights",
-            "work-events",
-            "--session-date-since",
-            "2026-03-02",
-            "--session-date-until",
-            "2026-03-02",
-            "--format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert matched.exit_code == 0
-    assert missed.exit_code == 0
-    assert json_int(extract_json_result(matched.output)["total"]) >= 1
-    assert json_int(extract_json_result(missed.output)["total"]) == 0
-
-
-def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspace) -> None:
+def test_insights_profile_date_filters_json(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
     runner = CliRunner()
@@ -855,16 +771,12 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
         ],
         catch_exceptions=False,
     )
-    phases = runner.invoke(cli, ["analyze", "insights", "phases", "--format", "json"], catch_exceptions=False)
 
     assert profiles.exit_code == 0
-    assert phases.exit_code == 0
 
     profile_payload = extract_json_result(profiles.output)
-    phase_payload = extract_json_result(phases.output)
     assert json_int(profile_payload["total"]) == 2
-    assert json_int(phase_payload["total"]) >= 1
-    assert json_object_list(phase_payload["session_phases"])[0]["insight_kind"] == "session_phase"
+    assert json_object_list(profile_payload["session_profiles"])[0]["insight_kind"] == "session_profile"
 
 
 def test_insights_profile_session_date_filter_reaches_archive_predicate(cli_workspace: CliWorkspace) -> None:
@@ -904,41 +816,6 @@ def test_insights_profile_session_date_filter_reaches_archive_predicate(cli_work
     assert session_id.endswith(":ext-conv-root")
 
 
-def test_insights_work_events_json_preserves_archive_temporal_provenance_without_marker(
-    cli_workspace: CliWorkspace,
-) -> None:
-    """CLI serialization uses the ArchiveStore provenance, not an epoch fallback."""
-
-    db_path = cli_workspace["db_path"]
-    session_token = "temporal-provenance"
-    session_id = native_session_id_for("codex", session_token)
-    SessionBuilder(db_path, session_token).provider("codex").add_message("u1", role="user", text="timeless").save()
-    with open_index_db(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO session_work_events (
-                session_id, position, work_event_type, summary,
-                input_high_water_mark, input_high_water_mark_source
-            ) VALUES (?, 0, 'implementation', 'timeless event', ?, 'provider_ts')
-            """,
-            (session_id, "2026-08-04T09:30:00Z"),
-        )
-        conn.commit()
-
-    result = CliRunner().invoke(
-        cli,
-        ["analyze", "insights", "work-events", "--session-id", session_id, "--format", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    row = json_object_list(extract_json_result(result.output)["session_work_events"])[0]
-    provenance = json_object(row["provenance"])
-    assert provenance["materialized_at"] is None
-    assert provenance["input_high_water_mark_source"] == "provider_ts"
-    assert provenance["time_confidence"] == "recorded"
-
-
 def test_session_insight_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace) -> None:
     _seed_products(cli_workspace)
 
@@ -946,8 +823,6 @@ def test_session_insight_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace)
     status = _insight_status(cli_workspace["db_path"])
 
     assert counts.profiles == 2
-    assert counts.work_events >= 1
-    assert counts.phases >= 1
     assert status.profile_row_count == 2
 
 
@@ -967,8 +842,6 @@ def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspa
     # old upfront "cleared session_*" heartbeats must be gone.
     prune_events = [event for event in observed if event[1] and event[1].startswith("rebuild: pruned orphans from ")]
     assert [desc for _, desc in prune_events] == [
-        "rebuild: pruned orphans from session_work_events",
-        "rebuild: pruned orphans from session_phases",
         "rebuild: pruned orphans from session_latency_profiles",
         "rebuild: pruned orphans from session_profiles",
     ]
@@ -1164,8 +1037,6 @@ def test_session_insight_status_accepts_epoch_backed_session_timestamps(cli_work
 
     assert status.profile_row_count == 1
     assert status.stale_profile_row_count == 0
-    assert status.stale_work_event_inference_count == 0
-    assert status.stale_phase_inference_count == 0
     assert status.profile_merged_fts_duplicate_count == 0
 
 
@@ -1193,44 +1064,3 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
 
     assert status.profile_row_count == 1
     assert status.missing_profile_row_count == 1
-
-
-def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace) -> None:
-    """`analyze insights timeline <conv-id> --format json` emits per-entry fidelity tags."""
-    _seed_products(cli_workspace)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["analyze", "insights", "timeline", NID_ROOT, "--format", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = extract_json_result(result.output)
-    assert payload["session_id"] == NID_ROOT
-    counts = json_object(payload["fidelity_counts"])
-    # Both fidelity buckets are present in the contract output even if zero.
-    assert "hook" in counts
-    assert "sort_key" in counts
-    entries = json_object_list(payload["entries"])
-    # Every entry carries a fidelity tag drawn from the contract set.
-    for entry in entries:
-        assert entry["fidelity"] in {"hook", "sort_key"}
-        assert "timing_provenance" in entry
-        assert entry["source"] in {"work_event", "phase"}
-
-
-def test_insights_timeline_plain_includes_legend(cli_workspace: CliWorkspace) -> None:
-    _seed_products(cli_workspace)
-
-    runner = CliRunner()
-    result = runner.invoke(
-        cli,
-        ["analyze", "insights", "timeline", NID_ROOT],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    assert f"Timeline for {NID_ROOT}" in result.output
-    assert "legend:" in result.output

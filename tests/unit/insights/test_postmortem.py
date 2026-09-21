@@ -65,8 +65,6 @@ def _profile(
         file_paths_touched=(),
         languages_detected=(),
         repo_names=repo_names,
-        work_events=(),
-        phases=(),
         first_message_at=first_message_at,
         last_message_at=last_message_at,
         wall_duration_ms=wall_duration_ms,

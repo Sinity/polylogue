@@ -6,23 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.semantic.facts import SessionSemanticFacts
 from polylogue.archive.session.attribution import SessionAttribution
-from polylogue.archive.session.documents import (
-    SessionPhaseDocument,
-    SessionProfileDocument,
-)
-from polylogue.archive.session.extraction import WorkEvent
-from polylogue.archive.session.provenance import date_provenance as _date_provenance
-from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
+from polylogue.archive.session.documents import SessionProfileDocument
 from polylogue.archive.session.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.core.payload_coercion import (
     coerce_float,
     coerce_int,
-    int_pair,
     mapping_or_empty,
-    mapping_sequence,
     optional_date,
     optional_datetime,
     optional_string,
@@ -31,7 +22,6 @@ from polylogue.core.payload_coercion import (
     string_sequence,
 )
 
-SessionPhasePayload = SessionPhaseDocument
 SessionProfilePayload = SessionProfileDocument
 
 
@@ -41,41 +31,6 @@ def _scalar_mapping(value: object) -> dict[str, int | float | str | None]:
         for key, item in mapping_or_empty(value).items()
         if isinstance(item, int | float | str) or item is None
     }
-
-
-def _phase_to_dict(phase: SessionPhase) -> SessionPhasePayload:
-    start_time = phase.start_time.isoformat() if phase.start_time else None
-    end_time = phase.end_time.isoformat() if phase.end_time else None
-    canonical_session_date = phase.canonical_session_date.isoformat() if phase.canonical_session_date else None
-    return {
-        "start_time": start_time,
-        "end_time": end_time,
-        "canonical_session_date": canonical_session_date,
-        "timing_provenance": _range_timing_provenance(start_time, end_time),
-        "date_provenance": _date_provenance(canonical_session_date, start_time, end_time),
-        "message_range": list(phase.message_range),
-        "duration_ms": phase.duration_ms,
-        "phase_idle_threshold_ms": phase.phase_idle_threshold_ms,
-        "tool_counts": phase.tool_counts,
-        "word_count": phase.word_count,
-        "confidence": phase.confidence,
-        "evidence": list(phase.evidence),
-    }
-
-
-def _phase_from_mapping(payload: SessionPhasePayload | Mapping[str, object]) -> SessionPhase:
-    return SessionPhase(
-        start_time=optional_datetime(payload.get("start_time")),
-        end_time=optional_datetime(payload.get("end_time")),
-        canonical_session_date=optional_date(payload.get("canonical_session_date")),
-        message_range=int_pair(payload.get("message_range")),
-        duration_ms=coerce_int(payload.get("duration_ms"), 0),
-        phase_idle_threshold_ms=coerce_int(payload.get("phase_idle_threshold_ms"), 300_000),
-        tool_counts=string_int_mapping(payload.get("tool_counts")),
-        word_count=coerce_int(payload.get("word_count"), 0),
-        confidence=coerce_float(payload.get("confidence"), 0.0),
-        evidence=string_sequence(payload.get("evidence")),
-    )
 
 
 @dataclass(frozen=True)
@@ -102,8 +57,6 @@ class SessionProfile:
     file_paths_touched: tuple[str, ...]
     languages_detected: tuple[str, ...]
     repo_names: tuple[str, ...]
-    work_events: tuple[WorkEvent, ...]
-    phases: tuple[SessionPhase, ...]
     inferred_topic: str | None = None
     inferred_topic_source: str = "absent"
     first_message_at: datetime | None = None
@@ -203,8 +156,6 @@ class SessionProfile:
             "file_paths_touched": list(self.file_paths_touched),
             "languages_detected": list(self.languages_detected),
             "repo_names": list(self.repo_names),
-            "work_events": [event.to_dict() for event in self.work_events],
-            "phases": [_phase_to_dict(phase) for phase in self.phases],
             "first_message_at": self.first_message_at.isoformat() if self.first_message_at else None,
             "last_message_at": self.last_message_at.isoformat() if self.last_message_at else None,
             "timestamp_source": self.timestamp_source,
@@ -283,8 +234,6 @@ class SessionProfile:
             file_paths_touched=string_sequence(payload.get("file_paths_touched")),
             languages_detected=string_sequence(payload.get("languages_detected")),
             repo_names=repo_names,
-            work_events=tuple(WorkEvent.from_dict(item) for item in mapping_sequence(payload.get("work_events"))),
-            phases=tuple(_phase_from_mapping(item) for item in mapping_sequence(payload.get("phases"))),
             first_message_at=optional_datetime(payload.get("first_message_at")),
             last_message_at=optional_datetime(payload.get("last_message_at")),
             timestamp_source=optional_string(payload.get("timestamp_source")) or "provider_supplied",
@@ -348,8 +297,6 @@ class SessionProfile:
 class SessionAnalysis:
     facts: SessionSemanticFacts
     attribution: SessionAttribution
-    work_events: tuple[WorkEvent, ...]
-    phases: tuple[SessionPhase, ...]
 
 
 __all__ = ["SessionAnalysis", "SessionProfile"]

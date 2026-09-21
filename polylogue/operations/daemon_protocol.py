@@ -550,8 +550,6 @@ class IngestResult(_OperationResult):
 
 class InsightRebuildResult(_OperationPayload):
     profiles: int = Field(ge=0)
-    work_events: int = Field(ge=0)
-    phases: int = Field(ge=0)
     threads: int = Field(ge=0)
     tag_rollups: int = Field(ge=0)
 

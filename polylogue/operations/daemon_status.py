@@ -37,7 +37,6 @@ _TIER_STATUS_TABLES: dict[str, tuple[str, ...]] = {
         "actions",
         "messages_fts",
         "session_profiles",
-        "work_events",
         "threads",
         "thread_sessions",
     ),

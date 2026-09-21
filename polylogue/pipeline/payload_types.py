@@ -100,8 +100,6 @@ class IngestDiagnostics(TypedDict, total=False):
 class MaterializeStageObservation(TypedDict, total=False):
     mode: str
     profiles: int
-    work_events: int
-    phases: int
     threads: int
     tag_rollups: int
     sessions: int

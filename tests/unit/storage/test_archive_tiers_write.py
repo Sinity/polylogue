@@ -39,21 +39,15 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAgentPolicy,
-    ArchiveSessionPhase,
     ArchiveSessionTag,
-    ArchiveSessionWorkEvent,
     ArchiveWriteOutcome,
     read_archive_session_envelope,
     read_archive_session_page,
     read_session_agent_policies,
-    read_session_phases,
     read_session_tags,
-    read_session_work_events,
     search_archive_blocks,
-    upsert_session_phase,
     upsert_session_profile_costs,
     upsert_session_tag,
-    upsert_session_work_event,
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
@@ -931,7 +925,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
         """
         SELECT workflow_shape, workflow_shape_method, workflow_shape_confidence, terminal_state,
             terminal_state_method, terminal_state_confidence, duration_ms, substantive_count,
-            attachment_count, work_event_count, phase_count, tool_calls_per_minute,
+            attachment_count, tool_calls_per_minute,
             search_text
         FROM session_profiles
         WHERE session_id = ?
@@ -942,105 +936,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
 
     assert profile["duration_ms"] is None
     assert profile["substantive_count"] >= 0
-    assert profile["work_event_count"] >= 0
     assert isinstance(profile["search_text"], str)
-
-
-def test_archive_tiers_timeline_insight_rows_have_deterministic_targets(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "index.db")
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="codex-timeline-insights",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="implement the plan")],
-            ),
-            ParsedMessage(
-                provider_message_id="m2",
-                role=Role.ASSISTANT,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="plan implemented")],
-            ),
-        ],
-    )
-    session_id = write_parsed_session_to_archive(conn, session)
-
-    work_event = upsert_session_work_event(
-        conn,
-        session_id=session_id,
-        position=0,
-        work_event_type="implementation",
-        summary="Implemented archive helper surface",
-        confidence=0.875,
-        start_index=0,
-        end_index=1,
-        started_at_ms=1_767_225_600_000,
-        ended_at_ms=1_767_225_660_000,
-        duration_ms=60_000,
-        file_paths=("polylogue/storage/sqlite/archive_tiers/write.py",),
-        tools_used=("apply_patch", "pytest"),
-        evidence={"message_ids": ["m1", "m2"]},
-        inference={"method": "heuristic"},
-        search_text="implemented archive helper surface",
-    )
-    phase = upsert_session_phase(
-        conn,
-        session_id=session_id,
-        position=0,
-        start_index=0,
-        end_index=1,
-        started_at_ms=1_767_225_600_000,
-        ended_at_ms=1_767_225_660_000,
-        duration_ms=60_000,
-        tool_counts={"apply_patch": 1, "pytest": 1},
-        word_count=6,
-        evidence={"event_positions": [0]},
-        inference={"method": "window"},
-        search_text="build phase",
-    )
-
-    assert work_event == ArchiveSessionWorkEvent(
-        event_id=f"{session_id}:work_event:0",
-        session_id=session_id,
-        position=0,
-        work_event_type="implementation",
-        summary="Implemented archive helper surface",
-        confidence=0.875,
-        start_index=0,
-        end_index=1,
-        started_at_ms=1_767_225_600_000,
-        ended_at_ms=1_767_225_660_000,
-        duration_ms=60_000,
-        file_paths=("polylogue/storage/sqlite/archive_tiers/write.py",),
-        tools_used=("apply_patch", "pytest"),
-        evidence={"message_ids": ["m1", "m2"]},
-        inference={"method": "heuristic"},
-        search_text="implemented archive helper surface",
-    )
-    assert phase == ArchiveSessionPhase(
-        phase_id=f"{session_id}:phase:0",
-        session_id=session_id,
-        position=0,
-        start_index=0,
-        end_index=1,
-        started_at_ms=1_767_225_600_000,
-        ended_at_ms=1_767_225_660_000,
-        duration_ms=60_000,
-        tool_counts={"apply_patch": 1, "pytest": 1},
-        word_count=6,
-        evidence={"event_positions": [0]},
-        inference={"method": "window"},
-        search_text="build phase",
-    )
-    assert read_session_work_events(conn, session_id=session_id) == {0: work_event}
-    assert read_session_phases(conn, session_id=session_id) == {0: phase}
-
-    profile = conn.execute(
-        "SELECT work_event_count, phase_count FROM session_profiles WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    assert dict(profile) == {"work_event_count": 1, "phase_count": 1}
 
 
 def test_archive_tiers_session_tags_upsert_normalizes_and_refreshes_scores(tmp_path: Path) -> None:

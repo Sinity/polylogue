@@ -63,7 +63,6 @@ def thread_search_text(thread: Thread) -> str:
         thread.root_id,
         thread.dominant_repo or "",
         *thread.session_ids,
-        *thread.work_event_breakdown.keys(),
         thread.support_level,
         *thread.support_signals,
         *(signal for member in thread.member_evidence for signal in member.support_signals),
@@ -99,7 +98,6 @@ def build_thread_record(
         total_messages=thread.total_messages,
         total_cost_usd=thread.total_cost_usd,
         wall_duration_ms=thread.wall_duration_ms,
-        work_event_breakdown=thread.work_event_breakdown,
         payload=ArchivedThreadPayload.model_validate(payload),
         search_text=thread_search_text(thread),
     )
@@ -129,7 +127,6 @@ def _thread_payload_document(record: ThreadRecord) -> ThreadDocument:
         "total_cost_usd": payload.total_cost_usd,
         "dominant_repo": payload.dominant_repo,
         "origin_breakdown": dict(payload.origin_breakdown),
-        "work_event_breakdown": dict(payload.work_event_breakdown),
         "confidence": payload.confidence,
         "support_level": payload.support_level,
         "support_signals": list(payload.support_signals),

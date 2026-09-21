@@ -122,7 +122,7 @@ is just the composed view across edges, not a replacement for the physical ones.
   serves Claude resume chains, which need composition anyway and don't get it
   today (Claude `continuation` count is currently 0 — a pre-existing gap this
   fixes).
-- Session-keyed derived tables (FTS, `session_model_usage`, work-events, phases,
+- Session-keyed derived tables (FTS, `session_model_usage`,
   embeddings) hold only real (once-stored) content, so they are correct by
   construction instead of needing per-consumer dedup. Search over an inherited
   prefix resolves through the parent; embeddings never pay twice.

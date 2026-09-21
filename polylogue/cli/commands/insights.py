@@ -35,11 +35,6 @@ from polylogue.analysis.registry import (
     fetch_insights,
     render_insight_items,
 )
-from polylogue.analysis.timeline_renderer import (
-    build_session_timeline,
-    render_markdown,
-    render_plain,
-)
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.insight_command_contracts import (
@@ -149,7 +144,7 @@ class _AnalyzeInsightsGroup(click.Group):
     """Click group with section headers for command listing."""
 
     _SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
-        ("Session-level", ("profiles", "work-events", "phases", "timeline")),
+        ("Session-level", ("profiles",)),
         ("Aggregate", ("threads", "tag-rollups", "coverage", "tags")),
         ("Analytics", ("tool-usage", "costs", "cost-rollups", "usage-timeline", "debt", "latency")),
     )
@@ -558,47 +553,6 @@ def insights_audit_command(
         emit_success(report.model_dump(mode="json"))
         return
     _render_audit_plain(report)
-
-
-@analyze_insights_command.command("timeline")
-@click.argument("session_id")
-@click.option(
-    "--format",
-    "-f",
-    "output_format",
-    type=click.Choice(["plain", "markdown", "json"]),
-    default=None,
-    help="Output format (default: plain, inherits root --format).",
-)
-@click.pass_context
-def insights_timeline_command(
-    ctx: click.Context,
-    session_id: str,
-    output_format: str | None,
-) -> None:
-    """Render a per-session timeline with hook-vs-sort-key fidelity tags.
-
-    Merges materialized work events and session phases for one session
-    into a chronological timeline. Each entry carries an explicit fidelity
-    tag: ``hook`` for entries whose timing came from a recorded timestamped
-    range, ``sort_key`` for entries reconstructed from message sort-key
-    ordering.
-    """
-    env: AppEnv = ctx.obj
-    resolved_format = output_format or ctx.find_root().params.get("output_format") or "plain"
-    try:
-        work_events = run_coroutine_sync(env.polylogue.get_session_work_event_insights(session_id))
-        phases = run_coroutine_sync(env.polylogue.get_session_phase_insights(session_id))
-    except ArchiveInsightUnavailableError as exc:
-        fail("insights timeline", str(exc))
-    timeline = build_session_timeline(session_id, work_events, phases)
-    if resolved_format == "json":
-        emit_success(timeline.to_dict())
-        return
-    if resolved_format == "markdown":
-        click.echo(render_markdown(timeline))
-        return
-    click.echo(render_plain(timeline))
 
 
 # Register all insight types as subcommands

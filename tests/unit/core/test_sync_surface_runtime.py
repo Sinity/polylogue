@@ -161,10 +161,6 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         get_session_profile_insight=lambda session_id, **kwargs: ("profile", session_id, kwargs),
         list_session_profile_insights=lambda query=None: ("profiles", query),
         list_session_tag_rollup_insights=lambda query=None: ("tags", query),
-        get_session_work_event_insights=lambda session_id: ("events", session_id),
-        list_session_work_event_insights=lambda query=None: ("events-list", query),
-        get_session_phase_insights=lambda session_id: ("phases", session_id),
-        list_session_phase_insights=lambda query=None: ("phases-list", query),
         get_thread_insight=lambda thread_id: ("thread", thread_id),
         list_thread_insights=lambda query=None: ("threads", query),
         list_archive_coverage_insights=lambda query=None: ("coverage", query),
@@ -186,10 +182,6 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         )
         assert archive.list_session_profile_insights("query") == ("profiles", "query")
         assert archive.list_session_tag_rollup_insights("query") == ("tags", "query")
-        assert archive.get_session_work_event_insights("conv-1") == ("events", "conv-1")
-        assert archive.list_session_work_event_insights("query") == ("events-list", "query")
-        assert archive.get_session_phase_insights("conv-1") == ("phases", "conv-1")
-        assert archive.list_session_phase_insights("query") == ("phases-list", "query")
         assert archive.get_thread_insight("thread-1") == ("thread", "thread-1")
         assert archive.list_thread_insights("query") == ("threads", "query")
         assert archive.list_archive_coverage_insights("query") == ("coverage", "query")
@@ -199,7 +191,7 @@ def test_sync_product_queries_forward_through_sync_bridge() -> None:
         assert archive.list_archive_debt_insights("query") == ("debt", "query")
         assert archive.insight_readiness_report("query") == ("readiness", "query")
 
-    assert mock_run.call_count == 16
+    assert mock_run.call_count == 12
 
 
 def test_sync_polylogue_wraps_async_facade_and_context_manager() -> None:
@@ -236,10 +228,6 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive = MagicMock()
     archive.list_session_tag_rollup_insights.return_value = []
     archive.stats_by.return_value = {}
-    archive.get_session_work_event_insights.return_value = ["events"]
-    archive.list_session_work_event_insights.return_value = ["events-list"]
-    archive.get_session_phase_insights.return_value = ["phases"]
-    archive.list_session_phase_insights.return_value = ["phases-list"]
     archive.get_thread_insight.return_value = "thread"
     archive.list_thread_insights.return_value = ["threads"]
     archive.list_archive_coverage_insights.return_value = ["coverage"]
@@ -278,10 +266,6 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
         # tag-rollup merges synthesized provider rollups + sorts; cost enriches.
         # These post-process (not pure forwarders) — assert delegation + empty post-process.
         assert await harness.list_session_tag_rollup_insights() == []
-        assert await harness.get_session_work_event_insights("conv-1") == ["events"]
-        assert await harness.list_session_work_event_insights() == ["events-list"]
-        assert await harness.get_session_phase_insights("conv-1") == ["phases"]
-        assert await harness.list_session_phase_insights() == ["phases-list"]
         assert await harness.get_thread_insight("thread-1") == "thread"
         assert await harness.list_thread_insights() == ["threads"]
         assert await harness.list_archive_coverage_insights() == ["coverage"]
@@ -293,10 +277,6 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
         assert await harness.list_archive_debt_insights() == ["debt"]
 
     archive.list_session_tag_rollup_insights.assert_called_once()
-    archive.get_session_work_event_insights.assert_called_once_with("conv-1")
-    archive.list_session_work_event_insights.assert_called_once()
-    archive.get_session_phase_insights.assert_called_once_with("conv-1")
-    archive.list_session_phase_insights.assert_called_once()
     archive.get_thread_insight.assert_called_once_with("thread-1")
     archive.list_thread_insights.assert_called_once()
     archive.list_archive_coverage_insights.assert_called_once()

@@ -53,8 +53,6 @@ class SelectedSessionCounts:
     """Actual index-family row counts certified for one selected target."""
 
     profiles: int
-    work_events: int
-    phases: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,8 +75,6 @@ class _SelectedSessionFacts(Protocol):
     input_binding: str | None
     output_binding: str | None
     profiles: int
-    work_events: int
-    phases: int
 
 
 @runtime_checkable
@@ -326,8 +322,6 @@ def _is_selected_session_facts(value: object) -> TypeGuard[_SelectedSessionFacts
     input_binding: object = value.input_binding
     output_binding: object = value.output_binding
     profiles: object = value.profiles
-    work_events: object = value.work_events
-    phases: object = value.phases
     return (
         isinstance(session_present, bool)
         and isinstance(status, str)
@@ -335,10 +329,6 @@ def _is_selected_session_facts(value: object) -> TypeGuard[_SelectedSessionFacts
         and isinstance(output_binding, str | None)
         and isinstance(profiles, int)
         and not isinstance(profiles, bool)
-        and isinstance(work_events, int)
-        and not isinstance(work_events, bool)
-        and isinstance(phases, int)
-        and not isinstance(phases, bool)
     )
 
 
@@ -351,11 +341,7 @@ def _publication_commit_known(exc: BaseException) -> bool | None:
 
 
 def _selected_counts(facts: _SelectedSessionFacts) -> SelectedSessionCounts:
-    return SelectedSessionCounts(
-        profiles=int(facts.profiles),
-        work_events=int(facts.work_events),
-        phases=int(facts.phases),
-    )
+    return SelectedSessionCounts(profiles=int(facts.profiles))
 
 
 def _selected_outcome(
@@ -373,7 +359,7 @@ def _selected_outcome(
             state=state,
             input_binding=input_binding,
             output_binding=None,
-            certified_counts=SelectedSessionCounts(0, 0, 0),
+            certified_counts=SelectedSessionCounts(0),
             publication_known_committed=publication_known_committed,
             reason=reason,
         )
@@ -403,7 +389,7 @@ def _selected_disposition_moved(target: SelectedSessionTarget, facts: _SelectedS
 def _selected_satisfied(target: SelectedSessionTarget, facts: _SelectedSessionFacts) -> bool:
     if target.expected == "required":
         return facts.session_present and facts.status == "valid"
-    return not facts.session_present and facts.profiles == facts.work_events == facts.phases == 0
+    return not facts.session_present and facts.profiles == 0
 
 
 def _selected_frame_is_current(adapter: _SelectedSessionAdapter, frame: DerivationFrame) -> bool:

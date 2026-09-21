@@ -1226,17 +1226,9 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
             (session_id,),
         ).fetchone()
         assert latency is not None
-        work_events_row = conn.execute(
-            "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        assert work_events_row is not None
-        work_events = work_events_row[0]
 
     assert counts.profiles == 1
     assert elapsed_s < 2.0
-    assert counts.work_events == 0
-    assert counts.phases == 0
     assert profile["workflow_shape"] == "bounded_large_session"
     assert profile["message_count"] == 50
     assert profile["word_count"] == 1234
@@ -1249,7 +1241,6 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
     assert latency["input_high_water_mark"] is None
     assert "large_session_bounded" in profile["inference_payload_json"]
     assert "large_session_bounded" in profile["enrichment_payload_json"]
-    assert work_events == 0
 
 
 @pytest.mark.asyncio
@@ -1298,26 +1289,15 @@ async def test_async_large_session_rebuild_uses_bounded_degraded_profile(
             )
         ).fetchone()
         assert profile is not None
-        work_events_row = await (
-            await async_conn.execute(
-                "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
-                (session_id,),
-            )
-        ).fetchone()
-        assert work_events_row is not None
-        work_events = work_events_row[0]
 
     assert counts.profiles == 1
     assert elapsed_s < 2.0
-    assert counts.work_events == 0
-    assert counts.phases == 0
     assert profile["workflow_shape"] == "bounded_large_session"
     assert profile["message_count"] == 50
     assert profile["word_count"] == 1234
     assert profile["tool_use_count"] == 7
     assert "large_session_bounded" in profile["inference_payload_json"]
     assert "large_session_bounded" in profile["enrichment_payload_json"]
-    assert work_events == 0
 
 
 def test_large_session_rebuild_derives_terminal_state_from_bounded_tail(
@@ -1816,18 +1796,8 @@ async def test_apply_session_insight_session_updates_async_clears_deleted_sessio
             "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
             (_sid("conv-stale"),),
         ).fetchone()[0]
-        work_event_count = conn.execute(
-            "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
-            (_sid("conv-stale"),),
-        ).fetchone()[0]
-        phase_count = conn.execute(
-            "SELECT COUNT(*) FROM session_phases WHERE session_id = ?",
-            (_sid("conv-stale"),),
-        ).fetchone()[0]
 
     assert profile_count == 0
-    assert work_event_count == 0
-    assert phase_count == 0
 
 
 @pytest.mark.asyncio
@@ -2049,21 +2019,12 @@ async def test_refresh_single_session_heavy_uses_bounded_degraded_profile(
                 (session_id,),
             )
         ).fetchone()
-        work_events_row = await (
-            await async_conn.execute(
-                "SELECT COUNT(*) FROM session_work_events WHERE session_id = ?",
-                (session_id,),
-            )
-        ).fetchone()
 
     assert counts.profiles == 1
-    assert counts.work_events == 0
-    assert counts.phases == 0
     assert profile is not None
     assert profile["workflow_shape"] == "bounded_large_session"
     assert profile["message_count"] == 50
     assert "large_session_bounded" in profile["inference_payload_json"]
-    assert work_events_row is not None and work_events_row[0] == 0
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 Writer module: index.
 
-Session tag/work-event/phase CRUD (the former ``user``-tier twin-write
+Session tag CRUD (the former ``user``-tier twin-write
 contract here) moved to ``session_annotations_write.py`` — see that
 module's docstring for the current writer-module declaration.
 """
@@ -103,15 +103,9 @@ from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import should_skip_stale_replace
 from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
-    ArchiveSessionPhase,
     ArchiveSessionTag,
-    ArchiveSessionWorkEvent,
-    read_session_phases,
     read_session_tags,
-    read_session_work_events,
-    upsert_session_phase,
     upsert_session_tag,
-    upsert_session_work_event,
 )
 from polylogue.storage.sqlite.archive_tiers.session_suppression import (
     record_suppression_refusal,
@@ -8200,8 +8194,6 @@ def _reextract_prefix_tail_db(
     # candidate again.
     conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child_session_id,))
     conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (child_session_id,))
-    conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (child_session_id,))
-    conn.execute("DELETE FROM session_phases WHERE session_id = ?", (child_session_id,))
     record_substage("count_refresh", t0)
     return invalidated_branch_point_sources
 
@@ -9859,25 +9851,6 @@ def _iso_from_ms(value: object) -> str | None:
     return parsed.isoformat() if parsed is not None else None
 
 
-def _refresh_session_profile_count(
-    conn: sqlite3.Connection,
-    session_id: str,
-    *,
-    table: str,
-    column: str,
-) -> None:
-    count = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0]
-    conn.execute(
-        f"""
-        INSERT INTO session_profiles (session_id, {column})
-        VALUES (?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
-            {column} = excluded.{column}
-        """,
-        (session_id, count),
-    )
-
-
 def _enum_value(value: object) -> str | None:
     if value is None:
         return None
@@ -9897,26 +9870,20 @@ __all__ = [
     "ARCHIVE_SESSION_ENVELOPE_COLUMNS",
     "ArchiveBlockRow",
     "ArchiveMessageRow",
-    "ArchiveSessionPhase",
     "ArchiveSessionTag",
     "ArchiveSessionEnvelope",
-    "ArchiveSessionWorkEvent",
     "archive_block_row",
     "archive_block_row_select_sql",
     "archive_message_row_select_sql",
     "archive_session_envelope_select_sql",
     "read_session_agent_policies",
-    "read_session_phases",
     "read_session_tags",
-    "read_session_work_events",
     "rebuild_archive_messages_fts",
     "replace_parser_ingest_flag_tags",
     "repo_identity_key",
     "upsert_session_profile_costs",
-    "upsert_session_phase",
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",
-    "upsert_session_work_event",
     "read_archive_session_envelope",
     "search_archive_blocks",
     "write_parsed_session_to_archive",

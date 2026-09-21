@@ -11,8 +11,6 @@ from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadiness
 from polylogue.api import Polylogue
 from polylogue.storage.derived.session.profiles import (
     enrichment_fallback_reasons,
-    profile_inference_fallback_reasons,
-    profile_inference_payload,
     session_enrichment_payload,
 )
 from tests.infra.storage_records import SessionBuilder
@@ -48,43 +46,11 @@ def _stub_profile_no_events() -> object:
     return _P()
 
 
-def test_profile_inference_fallback_reasons_flags_empty_work_and_phases() -> None:
-    profile = _stub_profile_no_events()
-
-    reasons = profile_inference_fallback_reasons(profile)  # type: ignore[arg-type]
-
-    assert FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES in reasons
-    assert FallbackReason.ENGAGED_DURATION_SESSION_TOTAL not in reasons
-
-
 def test_enrichment_fallback_reasons_flags_missing_analysis_and_no_user_turns() -> None:
     reasons = enrichment_fallback_reasons(None, user_turns=())
 
     assert FallbackReason.MISSING_SESSION_ANALYSIS in reasons
     assert FallbackReason.NO_USER_TURNS in reasons
-
-
-def test_profile_inference_payload_serializes_fallback_reasons() -> None:
-    profile = _stub_profile_no_events()
-    payload = profile_inference_payload(profile)  # type: ignore[arg-type]
-
-    assert FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES in payload.fallback_reasons
-    assert FallbackReason.ENGAGED_DURATION_SESSION_TOTAL not in payload.fallback_reasons
-
-
-def test_profile_inference_fallback_reasons_do_not_classify_phase_intervals() -> None:
-    class _Phase:
-        tool_counts: dict[str, int] = {}
-        duration_ms: int = 60_000
-
-    class _P:
-        work_events: tuple[object, ...] = ()
-        phases: tuple[object, ...] = (_Phase(),)
-
-    reasons = profile_inference_fallback_reasons(_P())  # type: ignore[arg-type]
-
-    assert FallbackReason.ALL_PHASES_HEURISTIC not in reasons
-    assert FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES not in reasons
 
 
 def test_session_enrichment_payload_serializes_fallback_reasons() -> None:
@@ -107,16 +73,14 @@ def _seed_degraded_session(db_path: Path) -> None:
         .title("Degraded Session")
         .created_at("2026-05-19T09:00:00+00:00")
         .updated_at("2026-05-19T09:05:00+00:00")
-        .add_message(
-            "u1",
-            role="user",
-            text="Single user turn with no tool use.",
-            timestamp="2026-05-19T09:00:00+00:00",
-        )
+        # No user turn at all: enrichment has nothing to summarize intent
+        # from, so it records NO_USER_TURNS and the readiness report must
+        # classify the row degraded (polylogue-cuxz.7 retired the work-event
+        # and phase markers this used to lean on).
         .add_message(
             "a1",
             role="assistant",
-            text="Reply with no tools either.",
+            text="Reply with no user turn preceding it.",
             timestamp="2026-05-19T09:05:00+00:00",
         )
         .save()
@@ -145,8 +109,8 @@ async def test_readiness_report_classifies_fallback_rows_as_degraded(
 
     profile = next(entry for entry in report.insights if entry.insight_name == "session_profiles")
     assert profile.degraded_count == 1
-    # The seeded session materializes weak work-events and tool-less
-    # phases; the taxonomy surfaces those reasons explicitly.
+    # The seeded session has no user turn, so enrichment records
+    # NO_USER_TURNS; the taxonomy surfaces that reason explicitly.
     assert profile.fallback_reason_counts
     # The evidence channel must surface the same markers consumers see.
     assert any("degraded=1" in line for line in profile.evidence)

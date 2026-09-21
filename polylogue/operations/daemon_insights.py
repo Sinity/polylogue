@@ -237,7 +237,7 @@ async def execute_insights_rebuild_operation(
     active_observed: SessionInsightPartReceipt | None = None
     try:
         await execution.accept()
-        totals = {"profiles": 0, "work_events": 0, "phases": 0}
+        totals = {"profiles": 0}
         for part in execution.parts:
             active_part = part
             active_observed = None

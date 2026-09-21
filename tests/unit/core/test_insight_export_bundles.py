@@ -89,7 +89,7 @@ async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict
     result = await archive.export_insight_bundle(
         InsightExportBundleRequest(
             output_path=target,
-            insights=("profiles", "work-events"),
+            insights=("profiles", "threads"),
             origin="codex-session",
             since="2026-03-01",
             until="2026-03-31",
@@ -100,7 +100,7 @@ async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict
     manifest = _json_file(target / "manifest.json")
     assert manifest["bundle_version"] == 1
     assert manifest["query"] == {
-        "insights": ["session_profiles", "session_work_events"],
+        "insights": ["session_profiles", "threads"],
         "origin": "codex-session",
         "since": "2026-03-01",
         "until": "2026-03-31",
@@ -108,17 +108,17 @@ async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict
     assert (target / "coverage.json").exists()
     assert (target / "README.md").exists()
     assert (target / "schemas" / "session_profiles.schema.json").exists()
-    assert (target / "schemas" / "session_work_events.schema.json").exists()
+    assert (target / "schemas" / "threads.schema.json").exists()
     profiles = _jsonl_file(target / "insights" / "session_profiles.jsonl")
-    events = _jsonl_file(target / "insights" / "session_work_events.jsonl")
+    threads = _jsonl_file(target / "insights" / "threads.jsonl")
     assert {profile["origin"] for profile in profiles} == {"codex-session"}
     assert profiles
-    assert events
+    assert threads
     summaries = manifest["insights"]
     assert isinstance(summaries, list)
     assert {summary["insight_name"] for summary in summaries if isinstance(summary, dict)} == {
         "session_profiles",
-        "session_work_events",
+        "threads",
     }
 
 

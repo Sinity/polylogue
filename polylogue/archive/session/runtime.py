@@ -11,11 +11,13 @@ from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
 from polylogue.archive.actions.parsing import tool_result_block_outcome
-from polylogue.archive.phase.extraction import extract_phases
 from polylogue.archive.semantic.facts import build_session_semantic_facts
-from polylogue.archive.semantic.timing import compute_session_timing, compute_tool_active_duration_ms
+from polylogue.archive.semantic.timing import (
+    compute_engaged_duration_ms,
+    compute_session_timing,
+    compute_tool_active_duration_ms,
+)
 from polylogue.archive.session.attribution import extract_attribution
-from polylogue.archive.session.extraction import extract_work_events
 from polylogue.archive.session.models import SessionAnalysis, SessionProfile
 from polylogue.core.enums import Origin, StopReason
 
@@ -482,19 +484,11 @@ def build_session_analysis(
     semantic_facts = facts or build_session_semantic_facts(session, stage_timing_add=stage_timing_add)
     add_timing("analysis.facts", t0)
     t0 = time.perf_counter()
-    phases = tuple(extract_phases(session, facts=semantic_facts))
-    add_timing("analysis.phases", t0)
-    t0 = time.perf_counter()
     attribution = extract_attribution(session, facts=semantic_facts)
     add_timing("analysis.attribution", t0)
-    t0 = time.perf_counter()
-    work_events = tuple(extract_work_events(session, facts=semantic_facts, phases=phases))
-    add_timing("analysis.work_events", t0)
     return SessionAnalysis(
         facts=semantic_facts,
         attribution=attribution,
-        work_events=work_events,
-        phases=phases,
     )
 
 
@@ -563,9 +557,13 @@ def build_session_profile(
     )
     add_timing("profile.compactions", t0)
     t0 = time.perf_counter()
-    # Engagement is the sum of timestamped phase intervals. A session-level
-    # wall-clock total includes idle gaps and is not a valid substitute.
-    engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
+    # Engagement is the sum of timestamped engagement intervals. A
+    # session-level wall-clock total includes idle gaps and is not a valid
+    # substitute.
+    engaged_duration_ms = compute_engaged_duration_ms(
+        [message.timestamp for message in session_analysis.facts.message_facts if message.timestamp is not None],
+        [event.timestamp for event in session.session_events if event.timestamp is not None],
+    )
     tool_active_duration_ms = compute_tool_active_duration_ms(session.session_events)
     add_timing("profile.durations", t0)
     t0 = time.perf_counter()
@@ -623,8 +621,6 @@ def build_session_profile(
         file_paths_touched=attribution.file_paths_touched,
         languages_detected=attribution.languages_detected,
         repo_names=attribution.repo_names,
-        work_events=session_analysis.work_events,
-        phases=session_analysis.phases,
         first_message_at=first_message_at,
         last_message_at=last_message_at,
         timestamp_source=timestamp_source,

@@ -363,10 +363,8 @@ def test_fts_readiness_ok(
     _patch_fts_readiness(
         monkeypatch,
         {
-            "session_work_events_ready": True,
             "surfaces": {
                 "messages_fts": {"ready": True},
-                "session_work_events_fts": {"ready": True},
             },
         },
     )
@@ -385,7 +383,6 @@ def test_fts_readiness_error_when_large_gap(
     _patch_fts_readiness(
         monkeypatch,
         {
-            "session_work_events_ready": True,
             "surfaces": {
                 "messages_fts": {
                     "ready": False,
@@ -396,7 +393,6 @@ def test_fts_readiness_error_when_large_gap(
                     "freshness_recorded_state": "stale",
                     "missing_rows": 100,
                 },
-                "session_work_events_fts": {"ready": True},
             },
         },
     )
@@ -420,10 +416,8 @@ def test_fts_readiness_counts_docsize_not_virtual_table(
     def ledger(_dbf: Path, *, exact: bool = False) -> dict[str, object]:
         calls.append(exact)
         return {
-            "session_work_events_ready": True,
             "surfaces": {
                 "messages_fts": {"ready": True},
-                "session_work_events_fts": {"ready": True},
             },
         }
 
@@ -447,7 +441,6 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
     def ledger(_dbf: Path, *, exact: bool = False) -> dict[str, object]:
         calls.append(exact)
         return {
-            "session_work_events_ready": True,
             "surfaces": {
                 "messages_fts": {
                     "ready": False,
@@ -458,7 +451,6 @@ def test_fts_readiness_does_not_accept_stats_when_messages_drift(
                     "freshness_recorded_state": "stale",
                     "missing_rows": 996,
                 },
-                "session_work_events_fts": {"ready": True},
             },
         }
 
@@ -481,7 +473,6 @@ def test_fts_readiness_flags_stale_extra_rows(
     _patch_fts_readiness(
         monkeypatch,
         {
-            "session_work_events_ready": True,
             "surfaces": {
                 "messages_fts": {
                     "ready": False,
@@ -492,7 +483,6 @@ def test_fts_readiness_flags_stale_extra_rows(
                     "freshness_recorded_state": "stale",
                     "excess_rows": 2,
                 },
-                "session_work_events_fts": {"ready": True},
             },
         },
     )

@@ -7,7 +7,6 @@ from polylogue.storage.fts.sql import (
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
     FTS_MESSAGES_TABLE_SQL,
     FTS_TRIGGER_DDL,
-    FTS_UNICODE_TOKENIZER,
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
@@ -512,7 +511,20 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # relation cannot carry. ADDITIVE_DERIVED: no stored row of any existing
 # relation changes and no parsed row is re-derived; an archive opened without
 # the table reports every rollup MISSING and reconciles it once.
-INDEX_SCHEMA_VERSION = 105
+#
+# polylogue-cuxz.7: v106 drops `session_work_events`, `session_phases`,
+# `session_work_events_fts` and the `threads` view's
+# `work_event_breakdown_json` column, plus the
+# `session_profiles.work_event_count`/`phase_count` columns that declared
+# their per-session cardinality. The two tables stored a heuristic
+# segmentation that produced a single span covering the whole session for
+# 82%/84% of sessions, with index-synthesized endpoints that inverted on
+# 13,743 rows; their structural half duplicates `action_pairs` at real
+# per-call granularity. SEMANTIC, a strictly stronger claim than v105's
+# additive binding table: relations and a view column disappear, so an
+# existing index.db cannot be read forward and must be rebuilt from
+# source.db.
+INDEX_SCHEMA_VERSION = 106
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
@@ -999,15 +1011,6 @@ WITH RECURSIVE members AS (
     SELECT thread_id, json_group_object(origin, origin_count) AS value
     FROM origin_counts
     GROUP BY thread_id
-), work_event_counts AS (
-    SELECT m.thread_id, e.work_event_type, COUNT(*) AS event_count
-    FROM members m
-    JOIN session_work_events e ON e.session_id = m.session_id
-    GROUP BY m.thread_id, e.work_event_type
-), work_event_json AS (
-    SELECT thread_id, json_group_object(work_event_type, event_count) AS value
-    FROM work_event_counts
-    GROUP BY thread_id
 ), repo_json AS (
     SELECT thread_id,
            (SELECT rc.repo FROM repo_counts rc
@@ -1050,7 +1053,6 @@ SELECT g.thread_id,
        CASE WHEN g.start_time IS NULL OR g.end_time IS NULL THEN 0
             ELSE MAX(CAST((julianday(g.end_time) - julianday(g.start_time)) * 86400000 AS INTEGER), 0)
        END AS wall_duration_ms,
-       COALESCE(w.value, '{{}}') AS work_event_breakdown_json,
        '{{}}' AS payload_json /* json_object(
            'thread_id', g.thread_id,
            'root_id', g.thread_id,
@@ -1071,7 +1073,6 @@ SELECT g.thread_id,
            'total_cost_usd', g.total_cost_usd,
            'dominant_repo', r.dominant_repo,
            'origin_breakdown', json(COALESCE(o.value, '{{}}')),
-           'work_event_breakdown', json(COALESCE(w.value, '{{}}')),
            'confidence', CASE WHEN g.session_count > 1 THEN 1.0 ELSE 0.85 END,
            'support_level', CASE WHEN g.session_count > 1 THEN 'strong' ELSE 'moderate' END,
            'support_signals', json((SELECT json_group_array(signal) FROM (
@@ -1103,8 +1104,7 @@ SELECT g.thread_id,
        g.created_at_ms
 FROM grouped g
 LEFT JOIN repo_json r ON r.thread_id = g.thread_id
-LEFT JOIN origin_json o ON o.thread_id = g.thread_id
-LEFT JOIN work_event_json w ON w.thread_id = g.thread_id;
+LEFT JOIN origin_json o ON o.thread_id = g.thread_id;
 
 -- polylogue-eizc: threads_fts (a MATCH index over threads.search_text) was
 -- dropped in INDEX_SCHEMA_VERSION 62 -- its only MATCH reader
@@ -1315,34 +1315,6 @@ CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_delete
 AFTER DELETE ON session_tags BEGIN
     UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
 END;
-
-CREATE TABLE IF NOT EXISTS session_work_events (
-    {TABLE_SPECS["session_work_events"].ddl_body}
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_work_events_session
-ON session_work_events(session_id, position);
-
-CREATE INDEX IF NOT EXISTS idx_session_work_events_type
-ON session_work_events(work_event_type, session_id);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS session_work_events_fts USING fts5(
-    event_id UNINDEXED,
-    session_id UNINDEXED,
-    work_event_type UNINDEXED,
-    text,
-    tokenize='{FTS_UNICODE_TOKENIZER}'
-);
-
--- FTS triggers for session_work_events_fts table are now dynamically composed from sql.py
--- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
-
-CREATE TABLE IF NOT EXISTS session_phases (
-    {TABLE_SPECS["session_phases"].ddl_body}
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_session_phases_session
-ON session_phases(session_id, position);
 
 CREATE TABLE IF NOT EXISTS session_latency_profiles (
     {TABLE_SPECS["session_latency_profiles"].ddl_body}
@@ -1854,8 +1826,8 @@ GROUP BY dm.tag, dm.bucket_day, dm.source_name;
 # storage/fts/sql.py as the single canonical source (also used by the
 # repair-path lifecycle in fts_lifecycle.py), but a fresh-database bootstrap
 # still needs them appended to the script it executescript()s -- without
-# this, a freshly created index.db has the messages_fts/
-# session_work_events_fts virtual tables but no triggers populating them,
+# this, a freshly created index.db has the messages_fts virtual table
+# but no triggers populating it,
 # so every insert silently produces an empty search index. Regression:
 # devtools render demo-corpus-datasheet started failing with "Search index
 # is incomplete" right after #2893 landed.

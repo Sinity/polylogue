@@ -47,11 +47,10 @@ def test_collect_derived_statuses_uses_canonical_session_insight_readiness(
     snapshot = SessionInsightStatusSnapshot(
         total_sessions=2,
         root_threads=0,
-        profile_row_count=2,
-        work_event_inference_count=1,
-        expected_work_event_inference_count=4,
-        phase_inference_count=2,
-        expected_phase_inference_count=5,
+        profile_row_count=1,
+        thread_count=0,
+        tag_rollup_count=1,
+        expected_tag_rollup_count=3,
     )
     monkeypatch.setattr(
         derived_status_mod,
@@ -64,16 +63,15 @@ def test_collect_derived_statuses_uses_canonical_session_insight_readiness(
     finally:
         conn.close()
 
-    work_events = statuses["session_work_events"]
-    phases = statuses["session_phases"]
-    assert work_events.ready is False
-    assert work_events.source_rows == 4
-    assert work_events.materialized_rows == 1
-    assert work_events.pending_rows == 3
-    assert phases.ready is False
-    assert phases.source_rows == 5
-    assert phases.materialized_rows == 2
-    assert phases.pending_rows == 3
+    profiles = statuses["session_profile_rows"]
+    tag_rollups = statuses["session_tag_rollups"]
+    assert profiles.ready is False
+    assert profiles.materialized_documents == 1
+    assert profiles.source_documents == 2
+    assert tag_rollups.ready is False
+    assert tag_rollups.source_rows == 3
+    assert tag_rollups.materialized_rows == 1
+    assert tag_rollups.pending_rows == 2
 
 
 def test_collect_derived_statuses_preserves_independent_readiness_conditions(
@@ -87,11 +85,6 @@ def test_collect_derived_statuses_preserves_independent_readiness_conditions(
         total_sessions=1,
         root_threads=1,
         profile_row_count=1,
-        work_event_inference_count=2,
-        expected_work_event_inference_count=2,
-        phase_inference_count=1,
-        expected_phase_inference_count=1,
-        stale_phase_inference_count=1,
         thread_count=1,
         stale_thread_count=1,
         tag_rollup_count=1,
@@ -108,9 +101,7 @@ def test_collect_derived_statuses_preserves_independent_readiness_conditions(
     finally:
         conn.close()
 
-    assert statuses["session_work_events"].ready is True
-    assert statuses["session_work_events_fts"].ready is False
-    assert statuses["session_phases"].ready is False
+    assert statuses["session_profile_rows"].ready is True
     assert statuses["threads"].ready is False
     assert statuses["session_tag_rollups"].ready is False
 
@@ -121,19 +112,6 @@ def test_build_timeline_statuses_names_timeline_rows_by_table() -> None:
     statuses = build_timeline_statuses(
         {
             "profile_rows": 2,
-            "work_event_rows_ready": True,
-            "work_event_rows": 3,
-            "expected_work_event_rows": 3,
-            "stale_work_event_rows": 0,
-            "orphan_work_event_rows": 0,
-            "work_event_fts_ready": True,
-            "work_event_fts_rows": 3,
-            "work_event_fts_duplicates": 0,
-            "phase_rows_ready": True,
-            "phase_rows": 5,
-            "expected_phase_rows": 5,
-            "stale_phase_rows": 0,
-            "orphan_phase_rows": 0,
             "threads_ready": True,
             "thread_rows": 1,
             "total_thread_roots": 1,
@@ -142,17 +120,10 @@ def test_build_timeline_statuses_names_timeline_rows_by_table() -> None:
         }
     )
 
-    assert "session_work_events" in statuses
-    assert "session_work_event_inference" not in statuses
-    assert statuses["session_work_events"].name == "session_work_events"
-    assert statuses["session_work_events"].detail == "Session work events ready (3/3 rows)"
-    assert "session_work_events_fts" in statuses
-    assert "session_work_event_inference_fts" not in statuses
-    assert statuses["session_work_events_fts"].name == "session_work_events_fts"
-    assert "session_phases" in statuses
-    assert "session_phase_inference" not in statuses
-    assert statuses["session_phases"].name == "session_phases"
-    assert statuses["session_phases"].detail == "Session phase intervals ready (5/5 rows)"
+    assert "threads" in statuses
+    assert "thread_inference" not in statuses
+    assert statuses["threads"].name == "threads"
+    assert statuses["threads"].detail == "Work threads ready (1/1 roots)"
 
 
 def test_build_retrieval_statuses_counts_stale_session_insight_rows() -> None:
@@ -179,14 +150,7 @@ def test_build_retrieval_statuses_counts_stale_session_insight_rows() -> None:
             "expected_inference_retrieval_rows": 0,
             "profile_inference_fts_rows": 0,
             "profile_inference_fts_duplicates": 0,
-            "work_event_fts_rows": 4,
-            "work_event_fts_duplicates": 2,
-            "work_event_rows": 4,
-            "phase_rows": 0,
-            "stale_work_event_rows": 1,
-            "stale_phase_rows": 2,
-            "orphan_work_event_rows": 0,
-            "orphan_phase_rows": 0,
+            "stale_profile_rows": 3,
             "enrichment_retrieval_ready": True,
             "enrichment_retrieval_rows": 0,
             "expected_enrichment_retrieval_rows": 0,

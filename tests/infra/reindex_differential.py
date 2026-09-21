@@ -67,13 +67,11 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_latency_profiles": frozenset({"materialized_at"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_model_usage": frozenset(),
-    "session_phases": frozenset(),
     "session_profiles": frozenset({"materialized_at"}),
     "session_provider_usage_events": frozenset(),
     "session_refs": frozenset(),
     "session_repos": frozenset(),
     "session_tags": frozenset(),
-    "session_work_events": frozenset(),
     "session_working_dirs": frozenset(),
     "sessions": frozenset(),
     "web_content_constructs": frozenset(),
@@ -173,7 +171,7 @@ def compared_table_census() -> tuple[str, ...]:
     """Return all ordinary current-DDL index tables with a declared policy."""
     tables = frozenset(_CREATE_TABLE.findall(INDEX_DDL))
     virtual_tables = frozenset(_CREATE_VIRTUAL_TABLE.findall(INDEX_DDL))
-    if virtual_tables != {"messages_fts", "session_work_events_fts"}:
+    if virtual_tables != {"messages_fts"}:
         raise AssertionError(f"unclassified virtual index tables: {sorted(virtual_tables)}")
     classified = set(_VOLATILE_COLUMNS) | set(_NON_COMPARABLE_TABLES)
     if missing := tables - classified:
@@ -391,13 +389,7 @@ def _open_debt_rows(ops_path: Path) -> tuple[FactRow, ...]:
 def _public_reads(archive: ArchiveStore, session_ids: tuple[str, ...]) -> tuple[tuple[str, object], ...]:
     values: list[tuple[str, object]] = []
     for session_id in session_ids:
-        values.extend(
-            (
-                (f"profile:{session_id}", _freeze_public(archive.get_session_profile_insight(session_id))),
-                (f"work-events:{session_id}", _freeze_public(archive.get_session_work_event_insights(session_id))),
-                (f"phases:{session_id}", _freeze_public(archive.get_session_phase_insights(session_id))),
-            )
-        )
+        values.extend(((f"profile:{session_id}", _freeze_public(archive.get_session_profile_insight(session_id))),))
     values.append(("threads", _freeze_public(archive.list_thread_insights(limit=None))))
     return tuple(values)
 

@@ -15,7 +15,6 @@ from unittest.mock import patch
 _DERIVED_SURFACES = (
     "messages_fts",
     "messages_fts_identity",
-    "session_work_events_fts",
     "action_pairs",
     "delegation_facts",
     "delegation_refresh_scope",

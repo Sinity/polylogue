@@ -38,8 +38,6 @@ def _profile(session_id: str, *, cost: float, provenance: str) -> SessionProfile
         file_paths_touched=(),
         languages_detected=(),
         repo_names=(),
-        work_events=(),
-        phases=(),
         first_message_at=None,
         last_message_at=None,
         wall_duration_ms=0,

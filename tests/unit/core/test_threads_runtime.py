@@ -35,8 +35,6 @@ def _profile(
         file_paths_touched=(),
         languages_detected=(),
         repo_names=repo_names,
-        work_events=(),
-        phases=(),
         first_message_at=first_message_at,
         last_message_at=last_message_at,
         timestamped_message_count=2 if first_message_at and last_message_at else 0,

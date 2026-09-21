@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.analysis.confidence import ConfidenceBand
 from polylogue.analysis.fallback import FallbackReason
 from polylogue.analysis.temporal_source import TimeConfidence
-from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
-from polylogue.archive.session.provenance import date_provenance as _date_provenance
-from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.core.sources import source_name_to_origin
 
 ARCHIVE_INSIGHT_CONTRACT_VERSION = 10
@@ -113,8 +107,6 @@ class SessionInferencePayload(ArchiveInsightModel):
     inferred_topic: str | None = None
     inferred_topic_source: str = "absent"
     repo_names: tuple[str, ...] = ()
-    work_event_count: int = 0
-    phase_count: int = 0
     engaged_duration_ms: int = 0
     engaged_minutes: float = 0.0
     tool_active_duration_ms: int = 0
@@ -131,19 +123,7 @@ class SessionInferencePayload(ArchiveInsightModel):
     engaged_duration_source: str = "unknown"
     repo_inference_strength: ConfidenceBand = ConfidenceBand.WEAK
     auto_tags: tuple[str, ...] = ()
-    work_events: tuple[WorkEventDocument, ...] = ()
-    phases: tuple[SessionPhaseDocument, ...] = ()
     fallback_reasons: tuple[FallbackReason, ...] = ()
-
-    @field_validator("work_events", mode="before")
-    @classmethod
-    def _normalize_work_event_documents(cls, value: object) -> object:
-        return _normalize_timed_documents(value)
-
-    @field_validator("phases", mode="before")
-    @classmethod
-    def _normalize_phase_documents(cls, value: object) -> object:
-        return _normalize_timed_documents(value)
 
 
 class SessionLatencyProfilePayload(ArchiveInsightModel):
@@ -158,52 +138,6 @@ class SessionLatencyProfilePayload(ArchiveInsightModel):
         "agent-response time includes both model output delay and any intervening tool execution; "
         "provider tool latency requires timestamped session-event pairs"
     )
-
-
-class WorkEventEvidencePayload(ArchiveInsightModel):
-    start_index: int
-    end_index: int
-    start_time: str | None = None
-    end_time: str | None = None
-    canonical_session_date: str | None = None
-    timing_provenance: str = "untimestamped"
-    date_provenance: str = "none"
-    duration_ms: int = 0
-    file_paths: tuple[str, ...] = ()
-    tools_used: tuple[str, ...] = ()
-
-
-class WorkEventInferencePayload(ArchiveInsightModel):
-    heuristic_label: str
-    summary: str
-    confidence: float
-    evidence: tuple[str, ...] = ()
-    support_level: ConfidenceBand = ConfidenceBand.WEAK
-    support_signals: tuple[str, ...] = ()
-    fallback_inference: bool = False
-    fallback_reasons: tuple[FallbackReason, ...] = ()
-
-
-class SessionPhaseEvidencePayload(ArchiveInsightModel):
-    start_time: str | None = None
-    end_time: str | None = None
-    canonical_session_date: str | None = None
-    timing_provenance: str = "untimestamped"
-    date_provenance: str = "none"
-    message_range: tuple[int, int] = (0, 0)
-    duration_ms: int = 0
-    phase_idle_threshold_ms: int = 300_000
-    tool_counts: dict[str, int] = Field(default_factory=dict)
-    word_count: int = 0
-
-
-class SessionPhaseInferencePayload(ArchiveInsightModel):
-    confidence: float = 0.0
-    evidence: tuple[str, ...] = ()
-    support_level: ConfidenceBand = ConfidenceBand.WEAK
-    support_signals: tuple[str, ...] = ()
-    fallback_inference: bool = False
-    fallback_reasons: tuple[FallbackReason, ...] = ()
 
 
 class ObjectivePosturePayload(ArchiveInsightModel):
@@ -247,24 +181,6 @@ class SessionEnrichmentPayload(ArchiveInsightModel):
     objective_posture: ObjectivePosturePayload = Field(default_factory=ObjectivePosturePayload)
 
 
-def _normalize_timed_documents(value: object) -> object:
-    if not isinstance(value, list | tuple):
-        return value
-    return tuple(_normalize_timed_document(item) for item in value)
-
-
-def _normalize_timed_document(value: object) -> object:
-    if not isinstance(value, Mapping):
-        return value
-    document: dict[str, Any] = dict(value)
-    start_time = _optional_str(document.get("start_time"))
-    end_time = _optional_str(document.get("end_time"))
-    canonical_session_date = _optional_str(document.get("canonical_session_date"))
-    document.setdefault("timing_provenance", _range_timing_provenance(start_time, end_time))
-    document.setdefault("date_provenance", _date_provenance(canonical_session_date, start_time, end_time))
-    return document
-
-
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
@@ -291,7 +207,6 @@ class ThreadPayload(ArchiveInsightModel):
     total_cost_usd: float = 0.0
     wall_duration_ms: int = 0
     origin_breakdown: dict[str, int] = Field(default_factory=dict)
-    work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     confidence: float = 0.0
     support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
@@ -308,7 +223,6 @@ class DaySessionSummaryPayload(ArchiveInsightModel):
     total_wall_duration_ms: int = 0
     total_messages: int = 0
     total_words: int = 0
-    work_event_breakdown: dict[str, int] = Field(default_factory=dict)
     repos_active: tuple[str, ...] = ()
     origins: dict[str, int] = Field(default_factory=dict)
 
@@ -336,11 +250,7 @@ __all__ = [
     "SessionEnrichmentPayload",
     "SessionEvidencePayload",
     "SessionInferencePayload",
-    "SessionPhaseEvidencePayload",
-    "SessionPhaseInferencePayload",
     "WeekSessionSummaryPayload",
-    "WorkEventEvidencePayload",
-    "WorkEventInferencePayload",
     "ThreadPayload",
     "ThreadMemberEvidencePayload",
 ]

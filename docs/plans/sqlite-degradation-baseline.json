@@ -205,11 +205,11 @@
     },
     {
       "file": "polylogue/daemon/fts_status.py",
-      "digest": "5c141c129aee75ac48374d917905c9e35632832e"
+      "digest": "0620e113494c05e43fc1853a07e36c6e65c56a0d"
     },
     {
       "file": "polylogue/daemon/fts_status.py",
-      "digest": "fd7823b9f662916d5ec22cae1677b226e83e29f3"
+      "digest": "69e2de7074db1c7c528bcf4b4ebe983163931d14"
     },
     {
       "file": "polylogue/daemon/health.py",

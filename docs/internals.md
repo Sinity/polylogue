@@ -432,7 +432,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   release window.
 - Index schema version 35 added Polish lexical search-recall folding
   (polylogue-9jsi). The then-present `messages_fts`, `threads_fts`, and
-  `session_work_events_fts` tokenizers moved from `unicode61` to
+  insight-search tokenizers moved from `unicode61` to
   `unicode61 remove_diacritics 2`, which folds ordinary combining-mark
   diacritics (`ó`->`o`, `ż`->`z`, `ą`->`a`, ...) symmetrically for indexed
   and `MATCH` query text. Separately, `ł`/`Ł` (Latin L with stroke) has no

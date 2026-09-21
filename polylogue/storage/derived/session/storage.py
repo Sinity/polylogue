@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import TypeVar
 
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.runtime import (
     SessionLatencyProfileRecord,
-    SessionPhaseRecord,
     SessionProfileRecord,
-    SessionWorkEventRecord,
     _json_array_or_none,
     _json_or_none,
 )
@@ -62,8 +60,6 @@ _SESSION_PROFILE_BASE_COLUMNS = (
     "message_count",
     "substantive_count",
     "attachment_count",
-    "work_event_count",
-    "phase_count",
     "word_count",
     "tool_use_count",
     "thinking_count",
@@ -124,39 +120,10 @@ _SESSION_LATENCY_PROFILE_COLUMNS = (
     "evidence_payload_json",
     "search_text",
 )
-_SESSION_WORK_EVENT_BASE_COLUMNS = (
-    "session_id",
-    "position",
-    "work_event_type",
-    "summary",
-    "confidence",
-    "start_index",
-    "end_index",
-    "started_at_ms",
-    "ended_at_ms",
-    "duration_ms",
-    "file_paths_json",
-    "tools_used_json",
-    "input_high_water_mark",
-    "input_high_water_mark_source",
-)
 _TIMELINE_PAYLOAD_COLUMNS = (
     "evidence_json",
     "inference_json",
     "search_text",
-)
-_SESSION_PHASE_BASE_COLUMNS = (
-    "session_id",
-    "position",
-    "start_index",
-    "end_index",
-    "started_at_ms",
-    "ended_at_ms",
-    "duration_ms",
-    "tool_counts_json",
-    "word_count",
-    "input_high_water_mark",
-    "input_high_water_mark_source",
 )
 
 
@@ -302,8 +269,6 @@ def session_profile_insert_values(
         record.message_count,
         record.substantive_count,
         record.attachment_count,
-        record.work_event_count,
-        record.phase_count,
         record.word_count,
         record.tool_use_count,
         record.thinking_count,
@@ -382,93 +347,6 @@ def _epoch_ms_or_none(value: str | None) -> int | None:
     return int(parsed.timestamp() * 1000) if parsed is not None else None
 
 
-def session_work_event_insert_columns(
-    *,
-    has_fallback_payload: bool,
-) -> tuple[str, ...]:
-    return _with_fallback_payload_column(
-        _SESSION_WORK_EVENT_BASE_COLUMNS,
-        _TIMELINE_PAYLOAD_COLUMNS,
-        has_fallback_payload=has_fallback_payload,
-    )
-
-
-def session_work_event_insert_values(
-    record: SessionWorkEventRecord,
-    *,
-    has_fallback_payload: bool,
-) -> SqlBindings:
-    base_values: list[SqlValue] = [
-        record.session_id,
-        record.event_index,
-        record.heuristic_label,
-        record.summary,
-        record.confidence,
-        record.start_index,
-        record.end_index,
-        _epoch_ms_or_none(record.start_time),
-        _epoch_ms_or_none(record.end_time),
-        record.duration_ms,
-        _json_array_or_none(record.file_paths) or "[]",
-        _json_array_or_none(record.tools_used) or "[]",
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-    ]
-    payload_values: tuple[SqlValue, ...] = (
-        _json_or_none(record.evidence_payload),
-        _json_or_none(record.inference_payload),
-        record.search_text,
-    )
-    return _compose_bindings(
-        base_values,
-        payload_values,
-        has_fallback_payload=has_fallback_payload,
-        fallback_payload_json=None,
-    )
-
-
-def session_phase_insert_columns(
-    *,
-    has_fallback_payload: bool,
-) -> tuple[str, ...]:
-    return _with_fallback_payload_column(
-        _SESSION_PHASE_BASE_COLUMNS,
-        _TIMELINE_PAYLOAD_COLUMNS,
-        has_fallback_payload=has_fallback_payload,
-    )
-
-
-def session_phase_insert_values(
-    record: SessionPhaseRecord,
-    *,
-    has_fallback_payload: bool,
-) -> SqlBindings:
-    base_values: list[SqlValue] = [
-        record.session_id,
-        record.phase_index,
-        record.start_index,
-        record.end_index,
-        _epoch_ms_or_none(record.start_time),
-        _epoch_ms_or_none(record.end_time),
-        record.duration_ms,
-        _json_or_none(record.tool_counts),
-        record.word_count,
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-    ]
-    payload_values: tuple[SqlValue, ...] = (
-        _json_or_none(record.evidence_payload),
-        _json_or_none(record.inference_payload),
-        record.search_text,
-    )
-    return _compose_bindings(
-        base_values,
-        payload_values,
-        has_fallback_payload=has_fallback_payload,
-        fallback_payload_json=None,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Profile writes
 # ---------------------------------------------------------------------------
@@ -528,94 +406,17 @@ def replace_session_latency_profiles_bulk_sync(
 
 
 # ---------------------------------------------------------------------------
-# Timeline writes
-# ---------------------------------------------------------------------------
-
-
-def replace_session_work_events_sync(
-    conn: sqlite3.Connection,
-    session_id: str,
-    records: Sequence[SessionWorkEventRecord],
-) -> None:
-    conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (session_id,))
-    if records:
-        has_fallback_payload = table_has_column(conn, "session_work_events", "payload_json")
-        columns = session_work_event_insert_columns(has_fallback_payload=has_fallback_payload)
-        conn.executemany(
-            build_insert_sql("session_work_events", columns),
-            [session_work_event_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
-        )
-
-
-def replace_session_work_events_bulk_sync(
-    conn: sqlite3.Connection,
-    records_by_session: Mapping[str, Sequence[SessionWorkEventRecord]],
-) -> None:
-    if not records_by_session:
-        return
-    _delete_where_in(conn, "session_work_events", "session_id", tuple(records_by_session))
-    records = [record for session_records in records_by_session.values() for record in session_records]
-    if records:
-        has_fallback_payload = table_has_column(conn, "session_work_events", "payload_json")
-        columns = session_work_event_insert_columns(has_fallback_payload=has_fallback_payload)
-        conn.executemany(
-            build_insert_sql("session_work_events", columns),
-            [session_work_event_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
-        )
-
-
-def replace_session_phases_sync(
-    conn: sqlite3.Connection,
-    session_id: str,
-    records: Sequence[SessionPhaseRecord],
-) -> None:
-    conn.execute("DELETE FROM session_phases WHERE session_id = ?", (session_id,))
-    if records:
-        has_fallback_payload = table_has_column(conn, "session_phases", "payload_json")
-        columns = session_phase_insert_columns(has_fallback_payload=has_fallback_payload)
-        conn.executemany(
-            build_insert_sql("session_phases", columns),
-            [session_phase_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
-        )
-
-
-def replace_session_phases_bulk_sync(
-    conn: sqlite3.Connection,
-    records_by_session: Mapping[str, Sequence[SessionPhaseRecord]],
-) -> None:
-    if not records_by_session:
-        return
-    _delete_where_in(conn, "session_phases", "session_id", tuple(records_by_session))
-    records = [record for session_records in records_by_session.values() for record in session_records]
-    if records:
-        has_fallback_payload = table_has_column(conn, "session_phases", "payload_json")
-        columns = session_phase_insert_columns(has_fallback_payload=has_fallback_payload)
-        conn.executemany(
-            build_insert_sql("session_phases", columns),
-            [session_phase_insert_values(record, has_fallback_payload=has_fallback_payload) for record in records],
-        )
-
-
-# ---------------------------------------------------------------------------
 # Aggregate writes
 # ---------------------------------------------------------------------------
 
 
 __all__ = [
     "build_insert_sql",
-    "replace_session_phases_bulk_sync",
-    "replace_session_phases_sync",
     "replace_session_latency_profiles_bulk_sync",
     "replace_session_profiles_bulk_sync",
     "replace_session_profile_sync",
-    "replace_session_work_events_bulk_sync",
-    "replace_session_work_events_sync",
-    "session_phase_insert_columns",
-    "session_phase_insert_values",
     "session_profile_insert_columns",
     "session_profile_insert_values",
     "session_latency_profile_insert_values",
-    "session_work_event_insert_columns",
-    "session_work_event_insert_values",
     "table_has_column",
 ]

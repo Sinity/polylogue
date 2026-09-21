@@ -60,7 +60,6 @@ from polylogue.analysis.archive import (
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
     SessionLatencyProfileInsightQuery,
-    SessionPhaseInsightQuery,
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
 )
@@ -75,7 +74,6 @@ async with Polylogue() as archive:
             limit=25,
         )
     )
-    phases = await archive.list_session_phase_insights(SessionPhaseInsightQuery(provider="claude-code", limit=25))
     latency = await archive.list_session_latency_profile_insights(
         SessionLatencyProfileInsightQuery(provider="claude-code", only_stuck=False, limit=25)
     )

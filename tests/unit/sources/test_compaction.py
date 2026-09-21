@@ -698,8 +698,6 @@ class TestProfileCompactionCounting:
             file_paths_touched=(),
             languages_detected=(),
             repo_names=(),
-            work_events=(),
-            phases=(),
             compaction_count=3,
         )
         evidence = profile_evidence_payload(profile)
@@ -769,8 +767,6 @@ class TestProfileCompactionCounting:
             file_paths_touched=(),
             languages_detected=(),
             repo_names=(),
-            work_events=(),
-            phases=(),
         )
         evidence = profile_evidence_payload(profile)
         assert evidence.compaction_count == 0

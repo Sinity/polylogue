@@ -27,8 +27,6 @@ class _Receipt(BaseModel):
 
 class InsightCertifiedCountsHistorical(_Receipt):
     profiles: int = Field(ge=0)
-    work_events: int = Field(ge=0)
-    phases: int = Field(ge=0)
 
 
 class InsightTargetHistoricalReceipt(_Receipt):
@@ -50,8 +48,6 @@ class InsightTargetHistoricalReceipt(_Receipt):
 
 class InsightTerminalSummaryHistorical(_Receipt):
     profiles: int = Field(ge=0)
-    work_events: int = Field(ge=0)
-    phases: int = Field(ge=0)
     threads: int = Field(ge=0)
     tag_rollups: int = Field(ge=0)
 

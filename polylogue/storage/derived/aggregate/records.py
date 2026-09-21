@@ -54,7 +54,6 @@ class DaySessionSummaryRecord(BaseModel):
     total_wall_duration_ms: int = 0
     total_messages: int = 0
     total_words: int = 0
-    work_event_breakdown: dict[str, int]
     repos_active: tuple[str, ...] = ()
     payload: DaySessionSummaryPayload
     search_text: str

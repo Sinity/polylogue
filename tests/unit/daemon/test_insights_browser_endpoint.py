@@ -1,11 +1,9 @@
 """Insights browser endpoint contracts for the reader (#1120).
 
-``GET /api/insights/sessions/{id}[?include=profile,timeline,phases,threads]``
-returns a single typed envelope joining four per-session insight kinds:
+``GET /api/insights/sessions/{id}[?include=profile,threads]``
+returns a single typed envelope joining the per-session insight kinds:
 
 - session profile (#1018)
-- work-event timeline (#1133/#1135)
-- session phases
 - thread membership
 
 Each kind carries a canonical terminal outcome plus a readiness chip from
@@ -29,7 +27,6 @@ from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -39,10 +36,8 @@ from polylogue.daemon.http import (
     DaemonAPIHTTPServer,
     _empty_profile_panel_payload,
     _parse_insight_includes,
-    _phase_panel_payload,
     _readiness_tag,
     _thread_panel_payload,
-    _work_event_panel_payload,
 )
 from polylogue.surfaces.outcome import decide_outcome
 
@@ -159,14 +154,14 @@ class TestParseIncludes:
 
     def test_subset_preserves_canonical_order(self) -> None:
         # Caller passes threads,profile but the canonical order is
-        # profile,timeline,phases,threads — we must normalize.
+        # profile,threads — we must normalize.
         assert _parse_insight_includes("threads,profile") == ("profile", "threads")
 
     def test_unknown_tokens_are_dropped(self) -> None:
-        assert _parse_insight_includes("profile,not-a-kind,phases") == ("profile", "phases")
+        assert _parse_insight_includes("profile,not-a-kind,phases") == ("profile",)
 
     def test_whitespace_and_case_tolerant(self) -> None:
-        assert _parse_insight_includes("  PROFILE , Timeline  ") == ("profile", "timeline")
+        assert _parse_insight_includes("  PROFILE , Threads  ") == ("profile", "threads")
 
 
 # ---------------------------------------------------------------------------
@@ -184,19 +179,6 @@ class TestEmptyPayloads:
         assert payload["profile"] is None
         assert payload["provenance"] is None
 
-    def test_empty_work_event_panel_is_q_missing(self) -> None:
-        payload = _work_event_panel_payload([], _EMPTY)
-        assert payload["readiness_tag"] == "q-missing"
-        assert payload["materialized"] is False
-        assert payload["count"] == 0
-        assert payload["events"] == []
-
-    def test_empty_phase_panel_is_q_missing(self) -> None:
-        payload = _phase_panel_payload([], _EMPTY)
-        assert payload["readiness_tag"] == "q-missing"
-        assert payload["count"] == 0
-        assert payload["phases"] == []
-
     def test_empty_thread_panel_is_q_missing(self) -> None:
         payload = _thread_panel_payload([], _EMPTY)
         assert payload["readiness_tag"] == "q-missing"
@@ -206,59 +188,9 @@ class TestEmptyPayloads:
     def test_payloads_round_trip_through_json(self) -> None:
         for payload in (
             _empty_profile_panel_payload(_EMPTY),
-            _work_event_panel_payload([], _EMPTY),
-            _phase_panel_payload([], _EMPTY),
             _thread_panel_payload([], _EMPTY),
         ):
             json.dumps(payload)
-
-    def test_work_event_payload_uses_origin(self) -> None:
-        class _Dump:
-            def model_dump(self, *, mode: str) -> dict[str, object]:
-                assert mode == "json"
-                return {}
-
-        payload = _work_event_panel_payload(
-            [
-                SimpleNamespace(
-                    event_id="event-1",
-                    event_index=0,
-                    session_id="claude-code-session:ins-1",
-                    origin="claude-code-session",
-                    evidence=_Dump(),
-                    inference=_Dump(),
-                    provenance=SimpleNamespace(materializer_version=1),
-                )
-            ],
-            _OK,
-        )
-        event = cast(list[dict[str, object]], payload["events"])[0]
-        assert event["origin"] == "claude-code-session"
-        assert "provider" not in event
-
-    def test_phase_payload_uses_origin(self) -> None:
-        class _Dump:
-            def model_dump(self, *, mode: str) -> dict[str, object]:
-                assert mode == "json"
-                return {}
-
-        payload = _phase_panel_payload(
-            [
-                SimpleNamespace(
-                    phase_id="phase-1",
-                    phase_index=0,
-                    session_id="codex-session:ins-1",
-                    origin="codex-session",
-                    evidence=_Dump(),
-                    inference=_Dump(),
-                    provenance=SimpleNamespace(materializer_version=1),
-                )
-            ],
-            _OK,
-        )
-        phase = cast(list[dict[str, object]], payload["phases"])[0]
-        assert phase["origin"] == "codex-session"
-        assert "provider" not in phase
 
 
 # ---------------------------------------------------------------------------
@@ -307,25 +239,25 @@ class TestInsightsEndpointDispatch:
 
     def test_include_param_restricts_kinds(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,phases")
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,threads")
         send_error, send_json = _capture_responses(handler)
         handler.do_GET()
         send_error.assert_not_called()
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert payload["include"] == ["profile", "phases"]
+        assert payload["include"] == ["profile", "threads"]
         # Only the requested kinds appear — restriction must be honored.
-        assert set(payload["kinds"].keys()) == {"profile", "phases"}
+        assert set(payload["kinds"].keys()) == {"profile", "threads"}
 
     def test_include_param_with_unknown_tokens_drops_them(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,bogus,timeline")
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,bogus,threads")
         _, send_json = _capture_responses(handler)
         handler.do_GET()
         status, payload = send_json.call_args.args
         assert status == HTTPStatus.OK
-        assert set(payload["kinds"].keys()) == {"profile", "timeline"}
+        assert set(payload["kinds"].keys()) == {"profile", "threads"}
 
     def test_envelope_carries_origin_and_id(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_minimum_archive(workspace_env)
@@ -362,7 +294,7 @@ class TestUnavailableInsightSurface:
         from polylogue.analysis.archive import ArchiveInsightUnavailableError
 
         session_id = _seed_minimum_archive(workspace_env)
-        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=timeline,phases")
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile,threads")
         _, send_json = _capture_responses(handler)
         if fail:
             from polylogue.api import Polylogue
@@ -370,10 +302,10 @@ class TestUnavailableInsightSurface:
             monkeypatch = _pytest.MonkeyPatch()
 
             async def _unavailable(*_args: object, **_kwargs: object) -> object:
-                raise ArchiveInsightUnavailableError("work-event insight surface is unavailable")
+                raise ArchiveInsightUnavailableError("thread insight surface is unavailable")
 
             try:
-                monkeypatch.setattr(Polylogue, "list_session_work_event_insights", _unavailable, raising=True)
+                monkeypatch.setattr(Polylogue, "list_thread_insights", _unavailable, raising=True)
                 handler.do_GET()
             finally:
                 monkeypatch.undo()
@@ -384,30 +316,33 @@ class TestUnavailableInsightSurface:
 
     def test_failed_panel_is_distinguishable_from_empty(self, workspace_env: dict[str, Path]) -> None:
         failed = self._panels(workspace_env, fail=True)
-        failed_timeline = cast(dict[str, object], cast(dict[str, object], failed["kinds"])["timeline"])
-        assert failed_timeline["outcome"] == {
+        failed_threads = cast(dict[str, object], cast(dict[str, object], failed["kinds"])["threads"])
+        assert failed_threads["outcome"] == {
             "state": "error",
-            "reason": "insight_unavailable:timeline",
+            "reason": "insight_unavailable:threads",
             "detail": {},
         }
-        assert failed_timeline["readiness_tag"] == "q-error"
-        assert failed_timeline["count"] == 0
+        assert failed_threads["readiness_tag"] == "q-error"
+        assert failed_threads["count"] == 0
 
     def test_empty_panel_stays_empty(self, workspace_env: dict[str, Path]) -> None:
         healthy = self._panels(workspace_env, fail=False)
-        healthy_timeline = cast(dict[str, object], cast(dict[str, object], healthy["kinds"])["timeline"])
-        assert cast(dict[str, object], healthy_timeline["outcome"])["state"] == "empty"
-        assert healthy_timeline["readiness_tag"] == "q-missing"
-        assert healthy_timeline["count"] == 0
+        # The profile panel is the genuinely-empty kind on the minimum
+        # archive (no session insight is materialized); the thread panel
+        # answers "ok" because a root session always forms one thread.
+        healthy_profile = cast(dict[str, object], cast(dict[str, object], healthy["kinds"])["profile"])
+        assert cast(dict[str, object], healthy_profile["outcome"])["state"] == "empty"
+        assert healthy_profile["readiness_tag"] == "q-missing"
+        assert healthy_profile["materialized"] is False
 
     def test_envelope_outcome_is_degraded_when_one_kind_fails(self, workspace_env: dict[str, Path]) -> None:
         failed = self._panels(workspace_env, fail=True)
         envelope_outcome = cast(dict[str, object], failed["outcome"])
         assert envelope_outcome["state"] == "degraded"
-        assert envelope_outcome["reason"] == "insight_unavailable:timeline"
+        assert envelope_outcome["reason"] == "insight_unavailable:threads"
         # The unaffected kind still answered, which is what "degraded" means.
-        phases = cast(dict[str, object], cast(dict[str, object], failed["kinds"])["phases"])
-        assert cast(dict[str, object], phases["outcome"])["state"] in {"ok", "empty"}
+        profile = cast(dict[str, object], cast(dict[str, object], failed["kinds"])["profile"])
+        assert cast(dict[str, object], profile["outcome"])["state"] in {"ok", "empty"}
 
     def test_failure_is_logged(self, workspace_env: dict[str, Path]) -> None:
         """A panel that could not answer names itself on the event stream.
@@ -421,5 +356,5 @@ class TestUnavailableInsightSurface:
         with capture() as records:
             self._panels(workspace_env, fail=True)
         unavailable = [r for r in records if r["event"] == "daemon.http.session_insight_unavailable"]
-        assert [r["kind"] for r in unavailable] == ["timeline"]
+        assert [r["kind"] for r in unavailable] == ["threads"]
         assert unavailable[0]["outcome"] == "degraded"

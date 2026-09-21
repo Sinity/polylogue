@@ -52,10 +52,7 @@ _DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
     ("retrieval_inference", "retrieval_inference"),
     ("retrieval_enrichment", "retrieval_enrichment"),
     ("session_profile_rows", "session_profile_rows"),
-    ("session_work_events", "session_work_events"),
-    ("session_work_events_fts", "session_work_events_fts"),
     ("session_tag_rollups", "session_tag_rollups"),
-    ("session_phases", "session_phases"),
 )
 
 

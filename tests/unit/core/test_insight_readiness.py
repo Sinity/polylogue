@@ -28,12 +28,8 @@ def _seed_readiness_sessions(db_path: Path) -> None:
         .title("Ready Root")
         .created_at("2026-04-01T09:00:00+00:00")
         .updated_at("2026-04-01T09:10:00+00:00")
-        .add_message(
-            "u1",
-            role="user",
-            text="Plan insight readiness reporting.",
-            timestamp="2026-04-01T09:00:00+00:00",
-        )
+        # No user turn: enrichment records NO_USER_TURNS, which is the
+        # fallback marker the readiness report classifies as degraded.
         .add_message(
             "a1",
             role="assistant",
@@ -75,8 +71,6 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     # their sources, but coverage must still surface the fallback.
     assert {insight.insight_name for insight in report.insights} >= {
         "session_profiles",
-        "session_work_events",
-        "session_phases",
         "threads",
         "session_tag_rollups",
         "archive_coverage",

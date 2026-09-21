@@ -17,14 +17,10 @@ from polylogue.analysis.archive import (
     SessionCostInsightQuery,
     SessionLatencyProfileInsight,
     SessionLatencyProfileInsightQuery,
-    SessionPhaseInsight,
-    SessionPhaseInsightQuery,
     SessionProfileInsight,
     SessionProfileInsightQuery,
     SessionTagRollupInsight,
     SessionTagRollupQuery,
-    SessionWorkEventInsight,
-    SessionWorkEventInsightQuery,
     ThreadInsight,
     ThreadInsightQuery,
     UsageTimelineInsight,
@@ -58,26 +54,6 @@ if TYPE_CHECKING:
             self,
             query: SessionTagRollupQuery | None = None,
         ) -> list[SessionTagRollupInsight]: ...
-
-        async def get_session_work_event_insights(
-            self,
-            session_id: str,
-        ) -> list[SessionWorkEventInsight]: ...
-
-        async def list_session_work_event_insights(
-            self,
-            query: SessionWorkEventInsightQuery | None = None,
-        ) -> list[SessionWorkEventInsight]: ...
-
-        async def get_session_phase_insights(
-            self,
-            session_id: str,
-        ) -> list[SessionPhaseInsight]: ...
-
-        async def list_session_phase_insights(
-            self,
-            query: SessionPhaseInsightQuery | None = None,
-        ) -> list[SessionPhaseInsight]: ...
 
         async def get_thread_insight(self, thread_id: str) -> ThreadInsight | None: ...
 
@@ -274,106 +250,6 @@ class PolylogueInsightsMixin:
         if request.limit is not None:
             rollups = rollups[: max(int(request.limit), 0)]
         return rollups
-
-    async def get_session_work_event_insights(
-        self,
-        session_id: str,
-    ) -> list[SessionWorkEventInsight]:
-        return await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.session_work_events.get",
-            arguments={"session_id": session_id},
-            work=lambda archive: archive.get_session_work_event_insights(session_id),
-            projection="session-work-events",
-        )
-
-    async def list_session_work_event_insights(
-        self,
-        query: SessionWorkEventInsightQuery | None = None,
-    ) -> list[SessionWorkEventInsight]:
-        request = query or SessionWorkEventInsightQuery()
-        since_ms = _combine_lower_ms(
-            _archive_query_date_ms("since", request.since),
-            _session_date_lower_ms(request.session_date_since),
-        )
-        until_ms = _combine_upper_ms(
-            _archive_query_date_ms("until", request.until),
-            _session_date_upper_ms(request.session_date_until),
-        )
-        return await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.session_work_events.list",
-            arguments={
-                "session_id": request.session_id,
-                "origin": request.origin,
-                "heuristic_label": request.heuristic_label,
-                "query": request.query,
-                "since": since_ms,
-                "until": until_ms,
-            },
-            work=lambda archive: archive.list_session_work_event_insights(
-                session_id=request.session_id,
-                origin=request.origin,
-                heuristic_label=request.heuristic_label,
-                query=request.query,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                limit=request.limit,
-                offset=request.offset,
-            ),
-            page_size=request.limit,
-            offset=request.offset,
-            projection="session-work-events",
-            stable_order="time,session_id",
-        )
-
-    async def get_session_phase_insights(
-        self,
-        session_id: str,
-    ) -> list[SessionPhaseInsight]:
-        return await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.session_phases.get",
-            arguments={"session_id": session_id},
-            work=lambda archive: archive.get_session_phase_insights(session_id),
-            projection="session-phases",
-        )
-
-    async def list_session_phase_insights(
-        self,
-        query: SessionPhaseInsightQuery | None = None,
-    ) -> list[SessionPhaseInsight]:
-        request = query or SessionPhaseInsightQuery()
-        since_ms = _combine_lower_ms(
-            _archive_query_date_ms("since", request.since),
-            _session_date_lower_ms(request.session_date_since),
-        )
-        until_ms = _combine_upper_ms(
-            _archive_query_date_ms("until", request.until),
-            _session_date_upper_ms(request.session_date_until),
-        )
-        return await run_archive_read(
-            _active_archive_root(self.config),
-            operation="insights.session_phases.list",
-            arguments={
-                "session_id": request.session_id,
-                "origin": request.origin,
-                "since": since_ms,
-                "until": until_ms,
-            },
-            work=lambda archive: archive.list_session_phase_insights(
-                session_id=request.session_id,
-                origin=request.origin,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                limit=request.limit,
-                offset=request.offset,
-            ),
-            page_size=request.limit,
-            offset=request.offset,
-            projection="session-phases",
-            stable_order="time,session_id",
-        )
 
     async def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
         return await run_archive_read(

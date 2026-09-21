@@ -23,7 +23,6 @@ class DaySessionSummary:
     total_wall_duration_ms: int
     total_messages: int
     total_words: int
-    work_event_breakdown: dict[str, int]
     repos_active: tuple[str, ...]
     origins: dict[str, int]
 
@@ -38,7 +37,6 @@ class DaySessionSummary:
             "total_wall_duration_ms": self.total_wall_duration_ms,
             "total_messages": self.total_messages,
             "total_words": self.total_words,
-            "work_event_breakdown": self.work_event_breakdown,
             "repos_active": list(self.repos_active),
             "origins": self.origins,
         }
@@ -81,7 +79,6 @@ def summarize_day(
     profiles: Sequence[SessionProfile],
     target_date: date,
 ) -> DaySessionSummary:
-    work_events: Counter[str] = Counter()
     repos: set[str] = set()
     origins: Counter[str] = Counter()
     total_cost = 0.0
@@ -103,10 +100,6 @@ def summarize_day(
         total_messages += profile.message_count
         total_words += profile.word_count
         origins[profile.origin] += 1
-        work_events.update(
-            event.heuristic_label.value if hasattr(event.heuristic_label, "value") else str(event.heuristic_label)
-            for event in profile.work_events
-        )
         repos.update(profile.repo_names or normalize_repo_names(repo_paths=profile.repo_paths))
     return DaySessionSummary(
         date=target_date,
@@ -119,7 +112,6 @@ def summarize_day(
         total_wall_duration_ms=total_wall,
         total_messages=total_messages,
         total_words=total_words,
-        work_event_breakdown=dict(work_events),
         repos_active=tuple(sorted(repos)),
         origins=dict(origins),
     )

@@ -14,10 +14,8 @@ from pydantic import Field, field_validator
 
 from polylogue.analysis.archive import (
     ArchiveInsightUnavailableError,
-    SessionPhaseInsight,
     SessionProfileInsight,
     SessionProfileInsightQuery,
-    SessionWorkEventInsight,
     ThreadInsight,
     ThreadInsightQuery,
 )
@@ -37,12 +35,12 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-RESUME_BRIEF_MATERIALIZER_VERSION = 2
+RESUME_BRIEF_MATERIALIZER_VERSION = 3
 """Bumped whenever the resume-brief composition contract changes shape.
 
 Owned by ``polylogue/analysis/resume.py``. The brief is composed on read
-from already-materialized session insights (profile with folded enrichment,
-work events, phases, work thread); the version bumps when fields or
+from already-materialized session insights (profile with folded enrichment
+and work thread); the version bumps when fields or
 composition semantics change so consumers can invalidate cached
 renderings.
 """
@@ -76,20 +74,6 @@ class ResumeFacts(ArchiveInsightModel):
     last_message: ResumeLastMessage | None = None
 
 
-class ResumeWorkEvent(ArchiveInsightModel):
-    heuristic_label: str
-    summary: str
-    confidence: float
-    support_level: str
-
-
-class ResumePhase(ArchiveInsightModel):
-    phase_index: int
-    message_range: tuple[int, int]
-    confidence: float
-    support_level: str
-
-
 class ResumeThread(ArchiveInsightModel):
     thread_id: str
     root_id: str
@@ -109,8 +93,6 @@ class ResumeInferences(ArchiveInsightModel):
     support_level: str = "unknown"
     repo_names: tuple[str, ...] = ()
     auto_tags: tuple[str, ...] = ()
-    work_events: tuple[ResumeWorkEvent, ...] = ()
-    phases: tuple[ResumePhase, ...] = ()
     thread: ResumeThread | None = None
     # polylogue-37t.23: the full authority-blended resumability projection
     # (structural_inference tier, overlaid with any live assertion-tier
@@ -136,16 +118,14 @@ class ResumeProvenance(ArchiveInsightModel):
     """Cites the substrate rows that contributed to a resume brief.
 
     Every brief surface (CLI, MCP, reader) must be able to point back at
-    the specific session, message, work-event, phase, and related-session
-    IDs it composed from — no opaque prose.
+    the specific session, message, and related-session IDs it composed
+    from — no opaque prose.
     """
 
     materializer_version: int
     computed_at: str
     cited_session_ids: tuple[str, ...] = ()
     cited_message_ids: tuple[str, ...] = ()
-    cited_work_event_ids: tuple[str, ...] = ()
-    cited_phase_ids: tuple[str, ...] = ()
     cited_thread_id: str | None = None
 
 
@@ -217,10 +197,6 @@ class ResumeOperations(Protocol):
         *,
         tier: str = "merged",
     ) -> SessionProfileInsight | None: ...
-
-    async def get_session_work_event_insights(self, session_id: str) -> list[SessionWorkEventInsight]: ...
-
-    async def get_session_phase_insights(self, session_id: str) -> list[SessionPhaseInsight]: ...
 
     async def list_thread_insights(
         self,
@@ -806,30 +782,6 @@ def _facts_from_session(
     )
 
 
-def _event_summary(events: Sequence[SessionWorkEventInsight]) -> tuple[ResumeWorkEvent, ...]:
-    return tuple(
-        ResumeWorkEvent(
-            heuristic_label=event.inference.heuristic_label,
-            summary=event.inference.summary,
-            confidence=event.inference.confidence,
-            support_level=event.inference.support_level,
-        )
-        for event in events[:5]
-    )
-
-
-def _phase_summary(phases: Sequence[SessionPhaseInsight]) -> tuple[ResumePhase, ...]:
-    return tuple(
-        ResumePhase(
-            phase_index=phase.phase_index,
-            message_range=phase.evidence.message_range,
-            confidence=phase.inference.confidence if phase.inference is not None else 0.0,
-            support_level=phase.inference.support_level if phase.inference is not None else "weak",
-        )
-        for phase in phases[:5]
-    )
-
-
 def _thread_summary(thread: ThreadInsight | None) -> ResumeThread | None:
     if thread is None:
         return None
@@ -847,8 +799,6 @@ def _thread_summary(thread: ThreadInsight | None) -> ResumeThread | None:
 def _inferences(
     *,
     profile: SessionProfileInsight | None,
-    events: Sequence[SessionWorkEventInsight],
-    phases: Sequence[SessionPhaseInsight],
     thread: ThreadInsight | None,
 ) -> ResumeInferences:
     profile_inference = profile.inference if profile is not None else None
@@ -862,8 +812,6 @@ def _inferences(
         support_level=enrichment_payload.support_level if enrichment_payload is not None else "unknown",
         repo_names=profile_inference.repo_names if profile_inference is not None else (),
         auto_tags=profile_inference.auto_tags if profile_inference is not None else (),
-        work_events=_event_summary(events),
-        phases=_phase_summary(phases),
         thread=_thread_summary(thread),
         objective_posture=(
             enrichment_payload.objective_posture if enrichment_payload is not None else ObjectivePosturePayload()
@@ -963,10 +911,6 @@ def _next_steps(
     if inferences.blockers:
         steps.append(f"Resolve blocker: {inferences.blockers[0]}")
 
-    last = inferences.work_events[-1] if inferences.work_events else None
-    if last is not None:
-        steps.append(f"Continue after latest work event: {last.summary}")
-
     last_message = _last_message(session.messages.to_list())
     if last_message is not None and last_message.role == "user" and last_message.preview:
         steps.append(f"Respond to latest user request: {last_message.preview}")
@@ -1033,23 +977,9 @@ async def build_resume_brief(
                 )
             )
 
-    events: list[SessionWorkEventInsight] = []
-    try:
-        events = await operations.get_session_work_event_insights(session_id)
-    except ArchiveInsightUnavailableError as exc:
-        uncertainties.append(ResumeUncertainty(source="work_events", detail=str(exc)))
-
-    phases: list[SessionPhaseInsight] = []
-    try:
-        phases = await operations.get_session_phase_insights(session_id)
-    except ArchiveInsightUnavailableError as exc:
-        uncertainties.append(ResumeUncertainty(source="phases", detail=str(exc)))
-
     thread = await _find_thread(operations, session_id, uncertainties)
     inferences = _inferences(
         profile=profile,
-        events=events,
-        phases=phases,
         thread=thread,
     )
     # polylogue-37t.23: overlay the live assertion tier on top of the
@@ -1076,15 +1006,11 @@ async def build_resume_brief(
 
     cited_session_ids: tuple[str, ...] = (session_id,) + tuple(related.session_id for related in related_sessions)
     cited_message_ids: tuple[str, ...] = tuple(str(message.id) for message in session.messages)
-    cited_work_event_ids: tuple[str, ...] = tuple(event.event_id for event in events[:5])
-    cited_phase_ids: tuple[str, ...] = tuple(phase.phase_id for phase in phases[:5])
     provenance = ResumeProvenance(
         materializer_version=RESUME_BRIEF_MATERIALIZER_VERSION,
         computed_at=_utc_now_iso(),
         cited_session_ids=cited_session_ids,
         cited_message_ids=cited_message_ids,
-        cited_work_event_ids=cited_work_event_ids,
-        cited_phase_ids=cited_phase_ids,
         cited_thread_id=thread.thread_id if thread is not None else None,
     )
 
@@ -1307,11 +1233,9 @@ __all__ = [
     "ResumeOperations",
     "ResumeOverlapBasis",
     "ResumePathOverlap",
-    "ResumePhase",
     "ResumeProvenance",
     "ResumeRelatedSession",
     "ResumeUncertainty",
-    "ResumeWorkEvent",
     "ResumeThread",
     "build_resume_brief",
     "find_resume_candidates",

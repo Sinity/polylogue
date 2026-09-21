@@ -1,6 +1,6 @@
 """Insight materialization laws: session insights agree with source sessions.
 
-Proves that materialized session insights (profiles, work events, phases)
+Proves that materialized session insights (profiles, threads)
 reflect the sessions they were derived from — counts match, provider
 agrees, no phantom insights for non-existent sessions.
 """
@@ -126,39 +126,3 @@ class TestInsightMaterializationIdempotence:
             ids_after = {r["session_id"] for r in conn.execute("SELECT session_id FROM session_profiles").fetchall()}
 
         assert ids_before == ids_after, "Rebuild changed profile set"
-
-
-class TestWorkEventAgreement:
-    """Work events must reference valid profiles."""
-
-    def test_no_orphan_work_events(self, materialized_db: Path) -> None:
-        with closing(_open_archive(materialized_db)) as conn:
-            has_events = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_work_events'"
-            ).fetchone()
-            if has_events is None:
-                pytest.skip("session_work_events table not present")
-
-            orphans = conn.execute(
-                "SELECT COUNT(*) FROM session_work_events we "
-                "WHERE NOT EXISTS (SELECT 1 FROM session_profiles sp WHERE sp.session_id = we.session_id)"
-            ).fetchone()[0]
-            assert orphans == 0, f"Found {orphans} orphan work events"
-
-
-class TestPhaseAgreement:
-    """Phases must reference valid profiles."""
-
-    def test_no_orphan_phases(self, materialized_db: Path) -> None:
-        with closing(_open_archive(materialized_db)) as conn:
-            has_phases = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='session_phases'"
-            ).fetchone()
-            if has_phases is None:
-                pytest.skip("session_phases table not present")
-
-            orphans = conn.execute(
-                "SELECT COUNT(*) FROM session_phases sp2 "
-                "WHERE NOT EXISTS (SELECT 1 FROM session_profiles sp WHERE sp.session_id = sp2.session_id)"
-            ).fetchone()[0]
-            assert orphans == 0, f"Found {orphans} orphan phases"

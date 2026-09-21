@@ -103,12 +103,12 @@ def test_genuinely_empty_archive_reports_coverage_as_unmeasured_exact(tmp_path: 
 def test_unreadable_archive_index_reports_nothing_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """polylogue-bu47u: a failed readiness query certifies nothing.
 
-    ``session_work_events_ready`` used to return ``True`` from inside the
+    A readiness flag used to return ``True`` from inside the
     ``except sqlite3.Error`` handler while every sibling key returned the
     not-ready value -- a positive readiness claim emitted by an error path.
 
-    Anti-vacuity: restore ``"session_work_events_ready": True`` (or the
-    fabricated ``coverage_pct: 0.0``) in that handler and this fails.
+    Anti-vacuity: restore ``"messages_ready": True`` (or the fabricated
+    ``coverage_pct: 0.0``) in that handler and this fails.
     """
     from polylogue.daemon import fts_status
 
@@ -124,7 +124,6 @@ def test_unreadable_archive_index_reports_nothing_ready(tmp_path: Path, monkeypa
 
     assert payload is not None
     assert payload["messages_ready"] is False
-    assert payload["session_work_events_ready"] is False
     assert payload["invariant_ready"] is False
     assert payload["coverage_pct"] is None
     assert payload["coverage_exact"] is False

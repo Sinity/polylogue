@@ -724,8 +724,7 @@ Implementation: `polylogue/storage/search/query_builders.py`,
   `ł`/`Ł` into indexed text before FTS insertion and into `MATCH` query text
   in `escape_fts5_query`, so `latwo`/`zrobilem` finds seeded
   `łatwo`/`zrobiłem` (polylogue-9jsi). The same tokenizer and fold apply to
-  the `session_work_events_fts` insight-search surface, including full rebuild,
-  missing-row repair, and dangling-row repair paths. Thread search uses its
+  full rebuild, missing-row repair, and dangling-row repair paths. Thread search uses its
   canonical substring scan; the unused `threads_fts` surface was removed in
   index schema v63.
   A trigram fallback lane for further recall (beyond word-boundary tokens)

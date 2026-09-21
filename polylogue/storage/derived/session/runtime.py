@@ -36,8 +36,6 @@ class SessionInsightRefreshChunkPayload(TypedDict):
     max_estimated_session_messages: int
     hydrated_count: int
     profiles_written: int
-    work_events_written: int
-    phases_written: int
     load_ms: float
     hydrate_ms: float
     build_ms: float
@@ -49,8 +47,6 @@ class SessionInsightRefreshChunkPayload(TypedDict):
 @dataclass(slots=True)
 class SessionInsightCounts:
     profiles: int = 0
-    work_events: int = 0
-    phases: int = 0
     threads: int = 0
     tag_rollups: int = 0
 
@@ -58,22 +54,16 @@ class SessionInsightCounts:
         self,
         *,
         profiles: int = 0,
-        work_events: int = 0,
-        phases: int = 0,
         threads: int = 0,
         tag_rollups: int = 0,
     ) -> None:
         self.profiles += profiles
-        self.work_events += work_events
-        self.phases += phases
         self.threads += threads
         self.tag_rollups += tag_rollups
 
     def to_dict(self) -> dict[str, int]:
         return {
             "profiles": self.profiles,
-            "work_events": self.work_events,
-            "phases": self.phases,
             "threads": self.threads,
             "tag_rollups": self.tag_rollups,
         }
@@ -95,10 +85,6 @@ class SessionInsightStatusSnapshot:
     root_threads: int = 0
     profile_row_count: int = 0
     latency_profile_row_count: int = 0
-    work_event_inference_count: int = 0
-    work_event_inference_fts_count: int = 0
-    work_event_inference_fts_duplicate_count: int = 0
-    phase_inference_count: int = 0
     run_count: int = 0
     observed_event_count: int = 0
     context_snapshot_count: int = 0
@@ -111,12 +97,6 @@ class SessionInsightStatusSnapshot:
     missing_latency_profile_row_count: int = 0
     stale_latency_profile_row_count: int = 0
     orphan_latency_profile_row_count: int = 0
-    expected_work_event_inference_count: int = 0
-    stale_work_event_inference_count: int = 0
-    orphan_work_event_inference_count: int = 0
-    expected_phase_inference_count: int = 0
-    stale_phase_inference_count: int = 0
-    orphan_phase_inference_count: int = 0
     stale_thread_count: int = 0
     orphan_thread_count: int = 0
     expected_tag_rollup_count: int = 0
@@ -131,26 +111,3 @@ class SessionInsightStatusSnapshot:
     profile_enrichment_fts_duplicate_count: int = 0
     profile_merged_fts_count: int = 0
     profile_merged_fts_duplicate_count: int = 0
-
-    @property
-    def phase_count(self) -> int:
-        """Evidence-tier session phase row count.
-
-        ``phase_inference_count`` is the historical storage/status field name.
-        Public readers should prefer this alias: phases are deterministic
-        time-gap intervals, not a probabilistic phase-kind inference surface.
-        """
-
-        return self.phase_inference_count
-
-    @property
-    def expected_phase_count(self) -> int:
-        return self.expected_phase_inference_count
-
-    @property
-    def stale_phase_count(self) -> int:
-        return self.stale_phase_inference_count
-
-    @property
-    def orphan_phase_count(self) -> int:
-        return self.orphan_phase_inference_count

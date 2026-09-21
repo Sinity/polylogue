@@ -51,7 +51,6 @@ _TABLES_EXPECTED_POPULATED = frozenset(
 
 _TABLES_CONDITIONALLY_POPULATED = frozenset(
     {
-        "session_phases",
         "session_latency_profiles",
         "threads",
         "session_tag_rollups",
@@ -128,7 +127,6 @@ def _snapshot(db_path: Path) -> dict[str, int]:
         indexed_blocks_count = conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
         fts_docsize = conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
         session_profiles_count = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
-        session_work_events_count = conn.execute("SELECT COUNT(*) FROM session_work_events").fetchone()[0]
         content_hashes = {row[0] for row in conn.execute("SELECT content_hash FROM sessions").fetchall()}
     finally:
         conn.close()
@@ -139,7 +137,6 @@ def _snapshot(db_path: Path) -> dict[str, int]:
         "indexed_blocks": indexed_blocks_count,
         "fts_docsize": fts_docsize,
         "session_profiles": session_profiles_count,
-        "session_work_events": session_work_events_count,
         "distinct_content_hashes": len(content_hashes),
     }
 
@@ -185,7 +182,6 @@ def test_full_pipeline_replay_produces_correct_archive(
     - sessions / messages / blocks have expected counts
     - FTS index docsize matches indexed blocks
     - session_profiles has one row per session
-    - session_work_events has rows (for providers that emit work events)
     - Content hashes are deterministic across two independent databases
     """
     # ── Phase 1: generate and ingest into DB1 ──

@@ -108,12 +108,10 @@ def test_fresh_archive_fts_surfaces_use_the_canonical_tokenizer(tmp_path: Path) 
     with ArchiveStore(tmp_path):
         pass
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        rows = conn.execute(
-            "SELECT name, sql FROM sqlite_master WHERE name IN ('messages_fts', 'session_work_events_fts')"
-        ).fetchall()
+        rows = conn.execute("SELECT name, sql FROM sqlite_master WHERE name IN ('messages_fts')").fetchall()
 
     definitions = {str(row[0]): str(row[1]) for row in rows}
-    assert set(definitions) == {"messages_fts", "session_work_events_fts"}
+    assert set(definitions) == {"messages_fts"}
     assert all(f"tokenize='{FTS_UNICODE_TOKENIZER}'" in sql for sql in definitions.values())
 
 

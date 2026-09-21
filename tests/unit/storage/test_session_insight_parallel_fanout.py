@@ -7,8 +7,8 @@ interpreter, and stays fully sequential otherwise. These tests pin three
 things a naive fan-out could get wrong:
 
 1. Equivalence: parallel and sequential execution must write byte-identical
-   ``session_profiles`` / ``session_latency_profiles`` / ``session_work_events``
-   / ``session_phases`` rows for the same corpus (build/rebuild.py, refresh.py).
+   ``session_profiles`` / ``session_latency_profiles`` rows for the same
+   corpus (build/rebuild.py, refresh.py).
 2. Determinism: results come back in job order regardless of which job's
    thread finishes first, so the single writer always applies them in a
    fixed, reproducible order.
@@ -127,8 +127,6 @@ def _rebuild_and_dump(archive_root: Path) -> dict[str, list[dict[str, object]]]:
         return {
             "session_profiles": _dump_table(conn, "session_profiles", order_by="session_id"),
             "session_latency_profiles": _dump_table(conn, "session_latency_profiles", order_by="session_id"),
-            "session_work_events": _dump_table(conn, "session_work_events", order_by="session_id, position"),
-            "session_phases": _dump_table(conn, "session_phases", order_by="session_id, position"),
         }
 
 
@@ -256,8 +254,6 @@ def test_rebuild_session_insights_writes_only_happen_on_calling_thread(
     write_fn_names = [
         "replace_session_profiles_bulk_sync",
         "replace_session_latency_profiles_bulk_sync",
-        "replace_session_work_events_bulk_sync",
-        "replace_session_phases_bulk_sync",
     ]
     for name in write_fn_names:
         original_write = getattr(rebuild_mod, name)
