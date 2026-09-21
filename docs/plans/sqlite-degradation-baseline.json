@@ -7,11 +7,11 @@
     },
     {
       "file": "polylogue/analysis/hermes_integration_health.py",
-      "digest": "2c3ca562218aaa4a1d4901ddd6f9a246bf8b3be9"
+      "digest": "8d2ff212dfc9c03063b0e8f0fca5ecfe5dacac35"
     },
     {
       "file": "polylogue/analysis/hermes_integration_health.py",
-      "digest": "efcb8302670275365fc80e973c5a4333fa7e85e0"
+      "digest": "c56019d8e083b4c41f7929eee09e0802b209c8ce"
     },
     {
       "file": "polylogue/analysis/schema_drift.py",
