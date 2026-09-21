@@ -133,7 +133,19 @@ def test_domain_roundtrip_populates_every_masked_message_field() -> None:
 
 
 def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
-    """The minimum required kwargs are id/role/text; everything else has a default."""
+    """The minimum required kwargs are id/role/text; everything else has a default.
+
+    The four token lanes default to ``None``, not ``0``. This test pinned
+    ``0`` until polylogue-qgyuj made them nullable on the canonical ``Message``
+    model, and the envelope is generated from that model, so the assertion was
+    pinning a stale default rather than a property (polylogue-2i96t). ``None``
+    is the correct value here for the reason ``Message`` states: a caller that
+    omits these fields has supplied no measurement, and defaulting to ``0`` on
+    a public output model republishes exactly the false measured-zero the
+    storage/read path stopped writing. A measured zero is still expressible
+    and still distinct -- the assertion below pins that too, so this cannot be
+    satisfied by making the lane un-settable.
+    """
     payload = MessageRenderEnvelope(id="m1", role="user", text="hi")
 
     assert payload.target_ref is None
@@ -147,10 +159,11 @@ def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
     assert payload.has_paste_evidence is False
     assert payload.has_tool_use is False
     assert payload.has_thinking is False
-    assert payload.input_tokens == 0
-    assert payload.output_tokens == 0
-    assert payload.cache_read_tokens == 0
-    assert payload.cache_write_tokens == 0
+    assert payload.input_tokens is None
+    assert payload.output_tokens is None
+    assert payload.cache_read_tokens is None
+    assert payload.cache_write_tokens is None
+    assert MessageRenderEnvelope(id="m1", role="user", text="hi", input_tokens=0).input_tokens == 0
     assert payload.model_name is None
     assert payload.attachment_refs == ()
     assert payload.raw_id is None
@@ -406,7 +419,6 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
     assert blob["position"] == 0
     assert blob["is_active_leaf"] is False
     assert blob["has_paste_evidence"] is False
-    assert blob["input_tokens"] == 0
     assert blob["attachment_refs"] == []
 
     # None defaults are correctly omitted.
@@ -416,6 +428,15 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
     assert "raw_id" not in blob
     assert "source_path" not in blob
     assert "model_name" not in blob
+    # An unmeasured token lane is a ``None`` default and is omitted with the
+    # rest of them (polylogue-qgyuj/polylogue-2i96t). This assertion used to
+    # sit in the observable block above pinning ``input_tokens == 0``, which
+    # is the wire shape of a *measured* zero -- so the pair below is what
+    # keeps the two apart on the wire, and the second half fails if the lane
+    # is ever excluded unconditionally.
+    assert "input_tokens" not in blob
+    measured = MessageRenderEnvelope(id="m1", role="user", text="hi", input_tokens=0)
+    assert json.loads(measured.to_json(exclude_none=True))["input_tokens"] == 0
 
 
 # ---------------------------------------------------------------------------

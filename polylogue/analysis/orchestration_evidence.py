@@ -24,6 +24,12 @@ if TYPE_CHECKING:
 _LIMIT = 1000
 _BEAD_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]*-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*\Z")
 _LAUNCH_TOOLS = {"Agent", "Task", "spawn_agent"}
+# polylogue-w4hfb: ``Message``'s four per-message token lanes are nullable and
+# ``None`` means "the provider reported no counter at this grain", which is a
+# different fact from a measured ``0`` (archive/message/models.py, polylogue-
+# qgyuj). This projection therefore never orders a lane against an int without
+# first separating the unmeasured case, and never folds unmeasured into zero.
+_MESSAGE_TOKEN_LANES = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
 _SHELL_TOOLS = {"Bash", "exec_command", "shell_command", "shell"}
 
 
@@ -124,6 +130,8 @@ def build_session_orchestration(
     usage_observations: list[dict[str, object]] = []
     message_tokens: dict[str, int] = {}
     messages_with_tokens = 0
+    messages_with_unmeasured_lanes = 0
+    unmeasured_lane_messages: dict[str, int] = {}
     gaps = ["archive_freshness_unverified", "quota_consumed_tokens_unavailable"]
     watermark = None
     if acquisition:
@@ -134,15 +142,17 @@ def build_session_orchestration(
 
     for message in messages:
         timestamp = message.timestamp.isoformat() if message.timestamp else None
-        positive_tokens = {
-            key: value
-            for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")
-            if (value := getattr(message, key)) > 0
-        }
+        lanes = {key: getattr(message, key) for key in _MESSAGE_TOKEN_LANES}
+        positive_tokens = {key: value for key, value in lanes.items() if value is not None and value > 0}
+        unmeasured_lanes = [key for key, value in lanes.items() if value is None]
         if positive_tokens:
             messages_with_tokens += 1
             for key, value in positive_tokens.items():
                 message_tokens[key] = message_tokens.get(key, 0) + value
+        if unmeasured_lanes:
+            messages_with_unmeasured_lanes += 1
+            for key in unmeasured_lanes:
+                unmeasured_lane_messages[key] = unmeasured_lane_messages.get(key, 0) + 1
         if str(message.role) == "assistant" and message.model_name:
             if segments and segments[-1]["model"] == message.model_name:
                 segments[-1]["end_message_id"] = message.id
@@ -309,6 +319,8 @@ def build_session_orchestration(
         gaps.append("cumulative_token_usage_unavailable")
     if message_tokens:
         gaps.append("message_usage_missing_and_zero_indistinguishable")
+    if unmeasured_lane_messages:
+        gaps.append("message_token_lanes_unmeasured")
     if not segments:
         gaps.append("model_evidence_unavailable")
     if not quotas:
@@ -378,6 +390,14 @@ def build_session_orchestration(
             "latest_cumulative": latest_total,
             "message_tokens_lower_bound": message_tokens or None,
             "messages_with_positive_tokens": messages_with_tokens,
+            # The two buckets below are what keeps ``message_tokens_lower_bound``
+            # honest: it sums measured-positive lanes only, so a reader needs the
+            # count of messages that carried an unmeasured lane -- and which lanes
+            # those were -- to know the denominator the lower bound was taken over.
+            # A measured ``0`` is excluded from both: it is a measurement.
+            "messages_with_unmeasured_token_lanes": messages_with_unmeasured_lanes,
+            "unmeasured_token_lane_messages": unmeasured_lane_messages or None,
+            "message_token_lane_scope": len(messages),
             "observations": usage_observations[:_LIMIT],
             "quota_consumed_tokens": None,
             "includes_children": None,
