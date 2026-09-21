@@ -8482,6 +8482,31 @@ def _archive_messages_fts_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
 
 
 def _archive_profile_rows_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
+    """Count sessions whose derived profile has not been materialized yet.
+
+    This measures derivation lag, and only that. It used to add a second half
+    -- ``session_profiles`` rows whose ``sessions`` row is gone -- which no
+    archive can hold and no owner would have acted on:
+
+    * ``session_profiles.session_id`` is ``TEXT PRIMARY KEY REFERENCES
+      sessions(session_id) ON DELETE CASCADE``, so every write profile that
+      enforces foreign keys makes the orphan uninsertable and cascades the
+      parent delete.
+    * The one production route that deliberately drops enforcement -- the bulk
+      ingest window's ``PRAGMA foreign_keys = OFF`` in
+      ``pipeline/services/ingest_batch/_core.py`` -- runs
+      ``_foreign_key_violations_for_sessions`` over a plan derived from the
+      live schema before it commits, and raises ``sqlite3.IntegrityError``
+      rather than committing a violation that window admitted.
+    * A full session-insight rebuild additionally prunes per-session insight
+      rows whose session is gone (``_delete_orphan_session_insights_sync`` in
+      ``storage/derived/session/rebuild.py``), so even a hypothetical orphan
+      has a recurring owner that removes it.
+
+    So the orphan half was a permanently-zero count with no actuator behind
+    it: a repair-shaped scan, not a measure. The missing half is real, its
+    owner is ordinary derivation (``polylogued run``), and it stays.
+    """
     missing = _count_scalar(
         conn,
         """
@@ -8492,26 +8517,15 @@ def _archive_profile_rows_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
         )
         """,
     )
-    orphaned = _count_scalar(
-        conn,
-        """
-        SELECT COUNT(*)
-        FROM session_profiles AS p
-        WHERE NOT EXISTS (
-            SELECT 1 FROM sessions AS s WHERE s.session_id = p.session_id
-        )
-        """,
-    )
-    issue_count = missing + orphaned
     detail = (
         "archive session profile rows complete"
-        if issue_count == 0
-        else f"{missing:,} missing and {orphaned:,} orphaned archive session profile rows"
+        if missing == 0
+        else f"{missing:,} sessions without a derived session profile"
     )
     return _archive_debt(
         name="archive_session_profile_rows",
         category="derived_repair",
-        issue_count=issue_count,
+        issue_count=missing,
         detail=detail,
     )
 
