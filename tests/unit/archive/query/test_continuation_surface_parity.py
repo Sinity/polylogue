@@ -71,6 +71,28 @@ def _write_needle_message(archive_root: Path, native_id: str, text: str) -> None
         )
 
 
+def _write_agg_message(archive_root: Path, native_id: str, role: Role, text: str) -> None:
+    """Seed one message whose derived ``word_count`` the aggregate reduces."""
+
+    with ArchiveStore(archive_root) as archive_db:
+        write_index_session(
+            archive_db,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=native_id,
+                title="Aggregate parity session",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=role,
+                        text=text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                    )
+                ],
+            ),
+        )
+
+
 @contextmanager
 def _running_http_server() -> Iterator[str]:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -108,6 +130,99 @@ def mcp_server() -> MCPServerUnderTest:
     from polylogue.mcp.server import build_server
 
     return cast(MCPServerUnderTest, build_server())
+
+
+async def test_agg_terminal_pages_and_metrics_match_across_http_api_mcp(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The named-metric aggregate agrees across HTTP, the Python API and MCP.
+
+    The ``| agg ...`` terminal is evaluated entirely in SQL
+    (``ArchiveStore.query_unit_agg_metrics``) and its group page is walked with
+    the same continuation machinery as a row page. Production dependencies
+    exercised: ``DaemonAPIHandler._handle_query_units``,
+    ``Polylogue.query_units`` and the MCP ``query`` tool, all reaching
+    ``_execute_agg_terminal``.
+
+    Anti-vacuity: computing the metric on one surface only, or paging the
+    underlying rows instead of the grouped relation, makes the three group
+    pages or their metrics diverge here. The expected metrics are the word
+    counts of the seeded texts, computed in this test.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    seeded = {
+        Role.USER: ("one two", "one two three four"),
+        Role.ASSISTANT: ("one two three", "one two three four five six"),
+    }
+    for role, texts in seeded.items():
+        for index, text in enumerate(texts):
+            _write_agg_message(archive_root, f"agg-{role.value}-{index}", role, f"aggcheck {text}")
+
+    expression = "messages where text:aggcheck | group by role | agg count, avg:word_count, max:word_count"
+    archive = Polylogue(archive_root=archive_root)
+
+    api_first = await archive.query_units(expression, limit=1)
+    assert api_first.continuation is not None
+    api_second = await archive.query_units(continuation=api_first.continuation)
+
+    quoted_expression = quote(expression)
+    with _running_http_server() as base_url:
+        http_first = cast(
+            dict[str, object], _get_json(base_url, f"/api/query-units?expression={quoted_expression}&limit=1")
+        )
+        http_second = cast(
+            dict[str, object],
+            _get_json(base_url, f"/api/query-units?continuation={quote(str(http_first['continuation']), safe='')}"),
+        )
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        mcp_first = json.loads(
+            await invoke_surface_async(mcp_server._tool_manager._tools["query"].fn, expression=expression, limit=1)
+        )
+        mcp_second = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["query"].fn, continuation=mcp_first["continuation"]
+            )
+        )
+
+    def _groups(items: object) -> dict[str, object]:
+        return {
+            str(cast(dict[str, object], item)["group_key"]): cast(dict[str, object], item)["metrics"]
+            for item in cast(list[object], items)
+        }
+
+    api_groups = {
+        str(cast(object, item).group_key): cast(object, item).metrics  # type: ignore[attr-defined]
+        for item in (*api_first.items, *api_second.items)
+    }
+    http_groups = {**_groups(http_first["items"]), **_groups(http_second["items"])}
+    mcp_groups = {**_groups(mcp_first["items"]), **_groups(mcp_second["items"])}
+
+    # "aggcheck" prefixes every text, so each word count is one more than the
+    # seeded phrase's own word count.
+    expected = {
+        role.value: {
+            "count": len(texts),
+            "avg_word_count": sum(len(text.split()) + 1 for text in texts) / len(texts),
+            "max_word_count": float(max(len(text.split()) + 1 for text in texts)),
+        }
+        for role, texts in seeded.items()
+    }
+    assert api_groups == expected
+    assert http_groups == expected
+    assert mcp_groups == expected
+    # Each page carried exactly one group, so the walk covered both without
+    # re-emitting either.
+    assert len(api_first.items) == 1
+    assert len(api_second.items) == 1
+    assert api_second.continuation is None
 
 
 async def test_continuation_pages_match_identically_across_http_api_mcp(
