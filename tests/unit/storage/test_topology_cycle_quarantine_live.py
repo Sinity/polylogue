@@ -263,6 +263,87 @@ def test_self_referential_edge_quarantines_without_touching_projection(tmp_path:
     )
 
 
+def test_child_first_mutual_parent_pair_quarantines_the_closing_edge(tmp_path: Path) -> None:
+    """A mutual parent pair ingested child-first cannot close a projection loop.
+
+    polylogue-nzf93. The guard is full-chain, not single-hop (see the 1024-hop
+    budget case below), but it used to read ``sessions.parent_session_id`` --
+    a projection ``_resolve_session_graph`` refreshes only AFTER its
+    inbound-parent loop. Writing A(parent=B) before B exists leaves A -> B
+    unresolved; writing B(parent=A) then resolves B -> A outbound, and the
+    inbound loop's walk out of B still saw a NULL column, so it called A -> B
+    acyclic. Both edges resolved and ``parent_session_id`` itself closed a
+    two-node loop. This is the ingest order the earlier cross-ingest case does
+    not reach: there the parent lands unparented first.
+
+    Anti-vacuity, verified by reverting: restore ``_walk_parent_of`` to
+    ``SELECT parent_session_id FROM sessions WHERE session_id = ?`` and this
+    fails at the first quarantine assertion with ``status is None`` -- both
+    edges resolve and ``parent_session_id`` reads A -> B -> A.
+    """
+    conn = _connect(tmp_path / "index.db")
+
+    # A lands first claiming a parent that does not exist yet: the edge stays
+    # unresolved and A's projection stays unparented.
+    session_a = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="mutual-A",
+        title="A",
+        parent_session_provider_id="mutual-B",
+        messages=[_msg("a0", Role.USER, "a body", 0)],
+    )
+    a_id = write_parsed_session_to_archive(conn, session_a)
+    assert _link_row(conn, a_id)["resolved_dst_session_id"] is None
+    assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (a_id,)).fetchone()[0] is None
+
+    # B lands claiming A. Its own outbound edge is legitimate; the inbound
+    # A -> B edge this write would also resolve is the one that closes a loop.
+    session_b = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="mutual-B",
+        title="B",
+        parent_session_provider_id="mutual-A",
+        messages=[_msg("b0", Role.USER, "b body", 0)],
+    )
+    b_id = write_parsed_session_to_archive(conn, session_b)
+
+    closing = _link_row(conn, a_id)
+    assert closing["status"] == TopologyEdgeStatus.QUARANTINED.value
+    assert closing["resolved_dst_session_id"] is None
+    evidence = json.loads(closing["evidence_json"])
+    assert evidence["reason"] == "cycle_rejected"
+    assert evidence["cycle_path"] == [a_id, b_id, a_id]
+
+    # B's own edge is untouched: quarantining the closing edge must not reject
+    # the legitimate half of the pair.
+    kept = _link_row(conn, b_id)
+    assert kept["status"] is None
+    assert kept["resolved_dst_session_id"] == a_id
+
+    # A reader that recomposes lineage by walking parent_session_id terminates
+    # from either end of the pair -- driven as a real walk with no visited set,
+    # so a surviving loop hangs the walk rather than passing a shape assertion.
+    def _walk(start: str) -> list[str]:
+        chain = [start]
+        for _ in range(16):
+            row = conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (chain[-1],)).fetchone()
+            if row is None or row[0] is None:
+                return chain
+            chain.append(str(row[0]))
+        raise AssertionError(f"parent_session_id walk from {start} did not terminate: {chain}")
+
+    assert _walk(a_id) == [a_id]
+    assert _walk(b_id) == [b_id, a_id]
+
+    # The census must read this as a proven cycle, not malformed evidence:
+    # the quarantine path recorded is the one the projection actually supports.
+    census = census_topology_links(conn, sample_unresolved=0)
+    assert census["cycle_evidence_count"] == 1
+    assert census["malformed_quarantine_evidence_count"] == 0
+    assert census["effective_status_counts"] == {"quarantined": 1, "resolved": 1}
+    assert census["quarantined_with_stale_projection_count"] == 0
+
+
 def test_over_budget_acyclic_walk_is_not_recorded_as_a_cycle_and_keeps_prefix(tmp_path: Path) -> None:
     """The live writer must distinguish an indeterminate deep walk from a cycle.
 

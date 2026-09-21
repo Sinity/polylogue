@@ -138,6 +138,18 @@ def _seed_coordination_archive(index: Path) -> None:
                  NULL, NULL, NULL, NULL, NULL, 20, NULL)
             """
         )
+        # polylogue-3sic0: blocks.message_id is an FK into messages in the real
+        # index tier, and tool_use/tool_result pairing ranks both sides by
+        # transcript order (message position, variant_index, block position),
+        # so a block whose message row is missing is not a state production can
+        # reach. Seed the owning message row this fixture's own `messages`
+        # table exists for.
+        conn.execute(
+            """
+            INSERT INTO messages (session_id, message_id, position, variant_index)
+            VALUES ('codex-session:thread-1', 'm1', 0, 0)
+            """
+        )
         conn.execute(
             """
             INSERT INTO blocks

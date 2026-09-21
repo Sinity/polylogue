@@ -267,6 +267,37 @@ WITH session_started_base AS (
         '' AS materialized_at
     FROM sessions s0
 ),
+ranked_tool_uses AS (
+    -- Rank both sides of the pairing within (session_id, tool_id) by
+    -- transcript order -- message position, THEN variant_index (messages are
+    -- only unique on the pair, so omitting it leaves regenerated variants
+    -- tied and lets SQLite rank the two CTEs independently), then block
+    -- position.  Same rule as ``action_pairs_refresh_sql``.
+    SELECT u.block_id AS block_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY u.session_id, u.tool_id
+               ORDER BY um.position, um.variant_index, u.position
+           ) AS pair_rank
+    FROM blocks u
+    JOIN messages um ON um.message_id = u.message_id
+    WHERE u.block_type = 'tool_use'
+      AND u.tool_id IS NOT NULL
+      AND u.tool_id <> ''
+),
+ranked_tool_results AS (
+    SELECT r.block_id AS block_id,
+           r.session_id AS session_id,
+           r.tool_id AS tool_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY r.session_id, r.tool_id
+               ORDER BY rm.position, rm.variant_index, r.position
+           ) AS pair_rank
+    FROM blocks r
+    JOIN messages rm ON rm.message_id = r.message_id
+    WHERE r.block_type = 'tool_result'
+      AND r.tool_id IS NOT NULL
+      AND r.tool_id <> ''
+),
 tool_finished_base AS (
     SELECT
         'source' AS row_source,
@@ -309,15 +340,32 @@ tool_finished_base AS (
             r.session_id || '::' || r.message_id || '::' || r.position
         ) AS evidence_refs_json,
         trim(COALESCE(u.search_text, '') || ' ' || COALESCE(r.search_text, '')) AS search_text
+    -- polylogue-3sic0: pair by transcript rank, not by plain equality on
+    -- (session_id, tool_id).  A provider that re-emits one tool_id (a retry,
+    -- a loop) has N uses and M results under that id, and the equality join
+    -- returned all N*M combinations -- fabricating tool_finished events that
+    -- pair a use with a result it never produced, and inflating the event
+    -- count.  ``xnkf`` fixed exactly this fan-out for ``action_pairs`` after
+    -- verifying it live on identical ``toolu_`` ids; this relation was still
+    -- re-deriving the shape that was fixed, so the ranking rule is mirrored
+    -- here (``action_pairs.py``) rather than depended on: polylogue-dab made
+    -- these relations read from durable rows only, and reading the
+    -- trigger-maintained table instead would make an un-refreshed
+    -- ``action_pairs`` report zero tool_finished events, which is a worse
+    -- failure than the fan-out.  The join to a result stays INNER, so an
+    -- unpaired use still emits no event, as before.  The ``u``/``r`` aliases
+    -- are load-bearing: ``observed_event_source_pushdown`` builds
+    -- ``source_where`` against them.
     FROM blocks u
+    JOIN ranked_tool_uses ru
+        ON ru.block_id = u.block_id
+    JOIN ranked_tool_results rr
+        ON rr.session_id = u.session_id
+        AND rr.tool_id = u.tool_id
+        AND rr.pair_rank = ru.pair_rank
     JOIN blocks r
-        ON r.session_id = u.session_id
-        AND r.tool_id = u.tool_id
-        AND r.block_type = 'tool_result'
-    WHERE u.block_type = 'tool_use'
-        AND u.tool_id IS NOT NULL
-        AND u.tool_id <> ''
-        AND ({source_where})
+        ON r.block_id = rr.block_id
+    WHERE ({source_where})
 ),
 source_observed_events AS (
     SELECT * FROM session_started_base

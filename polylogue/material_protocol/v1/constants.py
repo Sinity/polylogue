@@ -20,7 +20,11 @@ PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 #: only immutable records and are the sole byte-reuse surface for appends.
 #: v3: block records carry canonical tool outcomes and unknown-outcome reasons.
 #: v4: attachment records carry direction, producer_ref and caption.
-SEMANTICS_VERSION = 4
+#: v5: message-record ``usage`` token counters are nullable. An absent
+#: per-message counter encodes ``null`` (unknown) instead of ``0``; ``0`` now
+#: means a measured zero. The keys are unchanged, but the value domain is not,
+#: and the change moved every message-record digest for identical material.
+SEMANTICS_VERSION = 5
 
 #: Version of the canonicalization algorithm (NFC + sorted-key JSON framing).
 CANONICALIZER_VERSION = 1
