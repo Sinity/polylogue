@@ -9,12 +9,10 @@ down to the single small closed enum downstream consumers should read.
 
 Deliberately out of scope for this phase (see polylogue-w6hql notes for the
 full accounting): rewriting the write paths of ``raw_authority_blockers``,
-``raw_authority_censuses``, ``raw_authority_census_plans``,
-``raw_authority_post_plans``, ``raw_authority_parser_census``, and
-``raw_membership_census``, or removing/rewriting the ~5,000-8,000 lines of
-classification machinery in ``polylogue/storage/raw_convergence.py`` and
+``raw_authority_parser_census`` and ``raw_membership_census``, or
+removing/rewriting the classification machinery in
 ``polylogue/storage/sqlite/archive_tiers/revision_governance.py`` that
-produce that evidence. Those tables and modules remain the system of record
+produces that evidence. Those tables and modules remain the system of record
 this phase; this module only reads their *output* (via the
 ``HistoricalRevisionDecision`` shape) and re-expresses it as one verdict.
 """

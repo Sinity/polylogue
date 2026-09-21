@@ -2210,10 +2210,9 @@ def rebuild_archive_session_insights(
     markers. Thread and tag summaries are query-time views.
     to the canonical path, which commits internally.
 
-    Both :mod:`polylogue.api` (the async facade) and
-    :mod:`polylogue.storage.raw_convergence` (maintenance/doctor repair orchestration)
-    call this primitive downward instead of duplicating it or reaching across
-    ring boundaries for a private symbol (polylogue-exb).
+    :mod:`polylogue.api` (the async facade) calls this primitive downward
+    instead of duplicating it or reaching across ring boundaries for a
+    private symbol (polylogue-exb).
     """
     resolved_ids = _resolve_archive_rebuild_session_ids(archive, session_ids) if session_ids is not None else None
     if session_ids is not None and not resolved_ids:

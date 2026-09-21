@@ -245,9 +245,8 @@ def revision_authority_refuses_write(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_revision_heads'"
     ).fetchone()
     if has_revision_heads is not None:
-        # Historical drift or an interrupted repair can leave more than one
-        # raw_revision_heads row for a session (storage/raw_convergence.py's
-        # ``parallel_session_heads`` shape). A bare ``LIMIT 1`` examined an
+        # Historical drift or an interrupted write can leave more than one
+        # raw_revision_heads row for a session. A bare ``LIMIT 1`` examined an
         # arbitrary one of those rows, so an incoming raw matching whichever
         # row happened to be selected was allowed through even when a
         # different parallel head accepted another raw -- and the same write

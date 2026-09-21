@@ -194,7 +194,6 @@ def active_archive_root(config: Config) -> Path:
 
     Deliberately follows ``config.db_path`` (not ``config.archive_root``),
     matching the ``polylogue-yla8.1`` split-root contract used by
-    :func:`polylogue.storage.raw_convergence._raw_materialization_archive_root` and
     :func:`polylogue.storage.raw_reconciler._archive_root`: an explicit
     ``Config(db_path=...)`` override must be honored, and the ordinary case
     already resolves ``config.db_path`` correctly (``.index-active-pointer``

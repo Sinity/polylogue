@@ -453,11 +453,28 @@ Ask in this order — the first `yes` decides:
    archive/storage calls into one operation (import, export, backup)?** →
    `operations/`. Operations compose `archive/`+`storage/` calls; they do
    not contain new domain semantics or new SQL.
-5. **Is it INTEGRITY REPAIR — detecting and fixing rows that violate an
-   invariant the write path should have prevented?** → `maintenance/`.
-   `maintenance/` is diagnostic-and-corrective, never the primary write
-   path; a normal write that needs new semantics belongs in `archive/` or
-   `storage/`, not a `maintenance/` shim that "fixes it up after."
+5. **Is it operator-invoked VERIFICATION over durable material, or a
+   finite campaign-scoped operation with a named deletion trigger?** →
+   `maintenance/`. Conservation proofs, censuses, blob-namespace
+   disposition, embedding preservation across a rebuild, archive
+   verification.
+
+   `maintenance/` is **not** the home for "detect and fix rows that violate
+   an invariant the write path should have prevented" — there is no standing
+   repair product (polylogue-6kur). A row that violates a write-path
+   invariant has exactly one of three owners, and choosing takes precedence
+   over placement:
+
+   - the **schema**, if the state is expressible and should not be — add the
+     constraint;
+   - the **producer**, if a current writer still emits it — fix it at the
+     acquisition/parser/writer owner, never with a backfill that masks it;
+   - a **canonical derivation**, if the row is a rebuildable read model —
+     reconverge it from durable evidence under one owner with bounded retry.
+
+   A failure that none of the three can discharge is an explicit retryable
+   obligation or a typed permanent refusal, surfaced as such. It is not a
+   queued remedy.
 6. **Does it present data to a human or agent (CLI/MCP/web/API
    response-shaping) with no persistence of its own?** → a *surface*
    package (`cli/`, `mcp/`, `api/`, `daemon/` for the HTTP/web-reader
@@ -480,8 +497,9 @@ Ask in this order — the first `yes` decides:
 | --- | --- | --- |
 | A helper that batches N sessions into one `INSERT ... VALUES` statement | `storage/` | Raw SQL, no domain interpretation — rule 2. |
 | A function that decides whether a session is a "fork" vs a "resume" from `session_links` rows already read | `archive/topology/` | Domain meaning over already-fetched storage rows — rule 3. |
-| A CLI command that runs "detect orphaned messages, then re-run FTS repair, then print a summary" | `operations/` if it is a *new* multi-step orchestration reusable outside the CLI, otherwise a thin `cli/commands/` handler that calls existing `operations/` — rule 4, then rule 6 for the handler shell. |
-| A routine that finds `messages` rows whose `session_id` no longer exists in `sessions` and deletes them | `maintenance/` | Corrective repair for a write-path invariant violation — rule 5. |
+| A CLI command that runs "count FTS rows behind `blocks`, then print a summary" | `operations/` if it is a *new* multi-step orchestration reusable outside the CLI, otherwise a thin `cli/commands/` handler that calls existing `operations/` — rule 4, then rule 6 for the handler shell. Re-syncing the rows is not the command's job: `storage/fts/` owns that derivation and the daemon drives it. |
+| A routine that finds `messages` rows whose `session_id` no longer exists in `sessions` and deletes them | nowhere — it has no subject | `messages.session_id` is a cascading FK (`archive_tiers_specs.py`), so the state is schema-impossible. Rule 5's first owner: if a state should not exist, the constraint owns it, not a sweeper. |
+| A routine that reconverges `session_profiles` rows missing for an existing session | `storage/derived/session/` | A rebuildable read model with one canonical derivation owner — rule 5's third owner, not a `maintenance/` fix-up. |
 | A new Pydantic response model for an MCP tool's JSON payload | `mcp/payloads.py` (a surface package) | Presentation shaping, no persistence — rule 6. |
 | A shared `dataclass` used by `archive/`, `storage/`, and `mcp/` to represent "an evidence reference" with no I/O | `core/` | Shared type, 3+ unrelated consumers, no I/O — rule 1. |
 

@@ -155,9 +155,9 @@ routes:
       - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
     route: unreached
     reason: >-
-      Its docstring still claims polylogue.api and
-      polylogue.storage.raw_convergence call it; at this head neither does, and
-      its only callers are tests and tests/visual/conftest.py.
+      Its docstring claimed polylogue.api calls it; at this head nothing in
+      production does, and its only callers are tests and
+      tests/visual/conftest.py.
 
   - function: polylogue.storage.derived.session.rebuild.rebuild_session_insights_async
     kinds: [entry_root]

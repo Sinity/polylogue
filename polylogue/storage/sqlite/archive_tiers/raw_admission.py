@@ -85,12 +85,11 @@ This module composes the existing low-level writers in
 persistence -- it decides *which* revision envelope to write, not how to
 write it.
 
-The one path that creates a ``raw_sessions`` row WITHOUT coming through
-here is ``source_write.insert_reconstructed_raw_row`` -- a copy-forward
-repair rebuilding a row from evidence already adjudicated elsewhere, for a
-source that no longer exists. Its docstring carries the reasoning; it lives
-in ``source_write.py`` because that is this tier's declared writer module
-and issuing the INSERT here would contradict the paragraph above.
+Every ``raw_sessions`` row in a live archive comes through here. The
+reconstruction exemption that used to sit beside it
+(``source_write.insert_reconstructed_raw_row``, the browser-origin
+copy-forward) is gone with the repair strategy that was its only caller
+(polylogue-6kur).
 """
 
 from __future__ import annotations

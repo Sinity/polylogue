@@ -375,9 +375,18 @@ The pass is not recorded. Its `pass_id` is a content address over the
 inspected inventory, so two passes that observe the same frontier name the
 same pass and neither writes a row (polylogue-6kur ruling 2026-09-15 retired
 the per-pass census ledger, which re-recorded the entire pending plan set on
-every inspection). Each returned item carries its own state, actuator,
-reason, evidence digest, input raw IDs, preconditions and strategy witness,
-so a caller needs no separate detail handle to see a component's evidence.
+every inspection). Each returned item carries its own state, reason, evidence
+digest, input raw IDs and preconditions, so a caller needs no separate detail
+handle to see a component's evidence.
+
+The pass classifies; it never schedules a remedy. `proven_current` and
+`superseded` are terminal facts. `missing_bytes_reacquire` is the one
+retryable state, and what retries it is ordinary acquisition.
+`unresolved_provenance` and `corrupt` are typed permanent refusals: only new
+bytes or new evidence changes them. polylogue-6kur deleted the actuator
+taxonomy, the executability gate and the operator-judgment promotion loop that
+used to dress these states as queued repairs -- every one of those named a
+remedy no code in the tree could run.
 
 What the pass *does* publish is durable: every blocking item gets a
 `raw_authority_blockers` row, and an obligation that current evidence
@@ -403,16 +412,15 @@ archive):
 polylogue ops maintenance raw-authority-blockers --output-format json
 ```
 
-Each row's `kind` distinguishes `frontier_judgment` (requires an accepted
-judgment assertion id plus `disposition=retain_canonical_authority`, per the
-conflicting-authority frontier) from `frontier_obligation` (the other
-frontier obligation states -- missing bytes, unresolved provenance, corrupt
--- which resolve like an ordinary blocker: no judgment assertion is
-required). The listing is bounded to `--limit` (1-500, default 100) per
+Each row's `kind` describes how the resolver reads its stored snapshot, not a
+different effect: `frontier_obligation` carries the current frontier plan
+shape, and `stale_plan` is a durable row whose snapshot predates it, which the
+resolver re-derives from live evidence instead of trusting. The listing is
+bounded to `--limit` (1-500, default 100) per
 call; if the response's `truncated` field is `true`, pass
 `--offset <next_offset>` to read the next page. After inspecting the
-blocker's own plan snapshot and current evidence, explicitly reopen
-replanning with a recorded rationale:
+blocker's own plan snapshot and current evidence, explicitly resolve it with
+a recorded rationale:
 
 ```bash
 polylogue ops maintenance raw-authority-blocker-resolve \
@@ -421,22 +429,25 @@ polylogue ops maintenance raw-authority-blocker-resolve \
   --yes
 ```
 
-Resolution never applies the stale plan. It stores the replacement plan
-witness in the resolution receipt; the next ordinary convergence pass plans
-and validates current evidence normally. Both commands route through
+Resolution applies no remedy. It stores the replacement plan witness in the
+resolution receipt and tombstones the blocked state; whatever the obligation
+named is discharged by ordinary acquisition or derivation, or the next census
+pass republishes it. Both commands route through
 `OperationExecutor`/`BlockerResolveActuator` (polylogue-t46.9 phase 3):
 PREPARE previews the exact blocker target and EXECUTE requires a
 confirm-flag-strength authorization bound to that plan's hash, refusing
 (`preview_stale`) if the blocker was concurrently resolved between preview
 and confirm.
 
-### Raw-authority frontier ownership and recovery
+### Raw-authority frontier ownership
 
-Routine raw-authority frontier application is daemon-owned. The daemon selects
-only executable proof-backed plans under the writer coordinator and validates
-the typed application receipt. `polylogue ops maintenance raw-authority-frontier`
-inspects only; it has no manual plan selector or apply option, and what it
-records is the durable blocker set, not a census row.
+Nothing applies a frontier plan. `polylogue ops maintenance
+raw-authority-frontier` inspects and publishes obligations; it has no plan
+selector and no apply option, and what it records is the durable blocker set,
+not a census row. Raw materialization itself is owned by the canonical raw
+derivation (`polylogue/storage/derived/raw.py`) under the daemon writer
+coordinator, which replays one authority component per call from ordinary
+durable evidence.
 
 ### `polylogue ops maintenance operation-recovery` - inspecting and adjudicating interrupted mutations
 

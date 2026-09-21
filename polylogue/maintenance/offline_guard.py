@@ -59,7 +59,7 @@ def offline_maintenance_block_reason(
         return None
     return (
         f"Refusing offline maintenance while polylogued PID {daemon_pid} is running. "
-        "Stop polylogued for offline repair, or let daemon convergence drain live work."
+        "Stop polylogued to run this operation offline, or let daemon convergence drain live work."
     )
 
 

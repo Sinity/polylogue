@@ -339,8 +339,6 @@ class IdentityResetRequest(_OperationPayload):
 class RawAuthorityBlockerResolveRequest(_OperationPayload):
     blocker_id: str = Field(min_length=1)
     resolution: str = Field(min_length=1, max_length=4096)
-    assertion_id: str | None = None
-    judgment_disposition: Literal["retain_canonical_authority"] | None = None
 
 
 class ResetRequest(_OperationPayload):

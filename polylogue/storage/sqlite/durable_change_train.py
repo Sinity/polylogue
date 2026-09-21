@@ -1703,13 +1703,13 @@ def _seed_probe_raw_row(
     returns; nothing here ever touches a real archive.
 
     These rows also cannot go through
-    :func:`~polylogue.storage.sqlite.archive_tiers.raw_admission.admit_raw_observation`
-    or through ``insert_reconstructed_raw_row``, and the reason is the point of
-    the probes: each seeds a DELIBERATELY unusual row -- a ``detected_provider``
-    that disagrees with ``origin``, a row carrying a ``parse_error``, a bare row
-    with no revision envelope -- precisely to prove a migrated reader still
-    handles that shape. Both of those writers would normalize the row into a
-    well-formed envelope and destroy the condition under test.
+    :func:`~polylogue.storage.sqlite.archive_tiers.raw_admission.admit_raw_observation`,
+    and the reason is the point of the probes: each seeds a DELIBERATELY
+    unusual row -- a ``detected_provider`` that disagrees with ``origin``, a
+    row carrying a ``parse_error``, a bare row with no revision envelope --
+    precisely to prove a migrated reader still handles that shape. That
+    writer would normalize the row into a well-formed envelope and destroy
+    the condition under test.
     """
     columns = ["raw_id", "origin", "source_path", "source_index", "blob_hash", "blob_size", "acquired_at_ms"]
     values: list[object] = [raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms]

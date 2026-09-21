@@ -51,7 +51,6 @@ def _seed_raw_authority_blocker(
     plan_id: str = "raw-replay:cli-test-plan",
     observed_pass_id: str = "raw-authority-frontier-pass:cli-test",
     frontier: bool = False,
-    judgment_assertion_id: str | None = None,
     reason: str = "immutable source/index preconditions changed after the inspection pass",
 ) -> None:
     """Directly seed one real, unresolved ``raw_authority_blockers`` row.
@@ -63,11 +62,10 @@ def _seed_raw_authority_blocker(
     ``source.db`` and, for non-frontier blockers,
     ``resolve_raw_authority_blocker``'s real replan.
 
-    ``frontier`` alone seeds a ``frontier_obligation``-kind blocker (missing
-    bytes / unresolved provenance / corrupt); pass ``judgment_assertion_id``
-    too for a genuine ``frontier_judgment`` blocker, matching how
-    ``_reconcile_frontier_obligations`` only writes that key for
-    ``CONFLICTING_AUTHORITY_NEEDS_JUDGMENT`` plans.
+    ``frontier`` seeds a ``frontier_obligation``-kind blocker: the current
+    frontier plan shape ``_reconcile_frontier_obligations`` writes. Without
+    it the row is a ``stale_plan`` -- a durable snapshot predating that shape,
+    which the resolver re-derives from live evidence instead of trusting.
     """
     raw_id = f"raw-{blocker_id}"
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -86,7 +84,7 @@ def _seed_raw_authority_blocker(
 
     witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
     input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
-    observed_json = json.dumps({"judgment_assertion_id": judgment_assertion_id}) if judgment_assertion_id else "{}"
+    observed_json = "{}"
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         # The blocker is keyed on the plan's content address and carries the
@@ -258,8 +256,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         plan_id="raw-replay:frontier-plan",
         observed_pass_id="raw-authority-frontier-pass:frontier-test",
         frontier=True,
-        judgment_assertion_id="judgment:frontier-conflict",
-        reason="conflicting canonical authority",
+        reason="accepted raw authority remains quarantined",
     )
     _seed_raw_authority_blocker(
         root,
@@ -280,7 +277,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         payload = json.loads(result.stdout)
         by_id = {row["blocker_id"]: row for row in payload["blockers"]}
         assert by_id["blocker-stale"]["kind"] == "stale_plan"
-        assert by_id["blocker-frontier"]["kind"] == "frontier_judgment"
+        assert by_id["blocker-frontier"]["kind"] == "frontier_obligation"
         assert by_id["blocker-obligation"]["kind"] == "frontier_obligation"
         assert payload["total_count"] == 3
         assert payload["truncated"] is False
@@ -2093,7 +2090,9 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     payload = json.loads(result.stdout)
     assert payload["accepted_head_count"] == 0
     assert payload["plan_count"] == 0
-    assert payload["executable_plan_count"] == 0
+    # polylogue-6kur: the census reports obligations, never an executable
+    # plan count. Nothing applies a frontier plan.
+    assert "executable_plan_count" not in payload
     assert payload["state_counts"] == {}
     assert payload["pass_id"].startswith("raw-authority-frontier-pass:")
     assert "query_handle" not in payload
