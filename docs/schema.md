@@ -19,17 +19,24 @@ exhaustive column table drifts from the DDL and goes stale. When you need an
 exact column, read the tier file named below — do not trust a prose summary
 over the `CREATE TABLE` statement.
 
-| Tier file | Tier | Version constant |
-|-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 29` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 53` |
-| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 4` |
-| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 10` |
-| `audit.py` | `audit.db` | `AUDIT_SCHEMA_VERSION = 2` |
-| `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
+`ARCHIVE_VERSION_BY_TIER` in `archive_tiers/__init__.py` is the single
+declaration of what each tier stamps and what its readers compare against. Read
+the number there, not from a prose table that goes stale.
+
+| Tier file | Tier | Version source |
+|-----------|------|----------------|
+| `source.py` | `source.db` | `ARCHIVE_FORMAT_FLOOR_VERSION` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION` |
+| `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION` |
+| `user.py` | `user.db` | `ARCHIVE_FORMAT_FLOOR_VERSION` |
+| `audit.py` | `audit.db` | `ARCHIVE_FORMAT_FLOOR_VERSION` |
+| `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION` |
 
 There is no single global "schema version" number. Each tier is versioned and
-bootstrapped independently.
+bootstrapped independently. The durable tiers (`source`, `user`, `audit`)
+deliberately declare no version constant of their own: they were renumbered
+from one by the archive format floor, and the only number that describes them
+is the one `ARCHIVE_VERSION_BY_TIER` maps them to.
 
 ### Durable migration change trains
 

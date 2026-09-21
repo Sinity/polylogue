@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-AUDIT_SCHEMA_VERSION = 3
-
 MACHINE_REQUEST_DDL = """
 CREATE TABLE IF NOT EXISTS machine_requests (
     archive_identity TEXT NOT NULL,
@@ -268,4 +266,4 @@ INSERT OR IGNORE INTO audit_continuity_head(
 AUDIT_DDL = AUDIT_DDL.replace("__AUDIT_CONTINUITY_GENESIS_HEAD__", AUDIT_CONTINUITY_GENESIS_HEAD_SHA256)
 AUDIT_DDL += MACHINE_REQUEST_DDL
 
-__all__ = ["AUDIT_DDL", "AUDIT_SCHEMA_VERSION"]
+__all__ = ["AUDIT_DDL"]

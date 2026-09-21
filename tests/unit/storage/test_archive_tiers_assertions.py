@@ -237,8 +237,8 @@ def test_fresh_user_tier_creates_assertions_table(tmp_path: Path) -> None:
         assert _table_exists(conn, "annotation_schemas")
         assert _table_exists(conn, "annotation_batches")
         # The durable user tier is stamped by the fresh floor
-        # (``ARCHIVE_FORMAT_FLOOR_VERSION``), not by the retired
-        # ``USER_SCHEMA_VERSION`` migration chain that #5275 removed.
+        # (``ARCHIVE_FORMAT_FLOOR_VERSION``), not by the retired pre-floor
+        # migration chain #5275/#5290 removed.
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
     finally:
         conn.close()

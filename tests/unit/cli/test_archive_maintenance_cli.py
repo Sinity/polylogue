@@ -36,7 +36,6 @@ from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitActio
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.live_ingest import write_index_session
@@ -488,6 +487,27 @@ def _create_user_v3(path: Path) -> None:
             """
         )
     _refresh_fresh_bootstrap_marker(path.parent)
+
+
+def _refresh_archive_format_marker(archive_root: Path) -> None:
+    """Re-publish the format marker after a fixture rebuilt a durable tier by hand.
+
+    The marker binds each durable tier's birth version to that tier's schema
+    fingerprint, so replacing the file on disk invalidates it exactly the way a
+    transplanted historical tier would. A fixture that deliberately authors the
+    tier has to restate that evidence; leaving the original marker in place
+    makes every later refusal a fixture artifact instead of the behavior under
+    test.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import (
+        archive_format_marker_path,
+        record_fresh_archive_format,
+    )
+
+    marker = archive_format_marker_path(archive_root)
+    assert marker.is_file(), f"fixture must carry an archive format marker: {marker}"
+    marker.unlink()
+    record_fresh_archive_format(archive_root)
 
 
 def _refresh_fresh_bootstrap_marker(archive_root: Path) -> None:
@@ -1694,10 +1714,10 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
     assert payload["ok"] is True
     assert payload["tier"] == "user"
     assert payload["from_version"] == 10
-    assert payload["to_version"] == USER_SCHEMA_VERSION
-    assert payload["applied_versions"] == list(range(11, USER_SCHEMA_VERSION + 1))
+    assert payload["to_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
+    assert payload["applied_versions"] == list(range(11, ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] + 1))
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == USER_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='query_excision_ledger'"
         ).fetchone()
@@ -1796,6 +1816,7 @@ def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
     _refresh_fresh_bootstrap_marker(cli_workspace["archive_root"])
+    _refresh_archive_format_marker(cli_workspace["archive_root"])
 
     result = cli_runner.invoke(
         cli,

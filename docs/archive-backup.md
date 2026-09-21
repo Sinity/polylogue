@@ -106,11 +106,11 @@ sqlite3 "file:$(readlink -f "$POLYLOGUE_ARCHIVE_ROOT/index.db")?mode=ro" 'PRAGMA
 ```
 
 The candidate is the newest first-parent `master` commit whose
-`SOURCE_SCHEMA_VERSION`, `USER_SCHEMA_VERSION`, `INDEX_SCHEMA_VERSION`,
-`EMBEDDINGS_SCHEMA_VERSION` and `AUDIT_SCHEMA_VERSION` in
-`polylogue/storage/sqlite/archive_tiers/` all equal those numbers. Tiers
-migrate on independent schedules, so an archive whose durable tiers were
-migrated at different times may have no commit that matches every tier. Pin on
+`ARCHIVE_VERSION_BY_TIER` in
+`polylogue/storage/sqlite/archive_tiers/__init__.py` maps every tier to those
+numbers. Tiers migrate on independent schedules, so an archive whose durable
+tiers were migrated at different times may have no commit that matches every
+tier. Pin on
 the tiers the restore has to read, and record which tier is left unopenable and
 what that costs.
 

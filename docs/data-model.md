@@ -181,8 +181,8 @@ definitions; `annotation_batches` records label-run provenance; each label is
 an `assertions` row with `kind="annotation"`. Agent-authored labels are always
 candidate-scoped and non-injected until an operator judgment accepts them.
 Schema vocabulary can therefore grow by inserting immutable registry rows;
-the five v1 seed families do not change the user-tier DDL or
-`USER_SCHEMA_VERSION`.
+the five v1 seed families do not change the user-tier DDL or the user tier's
+`PRAGMA user_version`.
 
 | Schema | Grain | Required construct fields | Authority model |
 |--------|-------|---------------------------|-----------------|

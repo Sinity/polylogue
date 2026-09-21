@@ -122,8 +122,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `durable-enum-checks` gate holds that line, refusing any durable-tier
   membership list whose member set equals a reachable enum's values.
 - **Durable change trains** make that migration window machine-readable.
-  Every source migration above v37 and every user migration above v10 must
-  ship beside the SQL resource as `migrations/{source,user}/NNN.train.json`.
+  Every numbered durable migration must ship beside the SQL resource as
+  `migrations/{source,user,audit}/NNN.train.json`.
   The frozen manifest binds the tier, shipped and target versions, slot,
   exact SQL filename and SHA-256, owner, schema/runtime riders, behavior
   proofs, ordering, row-count exceptions, restart convergence proof, and
@@ -132,11 +132,12 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   runs. The lifecycle is declare, admit, reserve, authorize, apply, prove,
   and release. It uses the existing migration transaction and verified backup
   receipt, with no train state database and no second migration engine.
-  The source adoption floor is v37, the lowest version whose numbered chain
-  reproduces canonical `SOURCE_DDL`: below it the chain rebuilds `source_items`
-  (v26-36), `raw_sessions` (v26-32), `raw_hook_events` and
-  `raw_failure_disposition_receipts` (v26-28) to shapes canonical DDL no longer
-  declares. A tier below the floor is not admitted for forward migration.
+  `DURABLE_MIGRATION_ADOPTION_FLOORS` is `ARCHIVE_FORMAT_FLOOR_VERSION` (1) for
+  source, user and audit alike: the archive format lineage renumbered every
+  durable tier from one and retired the predecessor chains, so the first
+  numbered slot on any durable tier is `002`. A tier below the floor is not
+  admitted for forward migration — a historical lineage is refused at archive
+  admission rather than bridged by a migration chain.
 - **Derived tiers** (`index.db`, `ops.db`, `embeddings.db`) have no migration
   chain. They still stamp a tier version constant, which the profile seam
   compares like any other tier, but their governing contract is one identity

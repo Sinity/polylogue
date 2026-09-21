@@ -35,9 +35,9 @@ from polylogue.daemon.metrics import (
     PROMETHEUS_CONTENT_TYPE,
     format_metrics,
 )
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -188,7 +188,10 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_archive_tier_present{tier="embeddings"} 1' in body
         assert f'polylogue_archive_tier_count{{state="present"}} {len(ARCHIVE_TIER_SPECS)}' in body
         assert 'polylogue_archive_tier_count{state="missing"} 0' in body
-        assert f'polylogue_archive_tier_user_version{{tier="source"}} {SOURCE_SCHEMA_VERSION}' in body
+        assert (
+            f'polylogue_archive_tier_user_version{{tier="source"}} {ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]}'
+            in body
+        )
         assert 'polylogue_archive_storage_layout{layout="archive_complete"} 1' in body
         assert 'polylogue_archive_storage_layout{layout="archive_partial"} 0' in body
         assert 'polylogue_archive_storage_ready{state="archive_runtime"} 1' in body

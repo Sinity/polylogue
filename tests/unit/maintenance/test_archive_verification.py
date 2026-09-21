@@ -501,9 +501,13 @@ def test_missing_tier_trips_tier_schema_check(tmp_path: Path) -> None:
 
 def test_stale_schema_version_trips_tier_schema_check(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
+    # Above the expected version. The durable user tier now sits at the archive
+    # format floor, so the historical "stale = 1" stamp is exactly what this
+    # runtime expects and no longer trips anything.
+    stale_version = ARCHIVE_TIER_SPECS[ArchiveTier.USER].version + 1
     conn = _connect(tmp_path / "user.db")
     try:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {stale_version}")
         conn.commit()
     finally:
         conn.close()
@@ -513,7 +517,7 @@ def test_stale_schema_version_trips_tier_schema_check(tmp_path: Path) -> None:
     check = _check(report, "tier-schema")
     assert check.status is OutcomeStatus.ERROR
     assert "user" in check.summary
-    assert check.evidence["tiers"]["user"]["actual_version"] == 1
+    assert check.evidence["tiers"]["user"]["actual_version"] == stale_version
     assert check.evidence["tiers"]["user"]["expected_version"] == ARCHIVE_TIER_SPECS[ArchiveTier.USER].version
 
 

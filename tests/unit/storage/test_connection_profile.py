@@ -143,16 +143,20 @@ def test_index_schema_guard_distinguishes_uninitialized_from_stale(tmp_path: Pat
 def test_schema_skew_write_profiles_refuse_stale_archive_tier_before_returning_connection(
     tmp_path: Path, factory: Callable[..., sqlite3.Connection]
 ) -> None:
+    # A version this runtime cannot serve in either direction. The durable
+    # tiers sit at the format floor, so stepping one below collapses onto 0 --
+    # the never-provisioned sentinel, not a skewed schema.
+    skewed_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] + 1
     db_path = tmp_path / "user.db"
     with sqlite3.connect(db_path) as connection:
-        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1}")
+        connection.execute(f"PRAGMA user_version = {skewed_version}")
 
     with pytest.raises(SchemaSkew) as excinfo:
         factory(db_path)
 
     assert excinfo.value.tier == ArchiveTier.USER.value
     assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
-    assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
+    assert excinfo.value.found == skewed_version
     assert "durable state" in excinfo.value.remedy
     assert "do not rebuild" in excinfo.value.remedy
     assert "migrate-tier user" in excinfo.value.remedy
@@ -200,7 +204,9 @@ def test_schema_skew_diagnostic_read_profile_opens_stale_archive_tier(tmp_path: 
 def test_schema_skew_explicit_tier_checks_noncanonical_generation_path(tmp_path: Path) -> None:
     db_path = tmp_path / "generation.sqlite"
     with sqlite3.connect(db_path) as connection:
-        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] - 1}")
+        # Above, not below: the source tier sits at the format floor, and one
+        # below it is the never-provisioned sentinel rather than a skew.
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1}")
 
     with pytest.raises(SchemaSkew) as excinfo:
         connection_profile.open_readonly_connection(db_path, tier=ArchiveTier.SOURCE)

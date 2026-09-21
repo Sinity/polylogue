@@ -25,6 +25,14 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 # schema identities. A version alone is deliberately insufficient to admit a
 # durable file: bootstrap also requires the archive format marker and verifies
 # a floor durable schema.
+#
+# ``ARCHIVE_VERSION_BY_TIER`` below is the single declaration of what each tier
+# stamps and what its readers compare against. The durable tier modules
+# deliberately declare no ``*_SCHEMA_VERSION`` of their own: two numbers for one
+# tier is a split nobody can read, and the pre-floor constants that survived
+# this reset went on being consumed as an authority threshold long after
+# nothing stamped them. ``tests/unit/storage/test_durable_tier_version_authority.py``
+# holds that line.
 ARCHIVE_FORMAT_FLOOR_VERSION = 1
 
 AUDIT_COLUMN_DISPOSITIONS = audit_column_dispositions()

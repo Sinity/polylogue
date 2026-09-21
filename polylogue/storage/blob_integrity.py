@@ -538,7 +538,16 @@ def _source_schema_capabilities(conn: sqlite3.Connection) -> SourceBlobCapabilit
     Those are different contracts even when both report ``user_version=0``.
     """
 
-    from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    # The only version a source tier of this format lineage carries is the one
+    # bootstrap stamps. ``user_version`` was renumbered from one by the archive
+    # format floor, so it no longer orders across lineages: a historical 29 is
+    # not "newer" than a current 1. Exact equality is therefore the only honest
+    # version statement -- any other stamp is a file this runtime did not write,
+    # and its catalog, not its integer, has to earn authority below.
+    stamped_source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
 
     try:
         row = conn.execute("PRAGMA user_version").fetchone()
@@ -557,12 +566,12 @@ def _source_schema_capabilities(conn: sqlite3.Connection) -> SourceBlobCapabilit
         # A typed blob_refs table is a valid conservative carrier for an old
         # source, even when a later referent relation is absent. It is added to
         # fallback only when canonical authority is not selected below.
-        current_authority = user_version >= SOURCE_SCHEMA_VERSION or current_capabilities
+        current_authority = user_version == stamped_source_version or current_capabilities
         if not current_authority and current_blob_refs:
             legacy_carriers.append("blob_refs")
         if current_authority:
             kind: SourceBlobSchemaKind = (
-                "current_versioned" if user_version >= SOURCE_SCHEMA_VERSION else "current_unversioned"
+                "current_versioned" if user_version == stamped_source_version else "current_unversioned"
             )
         elif current_blob_refs and legacy_carriers:
             kind = "mixed_transitional"
