@@ -1460,6 +1460,64 @@ class TestReaderSessionState:
         resolved_payload = cast(dict[str, object], result["payload"])
         assert resolved_payload["id"] == "claude-code-session:c1"
 
+    def test_ref_resolution_is_one_implementation_for_the_daemon_and_the_facade(
+        self, workspace_env: dict[str, Path]
+    ) -> None:
+        """polylogue-j5u2b: the daemon and the facade resolve a ref identically.
+
+        ``annotations import`` admits or rejects every durable ``user.db``
+        candidate row on ``resolved``/``object_refs``, so a second
+        ref-resolution implementation behind that decision would change *which*
+        rows are admitted with no failure at the point of divergence.  The
+        resolution therefore lives in ``polylogue/operations/ref_resolution.py``
+        and both routes run it.
+
+        The block anchor is the shape the bead names because it is the one that
+        never went through ``parse_public_ref`` at all -- it has its own parser,
+        its own drift-tolerant resolver and its own typed states, so a
+        handler-side copy would be easiest to get subtly wrong there.
+
+        Anti-vacuity: reintroducing a handler-side implementation in
+        ``_handle_ref_resolve`` (even one that only differs in a caveat or an
+        ``object_refs`` entry) makes the document comparison red, and the
+        ``resolved is True`` / non-empty ``object_refs`` assertions keep two
+        matching *unresolved* answers from passing trivially.
+        """
+
+        from polylogue.api import Polylogue
+        from polylogue.api.sync.bridge import run_coroutine_sync
+        from polylogue.storage.block_anchor import format_block_anchor
+
+        archive_root = workspace_env["archive_root"]
+        with _running_server(workspace_env) as (_, base_url):
+            with sqlite3.connect(archive_root / "index.db") as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT message_id, content_hash FROM blocks WHERE session_id = ? ORDER BY position LIMIT 1",
+                    (C1,),
+                ).fetchone()
+            assert row is not None, "the seeded archive must hold a block, or this parity is vacuous"
+            stored_hash = row["content_hash"]
+            content_hash_hex = stored_hash.hex() if isinstance(stored_hash, bytes) else str(stored_hash)
+            anchor = format_block_anchor(C1, str(row["message_id"]), content_hash_hex)
+
+            refs = (anchor, f"session:{C1}", f"message:{M_C1}")
+            daemon_documents = [
+                cast(dict[str, object], _get_json(base_url, f"/api/refs/resolve?ref={quote(ref, safe='')}"))
+                for ref in refs
+            ]
+
+        facade = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+        facade_documents = [
+            run_coroutine_sync(facade.resolve_ref(ref)).model_dump(mode="json", exclude_none=True) for ref in refs
+        ]
+
+        for ref, daemon_document, facade_document in zip(refs, daemon_documents, facade_documents, strict=True):
+            assert daemon_document == facade_document, ref
+            assert daemon_document["resolved"] is True, ref
+            assert daemon_document["object_refs"], ref
+        assert cast(dict[str, object], daemon_documents[0]["payload"])["state"] == "ok"
+
     def test_import_explain_route_reads_archived_raw_evidence(self, workspace_env: dict[str, Path]) -> None:
         raw_id, source_path = _seed_import_explain_archive(workspace_env)
         with _running_server(workspace_env, seeded=False) as (_, base_url):
