@@ -22,6 +22,7 @@ migration runner (polylogue-sod7).  Declarations are strings and dataclasses.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final
 
 from polylogue.declarations import (
@@ -29,6 +30,7 @@ from polylogue.declarations import (
     CompletenessEdge,
     DeclarationRegistry,
     DeclarationSpec,
+    Diagnostic,
     ExampleSpec,
     HandlerBinding,
     OutputSpec,
@@ -327,12 +329,179 @@ def declaration_for_command(cli_name: str) -> MaintenanceCommandDeclaration:
         ) from exc
 
 
+# ── Campaign-scoped actuator retirement ─────────────────────────────────────
+#
+# Two of the commands declared above are backed by finite durable-source
+# actuators that exist for one campaign and must not outlive it
+# (polylogue-6kur AC6). Their binding to that campaign used to be prose in a
+# coordinator ruling: nothing in the tree said what they serve, what ends them,
+# or noticed when that end arrived. This is that declaration, and
+# ``devtools gate declaration-bindings`` resolves it the same way it resolves
+# every other binding this family declares -- against the live checkout.
+#
+# The condition is recorded here rather than read from bead state on purpose:
+# task state is external to a feature branch and cannot gate a test, while a
+# tracked declaration can. A date would rot and a version bump would not be
+# evidence the work happened; the condition names the work.
+
+RETIREMENT_REPAIR_COMMAND: Final = (
+    "delete the named actuator and its declaration entry, then run `devtools gate declaration-bindings`"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignActuatorRetirement:
+    """One finite actuator, the campaign work it serves, and what ends it."""
+
+    #: ``module:Symbol`` of the actuator class itself.
+    actuator: str
+    #: Tracked path that must define it while it is still owed.
+    owner_path: str
+    #: The maintenance commands it backs, for the operator reading a failure.
+    commands: tuple[str, ...]
+    #: The campaign work this actuator implements.
+    serves: str
+    #: The condition that retires it, stated as a checkable fact about the
+    #: world rather than a date or a release.
+    retires_when: str
+    #: Whether ``retires_when`` has happened. Flipping this to ``True`` is the
+    #: act that makes the actuator's continued presence a gate failure.
+    condition_met: bool
+
+    @property
+    def declaration_id(self) -> str:
+        return f"maintenance.actuator-retirement.{self.actuator.rpartition(':')[2]}"
+
+
+_FRESH_START_PRE_RESTART_STEP_2: Final = (
+    "the 2026-09-07 fresh-start ruling's pre-restart step 2: copy restore_required "
+    "material back to its spool and delete GC-eligible material"
+)
+_FINAL_ARCHIVE_ACCEPTED: Final = (
+    "the final archive has been built and accepted, so pre-restart step 2 has no "
+    "remaining subject and source sealing is next"
+)
+
+CAMPAIGN_ACTUATOR_RETIREMENTS: Final[tuple[CampaignActuatorRetirement, ...]] = (
+    CampaignActuatorRetirement(
+        actuator="polylogue.operations.maintenance_actuators:BlobReferenceSourceReplaceActuator",
+        owner_path="polylogue/operations/maintenance_actuators.py",
+        commands=(
+            "ops maintenance blob-reference-replace-from-source-preview",
+            "ops maintenance blob-reference-replace-from-source",
+        ),
+        serves=_FRESH_START_PRE_RESTART_STEP_2,
+        retires_when=_FINAL_ARCHIVE_ACCEPTED,
+        condition_met=False,
+    ),
+    CampaignActuatorRetirement(
+        actuator="polylogue.operations.maintenance_actuators:BlobReferenceOrphanPruneActuator",
+        owner_path="polylogue/operations/maintenance_actuators.py",
+        commands=(
+            "ops maintenance blob-reference-prune-orphans-preview",
+            "ops maintenance blob-reference-prune-orphans",
+        ),
+        serves=_FRESH_START_PRE_RESTART_STEP_2,
+        retires_when=_FINAL_ARCHIVE_ACCEPTED,
+        condition_met=False,
+    ),
+)
+
+
+def _actuator_exists(record: CampaignActuatorRetirement, *, root: Path) -> bool:
+    """Return whether the declared actuator is still defined in the tree.
+
+    Resolution is a source read, not an import: this runs from a gate, and
+    importing ``maintenance_actuators`` would pull the mutation-transaction
+    kernel into a module whose whole contract is that importing it costs
+    nothing (a bare ``ops maintenance --help`` imports this file).
+    """
+
+    module_path, _, symbol = record.actuator.partition(":")
+    # The declared owner path and the declared dotted module must be the same
+    # file, so a record cannot name a symbol in one place and guard another.
+    if record.owner_path.removesuffix(".py").replace("/", ".") != module_path:
+        return False
+    try:
+        source = (root / record.owner_path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return f"class {symbol}(" in source
+
+
+def retirement_diagnostics(*, root: Path) -> tuple[Diagnostic, ...]:
+    """Resolve every declared actuator retirement against the live checkout.
+
+    Two refusals, one in each direction, because a check that only ever demands
+    deletion cannot express a successor:
+
+    * ``actuator-retirement-overdue`` -- the condition is recorded as met and
+      the actuator is still here. This is the enforced deletion successor.
+    * ``actuator-retirement-premature`` -- the condition is not met and the
+      actuator is already gone, so the declaration no longer describes the
+      tree and the campaign work it named has lost its implementation
+      unannounced.
+    """
+
+    diagnostics: list[Diagnostic] = []
+    for record in CAMPAIGN_ACTUATOR_RETIREMENTS:
+        present = _actuator_exists(record, root=root)
+        if not (root / record.owner_path).exists() and not record.condition_met:
+            diagnostics.append(
+                Diagnostic(
+                    code="actuator-retirement-missing-owner-path",
+                    message=(
+                        f"{record.declaration_id}: declared owner path {record.owner_path} does not exist "
+                        f"while the retirement condition is not met ({record.retires_when})"
+                    ),
+                    declaration_id=record.declaration_id,
+                    owner_path=record.owner_path,
+                    repair_command=RETIREMENT_REPAIR_COMMAND,
+                )
+            )
+            continue
+        if record.condition_met and present:
+            diagnostics.append(
+                Diagnostic(
+                    code="actuator-retirement-overdue",
+                    message=(
+                        f"{record.declaration_id}: {record.actuator} is still defined, but its declared "
+                        f"retirement condition is recorded as met -- {record.retires_when}. It served "
+                        f"{record.serves} and backs {', '.join(record.commands)}; delete it and those "
+                        "commands before source sealing"
+                    ),
+                    declaration_id=record.declaration_id,
+                    owner_path=record.owner_path,
+                    repair_command=RETIREMENT_REPAIR_COMMAND,
+                )
+            )
+        elif not record.condition_met and not present:
+            diagnostics.append(
+                Diagnostic(
+                    code="actuator-retirement-premature",
+                    message=(
+                        f"{record.declaration_id}: {record.actuator} is gone, but its retirement condition "
+                        f"is not recorded as met -- {record.retires_when}. Either record the condition or "
+                        f"restore the actuator: {record.serves} still has no other owner"
+                    ),
+                    declaration_id=record.declaration_id,
+                    owner_path=record.owner_path,
+                    repair_command=RETIREMENT_REPAIR_COMMAND,
+                )
+            )
+    return tuple(diagnostics)
+
+
 __all__ = [
+    "CAMPAIGN_ACTUATOR_RETIREMENTS",
     "MAINTENANCE_COMMAND_BY_NAME",
     "MAINTENANCE_COMMAND_DECLARATIONS",
     "MAINTENANCE_CONSUMER",
     "MAINTENANCE_KERNEL_REGISTRY",
     "REPAIR_COMMAND",
+    "RETIREMENT_REPAIR_COMMAND",
+    "CampaignActuatorRetirement",
     "MaintenanceCommandDeclaration",
     "declaration_for_command",
+    "retirement_diagnostics",
 ]

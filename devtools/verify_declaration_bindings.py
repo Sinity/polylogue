@@ -8,7 +8,10 @@ repair command.
 
 Anti-vacuity: rename or delete a declared handler function, point a declaration
 at a file that does not exist, or register a declaration with no example,
-output, or completeness edge, and this exits non-zero.
+output, or completeness edge, and this exits non-zero. For the maintenance
+family's campaign-actuator retirements, record a retirement condition as met
+while its actuator is still defined -- or delete an actuator whose condition is
+not met -- and this exits non-zero naming that actuator.
 """
 
 from __future__ import annotations
@@ -88,12 +91,28 @@ def _query_domain_diagnostics() -> tuple[Diagnostic, ...]:
     return query_binding_diagnostics()
 
 
+def _maintenance_domain_diagnostics() -> tuple[Diagnostic, ...]:
+    """Resolve the maintenance family's campaign-actuator retirements.
+
+    Two of the family's declared commands are backed by finite durable-source
+    actuators that exist for one campaign. The family declares what each one
+    serves and the condition that retires it; this resolves that declaration
+    against the tree in both directions -- an actuator that outlived a met
+    condition, and a declaration whose actuator vanished while the work it
+    named is still owed.
+    """
+
+    from polylogue.maintenance.declarations import retirement_diagnostics
+
+    return retirement_diagnostics(root=ROOT)
+
+
 REGISTRIES: dict[str, _RegistryEntry] = {
     "mcp": _RegistryEntry(_mcp, structural=True),
     "daemon-route": _RegistryEntry(_daemon, structural=True),
     "query": _RegistryEntry(_query, structural=True, domain=_query_domain_diagnostics),
     "marker": _RegistryEntry(_marker, structural=True),
-    "maintenance": _RegistryEntry(_maintenance, structural=True),
+    "maintenance": _RegistryEntry(_maintenance, structural=True, domain=_maintenance_domain_diagnostics),
 }
 
 

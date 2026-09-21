@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import click
 from click.testing import CliRunner
@@ -22,9 +23,11 @@ from polylogue.cli.commands.maintenance import maintenance_group
 from polylogue.declarations import DeclarationRegistry, HandlerBinding
 from polylogue.declarations.diagnostics import diagnose_registry
 from polylogue.maintenance.declarations import (
+    CAMPAIGN_ACTUATOR_RETIREMENTS,
     MAINTENANCE_COMMAND_DECLARATIONS,
     MAINTENANCE_KERNEL_REGISTRY,
     declaration_for_command,
+    retirement_diagnostics,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -110,3 +113,83 @@ def test_unknown_command_names_its_exact_repair() -> None:
         assert "devtools test" in str(exc)
     else:  # pragma: no cover - the lookup must refuse
         raise AssertionError("unknown maintenance command resolved")
+
+
+def test_campaign_actuator_retirements_name_a_live_actuator_and_its_commands() -> None:
+    """Every declared retirement points at something that is actually there.
+
+    The declaration is the head-side signal polylogue-6kur AC6 asks for: bead
+    state is external to a feature branch and cannot gate a check, so the
+    actuator, the campaign work it serves, and the condition that retires it
+    are recorded in the tree instead.
+
+    Anti-vacuity: rename either actuator class, or point a record's
+    ``owner_path`` at a different file than its dotted module, and this goes
+    red.
+    """
+
+    assert CAMPAIGN_ACTUATOR_RETIREMENTS
+    for record in CAMPAIGN_ACTUATOR_RETIREMENTS:
+        module_path, separator, symbol = record.actuator.partition(":")
+        assert separator, record.actuator
+        assert record.owner_path.removesuffix(".py").replace("/", ".") == module_path
+        assert f"class {symbol}(" in (ROOT / record.owner_path).read_text(encoding="utf-8")
+        assert record.commands and record.serves and record.retires_when
+        for command in record.commands:
+            assert command.startswith("ops maintenance ")
+            declaration_for_command(command.removeprefix("ops maintenance "))
+
+
+def test_retirement_check_refuses_in_both_directions() -> None:
+    """The check is a deletion *successor*, not a standing deletion demand.
+
+    A check that only ever demanded deletion could not express "this actuator
+    is still owed"; a check that only ever demanded presence could not end it.
+    Both refusals are exercised here against the same tree, with the recorded
+    condition as the only difference.
+
+    Anti-vacuity: drop either branch of ``retirement_diagnostics`` and the
+    corresponding assertion goes red; the third assertion is the control that
+    keeps a blanket refusal from passing the other two.
+    """
+
+    live = retirement_diagnostics(root=ROOT)
+    assert live == (), [item.message for item in live]
+
+    met = [replace(record, condition_met=True) for record in CAMPAIGN_ACTUATOR_RETIREMENTS]
+    with patch("polylogue.maintenance.declarations.CAMPAIGN_ACTUATOR_RETIREMENTS", tuple(met)):
+        overdue = retirement_diagnostics(root=ROOT)
+    assert {item.code for item in overdue} == {"actuator-retirement-overdue"}
+    assert len(overdue) == len(CAMPAIGN_ACTUATOR_RETIREMENTS)
+    for record, diagnostic in zip(CAMPAIGN_ACTUATOR_RETIREMENTS, overdue, strict=True):
+        assert record.actuator in diagnostic.message
+        assert record.retires_when in diagnostic.message
+
+    vanished = [
+        replace(record, actuator=f"{record.owner_path.removesuffix('.py').replace('/', '.')}:NoSuchActuator")
+        for record in CAMPAIGN_ACTUATOR_RETIREMENTS
+    ]
+    with patch("polylogue.maintenance.declarations.CAMPAIGN_ACTUATOR_RETIREMENTS", tuple(vanished)):
+        premature = retirement_diagnostics(root=ROOT)
+    assert {item.code for item in premature} == {"actuator-retirement-premature"}
+
+
+def test_declaration_bindings_gate_owns_the_retirement_check() -> None:
+    """The gate reads the declaration; no new gate name was invented.
+
+    ``devtools gate declaration-bindings`` already resolves this family's
+    declared bindings against the live checkout, and its ``domain`` hook is the
+    declared seam for bindings the shared kernel cannot resolve.
+
+    Anti-vacuity: unwire ``_maintenance_domain_diagnostics`` from ``REGISTRIES``
+    and this goes red while ``retirement_diagnostics`` still passes its own
+    tests -- a declaration nothing reads.
+    """
+
+    from devtools.verify_declaration_bindings import REGISTRIES
+
+    domain = REGISTRIES["maintenance"].domain
+    assert domain is not None
+    met = [replace(record, condition_met=True) for record in CAMPAIGN_ACTUATOR_RETIREMENTS]
+    with patch("polylogue.maintenance.declarations.CAMPAIGN_ACTUATOR_RETIREMENTS", tuple(met)):
+        assert {item.code for item in domain()} == {"actuator-retirement-overdue"}

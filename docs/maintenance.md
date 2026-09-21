@@ -255,6 +255,15 @@ polylogue ops maintenance blob-reference-prune-orphans \
   --quarantine-file /tmp/quarantine.jsonl --output-format json
 ```
 
+These four commands are campaign-scoped, not standing maintenance. Their
+actuators implement one step of the 2026-09-07 fresh-start ruling — copying
+`restore_required` material back to its spool and deleting GC-eligible
+material — and have no purpose once the final archive is built and accepted.
+`CAMPAIGN_ACTUATOR_RETIREMENTS` in `polylogue/maintenance/declarations.py`
+records each actuator, the work it serves, and the condition that retires it;
+`devtools gate declaration-bindings` reads that declaration and refuses once a
+recorded-as-met condition leaves an actuator still standing.
+
 ### `polylogue ops maintenance verify-archive` — coherence gate
 
 Read-only. Runs a fixed registry of independent checks over the whole
