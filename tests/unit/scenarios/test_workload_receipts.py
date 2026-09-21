@@ -71,6 +71,7 @@ def test_named_measurement_paths_have_receipt_or_explicit_adapter() -> None:
         "ingest/source-observation",
         "verify-run",
         "slo-catalog",
+        "route-observation",
     }
     assert all(declaration.evidence for declaration in declarations)
     assert {declaration.disposition for declaration in declarations} == {"shared-receipt", "explicit-adapter"}

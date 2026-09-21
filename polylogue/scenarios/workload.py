@@ -109,6 +109,12 @@ WORKLOAD_ADAPTER_DECLARATIONS: tuple[WorkloadAdapterDeclaration, ...] = (
         "_workload_receipt and AppendCohortMemoryCounter.workload_receipt",
     ),
     WorkloadAdapterDeclaration("verify-run", "devtools.verify", "shared-receipt", "_verification_workload_receipt"),
+    WorkloadAdapterDeclaration(
+        "route-observation",
+        "polylogue.operations.route_observation",
+        "explicit-adapter",
+        "RouteObservationReceipt.to_workload_receipt",
+    ),
     WorkloadAdapterDeclaration("slo-catalog", "devtools.verify_slos", "shared-receipt", "_slo_workload_receipt"),
 )
 

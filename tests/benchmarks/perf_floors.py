@@ -277,7 +277,7 @@ def measure_action_pairs_refresh(
 
 
 def measure_query_latency(index_db: Path) -> list[FloorMetric]:
-    from polylogue.operations.route_observation import compute_latency_percentiles
+    from polylogue.operations.route_observation import RouteObservationDrops, compute_latency_percentiles
     from polylogue.storage.sqlite.archive_tiers.ops_write import ArchiveRouteObservation
     from tests.benchmarks.helpers import open_bench_store
 
@@ -317,7 +317,9 @@ def measure_query_latency(index_db: Path) -> list[FloorMetric]:
                 )
             )
 
-    buckets = compute_latency_percentiles(observations)
+    # The benchmark built every observation in this process, so it can
+    # honestly claim a complete drop account.
+    buckets = compute_latency_percentiles(observations, drops=RouteObservationDrops.none_observed()).buckets
     metrics: list[FloorMetric] = []
     for bucket in buckets:
         metric_stub = bucket.route.replace(".", "_").replace("-", "_")
