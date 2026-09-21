@@ -37,9 +37,11 @@ def cli_env(tmp_path: Path, seeded_demo_archive: Path) -> dict[str, str]:
     }
 
 
-def _run(args: list[str], *, env: dict[str, str]) -> CliResult:
+def _run(args: list[str], *, env: dict[str, str], expect_exit: int = 0) -> CliResult:
     result = run_cli(args, env=env, timeout=120)
-    assert result.success, f"polylogue {' '.join(args)} failed:\n{result.output}"
+    assert result.exit_code == expect_exit, (
+        f"polylogue {' '.join(args)} exited {result.exit_code}, expected {expect_exit}:\n{result.output}"
+    )
     return result
 
 
@@ -152,7 +154,11 @@ def test_mcp_query_and_get_round_trip(seeded_demo_archive: Path) -> None:
 
 
 def test_status_reports_direct_archive_fallback_when_daemon_is_unreachable(cli_env: dict[str, str]) -> None:
-    result = _run(["status", "--daemon-url", "http://127.0.0.1:1"], env=cli_env)
+    # The archive answers, but the answer is degraded: no daemon served it.
+    # OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a); this read as
+    # success only because standalone_mode discarded the refusal. The subject
+    # is the fallback's own text, asserted below.
+    result = _run(["status", "--daemon-url", "http://127.0.0.1:1"], env=cli_env, expect_exit=1)
     assert "Sessions:" in result.output
     # The direct fallback names the daemon state and how to start it.
     assert "daemon idle" in result.output.lower()
@@ -167,7 +173,9 @@ def test_status_text_reports_authoritative_convergence_debt_state(tmp_path: Path
             conn.execute("DROP TABLE convergence_debt")
             conn.commit()
 
-    result = _run(["--plain", "ops", "status"], env=workspace["env"])
+    # Degraded (daemon-less) reads exit 1; see polylogue-1fu1a. What this
+    # test pins is which convergence-debt state the text reports.
+    result = _run(["--plain", "ops", "status"], env=workspace["env"], expect_exit=1)
     output = result.output.lower()
 
     assert "convergence debt:" in output

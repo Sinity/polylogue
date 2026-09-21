@@ -926,7 +926,12 @@ class TestStatusDiagnosticIntegration:
             env=self._malformed_archive_env(tmp_path, archive_root),
         )
 
-        assert result.exit_code == 0, result.output
+        # A malformed archive read without a daemon is a degraded answer,
+        # and OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
+        # asserted 0 only because standalone_mode discarded the refusal;
+        # the subject below -- what the surface says about the gap -- is
+        # unchanged.
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout)
         assert payload["ingest_workload"]["available"] is False
         assert "convergence debt status unavailable" in payload["ingest_workload"]["reason"]
@@ -961,7 +966,12 @@ class TestStatusDiagnosticIntegration:
         )
 
         output_lower = result.output.lower()
-        assert result.exit_code == 0, result.output
+        # A malformed archive read without a daemon is a degraded answer,
+        # and OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
+        # asserted 0 only because standalone_mode discarded the refusal;
+        # the subject below -- what the surface says about the gap -- is
+        # unchanged.
+        assert result.exit_code == 1, result.output
         assert "convergence debt: unavailable" in output_lower
         assert "convergence debt status unavailable" in output_lower
         assert "could not be queried" not in output_lower
@@ -978,7 +988,12 @@ class TestStatusDiagnosticIntegration:
             env=self._malformed_archive_env(tmp_path, archive_root),
         )
 
-        assert result.exit_code == 0, result.output
+        # A malformed archive read without a daemon is a degraded answer,
+        # and OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
+        # asserted 0 only because standalone_mode discarded the refusal;
+        # the subject below -- what the surface says about the gap -- is
+        # unchanged.
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout)
         assert payload["ingest_workload"] == {
             "available": False,
@@ -1018,7 +1033,12 @@ class TestStatusDiagnosticIntegration:
         )
 
         output_lower = result.output.lower()
-        assert result.exit_code == 0, result.output
+        # A malformed archive read without a daemon is a degraded answer,
+        # and OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
+        # asserted 0 only because standalone_mode discarded the refusal;
+        # the subject below -- what the surface says about the gap -- is
+        # unchanged.
+        assert result.exit_code == 1, result.output
         assert "convergence debt:" in output_lower
         assert "convergence debt: unavailable" not in output_lower
         assert "convergence debt status unavailable" not in output_lower
@@ -1239,3 +1259,100 @@ def test_status_command_accepts_json_alias_flag(tmp_path: Path) -> None:
     assert "No such option" not in result.output
     parsed = json.loads(result.stdout)
     assert isinstance(parsed, dict)
+
+
+class TestStrictSourceExitCodes:
+    """``ops status --source`` exit codes reach the shell (polylogue-1fu1a).
+
+    ``cli/commands/status.py`` signals the named-source refusals with
+    ``click.exceptions.Exit(2)`` and ``Exit(3)``, and had no test at all. In
+    ``standalone_mode=False`` -- how the installed entrypoint runs Click --
+    an explicit ``Exit`` is a return value, so both refusals reached the shell
+    as success. These run in a subprocess for exactly that reason; a
+    ``CliRunner`` rewrite makes them vacuous.
+    """
+
+    @staticmethod
+    def _archive_env(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+        """A seeded archive whose disposable OPS tier is absent.
+
+        ``ops.db`` is removed on purpose. ``ingest_attempts`` carries no index
+        on ``source_path``, so every named-source lookup against a present
+        ops.db is planned as a full scan and rejected -- which pins *every*
+        ``--source`` call to exit 3 and leaves the exit-2 branch unreachable.
+        Dropping the disposable tier is the smallest shape that exercises the
+        2-vs-3 distinction these tests are about, and it keeps them correct
+        once that scan is made bounded.
+        """
+        from tests.infra.cli_subprocess import setup_isolated_workspace
+
+        workspace = setup_isolated_workspace(tmp_path)
+        archive_root = workspace["paths"]["archive_root"]
+        for name in ("ops.db", "ops.db-wal", "ops.db-shm"):
+            (archive_root / name).unlink(missing_ok=True)
+        return archive_root, dict(workspace["env"])
+
+    @pytest.mark.integration
+    def test_unsearchable_named_source_exits_two_only_under_strict_source(self, tmp_path: Path) -> None:
+        """A never-ingested source is a refusal only when ``--strict-source`` asks.
+
+        Anti-vacuity: delete the ``Exit(2)`` raise, or let the entrypoint go
+        back to discarding it, and the strict run reports 0 like the lenient
+        one -- which is the whole point of the flag.
+        """
+        from tests.infra.cli_subprocess import run_cli
+
+        _archive_root, env = self._archive_env(tmp_path)
+        never_ingested = tmp_path / "never-ingested.jsonl"
+        never_ingested.write_text("{}\n", encoding="utf-8")
+
+        lenient = run_cli(["--plain", "ops", "status", "--source", str(never_ingested)], env=env)
+        strict = run_cli(
+            ["--plain", "ops", "status", "--source", str(never_ingested), "--strict-source"],
+            env=env,
+        )
+
+        assert lenient.exit_code == 0, lenient.output
+        assert strict.exit_code == 2, strict.output
+
+    @pytest.mark.integration
+    def test_failed_evidence_read_exits_three_without_strict_source(self, tmp_path: Path) -> None:
+        """An evidence read that failed outranks ``--strict-source``.
+
+        Exit 3 means "the answer itself is untrustworthy", so it fires whether
+        or not the caller asked for strictness. Anti-vacuity: drop the
+        ``Exit(3)`` raise and this reports 0 while still printing a projection
+        built from a source tier it could not read; demote it to ``Exit(2)``
+        and it stops outranking the lenient default.
+        """
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root, env = self._archive_env(tmp_path)
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            conn.execute("DROP TABLE raw_sessions")
+            conn.execute("CREATE TABLE raw_sessions (wrong_column TEXT)")
+            conn.commit()
+
+        unreadable_source = tmp_path / "evidence-unreadable.jsonl"
+        unreadable_source.write_text("{}\n", encoding="utf-8")
+
+        result = run_cli(["--plain", "ops", "status", "--source", str(unreadable_source)], env=env)
+
+        assert result.exit_code == 3, result.output
+        assert "errors=1" in result.output
+
+    @pytest.mark.integration
+    def test_relative_source_is_a_usage_error(self, tmp_path: Path) -> None:
+        """``--source`` demands an absolute exact path.
+
+        Anti-vacuity: accept a relative path and this stops carrying the usage
+        message below, reporting whatever the named-source ladder decides.
+        """
+        from tests.infra.cli_subprocess import run_cli
+
+        _archive_root, env = self._archive_env(tmp_path)
+
+        result = run_cli(["--plain", "ops", "status", "--source", "relative.jsonl"], env=env)
+
+        assert result.exit_code == 2, result.output
+        assert "must be an absolute exact source path" in result.output

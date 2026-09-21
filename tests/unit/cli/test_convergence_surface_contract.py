@@ -84,7 +84,12 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     )
 
     status = run_cli(["--plain", "status", "--format", "json"], env=env, timeout=30)
-    assert status.exit_code == 0, status.output
+    # A converging archive read with no daemon is degraded, which
+    # OUTCOME_EXIT_CODES maps to 1 (polylogue-1fu1a). This asserted 0 only
+    # because standalone_mode discarded the refusal. The subject of this test
+    # is that every surface reports the same counts, not the status code, so
+    # the payload assertions below are unchanged.
+    assert status.exit_code == 1, status.output
     status_payload = _load_stdout_json(status.stdout)
     status_counts = status_payload["component_readiness"]["raw_materialization"]["counts"]
     assert {key: status_counts[key] for key in expected_counts} == expected_counts

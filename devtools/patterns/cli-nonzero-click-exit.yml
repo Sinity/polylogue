@@ -1,0 +1,20 @@
+id: cli-nonzero-click-exit
+language: Python
+severity: warning
+files:
+  - "polylogue/cli/**/*.py"
+message: >-
+  nonzero click Exit signals a refusal that only becomes a process exit because
+  QueryFirstGroupBase.invoke converts it; raise SystemExit instead; owner
+  polylogue-1fu1a
+rule:
+  any:
+    - pattern: raise click.exceptions.Exit($CODE)
+    - pattern: raise click.Exit($CODE)
+    - pattern: raise Exit($CODE)
+    - pattern: ctx.exit($CODE)
+    - pattern: click.get_current_context().exit($CODE)
+constraints:
+  CODE:
+    not:
+      regex: '^0$'

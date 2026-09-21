@@ -6,10 +6,14 @@ Pins the exit code semantics of the polylogue CLI:
 - Exit 1: runtime error (PolylogueError, unhandled exception, invalid date)
 - Exit 2: Click argument-type mismatch (UsageError / BadParameter)
 
-These tests use CliRunner so they run in-process. Tests that need a
+Most of these tests use CliRunner so they run in-process. Tests that need a
 real database use ``workspace_env`` (isolated XDG paths, no production DB
 access). Tests that only need flag parsing use ``--help`` or rely on Click
 type rejection, which fires before any database I/O.
+
+``TestRefusalExitCodeThroughRealEntrypoint`` at the end of this file is
+deliberately not in-process: CliRunner runs Click in standalone mode and
+cannot observe the exit status the installed entrypoint actually produces.
 """
 
 from __future__ import annotations
@@ -225,3 +229,92 @@ class TestJsonModeExitCodeConsistency:
         assert help_result.exit_code == 0
         assert error_result.exit_code != 0
         assert help_result.exit_code != error_result.exit_code
+
+
+# ---------------------------------------------------------------------------
+# Refusals must exit nonzero through the REAL entrypoint (polylogue-1fu1a)
+#
+# Every test above runs through ``CliRunner``, which invokes Click in
+# standalone mode. In standalone mode ``click.exceptions.Exit`` really does
+# exit, so a CliRunner assertion is structurally incapable of observing the
+# defect these tests pin: the installed ``polylogue`` script runs Click with
+# ``standalone_mode=False`` (``polylogue/cli/machine_main.py``), where Click
+# turns an explicit ``Exit`` into a *return value* that ``run_machine_entry``
+# discards. Only a real process boundary can tell the two apart.
+# ---------------------------------------------------------------------------
+
+
+class TestRefusalExitCodeThroughRealEntrypoint:
+    """A printed refusal must reach the shell as a nonzero status.
+
+    These run the installed entrypoint in a subprocess on purpose. Rewriting
+    any of them onto ``CliRunner`` makes them vacuous.
+    """
+
+    @staticmethod
+    def _refusable_root(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+        """An empty directory that ``demo verify`` must refuse, plus its env."""
+        from tests.infra.cli_subprocess import setup_isolated_workspace
+
+        workspace = setup_isolated_workspace(tmp_path)
+        empty_root = tmp_path / "not-a-demo-archive"
+        empty_root.mkdir()
+        return empty_root, dict(workspace["env"])
+
+    @pytest.mark.integration
+    def test_json_refusal_exits_nonzero_like_its_plain_sibling(self, tmp_path: Path) -> None:
+        """``demo verify`` refuses identically in both output modes.
+
+        This is the sharpest shape of the defect: the same failed verification
+        raised ``ClickException`` in plain mode (exit 1) and ``ctx.exit(1)``
+        under ``--format json`` (exit 0), so the machine-readable surface was
+        the one that lied.
+
+        Anti-vacuity: drop the ``Exit`` -> ``SystemExit`` conversion from
+        ``QueryFirstGroupBase.invoke`` and the JSON invocation returns 0 while
+        the plain one still returns 1, turning this red on the equality.
+        """
+        from tests.infra.cli_subprocess import run_cli
+
+        empty_root, env = self._refusable_root(tmp_path)
+
+        json_result = run_cli(["demo", "verify", "--root", str(empty_root), "--format", "json"], env=env)
+        plain_result = run_cli(["demo", "verify", "--root", str(empty_root)], env=env)
+
+        assert json_result.exit_code != 0, json_result.output
+        assert json_result.exit_code == plain_result.exit_code, (
+            f"json exited {json_result.exit_code}, plain exited {plain_result.exit_code}"
+        )
+
+    @pytest.mark.integration
+    def test_cli_runner_cannot_observe_the_real_exit_status(self, tmp_path: Path, runner: CliRunner) -> None:
+        """Pin why the subprocess boundary is required, not a style preference.
+
+        ``CliRunner`` reports exit 1 for this refusal whether or not the
+        conversion exists, because it runs Click in standalone mode. The
+        subprocess run is the only one that can disagree with it.
+
+        Anti-vacuity: if ``CliRunner`` ever stopped running in standalone mode
+        this assertion changes meaning, and the comparison below stops being
+        the independent check it claims to be.
+        """
+        empty_root, _env = self._refusable_root(tmp_path)
+
+        in_process = runner.invoke(cli, ["demo", "verify", "--root", str(empty_root), "--format", "json"])
+
+        assert in_process.exit_code == 1
+        assert runner.invoke(cli, ["--help"]).exit_code == 0
+
+    @pytest.mark.integration
+    def test_success_still_exits_zero_through_the_real_entrypoint(self, tmp_path: Path) -> None:
+        """The conversion must not turn a successful command nonzero.
+
+        Anti-vacuity: widen the conversion from "nonzero ``Exit``" to "any
+        ``Exit``, using a truthy default" -- the shape that would make
+        ``ctx.exit()`` and ``--version`` exit 1 -- and this turns red.
+        """
+        from tests.infra.cli_subprocess import run_cli
+
+        _empty_root, env = self._refusable_root(tmp_path)
+
+        assert run_cli(["--version"], env=env).exit_code == 0
