@@ -83,23 +83,67 @@ class SubjectDenominatorCounts:
     candidates_inventoried: int | None
     candidates_included: int | None
     candidate_terminal_outcomes: Mapping[str, int]
+    #: ``True`` when at least one declared root is an ``append`` root, whose
+    #: membership legitimately grows while a session runs.
+    has_append_root: bool = False
+
+    @property
+    def retained_baseline_members(self) -> int:
+        """Baseline members the checked frontier still admits."""
+
+        return self.baseline_members - self.members_missing_since_baseline
+
+    @property
+    def conservation_detail(self) -> str:
+        if self.candidates_inventoried is None:
+            return "the run recorded no candidate inventory"
+        if sum(self.candidate_terminal_outcomes.values()) != self.candidates_inventoried:
+            return (
+                f"{sum(self.candidate_terminal_outcomes.values())} terminal outcome(s) do not account for "
+                f"{self.candidates_inventoried} inventoried candidate(s)"
+            )
+        if self.candidates_inventoried < self.retained_baseline_members:
+            return (
+                f"{self.candidates_inventoried} inventoried candidate(s) is fewer than the "
+                f"{self.retained_baseline_members} recorded baseline member(s) the frontier still admits"
+            )
+        if not self.has_append_root and self.candidates_inventoried != self.live_members:
+            return (
+                f"{self.candidates_inventoried} inventoried candidate(s) against {self.live_members} "
+                "admitted member(s) on frozen roots"
+            )
+        if self.candidates_inventoried != self.live_members:
+            return (
+                f"{self.candidates_inventoried} inventoried candidate(s) against {self.live_members} "
+                "admitted at check time; the difference is declared append-root growth between the two "
+                "observations, and no recorded baseline member was dropped"
+            )
+        return f"{self.candidates_inventoried} inventoried candidate(s) match the admitted member set exactly"
 
     @property
     def conserves(self) -> bool:
-        """Whether the run inventoried exactly the live admitted member set.
+        """Whether the run consumed the declared denominator without loss.
 
-        ``candidates_inventoried`` is the production route's own count of
-        physical candidates; ``live_members`` is the frontier's count of
-        admitted members after applying the enumerated drift. Equality is the
-        conservation claim: nothing was sampled away and nothing was read from
-        outside the declared denominator.
+        Every inventoried candidate must carry exactly one terminal outcome,
+        and the run must have inventoried at least every recorded baseline
+        member the frontier still admits -- that is what excludes silent
+        sampling.
+
+        Exact equality with the *live* member count is required only for
+        ``frozen`` roots. An ``append`` root legitimately gains members while a
+        session runs, and the frontier check necessarily observes it at a
+        different instant than the generation did, so demanding equality there
+        would report ordinary growth as a conservation failure. The delta stays
+        visible in ``conservation_detail``.
         """
 
         if self.candidates_inventoried is None:
             return False
-        if self.candidates_inventoried != self.live_members:
+        if sum(self.candidate_terminal_outcomes.values()) != self.candidates_inventoried:
             return False
-        return sum(self.candidate_terminal_outcomes.values()) == self.candidates_inventoried
+        if self.candidates_inventoried < self.retained_baseline_members:
+            return False
+        return self.has_append_root or self.candidates_inventoried == self.live_members
 
     def to_payload(self) -> JSONDocument:
         return {
@@ -108,10 +152,12 @@ class SubjectDenominatorCounts:
             "members_missing_since_baseline": self.members_missing_since_baseline,
             "members_added_since_baseline": self.members_added_since_baseline,
             "live_members": self.live_members,
+            "has_append_root": self.has_append_root,
             "candidates_inventoried": self.candidates_inventoried,
             "candidates_included": self.candidates_included,
             "candidate_terminal_outcomes": _terminal_payload(self.candidate_terminal_outcomes),
             "conserves": self.conserves,
+            "conservation_detail": self.conservation_detail,
         }
 
 
@@ -233,12 +279,14 @@ def _subject_counts(
     }
     inventoried = (source or {}).get("source_candidate_count")
     included = (source or {}).get("source_included_candidate_count")
+    declared = frontier.subject(subject)
     return SubjectDenominatorCounts(
         baseline_members=baseline_members,
         baseline_bytes=sum(item.byte_count for item in baselines),
         members_missing_since_baseline=missing,
         members_added_since_baseline=added,
         live_members=baseline_members - missing + added,
+        has_append_root=bool(declared and any(root.mutability == "append" for root in declared.roots)),
         candidates_inventoried=inventoried if isinstance(inventoried, int) else None,
         candidates_included=included if isinstance(included, int) else None,
         candidate_terminal_outcomes=terminal,
@@ -407,10 +455,7 @@ def _reconcile_subject(
         reason = f"{len(changed)} package version(s) new or changed; {route}"
     elif not counts.conserves:
         final_outcome = "failed"
-        reason = (
-            "zero-diff is not acceptable without a reconciled denominator: the route inventoried "
-            f"{counts.candidates_inventoried} candidate(s) against {counts.live_members} admitted member(s)"
-        )
+        reason = f"zero-diff is not acceptable without a reconciled denominator: {counts.conservation_detail}"
     else:
         final_outcome = "zero_diff"
         reason = f"every committed version is structurally unchanged; {route}"

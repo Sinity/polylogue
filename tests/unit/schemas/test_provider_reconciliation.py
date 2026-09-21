@@ -22,6 +22,7 @@ from polylogue.schemas.provider_reconciliation import (
 )
 from polylogue.schemas.source_frontier import (
     FrontierCheck,
+    FrontierFinding,
     FrontierRoot,
     FrontierSubject,
     RootBaseline,
@@ -46,10 +47,17 @@ def _required(token: str) -> DenominatorSubject:
     )
 
 
-def _frontier(token: str, *, members: int, zero_material_reason: str | None = None) -> SchemaFrontier:
+def _frontier(
+    token: str,
+    *,
+    members: int,
+    zero_material_reason: str | None = None,
+    mutability: str = "frozen",
+) -> SchemaFrontier:
     root = FrontierRoot(
         path=Path("/declared/root"),
         scope="synthetic declared root",
+        mutability=mutability,
         zero_material_reason=zero_material_reason,
     )
     baseline = RootBaseline(
@@ -65,13 +73,25 @@ def _frontier(token: str, *, members: int, zero_material_reason: str | None = No
     )
 
 
-def _check(frontier: SchemaFrontier) -> FrontierCheck:
+def _check(frontier: SchemaFrontier, *, added: int = 0) -> FrontierCheck:
+    findings = tuple(
+        FrontierFinding(
+            "member_added",
+            baseline.subject,
+            baseline.root,
+            "the declared root admits a member the baseline does not record",
+            member=f"grown-{index}",
+            severity="notice",
+        )
+        for baseline in frontier.baselines
+        for index in range(added)
+    )
     return FrontierCheck(
         baseline_digest=frontier.baseline_digest,
         declaration_digest=frontier.declaration_digest,
-        findings=(),
+        findings=findings,
         checked_roots=1,
-        checked_members=sum(item.member_count for item in frontier.baselines),
+        checked_members=sum(item.member_count for item in frontier.baselines) + added,
         content_verified=False,
     )
 
@@ -126,11 +146,15 @@ def _receipt(
 
 
 def _reconcile(
-    denominator: ProviderDenominator, frontier: SchemaFrontier, receipts: list[dict[str, object]]
+    denominator: ProviderDenominator,
+    frontier: SchemaFrontier,
+    receipts: list[dict[str, object]],
+    *,
+    added: int = 0,
 ) -> ProviderMatrix:
     return reconcile_provider_matrix(
         frontier=frontier,
-        check=_check(frontier),
+        check=_check(frontier, added=added),
         receipts=load_receipts(receipts),
         code_revision="0123456789abcdef0123456789abcdef01234567",
         inference_configuration=CONFIGURATION,
@@ -324,3 +348,66 @@ def test_the_matrix_binds_what_decided_it() -> None:
     ):
         assert payload[field], field
     assert json_document(payload["generator_semantics"])["implementation_fingerprint"] == ["f" * 64]
+
+
+def test_append_root_growth_is_explained_drift_not_a_conservation_failure() -> None:
+    """A live root observed twice cannot be required to hold still.
+
+    An ``append`` root legitimately gains members while a session runs, and the
+    frontier check observes it at a different instant than the generation did.
+    Conservation therefore requires that no recorded baseline member was
+    dropped, not that the two observations agree exactly.
+
+    Anti-vacuity: dropping *below* the retained baseline is still a failure,
+    and the same shortfall on a frozen root is a failure too.
+    """
+
+    denominator = _denominator(_required("codex"))
+    live = _frontier("codex", members=100, mutability="append")
+
+    # The baseline recorded 100 members, the generation saw 103, and the later
+    # frontier check saw 105.
+    grew = _reconcile(
+        denominator,
+        live,
+        [_receipt("codex", candidates=103, included=103, samples=980, statuses=("unchanged",))],
+        added=5,
+    )
+    entry = grew.subjects[0]
+    assert entry.counts is not None
+    assert entry.counts.conserves
+    assert "append-root growth" in entry.counts.conservation_detail
+    assert entry.outcome == "zero_diff"
+
+    lost = _reconcile(
+        denominator,
+        live,
+        [_receipt("codex", candidates=60, included=60, samples=600, statuses=("unchanged",))],
+        added=5,
+    )
+    assert lost.subjects[0].outcome == "failed"
+
+    frozen = _reconcile(
+        denominator,
+        _frontier("codex", members=100),
+        [_receipt("codex", candidates=103, included=103, samples=980, statuses=("unchanged",))],
+        added=5,
+    )
+    assert frozen.subjects[0].outcome == "failed"
+    assert frozen.subjects[0].counts is not None
+    assert "frozen roots" in frozen.subjects[0].counts.conservation_detail
+
+
+def test_an_unaccounted_terminal_outcome_breaks_conservation() -> None:
+    """Every inventoried candidate must carry exactly one terminal outcome."""
+
+    denominator = _denominator(_required("codex"))
+    frontier = _frontier("codex", members=4)
+    receipt = _receipt("codex", candidates=4, included=4, samples=40, statuses=("unchanged",))
+    source = json_document(json_document(json_document(receipt["result"])["phase_receipt"])["source"])
+    source["source_candidate_terminal_outcomes"] = {"included": 3}
+
+    matrix = _reconcile(denominator, frontier, [receipt])
+    assert matrix.subjects[0].outcome == "failed"
+    assert matrix.subjects[0].counts is not None
+    assert "do not account for" in matrix.subjects[0].counts.conservation_detail
