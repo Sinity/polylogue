@@ -2898,15 +2898,16 @@ def test_hermes_continuation_child_keeps_its_own_reported_usage(tmp_path: Path) 
     """A continuation child's usage stays the totals its own session row reported.
 
     Hermes reports cumulative counters per session, not across a continuation
-    chain (``docs/cost-model.md``). While each child physically replayed its
-    parent, the writer rebased the child's cumulative totals by subtracting the
-    parent's STORED baseline -- and the parent's stored baseline had itself
-    already been rebased, so a chain produced a sawtooth
-    (10, 3, 13, 6, 16, ...) instead of the reported 10, 13, 16, ... Nothing is
-    replayed now, so nothing is rebased.
+    chain (``docs/cost-model.md``), so a chain's stored totals must track the
+    reported 10, 13, 16, ... exactly.
 
-    Anti-vacuity: restore the composing parse and the rebasing fires again,
-    turning link 1's reported 13 input tokens into 3.
+    Anti-vacuity: make the parser emit composed prefixes again and every link
+    past the first stores the parent's totals on top of its own, so the
+    segment-per-session identity this asserts is lost. polylogue-uoq3x removed
+    the writer-side rebase that used to turn the same input into the sawtooth
+    10, 3, 13, 6, 16, ...; the un-rebased writer is now pinned for every
+    replaying origin by
+    ``test_replaying_chain_stores_each_link_reported_cumulative``.
     """
     links = 5
     state_db = tmp_path / "state.db"
