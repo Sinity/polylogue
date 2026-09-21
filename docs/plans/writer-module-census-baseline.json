@@ -274,12 +274,6 @@
     ]
   },
   {
-    "file": "polylogue/storage/index_generation.py",
-    "tiers": [
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/storage/materials.py",
     "tiers": [
       "source"
