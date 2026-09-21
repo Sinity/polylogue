@@ -1508,6 +1508,10 @@ components:
           - type: 'null'
           default: null
           title: Title Source
+        title_is_synthesized:
+          default: false
+          title: Title Is Synthesized
+          type: boolean
         title_ref:
           anyOf:
           - type: string
@@ -1834,6 +1838,10 @@ components:
           - type: 'null'
           default: null
           title: Title Source
+        title_is_synthesized:
+          default: false
+          title: Title Is Synthesized
+          type: boolean
         title_ref:
           anyOf:
           - type: string

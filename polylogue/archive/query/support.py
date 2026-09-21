@@ -29,6 +29,7 @@ def session_to_summary(session: Session) -> SessionSummary:
         origin=session.origin,
         title=session.title,
         display_label=session.display_label,
+        display_label_source=session.display_label_source,
         created_at=session.created_at,
         updated_at=session.updated_at,
         metadata=session.metadata,

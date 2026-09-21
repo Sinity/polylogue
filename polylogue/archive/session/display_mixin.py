@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.core.enums import DisplayLabelSource, TitleSource
 from polylogue.core.types import SessionId
 
 if TYPE_CHECKING:
@@ -42,11 +43,15 @@ class DisplayTitleTagsMixin:
     - branch_type: BranchType | None
     - display_name: str | None
     - display_label: str | None
+    - display_label_source: DisplayLabelSource | None
+    - title_source: TitleSource | None
     """
 
     id: SessionId
     title: str | None
     display_label: str | None
+    display_label_source: DisplayLabelSource | None
+    title_source: TitleSource | None
     created_at: datetime | None
     updated_at: datetime | None
     metadata: dict[str, object]
@@ -77,7 +82,13 @@ class DisplayTitleTagsMixin:
             return user_title
         if self.display_label:
             return self.display_label
-        if self.title:
+        # polylogue-4p1.6: a HEURISTIC title is a prompt echo the parser
+        # already recognized as one. It is stored evidence, not title-worthy
+        # evidence -- rendering it republishes the user's own opening message
+        # as if the provider had named the session. Reads that can compose a
+        # structural label supply it as ``display_label`` above; reads that
+        # cannot fall through to the identity fallback rather than to the echo.
+        if self.title and self.title_source is not TitleSource.HEURISTIC:
             return self.title
         # polylogue-cgfy: provider-assigned display name (e.g. Claude Code's
         # slug, "greedy-squishing-hamming") is title-worthy evidence.
@@ -87,6 +98,28 @@ class DisplayTitleTagsMixin:
     def display_title(self) -> str:
         """Return the read-time display label, preserving provider titles."""
         return self.explicit_display_title or str(self.id)
+
+    @property
+    def display_title_is_synthesized(self) -> bool:
+        """Whether ``display_title`` was composed here rather than asserted.
+
+        A synthesized label must never read as a stored title. ``True`` means
+        no user, provider title or provider-assigned name produced the string;
+        the archive composed it from structural evidence -- which is the case
+        for a session whose stored title is a recognized prompt echo
+        (``TitleSource.HEURISTIC``), where the echo is deliberately not
+        display authority.
+
+        The session-id fallback also counts as synthesized: it is likewise a
+        string no provider asserted as a name.
+        """
+        if self.user_title:
+            return False
+        if self.display_label:
+            return self.display_label_source is DisplayLabelSource.SYNTHESIZED
+        if self.title and self.title_source is not TitleSource.HEURISTIC:
+            return False
+        return not self.display_name
 
     @property
     def summary(self) -> str | None:

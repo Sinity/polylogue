@@ -245,6 +245,11 @@
       "title": "Title",
       "type": "string"
     },
+    "title_is_synthesized": {
+      "default": false,
+      "title": "Title Is Synthesized",
+      "type": "boolean"
+    },
     "title_ref": {
       "anyOf": [
         {

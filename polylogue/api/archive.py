@@ -912,7 +912,11 @@ def _iter_post_filtered_summaries(
     for start in range(0, len(candidates), POST_FILTER_HYDRATION_CHUNK):
         chunk = candidates[start : start + POST_FILTER_HYDRATION_CHUNK]
         sessions = [
-            archive_envelope_to_session(archive.read_session(summary.session_id), display_label=summary.display_label)
+            archive_envelope_to_session(
+                archive.read_session(summary.session_id),
+                display_label=summary.display_label,
+                display_label_source=summary.display_label_source,
+            )
             for summary in chunk
         ]
         matched_ids = {str(session.id) for session in plan._apply_full_filters(sessions, sql_pushed=True)}
@@ -2775,7 +2779,9 @@ class _ArchiveNeighborRuntime:
             resolved = self._archive.resolve_session_id(session_id)
             summary = self._archive.read_summary(resolved)
             return archive_envelope_to_session(
-                self._archive.read_session(resolved), display_label=summary.display_label
+                self._archive.read_session(resolved),
+                display_label=summary.display_label,
+                display_label_source=summary.display_label_source,
             )
         except KeyError:
             return None
@@ -3043,7 +3049,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 return None
             summary = archive.read_summary(resolved_id)
             session = archive_envelope_to_session(
-                archive.read_session(resolved_id), display_label=summary.display_label
+                archive.read_session(resolved_id),
+                display_label=summary.display_label,
+                display_label_source=summary.display_label_source,
             )
             if content_projection is None or not content_projection.filters_content():
                 return session
@@ -4846,7 +4854,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         session_id = str(row["session_id"])
         message_id = str(row["message_id"])
         summary = archive.read_summary(session_id)
-        session = archive_envelope_to_session(archive.read_session(session_id), display_label=summary.display_label)
+        session = archive_envelope_to_session(
+            archive.read_session(session_id),
+            display_label=summary.display_label,
+            display_label_source=summary.display_label_source,
+        )
         message = next((item for item in session.messages if str(item.id) == message_id), None)
         if message is None:
             return cast(
@@ -5380,6 +5392,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         session = archive_envelope_to_session(
             archive.read_session(str(summary.session_id)),
             display_label=summary.display_label,
+            display_label_source=summary.display_label_source,
         )
         digest = compile_session_digest(session)
         if object_ref.kind == "run":
@@ -5541,6 +5554,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 archive_envelope_to_session(
                     archive.read_session(summary.session_id),
                     display_label=summary.display_label,
+                    display_label_source=summary.display_label_source,
                 )
                 for summary in summaries
             ]
@@ -6136,6 +6150,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 archive_envelope_to_session(
                     archive.read_session(summary.session_id),
                     display_label=summary.display_label,
+                    display_label_source=summary.display_label_source,
                 )
                 for summary in archive.list_summaries(limit=5)
             ]
@@ -7212,6 +7227,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 archive_envelope_to_session(
                     session,
                     display_label=archive.read_summary(session.session_id).display_label,
+                    display_label_source=archive.read_summary(session.session_id).display_label_source,
                 )
                 for session in archive.get_session_tree(session_id)
             ],

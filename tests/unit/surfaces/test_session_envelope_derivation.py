@@ -23,6 +23,14 @@ from polylogue.surfaces.payloads import (
 
 
 def _build_session() -> Session:
+    """A provider-titled session.
+
+    ``TitleSource.ORIGIN`` is load-bearing here: a ``HEURISTIC`` title is an
+    echo of the user's own prompt, which the display projection deliberately
+    refuses to present as the session's title (polylogue-4p1.6), so these
+    round-trip laws would be asserting the identity fallback instead of the
+    title.
+    """
     message = Message(
         id="m1",
         role=Role.USER,
@@ -35,7 +43,7 @@ def _build_session() -> Session:
         id=SessionId("codex-session:c1"),
         origin=Origin.CODEX_SESSION,
         title="A canonical session",
-        title_source=TitleSource.HEURISTIC,
+        title_source=TitleSource.ORIGIN,
         messages=MessageCollection(messages=[message]),
     )
 

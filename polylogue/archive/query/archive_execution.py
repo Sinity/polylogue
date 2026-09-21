@@ -378,7 +378,9 @@ async def list_archive(
         sessions = _attach_units_to_domain(
             [
                 archive_envelope_to_session(
-                    archive.read_session(summary.session_id), display_label=summary.display_label
+                    archive.read_session(summary.session_id),
+                    display_label=summary.display_label,
+                    display_label_source=summary.display_label_source,
                 )
                 for summary in archive_rows
             ],
