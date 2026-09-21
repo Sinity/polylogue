@@ -31,13 +31,14 @@ from polylogue.archive.query.evaluator import (
     CanonicalPlanEvaluator,
     QueryEvaluation,
     QueryEvaluationRequest,
+    declared_origin_scope,
 )
 from polylogue.archive.query.expression import RefOperand
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.predicate import predicate_from_payload
 from polylogue.core.query_identity import LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION
 from polylogue.logging import get_logger
-from polylogue.storage.sqlite.query_objects import EvaluationReceipt
+from polylogue.storage.sqlite.query_objects import EvaluationReceipt, QueryObject
 
 logger = get_logger(__name__)
 
@@ -189,6 +190,20 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
             receipt=receipt,
         )
         return evaluation
+
+    def session_origin_scope(self, query: QueryObject) -> frozenset[str] | None:
+        """Bound this definition's members by origin, from the definition alone.
+
+        The same planner that executes the definition owns the claim about
+        what it can match, so the bound cannot drift away from the predicate
+        grammar this module already inverts. Shapes it has not proved a bound
+        for return ``None``, and every caller then keeps its global baseline.
+        """
+        if query.definition_protocol_version == LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION:
+            return None
+        if query.grain not in _SUPPORTED_GRAINS:
+            return None
+        return declared_origin_scope(query)
 
     def resolve_cohort(self, operand: RefOperand) -> QueryEvaluation:
         raise NotImplementedError(

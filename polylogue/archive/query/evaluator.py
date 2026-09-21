@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 from polylogue.archive.query.expression import RefOperand, RelationGrain, ResolvedRefOperand
-from polylogue.core.query_identity import require_supported_definition_protocol_version
+from polylogue.core.query_identity import (
+    LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION,
+    require_supported_definition_protocol_version,
+)
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.holdout_cohorts import (
     HoldoutAccessError,
@@ -64,6 +67,98 @@ class CanonicalPlanEvaluator(Protocol):
     def evaluate(self, request: QueryEvaluationRequest) -> QueryEvaluation: ...
 
     def resolve_cohort(self, operand: RefOperand) -> QueryEvaluation: ...
+
+
+@runtime_checkable
+class ScopedCanonicalPlanEvaluator(Protocol):
+    """An evaluator that also publishes a bound on what a definition can match.
+
+    Deliberately separate from :class:`CanonicalPlanEvaluator`: publishing a
+    bound is an extra capability, not a new obligation on every planner. A
+    caller narrows only against an evaluator that implements this, and keeps
+    its exhaustive baseline against one that does not -- so an evaluator that
+    has never proved a bound is never read as having proved an empty one.
+    """
+
+    def session_origin_scope(self, query: QueryObject) -> frozenset[str] | None:
+        """Origins bounding this definition's membership, or ``None`` for unbounded."""
+        ...
+
+
+def session_origin(session_id: str) -> str | None:
+    """Return the origin token embedded in a session identity, if it has one.
+
+    ``sessions.session_id`` is the generated column ``origin || ':' || native_id``
+    and no public origin token contains a colon, so the prefix before the first
+    colon *is* the origin. It is part of the computed identity, which is why a
+    session cannot migrate between origins without becoming a different session.
+
+    An identifier with no colon is not a session identity this rule can read;
+    the caller must treat it as unbounded rather than guess.
+    """
+    origin, separator, _native_id = session_id.partition(":")
+    return origin if separator and origin else None
+
+
+def declared_origin_scope(query: QueryObject) -> frozenset[str] | None:
+    """Derive the origins a canonical definition's members must carry.
+
+    The result is an over-approximation by construction: it is ``None``
+    unless every satisfying session provably carries one of the returned
+    origins. Only shapes where that implication holds contribute a bound --
+
+    * an ``origin`` equality leaf bounds membership to its listed values;
+    * ``and`` intersects whichever children are bounded, because a conjunct
+      can only remove members;
+    * ``or`` is bounded only when *every* branch is, because one unbounded
+      branch can admit any origin;
+    * ``not`` and every other predicate kind are unbounded, because a
+      negation or a correlated/text predicate can match any origin.
+
+    Nothing here inspects the archive: the bound is a property of the
+    definition, so it cannot go stale against an index generation and it is
+    recomputed from the current definition on every use.
+    """
+    from polylogue.archive.query.predicate import (
+        QueryBoolPredicate,
+        QueryFieldPredicate,
+        QueryPredicate,
+    )
+
+    if query.definition_protocol_version == LEGACY_QUERY_DEFINITION_PROTOCOL_VERSION:
+        return None
+    if query.grain != "session":
+        return None
+    ast = query.canonical_plan.get("ast")
+    if not isinstance(ast, dict):
+        return None
+    try:
+        from polylogue.archive.query.predicate import predicate_from_payload
+
+        predicate = predicate_from_payload(ast)
+    except Exception:  # an unreadable definition is unbounded, not empty
+        return None
+
+    def bound(node: QueryPredicate) -> frozenset[str] | None:
+        if isinstance(node, QueryFieldPredicate):
+            if node.field != "origin" or node.op != "=" or not node.values:
+                return None
+            return frozenset(node.values)
+        if isinstance(node, QueryBoolPredicate):
+            child_bounds = [bound(child) for child in node.children]
+            if node.op == "and":
+                known = [item for item in child_bounds if item is not None]
+                if not known:
+                    return None
+                return frozenset.intersection(*known)
+            if node.op == "or":
+                if not child_bounds or any(item is None for item in child_bounds):
+                    return None
+                return frozenset().union(*[item for item in child_bounds if item is not None])
+            return None
+        return None
+
+    return bound(predicate)
 
 
 class DurableRefResolver:
@@ -184,4 +279,7 @@ __all__ = [
     "QueryEvaluation",
     "QueryEvaluationRequest",
     "RetainedRelationUnavailableError",
+    "ScopedCanonicalPlanEvaluator",
+    "declared_origin_scope",
+    "session_origin",
 ]
