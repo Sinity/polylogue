@@ -17,9 +17,15 @@ status payload on every probe.
 
 from __future__ import annotations
 
+import ast
+import contextlib
+import dataclasses
+import importlib
+import inspect
 import json
 import re
 import sqlite3
+from collections.abc import Iterator
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -222,7 +228,7 @@ class TestEventLedgerReadIsolation:
         monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
         assert events_mod.query_daemon_events() == []
-        assert events_mod.query_events_since(0) == []
+        assert events_mod.query_events_since(0).events == ()
         assert events_mod.get_latest_event_id() == 0
         assert events_mod.get_daemon_event_counts() == {}
         assert events_mod.get_last_ingestion_batch() is None
@@ -250,7 +256,7 @@ class TestEventLedgerReadIsolation:
         monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
         assert events_mod.query_daemon_events() == []
-        assert events_mod.query_events_since(0) == []
+        assert events_mod.query_events_since(0).events == ()
         assert events_mod.get_latest_event_id() == 0
         assert events_mod.get_daemon_event_counts() == {}
         assert events_path.stat().st_size == size_before
@@ -281,7 +287,7 @@ class TestEventLedgerReadIsolation:
             monkeypatch.setattr(events_mod, "open_daemon_connection", unexpected)
 
             assert [event["kind"] for event in events_mod.query_daemon_events()] == ["committed"]
-            assert [event["kind"] for event in events_mod.query_events_since(0)] == ["committed"]
+            assert [event["kind"] for event in events_mod.query_events_since(0).events] == ["committed"]
             assert events_mod.get_latest_event_id() == 1
             assert events_mod.get_daemon_event_counts() == {"committed": 1}
             assert writer.in_transaction is True
@@ -293,7 +299,7 @@ class TestEventLedgerReadIsolation:
         finally:
             writer.close()
 
-        assert [event["kind"] for event in events_mod.query_events_since(1)] == [
+        assert [event["kind"] for event in events_mod.query_events_since(1).events] == [
             "uncommitted",
             "writer-still-active",
         ]
@@ -763,3 +769,369 @@ def test_emitter_converges_ops_tier_once_per_process(
     events_module.emit_daemon_event("test-event", payload={"n": 2})
 
     assert len(calls) == 1
+
+
+def _events_module_source() -> ast.Module:
+    """Parse ``polylogue/daemon/events.py`` from disk, without importing it."""
+    from polylogue.daemon import events as events_mod
+
+    source_file = inspect.getsourcefile(events_mod)
+    assert source_file is not None
+    return ast.parse(Path(source_file).read_text(encoding="utf-8"))
+
+
+def _advertised_topic_constants() -> dict[str, str]:
+    """Derive the advertised-topic denominator from the code that advertises them.
+
+    Every module-level ``EVENT_*`` assignment whose value is a string literal in
+    ``polylogue/daemon/events.py`` is an advertised SSE topic. The denominator
+    is read out of the constant *declarations* -- not out of ``EVENT_SPECS``,
+    and not out of ``GRANULAR_EVENT_KINDS`` (which is derived from the
+    registry) -- so the enumeration below cannot see the thing it checks. Add a
+    fourth ``EVENT_FOO = "foo.bar"`` constant and this denominator grows even
+    though the registry did not.
+    """
+    topics: dict[str, str] = {}
+    for node in _events_module_source().body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id.startswith("EVENT_"):
+                topics[target.id] = node.value.value
+    return topics
+
+
+def _production_emit_targets() -> set[str]:
+    """Names of ``EVENT_*`` constants passed to ``emit_daemon_event`` in production.
+
+    A second denominator, read from the call sites rather than the declarations:
+    a topic constant that no production function ever emits is advertised with
+    zero producers -- the regression that retired ``insight.updated`` and the
+    two ``progress.*`` topics.
+    """
+    emitted: set[str] = set()
+    for node in ast.walk(_events_module_source()):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Name) and func.id == "emit_daemon_event"):
+            continue
+        if node.args and isinstance(node.args[0], ast.Name):
+            emitted.add(node.args[0].id)
+    return emitted
+
+
+class TestAdvertisedTopicContracts:
+    """Every advertised SSE topic carries a declared, production-backed contract."""
+
+    def test_every_advertised_topic_constant_has_a_registry_entry(self) -> None:
+        """Anti-vacuity: a topic constant with no ``EVENT_SPECS`` entry fails here.
+
+        The denominator comes from the module's own ``EVENT_*`` string
+        declarations via ``ast``; the registry is the numerator. Deleting a
+        spec entry, or adding a topic constant without one, is red.
+        """
+        from polylogue.daemon.events import EVENT_SPECS
+
+        advertised = set(_advertised_topic_constants().values())
+        assert advertised, "no advertised topic constants were discovered -- the denominator is broken"
+        assert advertised == set(EVENT_SPECS), (
+            f"topics advertised without a declared contract: {sorted(advertised - set(EVENT_SPECS))}; "
+            f"contracts for unadvertised topics: {sorted(set(EVENT_SPECS) - advertised)}"
+        )
+
+    def test_granular_kinds_are_exactly_the_advertised_topics(self) -> None:
+        from polylogue.daemon.events import GRANULAR_EVENT_KINDS
+
+        assert set(_advertised_topic_constants().values()) == set(GRANULAR_EVENT_KINDS)
+
+    def test_every_advertised_topic_has_a_production_emitter_in_this_module(self) -> None:
+        """A topic nobody emits is an advertised channel with no producer."""
+        emitted_constants = _production_emit_targets()
+        advertised_constants = set(_advertised_topic_constants())
+        assert advertised_constants <= emitted_constants, (
+            f"advertised topics with no production emit call: {sorted(advertised_constants - emitted_constants)}"
+        )
+
+    def test_declared_emitter_resolves_to_production_code_not_tests(self) -> None:
+        """Anti-vacuity: pointing a spec's emitter at a tests-only function fails here."""
+        import polylogue
+        from polylogue.daemon.events import EVENT_SPECS
+
+        package_root = Path(inspect.getsourcefile(polylogue) or "").parent.resolve()
+        for spec in EVENT_SPECS.values():
+            module_path, _, attribute = spec.emitter.rpartition(".")
+            module = importlib.import_module(module_path)
+            emitter = getattr(module, attribute, None)
+            assert callable(emitter), f"{spec.kind}: declared emitter {spec.emitter} is not callable"
+            source_file = inspect.getsourcefile(emitter)
+            assert source_file is not None
+            resolved = Path(source_file).resolve()
+            assert resolved.is_relative_to(package_root), (
+                f"{spec.kind}: emitter {spec.emitter} lives outside the polylogue package at {resolved}"
+            )
+            assert "tests" not in resolved.parts, (
+                f"{spec.kind}: emitter {spec.emitter} is defined under tests/, not production code"
+            )
+
+    def test_emitted_payload_matches_the_declared_projection(self, empty_events_db: Path) -> None:
+        """Run each declared production emitter and check its payload against its spec.
+
+        Makes ``payload_projection``/``required_payload_fields`` load-bearing:
+        an emitter that starts publishing an undeclared key, or stops carrying
+        its object ref, goes red here rather than shipping an undeclared
+        projection to subscribers.
+        """
+        from polylogue.daemon.events import (
+            EVENT_MESSAGE_APPENDED,
+            EVENT_SESSION_APPENDED,
+            EVENT_SESSION_UPDATED,
+            EVENT_SPECS,
+            emit_message_appended,
+            emit_session_appended,
+            emit_session_updated,
+            query_events_since,
+        )
+
+        emit_session_appended(source_name="synthetic", succeeded_file_count=1, session_id="synthetic:s1")
+        emit_session_updated(session_id="synthetic:s1", source_name="synthetic", appended_count=2)
+        emit_message_appended(session_id="synthetic:s1", source_name="synthetic", appended_count=3)
+
+        by_kind = {event["kind"]: event for event in query_events_since(0).events}
+        assert set(by_kind) == {EVENT_SESSION_APPENDED, EVENT_SESSION_UPDATED, EVENT_MESSAGE_APPENDED}
+        for kind, event in by_kind.items():
+            spec = EVENT_SPECS[cast("str", kind)]
+            payload = cast("dict[str, object]", event["payload"])
+            undeclared = set(payload) - set(spec.payload_projection)
+            assert not undeclared, f"{kind}: emitted undeclared payload keys {sorted(undeclared)}"
+            missing = set(spec.required_payload_fields) - set(payload)
+            assert not missing, f"{kind}: emitted payload is missing required fields {sorted(missing)}"
+            assert payload[spec.object_ref] == "synthetic:s1"
+
+    def test_declared_frame_is_the_frame_written_on_the_wire(self, empty_events_db: Path) -> None:
+        """``EventSpec.frame`` describes the real SSE ``event:`` line, not a wish."""
+        from polylogue.daemon.events import EVENT_SPECS, emit_session_updated
+
+        emit_session_updated(session_id="synthetic:s1", source_name="synthetic", appended_count=1)
+        handler = _make_handler("GET", "/api/events?since=0&max_seconds=1")
+        handler.do_GET()
+        out = cast("BytesIO", handler.wfile).getvalue()
+        frame = EVENT_SPECS["session.updated"].frame
+        assert f"event: {frame}\n".encode() in out
+
+    def test_spec_rejects_an_emitter_outside_the_polylogue_package(self) -> None:
+        from polylogue.daemon.events import EVENT_SPECS
+
+        spec = EVENT_SPECS["session.updated"]
+        with pytest.raises(ValueError, match="non-production emitter"):
+            dataclasses.replace(spec, emitter="tests.unit.daemon.test_daemon_events_endpoint.fake_emitter")
+
+    def test_spec_rejects_an_object_ref_outside_its_projection(self) -> None:
+        from polylogue.daemon.events import EVENT_SPECS
+
+        spec = EVENT_SPECS["session.updated"]
+        with pytest.raises(ValueError, match="object_ref"):
+            dataclasses.replace(spec, object_ref="not_a_payload_key")
+
+
+@contextlib.contextmanager
+def _retention(max_rows: int | None = None, max_age_ms: int | None = None) -> Iterator[None]:
+    """Install a declared ledger bound through the production injection point."""
+    from polylogue.daemon.events import DaemonEventRetention, set_daemon_event_retention
+
+    previous = set_daemon_event_retention(DaemonEventRetention(max_rows=max_rows, max_age_ms=max_age_ms))
+    try:
+        yield
+    finally:
+        set_daemon_event_retention(previous)
+
+
+class TestDaemonEventRetention:
+    """The ledger has a named enforcement point, and no invented bound."""
+
+    def test_default_retention_is_declared_unbounded_not_silently_bounded(self) -> None:
+        """No retention value is invented; an unbounded ledger says it is unbounded."""
+        from polylogue.daemon.events import daemon_event_retention
+
+        retention = daemon_event_retention()
+        assert retention.max_rows is None
+        assert retention.max_age_ms is None
+        assert retention.is_bounded is False
+
+    def test_unbounded_retention_prunes_nothing(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_daemon_event, query_events_since
+
+        for index in range(6):
+            emit_daemon_event("ingestion_batch", payload={"n": index})
+        assert len(query_events_since(0).events) == 6
+
+    def test_declared_row_cap_is_enforced_on_every_emit(self, empty_events_db: Path) -> None:
+        """Anti-vacuity: a no-op enforcement point leaves all six rows behind."""
+        from polylogue.daemon.events import emit_daemon_event, query_events_since
+
+        with _retention(max_rows=3):
+            for index in range(6):
+                emit_daemon_event("ingestion_batch", payload={"n": index})
+            page = query_events_since(0)
+
+        assert [cast("dict[str, object]", event["payload"])["n"] for event in page.events] == [3, 4, 5]
+        assert page.retained_min_id is not None
+
+    def test_declared_age_window_is_enforced_on_every_emit(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import emit_daemon_event, query_events_since
+
+        base_ms = 1_700_000_000_000
+        with _retention(max_age_ms=10_000):
+            emit_daemon_event("ingestion_batch", payload={"n": "stale"}, observed_at_ms=base_ms)
+            emit_daemon_event("ingestion_batch", payload={"n": "fresh"}, observed_at_ms=base_ms + 60_000)
+            page = query_events_since(0)
+
+        assert [cast("dict[str, object]", event["payload"])["n"] for event in page.events] == ["fresh"]
+
+    def test_retention_rejects_a_non_positive_declared_bound(self) -> None:
+        from polylogue.daemon.events import DaemonEventRetention
+
+        with pytest.raises(ValueError, match="max_rows"):
+            DaemonEventRetention(max_rows=0)
+        with pytest.raises(ValueError, match="max_age_ms"):
+            DaemonEventRetention(max_age_ms=-1)
+
+
+class TestAgedOutCursorResync:
+    """A pruned replay gap is an explicit resync, never a short or empty answer."""
+
+    def _force_gap(self) -> int:
+        """Emit, prune below the client's cursor, and return that stale cursor.
+
+        Uses the production enforcement point to do the pruning, so the fixture
+        reproduces the real route rather than a hand-rolled DELETE.
+        """
+        from polylogue.daemon.events import emit_daemon_event, query_events_since
+
+        for index in range(4):
+            emit_daemon_event("ingestion_batch", payload={"n": index})
+        client_cursor = cast("int", query_events_since(0).events[0]["id"])
+        with _retention(max_rows=2):
+            emit_daemon_event("ingestion_batch", payload={"n": "after-prune"})
+        return client_cursor
+
+    def test_cursor_below_the_retained_minimum_is_refused_with_a_resync(self, empty_events_db: Path) -> None:
+        """Anti-vacuity: without the retained-minimum check this returns a short
+        page of surviving rows and reports it as a complete ``ok`` answer."""
+        from polylogue.daemon.events import EventCursorStatus, query_events_since
+
+        stale_cursor = self._force_gap()
+        page = query_events_since(stale_cursor)
+
+        assert page.status is EventCursorStatus.AGED_OUT
+        assert page.events == ()
+        assert page.resync is not None
+        payload = cast("dict[str, object]", page.resync["payload"])
+        assert payload["resync"] is True
+        assert payload["reason"] == "cursor_aged_out"
+        assert payload["requested_since"] == stale_cursor
+        assert payload["first_event_id"] == page.retained_min_id
+        assert payload["last_event_id"] == page.latest_id
+        assert page.retained_min_id is not None and page.retained_min_id > stale_cursor + 1
+
+    def test_cursor_inside_the_retained_range_is_served_normally(self, empty_events_db: Path) -> None:
+        from polylogue.daemon.events import EventCursorStatus, emit_daemon_event, query_events_since
+
+        emit_daemon_event("ingestion_batch", payload={"n": 0})
+        emit_daemon_event("ingestion_batch", payload={"n": 1})
+        first_id = cast("int", query_events_since(0).events[0]["id"])
+
+        page = query_events_since(first_id)
+        assert page.status is EventCursorStatus.OK
+        assert page.resync is None
+        assert [cast("dict[str, object]", event["payload"])["n"] for event in page.events] == [1]
+
+    def test_a_cursor_ahead_of_a_reset_ledger_is_refused(self, empty_events_db: Path) -> None:
+        """A disposable tier replaced under a subscriber is loss, not "no change"."""
+        from polylogue.daemon.events import EventCursorStatus, emit_daemon_event, query_events_since
+
+        emit_daemon_event("ingestion_batch", payload={"n": 0})
+        page = query_events_since(9_999)
+
+        assert page.status is EventCursorStatus.AGED_OUT
+        assert cast("dict[str, object]", cast("dict[str, object]", page.resync)["payload"])["reason"] == "ledger_reset"
+
+    def test_an_aged_out_page_cannot_also_deliver_rows(self) -> None:
+        from polylogue.daemon.events import DaemonEventPage, EventCursorStatus
+
+        with pytest.raises(ValueError, match="partial row page"):
+            DaemonEventPage(
+                status=EventCursorStatus.AGED_OUT,
+                events=({"id": 1},),
+                retained_min_id=5,
+                latest_id=9,
+                resync={"kind": "snapshot"},
+            )
+
+    def test_an_ok_page_cannot_carry_a_resync_envelope(self) -> None:
+        from polylogue.daemon.events import DaemonEventPage, EventCursorStatus
+
+        with pytest.raises(ValueError, match="resync envelope"):
+            DaemonEventPage(
+                status=EventCursorStatus.OK,
+                events=(),
+                retained_min_id=5,
+                latest_id=9,
+                resync={"kind": "snapshot"},
+            )
+
+    def test_poll_reports_an_aged_out_cursor_as_a_degraded_resync(self, empty_events_db: Path) -> None:
+        stale_cursor = self._force_gap()
+
+        handler = _make_handler("GET", f"/api/events?poll=1&since={stale_cursor}")
+        send_json = capture_json_response(handler)
+        handler.do_GET()
+
+        status, payload = send_json.call_args.args
+        assert status == HTTPStatus.OK
+        assert payload["outcome"] == "degraded"
+        assert payload["resync"] is True
+        assert payload["resync_reason"] == "cursor_aged_out"
+        assert [event["kind"] for event in payload["events"]] == ["snapshot"]
+
+    def test_sse_stream_emits_a_resync_frame_for_an_aged_out_cursor(self, empty_events_db: Path) -> None:
+        stale_cursor = self._force_gap()
+
+        handler = _make_handler(
+            "GET",
+            "/api/events?max_seconds=1",
+            extra_headers={"Last-Event-ID": str(stale_cursor)},
+        )
+        handler.do_GET()
+        out = cast("BytesIO", handler.wfile).getvalue()
+
+        assert b"event: snapshot\n" in out
+        assert b'"reason": "cursor_aged_out"' in out or b'"reason":"cursor_aged_out"' in out
+        assert b"event: ingestion_batch\n" not in out
+
+    def test_resync_and_coalesced_snapshots_share_one_envelope_shape(self, empty_events_db: Path) -> None:
+        """One wire shape for "refetch your view", not two signals to learn."""
+        from polylogue.daemon.events import build_snapshot_envelope
+        from polylogue.daemon.events_http import _build_snapshot_event
+
+        stale_cursor = self._force_gap()
+        from polylogue.daemon.events import query_events_since
+
+        resync = cast("dict[str, object]", query_events_since(stale_cursor).resync)
+        coalesced = _build_snapshot_event([{"id": 1, "ts": "t", "kind": "ingestion_batch"}])
+
+        assert set(coalesced) == set(resync)
+        assert set(cast("dict[str, object]", coalesced["payload"])) <= set(cast("dict[str, object]", resync["payload"]))
+        assert (
+            build_snapshot_envelope(
+                event_id=1,
+                ts="t",
+                event_count=1,
+                first_event_id=1,
+                last_event_id=1,
+                kind_counts={"ingestion_batch": 1},
+            )
+            == coalesced
+        )

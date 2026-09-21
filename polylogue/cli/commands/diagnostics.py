@@ -923,14 +923,17 @@ def latency_command(
     Groups ``route_observations`` (CLI invocations, MCP sub-route detail)
     and ``mcp_call_log`` (whole MCP tool calls) by (surface, route).
     Buckets with fewer than 5 samples are marked low-confidence rather than
-    presented as a reliable percentile.
+    presented as a reliable percentile, and every answer carries the drop
+    disposition of the sample it was computed over: a percentile whose
+    denominator lost an uncounted number of observations is not a measurement
+    of the route.
     """
     import json as _json
     import time as _time
 
     from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
-    from polylogue.operations.route_observation import compute_latency_percentiles
+    from polylogue.operations.route_observation import compute_latency_percentiles, read_side_drops
     from polylogue.storage.sqlite.archive_tiers.ops_write import list_mcp_calls, list_route_observations
 
     env: AppEnv = ctx.obj
@@ -950,45 +953,50 @@ def latency_command(
         calls = list_mcp_calls(conn, limit=limit) if surface in (None, "mcp") else ()
         calls = tuple(call for call in calls if call.started_at_ms >= since_ms)
 
-    buckets = compute_latency_percentiles(observations, calls)
+    report = compute_latency_percentiles(
+        observations,
+        calls,
+        drops=read_side_drops(
+            observation_count=len(observations),
+            mcp_call_count=len(calls),
+            row_limit=limit,
+        ),
+    )
+    buckets = report.buckets
 
     if output_format == "json":
-        click.echo(
-            _json.dumps(
-                {
-                    "since_hours": since_hours,
-                    "buckets": [
-                        {
-                            "surface": b.surface,
-                            "route": b.route,
-                            "sample_count": b.sample_count,
-                            "p50_ms": b.p50_ms,
-                            "p95_ms": b.p95_ms,
-                            "error_count": b.error_count,
-                            "error_rate": round(b.error_rate, 4),
-                            "low_confidence": b.low_confidence,
-                        }
-                        for b in buckets
-                    ],
-                },
-                indent=2,
-            )
-        )
+        payload = report.to_payload()
+        payload["since_hours"] = since_hours
+        click.echo(_json.dumps(payload, indent=2))
         return
 
     if not buckets:
         env.ui.console.print(f"[yellow]No route observations in the last {since_hours:g}h.[/yellow]")
         return
-    header = f"{'surface':10s}  {'route':32s}  {'n':>6s}  {'p50 ms':>8s}  {'p95 ms':>8s}  {'errors':>7s}"
+    header = (
+        f"{'surface':10s}  {'route':32s}  {'n':>6s}  {'p50 ms':>8s}  {'p95 ms':>8s}  {'errors':>7s}  {'dropped':>8s}"
+    )
     env.ui.console.print(header)
     env.ui.console.print("-" * len(header))
     for b in buckets:
         p50 = f"{b.p50_ms:.0f}" if b.p50_ms is not None else "-"
         p95 = f"{b.p95_ms:.0f}" if b.p95_ms is not None else "-"
+        dropped = str(b.dropped_count) if b.drop_accounting_complete else f"{b.dropped_count}+?"
         flag = " (low confidence)" if b.low_confidence else ""
         env.ui.console.print(
             f"{b.surface[:10]:10s}  {b.route[:32]:32s}  {b.sample_count:6d}  {p50:>8s}  {p95:>8s}  "
-            f"{b.error_count:7d}{flag}"
+            f"{b.error_count:7d}  {dropped:>8s}{flag}"
+        )
+    # The drop line is not optional decoration: a percentile whose denominator
+    # lost an unknown number of members is not a measurement of the route.
+    if report.drops.accounting_complete:
+        env.ui.console.print(f"\ndropped observations: {report.drops.total}")
+    else:
+        reasons = ", ".join(f"{name}={count}" for name, count in sorted(report.drops.by_reason.items()))
+        detail = f" (counted here: {reasons})" if reasons else ""
+        env.ui.console.print(
+            f"\n[yellow]dropped observations: not fully countable from this process{detail} -- "
+            "these percentiles are over an unknown fraction of the invocations.[/yellow]"
         )
 
 
