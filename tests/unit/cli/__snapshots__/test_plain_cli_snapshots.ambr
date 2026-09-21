@@ -11,7 +11,7 @@
     "status": "ok",
     "result": {
       "portfolio": {
-        "schema_version": 1,
+        "schema_version": 2,
         "scope": {
           "matched_session_count": 4,
           "analyzed_session_count": 4,
@@ -94,15 +94,23 @@
         "pathologies": {
           "status": "clean",
           "count": 0,
-          "detail": "detectors ran; no pathology found",
+          "detail": "detectors ran over all 4 sessions in scope; no pathology found",
           "by_kind": {},
+          "swept_session_count": 4,
+          "scope_session_count": 4,
+          "missing_digest_count": 0,
+          "unanalyzed_session_count": 0,
           "evidence_refs": []
         },
         "context_loss": {
           "status": "clean",
           "count": 0,
-          "detail": "detectors ran; no pathology found",
+          "detail": "detectors ran over all 4 sessions in scope; no pathology found",
           "by_kind": {},
+          "swept_session_count": 4,
+          "scope_session_count": 4,
+          "missing_digest_count": 0,
+          "unanalyzed_session_count": 0,
           "evidence_refs": []
         },
         "top_pathologies": []
@@ -118,7 +126,7 @@
     "status": "ok",
     "result": {
       "postmortem": {
-        "schema_version": 2,
+        "schema_version": 3,
         "scope": {
           "matched_session_count": 4,
           "analyzed_session_count": 4,
@@ -196,15 +204,23 @@
         "wasted_loop": {
           "status": "clean",
           "count": 0,
-          "detail": "detectors ran; no pathology found",
+          "detail": "detectors ran over all 4 sessions in scope; no pathology found",
           "by_kind": {},
+          "swept_session_count": 4,
+          "scope_session_count": 4,
+          "missing_digest_count": 0,
+          "unanalyzed_session_count": 0,
           "evidence_refs": []
         },
         "failure_mode": {
           "status": "clean",
           "count": 0,
-          "detail": "detectors ran; no pathology found",
+          "detail": "detectors ran over all 4 sessions in scope; no pathology found",
           "by_kind": {},
+          "swept_session_count": 4,
+          "scope_session_count": 4,
+          "missing_digest_count": 0,
+          "unanalyzed_session_count": 0,
           "evidence_refs": []
         }
       }
@@ -1544,8 +1560,8 @@
   
   ## Failure-mode pathologies
   
-  - **Overall:** clean — detectors ran; no pathology found
-  - **Context loss:** clean — detectors ran; no pathology found
+  - **Overall:** clean — detectors ran over all 4 sessions in scope; no pathology found
+  - **Context loss:** clean — detectors ran over all 4 sessions in scope; no pathology found
   
   
   '''
@@ -1573,8 +1589,8 @@
   | repos_touched | (none) |
   | subagent_branch_count | 0 |
   | longest_tool_gap | unavailable (per-tool-call timestamps are not present in the session profile or session digest; longest_tool_gap is not cheaply derivable in v0) |
-  | wasted_loop | clean (no pathology found) |
-  | failure_mode | clean (no pathology found) |
+  | wasted_loop | clean (no pathology found across all 4 sessions in scope) |
+  | failure_mode | clean (no pathology found across all 4 sessions in scope) |
   
   ## Evidence
   
@@ -1606,8 +1622,8 @@
   cost_per_session_usd: no signal
   wall_per_session_s: n=4 total=1.29571e+<DURATION> min=240 p50=420 p90=7.51922e+07 max=7.51922e+07 mean=3.23927e+07
   wallclock_span_ms: 75192153659
-  pathologies: clean (detectors ran; no pathology found)
-  context_loss: clean (detectors ran; no pathology found)
+  pathologies: clean (detectors ran over all 4 sessions in scope; no pathology found)
+  context_loss: clean (detectors ran over all 4 sessions in scope; no pathology found)
   
   '''
 # ---
@@ -1623,8 +1639,8 @@
     repos_touched: (none)
     subagent_branch_count: 0
     longest_tool_gap: unavailable (per-tool-call timestamps are not present in the session profile or session digest; longest_tool_gap is not cheaply derivable in v0)
-    wasted_loop: clean (no pathology found)
-    failure_mode: clean (no pathology found)
+    wasted_loop: clean (no pathology found across all 4 sessions in scope)
+    failure_mode: clean (no pathology found across all 4 sessions in scope)
     evidence:
       session_count: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>, chatgpt-export:eef16694-50ca-432d-8aba-<HASH>, claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>
       wallclock_span: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>

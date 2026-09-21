@@ -34,6 +34,7 @@ from polylogue.analysis.postmortem import (
     SessionCountMetric,
     TokenLanes,
     WallclockSpanMetric,
+    _coverage_for,
     _pathology_field,
 )
 from polylogue.core.refs import EvidenceRef
@@ -43,7 +44,7 @@ if TYPE_CHECKING:
     from polylogue.analysis.transforms import SessionDigest
     from polylogue.archive.session.models import SessionProfile
 
-PORTFOLIO_SCHEMA_VERSION = 1
+PORTFOLIO_SCHEMA_VERSION = 2
 
 # Bounded number of repos / origins / pathology examples rendered so a
 # whole-archive scope produces a compact, skimmable artifact.
@@ -144,10 +145,11 @@ def compile_portfolio_bundle(
     """Pure aggregator: build a :class:`PortfolioBundle` from fetched data.
 
     No I/O. ``profiles`` are the hydrated session profiles in scope; ``digests``
-    maps ``session_id`` to its session digest (a subset is fine). Reuses the
-    postmortem aggregation idioms for session_count / cost / wallclock /
-    repos_touched and adds per-session distributions plus the pathology
-    distribution (#2383).
+    maps ``session_id`` to its session digest (a subset is fine, and the
+    pathology fields report the resulting coverage rather than presenting a
+    sampled sweep as a swept corpus). Reuses the postmortem aggregation idioms
+    for session_count / cost / wallclock / repos_touched and adds per-session
+    distributions plus the pathology distribution (#2383).
     """
 
     session_refs = tuple(EvidenceRef(session_id=p.session_id) for p in profiles)
@@ -261,23 +263,16 @@ def compile_portfolio_bundle(
     )
 
     # --- pathology distribution (#2383) -------------------------------------
+    # ``digests`` is documented as a subset, so the detectors routinely see less
+    # than the declared scope. The coverage receipt travels with each field so a
+    # corpus-wide report can never present a sampled sweep as a swept corpus.
+    coverage = _coverage_for(profiles, digests, scope=scope)
     projections = [digests[p.session_id].run_projection for p in profiles if p.session_id in digests]
-    if not projections:
-        pathologies = PathologyField(
-            status="unavailable",
-            detail="no run projection available in scope; pathology detection needs session-digest evidence",
-        )
-        context_loss = PathologyField(
-            status="unavailable",
-            detail="no run projection available in scope; context-loss detection needs session-digest evidence",
-        )
-        top_pathologies: tuple[PathologyFinding, ...] = ()
-    else:
-        report = compile_pathology_report(projections)
-        findings = list(report.findings)
-        pathologies = _pathology_field(findings)
-        context_loss = _pathology_field([f for f in findings if f.kind in _CONTEXT_LOSS_KINDS])
-        top_pathologies = tuple(sorted(findings, key=_finding_sort_key)[:top_n])
+    report = compile_pathology_report(projections) if projections else None
+    findings = list(report.findings) if report is not None else []
+    pathologies = _pathology_field(findings, coverage=coverage)
+    context_loss = _pathology_field([f for f in findings if f.kind in _CONTEXT_LOSS_KINDS], coverage=coverage)
+    top_pathologies: tuple[PathologyFinding, ...] = tuple(sorted(findings, key=_finding_sort_key)[:top_n])
 
     return PortfolioBundle(
         scope=scope,
