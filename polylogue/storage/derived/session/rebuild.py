@@ -24,10 +24,9 @@ from polylogue.analysis.archive_models import (
 )
 from polylogue.analysis.fallback import FallbackReason
 from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostSummary
-from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
-from polylogue.core.enums import Origin, SessionKind
+from polylogue.core.enums import Origin
 from polylogue.core.memory import release_process_memory
 from polylogue.core.protocols import ProgressCallback
 from polylogue.core.timestamps import parse_archive_datetime
@@ -65,13 +64,16 @@ from polylogue.storage.runtime import (
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.queries.attachments import get_attachments_batch
 from polylogue.storage.sqlite.queries.mappers import (
-    _json_object,
-    _parse_json,
-    _row_float,
     _row_text,
     _row_to_content_block,
     _row_to_message,
     _row_to_session_profile_record,
+)
+from polylogue.storage.sqlite.queries.mappers_archive import (
+    bind_block_row_mapper,
+    bind_message_row_mapper,
+    bind_session_row_mapper,
+    cursor_column_names,
 )
 from polylogue.storage.sqlite.queries.model_usage import get_model_usage_batch, sync_model_usage_batch
 from polylogue.storage.sqlite.queries.session_events import (
@@ -458,31 +460,6 @@ async def iter_session_id_pages_async(
         yield [str(row["session_id"]) for row in rows]
 
 
-def _row_to_session_insight_session(row: sqlite3.Row) -> SessionRecord:
-    parent_session_id = _row_text(row, "parent_session_id")
-    branch_type = _row_text(row, "branch_type")
-
-    return SessionRecord(
-        session_id=row["session_id"],
-        origin=row["origin"],
-        native_id=row["native_id"],
-        title=row["title"],
-        session_kind=SessionKind.normalize(_row_text(row, "session_kind")),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        sort_key=_row_float(row, "sort_key"),
-        content_hash=row["content_hash"],
-        metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"])),
-        version=row["version"],
-        parent_session_id=SessionId(parent_session_id) if parent_session_id is not None else None,
-        branch_type=BranchType(branch_type) if branch_type is not None else None,
-        raw_id=_row_text(row, "raw_id"),
-        working_directories_json=_row_text(row, "working_directories_json"),
-        git_branch=_row_text(row, "git_branch"),
-        git_repository_url=_row_text(row, "git_repository_url"),
-    )
-
-
 def attach_blocks_to_messages(
     messages: Sequence[MessageRecord],
     content_blocks: Sequence[BlockRecord],
@@ -664,27 +641,24 @@ def load_sync_batch(
     session_ids: Sequence[str],
 ) -> SessionInsightArchiveBatch:
     placeholders = ", ".join("?" for _ in session_ids)
-    sessions = [
-        _row_to_session_insight_session(row)
-        for row in conn.execute(
-            _SESSION_INSIGHT_SESSION_SQL_TEMPLATE.format(placeholders=placeholders),
-            tuple(session_ids),
-        ).fetchall()
-    ]
-    messages = [
-        _row_to_message(row)
-        for row in conn.execute(
-            _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(placeholders=placeholders),
-            (_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS, *session_ids),
-        ).fetchall()
-    ]
-    blocks = [
-        _row_to_content_block(row)
-        for row in conn.execute(
-            _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-            (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids),
-        ).fetchall()
-    ]
+    session_cursor = conn.execute(
+        _SESSION_INSIGHT_SESSION_SQL_TEMPLATE.format(placeholders=placeholders),
+        tuple(session_ids),
+    )
+    decode_session = bind_session_row_mapper(cursor_column_names(session_cursor.description))
+    sessions = [decode_session(row) for row in session_cursor.fetchall()]
+    message_cursor = conn.execute(
+        _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(placeholders=placeholders),
+        (_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS, *session_ids),
+    )
+    decode_message = bind_message_row_mapper(cursor_column_names(message_cursor.description))
+    messages = [decode_message(row) for row in message_cursor.fetchall()]
+    block_cursor = conn.execute(
+        _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+        (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids),
+    )
+    decode_block = bind_block_row_mapper(cursor_column_names(block_cursor.description))
+    blocks = [decode_block(row) for row in block_cursor.fetchall()]
     marker_blocks_by_session = load_marker_blocks_sync(conn, session_ids)
     return SessionInsightArchiveBatch(
         sessions=sessions,
@@ -703,33 +677,24 @@ async def load_async_batch(
     session_ids: Sequence[str],
 ) -> SessionInsightArchiveBatch:
     placeholders = ", ".join("?" for _ in session_ids)
-    sessions = [
-        _row_to_session_insight_session(row)
-        for row in await (
-            await conn.execute(
-                _SESSION_INSIGHT_SESSION_SQL_TEMPLATE.format(placeholders=placeholders),
-                tuple(session_ids),
-            )
-        ).fetchall()
-    ]
-    messages = [
-        _row_to_message(row)
-        for row in await (
-            await conn.execute(
-                _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(placeholders=placeholders),
-                (_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS, *session_ids),
-            )
-        ).fetchall()
-    ]
-    blocks = [
-        _row_to_content_block(row)
-        for row in await (
-            await conn.execute(
-                _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-                (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids),
-            )
-        ).fetchall()
-    ]
+    session_cursor = await conn.execute(
+        _SESSION_INSIGHT_SESSION_SQL_TEMPLATE.format(placeholders=placeholders),
+        tuple(session_ids),
+    )
+    decode_session = bind_session_row_mapper(cursor_column_names(session_cursor.description))
+    sessions = [decode_session(row) for row in await session_cursor.fetchall()]
+    message_cursor = await conn.execute(
+        _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE.format(placeholders=placeholders),
+        (_SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS, *session_ids),
+    )
+    decode_message = bind_message_row_mapper(cursor_column_names(message_cursor.description))
+    messages = [decode_message(row) for row in await message_cursor.fetchall()]
+    block_cursor = await conn.execute(
+        _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+        (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *session_ids),
+    )
+    decode_block = bind_block_row_mapper(cursor_column_names(block_cursor.description))
+    blocks = [decode_block(row) for row in await block_cursor.fetchall()]
     marker_blocks_by_session = await load_marker_blocks_async(conn, session_ids)
     attachments = await get_attachments_batch(conn, list(session_ids))
     session_events = await get_session_events_batch(conn, list(session_ids))
@@ -756,11 +721,13 @@ def load_marker_blocks_sync(
         return {}
     placeholders = ", ".join("?" for _ in session_ids)
     result: dict[str, list[BlockRecord]] = {str(session_id): [] for session_id in session_ids}
-    for row in conn.execute(
+    cursor = conn.execute(
         _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
         tuple(session_ids),
-    ).fetchall():
-        block = _row_to_content_block(row)
+    )
+    decode_block = bind_block_row_mapper(cursor_column_names(cursor.description))
+    for row in cursor.fetchall():
+        block = decode_block(row)
         result.setdefault(str(block.session_id), []).append(block)
     return result
 
@@ -774,13 +741,13 @@ async def load_marker_blocks_async(
         return {}
     placeholders = ", ".join("?" for _ in session_ids)
     result: dict[str, list[BlockRecord]] = {str(session_id): [] for session_id in session_ids}
-    for row in await (
-        await conn.execute(
-            _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-            tuple(session_ids),
-        )
-    ).fetchall():
-        block = _row_to_content_block(row)
+    cursor = await conn.execute(
+        _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+        tuple(session_ids),
+    )
+    decode_block = bind_block_row_mapper(cursor_column_names(cursor.description))
+    for row in await cursor.fetchall():
+        block = decode_block(row)
         result.setdefault(str(block.session_id), []).append(block)
     return result
 
