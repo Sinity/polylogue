@@ -1,6 +1,6 @@
 {
-  "_api-VIh9cM_e.js": {
-    "file": "api-VIh9cM_e.js",
+  "_api-DIMqXuwv.js": {
+    "file": "api-DIMqXuwv.js",
     "name": "api"
   },
   "_styles-BPJhZ5FR.css": {
@@ -15,13 +15,13 @@
     ]
   },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-BoZc0RkU.js",
+    "file": "archive-overview-DUoVHuHm.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
     "imports": [
       "_styles-DdbldGSJ.js",
-      "_api-VIh9cM_e.js"
+      "_api-DIMqXuwv.js"
     ]
   },
   "src/entrypoints/cost.tsx": {
@@ -34,43 +34,43 @@
     ]
   },
   "src/entrypoints/observability.tsx": {
-    "file": "observability-CTCXCK4S.js",
+    "file": "observability-d0sVwsqO.js",
     "name": "observability",
     "src": "src/entrypoints/observability.tsx",
     "isEntry": true,
     "imports": [
       "_styles-DdbldGSJ.js",
-      "_api-VIh9cM_e.js"
+      "_api-DIMqXuwv.js"
     ]
   },
   "src/entrypoints/search.tsx": {
-    "file": "search-CgLTq6gF.js",
+    "file": "search-BvgsMUI6.js",
     "name": "search",
     "src": "src/entrypoints/search.tsx",
     "isEntry": true,
     "imports": [
       "_styles-DdbldGSJ.js",
-      "_api-VIh9cM_e.js"
+      "_api-DIMqXuwv.js"
     ]
   },
   "src/entrypoints/session-list.tsx": {
-    "file": "session-list-C-2uOb-8.js",
+    "file": "session-list-KGOA_-Qr.js",
     "name": "session-list",
     "src": "src/entrypoints/session-list.tsx",
     "isEntry": true,
     "imports": [
       "_styles-DdbldGSJ.js",
-      "_api-VIh9cM_e.js"
+      "_api-DIMqXuwv.js"
     ]
   },
   "src/entrypoints/session-read.tsx": {
-    "file": "session-read-ly9Gi_VU.js",
+    "file": "session-read-BOS1zR8-.js",
     "name": "session-read",
     "src": "src/entrypoints/session-read.tsx",
     "isEntry": true,
     "imports": [
       "_styles-DdbldGSJ.js",
-      "_api-VIh9cM_e.js"
+      "_api-DIMqXuwv.js"
     ]
   }
 }

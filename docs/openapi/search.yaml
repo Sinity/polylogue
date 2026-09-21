@@ -652,6 +652,14 @@ paths:
         schema:
           type: integer
           minimum: 0
+      - name: around
+        in: query
+        required: false
+        description: Message id to centre the messages window on. The route resolves it to the offset of the limit-sized window
+          containing that message and reports that offset; a message that is not part of the session is refused with message_not_found
+          rather than answered with page zero.
+        schema:
+          type: string
       - name: related_limit
         in: query
         required: false

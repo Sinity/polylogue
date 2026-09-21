@@ -158,6 +158,14 @@ def _read_view_parameter(name: str) -> dict[str, Any]:
             "description": "Minimum confidence for correlation evidence.",
             "schema": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.3},
         },
+        "around": {
+            "description": (
+                "Message id to centre the messages window on. The route resolves it to the offset of the "
+                "limit-sized window containing that message and reports that offset; a message that is not "
+                "part of the session is refused with message_not_found rather than answered with page zero."
+            ),
+            "schema": {"type": "string"},
+        },
         "include_messages": {
             "description": "Include message excerpts in context-image payloads.",
             "schema": {"type": "boolean", "default": True},

@@ -32,6 +32,7 @@ from typing import Any, cast
 
 from polylogue.daemon.workspace_routes import (
     COMPARE_ALIGN_MODES,
+    MessageWindow,
     missing_session_target,
 )
 
@@ -246,11 +247,19 @@ def build_compare_envelope(
     left_id: str,
     right_id: str,
     align: str,
+    *,
+    window: MessageWindow | None = None,
 ) -> dict[str, Any]:
     """Assemble the full ``/api/compare`` response envelope.
 
     Callers should validate ``align`` against :data:`COMPARE_ALIGN_MODES`
     before calling — this function trusts the value and just records it.
+
+    ``window`` is the message window each side was loaded with. It is recorded
+    on the envelope because ``pairs`` covers exactly that window, while each
+    side's own ``message_count``/``total`` still carries its TRUE length: a
+    diff over a bounded window must not read as a diff over two whole
+    sessions (polylogue-o0zju).
     """
     left_ok = _is_payload(left_payload)
     right_ok = _is_payload(right_payload)
@@ -274,6 +283,7 @@ def build_compare_envelope(
         "total": len(pairs),
         "degraded_count": len(degraded_sides),
         "degraded_sides": degraded_sides,
+        **(window if window is not None else MessageWindow()).payload(),
     }
 
 

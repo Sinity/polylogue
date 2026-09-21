@@ -9,6 +9,7 @@ import {
   SESSION_READ_MESSAGE_LIMIT,
   parseSessionMessagePage,
   type SessionMessagePage,
+  type SessionMessageWindow,
 } from '../contracts/session-read';
 import { SEARCH_RESULT_LIMIT, parseSearchResult, type SearchResult } from '../contracts/search';
 
@@ -42,6 +43,24 @@ async function ensureWebCredential(): Promise<void> {
   }
 }
 
+/**
+ * An archive request the daemon refused, carrying the daemon's own typed
+ * refusal code. Callers that must distinguish refusals — a deep link naming a
+ * message this session does not contain is not the same event as a transport
+ * failure — read `code` instead of matching on message text.
+ */
+export class ArchiveRequestError extends Error {
+  readonly code: string;
+  readonly status: number;
+
+  constructor(code: string, status: number) {
+    super(`archive query failed: ${code}`);
+    this.name = 'ArchiveRequestError';
+    this.code = code;
+    this.status = status;
+  }
+}
+
 export async function requestJson(path: string): Promise<unknown> {
   await ensureWebCredential();
   const response = await fetch(path, {
@@ -57,7 +76,7 @@ export async function requestJson(path: string): Promise<unknown> {
       typeof payload === 'object' && payload !== null && 'error' in payload
         ? String((payload as { error: unknown }).error)
         : `HTTP ${response.status}`;
-    throw new Error(`archive query failed: ${detail}`);
+    throw new ArchiveRequestError(detail, response.status);
   }
   return payload;
 }
@@ -94,14 +113,26 @@ export async function fetchSessionListPage(
   return parseSessionListPage(await requestJson(`/api/sessions?${params.toString()}`));
 }
 
+/**
+ * Fetch exactly one message window.
+ *
+ * An `around` window names a message and lets the daemon resolve the offset of
+ * the window that holds it, so honouring a deep link is one request whatever
+ * the target's depth — the client never walks pages looking for it
+ * (polylogue-i5vqc). The response reports the `offset` it actually served.
+ */
 export async function fetchSessionMessagesPage(
   sessionId: string,
-  offset: number,
+  window: SessionMessageWindow,
 ): Promise<SessionMessagePage> {
   const params = new URLSearchParams();
   params.set('view', 'messages');
   params.set('limit', String(SESSION_READ_MESSAGE_LIMIT));
-  params.set('offset', String(offset));
+  if ('around' in window) {
+    params.set('around', window.around);
+  } else {
+    params.set('offset', String(window.offset));
+  }
   return parseSessionMessagePage(
     await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/read?${params.toString()}`),
   );
