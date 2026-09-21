@@ -33,14 +33,12 @@ def _annotate_schema(
     stats: FieldStatsMapping,
     path: str = "$",
     *,
-    min_session_count: int = 1,
     privacy_config: SchemaPrivacyConfig | None = None,
 ) -> SchemaPayload:
     return annotate_schema(
         json_document(dict(schema)),
         dict(stats),
         path,
-        min_session_count=min_session_count,
         privacy_config=privacy_config,
     )
 

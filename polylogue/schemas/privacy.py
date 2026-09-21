@@ -14,6 +14,26 @@ from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 
 _SAFE_ENUM_MAX_LEN = 50  # structural enums are short tokens, not content
 
+#: Declared semantic roles whose observed members may be published as a closed
+#: vocabulary in a committed provider package.
+#:
+#: Publication is an allowlist, and the default is refusal.  A committed package
+#: is public; an ``x-polylogue-values`` list is the only place a generated
+#: element carries *observed member values* rather than structure, so it is the
+#: one annotation that can carry operator content straight into a published
+#: artifact.  Shape heuristics cannot separate a provider protocol constant from
+#: a recurring private token -- ``sinex`` and ``sandbox`` are the same shape, and
+#: a grep pattern the operator typed recurs across sessions exactly like a wire
+#: constant does.  So the discriminator is a *declaration*: a field publishes its
+#: members only when this repository has classified the slot as a protocol
+#: vocabulary, and every other field publishes type, frequency and distribution
+#: with no member list.
+#:
+#: Adding a role here publishes every observed member of every field carrying it,
+#: for every provider, so it is an operator decision with a recorded reason --
+#: never a convenience widening.
+PUBLISHABLE_VOCABULARY_ROLES = frozenset({"message_role"})
+
 _FILE_EXTENSIONS = frozenset(
     {
         ".pdf",

@@ -97,7 +97,6 @@ def emit_schema_from_evidence(
     schema = _annotate_schema(
         schema,
         field_stats,
-        min_session_count=3,
         privacy_config=privacy_config,
     )
     schema["$schema"] = "https://json-schema.org/draft/2020-12/schema"

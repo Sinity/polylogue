@@ -8,6 +8,7 @@ from typing import overload
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.privacy import (
+    PUBLISHABLE_VOCABULARY_ROLES,
     _is_content_field,
     _is_safe_enum_value,
 )
@@ -18,18 +19,11 @@ _ENUM_OUTPUT_CAP = 20
 _ENUM_MIN_COUNT = 2
 _ENUM_MIN_FREQ = 0.03
 
-# Semantic roles whose enum values are structural identifiers
-# (e.g. record types, message roles).  These fields bypass the
-# cross-session privacy threshold because their values are
-# protocol-level tokens, not user content.
-_STRUCTURAL_ROLE_VALUES = frozenset({"message_role"})
-
 
 def _enum_values(
     field_stats: FieldStats,
     *,
     path: str,
-    min_session_count: int,
     privacy_config: SchemaPrivacyConfig | None,
 ) -> list[JSONValue]:
     total = max(field_stats.value_count, 1)
@@ -43,10 +37,6 @@ def _enum_values(
             continue
         if min_freq and (count / total) < min_freq:
             continue
-        if min_session_count > 1 and field_stats.value_session_ids:
-            session_count = len(field_stats.value_session_ids.get(value, set()))
-            if session_count < min_session_count:
-                continue
         values.append(value)
         if len(values) >= _ENUM_OUTPUT_CAP:
             break
@@ -107,7 +97,6 @@ def annotate_schema(
     stats: Mapping[str, FieldStats],
     path: str = "$",
     *,
-    min_session_count: int = 1,
     privacy_config: SchemaPrivacyConfig | None = None,
 ) -> JSONDocument: ...
 
@@ -118,7 +107,6 @@ def annotate_schema(
     stats: Mapping[str, FieldStats],
     path: str = "$",
     *,
-    min_session_count: int = 1,
     privacy_config: SchemaPrivacyConfig | None = None,
 ) -> JSONValue: ...
 
@@ -128,7 +116,6 @@ def annotate_schema(
     stats: Mapping[str, FieldStats],
     path: str = "$",
     *,
-    min_session_count: int = 1,
     privacy_config: SchemaPrivacyConfig | None = None,
 ) -> JSONValue:
     """Apply x-polylogue-* annotations to a schema from collected field stats."""
@@ -153,23 +140,24 @@ def annotate_schema(
             schema_node["x-polylogue-format"] = fmt
 
         id_formats = {"uuid4", "uuid", "hex-id", "base64"}
+        # A member list is published only from a slot this repository has
+        # declared a protocol vocabulary (PUBLISHABLE_VOCABULARY_ROLES).  Every
+        # other enum-like field keeps its type, frequency and distribution and
+        # publishes no observed member, because a committed package is public
+        # and no value-shape heuristic can tell a wire constant from a
+        # recurring private token.
+        sem_role = schema_node.get("x-polylogue-semantic-role")
         if (
-            field_stats.is_enum_like
+            isinstance(sem_role, str)
+            and sem_role in PUBLISHABLE_VOCABULARY_ROLES
+            and field_stats.is_enum_like
             and field_stats.observed_values
             and fmt not in id_formats
             and not _is_content_field(path)
         ):
-            # Structural fields (e.g. message_role) bypass the
-            # cross-session privacy threshold — their values
-            # are protocol-level tokens, not user content.
-            sem_role = schema_node.get("x-polylogue-semantic-role")
-            effective_min_conv = (
-                1 if isinstance(sem_role, str) and sem_role in _STRUCTURAL_ROLE_VALUES else min_session_count
-            )
             enum_values = _enum_values(
                 field_stats,
                 path=path,
-                min_session_count=effective_min_conv,
                 privacy_config=privacy_config,
             )
             if enum_values:
@@ -203,7 +191,6 @@ def annotate_schema(
                 prop_schema,
                 stats,
                 f"{path}.{prop_name}",
-                min_session_count=min_session_count,
                 privacy_config=privacy_config,
             )
 
@@ -213,7 +200,6 @@ def annotate_schema(
             additional_properties,
             stats,
             f"{path}.*",
-            min_session_count=min_session_count,
             privacy_config=privacy_config,
         )
 
@@ -223,7 +209,6 @@ def annotate_schema(
             items,
             stats,
             f"{path}[*]",
-            min_session_count=min_session_count,
             privacy_config=privacy_config,
         )
 
@@ -235,7 +220,6 @@ def annotate_schema(
                     item,
                     stats,
                     path,
-                    min_session_count=min_session_count,
                     privacy_config=privacy_config,
                 )
                 for item in keyword_items

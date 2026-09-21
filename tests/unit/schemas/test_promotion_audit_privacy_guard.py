@@ -52,7 +52,12 @@ def test_committed_schema_bundle_privacy_guard_is_green() -> None:
 
     assert report.checks, "the required schema privacy registry must inspect committed elements"
     assert report.all_passed, [check.format_line() for check in report.checks if check.status.value == "error"]
-    assert len(report.checks) == len(expected_scopes)
+    # Each committed element is inspected by every registered publication
+    # predicate: enum-value shape, published-vocabulary justification, and
+    # published paths/addresses.
+    expected_names = {"privacy_guards", "published_vocabulary", "published_paths"}
+    assert {check.name for check in report.checks} == expected_names
+    assert len(report.checks) == len(expected_scopes) * len(expected_names)
     assert {getattr(check, "provider", None) for check in report.checks} == expected_scopes
 
 
@@ -535,3 +540,91 @@ def test_genuine_enum_values_do_not_block(tmp_path: Path) -> None:
     report = audit_schema_artifacts(tmp_path)
 
     assert not [item for item in report.blockers if item.category == "unsafe_enum_value"]
+
+
+def test_unjustified_published_vocabulary_is_red(tmp_path: Path) -> None:
+    """A member list on a slot with no declared protocol role fails the gate.
+
+    Anti-vacuity: declare ``x-polylogue-semantic-role: message_role`` on the
+    same node and the check passes, so the assertion measures the justification
+    and not the mere presence of ``x-polylogue-values``.
+    """
+
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "grep_pattern": {
+                "type": "string",
+                "x-polylogue-values": ["banner|panel", "motd|splash"],
+            }
+        },
+    }
+    _write_element(tmp_path, "chatgpt", document)
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path / "providers"))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(check.name == "published_vocabulary" for check in failures)
+    assert any("unjustified closed vocabulary" in detail for check in failures for detail in check.details)
+
+
+def test_declared_protocol_vocabulary_is_green(tmp_path: Path) -> None:
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "role": {
+                "type": "string",
+                "x-polylogue-semantic-role": "message_role",
+                "x-polylogue-values": ["assistant", "user"],
+            }
+        },
+    }
+    _write_element(tmp_path, "chatgpt", document)
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path / "providers"))
+
+    vocabulary = [check for check in report.checks if check.name == "published_vocabulary"]
+    assert vocabulary and all(check.status.value == "ok" for check in vocabulary)
+
+
+def test_published_home_path_is_red(tmp_path: Path) -> None:
+    """A filesystem path published anywhere in a bundle fails the gate.
+
+    Anti-vacuity: replace the value with a bare token and the check passes, so
+    the assertion measures the path shape rather than the document's presence.
+    """
+
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "hook": {
+                "type": "string",
+                "x-polylogue-semantic-role": "message_role",
+                "x-polylogue-values": ["~/.claude/hooks/pretooluse-bash.sh"],
+            }
+        },
+    }
+    _write_element(tmp_path, "claude-code", document)
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path / "providers"))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(check.name == "published_paths" for check in failures)
+    rendered = report.format_text()
+    assert "pretooluse-bash.sh" not in rendered, "a leak report must not republish the leaked text"
+    assert "sha256:" in rendered
+
+
+def test_published_path_in_a_property_name_is_red(tmp_path: Path) -> None:
+    """A dynamic key harvested into a property name is inspected too."""
+
+    document = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {"/home/operator/notes.md": {"type": "string"}},
+    }
+    _write_element(tmp_path, "codex", document)
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=tmp_path / "providers"))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(check.name == "published_paths" for check in failures)

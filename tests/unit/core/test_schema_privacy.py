@@ -1,12 +1,16 @@
 """Privacy guard tests for schema inference.
 
-Covers all heuristics in _is_safe_enum_value and the field-level filters,
-plus the three new guards added in this session:
-  1. Cross-session threshold (value seen in <N distinct sessions excluded)
-  2. Key denylist expansion (body, message, input, output never yield enums)
+Covers the heuristics in ``_is_safe_enum_value``, the field-level filters, and
+the slot allowlist that decides whether a field may publish observed members at
+all:
+  1. Publishable-slot allowlist (only a declared protocol vocabulary role emits
+     ``x-polylogue-values``)
+  2. Key denylist (body, message, input, output never yield enums)
   3. Private TLD denylist (.local, .lan, .corp, .internal, .home rejected)
 
 Tests are grouped by guard type so failures pinpoint which heuristic regressed.
+Every suppression test declares a publishable role on the field under test, so
+a suppression assertion cannot pass merely because the slot was never eligible.
 """
 
 from __future__ import annotations
@@ -200,76 +204,66 @@ class TestSafeEnumValueExistingGuards:
 
 
 # =============================================================================
-# Guard 1: Cross-session threshold
+# Guard 1: Publishable-slot allowlist
 # =============================================================================
 
 
-class TestCrossSessionThreshold:
-    """Values seen in fewer than N sessions are suppressed from schema enums."""
+ROLE_SLOT: dict[str, object] = {"type": "string", "x-polylogue-semantic-role": "message_role"}
 
-    def _make_schema_with_samples(
-        self,
-        values_by_conv: dict[str, list[str]],
-        *,
-        min_session_count: int = 3,
-    ) -> Mapping[str, object]:
-        """Build schema annotations from samples grouped by session ID."""
-        samples = []
-        conv_ids = []
-        for conv_id, values in values_by_conv.items():
-            for v in values:
-                samples.append({"$.status": v})
-                conv_ids.append(conv_id)
 
-        # _collect_field_stats expects flat dicts with the actual field as a key
-        # Use a simple structure: {"status": value}
-        flat_samples = [{"status": v} for v in [v for vals in values_by_conv.values() for v in vals]]
-        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
+class TestPublishableSlotAllowlist:
+    """Only a declared protocol vocabulary slot publishes observed members.
 
-        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
-        schema: dict[str, object] = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=min_session_count)
-        return schema_property(annotated, "status")
+    A committed package is public, and ``x-polylogue-values`` is the one
+    annotation that carries observed member *values* rather than structure.
+    Value shape cannot separate a provider constant from a recurring private
+    token, so publication is an allowlist over declared semantic roles.
 
-    def test_value_in_one_conv_excluded_at_threshold_3(self) -> None:
-        """A value seen in only 1 session is excluded when threshold=3."""
-        values_by_conv = {
-            "conv_A": ["rare_status"],
-            "conv_B": ["common"],
-            "conv_C": ["common"],
-            "conv_D": ["common"],
-        }
-        status_schema = self._make_schema_with_samples(values_by_conv, min_session_count=3)
-        enum_vals = schema_values(status_schema)
-        assert "rare_status" not in enum_vals, "Single-session value should be excluded"
+    Anti-vacuity: restore publication for an undeclared slot -- drop the
+    ``sem_role in PUBLISHABLE_VOCABULARY_ROLES`` guard in
+    ``polylogue/schemas/generation/field_annotations.annotate_schema`` -- and
+    ``test_undeclared_slot_publishes_no_members`` and
+    ``test_undeclared_role_publishes_no_members`` both fail.
+    """
 
-    def test_value_in_three_convs_included_at_threshold_3(self) -> None:
-        """A value seen in exactly 3 sessions passes the threshold."""
-        values_by_conv = {
-            "conv_A": ["stable_role"],
-            "conv_B": ["stable_role"],
-            "conv_C": ["stable_role"],
-        }
-        status_schema = self._make_schema_with_samples(values_by_conv, min_session_count=3)
-        enum_vals = schema_values(status_schema)
-        assert "stable_role" in enum_vals, "Value in 3 sessions should pass threshold=3"
+    def _annotate(self, field_schema: Mapping[str, object], values: list[str]) -> Mapping[str, object]:
+        samples = [{"status": value} for value in values]
+        session_ids: list[str | None] = [f"conv_{index}" for index in range(len(values))]
+        stats = _collect_field_stats(samples, session_ids=session_ids)
+        schema: dict[str, object] = {"type": "object", "properties": {"status": dict(field_schema)}}
+        return schema_property(_annotate_schema(schema, stats), "status")
 
-    def test_threshold_1_includes_single_conv_values(self) -> None:
-        """Default threshold=1 preserves existing behaviour (no cross-conv filtering)."""
-        values_by_conv = {"conv_A": ["only_here", "only_here"]}
-        status_schema = self._make_schema_with_samples(values_by_conv, min_session_count=1)
-        enum_vals = schema_values(status_schema)
-        assert "only_here" in enum_vals, "threshold=1 should not filter single-conv values"
+    def test_undeclared_slot_publishes_no_members(self) -> None:
+        """A safe, highly recurrent value is still unpublished without a declared role."""
+        annotated = self._annotate({"type": "string"}, ["active"] * 30)
+        assert "x-polylogue-values" not in annotated
+        assert "x-polylogue-observed-distribution" in annotated, "structure must survive the member refusal"
 
-    def test_no_session_ids_skips_threshold(self) -> None:
-        """When session_ids is None, cross-conv check is skipped entirely."""
-        samples = [{"status": "solo_value"}] * 5
-        stats = _collect_field_stats(samples)  # no session_ids
-        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
-        enum_vals = schema_values(schema_property(annotated, "status"))
-        # No session tracking → no filtering
-        assert "solo_value" in enum_vals
+    def test_undeclared_role_publishes_no_members(self) -> None:
+        """A declared role outside the allowlist publishes nothing either."""
+        annotated = self._annotate(
+            {"type": "string", "x-polylogue-semantic-role": "session_title"},
+            ["active"] * 30,
+        )
+        assert "x-polylogue-values" not in annotated
+
+    def test_declared_protocol_slot_publishes_members(self) -> None:
+        annotated = self._annotate(ROLE_SLOT, ["assistant"] * 10 + ["user"] * 10)
+        assert set(schema_values(annotated)) == {"assistant", "user"}
+
+    def test_declared_slot_publishes_a_single_session_member(self) -> None:
+        """A declared protocol vocabulary is not user content, so recurrence is not required."""
+        samples = [{"status": "attachment"}] + [{"status": "assistant"} for _ in range(9)]
+        session_ids: list[str | None] = ["conv_A"] + ["conv_B"] * 9
+        stats = _collect_field_stats(samples, session_ids=session_ids)
+        schema: dict[str, object] = {"type": "object", "properties": {"status": dict(ROLE_SLOT)}}
+        annotated = schema_property(_annotate_schema(schema, stats), "status")
+        assert "attachment" in schema_values(annotated)
+
+    def test_value_guard_still_applies_inside_a_declared_slot(self) -> None:
+        """The allowlist admits the slot; it does not admit an unsafe value."""
+        annotated = self._annotate(ROLE_SLOT, ["myhost.local"] * 20)
+        assert "myhost.local" not in schema_values(annotated)
 
 
 # =============================================================================
@@ -311,7 +305,7 @@ class TestKeyDenylist:
         """New denylist fields produce no x-polylogue-values even with repeated values."""
         samples = [{field_name: "active"} for _ in range(20)]
         stats = _collect_field_stats(samples)
-        schema = {"type": "object", "properties": {field_name: {"type": "string"}}}
+        schema = {"type": "object", "properties": {field_name: dict(ROLE_SLOT)}}
         annotated = _annotate_schema(schema, stats)
         field_schema = schema_property(annotated, field_name)
         assert "x-polylogue-values" not in field_schema, f"Field '{field_name}' should suppress enum extraction"
@@ -320,7 +314,7 @@ class TestKeyDenylist:
         """A field not in the denylist does produce x-polylogue-values when repeated."""
         samples = [{"status": "active"} for _ in range(20)]
         stats = _collect_field_stats(samples)
-        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
+        schema = {"type": "object", "properties": {"status": dict(ROLE_SLOT)}}
         annotated = _annotate_schema(schema, stats)
         assert "x-polylogue-values" in schema_property(annotated, "status")
 
@@ -419,66 +413,7 @@ class TestStructuralConstantsInIdentifierFields:
 
 
 # =============================================================================
-# Guard 4: Structural role exemption -- message_role bypasses
-#          cross-session threshold
-# =============================================================================
-
-
-class TestStructuralRoleExemption:
-    """message_role fields bypass cross-session privacy threshold."""
-
-    def test_message_role_bypasses_threshold(self) -> None:
-        """A message_role field includes values from <3 sessions."""
-        values_by_conv = {
-            "conv_A": ["attachment"],
-            "conv_B": ["assistant"],
-            "conv_C": ["assistant"],
-            "conv_D": ["user", "assistant"],
-            "conv_E": ["user"],
-        }
-        flat_samples = [{"type": v} for vals in values_by_conv.values() for v in vals]
-        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
-        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
-        schema: dict[str, object] = {
-            "type": "object",
-            "properties": {
-                "type": {
-                    "type": "string",
-                    "x-polylogue-semantic-role": "message_role",
-                }
-            },
-        }
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
-        type_schema = schema_property(annotated, "type")
-        enum_vals = schema_values(type_schema)
-        assert "attachment" in enum_vals, "message_role field should preserve values even when min_session_count=3"
-        assert "assistant" in enum_vals
-        assert "user" in enum_vals
-
-    def test_non_role_field_respects_threshold(self) -> None:
-        """A field without message_role still respects the threshold."""
-        values_by_conv = {
-            "conv_A": ["rare_val"],
-            "conv_B": ["common"],
-            "conv_C": ["common"],
-            "conv_D": ["common"],
-        }
-        flat_samples = [{"status": v} for vals in values_by_conv.values() for v in vals]
-        flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
-        stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
-        schema = {
-            "type": "object",
-            "properties": {"status": {"type": "string"}},
-        }
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
-        status_schema = schema_property(annotated, "status")
-        enum_vals = schema_values(status_schema)
-        assert "rare_val" not in enum_vals, "Non-role field should respect min_session_count=3"
-        assert "common" in enum_vals
-
-
-# =============================================================================
-# Guard 5: Property test — safe values never resemble PII (Phase 9)
+# Guard 4: Property test — safe values never resemble PII (Phase 9)
 # =============================================================================
 
 
@@ -543,34 +478,38 @@ class TestMultiGuardInteraction:
     """Values that trip multiple privacy guards simultaneously.
 
     The three independent guards are:
-      1. Cross-session threshold (min_session_count)
+      1. Publishable-slot allowlist (PUBLISHABLE_VOCABULARY_ROLES)
       2. Content-field key denylist (_CONTENT_FIELD_NAMES)
       3. Private TLD denylist (_is_safe_enum_value)
 
     These tests assert that multi-guard payloads are handled correctly:
     suppression happens regardless of which guard fires first, and
     values are absent if ANY guard would suppress them.
+
+    Every field under test declares a publishable role, so guard 1 admits the
+    slot and the assertion measures guards 2 and 3 rather than passing because
+    nothing was eligible to publish.
     """
 
-    # ── overlap: content-field + cross-conv threshold ──────────
+    # ── overlap: content-field + publishable slot ──────────────
 
     def test_content_field_value_absent_even_when_seen_in_many_convs(self) -> None:
-        """Guard 2 (content field) suppresses regardless of Guard 1 (threshold).
+        """Guard 2 (content field) suppresses a value in a publishable slot.
 
-        A value in a content field is blocked even when seen in enough
-        sessions to satisfy the cross-conv threshold.
+        The field declares a publishable role, so guard 1 admits it; the
+        content-field denylist is what removes the members.
         """
         samples = [{"body": "active"} for _ in range(30)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(30)]
         stats = _collect_field_stats(samples, session_ids=conv_ids)
         schema: dict[str, object] = {
             "type": "object",
-            "properties": {"body": {"type": "string"}},
+            "properties": {"body": dict(ROLE_SLOT)},
         }
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        annotated = _annotate_schema(schema, stats)
         field_schema = schema_property(annotated, "body")
         assert "x-polylogue-values" not in field_schema, (
-            "Content field should suppress enums even when value passes threshold"
+            "Content field should suppress enums even in a publishable slot"
         )
 
     def test_content_field_with_rare_value_still_suppressed(self) -> None:
@@ -584,8 +523,8 @@ class TestMultiGuardInteraction:
         flat_samples = [{"body": v} for vals in values_by_conv.values() for v in vals]
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
         stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
-        schema = {"type": "object", "properties": {"body": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        schema = {"type": "object", "properties": {"body": dict(ROLE_SLOT)}}
+        annotated = _annotate_schema(schema, stats)
         field_schema = schema_property(annotated, "body")
         assert "x-polylogue-values" not in field_schema, "Content field 'body' should never produce enums"
 
@@ -600,8 +539,8 @@ class TestMultiGuardInteraction:
         samples = [{"input": "api.internal"} for _ in range(20)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(20)]
         stats = _collect_field_stats(samples, session_ids=conv_ids)
-        schema = {"type": "object", "properties": {"input": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        schema = {"type": "object", "properties": {"input": dict(ROLE_SLOT)}}
+        annotated = _annotate_schema(schema, stats)
         field_schema = schema_property(annotated, "input")
         assert "x-polylogue-values" not in field_schema, (
             "Content field 'input' should suppress enums regardless of private TLD status"
@@ -616,25 +555,25 @@ class TestMultiGuardInteraction:
         samples = [{"status": "myhost.local"} for _ in range(20)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(20)]
         stats = _collect_field_stats(samples, session_ids=conv_ids)
-        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        schema = {"type": "object", "properties": {"status": dict(ROLE_SLOT)}}
+        annotated = _annotate_schema(schema, stats)
         field_schema = schema_property(annotated, "status")
         enum_vals = schema_values(field_schema)
         assert "myhost.local" not in enum_vals, "Private TLD value should be suppressed on structural field"
 
-    # ── overlap: cross-conv threshold + private TLD ────────────
+    # ── overlap: publishable slot + private TLD ────────────────
 
     def test_private_tld_value_suppressed_regardless_of_conv_count(self) -> None:
-        """Guard 3 (private TLD) suppresses even when Guard 1 (threshold) is satisfied.
+        """Guard 3 (private TLD) suppresses inside an admitted slot.
 
         'printer.lan' is a private TLD — it should be absent from enums
-        even when seen in 30 different sessions.
+        even when seen in 30 different sessions on a publishable field.
         """
         samples = [{"status": "printer.lan"} for _ in range(30)]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(30)]
         stats = _collect_field_stats(samples, session_ids=conv_ids)
-        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        schema = {"type": "object", "properties": {"status": dict(ROLE_SLOT)}}
+        annotated = _annotate_schema(schema, stats)
         field_schema = schema_property(annotated, "status")
         enum_vals = schema_values(field_schema)
         assert "printer.lan" not in enum_vals, "Private TLD value should be suppressed even when seen in 30 sessions"
@@ -656,8 +595,8 @@ class TestMultiGuardInteraction:
         flat_samples = [{"message": v} for vals in values_by_conv.values() for v in vals]
         flat_conv_ids: list[str | None] = [cid for cid, vals in values_by_conv.items() for _ in vals]
         stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
-        schema = {"type": "object", "properties": {"message": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        schema = {"type": "object", "properties": {"message": dict(ROLE_SLOT)}}
+        annotated = _annotate_schema(schema, stats)
         field_schema = schema_property(annotated, "message")
         assert "x-polylogue-values" not in field_schema, "Content field 'message' should never produce enums (Guard 2)"
 
@@ -672,7 +611,7 @@ class TestMultiGuardInteraction:
         with the same inputs must produce equal results.
         """
         samples = [
-            {"status": "na1.storybird.ai"},
+            {"status": "dev-server.corp"},
             {"body": "some text"},
             {"status": "active"},
             {"input": "api.internal"},
@@ -684,14 +623,14 @@ class TestMultiGuardInteraction:
         schema: dict[str, object] = {
             "type": "object",
             "properties": {
-                "status": {"type": "string"},
-                "body": {"type": "string"},
-                "input": {"type": "string"},
+                "status": dict(ROLE_SLOT),
+                "body": dict(ROLE_SLOT),
+                "input": dict(ROLE_SLOT),
             },
         }
 
-        run1 = _annotate_schema(schema, stats, min_session_count=3)
-        run2 = _annotate_schema(schema, stats, min_session_count=3)
+        run1 = _annotate_schema(schema, stats)
+        run2 = _annotate_schema(schema, stats)
 
         assert run1 == run2, "Identical inputs must produce identical outputs"
 
@@ -701,13 +640,12 @@ class TestMultiGuardInteraction:
         """If any guard would suppress a value, the value is absent from enums.
 
         We construct a mixed payload where:
-        - 'na1.storybird.ai' → suppressed by Guard 1 (seen in 1 conv, threshold=3)
-          AND Guard 3 (domain with public TLD '.ai')
-        - 'active' in 'status' → passes all guards (seen in 3+ convs, not content field, not TLD)
+        - 'dev-server.corp' → suppressed by Guard 3 (private TLD '.corp')
+        - 'active' in 'status' → passes all guards (declared slot, not content field, not TLD)
         - 'active' in 'body' → suppressed by Guard 2 (content field)
         """
         values_by_conv = {
-            "conv_A": [("status", "na1.storybird.ai"), ("body", "active")],
+            "conv_A": [("status", "dev-server.corp"), ("body", "active")],
             "conv_B": [("status", "active")],
             "conv_C": [("status", "active")],
             "conv_D": [("status", "active")],
@@ -719,16 +657,16 @@ class TestMultiGuardInteraction:
         schema = {
             "type": "object",
             "properties": {
-                "status": {"type": "string"},
-                "body": {"type": "string"},
+                "status": dict(ROLE_SLOT),
+                "body": dict(ROLE_SLOT),
             },
         }
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        annotated = _annotate_schema(schema, stats)
 
         status_schema = schema_property(annotated, "status")
         status_enums = schema_values(status_schema)
         assert "active" in status_enums, "'active' in 'status' should pass all guards"
-        assert "na1.storybird.ai" not in status_enums, "Domain value suppressed by Guard 1 (rare) + Guard 3 (TLD)"
+        assert "dev-server.corp" not in status_enums, "Domain value suppressed by Guard 3 (private TLD)"
 
         body_schema = schema_property(annotated, "body")
         assert "x-polylogue-values" not in body_schema, "Content field 'body' should never produce enums (Guard 2)"
@@ -748,8 +686,8 @@ class TestMultiGuardInteraction:
         ]
         conv_ids: list[str | None] = [f"conv_{i}" for i in range(3)]
         stats = _collect_field_stats(samples, session_ids=conv_ids)
-        schema = {"type": "object", "properties": {"message": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        schema = {"type": "object", "properties": {"message": dict(ROLE_SLOT)}}
+        annotated = _annotate_schema(schema, stats)
 
         # Content field 'message' suppresses ALL enums (Guard 2)
         field_schema = schema_property(annotated, "message")
@@ -768,15 +706,14 @@ class TestMultiGuardInteraction:
         flat_conv_ids: list[str | None] = [cid for cid, pairs in values_by_conv.items() for _ in pairs]
         stats = _collect_field_stats(flat_samples, session_ids=flat_conv_ids)
 
-        # 'status' is a structural field — not a content field
+        # 'status' declares a publishable role and is not a content field
         # 'nas.local' → suppressed by Guard 3 (private TLD)
-        # 'active' → passes all guards (seen in 3 convs, not TLD)
-        # 'pending' → suppressed by Guard 1 (seen in 1 conv, threshold=3)
-        schema = {"type": "object", "properties": {"status": {"type": "string"}}}
-        annotated = _annotate_schema(schema, stats, min_session_count=3)
+        # 'active' and 'pending' → pass all guards
+        schema = {"type": "object", "properties": {"status": dict(ROLE_SLOT)}}
+        annotated = _annotate_schema(schema, stats)
         status_schema = schema_property(annotated, "status")
         enum_vals = schema_values(status_schema)
 
         assert "active" in enum_vals, "'active' should pass all three guards"
+        assert "pending" in enum_vals, "'pending' is a safe value in an admitted slot"
         assert "nas.local" not in enum_vals, "'nas.local' suppressed by Guard 3 (private TLD)"
-        assert "pending" not in enum_vals, "'pending' suppressed by Guard 1 (rare, threshold=3)"

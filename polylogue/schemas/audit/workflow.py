@@ -10,6 +10,8 @@ from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
     check_cross_provider_consistency,
     check_privacy_guards,
+    check_published_paths,
+    check_published_vocabulary,
     check_schema_drift,
     check_schema_staleness,
     check_semantic_roles,
@@ -285,6 +287,8 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
                         )
                     continue
                 report.checks.append(_scoped(element_scope, check_privacy_guards(schema)))
+                report.checks.append(_scoped(element_scope, check_published_vocabulary(schema)))
+                report.checks.append(_scoped(element_scope, check_published_paths(schema)))
             if len(report.checks) == scope_check_start and manifests:
                 report.checks.append(
                     AuditCheck(
