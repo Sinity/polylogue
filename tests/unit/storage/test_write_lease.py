@@ -143,10 +143,6 @@ def test_index_generation_bootstrap_requires_the_archive_bound_lease(
     assert Path(generation.index_path).is_file()
 
     with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
-        store.seal_candidate_membership(generation, source_snapshot="snapshot-unleased")
-    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
-        store.commit_candidate_membership(generation, ["raw-id"])
-    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
         store.promote(generation)
 
 
@@ -165,16 +161,10 @@ def test_index_generation_lifecycle_receipts_and_recovery_require_admission(
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     store = IndexGenerationStore.for_archive_root(root)
-    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
-        store.create_transaction(source_snapshot="snapshot-unleased")
 
     with arm_write_lease_enforcement(), write_lease("test.generation", archive_root=root):
         generation = store.create(source_snapshot="snapshot-leased")
 
-    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
-        store.save_pass_receipt("operation", {"status": "running"})
-    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
-        store.discard_transaction("operation")
     with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
         store.recover_promotion(generation.generation_id)
     with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):

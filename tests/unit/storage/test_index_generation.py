@@ -204,16 +204,6 @@ def test_lifecycle_generation_root_symlink_is_rejected(tmp_path: Path) -> None:
         IndexGenerationStore.for_archive_root(tmp_path)
 
 
-def test_lifecycle_transaction_root_symlink_is_rejected(tmp_path: Path) -> None:
-    _archive(tmp_path)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (tmp_path / ".index-rebuild-transactions").symlink_to(outside, target_is_directory=True)
-
-    with pytest.raises(RuntimeError, match="symlink"):
-        IndexGenerationStore.for_archive_root(tmp_path)
-
-
 def test_in_root_generation_alias_cannot_load_another_generation(tmp_path: Path) -> None:
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
@@ -357,36 +347,52 @@ def test_capture_blob_directory_identity_is_stable(tmp_path: Path, monkeypatch: 
         store.create(owner_id="operator", source_snapshot="snapshot-a")
 
 
-def test_fresh_transaction_missing_file_preserves_file_not_found(tmp_path: Path) -> None:
+def test_absent_generation_metadata_preserves_file_not_found(tmp_path: Path) -> None:
+    """A never-written generation reads as missing, not as corrupt metadata.
+
+    Anti-vacuity: wrapping ``_read_json_nofollow``'s open in the same
+    ``RuntimeError("invalid generation metadata")`` the decode failure raises
+    makes an absent generation indistinguishable from a poisoned one.
+    """
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
 
     with pytest.raises(FileNotFoundError):
-        store.load_transaction("fresh-operation")
+        store.load("gen-000000000000-absent0")
 
 
-def test_transaction_tmp_symlink_is_not_followed(tmp_path: Path) -> None:
+def test_metadata_tmp_symlink_is_not_followed(tmp_path: Path) -> None:
+    """``_atomic_json_write`` must not write through a planted tmp symlink.
+
+    Anti-vacuity: dropping ``O_EXCL``/``O_NOFOLLOW`` from the tmp open lets
+    this overwrite ``external.json``.
+    """
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
-    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="tmp-symlink")
-    path = store._transaction_path(transaction.operation_id)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    path = store._metadata_path(generation.generation_id)
     path.unlink()
     external = tmp_path / "external.json"
     external.write_text("untouched", encoding="utf-8")
     path.with_suffix(".json.tmp").symlink_to(external)
 
     with pytest.raises((FileExistsError, RuntimeError, OSError)):
-        store.save_transaction(transaction)
+        store._write(generation)
     assert external.read_text(encoding="utf-8") == "untouched"
 
 
-def test_check_to_use_replacement_cannot_redirect_transaction_write(
+def test_check_to_use_replacement_cannot_redirect_metadata_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A tmp file swapped for a symlink between write and replace is refused.
+
+    Anti-vacuity: removing the post-write ``lstat`` re-check from
+    ``_atomic_json_write`` lets the raced symlink become the metadata path.
+    """
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
-    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="race-op")
-    path = store._transaction_path(transaction.operation_id)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    path = store._metadata_path(generation.generation_id)
     external = tmp_path / "external.json"
     external.write_text("untouched", encoding="utf-8")
     real_replace = os.replace
@@ -398,7 +404,7 @@ def test_check_to_use_replacement_cannot_redirect_transaction_write(
 
     monkeypatch.setattr("polylogue.storage.index_generation.os.replace", replace_with_race)
     with pytest.raises(RuntimeError, match="symlink"):
-        store.save_transaction(transaction)
+        store._write(generation)
 
     assert external.read_text(encoding="utf-8") == "untouched"
     assert not path.is_symlink()
@@ -469,7 +475,7 @@ def test_generation_is_inactive_until_atomic_promotion(tmp_path: Path) -> None:
     assert retired[0].stat().st_ino == original_inode
 
 
-def test_stale_owner_cannot_checkpoint_or_promote(tmp_path: Path) -> None:
+def test_stale_owner_cannot_promote(tmp_path: Path) -> None:
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
@@ -657,83 +663,6 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
     assert tuple(store.generations_root.glob("gen-*/generation.json")) != ()
 
 
-def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archive(tmp_path: Path) -> None:
-    """polylogue-hord: paging orders by ``(blob_hash, raw_id)``, not acquisition
-    time, so byte-identical duplicates land adjacently. ``raw-a``/``raw-b``
-    deliberately share a ``blob_hash`` (proving the tie is broken by
-    ``raw_id``, exactly as the old acquired_at-tie test proved) while
-    ``raw-c`` gets a distinct, lexicographically-later hash -- acquired_at is
-    set in the OPPOSITE order from hash order to prove paging no longer
-    follows it.
-    """
-    _archive(tmp_path)
-    hash_group_1 = b"\x01" * 32
-    hash_group_2 = b"\x02" * 32
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        for raw_id, acquired_at_ms, blob_hash in (
-            ("raw-c", 10, hash_group_2),
-            ("raw-a", 30, hash_group_1),
-            ("raw-b", 30, hash_group_1),
-        ):
-            conn.execute(
-                """
-                INSERT INTO raw_sessions (
-                    raw_id, origin, native_id, source_path, source_index, blob_hash,
-                    blob_size, acquired_at_ms, validation_status
-                ) VALUES (?, 'codex-session', ?, ?, 0, ?, 1, ?, 'passed')
-                """,
-                (raw_id, raw_id, f"/{raw_id}.jsonl", blob_hash, acquired_at_ms),
-            )
-
-    store = IndexGenerationStore.for_archive_root(tmp_path)
-    transaction = store.create_transaction(
-        source_snapshot="source-v1", operation_id="resume-me", pass_byte_budget=2, pass_deadline_ms=5_000
-    )
-    first_page = store.next_raw_page(transaction, limit=2)
-    assert first_page.rows == (("raw-a", hash_group_1.hex(), 1), ("raw-b", hash_group_1.hex(), 1))
-    assert first_page.deferred_reason == "raw-batch"
-
-    transaction = store.checkpoint_transaction(
-        transaction,
-        status="paused",
-        last_blob_hash_hex=hash_group_1.hex(),
-        last_raw_id="raw-b",
-        processed_raw_count=2,
-    )
-    assert transaction.cursor == f"source:{hash_group_1.hex()}:raw-b"
-    assert store.load_transaction("resume-me") == transaction
-    assert store.next_raw_page(transaction, limit=2).rows == (("raw-c", hash_group_2.hex(), 1),)
-    assert transaction.pass_byte_budget == 2
-
-
-def test_rebuild_byte_budget_defers_without_excluding_an_oversized_first_raw(tmp_path: Path) -> None:
-    _archive(tmp_path)
-    hash_large = b"\x01" * 32
-    hash_later = b"\x02" * 32
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        for raw_id, blob_hash, blob_size in (("large", hash_large, 100), ("later", hash_later, 1)):
-            conn.execute(
-                """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
-                   blob_size, acquired_at_ms, validation_status)
-                   VALUES (?, 'codex-session', ?, ?, 0, ?, ?, 0, 'passed')""",
-                (raw_id, raw_id, f"/{raw_id}", blob_hash, blob_size),
-            )
-    store = IndexGenerationStore.for_archive_root(tmp_path)
-    transaction = store.create_transaction(source_snapshot="source-v1", pass_byte_budget=10)
-    first = store.next_raw_page(transaction, limit=10)
-    assert first.rows == (("large", hash_large.hex(), 100),)
-    assert first.deferred_reason == "byte-budget"
-    transaction = store.checkpoint_transaction(
-        transaction,
-        status="deferred",
-        last_blob_hash_hex=hash_large.hex(),
-        last_raw_id="large",
-        processed_raw_count=1,
-        processed_blob_bytes=100,
-    )
-    assert store.next_raw_page(transaction, limit=10).rows == (("later", hash_later.hex(), 1),)
-
-
 def test_source_snapshot_connection_stays_bound_across_path_replacement(tmp_path: Path) -> None:
     """A replacement after admission must not change the snapshot database."""
     _archive(tmp_path)
@@ -761,44 +690,6 @@ def test_source_snapshot_changes_when_retained_blob_identity_changes(tmp_path: P
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("UPDATE raw_sessions SET blob_hash = randomblob(32), blob_size = 2 WHERE raw_id = 'raw-a'")
     assert source_revision_snapshot(tmp_path) != before
-
-
-def test_derived_stores_cleared_defaults_false_and_round_trips_through_checkpoint(tmp_path: Path) -> None:
-    """polylogue-v6i3: ``derived_stores_cleared`` is the transaction marker
-    guarding the bulk-build "empty derived stores at resume" clear from
-    re-firing on every subsequent page of the same operation. It must
-    default False for a fresh transaction, persist True once checkpointed,
-    and survive a reload via ``load_transaction``."""
-    _archive(tmp_path)
-    store = IndexGenerationStore.for_archive_root(tmp_path)
-    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="bulk-build-op")
-    assert transaction.derived_stores_cleared is False
-
-    transaction = store.checkpoint_transaction(transaction, status="running", derived_stores_cleared=True)
-    assert transaction.derived_stores_cleared is True
-    assert store.load_transaction("bulk-build-op").derived_stores_cleared is True
-
-    # A later checkpoint that doesn't mention the field must not reset it.
-    transaction = store.checkpoint_transaction(transaction, status="paused")
-    assert transaction.derived_stores_cleared is True
-
-
-def test_derived_stores_cleared_missing_from_persisted_json_defaults_false(tmp_path: Path) -> None:
-    """A transaction persisted before this field existed (no key in its JSON)
-    must load as ``False`` via the dataclass default, not raise or silently
-    invent a different value."""
-    _archive(tmp_path)
-    store = IndexGenerationStore.for_archive_root(tmp_path)
-    transaction = store.create_transaction(source_snapshot="source-v1", operation_id="pre-existing-op")
-    path = store._transaction_path("pre-existing-op")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert "derived_stores_cleared" in payload
-    del payload["derived_stores_cleared"]
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-    reloaded = store.load_transaction("pre-existing-op")
-    assert reloaded.derived_stores_cleared is False
-    assert reloaded.operation_id == transaction.operation_id
 
 
 def test_promotion_prunes_superseded_generations(tmp_path: Path) -> None:
@@ -923,11 +814,11 @@ def test_promotion_refuses_ownerless_predecessor_before_pointer_swap(tmp_path: P
 
 
 def test_pruning_never_removes_a_never_promoted_rebuild_candidate(tmp_path: Path) -> None:
-    """An in-flight or paused rebuild candidate is `inactive` -- never promoted --
+    """An in-flight cold-build candidate is `inactive` -- never promoted --
     and must survive an unrelated promotion's housekeeping.
 
     Treating every non-active generation as superseded let a promotion delete a
-    rebuild in progress, and let a newer inactive candidate consume the single
+    build in progress, and let a newer inactive candidate consume the single
     retained slot so the real rollback target was pruned instead. Never-promoted
     candidates belong to ``discard_if_inactive``, driven by their owner.
     """
@@ -936,145 +827,16 @@ def test_pruning_never_removes_a_never_promoted_rebuild_candidate(tmp_path: Path
 
     first = store.create(owner_id="operator", source_snapshot="snapshot-a")
     store.promote(first)
-    # A resumable rebuild candidate, created but never promoted.
-    candidate = store.create(owner_id="rebuild", source_snapshot="snapshot-candidate")
+    # A cold-build candidate, created but never promoted.
+    candidate = store.create(owner_id="cold-build", source_snapshot="snapshot-candidate")
     second = store.create(owner_id="operator", source_snapshot="snapshot-b")
     store.promote(second)
 
     assert store.load(candidate.generation_id).state == "inactive"
-    assert Path(candidate.index_path).exists(), "an unrelated promotion deleted a live rebuild candidate"
+    assert Path(candidate.index_path).exists(), "an unrelated promotion deleted a live build candidate"
     # The genuine rollback target -- the previously-active generation -- is what
     # the retained slot is for, not the inactive candidate.
     assert Path(first.index_path).exists()
-
-
-def _seed_membership(
-    source_db: Path,
-    *,
-    raw_id: str,
-    logical_source_key: str,
-    decision: str | None,
-) -> None:
-    with sqlite3.connect(source_db) as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute(
-            """
-            INSERT INTO raw_session_memberships (
-                raw_id, logical_source_key, provider_session_id, source_revision,
-                normalized_content_hash, message_count, revision_authority, decision, decided_at_ms
-            ) VALUES (?, ?, ?, ?, zeroblob(32), 1, 'byte_proven', ?, ?)
-            """,
-            (raw_id, logical_source_key, raw_id, raw_id, decision, 1 if decision is not None else None),
-        )
-
-
-def _seed_raw(conn: sqlite3.Connection, *, raw_id: str, blob_hash: bytes, acquired_at_ms: int) -> None:
-    conn.execute(
-        """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
-           blob_size, acquired_at_ms, validation_status)
-           VALUES (?, 'codex-session', ?, ?, 0, ?, 1, ?, 'passed')""",
-        (raw_id, raw_id, f"/{raw_id}.jsonl", blob_hash, acquired_at_ms),
-    )
-
-
-class TestNextRawPageExcludesSupersededResumeDebt:
-    """polylogue-b5l.1 AC3: a raw whose every persisted membership decision is
-    ``superseded_equivalent``/``superseded_prefix`` is resolved history, not
-    resume debt -- it never gains its own ``index.sessions`` row (only its
-    cohort's accepted head does), so scheduling it every pass wastes a full
-    page slot re-parsing content a prior pass already resolved. A genuinely
-    accepted-but-unindexed raw, or one never censused at all, must still be
-    selected.
-    """
-
-    def test_fully_superseded_raw_is_excluded_from_the_page(self, tmp_path: Path) -> None:
-        _archive(tmp_path)
-        with sqlite3.connect(tmp_path / "source.db") as conn:
-            _seed_raw(conn, raw_id="raw-superseded", blob_hash=b"\x01" * 32, acquired_at_ms=10)
-            _seed_raw(conn, raw_id="raw-accepted", blob_hash=b"\x02" * 32, acquired_at_ms=20)
-        _seed_membership(
-            tmp_path / "source.db",
-            raw_id="raw-superseded",
-            logical_source_key="cohort-1",
-            decision="superseded_prefix",
-        )
-        _seed_membership(
-            tmp_path / "source.db",
-            raw_id="raw-accepted",
-            logical_source_key="cohort-2",
-            decision="applied",
-        )
-
-        store = IndexGenerationStore.for_archive_root(tmp_path)
-        transaction = store.create_transaction(source_snapshot="source-v1")
-        page = store.next_raw_page(transaction, limit=10)
-
-        raw_ids = [row[0] for row in page.rows]
-        assert raw_ids == ["raw-accepted"]
-
-    def test_never_censused_raw_remains_eligible(self, tmp_path: Path) -> None:
-        """A raw with no membership row at all (never classified) must still
-        be scheduled -- excluding it would silently drop genuinely novel,
-        never-processed content."""
-        _archive(tmp_path)
-        with sqlite3.connect(tmp_path / "source.db") as conn:
-            _seed_raw(conn, raw_id="raw-novel", blob_hash=b"\x03" * 32, acquired_at_ms=10)
-
-        store = IndexGenerationStore.for_archive_root(tmp_path)
-        transaction = store.create_transaction(source_snapshot="source-v1")
-        page = store.next_raw_page(transaction, limit=10)
-
-        assert [row[0] for row in page.rows] == ["raw-novel"]
-
-    def test_raw_superseded_in_one_cohort_but_pending_in_another_remains_eligible(self, tmp_path: Path) -> None:
-        """A multi-membership raw (e.g. a bundle member) is only resume-debt
-        -free when EVERY known membership row is superseded; a mixed shape
-        (superseded in one cohort, still ambiguous/pending in another) must
-        remain eligible."""
-        _archive(tmp_path)
-        with sqlite3.connect(tmp_path / "source.db") as conn:
-            _seed_raw(conn, raw_id="raw-mixed", blob_hash=b"\x04" * 32, acquired_at_ms=10)
-        _seed_membership(
-            tmp_path / "source.db", raw_id="raw-mixed", logical_source_key="cohort-a", decision="superseded_prefix"
-        )
-        _seed_membership(tmp_path / "source.db", raw_id="raw-mixed", logical_source_key="cohort-b", decision=None)
-
-        store = IndexGenerationStore.for_archive_root(tmp_path)
-        transaction = store.create_transaction(source_snapshot="source-v1")
-        page = store.next_raw_page(transaction, limit=10)
-
-        assert [row[0] for row in page.rows] == ["raw-mixed"]
-
-    def test_exclusion_survives_the_keyset_cursor_across_pages(self, tmp_path: Path) -> None:
-        """The superseded-exclusion filter is applied inside the same SQL
-        query as the keyset cursor, so a superseded raw sitting between two
-        eligible pages must never surface on a later page either."""
-        _archive(tmp_path)
-        with sqlite3.connect(tmp_path / "source.db") as conn:
-            _seed_raw(conn, raw_id="raw-a", blob_hash=b"\x01" * 32, acquired_at_ms=10)
-            _seed_raw(conn, raw_id="raw-superseded", blob_hash=b"\x02" * 32, acquired_at_ms=20)
-            _seed_raw(conn, raw_id="raw-b", blob_hash=b"\x03" * 32, acquired_at_ms=30)
-        _seed_membership(
-            tmp_path / "source.db",
-            raw_id="raw-superseded",
-            logical_source_key="cohort-1",
-            decision="superseded_equivalent",
-        )
-
-        store = IndexGenerationStore.for_archive_root(tmp_path)
-        transaction = store.create_transaction(source_snapshot="source-v1")
-        first_page = store.next_raw_page(transaction, limit=1)
-        assert [row[0] for row in first_page.rows] == ["raw-a"]
-
-        transaction = store.checkpoint_transaction(
-            transaction,
-            status="paused",
-            last_blob_hash_hex=first_page.rows[0][1],
-            last_raw_id=first_page.rows[0][0],
-            processed_raw_count=1,
-        )
-        second_page = store.next_raw_page(transaction, limit=1)
-        assert [row[0] for row in second_page.rows] == ["raw-b"]
 
 
 class TestRebuildLeaseStatus:

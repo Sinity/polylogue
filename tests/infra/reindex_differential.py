@@ -36,7 +36,10 @@ _CREATE_VIRTUAL_TABLE = re.compile(
 # model. Their stable semantic consequences are compared through the current
 # revision heads, FTS membership, materialization markers, and debt state.
 _NON_COMPARABLE_TABLES: dict[str, str] = {
-    "candidate_source_membership": ("generation-local rebuild resume state is validated by IndexGenerationStore"),
+    "candidate_source_membership": (
+        "generation-local resume state with no surviving writer; retained for the "
+        "source-generation receipt reader in storage/source_generation_receipts.py"
+    ),
     "messages_fts_identity": "FTS support relation compared through public search and exact membership counts",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
     "raw_revision_applications": "attempt receipts contain generated decision ids and wall-clock timestamps",
