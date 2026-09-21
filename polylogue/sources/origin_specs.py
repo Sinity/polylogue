@@ -1002,6 +1002,30 @@ def check_dropped_value_vocabularies(*, schema_root: Path | None = None) -> dict
     return drift
 
 
+def unobserved_value_vocabularies(*, schema_root: Path | None = None) -> tuple[str, ...]:
+    """Registered vocabularies whose schema leaf publishes no observed member.
+
+    An empty observed set is not agreement. ``check_dropped_value_vocabularies``
+    compares a parser's guessed vocabulary against what the committed package
+    recorded at the same leaf, so a leaf that publishes nothing makes that
+    comparison trivially green while proving nothing.
+
+    A committed package now publishes a member list only from a slot declared a
+    protocol vocabulary (``PUBLISHABLE_VOCABULARY_ROLES``), because value shape
+    cannot separate a wire constant from private content. Any leaf outside that
+    allowlist therefore has no public evidence, and this function names it
+    instead of letting the drift check report a pass it did not earn.
+    """
+
+    return tuple(
+        sorted(
+            vocab.field
+            for vocab in DROPPED_VALUE_VOCABULARIES
+            if not schema_observed_leaf_values(vocab.schema_provider, vocab.schema_field_path, schema_root=schema_root)
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class OriginCompletenessMode:
     """One material import mode projected into provider-completeness reports."""

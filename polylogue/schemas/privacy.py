@@ -294,3 +294,29 @@ def _is_safe_enum_value(
         return False
     # Block internal/private network hostnames (.local, .lan, .corp, .internal, .home)
     return "." not in value or not re.search(r"\.(local|lan|corp|internal|home)\b", lower)
+
+
+def strip_unpublishable_vocabularies(node: object) -> int:
+    """Remove every ``x-polylogue-values`` outside a declared protocol slot.
+
+    Applied at the package write boundary rather than only at annotation time,
+    because a package version that is merely *carried forward* is re-serialized
+    without being regenerated: without this, a vocabulary admitted under an
+    older rule would survive in every historical version forever.
+
+    Mutates ``node`` in place and returns the number of member lists removed.
+    """
+
+    removed = 0
+    if isinstance(node, dict):
+        values = node.get("x-polylogue-values")
+        role = node.get("x-polylogue-semantic-role")
+        if isinstance(values, list) and not (isinstance(role, str) and role in PUBLISHABLE_VOCABULARY_ROLES):
+            del node["x-polylogue-values"]
+            removed += 1
+        for child in node.values():
+            removed += strip_unpublishable_vocabularies(child)
+    elif isinstance(node, list):
+        for child in node:
+            removed += strip_unpublishable_vocabularies(child)
+    return removed

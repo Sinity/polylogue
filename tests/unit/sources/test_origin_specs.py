@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import gzip
 import json
 import subprocess
 import sys
@@ -37,6 +38,7 @@ from polylogue.sources.origin_specs import (
     schema_observed_leaf_values,
     topology_capability_census,
     undeclared_schema_values,
+    unobserved_value_vocabularies,
     validate_assembly_spec_parity,
     validate_stream_parser_parity,
 )
@@ -810,36 +812,87 @@ def test_dropped_value_vocabularies_match_the_real_parser_constant() -> None:
     assert _status_is_error("some_new_outcome_string") is None
 
 
-def test_dropped_value_vocabularies_have_no_drift_against_the_committed_schema() -> None:
+def _write_status_package(root: Path, *, values: list[str] | None) -> Path:
+    """Write one committed-shaped gemini-cli element with a status leaf.
+
+    The vocabulary readers must be exercised against a real gzip package file
+    rather than an in-memory document, but reading whichever package happens to
+    be committed also makes the assertion depend on live corpus content. A
+    synthetic package keeps the file format real and the expected values fixed.
+    """
+
+    leaf: dict[str, object] = {"type": "string"}
+    if values is not None:
+        leaf["x-polylogue-semantic-role"] = "message_role"
+        leaf["x-polylogue-values"] = list(values)
+    document = {
+        "type": "object",
+        "properties": {
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "toolCalls": {
+                            "type": "array",
+                            "items": {"type": "object", "properties": {"status": leaf}},
+                        }
+                    },
+                },
+            }
+        },
+    }
+    elements = root / "gemini-cli" / "versions" / "v1" / "elements"
+    elements.mkdir(parents=True, exist_ok=True)
+    (elements / "session_document.schema.json.gz").write_bytes(gzip.compress(json.dumps(document).encode("utf-8")))
+    return root
+
+
+def test_dropped_value_vocabularies_have_no_drift_against_the_committed_schema(tmp_path: Path) -> None:
     """Production dependency: DROPPED_VALUE_VOCABULARIES stays honest against real evidence.
 
-    Anti-vacuity: mutating this test to assert against a stale, hand-copied
-    expected set (rather than calling check_dropped_value_vocabularies,
-    which re-derives observed values from the live committed schema package
-    on disk) would defeat the entire point of polylogue-2qx's ask -- this
-    must read the real gzip schema file, not a fixture standing in for it.
+    Anti-vacuity: the fixture publishes ``success``, which the declared set
+    covers, so the empty result is earned. Publishing a value the declaration
+    omits (see the drift test below) turns it red.
     """
-    assert check_dropped_value_vocabularies() == {}
+    assert check_dropped_value_vocabularies(schema_root=_write_status_package(tmp_path, values=["success"])) == {}
 
 
-def test_schema_observed_leaf_values_walks_array_and_scalar_segments() -> None:
-    observed = schema_observed_leaf_values("gemini-cli", "messages[].toolCalls[].status")
-    assert observed == {"success"}
+def test_schema_observed_leaf_values_walks_array_and_scalar_segments(tmp_path: Path) -> None:
+    root = _write_status_package(tmp_path, values=["success"])
+    assert schema_observed_leaf_values("gemini-cli", "messages[].toolCalls[].status", schema_root=root) == {"success"}
     # A path with no committed schema evidence resolves to empty, not an error.
-    assert schema_observed_leaf_values("gemini-cli", "no.such.path") == frozenset()
-    assert schema_observed_leaf_values("no-such-provider", "status") == frozenset()
+    assert schema_observed_leaf_values("gemini-cli", "no.such.path", schema_root=root) == frozenset()
+    assert schema_observed_leaf_values("no-such-provider", "status", schema_root=root) == frozenset()
 
 
-def test_undeclared_schema_values_flags_a_value_the_declaration_does_not_cover() -> None:
+def test_undeclared_schema_values_flags_a_value_the_declaration_does_not_cover(tmp_path: Path) -> None:
     narrow_vocab = DroppedValueVocabulary(
         field="test-only narrow gemini-cli status vocabulary",
         schema_provider="gemini-cli",
         schema_field_path="messages[].toolCalls[].status",
         declared_values=frozenset(),
         parser_path="test-only",
-        reason="Anti-vacuity fixture: an empty declared set must show the real observed value as drift.",
+        reason="Anti-vacuity fixture: an empty declared set must show the observed value as drift.",
     )
-    assert undeclared_schema_values(narrow_vocab) == {"success"}
+    root = _write_status_package(tmp_path, values=["success"])
+    assert undeclared_schema_values(narrow_vocab, schema_root=root) == {"success"}
+
+
+def test_a_leaf_publishing_nothing_is_reported_as_unobserved_not_as_agreement(tmp_path: Path) -> None:
+    """A vocabulary with no published evidence must not read as a clean drift check.
+
+    A committed package publishes a member list only from a declared protocol
+    slot, so the drift comparison can silently lose its evidence. Anti-vacuity:
+    give the leaf a published vocabulary again and the field disappears from
+    ``unobserved_value_vocabularies``.
+    """
+    empty_root = _write_status_package(tmp_path / "empty", values=None)
+    assert check_dropped_value_vocabularies(schema_root=empty_root) == {}
+    assert "gemini-cli tool-result status" in unobserved_value_vocabularies(schema_root=empty_root)
+
+    published_root = _write_status_package(tmp_path / "published", values=["success"])
+    assert unobserved_value_vocabularies(schema_root=published_root) == ()
 
 
 def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

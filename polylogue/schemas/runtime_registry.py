@@ -44,6 +44,7 @@ from polylogue.schemas.packages import (
     SchemaResolutionReason,
     SchemaVersionPackage,
 )
+from polylogue.schemas.privacy import strip_unpublishable_vocabularies
 
 SCHEMA_DIR = Path(__file__).parent / "providers"
 SchemaProvider = Provider | str
@@ -574,6 +575,11 @@ class SchemaRegistry:
             if element.schema_file is None:
                 continue
             schema = copy.deepcopy(element_schemas[element.element_kind])
+            # The publication rule is enforced here, at the one physical writer
+            # every route reaches, so a carried-forward historical version is
+            # sanitized on re-serialization instead of preserving a vocabulary
+            # admitted under an older rule.
+            strip_unpublishable_vocabularies(schema)
             schema["$id"] = f"polylogue://schemas/{provider_token}/{package.version}/{element.element_kind}"
             schema["x-polylogue-version"] = (
                 int(package.version[1:]) if package.version.startswith("v") else package.version
