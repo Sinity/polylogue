@@ -16,7 +16,7 @@ from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1262,3 +1262,77 @@ def test_delete_preview_plan_is_reconstructed_by_its_audit_owner(tmp_path: Path)
     _rewrite_plan_json(_rewrite_context)
     with pytest.raises(DeleteAuthorizationError, match="preview_plan_invalid"):
         _load_preview(audit, preview.preview_ref, principal, require_prepared=True)
+
+
+def test_an_indeterminate_mutation_keeps_the_writer_gate_until_its_body_settles() -> None:
+    """The production route's bounded wait must not release a live writer.
+
+    polylogue-8r4zq AC2, at the real seam: ``_write_gate`` wraps ``_sync_run``,
+    so when the mutating wait hits its deadline and raises
+    ``DaemonMutationIndeterminate``, the context manager unwinds while the
+    submitted body is still adopted and still inside the archive. Releasing the
+    coordinator gate there admits a second writer alongside it.
+
+    Both halves matter: the client stays bounded by its own declared deadline
+    (the request thread returns), and the archive stays single-writer (the
+    successor waits for the abandoned body, not for the client).
+
+    Anti-vacuity: remove the settlement retention from
+    ``DaemonWriteThreadBridge.hold``'s release path and ``successor_entered``
+    is set before ``allow_body``, turning the ``not ... wait(0.3)`` red.
+    """
+    from polylogue.daemon.http import DaemonMutationIndeterminate
+
+    coordinator, bridge, stop = _loop_owned_bridge()
+    handler = _gated_handler(bridge)
+    # A short declared deadline is the whole point: the body outlives it.
+    object.__setattr__(handler, "headers", {"X-Polylogue-Deadline-Ms": "50"})
+
+    body_entered = threading.Event()
+    allow_body = threading.Event()
+    body_left = threading.Event()
+    raised: list[BaseException] = []
+
+    async def mutation(_polylogue: object) -> str:
+        body_entered.set()
+        await asyncio.to_thread(allow_body.wait, 5.0)
+        body_left.set()
+        return "persisted"
+
+    def request() -> None:
+        try:
+            with handler._write_gate("http.user.annotations.post"):
+                handler._sync_run(mutation)
+        except BaseException as exc:
+            raised.append(exc)
+
+    thread = threading.Thread(target=request, daemon=True)
+    thread.start()
+    try:
+        assert body_entered.wait(timeout=5.0)
+        thread.join(timeout=5.0)
+        assert not thread.is_alive(), "the client's wait outlived its declared deadline"
+        assert len(raised) == 1
+        assert isinstance(raised[0], DaemonMutationIndeterminate)
+        assert not body_left.is_set()
+
+        successor_entered = threading.Event()
+
+        async def successor() -> str:
+            successor_entered.set()
+            return "entered"
+
+        successor_future = asyncio.run_coroutine_threadsafe(
+            cast("Any", coordinator).run("maintenance.successor", successor),
+            cast("Any", bridge).owner_loop,
+        )
+        assert not successor_entered.wait(timeout=0.3)
+
+        allow_body.set()
+        assert successor_future.result(timeout=5.0) == "entered"
+        assert body_left.is_set()
+    finally:
+        allow_body.set()
+        thread.join(timeout=5.0)
+        handler.server.execution_kernel.shutdown(wait=True)
+        stop()

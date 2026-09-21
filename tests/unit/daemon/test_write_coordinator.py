@@ -8,6 +8,7 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1305,3 +1306,223 @@ async def test_priority_gate_never_grants_twice_when_a_waiter_cancels_during_han
     assert acquired == ["second", "fourth"]
     gate.release()
     await second
+
+
+def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller() -> None:
+    """A caller that stops waiting must not hand SQLite to a second writer.
+
+    polylogue-8r4zq AC2. The mutating HTTP route holds the gate around
+    ``_sync_run``; when its bounded wait expires the route raises
+    ``DaemonMutationIndeterminate`` and unwinds ``hold()`` while the submitted
+    body is still adopted and still writing. Releasing the gate on that unwind
+    admits a second writer alongside a live one.
+
+    The caller must still be bounded: it hands the hold off to the owner loop
+    and returns, rather than waiting for the body it already gave up on.
+
+    Anti-vacuity: delete ``_retain_until_delegation_settles`` from
+    ``wait_for_release`` (or make ``retire()`` always answer ``False``) and the
+    successor acquires while the delegated body is still inside its adoption,
+    turning ``successor_entered.is_set()`` red before ``allow_body`` is set.
+    """
+    from polylogue.core.write_lease import adopt_write_lease
+
+    loop = asyncio.new_event_loop()
+    loop_ready = threading.Event()
+    coordinator_holder: list[DaemonWriteCoordinator] = []
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        coordinator_holder.append(DaemonWriteCoordinator())
+        loop_ready.set()
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    try:
+        assert loop_ready.wait(timeout=5.0)
+        coordinator = coordinator_holder[0]
+        # Deliberately shorter than the body below: the caller-side release
+        # wait is a client-patience bound and must not become an early release.
+        bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
+
+        body_adopted = threading.Event()
+        allow_body = threading.Event()
+        body_left = threading.Event()
+        caller_returned = threading.Event()
+
+        def request() -> None:
+            with bridge.hold("http.user.annotations.post") as delegation:
+
+                def body() -> None:
+                    with adopt_write_lease(delegation):
+                        body_adopted.set()
+                        assert allow_body.wait(timeout=5.0)
+                    body_left.set()
+
+                worker = threading.Thread(target=body, daemon=True)
+                worker.start()
+                assert body_adopted.wait(timeout=5.0)
+                # The route's bounded mutation wait expired here.
+            caller_returned.set()
+
+        caller = threading.Thread(target=request, daemon=True)
+        caller.start()
+        # AC1 stays true: the caller is bounded by its own deadline, not by
+        # however long the write it abandoned keeps running.
+        assert caller_returned.wait(timeout=5.0)
+        caller.join(timeout=5.0)
+        assert not caller.is_alive()
+        assert not body_left.is_set()
+
+        successor_entered = threading.Event()
+
+        async def successor() -> str:
+            successor_entered.set()
+            return "entered"
+
+        successor_future = asyncio.run_coroutine_threadsafe(coordinator.run("maintenance.successor", successor), loop)
+        # A queued successor stays queued while the abandoned body writes on.
+        assert not successor_entered.wait(timeout=0.3)
+        assert coordinator.snapshot().active_actor == "http.user.annotations.post"
+
+        allow_body.set()
+        assert successor_future.result(timeout=5.0) == "entered"
+        assert body_left.is_set()
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5.0)
+
+
+def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops() -> None:
+    """The no-timeout bridge is bound on owner-loop liveness, not on a clock.
+
+    polylogue-8r4zq AC5. ``run_sync_with_timeout(actor, None, fn)`` is the
+    deliberate no-timeout bridge used by derivation publication, embedding
+    phases and operation writes: cancelling the writer in a timeout handler is
+    the bug the AC forbids. But if the owner loop stops without closing, the
+    admitted operation can never deliver its receipt through that loop, and the
+    caller waited forever.
+
+    Anti-vacuity: restore ``future.result(timeout=None)`` and the calling
+    thread never returns, so ``caller.is_alive()`` stays true and this is red.
+    The second half is the other direction: ``committed`` proves the admitted
+    writer was left alone rather than cancelled.
+    """
+    from polylogue.daemon.write_coordinator import DaemonWriterOwnerLoopStopped
+
+    loop = asyncio.new_event_loop()
+    loop_ready = threading.Event()
+    coordinator_holder: list[DaemonWriteCoordinator] = []
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        coordinator_holder.append(DaemonWriteCoordinator())
+        loop_ready.set()
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    assert loop_ready.wait(timeout=5.0)
+    bridge = DaemonWriteThreadBridge(coordinator_holder[0], loop, timeout=0.05)
+
+    writer_started = threading.Event()
+    allow_writer = threading.Event()
+    committed: list[str] = []
+    raised: list[BaseException] = []
+
+    def publish() -> str:
+        writer_started.set()
+        assert allow_writer.wait(timeout=5.0)
+        committed.append("published")
+        return "receipt"
+
+    def caller_body() -> None:
+        try:
+            bridge.run_sync_with_timeout("derivation.session_profile", None, publish)
+        except BaseException as exc:
+            raised.append(exc)
+
+    caller = threading.Thread(target=caller_body, daemon=True)
+    caller.start()
+    try:
+        assert writer_started.wait(timeout=5.0)
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5.0)
+        assert not loop_thread.is_alive()
+
+        caller.join(timeout=5.0)
+        assert not caller.is_alive(), "the unbounded wait outlived its owner loop"
+        assert len(raised) == 1
+        assert isinstance(raised[0], DaemonWriterOwnerLoopStopped)
+        assert "may still be in flight" in str(raised[0])
+
+        # The writer was never withdrawn: it settles on its own thread.
+        allow_writer.set()
+        for _ in range(500):
+            if committed:
+                break
+            time.sleep(0.01)
+        assert committed == ["published"]
+    finally:
+        allow_writer.set()
+        caller.join(timeout=5.0)
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_write() -> None:
+    """Admitted-but-not-started is settlement's problem, not the caller's.
+
+    polylogue-8r4zq AC3. ``on_admit`` fires inside the coordinator-owned
+    execution after the gate is taken and before the operation body is awaited,
+    so cancelling the caller there is the deterministic barrier for that race.
+    The admitted write must still run to completion and the gate must stay held
+    until it does.
+
+    Anti-vacuity: make ``run`` cancel its execution task on caller
+    cancellation regardless of ``request.acquired`` and ``receipts`` stays
+    empty while the successor enters early.
+    """
+    coordinator = DaemonWriteCoordinator()
+    receipts: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    caller: list[asyncio.Task[str]] = []
+
+    async def operation() -> str:
+        entered.set()
+        await release.wait()
+        receipts.append("committed")
+        return "receipt"
+
+    def cancel_on_admission() -> None:
+        caller[0].cancel()
+
+    caller.append(
+        asyncio.create_task(coordinator.run("control.mutation", operation, on_admit=cancel_on_admission)),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await caller[0]
+
+    while not entered.is_set():
+        await asyncio.sleep(0)
+    assert receipts == []
+    assert coordinator.snapshot().active_actor == "control.mutation"
+
+    successor_entered = asyncio.Event()
+
+    async def successor() -> str:
+        successor_entered.set()
+        return "entered"
+
+    successor_task = asyncio.create_task(coordinator.run("maintenance.successor", successor))
+    while coordinator.snapshot().queued_actors != ("maintenance.successor",):
+        await asyncio.sleep(0)
+    assert not successor_entered.is_set()
+
+    release.set()
+    assert await successor_task == "entered"
+    assert receipts == ["committed"]
+    assert await coordinator.shutdown(timeout=1.0)

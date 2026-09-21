@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import functools
 import heapq
 import threading
 import time
@@ -18,6 +19,7 @@ import weakref
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from concurrent.futures import CancelledError, InvalidStateError
 from concurrent.futures import Future as ConcurrentFuture
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +58,41 @@ _MAX_DETACHED_WRITER_FAILURE_ACTORS = 32
 _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH = 128
 _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR = "<other>"
 _DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX = "<other>"
+#: Cadence for the two ownership waits that have no clock to wait against: a
+#: delegated route body that is still inside the archive, and an admitted
+#: operation whose receipt can only arrive through the owner loop. Both are
+#: bounded by a real event (settlement, loop death), not by these numbers.
+_DELEGATION_SETTLEMENT_POLL_S = 0.01
+_DELEGATION_SETTLEMENT_WARN_S = 5.0
+_OWNER_LIVENESS_POLL_S = 0.25
+
+
+def _report_handed_off_hold(actor: str, future: ConcurrentFuture[None]) -> None:
+    """Drain a handed-off hold's terminal state so no failure is swallowed."""
+    if future.cancelled():
+        return
+    error = future.exception()
+    if error is None:
+        return
+    emit(
+        "daemon.writer.handed_off_hold_failed",
+        level=ERROR,
+        outcome="error",
+        reason="handed_off_hold_failed",
+        actor=actor,
+        error_type=type(error).__name__,
+        error_detail=str(error),
+    )
+
+
+class DaemonWriterOwnerLoopStopped(RuntimeError):  # noqa: N818 - typed outcome name
+    """An admitted write's owner loop stopped before it reported settlement.
+
+    Not a cancellation and not a rollback: nothing was withdrawn, so the
+    caller must re-read the archive rather than assume no effect landed.
+    """
+
+    code = "writer_owner_loop_stopped"
 
 
 #: Declared hold budgets, longest matching actor prefix wins.
@@ -730,6 +767,12 @@ class DaemonWriteThreadBridge:
         authorization that unit of work presents through
         :func:`~polylogue.core.write_lease.adopt_write_lease`; holding the gate
         without presenting it still cannot open a write connection.
+
+        The gate is released when the *delegated execution* settles, not when
+        the calling thread stops waiting. A mutating route whose bounded wait
+        expires (``DaemonMutationIndeterminate``) unwinds this context manager
+        while its body is still inside the archive; releasing here would admit
+        a second writer alongside it (polylogue-8r4zq AC2).
         """
         entered = threading.Event()
         settled = threading.Event()
@@ -738,10 +781,12 @@ class DaemonWriteThreadBridge:
 
         async def hold_lease() -> None:
             async def wait_for_release() -> None:
-                granted.append(delegate_write_lease())
+                delegation = delegate_write_lease()
+                granted.append(delegation)
                 entered.set()
                 settled.set()
                 await release.wait()
+                await self._retain_until_delegation_settles(actor, delegation)
 
             try:
                 await self._coordinator.run(actor, wait_for_release)
@@ -761,18 +806,72 @@ class DaemonWriteThreadBridge:
         try:
             yield granted[0]
         finally:
+            # Retire *before* signalling the release, so the answer cannot be
+            # invalidated by a body adopting in the gap: ``False`` means no
+            # execution can ever adopt this delegation again.
+            handed_off = granted[0].retire()
             self._loop.call_soon_threadsafe(release.set)
-            try:
-                future.result(timeout=self._timeout)
-            except TimeoutError:
-                future.cancel()
+            if handed_off:
+                # The body outlived this caller -- an expired mutating-route
+                # deadline is the live case. The owner loop keeps the gate
+                # until that body settles; waiting for it *here* would make
+                # the route's bounded client deadline "deadline plus however
+                # long the write runs", which is the bound this bead exists
+                # to give the client. No ``return`` here: returning out of a
+                # ``finally`` in a @contextmanager generator suppresses the
+                # very DaemonMutationIndeterminate the route is raising.
+                future.add_done_callback(functools.partial(_report_handed_off_hold, actor))
                 emit(
-                    "daemon.writer.release_timed_out",
+                    "daemon.writer.hold_handed_off",
+                    level=WARNING,
+                    outcome="unmeasured",
+                    reason="delegated_body_outlived_caller",
+                    actor=actor,
+                )
+            else:
+                try:
+                    future.result(timeout=self._timeout)
+                except TimeoutError:
+                    future.cancel()
+                    emit(
+                        "daemon.writer.release_timed_out",
+                        level=WARNING,
+                        outcome="degraded",
+                        reason="release_timeout",
+                        actor=actor,
+                        timeout_ms=round(self._timeout * 1000, 3),
+                    )
+
+    async def _retain_until_delegation_settles(self, actor: str, delegation: WriteLeaseDelegation) -> None:
+        """Keep the admitted hold until the delegated execution really leaves.
+
+        ``retire`` is atomic against adoption: once it answers ``False`` the
+        delegation can never be adopted again, so the caller thread unwinding
+        is a real end of ownership. ``True`` means a body is inside the
+        archive right now, and the only safe answer is to keep holding --
+        cancelling it is precisely what this bead forbids, and releasing the
+        gate would hand SQLite to a second writer.
+        """
+        if not delegation.retire():
+            return
+        waited = 0.0
+        warned = False
+        while not delegation.settled:
+            # A caller-side release timeout cancels this hold task. That is a
+            # statement about the *client's* patience, not about the writer,
+            # so it must not become an early release.
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(_DELEGATION_SETTLEMENT_POLL_S)
+            waited += _DELEGATION_SETTLEMENT_POLL_S
+            if not warned and waited >= _DELEGATION_SETTLEMENT_WARN_S:
+                warned = True
+                emit(
+                    "daemon.writer.delegation_unsettled",
                     level=WARNING,
                     outcome="degraded",
-                    reason="release_timeout",
+                    reason="delegated_body_still_running",
                     actor=actor,
-                    timeout_ms=round(self._timeout * 1000, 3),
+                    waited_ms=round(waited * 1000, 3),
                 )
 
     @property
@@ -835,12 +934,47 @@ class DaemonWriteThreadBridge:
         A None timeout preserves daemon ownership until the operation returns
         its receipt. This is necessary for no-promote canaries: abandoning a
         completed inactive candidate after a caller-side timeout would lose
-        the only authority capable of discarding it safely.
+        the only authority capable of discarding it safely. It is still bound
+        -- on the owner loop's liveness rather than on a clock: if that loop
+        stops without closing, the admitted operation can never deliver its
+        receipt here and an unbounded wait strands the caller forever
+        (polylogue-8r4zq AC5).
         """
         future = asyncio.run_coroutine_threadsafe(
             self._coordinator.run_sync(actor, function, *args, **kwargs), self._loop
         )
-        return future.result(timeout=timeout)
+        if timeout is not None:
+            return future.result(timeout=timeout)
+        return self._await_owner_settlement(actor, future)
+
+    def _await_owner_settlement(self, actor: str, future: ConcurrentFuture[T]) -> T:
+        """Wait for an admitted operation for as long as its owner loop lives.
+
+        The writer is never cancelled here. It may already be inside a SQLite
+        transaction on its own thread, so withdrawing it on a wait failure
+        would be the same lie in the other direction: this raises a typed
+        *indeterminate* outcome and leaves the operation alone.
+        """
+        while True:
+            try:
+                return future.result(timeout=_OWNER_LIVENESS_POLL_S)
+            except FutureTimeoutError:
+                pass
+            if self._loop.is_closed() or not self._loop.is_running():
+                if future.done():
+                    # It settled in the same breath the loop stopped.
+                    return future.result()
+                emit(
+                    "daemon.writer.owner_loop_stopped",
+                    level=ERROR,
+                    outcome="unmeasured",
+                    reason="owner_loop_stopped",
+                    actor=actor,
+                )
+                raise DaemonWriterOwnerLoopStopped(
+                    f"daemon writer owner loop stopped before {actor} reported settlement; "
+                    "the write may still be in flight -- re-read before retrying"
+                )
 
 
 def daemon_write_telemetry_payload() -> dict[str, object]:
@@ -895,6 +1029,7 @@ __all__ = [
     "DaemonWriteEvent",
     "DaemonWriteSnapshot",
     "DaemonWriteThreadBridge",
+    "DaemonWriterOwnerLoopStopped",
     "daemon_write_coordinator",
     "daemon_write_telemetry_payload",
     "register_write_coordinator",

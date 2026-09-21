@@ -101,6 +101,14 @@ class WriteLeaseDelegation:
       admission out into concurrent writers;
     * it is revoked when its lease is released, so a stashed delegation
       authorizes nothing afterwards.
+
+    Revocation refuses *future* adoptions; it cannot withdraw an execution
+    that already adopted the lease and may be inside a SQLite transaction.
+    :meth:`retire` therefore reports whether such an execution is still in
+    flight, and :attr:`settled` tells the admitting holder when it has really
+    finished, so the holder can keep the single-writer gate until then
+    instead of releasing it because a *caller* stopped waiting
+    (polylogue-8r4zq).
     """
 
     actor: str
@@ -108,6 +116,11 @@ class WriteLeaseDelegation:
     _guard: threading.Lock = field(default_factory=threading.Lock)
     _adopted_by: int | None = None
     _revoked: bool = False
+    _settled: threading.Event = field(default_factory=threading.Event)
+
+    def __post_init__(self) -> None:
+        # Never adopted is trivially settled; adoption clears it.
+        self._settled.set()
 
     @property
     def live(self) -> bool:
@@ -115,10 +128,37 @@ class WriteLeaseDelegation:
         with self._guard:
             return not self._revoked
 
+    @property
+    def adopted(self) -> bool:
+        """Whether an execution currently holds this authorization."""
+        with self._guard:
+            return self._adopted_by is not None
+
+    @property
+    def settled(self) -> bool:
+        """Whether no execution is currently running under this authorization."""
+        return self._settled.is_set()
+
+    def wait_for_settlement(self, timeout: float | None = None) -> bool:
+        """Block until the adopted execution leaves, or ``timeout`` elapses."""
+        return self._settled.wait(timeout)
+
     def revoke(self) -> None:
         """Retire this delegation; further adoptions are refused."""
         with self._guard:
             self._revoked = True
+
+    def retire(self) -> bool:
+        """Revoke, and report whether an adopted execution is still running.
+
+        Atomic against :func:`adopt_write_lease`: a ``False`` answer means no
+        execution can ever adopt this delegation again, so the holder may
+        release its gate. ``True`` means one is in flight and the holder must
+        wait for :attr:`settled` before another writer is admitted.
+        """
+        with self._guard:
+            self._revoked = True
+            return self._adopted_by is not None
 
 
 @dataclass(slots=True)
@@ -343,6 +383,7 @@ def adopt_write_lease(delegation: WriteLeaseDelegation) -> Iterator[WriteLease]:
                 f"{delegation._adopted_by}; one admission authorizes one writer at a time"
             )
         delegation._adopted_by = threading.get_ident()
+        delegation._settled.clear()
     source = delegation.lease
     adopted = WriteLease(
         actor=source.actor,
@@ -361,6 +402,7 @@ def adopt_write_lease(delegation: WriteLeaseDelegation) -> Iterator[WriteLease]:
         _ACTIVE.reset(token)
         with delegation._guard:
             delegation._adopted_by = None
+            delegation._settled.set()
 
 
 @contextmanager
