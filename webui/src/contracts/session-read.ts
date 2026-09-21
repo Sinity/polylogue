@@ -16,6 +16,15 @@ export interface SessionMessageRow {
   readonly semantic_card_suppressed: boolean;
 }
 
+/**
+ * Which message window a read asks for.
+ *
+ * `offset` is a coordinate; `around` names a message and asks the daemon to
+ * resolve the coordinate of the window containing it. The two are alternatives
+ * on purpose: a request carrying both would name two different windows.
+ */
+export type SessionMessageWindow = { readonly offset: number } | { readonly around: string };
+
 export interface SessionMessagePage {
   readonly messages: readonly SessionMessageRow[];
   readonly total: number;

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { SessionMessageRow } from '../contracts/session-read';
+import type { SessionMessageRow, SessionMessageWindow } from '../contracts/session-read';
 import { SemanticEntries } from '../design-system/semantic-cards';
-import { fetchSessionMessagesPage } from '../lib/api';
+import { ArchiveRequestError, fetchSessionMessagesPage } from '../lib/api';
 
 type PageLoader = (
   sessionId: string,
-  offset: number,
-) => Promise<{ messages: readonly SessionMessageRow[]; total: number }>;
+  window: SessionMessageWindow,
+) => Promise<{ messages: readonly SessionMessageRow[]; total: number; offset: number }>;
 
 export interface SessionReadIslandProps {
   readonly sessionId: string;
@@ -16,8 +16,8 @@ export interface SessionReadIslandProps {
   readonly initialHash?: string;
 }
 
-/** Bounds the deep-link resolve loop below so a stale/bogus anchor cannot page forever. */
-const MAX_DEEP_LINK_PAGES = 50;
+/** The daemon's typed refusal for a message reference this session does not contain. */
+const MESSAGE_NOT_FOUND = 'message_not_found';
 
 function messageTimestamp(timestamp: string | null): string {
   return timestamp ?? 'Time unavailable';
@@ -94,29 +94,24 @@ export function SessionReadIsland({
     }
     const targetMessageId = targetId.startsWith('msg-') ? targetId.slice(4) : targetId;
     let cancelled = false;
-    let offset = initialNextOffset;
+    // The deep link names a message, so ask the daemon for the window holding
+    // it (polylogue-i5vqc). The previous implementation walked pages from the
+    // SSR offset until the target appeared, which made a resolvable reference
+    // past its page ceiling report as unlocatable and made every shallower
+    // link fetch and retain the whole prefix.
     async function resolveDeepLink(): Promise<void> {
       setLoading(true);
       setStatus('Locating the linked message…');
-      let found = false;
-      for (let page = 0; page < MAX_DEEP_LINK_PAGES && !found; page += 1) {
-        if (cancelled || offset === null || offset === undefined) {
-          break;
-        }
-        const loadedAt = offset;
-        const result = await loadPage(sessionId, loadedAt);
-        if (cancelled) {
-          return;
-        }
-        setMessages((current) => [...current, ...result.messages]);
-        found = result.messages.some((message) => message.id === targetMessageId);
-        const reachedEnd = loadedAt + result.messages.length >= result.total || result.messages.length === 0;
-        offset = reachedEnd ? null : loadedAt + result.messages.length;
-        setNextOffset(offset);
+      const result = await loadPage(sessionId, { around: targetMessageId });
+      if (cancelled) {
+        return;
       }
+      setMessages(result.messages);
+      const windowEnd = result.offset + result.messages.length;
+      setNextOffset(windowEnd >= result.total || result.messages.length === 0 ? null : windowEnd);
       setLoading(false);
-      if (!found) {
-        setStatus('The linked message could not be located within the paged transcript.');
+      if (!result.messages.some((message) => message.id === targetMessageId)) {
+        setStatus('The linked message could not be located within the served window.');
         return;
       }
       // Wait a tick past this render so the freshly appended message has
@@ -126,13 +121,23 @@ export function SessionReadIsland({
         return;
       }
       document.getElementById(targetId)?.scrollIntoView();
-      setStatus('');
+      // Report the window that was served rather than clearing the status: a
+      // deep link past the first page skips the messages between them, and a
+      // silent jump would read as a continuous transcript.
+      setStatus(
+        `Showing messages ${(result.offset + 1).toLocaleString()}–${windowEnd.toLocaleString()} of ${result.total.toLocaleString()}.`,
+      );
     }
-    void resolveDeepLink().catch(() => {
-      if (!cancelled) {
-        setLoading(false);
-        setStatus('The linked message could not be loaded.');
+    void resolveDeepLink().catch((error: unknown) => {
+      if (cancelled) {
+        return;
       }
+      setLoading(false);
+      setStatus(
+        error instanceof ArchiveRequestError && error.code === MESSAGE_NOT_FOUND
+          ? 'The linked message is not part of this transcript.'
+          : 'The linked message could not be loaded.',
+      );
     });
     return () => {
       cancelled = true;
@@ -147,7 +152,7 @@ export function SessionReadIsland({
     setLoading(true);
     setStatus('Loading messages…');
     try {
-      const page = await loadPage(sessionId, nextOffset);
+      const page = await loadPage(sessionId, { offset: nextOffset });
       setMessages((current) => [...current, ...page.messages]);
       const reachedEnd = nextOffset + page.messages.length >= page.total || page.messages.length === 0;
       setNextOffset(reachedEnd ? null : nextOffset + page.messages.length);

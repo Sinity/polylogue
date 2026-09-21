@@ -395,6 +395,10 @@ READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
         (
             "limit",
             "offset",
+            # ``around`` names a message instead of a coordinate: the route
+            # resolves it to the offset of the window that holds it, so a deep
+            # link costs one page read rather than a walk from page zero.
+            "around",
         ),
     ),
     "raw": ReadViewHttpCapability("raw", ("json",)),

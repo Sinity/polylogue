@@ -86,6 +86,12 @@ from polylogue.daemon.write_coordinator import (
 from polylogue.logging import DEBUG, ERROR, WARNING, emit, propagate
 from polylogue.logging import span as log_span
 from polylogue.operations.authority import authority_for_config, authority_for_reader
+from polylogue.operations.message_locator import (
+    MessageNotInSessionError,
+    locate_message_in_archive,
+    locate_message_in_order,
+    window_offset_for_index,
+)
 from polylogue.operations.origin_filters import unknown_origin_filter_tokens
 from polylogue.operations.quick_check import HEALTH_RESULT_KEY, observe_quick_check
 from polylogue.rendering.semantic_card_placement import (
@@ -2284,16 +2290,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _serve_webui_workspace(self, mode: str, params: dict[str, list[str]]) -> None:
         archive_root = _web_reader_archive_root()
         payload: Mapping[str, object] | None = None
+        window = workspace_routes.parse_message_window(self, params)
         if archive_root is not None and mode == "stack":
             ids = workspace_routes.parse_id_list(params)
             if ids:
-                payload = self._do_archive_stack(archive_root, ids, self._get_param(params, "focus"))
+                payload = self._do_archive_stack(archive_root, ids, self._get_param(params, "focus"), window)
         elif archive_root is not None and mode == "compare":
             left = self._get_param(params, "left")
             right = self._get_param(params, "right")
             if left and right:
                 result = self._do_archive_compare(
-                    archive_root, left, right, self._get_param(params, "align", "prompt") or "prompt"
+                    archive_root, left, right, self._get_param(params, "align", "prompt") or "prompt", window
                 )
                 payload = result if isinstance(result, Mapping) else None
         self._serve_webui_secondary(
@@ -3938,27 +3945,56 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
         return payload
 
-    async def _do_get_session(self, poly: Polylogue, conv_id: str) -> object:
+    async def _do_get_session_window(
+        self, poly: Polylogue, conv_id: str, window: workspace_routes.MessageWindow
+    ) -> object:
+        """Load one session payload bounded to a workspace's declared window.
+
+        The workspace routes render a narrow reading window over each
+        referenced session; serving every message of every session made the
+        response grow with total session length instead (polylogue-o0zju).
+        ``message_count``/``total`` below still report the TRUE length.
+        """
+
+        return await self._do_get_session(poly, conv_id, limit=window.limit, offset=window.offset)
+
+    async def _do_get_session(
+        self,
+        poly: Polylogue,
+        conv_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> object:
         conv = await poly.get_session(conv_id)
         if conv is None:
             return None
         flags = _build_flags_from_session(conv)
         session_id = str(conv.id)
         target_ref = TargetRefPayload.session(session_id)
+        composed = conv.messages.to_list()
+        total_message_count = len(composed)
+        # ``limit=None`` is the whole transcript, for callers that need it
+        # whole (the JSON session detail route). A declared window serves only
+        # ``[offset, offset + limit)`` -- including the attachment flattening
+        # and semantic card placement below, which are projections OF the
+        # served rows and would otherwise still cost (and leak) the full
+        # session.
+        window_messages = composed[offset : offset + limit] if limit is not None else composed[offset:]
         # Flatten attachments across all messages so the inspector
         # tab and the session envelope share one source of truth
         # (#1199). Per-message attachments stay embedded in each
         # message envelope so the inline card renderer doesn't need
         # to cross-reference the session-level list.
         session_attachments: list[dict[str, object]] = []
-        for msg in conv.messages:
+        for msg in window_messages:
             for att in msg.attachments or []:
                 session_attachments.append(attachment_to_envelope(att, session_id=session_id, message_id=msg.id))
         # Semantic transcript cards (#ap7): the same provider-neutral shell /
         # file-edit / task / attachment registry the CLI renders to Markdown
         # (``cli/messages.py``), projected per-message for the web reader.
         card_placement = semantic_card_placement_for_messages(
-            conv.messages.to_list(),
+            window_messages,
             session_id=session_id,
             provider_family=conv.origin,
             lineage=lineage_descriptor_from_session(conv),
@@ -3973,7 +4009,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "actions": _dump_actions(reader_session_actions()),
             "created_at": conv.created_at.isoformat() if conv.created_at else None,
             "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
-            "message_count": len(conv.messages),
+            "message_count": total_message_count,
             "word_count": conv.word_count,
             "messages": [
                 {
@@ -4004,7 +4040,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         for att in (msg.attachments or [])
                     ],
                 }
-                for msg in conv.messages
+                for msg in window_messages
             ],
             "attachments": session_attachments,
             "semantic_entries": list(card_placement.session_entries),
@@ -4017,7 +4053,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "model": None,
             "flags": flags.model_dump(mode="json") if flags else None,
             "summary": conv.summary,
-            "total": len(conv.messages),
+            "total": total_message_count,
         }
 
     def _do_archive_get_session(
@@ -5052,18 +5088,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             limit = self._get_int(params, "limit", 50)
             offset = self._get_int(params, "offset", 0)
             window_continuation = self._get_param(params, "continuation")
+            around = self._get_param(params, "around")
+            if not self._accept_message_window_anchor(around, window_continuation):
+                return
             archive_root = _web_reader_archive_root()
             try:
                 if archive_root is not None:
                     payload: object | None = self._do_archive_get_messages(
-                        archive_root, conv_id, limit, offset, window_continuation
+                        archive_root, conv_id, limit, offset, window_continuation, around
                     )
                 else:
 
                     async def _get(poly: Polylogue) -> object:
-                        return await self._do_get_messages(poly, conv_id, limit, offset, window_continuation)
+                        return await self._do_get_messages(poly, conv_id, limit, offset, window_continuation, around)
 
                     payload = self._sync_run(_get)
+            except MessageNotInSessionError as exc:
+                self._send_error(HTTPStatus.NOT_FOUND, exc.code, str(exc))
+                return
             except QueryContinuationStaleError as exc:
                 self._send_error(HTTPStatus.CONFLICT, exc.code, str(exc))
                 return
@@ -5258,17 +5300,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
         offset = max(0, self._get_int(params, "offset", 0))
         continuation = self._get_param(params, "continuation")
+        around = self._get_param(params, "around")
+        if not self._accept_message_window_anchor(around, continuation):
+            return
 
         archive_root = _web_reader_archive_root()
         try:
             if archive_root is not None:
-                payload = self._do_archive_get_messages(archive_root, conv_id, limit, offset, continuation)
+                payload = self._do_archive_get_messages(archive_root, conv_id, limit, offset, continuation, around)
             else:
 
                 async def _get(poly: Polylogue) -> object:
-                    return await self._do_get_messages(poly, conv_id, limit, offset, continuation)
+                    return await self._do_get_messages(poly, conv_id, limit, offset, continuation, around)
 
                 payload = self._sync_run(_get)
+        except MessageNotInSessionError as exc:
+            self._send_error(HTTPStatus.NOT_FOUND, exc.code, str(exc))
+            return
         except QueryContinuationStaleError as exc:
             # A write landed since the token was issued; resuming it would page
             # into shifted rows, so the route refuses rather than answers.
@@ -5279,6 +5327,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, payload)
 
+    def _accept_message_window_anchor(self, around: str | None, continuation: str | None) -> bool:
+        """Refuse a request that names its window twice, and say so.
+
+        ``around`` asks the route to *decide* the offset; a continuation
+        already carries one. Honouring either silently would answer a window
+        the caller did not ask for, so the disagreement is the caller's error.
+        """
+
+        if around and continuation:
+            self._send_error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_request",
+                "around and continuation name two different windows",
+            )
+            return False
+        return True
+
     async def _do_get_messages(
         self,
         poly: Polylogue,
@@ -5286,8 +5351,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
         continuation: str | None = None,
+        around: str | None = None,
     ) -> object:
         started_at = monotonic()
+        anchor_session = None
+        if around:
+            # polylogue-i5vqc: a deep link names a message, so resolve it to
+            # the offset of the window that holds it instead of letting the
+            # caller walk pages looking for it. The composed session is read
+            # once here and reused for the projection below, so the locate
+            # costs no extra composition on this route.
+            anchor_session = await poly.get_session(conv_id)
+            if anchor_session is None:
+                raise MessageNotInSessionError(str(conv_id), around)
+            location = locate_message_in_order(
+                str(conv_id),
+                around,
+                (message.id for message in anchor_session.messages),
+            )
+            offset = window_offset_for_index(location.index, limit)
         # polylogue-ijbwq: window arithmetic, snapshot binding and the
         # continuation token come from the one shared execution route; this
         # handler owns only the web-reader projection below.
@@ -5298,7 +5380,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             truncation_reason=window.lineage_truncation_reason,
         )
         session_id = str(conv_id)
-        session = await poly.get_session(conv_id)
+        session = anchor_session if anchor_session is not None else await poly.get_session(conv_id)
         source_messages = session.messages.to_list() if session is not None else messages
         # polylogue-ppkj: lineage_descriptor_from_session hard-codes
         # lineage_complete=None (the DB-backed Session domain model carries
@@ -5367,6 +5449,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
         continuation: str | None = None,
+        around: str | None = None,
     ) -> object:
         """Return a bounded ``[offset, offset + limit)`` page of a session's messages.
 
@@ -5378,6 +5461,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         CLI's own paginated ``messages`` read view precedent
         (``polylogue/cli/messages.py``), which already builds its transcript
         from a bounded page rather than the full session.
+
+        ``around`` names a message instead of a coordinate: the offset of the
+        window holding it is resolved against the indexed transcript order
+        (``polylogue/operations/message_locator.py``) and reported back in
+        ``offset``, so a deep link costs one page read regardless of how deep
+        the target sits (polylogue-i5vqc). A message this session does not
+        contain is refused, never answered with page zero.
         """
         from polylogue.operations.transcript_window import read_transcript_window_sync, window_request
 
@@ -5406,6 +5496,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "outcome": decide_outcome(matched=0, error="session_not_found").to_dict(),
                     "authority": authority,
                 }
+
+            if around:
+                offset = window_offset_for_index(
+                    locate_message_in_archive(archive, session_id, around).index,
+                    limit,
+                )
 
             composed: list[object] = []
 
@@ -5483,7 +5579,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            self._send_json(HTTPStatus.OK, self._do_archive_stack(archive_root, ids, focus))
+            window = workspace_routes.parse_message_window(self, params)
+            self._send_json(HTTPStatus.OK, self._do_archive_stack(archive_root, ids, focus, window))
             return
         workspace_routes.handle_stack(self, params)
 
@@ -5497,44 +5594,42 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         archive_root = _web_reader_archive_root()
         if archive_root is not None:
-            self._send_json(HTTPStatus.OK, self._do_archive_compare(archive_root, left, right, align or "prompt"))
+            window = workspace_routes.parse_message_window(self, params)
+            self._send_json(
+                HTTPStatus.OK, self._do_archive_compare(archive_root, left, right, align or "prompt", window)
+            )
             return
         workspace_routes.handle_compare(self, params)
 
-    def _do_archive_stack(self, archive_root: Path, ids: list[str], focus: str | None) -> dict[str, object]:
+    def _do_archive_stack(
+        self,
+        archive_root: Path,
+        ids: list[str],
+        focus: str | None,
+        window: workspace_routes.MessageWindow,
+    ) -> dict[str, object]:
         items: list[dict[str, object]] = []
         for conv_id in ids:
-            payload = self._do_archive_get_session(archive_root, conv_id)
+            payload = self._do_archive_get_session(archive_root, conv_id, limit=window.limit, offset=window.offset)
             if not isinstance(payload, dict):
                 items.append(workspace_routes.missing_session_target(conv_id))
                 continue
-            items.append(
-                {
-                    "target_type": "session",
-                    "target_id": str(payload["id"]),
-                    "session_id": str(payload["id"]),
-                    "status": "resolved",
-                    "identity_key": f"session:{payload['id']}",
-                    "target_ref": workspace_routes.target_ref_from_session_payload(payload),
-                    "session": payload,
-                }
-            )
-        return {
-            "mode": "stack",
-            "ids": ids,
-            "focus": focus,
-            "items": items,
-            "total": len(items),
-            "resolved_count": sum(1 for item in items if item["status"] == "resolved"),
-            "degraded_count": sum(1 for item in items if item["status"] != "resolved"),
-        }
+            items.append(workspace_routes.stack_item(payload))
+        return workspace_routes.stack_payload(ids, focus, items, window)
 
-    def _do_archive_compare(self, archive_root: Path, left: str, right: str, align: str) -> object:
+    def _do_archive_compare(
+        self,
+        archive_root: Path,
+        left: str,
+        right: str,
+        align: str,
+        window: workspace_routes.MessageWindow,
+    ) -> object:
         from polylogue.daemon.compare import build_compare_envelope
 
-        left_payload = self._do_archive_get_session(archive_root, left)
-        right_payload = self._do_archive_get_session(archive_root, right)
-        return build_compare_envelope(left_payload, right_payload, left, right, align)
+        left_payload = self._do_archive_get_session(archive_root, left, limit=window.limit, offset=window.offset)
+        right_payload = self._do_archive_get_session(archive_root, right, limit=window.limit, offset=window.offset)
+        return build_compare_envelope(left_payload, right_payload, left, right, align, window=window)
 
     # ------------------------------------------------------------------
     # Handlers: get raw artifact
