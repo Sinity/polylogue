@@ -13,6 +13,7 @@ from polylogue.archive.query.search_contract import LaneFailure
 from polylogue.core.errors import DatabaseError
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from polylogue.storage.search.cache import ReadViewIdentity, capture_read_view, current_cache_epoch
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
@@ -72,6 +73,11 @@ class PinnedOperationRead:
     schema_versions: dict[str, int]
     degraded_components: tuple[str, ...]
     vector_failure: LaneFailure | None = None
+    #: The archive view this read was pinned against, when one could be named
+    #: for the pin itself.  ``None`` means the read-result cache epoch moved
+    #: across the pin, so no single view describes the snapshot and the read
+    #: is deliberately uncacheable rather than labelled with a guess.
+    read_view: ReadViewIdentity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,12 +220,29 @@ def open_operation_read(
             if execution_context is not None:
                 cleanup.enter_context(InterruptibleSQLiteRead(execution_context).control_store(archive))
             pin_snapshot = getattr(archive, "pin_operation_snapshot", None)
+            # The read-result cache epoch is the announced index-content
+            # revision, and it must describe the snapshot this read actually
+            # evaluates -- not whatever is current when the query finishes.
+            # Capturing it across the pin is the only place that can prove
+            # the two agree: an invalidation landing between these two reads
+            # leaves no single view describing the snapshot, so the read is
+            # named uncacheable instead of being given the newer epoch.
+            epoch_before_pin = current_cache_epoch()
             if callable(pin_snapshot):
                 versions, degraded = pin_snapshot()
             else:
                 # Keep operation-read adapters compatible with intentionally
                 # minimal doubles; production ArchiveStore always pins here.
                 versions, degraded = {}, ()
+            read_view = (
+                capture_read_view(
+                    archive_root=archive.archive_root,
+                    generation=str(archive.index_db_path.resolve()),
+                    epoch=epoch_before_pin,
+                )
+                if current_cache_epoch() == epoch_before_pin
+                else None
+            )
             if (
                 publication_guard is None
                 and ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity
@@ -259,7 +282,7 @@ def open_operation_read(
             archive.operation_degraded_components = degraded
             if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
                 raise RuntimeError("archive changed while pinning operation read authority")
-            pinned = PinnedOperationRead(archive, identity, versions, degraded, vector_failure)
+            pinned = PinnedOperationRead(archive, identity, versions, degraded, vector_failure, read_view)
         vector_connection = getattr(archive, "operation_vector_connection", None)
         if vector_connection is not None:
             from polylogue.storage.search_providers.sqlite_vec_runtime import prepare_vector_read_projection

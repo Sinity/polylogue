@@ -261,6 +261,7 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                         )
                         if context.read_dependencies is not None
                         else None,
+                        read_view=snapshot.read_view,
                     )
                 validate_operation_result(request.operation, result)
                 return operation_envelope(request, context, snapshot=snapshot, started_at=started, result=result)
