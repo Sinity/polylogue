@@ -234,7 +234,7 @@ treats an assertion-controlled context policy as a capability cap rather than
 a source of authority. The provider contract is
 `polylogue/context/scheduler.py:48-53`, and only an explicitly adopted,
 scoped, unexpired operator policy may enter instructions
-(`polylogue/context/scheduler.py:163-176`). The preamble keeps the partition
+(`polylogue/context/scheduler.py:159-175`). The preamble keeps the partition
 structural rather than textual: operator guidance and quoted evidence are
 different fields, not different prefixes
 (`polylogue/context/preamble.py:551-567`).
