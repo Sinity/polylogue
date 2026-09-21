@@ -5481,6 +5481,50 @@ class _CycleWalkResult:
     path: tuple[str, ...]
 
 
+def _walk_parent_of(conn: sqlite3.Connection, session_id: str) -> str | None:
+    """The parent ``session_id`` the cycle walk must follow out of *session_id*.
+
+    polylogue-nzf93: this deliberately reads the same authority
+    ``_refresh_session_projection`` derives ``sessions.parent_session_id``
+    from -- the first composing resolved ``session_links`` edge, in the same
+    order -- rather than the projection column itself.
+
+    The projection is refreshed only at the END of ``_resolve_session_graph``,
+    after its inbound-parent loop. Reading the column therefore made every
+    edge resolved earlier in the SAME write invisible to the guard, which is
+    how a mutual parent pair escaped: writing A(parent=B) before B exists
+    leaves A -> B unresolved, then writing B(parent=A) resolves B -> A
+    outbound, and the inbound loop's walk out of B still saw a NULL column and
+    called A -> B acyclic. Both edges resolved and ``parent_session_id`` itself
+    closed a two-node loop.
+
+    The ``sessions`` column remains the fallback for a session that carries no
+    composing resolved edge at all, so a parent chain projected without
+    ``session_links`` rows still walks.
+    """
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(
+            (
+                SELECT links.resolved_dst_session_id
+                FROM session_links AS links
+                WHERE links.src_session_id = :session_id
+                  AND links.resolved_dst_session_id IS NOT NULL
+                  AND {topology_status_composes_sql("links.status")}
+                ORDER BY links.observed_at_ms IS NULL, links.observed_at_ms,
+                         links.dst_origin, links.dst_native_id, links.link_type
+                LIMIT 1
+            ),
+            (SELECT parent_session_id FROM sessions WHERE session_id = :session_id)
+        )
+        """,
+        {"session_id": session_id},
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return str(row[0])
+
+
 def _would_create_cycle(
     conn: sqlite3.Connection,
     *,
@@ -5489,9 +5533,13 @@ def _would_create_cycle(
 ) -> _CycleWalkResult:
     """Classify the proposed edge without conflating exhaustion with a cycle.
 
-    Walks ``sessions.parent_session_id`` upward from ``proposed_parent_id``.
-    Budget exhaustion is indeterminate and must remain quarantined, but it is
-    not evidence that the proposed edge closes a cycle.
+    Walks the resolved parent chain upward from ``proposed_parent_id`` (see
+    ``_walk_parent_of`` for which edge that is). The walk is full-chain, not
+    single-hop, and ``_CYCLE_WALK_BUDGET`` bounds it: budget exhaustion is
+    indeterminate and must remain quarantined, but it is not evidence that the
+    proposed edge closes a cycle. A loop that does not contain ``child_id``
+    cannot be produced through the two guarded resolution routes, and the
+    budget terminates the walk if one is ever hand-written into the tier.
     """
     if proposed_parent_id == child_id:
         return _CycleWalkResult("cycle", (child_id, child_id))
@@ -5501,20 +5549,14 @@ def _would_create_cycle(
     while True:
         if steps >= _CYCLE_WALK_BUDGET:
             return _CycleWalkResult("budget_exhausted", tuple(path))
-        row = conn.execute(
-            "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-            (current,),
-        ).fetchone()
-        if row is None:
-            return _CycleWalkResult("acyclic", tuple(path))
-        next_parent = row[0]
+        next_parent = _walk_parent_of(conn, current)
         if next_parent is None:
             return _CycleWalkResult("acyclic", tuple(path))
         if next_parent == child_id:
             path.append(child_id)
             return _CycleWalkResult("cycle", tuple(path))
-        path.append(str(next_parent))
-        current = str(next_parent)
+        path.append(next_parent)
+        current = next_parent
         steps += 1
 
 
