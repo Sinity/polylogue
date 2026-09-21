@@ -144,13 +144,13 @@ Classified but not migrated, with the reason each keeps its own connection:
 | --- | --- |
 | `sources/revision_backfill.py` spill connections | non-archive scratch database owned by one pass |
 | `sinex/service.py` | an external Sinex database, not an archive tier |
-| `storage/blob_publication.py`, `storage/raw_convergence.py`, `daemon/convergence_stages.py` | one-tier writers inside a held lease |
+| `storage/blob_publication.py`, `daemon/convergence_stages.py` | one-tier writers inside a held lease |
 | `storage/sqlite/archive_tiers/{archive,user_write}.py` | the tier writers the profiles are applied *by* |
 | `storage/embeddings/status_payload.py` | diagnostic status read over a possibly-absent tier |
 
 The remaining direct `mode=ro` opens are concentrated in `storage/blob_gc.py`,
-`storage/raw_authority.py`, `storage/raw_convergence.py`,
-`daemon/convergence_stages.py` and `sources/live/`. They are one-shot
+`storage/raw_authority.py`, `daemon/convergence_stages.py` and
+`sources/live/`. They are one-shot
 maintenance and reconciliation reads over a single tier; migrating them is a
 mechanical follow-up, not a correctness gap, because none of them holds a frame
 across a request boundary.

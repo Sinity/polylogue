@@ -13,6 +13,19 @@ materialization and aggregate refresh moving into canonical derivations) and
 the kernel work in polylogue-bp12n.1. Every file:line below was read at
 `5218889` and is the state of the tree at that commit.
 
+> **Status, 2026-09-21 (polylogue-6kur).** Superseded in its apply-side half.
+> The census-ledger drop and the `raw_authority_blockers` re-keying this
+> document sequences (§4, M1-M5) landed: the ledger tables are in
+> `RETIRED_SOURCE_SCHEMA_OBJECTS` and blockers key on `plan_input_digest`.
+> Everything below that describes selecting, applying, or validating a replay
+> *plan* now describes deleted code -- `polylogue/storage/raw_convergence.py`
+> is gone with the generic repair framework, and `storage/raw_reconciler.py`
+> is a read-only census that applies nothing. Every `raw_convergence.py:NNNN`
+> citation below was already stale when written (it cites a 6,182-line
+> revision of a file that was 2,915 lines at deletion) and resolves to nothing
+> today. Read this as the decision record for the ledger drop, not as a map of
+> the current tree.
+
 Read `docs/internals.md` (schema regimes) and
 `docs/design/convergence-simplification-inventory.md` (what the daemon
 redesign already committed to deleting) first; this document assumes the

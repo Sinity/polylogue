@@ -422,11 +422,6 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/status.py",
-    "import": "polylogue.storage.raw_convergence"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/status.py",
     "import": "polylogue.storage.sqlite.archive_tiers.types"
   },
   {
@@ -1243,11 +1238,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/status.py",
     "import": "polylogue.storage.raw_retention"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/status.py",
-    "import": "polylogue.storage.raw_convergence"
   },
   {
     "target": "polylogue/daemon",

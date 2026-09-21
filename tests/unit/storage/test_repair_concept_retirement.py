@@ -11,6 +11,19 @@ What survives is a read-only frontier census whose every non-current state is
 either an explicit retryable obligation that ordinary acquisition discharges,
 or a typed permanent refusal. This module is that boundary's ratchet: each
 assertion names the exact production shape whose reintroduction turns it red.
+
+One local mutation is deliberately retained rather than deleted:
+``ops maintenance operation-recovery --confirm`` (and its MCP twin
+``recovery_adjudicate``) records operator testimony about an interrupted
+operation's durable targets into ``audit.db``. It repairs nothing, it mutates
+no archive content, and what it records -- whether a crashed EXECUTE's effect
+landed -- is not derivable from durable evidence, so no convergence stage can
+own it. Its premise is a dead daemon, and routing it through the daemon would
+make the record of the daemon's own interrupted operation permanently
+unclosable. That premise is enforced, not merely documented:
+``tests/unit/cli/test_maintenance_registration.py::
+test_operation_recovery_adjudication_refuses_while_daemon_owns_writes`` proves
+the adjudication refuses beside a live ``polylogued``.
 """
 
 from __future__ import annotations
@@ -266,3 +279,29 @@ def test_frontier_census_reports_a_blocked_head_without_promising_a_remedy(tmp_p
     expected = cast(dict[str, object], json.loads(str(row[0])))
     assert "actuator" not in cast(dict[str, object], expected["authority_witness"])
     assert "actuator" not in cast(dict[str, object], json.loads(str(row[1])))
+
+
+def test_no_product_module_is_named_as_a_repair_substrate() -> None:
+    """AC7, structural half: no module in the product tree is named for repair.
+
+    Module names are the part of "named or described as a generic repair
+    substrate" that a test can decide. ``storage/repair.py`` (7,534 lines) and
+    ``storage/raw_convergence.py`` (2,915) were both real modules under those
+    names; this keeps the next one from landing quietly.
+
+    The surviving occurrences of the word live inside modules with other names
+    and other jobs -- FTS index convergence, derived-row convergence inside the
+    write transaction, the declaration kernel's ``repair_command`` remedy
+    pointer, and the ``contradicted_then_repaired`` behavioural measurement.
+    None of them is a substrate, and none is checkable by name.
+
+    Anti-vacuity: adding ``polylogue/storage/repair.py`` (or ``doctor.py`` /
+    ``cleanup.py`` / any ``*_repair.py``) fails this.
+    """
+    forbidden = ("repair", "doctor", "cleanup")
+    offenders = [
+        str(path.relative_to(_repo_root()))
+        for path in _product_sources()
+        if any(token in path.stem.lower() for token in forbidden)
+    ]
+    assert offenders == []

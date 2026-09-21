@@ -128,7 +128,7 @@ def _archive_root(config: Config) -> Path:
     """Return the archive file-set root housing the currently active database.
 
     Deliberately follows ``config.db_path`` (not ``config.archive_root``),
-    matching :func:`polylogue.config.active_archive_file_set_root`:
+    matching :func:`polylogue.config.active_archive_root`:
     this reconciler inspects the database and blob store that are actually
     live right now, which ``config.db_path`` already resolves correctly
     (``.index-active-pointer``-aware, or an explicit override) inside

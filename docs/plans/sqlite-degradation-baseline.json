@@ -871,10 +871,6 @@
       "digest": "82035220b5a31091e549d04f8b3e40e0280c571a"
     },
     {
-      "file": "polylogue/storage/raw_convergence.py",
-      "digest": "4101d44284b6f1a6ab07f25dc842ffd71162c384"
-    },
-    {
       "file": "polylogue/storage/raw_failure_lifecycle.py",
       "digest": "21fe7353914733f5a46720cc42150f276438987b"
     },
