@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import hashlib
 import inspect
-import json
 import resource
 import sqlite3
 from dataclasses import asdict, dataclass, replace
@@ -26,6 +25,7 @@ from typing import cast
 
 import pytest
 
+from devtools.measurement_receipts import emit_receipt
 from polylogue.sources import revision_backfill
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.revision_backfill import (
@@ -50,6 +50,10 @@ from tests.infra.reindex_differential import (
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
 from tests.infra.workload_artifacts import FinishedBuildResourceMeasurement, FinishedBuildResourceProbe
 
+#: The committed-baseline name this arm records under.  ``devtools bench
+#: baseline --record`` promotes the emitted receipt to
+#: ``tests/benchmarks/baselines/<name>.json``.
+_MEASUREMENT_NAME = "finished-build-sealed-516-raw"
 _SESSION_COUNT = 516
 # ``_codex_raw_payload`` subtracts its JSON envelope before padding.  This
 # target consequently seals precisely 210,554,832 bytes (200.800735 MiB).
@@ -583,20 +587,22 @@ def test_finished_build_measurement_runs_sealed_production_arms_at_declared_scal
     assert receipt.deferred_secondary_indexes
     assert receipt.resources.elapsed_seconds > 0
     assert receipt.resources.storage_bytes > 0
-    print(
-        "finished-build-measurement="
-        + json.dumps(
-            {
-                "receipt": _receipt_payload(receipt),
-                "source_census": asdict(source_census),
-                "rejected_alternatives": [
-                    {"arm": arm.name, "reason": arm.refusal_reason} for arm in _REJECTED_ALTERNATIVES
-                ],
-                "verdict": {
-                    "conclusion": "single-arm-observation",
-                    "reason": "one selected production profile; no transport or width ranking claimed",
-                },
+    # The receipt goes to the measurement-receipt route, not to stdout: a
+    # printed receipt is evidence only for whoever was watching the run
+    # (polylogue-cjyfw).  ``devtools bench baseline --record <path> --reason
+    # ...`` promotes this observation to the committed baseline.
+    emitted = emit_receipt(
+        _MEASUREMENT_NAME,
+        {
+            "receipt": _receipt_payload(receipt),
+            "source_census": asdict(source_census),
+            "rejected_alternatives": [
+                {"arm": arm.name, "reason": arm.refusal_reason} for arm in _REJECTED_ALTERNATIVES
+            ],
+            "verdict": {
+                "conclusion": "single-arm-observation",
+                "reason": "one selected production profile; no transport or width ranking claimed",
             },
-            sort_keys=True,
-        )
+        },
     )
+    print(f"finished-build-measurement receipt: {emitted}")

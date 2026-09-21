@@ -101,6 +101,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools bench baseline` | List or record committed measurement receipts under tests/benchmarks/baselines/. |
 | `devtools bench collection` | Measure what a pytest selection costs to collect, before any test runs. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench parser-census` | Parse a recorded source denominator with no archive and diff the result against the last census. |

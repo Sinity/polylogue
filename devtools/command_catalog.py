@@ -435,6 +435,31 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "bench baseline",
+        "benchmarking",
+        "List or record committed measurement receipts under tests/benchmarks/baselines/.",
+        "devtools.measurement_receipts",
+        json_flag=True,
+        # ``--record RECEIPT`` and ``--reason TEXT`` take values, and a declared
+        # flag is always compiled as a Click boolean (``devtools/click_dispatch.py``
+        # ``_make_command``), which would swallow the value. They forward through
+        # the pass-through argv instead and are documented in the examples.
+        flags=(("--list", "List the committed measurement baselines."),),
+        use_when=(
+            "Put a measurement where the next reader finds it with "
+            "`--record <receipt> --reason <why>`. The static gates already commit their "
+            "baselines; this is the measurement half. It is explained-not-ratcheted -- a number that moved "
+            "is recorded with its reason, because a measurement legitimately moves with the host -- and it "
+            "is not a gate, so nothing runs it per PR. The scalar regression ratchet with tolerances stays "
+            "in tests/benchmarks/floors.json."
+        ),
+        examples=(
+            "devtools bench baseline --list",
+            "devtools bench baseline --record .cache/measurements/finished-build-sealed-516-raw.json "
+            '--reason "first recorded arm"',
+        ),
+    ),
+    CommandSpec(
         "bench memory",
         "benchmarking",
         "Measure query-memory envelopes on generated fixtures.",

@@ -122,8 +122,13 @@ def test_origin_teaching_follows_authoritative_enum() -> None:
     """Mutation: using a stale origin count or omitting an Origin token fails here."""
     assert tuple(item.token for item in ORIGIN_MEANINGS) == tuple(item.value for item in Origin)
     assert len(ORIGIN_MEANINGS) == len(Origin)
-    # beads-issue stays in the enum: its route is retired, but the durable
-    # CHECKs still admit the token, so the teaching table names it as reserved.
+    # beads-issue stays in the enum: its acquisition route is retired, but the
+    # token is still a declared Origin, so the teaching table names it as
+    # reserved rather than omitting a value the enum admits. The DERIVED index
+    # tier generates `CHECK(origin IN (...))` from this enum and still admits
+    # the token; the DURABLE source tier carries no enum CHECK at all, where
+    # membership is validated at the write boundary by `require_vocabulary`.
+    # See polylogue-53ngk for the removal route that asymmetry implies.
     assert {item.token for item in ORIGIN_MEANINGS} >= {"beads-issue"}
 
 

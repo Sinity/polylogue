@@ -730,7 +730,8 @@ Implementation: `polylogue/storage/search/query_builders.py`,
   A trigram fallback lane for further recall (beyond word-boundary tokens)
   is deliberately not part of this fold — see polylogue-xul7 (tracked
   follow-up) for a measured, benchmarked trigram lane before any such lane
-  ships or is defaulted on.
+  ships or is defaulted on, and **Trigram: what the retired index proved**
+  below for the two facts that lane inherits.
 - Raw score is **BM25**: lower is better in SQLite FTS5, values are
   typically negative, and they are **not comparable across queries**.
 - Match evidence: `matched_terms`, `snippet`, `match_surface="message"`,
@@ -788,6 +789,50 @@ Implementation: `polylogue/storage/search/query_builders.py`,
   `polylogue ops embed status --detail` performs exact pending-message and
   retrieval-band accounting; the default status path stays cheap and reports
   the latest persisted catch-up run.
+
+#### Trigram: what the retired index proved
+
+There is no trigram lane. There *was* a trigram index, `blocks_command_trigram`,
+and index schema v104 dropped it along with its three write triggers, the
+`blocks.tool_detail_text` generated projection that existed only to feed it, and
+its rebuild/repair machinery (polylogue-nv356). It was kept at v63 for exactly
+one consumer, `devtools/affordance_usage.py`'s `_cli_action_rows`; that module
+was deleted on 2026-08-25 with no product-surface replacement. A repo-wide
+census then found **no query consumer at all** — only the surface's own DDL, its
+rebuild helpers, and one verification gap check. No `MATCH` or `LIKE` reader
+existed anywhere, so the archive was paying three write triggers per `blocks`
+insert/delete/update, plus the index's storage, for a surface nothing read.
+`tests/unit/storage/test_blocks_command_trigram_retired.py` holds that ground.
+
+Two facts survive the removal, because whoever builds the measured trigram lane
+(polylogue-xul7) would otherwise rediscover them the expensive way:
+
+1. **A trigram index must drive the query, never be joined to it.** Write the
+   predicate as a rowid subquery:
+
+   ```sql
+   -- correct: the trigram index drives the scan
+   SELECT ... FROM blocks
+   WHERE blocks.rowid IN (SELECT rowid FROM <trigram> WHERE <col> LIKE ?)
+   ```
+
+   ```sql
+   -- wrong: the planner silently picks the other order
+   SELECT ... FROM blocks JOIN <trigram> ON <trigram>.rowid = blocks.rowid
+   WHERE <trigram>.<col> LIKE ?
+   ```
+
+   Measured on the retired index at 300K rows: **26 s for the plain join versus
+   0.15 s for the subquery** — a ~170x regression that costs nothing to
+   introduce and produces correct results, so only a benchmark catches it.
+
+2. **A trigram lane pays on write, not only on read.** The retired surface cost
+   three triggers on every `blocks` mutation and a generated column that fed
+   nothing else. polylogue-xul7's acceptance keeps trigram behind an explicit
+   opt-in routing rule with a measured index-size delta (the design note
+   estimates 1.5-2x `messages_fts`) and a precision/recall report before it
+   ships enabled for any caller — the retired index is not that evidence, and
+   the new lane declares its own index rather than resurrecting this one.
 
 ### Embedding Activation And Catch-Up
 

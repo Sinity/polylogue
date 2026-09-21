@@ -72,6 +72,12 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_refs": frozenset(),
     "session_repos": frozenset(),
     "session_tags": frozenset(),
+    # (session_id, input_binding, recipe_version): the inputs the canonical
+    # usage rollup was computed from and the recipe that computed them. Every
+    # value is derived from the session's own usage evidence -- no clock, no
+    # attempt id, no generation-local coordinate -- so two builds of the same
+    # sealed input must reproduce it exactly.
+    "session_usage_rollup_bindings": frozenset(),
     "session_working_dirs": frozenset(),
     "sessions": frozenset(),
     "web_content_constructs": frozenset(),
