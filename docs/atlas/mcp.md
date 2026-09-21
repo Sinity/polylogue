@@ -11,7 +11,7 @@ The live MCP surface is a twelve-tool operation algebra. Six read tools are alwa
 | `query` | read/default | Execute terminal query pages and projections; also carries the discriminated `session_operation` request (`polylogue/mcp/declarations/registry.py:71-91`) |
 | `read` | read/default | Read a stable archive URI or ref through a declared view (`polylogue/mcp/declarations/registry.py:92-112`) |
 | `get` | read/default | Resolve one exact object identity (`polylogue/mcp/declarations/registry.py:113-127`) |
-| `explain` | read/default | Explain grammar, capabilities, refs, semantics, or recovery (`polylogue/mcp/declarations/registry.py:128-143`) |
+| `explain` | read/default | Explain grammar, capabilities, refs, semantics, or recovery, and answer shared query completions via `subject="completions"` (`polylogue/mcp/declarations/registry.py:128-143`) |
 | `context` | read/default | Compile bounded policy-gated context with receipts (`polylogue/mcp/declarations/registry.py:144-158`) |
 | `status` | read/default | Report archive authority and readiness (`polylogue/mcp/declarations/registry.py:159-175`) |
 | `write` | `write` | Dispatch declared mutations; the named destructive operations fail closed without `confirm=true` (`polylogue/mcp/declarations/registry.py:176-193`) |

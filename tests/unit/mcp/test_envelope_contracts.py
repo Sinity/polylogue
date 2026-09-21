@@ -398,8 +398,17 @@ def test_query_capability_resource_exposes_mcp_algebra_and_valid_terminal_forms(
     assert root["grammar"]["terminal_form"] == "<terminal-source> where <predicate>"
     assert root["corpus"]["positive_count"] >= 80
     assert root["corpus"]["negative_count"] >= 10
-    assert root["corpus"]["examples_via"]["arguments"] == {"kind": "example"}
-    assert root["corpus"]["errors_via"]["arguments"] == {"kind": "error"}
+    # polylogue-2qx.8: both pointers named a ``query_completions`` tool MCP never
+    # registered. Pin the tool with the arguments -- arguments alone cannot tell
+    # a real route from an advertised one.
+    assert root["corpus"]["examples_via"] == {
+        "tool": "explain",
+        "arguments": {"subject": "completions", "kind": "example"},
+    }
+    assert root["corpus"]["errors_via"] == {
+        "tool": "explain",
+        "arguments": {"subject": "completions", "kind": "error"},
+    }
     assert set(root["corpus"]["routes"]) == {
         "query",
         "ranked-search",

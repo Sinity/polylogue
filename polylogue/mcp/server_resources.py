@@ -208,9 +208,18 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                     unit["fields"] = [field.name for field in descriptor.fields]
                 else:
                     unit["field_count"] = len(descriptor.fields)
+                    # The detail route is the shared completion route, which
+                    # returns exactly ``descriptor.fields`` for this unit. The
+                    # pointer previously named ``subject="capability"`` with a
+                    # ``unit`` argument ``explain`` does not accept, so the
+                    # advertised route could not be called at all.
                     unit["fields_via"] = {
                         "tool": "explain",
-                        "arguments": {"subject": "capability", "unit": descriptor.unit},
+                        "arguments": {
+                            "subject": "completions",
+                            "kind": "terminal-field",
+                            "unit": descriptor.unit,
+                        },
                     }
                 built.append(unit)
             return built
@@ -228,8 +237,18 @@ def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
                     "corpus": {
                         "positive_count": len(QUERY_DISCOVERY_EXAMPLES),
                         "negative_count": len(QUERY_DISCOVERY_NEGATIVE_EXAMPLES),
-                        "examples_via": {"tool": "query_completions", "arguments": {"kind": "example"}},
-                        "errors_via": {"tool": "query_completions", "arguments": {"kind": "error"}},
+                        # Both pointers name a registered tool and arguments
+                        # it accepts. They previously named a ``query_completions``
+                        # tool that MCP never registered, so a caller was told
+                        # about a route that did not exist.
+                        "examples_via": {
+                            "tool": "explain",
+                            "arguments": {"subject": "completions", "kind": "example"},
+                        },
+                        "errors_via": {
+                            "tool": "explain",
+                            "arguments": {"subject": "completions", "kind": "error"},
+                        },
                         # Completion candidates expose one of these declaration
                         # routes verbatim in their ``route`` field; no
                         # adapter-only aliases obscure route-dependent semantics.

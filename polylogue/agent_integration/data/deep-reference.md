@@ -149,12 +149,15 @@ Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
-| `subject` | `string` | yes | Declared explanation subject: query, field, value, ref, capability, result, or recovery. |
+| `subject` | `string` | yes | Declared explanation subject: query, field, value, ref, capability, completions, result, or recovery. |
 | `expression` | `string` | no | Query expression to parse and lower when subject=query. |
 | `ref` | `string` | no | Object/ref whose authority or addressing needs explanation. |
 | `offset` | `integer` | no | Offset into paged explanation results. |
-| `search` | `string` | no | Optional explanation search text. |
+| `search` | `string` | no | Optional explanation search text; the incomplete prefix when subject=completions. |
 | `limit` | `integer` | no | Maximum explanation rows. |
+| `kind` | `string` | no | Completion vocabulary to answer when subject=completions, such as example or error. |
+| `unit` | `string` | no | Query unit the unit-scoped completion kinds require. |
+| `field` | `string` | no | Query field the operator completion kinds require. |
 
 Example — Inspect parser and lowering behavior:
 

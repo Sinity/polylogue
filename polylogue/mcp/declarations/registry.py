@@ -131,7 +131,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "explain",
-        "Explain parser grammar, capabilities, refs, result semantics, or recovery.",
+        "Explain parser grammar, capabilities, completions, refs, result semantics, or recovery.",
         "polylogue.mcp.server_cutover",
         "register_cutover_read_tools",
         None,
@@ -143,7 +143,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "single_object",
         "polylogue.api.Polylogue.explain_query_expression",
         target_object_kinds=("query", "object-ref", "capability"),
-        target_purpose="Discover grammar, fields, values, plans, refs, authority, and recovery routes.",
+        target_purpose="Discover grammar, fields, values, completions, plans, refs, authority, and recovery routes.",
     ),
     _ToolRow(
         "context",

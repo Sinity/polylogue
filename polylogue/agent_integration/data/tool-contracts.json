@@ -294,7 +294,7 @@
     {
       "arguments": [
         {
-          "description": "Declared explanation subject: query, field, value, ref, capability, result, or recovery.",
+          "description": "Declared explanation subject: query, field, value, ref, capability, completions, result, or recovery.",
           "enum_values": [],
           "kind": "string",
           "name": "subject",
@@ -322,7 +322,7 @@
           "required_initial": false
         },
         {
-          "description": "Optional explanation search text.",
+          "description": "Optional explanation search text; the incomplete prefix when subject=completions.",
           "enum_values": [],
           "kind": "string",
           "name": "search",
@@ -333,6 +333,27 @@
           "enum_values": [],
           "kind": "integer",
           "name": "limit",
+          "required_initial": false
+        },
+        {
+          "description": "Completion vocabulary to answer when subject=completions, such as example or error.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "kind",
+          "required_initial": false
+        },
+        {
+          "description": "Query unit the unit-scoped completion kinds require.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "unit",
+          "required_initial": false
+        },
+        {
+          "description": "Query field the operator completion kinds require.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "field",
           "required_initial": false
         }
       ],

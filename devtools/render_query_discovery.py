@@ -90,10 +90,11 @@ def build_block() -> str:
     lines.extend(
         [
             "",
-            "Machine clients can request parser-gated positives with MCP/CLI "
-            '`query_completions(kind="example")` and real diagnostics/corrections with '
-            '`query_completions(kind="error")`. The query capability resource carries corpus counts and '
-            "the six shared semantics contracts.",
+            "Machine clients can request parser-gated positives with CLI "
+            '`query_completions(kind="example")` or MCP '
+            '`explain(subject="completions", kind="example")`, and real diagnostics/corrections with the '
+            'same routes at `kind="error"`. Both reach one shared completion route. The query capability '
+            "resource carries corpus counts and the six shared semantics contracts.",
             GENERATED_END,
         ]
     )
