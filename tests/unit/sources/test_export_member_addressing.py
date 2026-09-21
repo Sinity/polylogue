@@ -475,3 +475,72 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
                 addressing_mode="element",
                 manage_transaction=False,
             )
+
+
+def test_over_ceiling_member_resolves_against_the_identity_acquisition_recorded() -> None:
+    """polylogue-wzgpf: the structural-identity ceiling is a declared exception.
+
+    ``bounded_payload_content_identity`` refuses to derive a structural
+    identity above ``STRUCTURAL_IDENTITY_MAX_BYTES`` and records the byte
+    digest instead, with
+    ``CONTENT_IDENTITY_SKIPPED_OVERSIZE`` as the reason
+    (``polylogue/core/content_identity.py``). Replay must apply the same
+    ceiling, or the identity it derives disagrees with the one acquisition
+    wrote and the member is permanently unrecoverable.
+
+    Concrete input: a JSON member whose recorded ``content_identity`` is the
+    byte digest the ceiling forced, replayed as a structural reference.
+
+    Wrong observable outcome prevented: ``resolve_member_candidate``
+    returning ``unmatched``/``content_identity:unmatched`` for a member that
+    is byte-identical to the one recorded -- measured before this fix.
+
+    Anti-vacuity: the second arm keeps the ceiling out of the way, and the
+    same candidate then resolves only through its structural identity; a
+    change that simply made the byte digest an accepted alternative for
+    every member would make
+    ``test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash``
+    red.
+    """
+    payload = dumps_bytes(_session("kept"))
+    byte_digest = hashlib.sha256(payload).hexdigest()
+    assert structural_content_identity(json.loads(payload)) != byte_digest
+
+    over_ceiling = MemberCandidate(
+        MemberAddressingMode.WHOLE_MEMBER,
+        None,
+        payload,
+        identity_ceiling_bytes=len(payload) - 1,
+    )
+    resolution = resolve_member_candidate(
+        (over_ceiling,),
+        expected_digest=byte_digest,
+        hint_mode=MemberAddressingMode.WHOLE_MEMBER,
+        hint_index=None,
+        expected_is_structural=True,
+    )
+    assert resolution.error is None
+    assert resolution.outcome == "hint_verified"
+    assert resolution.payload_bytes == payload
+
+    under_ceiling = MemberCandidate(MemberAddressingMode.WHOLE_MEMBER, None, payload)
+    assert (
+        resolve_member_candidate(
+            (under_ceiling,),
+            expected_digest=byte_digest,
+            hint_mode=MemberAddressingMode.WHOLE_MEMBER,
+            hint_index=None,
+            expected_is_structural=True,
+        ).error
+        == "content_identity:unmatched"
+    )
+    assert (
+        resolve_member_candidate(
+            (under_ceiling,),
+            expected_digest=structural_content_identity(json.loads(payload)),
+            hint_mode=MemberAddressingMode.WHOLE_MEMBER,
+            hint_index=None,
+            expected_is_structural=True,
+        ).outcome
+        == "hint_verified"
+    )

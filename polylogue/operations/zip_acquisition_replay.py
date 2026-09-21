@@ -10,16 +10,15 @@ recorded; the hint only decides which candidate is tried first.
 from __future__ import annotations
 
 import hashlib
+import io
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Source
-from polylogue.core.content_identity import structural_content_identity
+from polylogue.core.content_identity import STRUCTURAL_IDENTITY_MAX_BYTES, bounded_payload_content_identity
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.json import JSONDecodeError
-from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.sources import provider_from_origin
 from polylogue.sources.source_acquisition_components import (
@@ -36,6 +35,10 @@ class MemberCandidate:
     addressing_mode: MemberAddressingMode
     element_index: int | None
     payload_bytes: bytes
+    #: The ceiling acquisition applied when it recorded this member's
+    #: identity. Production always uses the declared one; it is a field so a
+    #: test can exercise the over-ceiling branch without a 256 MiB fixture.
+    identity_ceiling_bytes: int = STRUCTURAL_IDENTITY_MAX_BYTES
 
     @property
     def coordinate(self) -> tuple[str, int | None]:
@@ -46,12 +49,23 @@ class MemberCandidate:
         """Identify this unit by decoded content, not by serialization.
 
         A unit that does not decode as JSON has no structure to compare, so
-        its bytes are its identity.
+        its bytes are its identity. So are the bytes of a unit above
+        ``STRUCTURAL_IDENTITY_MAX_BYTES``: acquisition records the byte
+        digest for those (``bounded_payload_content_identity``, the declared
+        exception in ``core/content_identity.py``), so deriving a structural
+        identity here would disagree with the value that was recorded -- the
+        recorded reference would resolve ``unmatched`` and the member would
+        be unrecoverable -- and would re-introduce at replay exactly the
+        unbounded decode the ceiling exists to prevent. Routing through the
+        ceiling's own owner keeps one rule for both sides.
         """
-        try:
-            return structural_content_identity(json_loads(self.payload_bytes))
-        except (JSONDecodeError, ValueError, TypeError):
-            return hashlib.sha256(self.payload_bytes).hexdigest()
+        identity, _skipped = bounded_payload_content_identity(
+            io.BytesIO(self.payload_bytes),
+            size=len(self.payload_bytes),
+            byte_digest=self.byte_identity,
+            ceiling=self.identity_ceiling_bytes,
+        )
+        return identity
 
     @property
     def byte_identity(self) -> str:
