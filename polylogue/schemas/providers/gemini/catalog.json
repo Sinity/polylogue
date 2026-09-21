@@ -1,6 +1,6 @@
 {
   "provider": "gemini",
-  "generated_at": "2026-09-15T20:22:50.812772+00:00",
+  "generated_at": "2026-09-21T14:47:59.083480+00:00",
   "latest_version": "v3",
   "default_version": "v3",
   "recommended_version": "v3",
@@ -156,7 +156,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-08T09:00:35.640671+00:00",
-      "last_seen": "2026-09-15T20:22:50.812665+00:00",
+      "last_seen": "2026-09-21T14:47:59.083384+00:00",
       "bundle_scope_count": 12,
       "sample_count": 12,
       "anchor_profile_family_id": "42934922ee9bfd50d3e52d41a83daf580cc4dc2b3ba515982500a84167da49fe",
@@ -170,7 +170,7 @@
           "artifact_count": 12,
           "supported": true,
           "first_seen": "2026-09-08T09:00:35.640671+00:00",
-          "last_seen": "2026-09-15T20:22:50.812665+00:00",
+          "last_seen": "2026-09-21T14:47:59.083384+00:00",
           "bundle_scope_count": 12,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -218,8 +218,8 @@
     "source_recipe": {
       "structure": {
         "evidence_format": 1,
-        "admission_revision": 1,
-        "identity_revision": 2,
+        "admission_revision": 2,
+        "identity_revision": 3,
         "zip_member_revision": 2,
         "phase": "structure",
         "reduction_revision": 2,
@@ -234,8 +234,8 @@
       },
       "statistics": {
         "evidence_format": 1,
-        "admission_revision": 1,
-        "identity_revision": 2,
+        "admission_revision": 2,
+        "identity_revision": 3,
         "zip_member_revision": 2,
         "phase": "statistics",
         "reduction_revision": 1,
@@ -248,9 +248,9 @@
           "dynamic_ratio": 0.5
         }
       },
-      "structure_fingerprint": "415a50c88f9b33c7173448e5150f5d82caa3d57dce021f9cac0fb82dd837c25d",
-      "statistics_fingerprint": "2f654e303b3fbbc1969de6e0e7be77ac35826cc81aa62242acdca155572011af",
-      "implementation_fingerprint": "2fbb0443f383f5136beeb82b84bfa7fa36cc7ee77444db5c757354573cf42518"
+      "structure_fingerprint": "c1262f3659e657952425c837cf9bec53074bad4cdd5690dfc09cff4b009a7ef5",
+      "statistics_fingerprint": "94ca41796d433a22ac78ffb9b1731a1c8421e02e14a7f2801627efcfd4694fe6",
+      "implementation_fingerprint": "a4705c9202e4a2afd4c23105d1da1e1ed6c8388d5c8f5544afebb2df14d37d63"
     },
     "source_cache_phase_hits": {
       "statistics": 2,
@@ -272,19 +272,19 @@
     },
     "source_terminal_reasons": {},
     "source_phase_timings_ms": {
-      "collect": 190.398,
-      "fold": 93.561,
-      "hash": 18.949,
-      "inventory": 0.166,
-      "preliminary": 41.136,
-      "revision_selection": 0.074,
-      "statistics": 35.738
+      "collect": 200.027,
+      "fold": 99.305,
+      "hash": 55.913,
+      "inventory": 0.16,
+      "preliminary": 7.375,
+      "revision_selection": 0.071,
+      "statistics": 36.443
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 2,
     "producer_version_conflicting_sources": 0,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "666504342e97832bbaabc388ac378d168b6658eaca40b4ea79a0f98b020824c1",
+    "source_input_manifest_digest": "fc3a47d2dcab625abcc8aa7f947e77548e024727964f77ed96f321760cd6cdd6",
     "source_candidate_count": 2,
     "source_included_candidate_count": 2,
     "source_included_native_source_revision_count": 12

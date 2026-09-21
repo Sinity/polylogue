@@ -1,6 +1,6 @@
 {
   "provider": "claude-design",
-  "generated_at": "2026-09-16T00:38:02.156407+00:00",
+  "generated_at": "2026-09-21T14:48:15.976112+00:00",
   "latest_version": "v4",
   "default_version": "v4",
   "recommended_version": "v4",
@@ -1271,7 +1271,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-16T00:38:02.156329+00:00",
-      "last_seen": "2026-09-16T00:38:02.156329+00:00",
+      "last_seen": "2026-09-21T14:48:15.976028+00:00",
       "bundle_scope_count": 11,
       "sample_count": 11,
       "anchor_profile_family_id": "deae516a151d97f9f8953089668fb83909da5fd5c5230d0723a9d475f46cda76",
@@ -1285,7 +1285,7 @@
           "artifact_count": 11,
           "supported": true,
           "first_seen": "2026-09-16T00:38:02.156329+00:00",
-          "last_seen": "2026-09-16T00:38:02.156329+00:00",
+          "last_seen": "2026-09-21T14:48:15.976028+00:00",
           "bundle_scope_count": 11,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -1352,17 +1352,17 @@
       },
       "structure_fingerprint": "c1262f3659e657952425c837cf9bec53074bad4cdd5690dfc09cff4b009a7ef5",
       "statistics_fingerprint": "94ca41796d433a22ac78ffb9b1731a1c8421e02e14a7f2801627efcfd4694fe6",
-      "implementation_fingerprint": "54a335fdb190ecefc64ae13346a1aafabb2867b056b0b00d056b27b2feb09008"
+      "implementation_fingerprint": "a4705c9202e4a2afd4c23105d1da1e1ed6c8388d5c8f5544afebb2df14d37d63"
     },
-    "source_cache_phase_hits": {},
-    "source_cache_phase_misses": {
+    "source_cache_phase_hits": {
       "statistics": 3,
       "structure": 3
     },
+    "source_cache_phase_misses": {},
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 0,
-    "source_cache_misses": 6,
+    "source_cache_hits": 6,
+    "source_cache_misses": 0,
     "source_terminal_outcomes": {
       "included": 11,
       "intentionally_excluded": 1,
@@ -1383,13 +1383,13 @@
       "no_schema_zip_members": 2
     },
     "source_phase_timings_ms": {
-      "collect": 9818.667,
-      "fold": 254.4,
-      "hash": 98.574,
-      "inventory": 0.227,
-      "preliminary": 4444.842,
-      "revision_selection": 0.11,
-      "statistics": 5017.507
+      "collect": 3689.741,
+      "fold": 212.971,
+      "hash": 364.598,
+      "inventory": 0.236,
+      "preliminary": 2909.963,
+      "revision_selection": 0.079,
+      "statistics": 199.021
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 3,

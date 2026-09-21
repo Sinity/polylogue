@@ -1,6 +1,6 @@
 {
   "provider": "hermes",
-  "generated_at": "2026-09-15T20:27:55.745599+00:00",
+  "generated_at": "2026-09-21T14:49:37.409220+00:00",
   "latest_version": "v3",
   "default_version": "v3",
   "recommended_version": "v3",
@@ -135,7 +135,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-08T09:01:02.756636+00:00",
-      "last_seen": "2026-09-15T20:27:55.745382+00:00",
+      "last_seen": "2026-09-21T14:49:37.409031+00:00",
       "bundle_scope_count": 159,
       "sample_count": 161,
       "anchor_profile_family_id": "f3428d40859c52e141d1ca642fd98b72e8f1583af2f4338399128d250c7ca4d6",
@@ -149,7 +149,7 @@
           "artifact_count": 2,
           "supported": true,
           "first_seen": "2026-09-08T09:01:02.756636+00:00",
-          "last_seen": "2026-09-15T20:27:55.745382+00:00",
+          "last_seen": "2026-09-21T14:49:37.409031+00:00",
           "bundle_scope_count": 2,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -170,7 +170,7 @@
           "artifact_count": 159,
           "supported": true,
           "first_seen": "2026-09-08T09:01:02.756636+00:00",
-          "last_seen": "2026-09-15T20:27:55.745382+00:00",
+          "last_seen": "2026-09-21T14:49:37.409031+00:00",
           "bundle_scope_count": 159,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -248,8 +248,8 @@
     "source_recipe": {
       "structure": {
         "evidence_format": 1,
-        "admission_revision": 1,
-        "identity_revision": 2,
+        "admission_revision": 2,
+        "identity_revision": 3,
         "zip_member_revision": 2,
         "phase": "structure",
         "reduction_revision": 2,
@@ -264,8 +264,8 @@
       },
       "statistics": {
         "evidence_format": 1,
-        "admission_revision": 1,
-        "identity_revision": 2,
+        "admission_revision": 2,
+        "identity_revision": 3,
         "zip_member_revision": 2,
         "phase": "statistics",
         "reduction_revision": 1,
@@ -278,19 +278,19 @@
           "dynamic_ratio": 0.5
         }
       },
-      "structure_fingerprint": "415a50c88f9b33c7173448e5150f5d82caa3d57dce021f9cac0fb82dd837c25d",
-      "statistics_fingerprint": "2f654e303b3fbbc1969de6e0e7be77ac35826cc81aa62242acdca155572011af",
-      "implementation_fingerprint": "2fbb0443f383f5136beeb82b84bfa7fa36cc7ee77444db5c757354573cf42518"
+      "structure_fingerprint": "c1262f3659e657952425c837cf9bec53074bad4cdd5690dfc09cff4b009a7ef5",
+      "statistics_fingerprint": "94ca41796d433a22ac78ffb9b1731a1c8421e02e14a7f2801627efcfd4694fe6",
+      "implementation_fingerprint": "a4705c9202e4a2afd4c23105d1da1e1ed6c8388d5c8f5544afebb2df14d37d63"
     },
-    "source_cache_phase_hits": {},
-    "source_cache_phase_misses": {
+    "source_cache_phase_hits": {
       "statistics": 171,
       "structure": 171
     },
+    "source_cache_phase_misses": {},
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 0,
-    "source_cache_misses": 342,
+    "source_cache_hits": 342,
+    "source_cache_misses": 0,
     "source_terminal_outcomes": {
       "included": 171,
       "unsupported": 7
@@ -307,19 +307,19 @@
       "source_class_unsupported": 7
     },
     "source_phase_timings_ms": {
-      "collect": 58712.116,
-      "fold": 9751.069,
-      "hash": 1784.991,
-      "inventory": 3.096,
-      "preliminary": 16721.516,
-      "revision_selection": 2.434,
-      "statistics": 30423.68
+      "collect": 13105.22,
+      "fold": 8274.077,
+      "hash": 1793.448,
+      "inventory": 3.339,
+      "preliminary": 7.425,
+      "revision_selection": 0.84,
+      "statistics": 3001.511
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 171,
     "producer_version_conflicting_sources": 0,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "45671ce25bff2b0bd70dc19256313e27017eca73e4064d6dcdd0cf93ee3b752f",
+    "source_input_manifest_digest": "74e813232e50cef3d71291cc60d919f00dad53197279d15b99dfe475f5ca2626",
     "source_candidate_count": 178,
     "source_included_candidate_count": 171,
     "source_included_native_source_revision_count": 171

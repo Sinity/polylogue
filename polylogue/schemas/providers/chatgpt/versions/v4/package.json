@@ -4,7 +4,7 @@
   "anchor_kind": "session_document",
   "default_element_kind": "session_document",
   "first_seen": "2026-09-15T21:33:27.370021+00:00",
-  "last_seen": "2026-09-15T21:33:27.370021+00:00",
+  "last_seen": "2026-09-21T14:54:18.461643+00:00",
   "bundle_scope_count": 2810,
   "sample_count": 5643,
   "anchor_profile_family_id": "207d98f91de868bed857b1d62dc164e4d9e7be33d5e2d8f86c0175715f7f85f6",
@@ -18,7 +18,7 @@
       "artifact_count": 5,
       "supported": true,
       "first_seen": "2026-09-15T21:33:27.370021+00:00",
-      "last_seen": "2026-09-15T21:33:27.370021+00:00",
+      "last_seen": "2026-09-21T14:54:18.461643+00:00",
       "bundle_scope_count": 5,
       "bundle_scope_identities": [],
       "exact_structure_ids": [
@@ -44,7 +44,7 @@
       "artifact_count": 2,
       "supported": true,
       "first_seen": "2026-09-15T21:33:27.370021+00:00",
-      "last_seen": "2026-09-15T21:33:27.370021+00:00",
+      "last_seen": "2026-09-21T14:54:18.461643+00:00",
       "bundle_scope_count": 2,
       "bundle_scope_identities": [],
       "exact_structure_ids": [
@@ -120,7 +120,7 @@
       "artifact_count": 2810,
       "supported": true,
       "first_seen": "2026-09-15T21:33:27.370021+00:00",
-      "last_seen": "2026-09-15T21:33:27.370021+00:00",
+      "last_seen": "2026-09-21T14:54:18.461643+00:00",
       "bundle_scope_count": 2810,
       "bundle_scope_identities": [],
       "exact_structure_ids": [
