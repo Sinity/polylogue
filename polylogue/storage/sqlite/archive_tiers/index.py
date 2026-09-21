@@ -524,25 +524,24 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # additive binding table: relations and a view column disappear, so an
 # existing index.db cannot be read forward and must be rebuilt from
 # source.db.
-INDEX_SCHEMA_VERSION = 106
+#
+# polylogue-79yii: v107 drops `candidate_source_membership` and its pending
+# index. The table was generation-local resume state for the index-rebuild
+# transaction lifecycle, whose `seal_candidate_membership` /
+# `commit_candidate_membership` writers PR #5336 retired -- and which had no
+# production caller before that either. Its one reader
+# (`storage/source_generation_receipts.py`) folded the result into
+# `SourceGenerationReceipt.index_generation_binding.source_snapshots`, a value
+# nothing outside that module ever read, and which after the retirement could
+# only be the empty set: an unwritten relation reported as a measured "no
+# source snapshots". The reader and the reported field go with the table.
+# INDEX-ONLY: the index tier is derived and rebuildable, no durable migration
+# is involved, and no reader regresses because the only consumer of the value
+# was the value itself.
+INDEX_SCHEMA_VERSION = 107
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
-
--- Candidate construction authority is generation-local.  The source seal is
--- copied here when an inactive generation is created; resume derives pending
--- work from this table, never from an ops cursor or a later source scan.
-CREATE TABLE IF NOT EXISTS candidate_source_membership (
-    raw_id TEXT PRIMARY KEY,
-    blob_hash BLOB NOT NULL,
-    blob_size INTEGER NOT NULL CHECK(blob_size >= 0),
-    source_snapshot TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('pending', 'committed')),
-    committed_at_ms INTEGER
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_candidate_source_membership_pending
-ON candidate_source_membership(status, blob_hash, raw_id);
 
 -- Continuation frames are deliberately tier-local: query-unit continuations
 -- combine this counter with the user-tier counter, so a write in either

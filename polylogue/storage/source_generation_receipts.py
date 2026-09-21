@@ -128,14 +128,6 @@ class SourceGenerationMemberDisposition:
 
 
 @dataclass(frozen=True, slots=True)
-class IndexGenerationBinding:
-    """Caller-observed active generation plus source snapshots stored in index."""
-
-    active_generation: str
-    source_snapshots: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class SourceGenerationReceipt:
     """Immutable, bounded source-to-current-index evidence projection."""
 
@@ -150,7 +142,6 @@ class SourceGenerationReceipt:
     confirmed_raw_ids: tuple[str, ...]
     unresolved_raw_ids: tuple[str, ...]
     source_marker_missing_raw_ids: tuple[str, ...]
-    index_generation_binding: IndexGenerationBinding
     items: tuple[SourceGenerationItemReceipt, ...]
 
 
@@ -172,7 +163,6 @@ def source_generation_receipt(
     if not active_generation:
         raise ValueError("active_generation must be non-empty")
 
-    binding = IndexGenerationBinding(active_generation=active_generation, source_snapshots=())
     generation = source_conn.execute(
         "SELECT item_count FROM main.source_generations WHERE source_generation_id = ?",
         (source_generation_id,),
@@ -190,7 +180,6 @@ def source_generation_receipt(
             confirmed_raw_ids=(),
             unresolved_raw_ids=(),
             source_marker_missing_raw_ids=(),
-            index_generation_binding=binding,
             items=(),
         )
     item_count = _int_cell(generation[0])
@@ -270,19 +259,6 @@ def source_generation_receipt(
 
     confirmed = sorted({raw.raw_id for item in items for raw in item.raws if raw.complete})
     unresolved = sorted({raw.raw_id for item in items for raw in item.raws if not raw.complete})
-    raw_ids = sorted(set(confirmed + unresolved))
-    source_snapshots: set[str] = set()
-    for offset in range(0, len(raw_ids), 256):
-        page = raw_ids[offset : offset + 256]
-        placeholders = ",".join("?" for _ in page)
-        source_snapshots.update(
-            str(row[0])
-            for row in index_conn.execute(
-                f"SELECT source_snapshot FROM main.candidate_source_membership WHERE raw_id IN ({placeholders})",
-                page,
-            )
-        )
-    binding = IndexGenerationBinding(active_generation, tuple(sorted(source_snapshots)))
     marker_missing = sorted(
         {
             raw.raw_id
@@ -316,7 +292,6 @@ def source_generation_receipt(
         confirmed_raw_ids=tuple(confirmed),
         unresolved_raw_ids=tuple(unresolved),
         source_marker_missing_raw_ids=tuple(marker_missing),
-        index_generation_binding=binding,
         items=tuple(items),
     )
 
@@ -843,7 +818,6 @@ def _bytes_cell(value: object) -> bytes | None:
 
 
 __all__ = [
-    "IndexGenerationBinding",
     "SourceGenerationBlocker",
     "SourceGenerationItemReceipt",
     "SourceGenerationLogicalReceipt",

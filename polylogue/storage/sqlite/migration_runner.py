@@ -1832,13 +1832,36 @@ class DurableSchemaInventory:
 
 @dataclass(frozen=True, slots=True)
 class DurableFreshDDLParityProof:
-    """Comparison between an upgraded database and a fresh canonical create."""
+    """Comparison between an upgraded database and a fresh canonical create.
+
+    Two digests describe the migrated side because they answer two different
+    questions, and a tier that retires anything makes them differ
+    (polylogue-jkoah):
+
+    - ``migrated_inventory_sha256`` is the migrated database's inventory
+      exactly as it is on disk, with no retirement projection. It is the digest
+      ``capture_durable_database_evidence`` records as
+      ``DurableDatabaseEvidence.schema_inventory_sha256``, so the train gates
+      that compare this proof against ``apply_evidence.post`` are comparing two
+      captures of the same bytes -- the binding that proves the applied
+      migration produced the inventory this proof verified.
+    - ``parity_inventory_sha256`` is the same inventory projected through the
+      tier's retirement declaration: retired objects removed, retired columns
+      dropped from their owning table. Only this digest is comparable to
+      ``fresh_inventory_sha256``, because fresh DDL already omits every
+      retirement.
+
+    Comparing the projected digest against an unprojected ``post`` capture
+    would refuse every tier that actually exercises the retirement exemption,
+    since the two can only be equal when the tier retires nothing.
+    """
 
     tier: ArchiveTier
     target_version: int
     migrated_version: int
     fresh_version: int
     migrated_inventory_sha256: str
+    parity_inventory_sha256: str
     fresh_inventory_sha256: str
     missing_objects: tuple[str, ...]
     unexpected_objects: tuple[str, ...]
@@ -2272,6 +2295,13 @@ def prove_durable_fresh_ddl_parity(
     retired_refs = _retired_schema_objects_for_parity(tier)
     # Fresh DDL already omits every retirement, so only the migrated side is
     # projected. Both sides then key on the same unqualified object_ref shape.
+    # Three captures, not two. ``observed`` is the migrated database exactly as
+    # it stands, and is the only one that can equal the unprojected
+    # ``DurableDatabaseEvidence.schema_inventory_sha256`` the apply step
+    # recorded for the same file. ``migrated``/``parity_migrated`` carry the
+    # retirement projection that makes a comparison against fresh DDL
+    # meaningful.
+    observed = capture_durable_schema_inventory(migrated_connection)
     migrated = capture_durable_schema_inventory(
         migrated_connection, retired_columns=_retired_columns_by_table(retired_refs)
     )
@@ -2303,7 +2333,8 @@ def prove_durable_fresh_ddl_parity(
         target_version=target_version,
         migrated_version=migrated_version,
         fresh_version=fresh_version,
-        migrated_inventory_sha256=parity_migrated.sha256,
+        migrated_inventory_sha256=observed.sha256,
+        parity_inventory_sha256=parity_migrated.sha256,
         fresh_inventory_sha256=fresh.sha256,
         missing_objects=missing,
         unexpected_objects=unexpected,
@@ -3271,7 +3302,10 @@ def prove_durable_change_train(
         not fresh_ddl_parity.matches
         or fresh_ddl_parity.tier is not train.tier
         or fresh_ddl_parity.target_version != train.target_version
+        # See ``DurableFreshDDLParityProof``: the unprojected digest is the one
+        # that can equal an unprojected ``post`` capture of the same file.
         or fresh_ddl_parity.migrated_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256
+        or fresh_ddl_parity.parity_inventory_sha256 != fresh_ddl_parity.fresh_inventory_sha256
         or fresh_ddl_parity.fresh_inventory_sha256 != train.fresh_ddl_parity.fresh_inventory_sha256
     ):
         raise DurableChangeTrainError("actual post-apply bytes do not have admitted fresh-DDL parity")
@@ -3391,6 +3425,7 @@ def _validate_admission_evidence(train: DurableChangeTrain) -> None:
     ):
         raise DurableChangeTrainError("fresh-DDL parity does not bind the train tier and target")
     _validate_sha256(parity.migrated_inventory_sha256, label="migrated fresh-DDL inventory")
+    _validate_sha256(parity.parity_inventory_sha256, label="retirement-projected fresh-DDL inventory")
     _validate_sha256(parity.fresh_inventory_sha256, label="canonical fresh-DDL inventory")
     parity_ref = _require_nonempty(parity.evidence_ref, label="fresh-DDL parity evidence")
     if (
@@ -3398,7 +3433,9 @@ def _validate_admission_evidence(train: DurableChangeTrain) -> None:
         or parity.missing_objects
         or parity.unexpected_objects
         or parity.changed_objects
-        or parity.migrated_inventory_sha256 != parity.fresh_inventory_sha256
+        # The projected digest is the operand fresh DDL can be equal to; the
+        # unprojected one carries whatever the tier declared it would retain.
+        or parity.parity_inventory_sha256 != parity.fresh_inventory_sha256
     ):
         raise DurableChangeTrainError("admitted fresh-DDL parity is not an exact match")
     required_refs = {admission_ref, parity_ref}
@@ -3597,11 +3634,16 @@ def _validate_train_proof(train: DurableChangeTrain) -> None:
         or parity.missing_objects
         or parity.unexpected_objects
         or parity.changed_objects
+        # Unprojected against unprojected: both are captures of the live
+        # migrated file. Using the retirement-projected digest here would
+        # refuse every tier that actually retires something (polylogue-jkoah).
         or parity.migrated_inventory_sha256 != apply_evidence.post.schema_inventory_sha256
+        or parity.parity_inventory_sha256 != parity.fresh_inventory_sha256
         or parity.fresh_inventory_sha256 != admitted_parity.fresh_inventory_sha256
     ):
         raise DurableChangeTrainError("proof fresh-DDL parity does not bind admitted and applied schema bytes")
     _validate_sha256(parity.migrated_inventory_sha256, label="proof migrated inventory")
+    _validate_sha256(parity.parity_inventory_sha256, label="proof retirement-projected inventory")
     _validate_sha256(parity.fresh_inventory_sha256, label="proof fresh inventory")
     expected_consumers = {
         consumer.consumer_id: consumer for rider in train.riders for consumer in rider.runtime_consumers
@@ -3995,6 +4037,28 @@ def _decode_manifest_value(annotation: object, value: object, *, label: str) -> 
     raise DurableChangeTrainError(f"{label} has unsupported manifest annotation {annotation!r}")
 
 
+def _backfilled_parity_inventory(value: object) -> object:
+    """Fill a pre-``parity_inventory_sha256`` parity proof from its own digest.
+
+    A manifest written before the projected digest was split out (polylogue-jkoah)
+    carried one migrated digest, and that digest was necessarily both -- the
+    split only separates two values when the tier retires something, and a
+    retirement-exercising train could not have been recorded while the proof
+    that consumes it refused every such tier. So copying the recorded digest
+    into the projected slot reproduces exactly what that train proved; it does
+    not assume a retirement away.
+
+    The manifest checksum is verified before this runs, so the backfill can
+    only complete a payload that already authenticated.
+    """
+    if not isinstance(value, dict) or "parity_inventory_sha256" in value:
+        return value
+    migrated = value.get("migrated_inventory_sha256")
+    if not isinstance(migrated, str):
+        return value
+    return {**value, "parity_inventory_sha256": migrated}
+
+
 def durable_change_train_from_payload(payload: Mapping[str, object]) -> DurableChangeTrain:
     """Strictly decode and validate a checksummed durable train manifest."""
     mutable = dict(payload)
@@ -4004,6 +4068,14 @@ def durable_change_train_from_payload(payload: Mapping[str, object]) -> DurableC
     # v1 manifests written before source continuity refreshes omitted this
     # optional field. Preserve their checksum and decode them as no refresh.
     mutable.setdefault("source_continuity_evidence", None)
+    if "fresh_ddl_parity" in mutable:
+        mutable["fresh_ddl_parity"] = _backfilled_parity_inventory(mutable["fresh_ddl_parity"])
+    recorded_proof = mutable.get("proof")
+    if isinstance(recorded_proof, dict) and "fresh_ddl_parity" in recorded_proof:
+        mutable["proof"] = {
+            **recorded_proof,
+            "fresh_ddl_parity": _backfilled_parity_inventory(recorded_proof["fresh_ddl_parity"]),
+        }
     decoded = _decode_manifest_value(DurableChangeTrain, mutable, label="train")
     if not isinstance(decoded, DurableChangeTrain):
         raise DurableChangeTrainError("durable change train payload decoded to the wrong type")
