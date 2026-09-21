@@ -2030,6 +2030,26 @@ def test_daemon_status_contains_malformed_scheduler_config_inside_bounded_queue_
     assert any("malformed interval" in str(caveat) for caveat in cast(list[object], queue["caveats"]))
 
 
+def _proven_healthy_frontier() -> Any:
+    """A frontier projection whose sub-checks actually support ``healthy``."""
+    return status_module.RawFrontierIntegrity(
+        available=True,
+        overall_status="healthy",
+        broken_head_status="healthy",
+        cursor_ahead_status="healthy",
+        missing_source_raw_status="healthy",
+    )
+
+
+def _verdict_clean_component_readiness() -> dict[str, object]:
+    """Readiness entries that refute nothing in the shared overall verdict."""
+    return {
+        "raw_frontier_integrity": {"component": "raw_frontier_integrity", "state": "ready", "summary": "ready"},
+        "raw_materialization": {"component": "raw_materialization", "state": "ready", "summary": "ready"},
+        "search": {"component": "search", "state": "ready", "summary": "ready"},
+    }
+
+
 @pytest.mark.parametrize(
     ("available", "lifecycle_state", "expected_ok"),
     [
@@ -2044,13 +2064,22 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
     lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"],
     expected_ok: bool,
 ) -> None:
-    """Root status JSON never promotes missing or non-clean source evidence."""
+    """Root status JSON never promotes missing or non-clean source evidence.
+
+    Every operand of the overall verdict except the raw-failure lifecycle is
+    pinned healthy, so a flip here can only come from the parametrized
+    lifecycle state. ``overall_status="healthy"`` alone is not enough: the
+    shared verdict re-derives the frontier verdict from its own sub-checks
+    rather than trusting a declared overall, so the sub-statuses are supplied
+    too (polylogue-20d.17.1).
+    """
     status = status_module.DaemonStatus(
         daemon_liveness=True,
         raw_failure_lifecycle_available=available,
         raw_failure_lifecycle_state=lifecycle_state,
         raw_failure_lifecycle_reason="source evidence test state",
-        raw_frontier_integrity=status_module.RawFrontierIntegrity(overall_status="healthy"),
+        raw_frontier_integrity=_proven_healthy_frontier(),
+        component_readiness=_verdict_clean_component_readiness(),
         raw_parse_failures=1 if lifecycle_state == "degraded" else 0,
         raw_unexplained_failures=1 if lifecycle_state == "blocked" else 0,
     )
@@ -3137,3 +3166,231 @@ def test_archive_debt_scan_failure_is_distinguishable_from_feature_off() -> None
     assert failures[0]["outcome"] == "degraded"
     assert failures[0]["error_type"] == "OperationalError"
     assert "database is locked" in str(failures[0]["error_detail"])
+
+
+# ---------------------------------------------------------------------------
+# One producer for the overall ``ok`` verdict (polylogue-20d.17.1)
+# ---------------------------------------------------------------------------
+
+
+def _clean_pinned_status_payload() -> dict[str, object]:
+    """A pinned archive payload in which nothing refutes the overall verdict."""
+    return {
+        "ok": True,
+        "component_readiness": _verdict_clean_component_readiness(),
+        "archive_tiers": {
+            "index": {"exists": True, "table_count_precision": {"sessions": "exact"}},
+        },
+        "raw_frontier_integrity": _proven_healthy_frontier().model_dump(),
+        "raw_failure_lifecycle_available": True,
+        "raw_failure_lifecycle_state": "healthy",
+        "raw_unexplained_failures": 0,
+        "daemon_liveness": False,
+        "sinex_publication": {},
+        "assertion_candidate_queue": {},
+        "next_action": "",
+        "diagnostic": {},
+    }
+
+
+class _PinnedArchiveStub:
+    """Minimal stand-in for the fields ``produce_operation_status`` reads."""
+
+    operation_schema_versions: dict[str, int] = {}
+
+
+def _daemon_payload_for_verdict_variant(variant: str) -> dict[str, object]:
+    """Build the real daemon status payload with exactly one operand perturbed."""
+    frontier = _proven_healthy_frontier()
+    if variant == "frontier_violated":
+        frontier = status_module.RawFrontierIntegrity(
+            available=True,
+            overall_status="violated",
+            broken_head_status="violated",
+            cursor_ahead_status="healthy",
+            missing_source_raw_status="healthy",
+            broken_head_count=1,
+        )
+    status = status_module.DaemonStatus(
+        daemon_liveness=True,
+        raw_failure_lifecycle_available=variant != "lifecycle_unavailable",
+        raw_failure_lifecycle_state=(
+            "degraded"
+            if variant == "lifecycle_degraded"
+            else "unavailable"
+            if variant == "lifecycle_unavailable"
+            else "healthy"
+        ),
+        raw_parse_failures=1 if variant == "lifecycle_degraded" else 0,
+        raw_frontier_integrity=frontier,
+        component_readiness=(
+            {
+                **_verdict_clean_component_readiness(),
+                "search": {"component": "search", "state": "stale", "summary": "fts index incomplete"},
+            }
+            if variant == "component_stale"
+            else _verdict_clean_component_readiness()
+        ),
+    )
+    halted = (
+        [{"unit": "fts", "reason": "halted", "message": "", "frame": "", "halted_at": ""}]
+        if variant == "halted_unit"
+        else []
+    )
+    snapshot = {
+        "state": "stale" if variant == "stale_snapshot" else "fresh",
+        "age_s": 1.0,
+        "captured_at": "2026-01-01T00:00:00+00:00",
+        "frame": "f",
+        "current_frame": "f",
+        "frame_changed": False,
+        "refresh_error": None,
+    }
+    with (
+        patch("polylogue.daemon.status.build_daemon_status", return_value=status),
+        patch("polylogue.daemon.status.halted_unit_status", return_value=halted),
+        patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
+        patch("polylogue.daemon.status_snapshot.snapshot_state_for_metrics", return_value=snapshot),
+    ):
+        return cast(dict[str, object], daemon_status_payload(sources=()))
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_ok"),
+    [
+        ("clean", True),
+        ("halted_unit", False),
+        ("stale_snapshot", False),
+        ("lifecycle_degraded", False),
+        ("lifecycle_unavailable", False),
+        ("frontier_violated", False),
+        ("component_stale", False),
+    ],
+)
+def test_daemon_status_payload_verdict_keeps_every_refutation(variant: str, expected_ok: bool) -> None:
+    """The one shared rule did not drop any operand the daemon rule used to check.
+
+    ``halted_unit``, ``stale_snapshot``, ``lifecycle_*`` and
+    ``frontier_violated`` were the daemon route's own refutations;
+    ``component_stale`` was only the operations route's. All seven now run
+    through :func:`overall_status_ok` (polylogue-20d.17.1).
+
+    Anti-vacuity: delete any single clause from ``overall_status_ok`` and the
+    corresponding row reports ``ok: true``; ``clean`` is the control that keeps
+    a blanket ``return False`` from passing the rest.
+    """
+    payload = _daemon_payload_for_verdict_variant(variant)
+    assert payload["ok"] is expected_ok
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected_ok"),
+    [
+        ("clean", True),
+        ("halted_unit", False),
+        ("stale_snapshot", False),
+    ],
+)
+def test_overall_ok_verdict_agrees_across_both_status_surfaces(variant: str, expected_ok: bool) -> None:
+    """The daemon payload and the operations layer decide ``ok`` with one rule.
+
+    ``daemon/status.py`` derived ``ok`` from frontier integrity, the raw-failure
+    lifecycle, halted units and snapshot staleness. ``operations/daemon_status``
+    derived it from component readiness plus tier-count precision and then
+    *overwrote* the runtime verdict with its own, so a daemon that had already
+    published ``ok: false`` was republished as ``ok: true`` through the
+    operations layer (polylogue-20d.17.1).
+
+    ``halted_units`` and ``status_snapshot`` are the divergent inputs: the
+    pinned reader never observes either, so under the two old rules the
+    operations layer published ``ok: true`` for exactly the snapshot on which
+    the daemon published ``ok: false``. ``clean`` is the anti-blanket control.
+
+    Anti-vacuity: restore the second computation site --
+    ``result["ok"] = bool(pinned["ok"]) and bool(runtime_status.get("daemon_liveness"))``
+    in ``produce_operation_status`` -- and both divergent rows go red. A test
+    that only inspected one surface could never observe that disagreement.
+    """
+    from polylogue.operations.daemon_status import produce_operation_status
+
+    daemon_payload = _daemon_payload_for_verdict_variant(variant)
+    pinned = _clean_pinned_status_payload()
+
+    with patch("polylogue.operations.daemon_status.produce_direct_status", return_value=pinned):
+        operation_payload = produce_operation_status(
+            archive=cast(Any, _PinnedArchiveStub()),
+            now_ms=1_700_000_000_000,
+            runtime_status=daemon_payload,
+        )
+
+    assert daemon_payload["ok"] is expected_ok
+    assert operation_payload["ok"] is expected_ok, (
+        f"{variant}: operations layer published ok={operation_payload['ok']!r} "
+        f"for a runtime that published ok={daemon_payload['ok']!r}"
+    )
+
+
+def test_composed_verdict_reads_the_operands_the_composed_payload_publishes() -> None:
+    """Where pinned evidence replaces runtime evidence, the verdict follows it.
+
+    ``produce_operation_status`` republishes the pinned reader's frontier and
+    raw-failure lifecycle over the runtime's. Deciding ``ok`` from the
+    *discarded* runtime copy would publish a refusal the payload's own evidence
+    does not explain -- the mirror image of the bug. The verdict therefore
+    reads the operands that survive into the response.
+
+    Anti-vacuity: feed the runtime's frontier/lifecycle into the composed call
+    instead of the pinned ones and this reports ``ok: false`` beside a healthy
+    published frontier.
+    """
+    from polylogue.operations.daemon_status import produce_operation_status
+
+    daemon_payload = _daemon_payload_for_verdict_variant("frontier_violated")
+    assert daemon_payload["ok"] is False
+    pinned = _clean_pinned_status_payload()
+
+    with patch("polylogue.operations.daemon_status.produce_direct_status", return_value=pinned):
+        operation_payload = produce_operation_status(
+            archive=cast(Any, _PinnedArchiveStub()),
+            now_ms=1_700_000_000_000,
+            runtime_status=daemon_payload,
+        )
+
+    published_frontier = cast(dict[str, object], operation_payload["raw_frontier_integrity"])
+    assert published_frontier["overall_status"] == "healthy"
+    assert operation_payload["ok"] is True
+
+
+def test_pinned_only_refutations_still_reach_the_composed_verdict() -> None:
+    """A refutation only the pinned reader can see is never dropped either.
+
+    The runtime payload measures no per-tier declared relation counts, so the
+    composition must keep consuming the pinned operands rather than trusting
+    the runtime's green answer.
+
+    Anti-vacuity: drop ``tier_count_unavailable=`` (or ``component_readiness=``)
+    from the composed call and these rows report ``ok: true`` again.
+    """
+    from polylogue.operations.daemon_status import produce_operation_status
+
+    daemon_payload = _daemon_payload_for_verdict_variant("clean")
+    assert daemon_payload["ok"] is True
+
+    inexact_counts = _clean_pinned_status_payload()
+    inexact_counts["archive_tiers"] = {
+        "index": {"exists": True, "table_count_precision": {"sessions": "estimated"}},
+    }
+    stale_component = _clean_pinned_status_payload()
+    stale_component["component_readiness"] = {
+        **_verdict_clean_component_readiness(),
+        "search": {"component": "search", "state": "stale", "summary": "fts index incomplete"},
+    }
+
+    for pinned in (inexact_counts, stale_component):
+        with patch("polylogue.operations.daemon_status.produce_direct_status", return_value=pinned):
+            operation_payload = produce_operation_status(
+                archive=cast(Any, _PinnedArchiveStub()),
+                now_ms=1_700_000_000_000,
+                runtime_status=daemon_payload,
+            )
+        assert operation_payload["ok"] is False

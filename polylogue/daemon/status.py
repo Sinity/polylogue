@@ -70,6 +70,7 @@ from polylogue.daemon.live_ingest_attempt_workload import (
 from polylogue.daemon.periodic import periodic_loop_payload
 from polylogue.logging import WARNING, emit
 from polylogue.maintenance.archive_verification import read_raw_failure_lifecycle
+from polylogue.operations.daemon_status import overall_status_ok
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
@@ -3395,18 +3396,21 @@ def daemon_status_payload(
 
     return json_document(
         {
-            # A daemon holding a halted unit is not ok, whatever the rest of
-            # its components report: something it was asked to do has stopped
-            # being schedulable and will not resume on its own.
-            "ok": (
-                status.raw_frontier_integrity.overall_status == "healthy"
-                and status.raw_failure_lifecycle_available
-                and status.raw_failure_lifecycle_state == "healthy"
-                and not halted_units
-                # A stale cached frame is advisory evidence only. Direct
-                # status remains usable when no daemon snapshot exists, but a
-                # known stale snapshot must not certify a green answer.
-                and status_snapshot.get("state") != "stale"
+            # One producer for this verdict (polylogue-20d.17.1): the daemon
+            # payload and the operations layer used to apply different rules
+            # to the same snapshot. This route measures no per-tier declared
+            # relation counts, so that operand is passed as unobserved.
+            "ok": overall_status_ok(
+                component_readiness=cast(Mapping[str, Mapping[str, object]], status.component_readiness),
+                raw_failures={
+                    "raw_failure_lifecycle_available": status.raw_failure_lifecycle_available,
+                    "raw_failure_lifecycle_state": status.raw_failure_lifecycle_state,
+                    "raw_unexplained_failures": status.raw_unexplained_failures,
+                },
+                raw_frontier_integrity=status.raw_frontier_integrity.model_dump(),
+                tier_count_unavailable=None,
+                halted_units=halted_units,
+                status_snapshot=status_snapshot,
             ),
             "halted_units": halted_units,
             "services": supervised_service_states(),
