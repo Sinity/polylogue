@@ -6,8 +6,11 @@ import json
 import sqlite3
 import uuid
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from polylogue.operations.judgment_scheduler import (
@@ -20,7 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 _DAEMON_EVENTS_DDL = """
 CREATE TABLE IF NOT EXISTS daemon_events (
@@ -114,6 +117,87 @@ def _iso_from_ms(value: object) -> str:
     return datetime.fromtimestamp(resolved / 1000, tz=UTC).isoformat()
 
 
+@dataclass(frozen=True, slots=True)
+class DaemonEventRetention:
+    """Declared bound on the ``daemon_events`` replay ledger.
+
+    ``daemon_events`` lives in the disposable ops tier but nothing in
+    ``polylogue/`` ever deleted from it, so a long-running daemon emitting one
+    ``message.appended`` per live append grew the table without limit
+    (polylogue-20d.13.6).
+
+    Both bounds default to ``None``: **no retention value is declared here on
+    purpose.** The parent bead supplies none, no measurement of the real
+    emission rate exists, and a number invented to make the enforcement point
+    look satisfied would be a fake bound. :func:`prune_daemon_events` is the
+    named enforcement point and runs on every emit; until an operator or a
+    live-daemon measurement supplies a bound it prunes nothing and
+    :attr:`is_bounded` reports the ledger as unbounded rather than pretending
+    otherwise.
+    """
+
+    max_rows: int | None = None
+    max_age_ms: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_rows is not None and self.max_rows <= 0:
+            raise ValueError("daemon event retention max_rows must be positive when declared")
+        if self.max_age_ms is not None and self.max_age_ms <= 0:
+            raise ValueError("daemon event retention max_age_ms must be positive when declared")
+
+    @property
+    def is_bounded(self) -> bool:
+        """True only when at least one bound has actually been declared."""
+        return self.max_rows is not None or self.max_age_ms is not None
+
+
+_UNBOUNDED_RETENTION = DaemonEventRetention()
+_RETENTION: DaemonEventRetention = _UNBOUNDED_RETENTION
+
+
+def daemon_event_retention() -> DaemonEventRetention:
+    """Return the retention bound currently enforced on ``daemon_events``."""
+    return _RETENTION
+
+
+def set_daemon_event_retention(retention: DaemonEventRetention) -> DaemonEventRetention:
+    """Install ``retention`` as the enforced bound and return the previous one."""
+    global _RETENTION
+    previous = _RETENTION
+    _RETENTION = retention
+    return previous
+
+
+def prune_daemon_events(
+    conn: sqlite3.Connection,
+    retention: DaemonEventRetention | None = None,
+    *,
+    now_ms: int | None = None,
+) -> int:
+    """Enforce ``retention`` on ``daemon_events`` and return the rows removed.
+
+    The single enforcement point for the ledger bound. Called on every emit so
+    a resuming subscriber's cursor and the retained range are trimmed by the
+    same writer, inside the emit transaction.
+    """
+    resolved = daemon_event_retention() if retention is None else retention
+    if not resolved.is_bounded:
+        return 0
+    removed = 0
+    if resolved.max_age_ms is not None:
+        horizon = (current_epoch_ms() if now_ms is None else now_ms) - resolved.max_age_ms
+        removed += conn.execute("DELETE FROM daemon_events WHERE ts_ms < ?", (horizon,)).rowcount
+    if resolved.max_rows is not None:
+        row_count = int(conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone()[0])
+        excess = row_count - resolved.max_rows
+        if excess > 0:
+            removed += conn.execute(
+                "DELETE FROM daemon_events WHERE id IN (SELECT id FROM daemon_events ORDER BY id ASC LIMIT ?)",
+                (excess,),
+            ).rowcount
+    return removed
+
+
 def emit_daemon_event(
     kind: str,
     *,
@@ -166,6 +250,7 @@ def emit_daemon_event(
                 json.dumps(payload or {}),
             ),
         )
+        prune_daemon_events(conn, now_ms=observed_at_ms)
         conn.commit()
     finally:
         conn.close()
@@ -259,21 +344,158 @@ def query_daemon_events(
         conn.close()
 
 
+class EventCursorStatus(str, Enum):
+    """Whether a resuming subscriber's cursor can still be honoured."""
+
+    OK = "ok"
+    """The requested cursor is inside the retained range; ``events`` is the
+    complete answer up to ``limit``."""
+
+    AGED_OUT = "aged-out"
+    """The requested cursor names history the ledger no longer retains. The
+    answer is a resync envelope, never a short or empty page: an empty page
+    reads to a subscriber as "nothing happened", which is precisely the silent
+    loss this refusal exists to prevent."""
+
+
+RESYNC_CURSOR_AGED_OUT = "cursor_aged_out"
+"""Rows between the cursor and the retained minimum were pruned."""
+
+RESYNC_LEDGER_RESET = "ledger_reset"
+"""The cursor is ahead of every retained row: the disposable ops tier holding
+the ledger was reset or replaced under the subscriber."""
+
+
+def build_snapshot_envelope(
+    *,
+    event_id: int,
+    ts: str,
+    event_count: int,
+    first_event_id: int | None,
+    last_event_id: int | None,
+    kind_counts: dict[str, int],
+    resync_reason: str | None = None,
+    requested_since: int | None = None,
+) -> dict[str, object]:
+    """Build the ``snapshot`` envelope shared by coalescing and resync.
+
+    Backpressure coalescing and an aged-out cursor both tell a subscriber the
+    same thing -- "stop animating row deltas and refetch your materialized
+    view" -- so they use one envelope shape rather than two signals the client
+    has to learn separately. ``resync_reason`` is what distinguishes them.
+    """
+    payload: dict[str, object] = {
+        "event_count": event_count,
+        "first_event_id": first_event_id,
+        "last_event_id": last_event_id,
+        "kind_counts": kind_counts,
+        "coalesced": True,
+    }
+    if resync_reason is not None:
+        payload["resync"] = True
+        payload["reason"] = resync_reason
+        payload["requested_since"] = requested_since
+    return {
+        "id": event_id,
+        "ts": ts,
+        "kind": "snapshot",
+        "operation_id": None,
+        "payload": payload,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonEventPage:
+    """One answer to a cursor-scoped ledger read, with its cursor verdict.
+
+    ``status`` is decided once, here, so a second reader cannot bypass the
+    retained-minimum check by querying the table directly through this module.
+    """
+
+    status: EventCursorStatus
+    events: tuple[dict[str, object], ...]
+    retained_min_id: int | None
+    """Lowest id still in the ledger, or ``None`` when the ledger holds no rows."""
+    latest_id: int
+    resync: dict[str, object] | None = None
+    """Snapshot-shaped envelope present exactly when ``status`` is ``AGED_OUT``."""
+
+    def __post_init__(self) -> None:
+        if (self.status is EventCursorStatus.AGED_OUT) != (self.resync is not None):
+            raise ValueError("an aged-out event page carries a resync envelope and an ok page carries none")
+        if self.status is EventCursorStatus.AGED_OUT and self.events:
+            raise ValueError("an aged-out event page must not also deliver a partial row page")
+
+
+def _retained_range(conn: sqlite3.Connection) -> tuple[int | None, int]:
+    row = conn.execute("SELECT MIN(id), COALESCE(MAX(id), 0) FROM daemon_events").fetchone()
+    if row is None:
+        return None, 0
+    return (None if row[0] is None else int(row[0])), int(row[1])
+
+
+def _cursor_refusal_reason(last_id: int, retained_min: int | None, latest: int) -> str | None:
+    """Return why ``last_id`` cannot be honoured, or ``None`` when it can."""
+    if last_id <= 0:
+        return None
+    if retained_min is None:
+        # The table exists but holds nothing, while the subscriber claims to
+        # have already seen row ``last_id``: its history is gone.
+        return RESYNC_LEDGER_RESET
+    if last_id + 1 < retained_min:
+        return RESYNC_CURSOR_AGED_OUT
+    if last_id > latest:
+        return RESYNC_LEDGER_RESET
+    return None
+
+
 def query_events_since(
     last_id: int,
     *,
     kinds: Sequence[str] | None = None,
     limit: int = 200,
-) -> list[dict[str, object]]:
-    """Return daemon events with ``id > last_id``, oldest-first.
+) -> DaemonEventPage:
+    """Return the page of daemon events after ``last_id``, oldest-first.
 
     Used by the live SSE stream and ETag polling fallback in the web reader.
     ``kinds`` restricts to a whitelist (empty/None means all kinds).
+
+    A cursor below the retained minimum is refused with
+    :attr:`EventCursorStatus.AGED_OUT` and a resync envelope rather than the
+    silently short page ``WHERE id > ?`` would otherwise produce.
     """
     conn = _open_events_reader()
     if conn is None:
-        return []
+        # No ledger file, or an ops database predating the event schema: there
+        # is no retained range to compare a cursor against, so this stays the
+        # documented empty-ledger result rather than a fabricated refusal.
+        return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
     try:
+        retained_min, latest = _retained_range(conn)
+        refusal = _cursor_refusal_reason(last_id, retained_min, latest)
+        if refusal is not None:
+            kind_counts = {
+                str(row[0]): int(row[1])
+                for row in conn.execute("SELECT kind, COUNT(*) FROM daemon_events GROUP BY kind")
+            }
+            retained_count = sum(kind_counts.values())
+            resync = build_snapshot_envelope(
+                event_id=latest,
+                ts=_iso_from_ms(current_epoch_ms()),
+                event_count=retained_count,
+                first_event_id=retained_min,
+                last_event_id=latest if latest else None,
+                kind_counts=kind_counts,
+                resync_reason=refusal,
+                requested_since=last_id,
+            )
+            return DaemonEventPage(
+                status=EventCursorStatus.AGED_OUT,
+                events=(),
+                retained_min_id=retained_min,
+                latest_id=latest,
+                resync=resync,
+            )
         kinds_tuple = tuple(kinds or ())
         if kinds_tuple:
             placeholders = ",".join("?" for _ in kinds_tuple)
@@ -290,16 +512,21 @@ def query_events_since(
             )
             params = (last_id, limit)
         rows = conn.execute(sql, params).fetchall()
-        return [
-            {
-                "id": row[0],
-                "ts": _iso_from_ms(row[1]),
-                "kind": row[2],
-                "operation_id": row[3],
-                "payload": json.loads(row[4]),
-            }
-            for row in rows
-        ]
+        return DaemonEventPage(
+            status=EventCursorStatus.OK,
+            events=tuple(
+                {
+                    "id": row[0],
+                    "ts": _iso_from_ms(row[1]),
+                    "kind": row[2],
+                    "operation_id": row[3],
+                    "payload": json.loads(row[4]),
+                }
+                for row in rows
+            ),
+            retained_min_id=retained_min,
+            latest_id=latest,
+        )
     finally:
         conn.close()
 
@@ -356,13 +583,192 @@ EVENT_SESSION_APPENDED = "session.appended"
 EVENT_SESSION_UPDATED = "session.updated"
 EVENT_MESSAGE_APPENDED = "message.appended"
 
-GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(
-    {
-        EVENT_SESSION_APPENDED,
-        EVENT_SESSION_UPDATED,
-        EVENT_MESSAGE_APPENDED,
-    }
+
+class EventProducerPhase(str, Enum):
+    """When, relative to the archive transaction, a topic's frame is published."""
+
+    POST_COMMIT = "post-commit"
+    """Published only after the archive transaction the event describes committed."""
+
+    PRE_COMMIT = "pre-commit"
+    """Published while the described transaction is still open -- a consumer that
+    fetches the referenced object may observe pre-transaction state."""
+
+
+class EventAudience(str, Enum):
+    """Who a topic's frames may be delivered to."""
+
+    LOOPBACK_READER = "loopback-reader"
+    """Any subscriber already authorized for the daemon's loopback read API; the
+    frame carries refs and counters only, never archive content."""
+
+
+@dataclass(frozen=True, slots=True)
+class EventSpec:
+    """The declared contract for one advertised SSE topic (polylogue-20d.13.5).
+
+    A topic without an entry here is a topic a subscriber cannot reason about:
+    it has no statement of which object the event refers to, which cursor
+    resumes it, which wire frame carries it, whether the described write has
+    committed, what the payload may contain, or who may see it. The registry
+    exists so that advertising a topic and declaring its contract are the same
+    act -- :data:`GRANULAR_EVENT_KINDS` is derived from :data:`EVENT_SPECS`
+    rather than restated beside it.
+    """
+
+    kind: str
+    """Stable event id; also the value of the ledger's ``kind`` column."""
+
+    summary: str
+    """What a subscriber learns from one frame of this topic."""
+
+    object_ref: str
+    """Payload key naming the archive object the event refers to."""
+
+    source_ref: str | None
+    """Payload key naming the acquisition source, when the topic carries one."""
+
+    archive_tier: ArchiveTier
+    """Tier whose committed state ``object_ref``/``source_ref`` resolve against."""
+
+    ledger_tier: ArchiveTier
+    """Tier holding the replay ledger this topic's cursor indexes."""
+
+    cursor_field: str
+    """Ledger column carrying the monotonic resume cursor (``Last-Event-ID``)."""
+
+    frame: str
+    """SSE ``event:`` frame name written on the wire for this topic."""
+
+    producer_phase: EventProducerPhase
+    payload_projection: tuple[str, ...]
+    """Exhaustive set of keys the topic's payload may carry. An emitter that
+    adds a key without declaring it here is publishing an undeclared projection."""
+
+    required_payload_fields: tuple[str, ...]
+    """Keys every frame of this topic carries, whatever their value."""
+
+    audience: EventAudience
+    emitter: str
+    """Dotted path of the production function that publishes this topic. A topic
+    whose only producer lives under ``tests/`` is advertised but never emitted --
+    the regression that retired ``insight.updated``/``progress.*``."""
+
+    def __post_init__(self) -> None:
+        for field_name in ("kind", "summary", "object_ref", "cursor_field", "frame", "emitter"):
+            if not getattr(self, field_name):
+                raise ValueError(f"event spec {self.kind or '<unnamed>'} requires a non-empty {field_name}")
+        if self.frame != self.kind:
+            # ``_write_sse_event`` writes the ledger ``kind`` as the SSE frame
+            # name, so a spec whose declared frame differs from its kind would
+            # describe a wire shape the daemon never produces.
+            raise ValueError(f"event spec {self.kind} declares frame {self.frame!r}, but the wire frame is the kind")
+        if self.object_ref not in self.payload_projection:
+            raise ValueError(f"event spec {self.kind} declares object_ref {self.object_ref!r} outside its projection")
+        if self.source_ref is not None and self.source_ref not in self.payload_projection:
+            raise ValueError(f"event spec {self.kind} declares source_ref {self.source_ref!r} outside its projection")
+        undeclared_required = set(self.required_payload_fields) - set(self.payload_projection)
+        if undeclared_required:
+            raise ValueError(
+                f"event spec {self.kind} requires payload fields outside its projection: {sorted(undeclared_required)}"
+            )
+        if self.object_ref not in self.required_payload_fields:
+            raise ValueError(f"event spec {self.kind} must always carry its object ref {self.object_ref!r}")
+        if not self.emitter.startswith("polylogue."):
+            raise ValueError(f"event spec {self.kind} names a non-production emitter: {self.emitter}")
+
+    def to_payload(self) -> dict[str, object]:
+        """Return the spec as a JSON-ready declaration."""
+        return {
+            "kind": self.kind,
+            "summary": self.summary,
+            "object_ref": self.object_ref,
+            "source_ref": self.source_ref,
+            "archive_tier": self.archive_tier.value,
+            "ledger_tier": self.ledger_tier.value,
+            "cursor_field": self.cursor_field,
+            "frame": self.frame,
+            "producer_phase": self.producer_phase.value,
+            "payload_projection": list(self.payload_projection),
+            "required_payload_fields": list(self.required_payload_fields),
+            "audience": self.audience.value,
+            "emitter": self.emitter,
+        }
+
+
+_EVENT_SPECS: tuple[EventSpec, ...] = (
+    EventSpec(
+        kind=EVENT_SESSION_APPENDED,
+        summary="A session was materialized into the archive by a full-parse ingest route.",
+        object_ref="session_id",
+        source_ref="source_name",
+        archive_tier=ArchiveTier.INDEX,
+        ledger_tier=ArchiveTier.OPS,
+        cursor_field="id",
+        frame=EVENT_SESSION_APPENDED,
+        producer_phase=EventProducerPhase.POST_COMMIT,
+        payload_projection=(
+            "session_id",
+            "source_name",
+            "succeeded_file_count",
+            "failed_file_count",
+            "source_paths",
+        ),
+        required_payload_fields=("session_id", "source_name", "succeeded_file_count", "failed_file_count"),
+        audience=EventAudience.LOOPBACK_READER,
+        emitter="polylogue.daemon.events.emit_session_appended",
+    ),
+    EventSpec(
+        kind=EVENT_SESSION_UPDATED,
+        summary="An already-archived session grew through the live-ingest append route.",
+        object_ref="session_id",
+        source_ref="source_name",
+        archive_tier=ArchiveTier.INDEX,
+        ledger_tier=ArchiveTier.OPS,
+        cursor_field="id",
+        frame=EVENT_SESSION_UPDATED,
+        producer_phase=EventProducerPhase.POST_COMMIT,
+        payload_projection=("session_id", "source_name", "appended_count"),
+        required_payload_fields=("session_id", "source_name", "appended_count"),
+        audience=EventAudience.LOOPBACK_READER,
+        emitter="polylogue.daemon.events.emit_session_updated",
+    ),
+    EventSpec(
+        kind=EVENT_MESSAGE_APPENDED,
+        summary="Messages were appended to a session, for live-tail consumers of that session.",
+        object_ref="session_id",
+        source_ref="source_name",
+        archive_tier=ArchiveTier.INDEX,
+        ledger_tier=ArchiveTier.OPS,
+        cursor_field="id",
+        frame=EVENT_MESSAGE_APPENDED,
+        producer_phase=EventProducerPhase.POST_COMMIT,
+        payload_projection=("session_id", "source_name", "appended_count", "source_path"),
+        required_payload_fields=("session_id", "source_name", "appended_count"),
+        audience=EventAudience.LOOPBACK_READER,
+        emitter="polylogue.daemon.events.emit_message_appended",
+    ),
 )
+
+EVENT_SPECS: Mapping[str, EventSpec] = MappingProxyType({spec.kind: spec for spec in _EVENT_SPECS})
+"""Per-topic contracts, keyed by advertised kind."""
+
+if len(EVENT_SPECS) != len(_EVENT_SPECS):  # pragma: no cover - construction-time guard
+    raise ValueError("duplicate event spec kind in EVENT_SPECS")
+
+#: The advertised granular SSE topics. Derived from :data:`EVENT_SPECS` so a
+#: topic cannot be advertised without declaring its contract first.
+GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(EVENT_SPECS)
+
+
+def event_spec(kind: str) -> EventSpec:
+    """Return the declared contract for ``kind``.
+
+    Raises ``KeyError`` for a kind with no declared contract -- including the
+    opaque legacy kinds (``ingestion_batch``/``ingest``/``reset``/
+    ``operation``), which are not advertised granular topics.
+    """
+    return EVENT_SPECS[kind]
 
 
 def emit_session_appended(
@@ -452,10 +858,24 @@ def get_daemon_event_counts() -> dict[str, int]:
 
 
 __all__ = [
+    "EVENT_MESSAGE_APPENDED",
     "EVENT_SESSION_APPENDED",
     "EVENT_SESSION_UPDATED",
-    "EVENT_MESSAGE_APPENDED",
+    "EVENT_SPECS",
     "GRANULAR_EVENT_KINDS",
+    "RESYNC_CURSOR_AGED_OUT",
+    "RESYNC_LEDGER_RESET",
+    "DaemonEventPage",
+    "DaemonEventRetention",
+    "EventAudience",
+    "EventCursorStatus",
+    "EventProducerPhase",
+    "EventSpec",
+    "build_snapshot_envelope",
+    "daemon_event_retention",
+    "event_spec",
+    "prune_daemon_events",
+    "set_daemon_event_retention",
     "emit_session_appended",
     "emit_session_updated",
     "emit_daemon_event",

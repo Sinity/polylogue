@@ -20,6 +20,13 @@ Backpressure coalescing (#1204): when the ledger has produced more than
 single ``snapshot`` event carrying ``{kind: count}`` rather than
 streaming each row to a slow client.
 
+Aged-out cursors (polylogue-20d.13.6): when ``since``/``Last-Event-ID``
+names history the ledger no longer retains, the handler answers with the
+same ``snapshot`` envelope carrying ``resync: true`` and a reason instead
+of a short or empty page, and the poll shape reports ``outcome:
+"degraded"``. An empty page would read to the client as "nothing
+happened".
+
 The handlers are pulled out of :mod:`polylogue.daemon.http` to keep that
 module's file-size budget headroom for the broader archive read API.
 """
@@ -32,7 +39,7 @@ from collections import Counter
 from http import HTTPStatus
 from typing import TYPE_CHECKING, cast
 
-from polylogue.daemon.events import query_events_since
+from polylogue.daemon.events import EventCursorStatus, build_snapshot_envelope, query_events_since
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler
@@ -50,25 +57,24 @@ def _resolve_coalesce_threshold(handler: DaemonAPIHandler, params: dict[str, lis
 
 
 def _build_snapshot_event(events: list[dict[str, object]]) -> dict[str, object]:
-    """Collapse a burst of events into a single ``snapshot`` envelope."""
+    """Collapse a burst of events into a single ``snapshot`` envelope.
+
+    Shares :func:`polylogue.daemon.events.build_snapshot_envelope` with the
+    aged-out-cursor resync path so a client learns one envelope shape, not two.
+    """
     counts: Counter[str] = Counter()
     for event in events:
         kind = cast("str", event.get("kind", "")) or "unknown"
         counts[kind] += 1
     last = events[-1]
-    return {
-        "id": last["id"],
-        "ts": last["ts"],
-        "kind": "snapshot",
-        "operation_id": None,
-        "payload": {
-            "event_count": len(events),
-            "first_event_id": events[0]["id"],
-            "last_event_id": last["id"],
-            "kind_counts": dict(counts),
-            "coalesced": True,
-        },
-    }
+    return build_snapshot_envelope(
+        event_id=cast("int", last["id"]),
+        ts=cast("str", last["ts"]),
+        event_count=len(events),
+        first_event_id=cast("int", events[0]["id"]),
+        last_event_id=cast("int", last["id"]),
+        kind_counts=dict(counts),
+    )
 
 
 def handle_events(handler: DaemonAPIHandler, params: dict[str, list[str]]) -> None:
@@ -84,7 +90,24 @@ def handle_events(handler: DaemonAPIHandler, params: dict[str, list[str]]) -> No
     coalesce_threshold = _resolve_coalesce_threshold(handler, params)
 
     if handler._get_bool(params, "poll"):
-        events = list(query_events_since(since_param, kinds=kinds, limit=500))
+        page = query_events_since(since_param, kinds=kinds, limit=500)
+        if page.status is EventCursorStatus.AGED_OUT:
+            resync = cast("dict[str, object]", page.resync)
+            # ``degraded`` outranks ``empty``: the subscriber asked from a
+            # cursor the ledger no longer retains, so answering with rows --
+            # or with none -- would report pruned history as "no change".
+            handler._send_json(
+                HTTPStatus.OK,
+                {
+                    "events": [resync],
+                    "last_event_id": page.latest_id,
+                    "outcome": "degraded",
+                    "resync": True,
+                    "resync_reason": cast("dict[str, object]", resync["payload"])["reason"],
+                },
+            )
+            return
+        events = list(page.events)
         if len(events) > coalesce_threshold:
             snapshot = _build_snapshot_event(events)
             handler._send_json(
@@ -137,7 +160,17 @@ def _stream_events(
     try:
         _write_sse_comment(handler, b"open")
         while time.monotonic() < deadline:
-            events = list(query_events_since(cursor, kinds=kinds, limit=200))
+            page = query_events_since(cursor, kinds=kinds, limit=200)
+            if page.status is EventCursorStatus.AGED_OUT:
+                resync = cast("dict[str, object]", page.resync)
+                _write_sse_event(handler, resync)
+                # The subscriber must refetch its materialized view; advancing
+                # to the newest retained id is the cursor that refetch is
+                # consistent with, and it cannot re-trip the same refusal.
+                cursor = page.latest_id
+                time.sleep(1.0)
+                continue
+            events = list(page.events)
             if events:
                 if len(events) > coalesce_threshold:
                     snapshot = _build_snapshot_event(events)
