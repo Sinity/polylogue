@@ -152,22 +152,46 @@ def census_beads_origin(runtime: ResolvedRuntimeConfig) -> dict[str, Any]:
         surfaces.append(SurfaceResult(name, str(path), state, rows=rows, evidence=evidence, error=error).to_dict())
 
     affected_tables = {
-        "source.db": [
-            "raw_sessions.origin",
-            "raw_artifacts.origin",
-            "source-tier origin CHECK constraints",
-        ],
+        "source.db": ["raw_sessions.origin", "raw_artifacts.origin"],
         "index.db": ["sessions.origin", "session_links.dst_origin", "derived FTS/insight projections"],
     }
+    # Where the token's admission actually lives, and the asymmetry that
+    # decides the removal route. The DURABLE source tier carries no
+    # enum-generated ``CHECK(origin IN (...))`` -- only ``length(trim(origin))
+    # > 0`` -- because vocabulary membership there is validated at the write
+    # boundary by ``require_vocabulary``. The DERIVED index tier does generate
+    # its CHECK from the Origin enum, so the token disappears from that DDL
+    # when the tier is re-created, never by a migration against a live file.
     constraints = {
-        "source.raw_sessions.origin": "origin = 'beads-issue' is retired from the origin CHECK vocabulary",
-        "source.raw_artifacts.origin": "origin = 'beads-issue' is retired from the origin CHECK vocabulary",
-        "index.sessions.origin": "origin = 'beads-issue' is retired from the origin CHECK vocabulary",
-        "index.session_links.dst_origin": "dst_origin = 'beads-issue' is retired from the destination-origin CHECK vocabulary",
+        "source.raw_sessions.origin": (
+            "durable: no enum CHECK, only a non-empty check; admission is the Origin "
+            "vocabulary at the write boundary (require_vocabulary)"
+        ),
+        "source.raw_artifacts.origin": (
+            "durable: no enum CHECK, only a non-empty check; admission is the Origin "
+            "vocabulary at the write boundary (require_vocabulary)"
+        ),
+        "index.sessions.origin": (
+            "derived: enum-generated CHECK(origin IN (...)) currently admits the token; "
+            "it narrows when the tier is re-created from the narrowed enum"
+        ),
+        "index.session_links.dst_origin": (
+            "derived: enum-generated CHECK(dst_origin IN (...)) currently admits the token; "
+            "it narrows when the tier is re-created from the narrowed enum"
+        ),
+    }
+    # A different vocabulary that happens to spell the same string. These are
+    # work-effect object kinds on a live route (a ``.beads/interactions.jsonl``
+    # ledger becomes work-evidence nodes), not session origins. Removing the
+    # retired Origin token must not touch any of them.
+    non_targets = {
+        "polylogue/core/refs.py": "ObjectRef kind 'beads-issue' in the work-evidence ref vocabulary",
+        "polylogue/analysis/work_evidence.py": "'beads-issue' in the effect-node kind vocabulary",
+        "polylogue/analysis/work_effects.py": "live ObjectRef(kind='beads-issue') minted from a Beads ledger",
     }
     plan = {
         "format": PLAN_FORMAT,
-        "action": "copy-forward-remove-retired-origin",
+        "action": "remove-retired-origin-vocabulary",
         "preconditions": [
             "fresh read-only census receipt is populated or explicitly reviewed for every surface",
             "verified backup manifest covers source.db and required durable blobs",
@@ -175,17 +199,20 @@ def census_beads_origin(runtime: ResolvedRuntimeConfig) -> dict[str, Any]:
             "operator authorization is bound to this plan digest",
         ],
         "steps": [
-            "dry-run the exact copy-forward against this census and plan digest",
-            "copy source.db and durable blobs to a new generation; preserve raw bytes and provenance",
-            "apply the additive source migration that narrows retired-origin checks without in-place deletion",
-            "rebuild index.db from the copied durable source evidence through the production rebuild route",
-            "recheck affected counts and schema constraints, then emit an immutable apply receipt",
+            "confirm this census reports zero rows on every database surface, with no surface left unavailable",
+            "delete the Origin/Provider token and its source and origin-spec mappings; leave the non_targets alone",
+            "leave the durable source tier alone: its origin columns carry no enum CHECK to narrow",
+            "accept that the derived schema identity moves, because the Origin enum is inside its closure",
+            "reconverge index.db through the production daemon, which re-creates the narrowed derived CHECK",
+            "recheck affected counts and fresh DDL, then emit an immutable apply receipt",
         ],
         "idempotence": "exact-plan-bound and resumable by generation; never rediscover targets",
         "no_apply_in_this_operation": True,
+        "no_durable_migration_required": True,
         "affected_tables": affected_tables,
         "constraints": constraints,
-        "derived_rebuild": "index.db FTS, lineage links, and materialized insights from copied source evidence",
+        "non_targets": non_targets,
+        "derived_rebuild": "index.db FTS, lineage links, and materialized insights reconverge from durable evidence",
     }
     payload: dict[str, Any] = {
         "format": FORMAT,
