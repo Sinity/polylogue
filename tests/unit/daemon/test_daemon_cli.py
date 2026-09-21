@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -3973,20 +3974,78 @@ def _daemon_startup_stubs(
     stack.enter_context(patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()))
 
 
-def _record_task_creation(stack: contextlib.ExitStack) -> list[tuple[str, str | None]]:
-    """Record every ``asyncio.create_task`` call with its immediate caller."""
-    import sys as _sys
+#: Task-name prefixes the daemon may create outside the supervisor, with the
+#: component whose call owns each one's whole lifetime.
+#:
+#: Every entry is a *bounded child of one admitted operation*: it has no
+#: cadence, no retry loop and no scheduler, and it settles inside the call
+#: that created it. That is the line the epic draws -- "a registry entry does
+#: not create a thread pool, retry loop or independent scheduler", and
+#: symmetrically, anything that acquires one stops being a bounded child and
+#: has to be declared in :mod:`polylogue.daemon.services` instead of being
+#: added here. An anonymous ``Task-N`` matches nothing and fails the
+#: inventory, which is why every one of these carries a name.
+_DECLARED_UNSUPERVISED_TASK_PREFIXES: dict[str, str] = {
+    "polylogue-writer:": "DaemonWriteCoordinator: one admitted mutation",
+    "polylogue-writer-staged:": "DaemonWriteThreadBridge: one staged publication",
+    "polylogue-managed:": "DaemonWriteCoordinator: one tracked post-write effect",
+    "polylogue-drive-catchup:": "DriveCatchupExecution: one settled catch-up step",
+}
 
-    real_create_task = asyncio.create_task
-    created: list[tuple[str, str | None]] = []
 
-    def recording(coro: Any, **kwargs: Any) -> Any:
-        caller = _sys._getframe(1)
-        created.append((caller.f_code.co_filename, kwargs.get("name")))
-        return real_create_task(coro, **kwargs)
+@dataclasses.dataclass(frozen=True, slots=True)
+class _SpawnedTask:
+    """One task the event loop actually created, and who asked for it."""
 
-    stack.enter_context(patch.object(asyncio, "create_task", recording))
-    return created
+    name: str
+    frame: str
+    """``file:line`` of the innermost non-asyncio frame that requested it."""
+
+    def __str__(self) -> str:  # pragma: no cover - only read from a failure
+        return f"{self.name} ({self.frame})"
+
+
+def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask]) -> None:
+    """Run *coro* under ``asyncio.run``, recording every task the loop creates.
+
+    The denominator is taken from the event loop, not from the registry.
+    ``loop.set_task_factory`` is the single construction point that
+    ``asyncio.create_task``, ``asyncio.ensure_future`` and ``loop.create_task``
+    all funnel through, so a child spawned by *any* module through *any* of
+    those spellings lands in ``into`` whether or not something declared it.
+    Nothing here consults :mod:`polylogue.daemon.services`, which is what
+    stops the inventory from being a mirror of the thing it audits.
+
+    Not covered, and deliberately named rather than implied: a task created
+    on a *different* loop inside a worker thread. The daemon's threaded work
+    goes through the compute adapter and ``asyncio.to_thread``, neither of
+    which creates a task.
+    """
+    import traceback as _tb
+
+    def factory(loop: Any, task_coro: Any, **kwargs: Any) -> Any:
+        task = asyncio.Task(task_coro, loop=loop, **kwargs)
+        frame = "<unknown>"
+        for entry in reversed(_tb.extract_stack()[:-1]):
+            if "/asyncio/" in entry.filename or entry.filename == __file__:
+                continue
+            frame = f"{entry.filename}:{entry.lineno}"
+            break
+        into.append(_SpawnedTask(name=task.get_name(), frame=frame))
+        return task
+
+    async def _main() -> None:
+        loop = asyncio.get_running_loop()
+        loop.set_task_factory(factory)
+        try:
+            await coro
+        finally:
+            # ``asyncio.run`` creates its own shutdown tasks after the main
+            # coroutine settles. Those belong to the runner, not to the
+            # daemon, so the inventory closes with the route it audits.
+            loop.set_task_factory(None)
+
+    asyncio.run(_main())
 
 
 def _capture_supervisor(stack: contextlib.ExitStack, daemon_cli: Any) -> list[Any]:
@@ -4003,12 +4062,25 @@ def _capture_supervisor(stack: contextlib.ExitStack, daemon_cli: Any) -> list[An
 
 
 def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path: Path) -> None:
-    """Every task the daemon spawns is one the registry declares.
+    """Every task the daemon spawns is one the registry or a named owner declares.
 
-    Anti-vacuity: add ``asyncio.create_task(...)`` anywhere in
-    ``polylogue/daemon/cli.py`` and the first assertion names that file;
-    start a name the registry does not carry and ``service_spec`` raises
-    with the missing identity before a task exists.
+    The denominator is the event loop's task factory
+    (:func:`_run_with_task_inventory`), which sees every
+    ``create_task``/``ensure_future``/``loop.create_task`` regardless of which
+    module spelled it. It never reads
+    :mod:`polylogue.daemon.services`, so this inventory cannot be satisfied by
+    a registry that agrees with itself.
+
+    Anti-vacuity, all three executed:
+
+    * spawn one unregistered child anywhere on the route
+      (``asyncio.ensure_future(asyncio.sleep(0))`` in ``run_daemon_services``)
+      and ``unowned`` names it with its ``file:line``;
+    * delete one registration from the registry and ``supervisor.start``
+      raises ``UnknownServiceError`` naming that exact identity before a task
+      exists;
+    * drop one ``supervisor.start`` call and ``unresolved`` names the declared
+      service the route never resolved.
     """
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.services import ServiceState, service_spec
@@ -4037,7 +4109,7 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
 
     with contextlib.ExitStack() as stack:
         _daemon_startup_stubs(stack, daemon_cli, tmp_path)
-        created = _record_task_creation(stack)
+        created: list[_SpawnedTask] = []
         supervisors = _capture_supervisor(stack, daemon_cli)
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
@@ -4064,7 +4136,7 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         ):
             stack.enter_context(patch(target, idle_loop))
         stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
-        asyncio.run(
+        _run_with_task_inventory(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
                 enable_watch=True,
@@ -4072,18 +4144,25 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
                 browser_capture_spool_path=None,
-            )
+            ),
+            into=created,
         )
+    assert created, "the task factory recorded nothing; the inventory never observed the route"
 
-    direct_from_composition_root = [entry for entry in created if entry[0].endswith("polylogue/daemon/cli.py")]
-    assert direct_from_composition_root == [], (
-        f"the composition root created an unsupervised task: {direct_from_composition_root}"
+    unowned = [
+        entry
+        for entry in created
+        if not entry.name.startswith(TASK_NAME_PREFIX)
+        and not any(entry.name.startswith(prefix) for prefix in _DECLARED_UNSUPERVISED_TASK_PREFIXES)
+    ]
+    assert unowned == [], (
+        "the composition route spawned a task no owner declares: "
+        + ", ".join(str(entry) for entry in unowned)
+        + " -- register it in polylogue.daemon.services or give its owner a declared prefix"
     )
 
     supervised_names = sorted(
-        name[len(TASK_NAME_PREFIX) :]
-        for _filename, name in created
-        if name is not None and name.startswith(TASK_NAME_PREFIX)
+        entry.name[len(TASK_NAME_PREFIX) :] for entry in created if entry.name.startswith(TASK_NAME_PREFIX)
     )
     assert supervised_names, "no supervised service was started on the production route"
     for name in supervised_names:
@@ -4094,6 +4173,21 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
     assert set(supervised_names) <= set(supervisor.states())
     unresolved = [spec.name for spec in supervisor.selected if supervisor.state(spec.name) is ServiceState.PENDING]
     assert unresolved == [], f"declared services the composition route never resolved: {unresolved}"
+
+    # The two halves are read from different places on purpose. ``supervised``
+    # is what the loop built; ``resolved`` is what the registry-driven
+    # supervisor decided. A service that lost its ``supervisor.start`` call
+    # shows up as a name the supervisor left PENDING; a task started under a
+    # name the registry does not carry never reaches the loop at all, because
+    # ``service_spec`` raises with that exact name first.
+    resolved_with_a_task = {
+        spec.name
+        for spec in supervisor.selected
+        if supervisor.state(spec.name) not in {ServiceState.SKIPPED, ServiceState.HALTED, ServiceState.PENDING}
+    }
+    assert set(supervised_names) == resolved_with_a_task, (
+        f"supervised tasks {sorted(set(supervised_names) ^ resolved_with_a_task)} do not match resolved services"
+    )
 
 
 @pytest.mark.parametrize("embeddings_configured", [False, True])
@@ -4165,7 +4259,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
 
     with contextlib.ExitStack() as stack:
         _daemon_startup_stubs(stack, daemon_cli, tmp_path)
-        created = _record_task_creation(stack)
+        created: list[_SpawnedTask] = []
         stack.enter_context(patch.object(daemon_cli, "_set_active_supervisor", capture))
         stack.enter_context(patch("polylogue.config.load_polylogue_config", return_value=config))
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
@@ -4193,7 +4287,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
         ):
             stack.enter_context(patch(target, idle_loop))
         stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
-        asyncio.run(
+        _run_with_task_inventory(
             daemon_cli.run_daemon_services(
                 sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
                 enable_watch=True,
@@ -4201,7 +4295,8 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
                 browser_capture_spool_path=None,
-            )
+            ),
+            into=created,
         )
 
     supervisor = supervisors[0]
@@ -4212,7 +4307,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
     )
     assert supervisor.state("embedding_orphan_reconcile") is ServiceState.STOPPED
 
-    backlog_tasks = [name for _filename, name in created if name == f"{TASK_NAME_PREFIX}embedding_backlog"]
+    backlog_tasks = [entry.name for entry in created if entry.name == f"{TASK_NAME_PREFIX}embedding_backlog"]
     assert backlog_tasks == ([] if not embeddings_configured else [f"{TASK_NAME_PREFIX}embedding_backlog"])
 
     # The unschedulable half is only half the property: status must name it.
