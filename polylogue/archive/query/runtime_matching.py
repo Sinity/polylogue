@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.archive.query.predicate import (
@@ -96,26 +97,78 @@ def matches_action_sequence(plan: SessionQueryPlan, session: Session) -> bool:
     return False
 
 
-def matches_action_predicate_sequence(
+#: Ceiling on the in-memory all-pairs expansion. A session with many
+#: qualifying actions per step has a combinatorial match set; the matcher
+#: stops extending at this many partial tuples and reports the shortfall
+#: rather than silently returning a prefix of the truth.
+MAX_SEQUENCE_WITNESSES = 10_000
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceMatchWitness:
+    """One ``seq()`` match, bound to the actions that produced it.
+
+    ``action_indices`` are positions in the session's ordered action list, so
+    the caller can resolve each step back to a concrete action rather than
+    re-deriving which ones matched.
+    """
+
+    action_indices: tuple[int, ...]
+
+    @property
+    def span(self) -> tuple[int, int]:
+        return self.action_indices[0], self.action_indices[-1]
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceMatchWitnesses:
+    """The match set for one session, plus whether it was bounded."""
+
+    witnesses: tuple[SequenceMatchWitness, ...]
+    truncated: bool = False
+    """``True`` when the all-pairs expansion hit :data:`MAX_SEQUENCE_WITNESSES`.
+
+    The remaining matches are unknown, not absent. ``bool(witnesses)`` is
+    still a sound answer to "did the pattern match", because truncation can
+    only drop matches after at least one was found.
+    """
+
+    def __bool__(self) -> bool:
+        return bool(self.witnesses)
+
+
+def action_predicate_sequence_witnesses(
     steps: tuple[QueryPredicate, ...],
     session: Session,
     constraints: tuple[QuerySequenceConstraint, ...] = (),
-) -> bool:
+) -> SequenceMatchWitnesses:
+    """Return every ordered action tuple satisfying ``steps``.
+
+    Multiplicity is all-pairs, matching the SQL lowering in
+    ``archive_query_reads._action_sequence_witness_relation``: a session where
+    two edits precede two tests yields four matches, not one. The existential
+    answer is ``bool()`` over this set rather than a second traversal, so the
+    two cannot disagree about what matched.
+    """
     if not steps:
-        return True
+        return SequenceMatchWitnesses(witnesses=(SequenceMatchWitness(action_indices=()),))
     actions = _actions_for(session)
     if not actions:
-        return False
+        return SequenceMatchWitnesses(witnesses=())
 
     edge_constraints = constraints or tuple(QuerySequenceConstraint() for _ in range(len(steps) - 1))
     if len(edge_constraints) != len(steps) - 1:
         raise ValueError("sequence constraints must describe every edge between steps")
 
-    candidates = [index for index, action in enumerate(actions) if _matches_action_predicate(steps[0], action)]
+    truncated = False
+    partial: list[tuple[int, ...]] = [
+        (index,) for index, action in enumerate(actions) if _matches_action_predicate(steps[0], action)
+    ]
     for step_index, step in enumerate(steps[1:]):
         constraint = edge_constraints[step_index]
-        next_candidates: list[int] = []
-        for previous_index in candidates:
+        extended: list[tuple[int, ...]] = []
+        for prefix in partial:
+            previous_index = prefix[-1]
             for current_index in range(previous_index + 1, len(actions)):
                 if constraint.kind == "next" and current_index != previous_index + 1:
                     break
@@ -129,11 +182,32 @@ def matches_action_predicate_sequence(
                     elapsed_ms = int((current_time - previous_time).total_seconds() * 1000)
                     if elapsed_ms < 0 or constraint.within_ms is None or elapsed_ms > constraint.within_ms:
                         continue
-                next_candidates.append(current_index)
-        candidates = next_candidates
-        if not candidates:
-            return False
-    return bool(candidates)
+                extended.append((*prefix, current_index))
+                if len(extended) >= MAX_SEQUENCE_WITNESSES:
+                    truncated = True
+                    break
+            if truncated:
+                break
+        partial = extended
+        if not partial:
+            return SequenceMatchWitnesses(witnesses=(), truncated=truncated)
+    return SequenceMatchWitnesses(
+        witnesses=tuple(SequenceMatchWitness(action_indices=indices) for indices in partial),
+        truncated=truncated,
+    )
+
+
+def matches_action_predicate_sequence(
+    steps: tuple[QueryPredicate, ...],
+    session: Session,
+    constraints: tuple[QuerySequenceConstraint, ...] = (),
+) -> bool:
+    """Whether ``session`` contains the pattern.
+
+    Derived from :func:`action_predicate_sequence_witnesses` rather than
+    traversing again, so a reported match always has a witness behind it.
+    """
+    return bool(action_predicate_sequence_witnesses(steps, session, constraints))
 
 
 def _matches_action_predicate(predicate: QueryPredicate, action: Action) -> bool:
@@ -189,6 +263,10 @@ def matches_action_text_terms(plan: SessionQueryPlan, session: Session) -> bool:
 
 
 __all__ = [
+    "MAX_SEQUENCE_WITNESSES",
+    "SequenceMatchWitness",
+    "SequenceMatchWitnesses",
+    "action_predicate_sequence_witnesses",
     "matches_action_predicate_sequence",
     "matches_action_sequence",
     "matches_action_terms",

@@ -91,6 +91,7 @@ from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryPredicate,
+    QuerySequencePredicate,
 )
 from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
@@ -169,6 +170,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
     ArchiveQueryUnitAggregateRow,
     ArchiveQueryUnitMultiAggregatePage,
     ArchiveRunQueryRow,
+    ArchiveSequenceWitnessRow,
     _action_command_expression,
     _session_filter_clause,
 )
@@ -6839,6 +6841,22 @@ class ArchiveStore:
             session_filters=session_filters,
             sort=sort,
             sort_direction=sort_direction,
+        )
+
+    def query_action_sequence_witnesses(
+        self,
+        predicate: QuerySequencePredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+    ) -> list[ArchiveSequenceWitnessRow]:
+        return _archive_query_reads.query_action_sequence_witnesses(
+            self,
+            predicate,
+            limit=limit,
+            offset=offset,
+            session_filters=session_filters,
         )
 
     def query_session_actions(
