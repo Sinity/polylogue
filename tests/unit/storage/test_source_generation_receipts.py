@@ -106,13 +106,6 @@ def _connections() -> tuple[sqlite3.Connection, sqlite3.Connection, str]:
         accepted_frontier=1,
     )
     record_revision_application_sync(index, receipt, decided_at_ms=2)
-    index.execute(
-        """
-        INSERT INTO candidate_source_membership(raw_id, blob_hash, blob_size, source_snapshot, status)
-        VALUES ('raw-1', ?, 1, 'source-snapshot-1', 'committed')
-        """,
-        (b"r" * 32,),
-    )
     return source, index, item_id
 
 
@@ -128,8 +121,7 @@ def test_receipt_requires_exact_source43_member_parser_application_head_and_sess
     assert receipt.confirmed_raw_ids == ("raw-1",)
     assert receipt.unresolved_raw_ids == ()
     assert receipt.source_marker_missing_raw_ids == ("raw-1",)
-    assert receipt.index_generation_binding.active_generation == "index-generation-1"
-    assert receipt.index_generation_binding.source_snapshots == ("source-snapshot-1",)
+    assert receipt.active_generation == "index-generation-1"
     logical = receipt.items[0].raws[0].logicals[0]
     assert logical.application_ids
     assert logical.head_session_ids == ("codex-session:session-1",)
@@ -299,3 +291,41 @@ def test_receipt_rejects_old_same_raw_receipt_after_reparse_changes_current_head
     logical = receipt.items[0].raws[0].logicals[0]
     assert SourceGenerationBlocker.APPLICATION_STALE in logical.blockers
     assert logical.complete is False
+
+
+def test_the_retired_candidate_membership_relation_is_neither_created_nor_read() -> None:
+    """polylogue-79yii: an unwritten relation may not be reported as a measurement.
+
+    ``candidate_source_membership`` was generation-local resume state for the
+    index-rebuild transaction lifecycle. PR #5336 retired its only writers, and
+    it had no production caller before that. The receipt reader folded it into
+    ``index_generation_binding.source_snapshots``, which could then only be the
+    empty set -- an unwritten relation presented as a measured "no source
+    snapshots". Nothing outside the module ever read the value, so the table,
+    the read, and the reported field are all retired together.
+
+    Anti-vacuity, in both directions, which is why this asserts the schema and
+    the read rather than an empty result (an empty-result assertion passed
+    before the retirement too, and proved nothing):
+
+    * restoring the ``CREATE TABLE`` to ``INDEX_DDL`` turns the first
+      assertion red;
+    * restoring the reader's query without the table makes
+      ``source_generation_receipt`` raise ``no such table`` instead of
+      returning a complete receipt, turning the second half red;
+    * reintroducing the reported field as an always-empty stand-in turns the
+      last assertion red.
+    """
+    source, index, _item_id = _connections()
+
+    declared = {str(row[0]) for row in index.execute("SELECT name FROM sqlite_schema")}
+    assert "candidate_source_membership" not in declared
+    assert "idx_candidate_source_membership_pending" not in declared
+
+    receipt = source_generation_receipt(
+        source, index, source_generation_id="source-43", active_generation="index-generation-1"
+    )
+
+    assert receipt.complete is True
+    assert receipt.active_generation == "index-generation-1"
+    assert not hasattr(receipt, "index_generation_binding")
