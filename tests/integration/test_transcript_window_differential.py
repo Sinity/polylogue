@@ -56,6 +56,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 import pytest
@@ -513,3 +515,193 @@ async def test_every_surface_mints_a_snapshot_bound_continuation(
     assert int(resumed["offset"]) == half
     assert _row_ids(resumed) != first_ids
     assert resumed["continuation"] is None and resumed["next_offset"] is None
+
+
+# ----------------------------------------------------------------------
+# polylogue-idrej — the anchored window ("around this message") on all four
+# ----------------------------------------------------------------------
+
+
+async def _api_anchor_window(
+    archive_root: Path, session_id: str, *, limit: int, around: str
+) -> tuple[tuple[str, ...], int, int]:
+    archive = Polylogue(archive_root=archive_root)
+    try:
+        window = await archive.read_transcript_window(session_id, limit=limit, around=around)
+    finally:
+        await archive.close()
+    return tuple(str(message.id) for message in window.rows), window.offset, window.total
+
+
+def _cli_anchor_window(session_id: str, *, limit: int, around: str) -> tuple[tuple[str, ...], int, int]:
+    from polylogue.cli.click_app import cli
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "read",
+            f"session:{session_id}",
+            "--view",
+            "messages",
+            "--limit",
+            str(limit),
+            "--around",
+            around,
+            "--format",
+            "json",
+        ],
+        catch_exceptions=True,
+    )
+    if result.exception is not None and not isinstance(result.exception, SystemExit):
+        raise result.exception
+    assert result.exit_code == 0, f"CLI read failed ({result.exit_code}): {result.output}"
+    payload = json.loads(result.output)
+    return _row_ids(payload), int(payload["offset"]), int(payload["total"])
+
+
+async def _mcp_anchor_window(
+    mcp_server: MCPServerUnderTest,
+    archive_root: Path,
+    session_id: str,
+    *,
+    limit: int,
+    around: str,
+) -> tuple[tuple[str, ...], int, int]:
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        raw = await invoke_surface_async(
+            mcp_server._tool_manager._tools["read"].fn,
+            ref=f"session:{session_id}",
+            view="messages",
+            limit=limit,
+            around=around,
+        )
+    payload = json.loads(raw)
+    assert "error" not in payload, payload
+    return _row_ids(payload), int(payload["offset"]), int(payload["total"])
+
+
+def _http_anchor_window(base_url: str, session_id: str, *, limit: int, around: str) -> tuple[tuple[str, ...], int, int]:
+    payload = _get_json(base_url, f"/api/sessions/{session_id}/messages?limit={limit}&around={quote(around, safe='')}")
+    return _row_ids(payload), int(payload["offset"]), int(payload["total"])
+
+
+async def test_anchored_window_is_identical_across_api_cli_mcp_http(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-idrej: the same ``(ref, message, limit)`` names one window everywhere.
+
+    ``around`` landed as an HTTP query parameter only, so "give me the window
+    around this message" was inexpressible on the CLI, the MCP ``read`` tool
+    and the Python API -- three surfaces that can otherwise answer the same
+    question.  It is sugar over ``offset``, which is exactly why testing only
+    the new surfaces could not see a divergence from the HTTP route that
+    already worked: this compares all four against each other, and against the
+    coordinate each of them reports resolving to.
+
+    Anti-vacuity: drop the anchor plumbing from any one surface and it answers
+    page zero (offset 0, ids ``message-0/1``) while the other three answer
+    offset 2 -- the tuple comparison and the ``offset == 2`` assertion both
+    fail.  Resolve the index against any ordering other than the one the page
+    read windows with and the last assertion -- that the anchored window is
+    byte-for-byte the window at the offset it reports -- fails while every
+    surface still looks like it returned a plausible page.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _seed_session(archive_root)
+
+    limit = 2
+    anchor_index = 3
+    whole, total = await _api_window(archive_root, session_id, limit=_MESSAGE_COUNT, offset=0)
+    assert total == _MESSAGE_COUNT
+    around = whole[anchor_index]
+    expected_offset = anchor_index - (anchor_index % limit)
+    assert expected_offset not in (0, _MESSAGE_COUNT - limit), (
+        "the anchor must sit in neither the first nor the last window, or page-zero passes trivially"
+    )
+
+    api = await _api_anchor_window(archive_root, session_id, limit=limit, around=around)
+    cli = _cli_anchor_window(session_id, limit=limit, around=around)
+    mcp = await _mcp_anchor_window(mcp_server, archive_root, session_id, limit=limit, around=around)
+    with _running_http_server() as base_url:
+        http = _http_anchor_window(base_url, session_id, limit=limit, around=around)
+
+    assert api == cli == mcp == http, {"api": api, "cli": cli, "mcp": mcp, "http": http}
+    anchored_ids, resolved_offset, reported_total = api
+    assert around in anchored_ids, "a resolvable reference must land inside the window it named"
+    assert resolved_offset == expected_offset
+    assert reported_total == _MESSAGE_COUNT
+
+    # The anchor is sugar: the window it resolves to is the window the same
+    # caller reaches by asking for the coordinate it reports back.
+    by_offset, by_offset_total = await _api_window(archive_root, session_id, limit=limit, offset=resolved_offset)
+    assert anchored_ids == by_offset
+    assert reported_total == by_offset_total
+
+
+async def test_anchored_window_is_refused_the_same_way_on_every_surface(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A message this session does not contain is refused, never answered with page zero.
+
+    Anti-vacuity: answer page zero instead and every one of these assertions
+    fails -- which is the substitution that silently hands back a *different*
+    message's window under the caller's reference.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _seed_session(archive_root)
+    missing = "not-a-message-in-this-session"
+
+    from polylogue.cli.click_app import cli
+    from polylogue.operations.message_locator import MessageNotInSessionError
+
+    archive = Polylogue(archive_root=archive_root)
+    try:
+        with pytest.raises(MessageNotInSessionError) as raised:
+            await archive.read_transcript_window(session_id, limit=2, around=missing)
+    finally:
+        await archive.close()
+    assert raised.value.code == "message_not_found"
+
+    result = CliRunner().invoke(
+        cli,
+        ["read", f"session:{session_id}", "--view", "messages", "--limit", "2", "--around", missing],
+        catch_exceptions=True,
+    )
+    assert result.exit_code != 0, result.output
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        mcp = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref=f"session:{session_id}",
+                view="messages",
+                limit=2,
+                around=missing,
+            )
+        )
+    assert mcp.get("code") == "message_not_found", mcp
+
+    with _running_http_server() as base_url:
+        try:
+            with urlopen(
+                Request(f"{base_url}/api/sessions/{session_id}/messages?limit=2&around={quote(missing, safe='')}"),
+                timeout=10,
+            ) as response:
+                raise AssertionError(f"expected a refusal, got {response.status}")
+        except HTTPError as exc:
+            assert exc.code == HTTPStatus.NOT_FOUND
+            assert json.loads(exc.read())["error"] == "message_not_found"

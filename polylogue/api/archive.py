@@ -5529,6 +5529,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         limit: int = 50,
         offset: int = 0,
         continuation: str | None = None,
+        around: str | None = None,
     ) -> TranscriptWindow[Message]:
         """Read one snapshot-bound transcript window (polylogue-ijbwq).
 
@@ -5538,9 +5539,32 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         archive snapshot, validates a resumed continuation's epoch and mints
         the next continuation, so a write landing between two pages is refused
         as stale here exactly as it is on the CLI, MCP and HTTP.
+
+        ``around`` names a message whose window is wanted instead of a
+        coordinate naming it (polylogue-idrej). It is resolved to an offset
+        through the shared locator before the window is framed, so the window
+        -- and the continuation it mints -- are identical to asking for the
+        offset this call reports back in ``TranscriptWindow.offset``.
         """
 
+        from polylogue.operations.message_locator import window_offset_around
         from polylogue.operations.transcript_window import message_transcript_window, window_request
+
+        if around is not None:
+            if continuation is not None or offset:
+                raise ValueError("around and an explicit window coordinate name two different windows")
+            archive_root = _active_archive_root(self.config)
+            offset = await run_archive_read(
+                archive_root,
+                operation="archive.message.locate",
+                arguments={"session_id": session_id, "around": around, "limit": limit},
+                work=lambda archive: window_offset_around(
+                    archive, archive.resolve_session_id(session_id), around, limit
+                ),
+                page_size=limit,
+                projection="message-location",
+                stable_order="position",
+            )
 
         return await message_transcript_window(
             self,

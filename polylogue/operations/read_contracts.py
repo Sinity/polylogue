@@ -101,6 +101,16 @@ WINDOWED_SESSION_READ_KINDS: frozenset[str] = frozenset({"transcript", "messages
 _WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks"})
 
 
+#: Kinds that accept ``around`` -- a *message* naming its own window instead
+#: of a coordinate naming it.  It is sugar over ``offset``: the handler
+#: resolves the message's ordinal index, aligns it onto the caller's declared
+#: ``limit``, and reports the resolved coordinate back, so an ``around`` window
+#: is byte-for-byte the window the same caller gets by asking for the offset it
+#: reports.  Only the ``messages`` kind carries it, matching the HTTP messages
+#: read-view capability that declared it first (polylogue-i5vqc).
+ANCHORED_SESSION_READ_KINDS: frozenset[str] = frozenset({"messages"})
+
+
 class SessionReadRequest(_ReadRequest):
     """One bounded read for an exact session reference.
 
@@ -114,6 +124,12 @@ class SessionReadRequest(_ReadRequest):
     kind: SessionReadKind = "transcript"
     limit: int = Field(default=200, ge=1, le=2000)
     offset: int = Field(default=0, ge=0)
+    #: A message reference whose window is wanted.  Declared here rather than
+    #: only on the HTTP route so the CLI, the MCP ``read`` tool and the Python
+    #: API can ask the same question; before this they could only ask by
+    #: coordinate, which made a deep link a page walk on three of the four
+    #: surfaces (polylogue-idrej).
+    around: str | None = Field(default=None, min_length=1)
     projection: dict[str, object] | None = None
     continuation: str | None = None
 
@@ -121,6 +137,21 @@ class SessionReadRequest(_ReadRequest):
     def only_a_windowed_kind_continues(self) -> SessionReadRequest:
         if self.kind not in WINDOWED_SESSION_READ_KINDS and self.continuation is not None:
             raise ValueError(f"{self.kind} is answered whole and issues no continuation")
+        return self
+
+    @model_validator(mode="after")
+    def an_anchor_names_one_window(self) -> SessionReadRequest:
+        if self.around is None:
+            return self
+        if self.kind not in ANCHORED_SESSION_READ_KINDS:
+            raise ValueError(f"{self.kind} does not serve a window around a message")
+        if self.continuation is not None:
+            # An anchor asks the handler to *decide* the offset; a continuation
+            # already carries one.  Honouring either silently would answer a
+            # window the caller did not ask for.
+            raise ValueError("around and continuation name two different windows")
+        if self.offset:
+            raise ValueError("around and offset name two different windows")
         return self
 
 
@@ -199,6 +230,7 @@ class SessionReferenceResult(_ReadResult):
 
 
 __all__ = [
+    "ANCHORED_SESSION_READ_KINDS",
     "WINDOWED_SESSION_READ_KINDS",
     "AggregateMode",
     "QueryAggregateRequest",

@@ -54,7 +54,11 @@ ReadViewExecutionKind = Literal[
 READ_VIEW_GLOBAL_OPTION_NAMES = frozenset({"limit", "offset"})
 
 
-MESSAGE_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset", "continuation"})
+#: The raw view windows *artifacts*, not messages, so it takes no message
+#: anchor: accepting one it could only ignore would answer a window the caller
+#: did not ask for.
+RAW_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset", "continuation"})
+MESSAGE_READ_VIEW_OPTION_NAMES = RAW_READ_VIEW_OPTION_NAMES | {"around"}
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
 CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {
@@ -153,7 +157,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "raw": ReadViewHandlerMetadata(
         "raw",
         "required",
-        MESSAGE_READ_VIEW_OPTION_NAMES,
+        RAW_READ_VIEW_OPTION_NAMES,
         execution_kind="in-process",
     ),
     "hooks": ReadViewHandlerMetadata(
@@ -328,6 +332,7 @@ __all__ = [
     "IN_PROCESS_READ_VIEWS",
     "MESSAGE_READ_VIEW_OPTION_NAMES",
     "NEIGHBOR_READ_VIEW_OPTION_NAMES",
+    "RAW_READ_VIEW_OPTION_NAMES",
     "READ_VIEW_HANDLER_METADATA",
     "READ_VIEW_GLOBAL_OPTION_NAMES",
     "ReadViewExecutionKind",

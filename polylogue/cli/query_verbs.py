@@ -483,6 +483,7 @@ def _read_view_option_values(
     edge_offset: int,
     edge_limit: int | None,
     continuation: str | None = None,
+    around: str | None = None,
 ) -> dict[str, object]:
     """Collect raw Click option values for read-view handler builders."""
 
@@ -504,6 +505,7 @@ def _read_view_option_values(
         "edge_offset": edge_offset,
         "edge_limit": edge_limit,
         "continuation": continuation,
+        "around": around,
     }
 
 
@@ -1170,6 +1172,16 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
         "Supersedes --limit/--offset; a write landing since the token was issued is refused as stale."
     ),
 )
+# New params on a query verb go last: a positional shift silently reroutes args.
+@click.option(
+    "--around",
+    "around",
+    default=None,
+    help=(
+        "Read the window holding this message id (--view messages). Sugar over --offset: the resolved "
+        "coordinate is reported back, and a message the session does not contain is refused, not paged past."
+    ),
+)
 @click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
@@ -1206,6 +1218,7 @@ def read_verb(
     edge_offset: int = 0,
     edge_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
     continuation: str | None = None,
+    around: str | None = None,
     ref: str | None = None,
 ) -> None:
     """Read matched sessions.
@@ -1596,6 +1609,7 @@ def read_verb(
                     edge_offset=edge_offset,
                     edge_limit=edge_limit,
                     continuation=continuation,
+                    around=around,
                 ),
             ),
             explicit_options=explicit_options,

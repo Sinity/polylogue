@@ -33,6 +33,10 @@ class ReadViewMessageOptions:
     #: Snapshot-bound continuation for the transcript window (polylogue-ijbwq).
     #: It carries its own window coordinates, so it supersedes limit/offset.
     continuation: str | None = None
+    #: A message whose window is wanted, instead of a coordinate naming it
+    #: (polylogue-idrej). Sugar over ``offset``: the declared read resolves it
+    #: and reports the coordinate it resolved to.
+    around: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

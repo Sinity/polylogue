@@ -31,6 +31,7 @@ def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOption
         offset=cast(int, values.get("offset", 0)),
         full=cast(bool, values.get("full", False)),
         continuation=cast(str | None, values.get("continuation")),
+        around=cast(str | None, values.get("around")),
     )
 
 
@@ -59,6 +60,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
             full=options.full,
             output_format=invocation.output_format,
             out_path=Path(invocation.out_path),
+            around=options.around,
         )
         return
 
@@ -79,6 +81,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
                 offset=offset,
                 full=options.full,
                 output_format=invocation.output_format,
+                around=options.around,
             )
         finally:
             click.echo = _orig_echo
@@ -94,6 +97,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         full=options.full,
         output_format=invocation.output_format,
         continuation=options.continuation,
+        around=options.around,
     )
 
 
@@ -107,6 +111,7 @@ def _write_messages_file(
     full: bool,
     output_format: str,
     out_path: Path,
+    around: str | None = None,
 ) -> None:
     """Stream one message window sequence straight to a file.
 
@@ -130,6 +135,7 @@ def _write_messages_file(
         full=full,
         continuation=None,
         daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+        around=around,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

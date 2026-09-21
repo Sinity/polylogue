@@ -1266,10 +1266,17 @@ def _session_messages_payload(
     This reader composes windows from the pinned archive page reader, which has
     no filter vocabulary, so a filtered request is refused by name rather than
     answered with unfiltered rows.
+
+    ``around`` names a message instead of a coordinate.  It is resolved to an
+    offset *before* the window is framed, so the continuation this window mints
+    carries the resolved coordinate and nothing about the anchor: an ``around``
+    window is the same window, and the same continuation family, as asking for
+    the offset it reports (polylogue-idrej).
     """
 
     from types import SimpleNamespace
 
+    from polylogue.operations.message_locator import window_offset_around
     from polylogue.operations.transcript_window import read_transcript_window_sync, window_request
     from polylogue.surfaces.outcome import lineage_page_outcome
     from polylogue.surfaces.projection_spec import ProjectionSpec
@@ -1286,6 +1293,23 @@ def _session_messages_payload(
     excluded_blocks = frozenset(projection.exclude_block_kinds) if projection is not None else frozenset()
 
     continuation_token = payload.get("continuation")
+    around = payload.get("around")
+    if around and continuation_token:
+        raise ValueError("around and continuation name two different windows")
+
+    try:
+        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
+    except KeyError as exc:
+        raise ValueError(f"session not found: {ref}") from exc
+
+    if around:
+        # The anchor is resolved against the same ``(position, variant_index)``
+        # order ``read_session_page`` windows with, so the index and the page
+        # cannot disagree.  A message this session does not contain is refused
+        # rather than answered with page zero, which would hand back a
+        # different message's window under the caller's reference.
+        offset = window_offset_around(archive, session_id, str(around), limit)
+
     request = window_request(
         ref,
         limit=limit,
@@ -1294,11 +1318,6 @@ def _session_messages_payload(
     )
     if request.message_role or request.message_type is not None or request.material_origin:
         raise ValueError("session.read messages does not serve a filtered message window")
-
-    try:
-        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
-    except KeyError as exc:
-        raise ValueError(f"session not found: {ref}") from exc
 
     header: dict[str, object] = {}
 

@@ -1205,6 +1205,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         limit: int | None = None,
         offset: int | None = None,
         continuation: str | None = None,
+        around: str | None = None,
     ) -> str:
         """Read a stable URI or public ref through an explicitly named view.
 
@@ -1216,6 +1217,11 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``topology`` view's existing ``node-offset:`` form; the surfaces share
         one offset vocabulary rather than one surface inventing a token the
         others cannot mint.
+
+        ``around`` names a message whose window is wanted instead of a
+        coordinate naming it (polylogue-idrej).  It is sugar over ``offset``:
+        the resolved coordinate comes back in the payload's ``offset``, and the
+        window is the one the same caller reaches by asking for it.
         """
         if continuation is not None and view not in ("topology", "messages"):
             return hooks.error_json(
@@ -1225,6 +1231,15 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             )
         if offset is not None and offset < 0:
             return hooks.error_json("offset must not be negative", code="invalid_argument", tool="read")
+        if around is not None:
+            if view != "messages":
+                return hooks.error_json("around windows the messages view only", code="invalid_argument", tool="read")
+            if continuation is not None or offset:
+                return hooks.error_json(
+                    "around and an explicit window coordinate name two different windows",
+                    code="invalid_argument",
+                    tool="read",
+                )
         # ``limit`` is applied to list-shaped read payloads below.
 
         normalized = _object_ref(ref)
@@ -1279,13 +1294,20 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
                 target = session_id or normalized
+                from polylogue.operations.message_locator import MessageNotInSessionError
+
                 try:
                     window = await hooks.get_polylogue().read_transcript_window(
                         target,
                         limit=hooks.clamp_limit(limit),
                         offset=window_offset,
                         continuation=window_continuation,
+                        around=around,
                     )
+                except MessageNotInSessionError as exc:
+                    # A resolvable reference this session does not contain is a
+                    # refusal, not page zero under the caller's ref.
+                    return hooks.error_json(str(exc), code=exc.code, tool="read")
                 except QueryContinuationStaleError as exc:
                     # Same typed refusal the query tool gives: a write since
                     # the token was issued is never answered with shifted rows.
