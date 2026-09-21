@@ -97,6 +97,14 @@ class RawSnapshotCleanupResult:
     skipped_missing_source_count: int
     skipped_referenced_count: int = 0
     errors: tuple[str, ...] = ()
+    #: Source paths this pass did not finish compacting. A pass is bounded per
+    #: path (``limit_per_path``); when a path fills that bound the remaining
+    #: superseded snapshots are still there afterwards. Naming them is what
+    #: lets the caller retain them as retryable backlog instead of reporting a
+    #: finished answer it did not compute. ``errors`` is deliberately not a
+    #: residual: those come from the blob unlink, whose subjects are already
+    #: unreferenced and belong to the ordinary blob-GC owner.
+    residual_source_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2307,6 +2315,14 @@ def compact_paths_superseded_raw_snapshots(
     eligible_raw_ids: set[str] | frozenset[str] | None = None,
     index_conn: sqlite3.Connection | None = None,
 ) -> RawSnapshotCleanupResult:
+    """Compact each path's superseded snapshots under one shared authority.
+
+    The per-path bound (``limit_per_path``) keeps one pass proportional to the
+    batch rather than to the archive. A bounded answer must still name what it
+    did not reach, so a path that fills its bound is returned in
+    ``residual_source_paths`` and the caller retains it as retryable backlog
+    instead of dropping it.
+    """
     totals = RawSnapshotCleanupResult(
         candidate_count=0,
         deleted_raw_count=0,
@@ -2316,6 +2332,7 @@ def compact_paths_superseded_raw_snapshots(
         skipped_missing_source_count=0,
     )
     errors: list[str] = []
+    residual: list[str] = []
     for path in source_paths:
         result = cleanup_superseded_raw_snapshots(
             conn,
@@ -2329,6 +2346,8 @@ def compact_paths_superseded_raw_snapshots(
             index_conn=index_conn,
         )
         errors.extend(result.errors)
+        if result.candidate_count >= limit_per_path:
+            residual.append(str(path))
         totals = RawSnapshotCleanupResult(
             candidate_count=totals.candidate_count + result.candidate_count,
             deleted_raw_count=totals.deleted_raw_count + result.deleted_raw_count,
@@ -2338,6 +2357,7 @@ def compact_paths_superseded_raw_snapshots(
             skipped_missing_source_count=totals.skipped_missing_source_count + result.skipped_missing_source_count,
             skipped_referenced_count=totals.skipped_referenced_count + result.skipped_referenced_count,
             errors=tuple(errors),
+            residual_source_paths=tuple(residual),
         )
     return totals
 

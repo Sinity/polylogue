@@ -2502,3 +2502,102 @@ def test_tool_episode_context_is_bounded_to_three_neighbouring_messages(tmp_path
     assert "before 0" not in "".join(episodes[0].context_before)
     assert "after 0" in episodes[0].context_after[0]
     assert "after 3" not in "".join(episodes[0].context_after)
+
+
+def _profile_debt_session(provider_session_id: str) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=provider_session_id,
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="profile debt target")],
+            )
+        ],
+    )
+
+
+def test_session_profile_debt_measures_derivation_lag_only(tmp_path: Path) -> None:
+    """``archive_session_profile_rows`` counts underived profiles, nothing else.
+
+    The insight used to add a second half: ``session_profiles`` rows whose
+    ``sessions`` row is missing. Nothing in the archive can hold one (the next
+    test proves the writer invariant), and no owner would have acted on it, so
+    it was a permanently-zero repair-shaped scan sitting on a live measure.
+
+    Anti-vacuity: restore the ``orphaned`` sub-count in
+    ``_archive_profile_rows_debt`` and the last assertion reports 1 instead of
+    0; delete the ``missing`` sub-count and the first reports 0 instead of 1.
+    """
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = write_index_session(facade, _profile_debt_session("profile-debt-lag"))
+
+    with ArchiveStore.open_existing(root) as facade:
+        by_name = {item.debt_name: item for item in facade.list_archive_debt_insights()}
+    debt = by_name["archive_session_profile_rows"]
+    assert debt.issue_count == 1
+    assert debt.healthy is False
+    assert debt.detail == "1 sessions without a derived session profile"
+
+    with ArchiveStore(root) as facade:
+        facade._conn.execute("INSERT INTO session_profiles (session_id) VALUES (?)", (session_id,))
+        facade._conn.commit()
+
+    with ArchiveStore.open_existing(root) as facade:
+        by_name = {item.debt_name: item for item in facade.list_archive_debt_insights()}
+    assert by_name["archive_session_profile_rows"].issue_count == 0
+    assert by_name["archive_session_profile_rows"].detail == "archive session profile rows complete"
+
+    # An orphan forced in behind the writer's back is still not this measure's
+    # subject: the report stays at zero rather than growing an issue whose
+    # only owner is the schema that forbids it.
+    with sqlite3.connect(root / "index.db") as raw:
+        raw.execute("PRAGMA foreign_keys = OFF")
+        raw.execute("INSERT INTO session_profiles (session_id) VALUES ('codex:no-such-session')")
+        raw.commit()
+
+    with ArchiveStore.open_existing(root) as facade:
+        by_name = {item.debt_name: item for item in facade.list_archive_debt_insights()}
+    assert by_name["archive_session_profile_rows"].issue_count == 0
+
+
+def test_orphan_session_profile_is_unreachable_through_production_writes(tmp_path: Path) -> None:
+    """The invariant that licenses deleting the orphan half of the debt scan.
+
+    Two independent guards, both production routes:
+
+    * every write profile that reaches ``index.db`` sets ``foreign_keys = ON``,
+      so an orphan insert is refused and a session delete cascades;
+    * the one route that deliberately suspends enforcement -- the bulk ingest
+      window in ``pipeline/services/ingest_batch/_core.py`` -- derives its
+      pre-commit ``_foreign_key_violations_for_sessions`` probe plan from the
+      live schema, and ``session_profiles`` is in it, scoped by session.
+
+    Anti-vacuity: drop ``ON DELETE CASCADE``/``REFERENCES sessions`` from
+    ``SESSION_PROFILES_SPEC`` and the insert/cascade assertions go red and the
+    probe plan loses its entry; set ``foreign_keys=False`` on
+    ``WRITE_CONNECTION_PROFILE`` and the refusal assertion goes red.
+    """
+    from polylogue.pipeline.services.ingest_batch._core import _foreign_key_check_plan
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = write_index_session(facade, _profile_debt_session("profile-debt-invariant"))
+
+    with ArchiveStore(root) as facade:
+        assert facade._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        with pytest.raises(sqlite3.IntegrityError):
+            facade._conn.execute("INSERT INTO session_profiles (session_id) VALUES ('codex:no-such-session')")
+        facade._conn.rollback()
+
+        facade._conn.execute("INSERT INTO session_profiles (session_id) VALUES (?)", (session_id,))
+        facade._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        facade._conn.commit()
+        assert facade._conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
+
+        scoped, unscoped = _foreign_key_check_plan(facade._conn)
+    probed = {(check.table, check.parent, check.scope_column) for check in scoped if check.table == "session_profiles"}
+    assert probed == {("session_profiles", "sessions", "session_id")}
+    assert "session_profiles" not in unscoped

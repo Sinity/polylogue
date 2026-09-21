@@ -1064,17 +1064,16 @@
       "transforms": {
         "component": "transforms",
         "scope": "session-analysis",
-        "state": "unknown",
-        "summary": "direct_status_default_skips_exact_archive_readiness",
+        "state": "ready",
+        "summary": "ready",
         "last_success": null,
         "last_attempt": null,
         "counts": {
           "transform_count": 1,
+          "session_count": 2,
           "session_digest_transform_version": 1
         },
-        "caveats": [
-          "direct_status_default_skips_exact_archive_readiness"
-        ],
+        "caveats": [],
         "repair_hint": null,
         "evidence_refs": [
           "transform_registry"
@@ -1207,10 +1206,12 @@
         "identity_status": null,
         "table_counts": {
           "assertions": 0,
+          "user_settings": 0,
           "annotation_schemas": 6
         },
         "table_count_precision": {
           "assertions": "exact",
+          "user_settings": "exact",
           "annotation_schemas": "exact"
         },
         "file_metadata": {
@@ -1289,6 +1290,7 @@
           "wal_bytes": null,
           "sqlite_stat1_rows": 14,
           "planner_stats_present": true,
+          "state": "fresh",
           "wal_metadata": {
             "state": "not_observed",
             "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
@@ -1299,6 +1301,7 @@
           "wal_bytes": null,
           "sqlite_stat1_rows": 41,
           "planner_stats_present": true,
+          "state": "fresh",
           "wal_metadata": {
             "state": "not_observed",
             "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
@@ -1309,6 +1312,7 @@
           "wal_bytes": null,
           "sqlite_stat1_rows": 1,
           "planner_stats_present": true,
+          "state": "fresh",
           "wal_metadata": {
             "state": "not_observed",
             "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
@@ -1319,6 +1323,7 @@
           "wal_bytes": null,
           "sqlite_stat1_rows": 1,
           "planner_stats_present": true,
+          "state": "fresh",
           "wal_metadata": {
             "state": "not_observed",
             "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
@@ -1329,6 +1334,7 @@
           "wal_bytes": null,
           "sqlite_stat1_rows": 2,
           "planner_stats_present": true,
+          "state": "fresh",
           "wal_metadata": {
             "state": "not_observed",
             "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
@@ -1337,8 +1343,9 @@
         "audit": {
           "exists": true,
           "wal_bytes": null,
-          "sqlite_stat1_rows": 0,
-          "planner_stats_present": false,
+          "sqlite_stat1_rows": null,
+          "planner_stats_present": null,
+          "state": "unavailable",
           "wal_metadata": {
             "state": "not_observed",
             "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
@@ -1413,45 +1420,8 @@
         "parsed_without_index_session": 0
       },
       "source_family_counts": {},
-      "raw_authority_census": {
-        "census_id": "census:1:<HASH>:<HASH>",
-        "sequence_no": 1,
-        "inventory_digest": "<HASH>",
-        "residual_digest": "<HASH>",
-        "plan_count": 0,
-        "post_inventory_digest": "<HASH>",
-        "post_residual_digest": "<HASH>",
-        "post_plan_count": 0,
-        "executable_plan_count": 0,
-        "residual_plan_count": 0,
-        "predecessor_census_id": null,
-        "mode": "dry_run",
-        "lifecycle_status": "completed",
-        "quiescent": true,
-        "fixed_point": false,
-        "completed_at_ms": <HASH>,
-        "pending_census_count": 0,
-        "query_handle": "polylogue:/<PATH>:1:<HASH>:<HASH>/0"
-      },
-      "raw_authority_frontier": {
-        "census_id": "census:1:<HASH>:<HASH>",
-        "sequence_no": 1,
-        "inventory_digest": "<HASH>",
-        "plan_inventory_digest": "<HASH>",
-        "residual_digest": "<HASH>",
-        "plan_count": 0,
-        "executable_plan_count": 0,
-        "residual_plan_count": 0,
-        "state_counts": {},
-        "blocking_count": 0,
-        "lifecycle_status": "completed",
-        "completed_at_ms": <HASH>,
-        "query_handle": "polylogue:/<PATH>:1:<HASH>:<HASH>/0"
-      },
-      "raw_authority_frontier_blocking_count": 0,
       "raw_authority_frontier_remediation_refs": [],
       "raw_authority_blocker_count": 0,
-      "raw_authority_pending_census_count": 0,
       "raw_authority_parser_census": {
         "available": true,
         "complete_count": 2,
@@ -1462,12 +1432,7 @@
         "incomplete_origin_summary": []
       },
       "raw_authority_parser_census_incomplete_count": 0,
-      "raw_authority_parser_census_incomplete_blob_bytes": 0,
-      "raw_authority_ledger_counts": {
-        "unresolved_blockers": 0,
-        "pending_censuses": 0,
-        "parser_census_incomplete": 0
-      }
+      "raw_authority_parser_census_incomplete_blob_bytes": 0
     },
     "raw_frontier_integrity": {
       "cursor_authority_deferred_count": 0,

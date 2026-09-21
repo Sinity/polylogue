@@ -8,7 +8,7 @@ import os
 import sqlite3
 import time
 import zipfile
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field
@@ -222,6 +222,20 @@ if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 
 logger = get_logger(__name__)
+
+#: Convergence-debt stage name for the recurring raw-retention owner. Raw
+#: retention is one of the four derived/durable-storage domains
+#: (polylogue-6kur AC5) that must each have a single ordinary owner with
+#: bounded retry; this stage name is how its unfinished work is retained in
+#: the shared ``convergence_debt`` ledger and found again on the next pass.
+RAW_RETENTION_STAGE = "raw_retention"
+#: How many superseded snapshots one pass compacts for one source path. The
+#: bound keeps a pass proportional to its batch; the remainder is named in a
+#: debt row rather than silently dropped.
+RAW_RETENTION_LIMIT_PER_PATH = 25
+#: How many retry-due backlog paths one pass additionally drains. The pass
+#: stays bounded by its own input plus this constant, never by the ledger.
+RAW_RETENTION_BACKLOG_PER_PASS = 25
 
 
 class CursorAuthorityBlockedError(RuntimeError):
@@ -5666,6 +5680,61 @@ class LiveBatchProcessor:
     def _ingest_append_plans(self, plans: list[_AppendPlan]) -> _AppendResult:
         return ingest_append_plans(self, plans)
 
+    def _raw_retention_backlog_paths(self, *, exclude: set[Path]) -> list[Path]:
+        """Return retry-due raw-retention backlog this pass should also drain.
+
+        Retention is the recurring owner of superseded live raw payloads, and a
+        recurring owner is only bounded-retrying if it comes back to what its
+        last bounded pass did not reach. The backlog lives in the ordinary
+        ``convergence_debt`` ledger under :data:`RAW_RETENTION_STAGE`, which
+        already carries the attempt count and the exponential ``next_retry_at``
+        backoff, so this reads that ledger rather than keeping a second one.
+
+        An unreadable ledger is deliberately not caught here. The backlog is
+        the only record that this work is still owed, so a pass that could not
+        read it has not proven there is none; swallowing the error would make
+        a broken ops tier look like an empty queue.
+        """
+        backlog = self._cursor.list_convergence_debt(
+            limit=RAW_RETENTION_BACKLOG_PER_PASS,
+            stage=RAW_RETENTION_STAGE,
+            retry_due_only=True,
+        )
+        ordered: list[Path] = []
+        for debt in backlog:
+            if debt.subject_type != "source_path":
+                continue
+            path = Path(debt.subject_id)
+            if path in exclude or path in ordered:
+                continue
+            ordered.append(path)
+        return ordered
+
+    def _record_raw_retention_outcome(
+        self,
+        paths: Sequence[Path],
+        *,
+        residual: set[Path],
+        error: str | None,
+        deferred: bool,
+    ) -> None:
+        """Retain unfinished retention work as ordinary retryable debt."""
+        for path in paths:
+            if path in residual:
+                self._cursor.record_convergence_debt(
+                    stage=RAW_RETENTION_STAGE,
+                    subject_type="source_path",
+                    subject_id=str(path),
+                    error=error,
+                    deferred=deferred,
+                )
+            else:
+                self._cursor.clear_convergence_debt(
+                    stage=RAW_RETENTION_STAGE,
+                    subject_type="source_path",
+                    subject_id=str(path),
+                )
+
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
         if not paths or _source_tier_acquisition_required():
             return
@@ -5686,6 +5755,11 @@ class LiveBatchProcessor:
         source_db = archive_root / "source.db"
         if not source_db.exists():
             return
+        # This pass's own subjects plus the retry-due backlog a previous
+        # bounded pass named. Both populations go through the one authority
+        # resolution below, so draining the backlog costs no extra hold.
+        scoped_paths = list(dict.fromkeys(paths))
+        scoped_paths.extend(self._raw_retention_backlog_paths(exclude=set(scoped_paths)))
         lease = ActiveWriterLease(archive_root)
         lease.acquire()
         try:
@@ -5700,16 +5774,27 @@ class LiveBatchProcessor:
                     retention_authority = active_raw_retention_authority(
                         conn,
                         index_db_path=index_db,
-                        terminal_source_paths=paths,
-                        authority_source_paths=paths,
+                        terminal_source_paths=scoped_paths,
+                        authority_source_paths=scoped_paths,
                     )
                 except RawRetentionSafetyError as exc:
+                    # A refusal used to be one log line and nothing else: the
+                    # pass returned, the paths were never revisited, and the
+                    # archive kept superseded payloads with no record that
+                    # anything owed them. Record it as ordinary failed debt so
+                    # the next due pass retries it with the shared backoff.
                     logger.warning("live.watcher: skipped unsafe raw snapshot compaction: %s", exc)
+                    self._record_raw_retention_outcome(
+                        scoped_paths,
+                        residual=set(scoped_paths),
+                        error=f"raw retention refused: {exc}",
+                        deferred=False,
+                    )
                     return
                 result = compact_paths_superseded_raw_snapshots(
                     conn,
-                    paths,
-                    limit_per_path=25,
+                    scoped_paths,
+                    limit_per_path=RAW_RETENTION_LIMIT_PER_PATH,
                     min_acquired_at=self._raw_compaction_min_acquired_at,
                     protected_raw_ids=retention_authority.protected_raw_ids,
                     eligible_raw_ids=retention_authority.eligible_raw_ids,
@@ -5718,7 +5803,22 @@ class LiveBatchProcessor:
         finally:
             lease.close()
         if result.errors:
+            # Blob-unlink errors only. Their subjects are already unreferenced,
+            # so the ordinary blob-GC owner collects them; routing them into
+            # retention debt would file work under the wrong owner and leave a
+            # row that no retention pass can ever clear.
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
+        # A bound that truncates silently reports a finished answer it did not
+        # compute. Name the bound in the debt row instead.
+        self._record_raw_retention_outcome(
+            scoped_paths,
+            residual={Path(path) for path in result.residual_source_paths},
+            error=(
+                f"raw retention bounded at {RAW_RETENTION_LIMIT_PER_PATH} superseded snapshots "
+                "per source path per pass; backlog retained"
+            ),
+            deferred=True,
+        )
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
         """Persist a proven append frontier against one stable observation."""
