@@ -308,3 +308,61 @@ def test_restart_from_a_large_wal_recovers_the_committed_rows(tmp_path: Path) ->
     )
     assert observation.mode == "truncate"
     assert observation.wal_bytes_after == 0
+
+
+# -- the cold-build pass boundary --------------------------------------------
+
+
+def test_the_cold_build_pass_boundary_checkpoints_through_the_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``finish_active_cold_build`` is a checkpoint caller like any other.
+
+    It ran a raw ``PRAGMA wal_checkpoint(TRUNCATE)`` on the daemon's *live*
+    writer connection, outside the escalation policy entirely. The active
+    generation is read concurrently by the CLI, MCP and the daemon's own
+    readers (see ``COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE``), and TRUNCATE
+    takes the writer lock and waits for those readers to drain -- against a
+    30 s busy timeout, once per ingest pass.
+
+    Anti-vacuity, three mutations:
+      * restoring the raw ``PRAGMA wal_checkpoint(TRUNCATE)`` leaves ``calls``
+        empty;
+      * naming ``boundary="exclusive"`` records the wrong boundary;
+      * asking for TRUNCATE at the recurring boundary makes the owner raise
+        ``ValueError`` out of ``finish_active_cold_build``.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    calls: list[tuple[str, str, tuple[int, int, int]]] = []
+    real = wal_checkpoint.checkpoint_connection
+
+    def record(conn: sqlite3.Connection, mode: str, *, boundary: str) -> tuple[int, int, int]:
+        result = real(conn, mode, boundary=boundary)  # type: ignore[arg-type]
+        calls.append((mode, boundary, result))
+        return result
+
+    monkeypatch.setattr(wal_checkpoint, "checkpoint_connection", record)
+
+    with ArchiveStore.open_active_cold_build(tmp_path) as archive:
+        assert archive.active_cold_build_engaged is True
+        archive._conn.executemany(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
+            [(f"cold-{index}", "codex-session", bytes([index % 256]) * 32) for index in range(64)],
+        )
+        archive._conn.commit()
+        wal = tmp_path / "index.db-wal"
+        assert wal.exists() and wal.stat().st_size > 0, "no WAL to drain; the boundary would be vacuous"
+        archive.finish_active_cold_build()
+        assert archive.active_cold_build_engaged is False
+
+    assert len(calls) == 1, calls
+    mode, boundary, (busy_pages, log_pages, checkpointed_pages) = calls[0]
+    assert (mode, boundary) == ("PASSIVE", "recurring")
+    # PASSIVE is a real drain here, not a downgrade to a no-op: nothing else
+    # pins frames, so every logged frame is copied back and none is busy. The
+    # WAL *file* keeps its size because a reset WAL is reused in place --
+    # shrinking it is what ``journal_size_limit`` owns, not this boundary.
+    assert log_pages > 0
+    assert (busy_pages, checkpointed_pages) == (0, log_pages)
+    assert "TRUNCATE" not in CHECKPOINT_ESCALATION_MODES["recurring"]

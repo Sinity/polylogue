@@ -1069,15 +1069,30 @@ class ArchiveStore:
         only file-level setting and the cold profile never changes it -- it
         stays WAL, so readers are unaffected throughout.
 
-        The one useful thing left is truncating the WAL the raised
-        autocheckpoint threshold let grow, which is not valid inside a
-        transaction and is therefore best-effort.
+        The one useful thing left is draining the WAL the raised autocheckpoint
+        threshold let grow, which is not valid inside a transaction and is
+        therefore best-effort.
+
+        That drain runs at the **recurring** checkpoint boundary, so PASSIVE is
+        the only mode it may attempt. This connection writes the *active*
+        generation, which ``COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE``
+        documents as "read concurrently by the CLI, MCP and the daemon's own
+        readers"; nothing here drains or excludes them. RESTART and TRUNCATE
+        take the writer lock and wait for readers, which at a 30 s busy timeout
+        turns every pass boundary into a checkpoint-attributable writer hold --
+        the outlier the escalation policy exists to prevent. A reader that
+        still pins frames leaves the WAL retained rather than fought; the
+        ``journal_size_limit`` cap still shrinks the file on the next
+        checkpoint that frees pages, and closing the connection ends the
+        reader-visible generation anyway.
         """
+        from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
+
         self._require_writable("finish an active cold build")
         if not self._active_cold_build_engaged:
             return
         if not self._conn.in_transaction:
-            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            checkpoint_connection(self._conn, "PASSIVE", boundary="recurring")
         self._active_cold_build_engaged = False
 
     def restore_deferred_secondary_indexes(self) -> None:
