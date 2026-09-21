@@ -1199,7 +1199,17 @@ def read_agentctl_outcome(job_id: str, *, state_root: Path | None = None) -> dic
 
 
 def _adopt_outcome(payload: dict[str, Any], outcome: Mapping[str, Any]) -> None:
-    """Take the process-level ending AgentCTL recorded for this run."""
+    """Take the process-level ending AgentCTL recorded for this run.
+
+    ``outcome`` is AgentCTL's own bucket and is coarse: an oom-kill and an
+    ordinary non-zero exit are both ``"failed"``. ``systemd_result`` is the
+    killer the unit recorded -- ``"oom-kill"``, ``"timeout"``, or null when the
+    command simply exited -- and it is the fact a reader of an abandoned
+    receipt actually needs. Dropping it is what made three differently-killed
+    scheduled runs read as one undifferentiated failure (polylogue-yk0zz), and
+    sent the reader to `journalctl` for something already on disk. The unit
+    name comes along because it is what a journal query needs.
+    """
     exit_code = outcome.get("exit_code")
     if isinstance(exit_code, int):
         payload["exit_code"] = exit_code
@@ -1207,6 +1217,12 @@ def _adopt_outcome(payload: dict[str, Any], outcome: Mapping[str, Any]) -> None:
     ended = outcome.get("outcome")
     if isinstance(ended, str) and ended:
         payload["termination_reason"] = ended
+    systemd_result = outcome.get("systemd_result")
+    if isinstance(systemd_result, str) and systemd_result:
+        payload["termination_killer"] = systemd_result
+    unit = outcome.get("unit")
+    if isinstance(unit, str) and unit:
+        payload["termination_unit"] = unit
     payload["agentctl_outcome_adopted"] = True
 
 

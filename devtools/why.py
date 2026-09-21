@@ -106,7 +106,8 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "(systemd-oomd, a hard cancel, a lost host), which no in-process handler can catch. "
         "This receipt was closed out from outside it, so its steps report what had finished, "
         "not what the run would have concluded.",
-        "Check `journalctl --user -g oom` or the AgentCTL job outcome for the cause, then rerun the tier.",
+        "Read the 'ended:' line above for the killer AgentCTL recorded; the receipt holds it, so "
+        "there is nothing to look up. Rerun the tier once the named cause is addressed.",
     ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
@@ -192,6 +193,21 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
         print(f"  tested tree: {tested}{moved}{dirty}", file=stream)
     else:
         print("  tested tree: not recorded -- this receipt is evidence for no tree", file=stream)
+
+    # How the process ended, when something outside it decided that. Without
+    # this line an oom-kill, a cancel and an operation timeout all render as
+    # one undifferentiated abandonment (polylogue-yk0zz).
+    reason = payload.get("termination_reason")
+    killer = payload.get("termination_killer")
+    if isinstance(reason, str) and reason or isinstance(killer, str) and killer:
+        parts = [str(reason)] if isinstance(reason, str) and reason else []
+        if isinstance(killer, str) and killer and killer != reason:
+            parts.append(f"systemd recorded {killer}")
+        line = f"  ended: {'; '.join(parts)}"
+        unit = payload.get("termination_unit")
+        if isinstance(unit, str) and unit:
+            line += f" (unit {unit})"
+        print(line, file=stream)
 
     diagnosis = payload.get("diagnosis") or payload.get("checkout_diagnosis")
     if diagnosis:

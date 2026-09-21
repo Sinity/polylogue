@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import stat
 from datetime import datetime
@@ -387,3 +388,54 @@ def test_a_run_id_without_an_owning_pid_is_not_reconciled(tmp_path: Path) -> Non
 
     assert verify_runs.reconcile_abandoned_verify_runs(runs_root=runs_root) == []
     assert cast(dict[str, object], verify_runs._read_json(run_dir / "run.json"))["status"] == "running"
+
+
+def test_three_differently_killed_runs_do_not_collapse_into_one_ending(tmp_path: Path) -> None:
+    """polylogue-yk0zz: the killer is on disk, so the receipt must keep it.
+
+    AgentCTL's own ``outcome`` bucket is coarse -- an oom-kill and an ordinary
+    non-zero exit are both ``"failed"`` -- while ``systemd_result`` names the
+    killer. These three payloads are the shapes the 2026-09-17, 09-19 and
+    09-20 scheduled corpus runs actually left behind (exit 124 timeout, exit
+    137 oom-kill, exit 130 cancelled).
+
+    Anti-vacuity: drop ``systemd_result`` from the adoption and the oom-killed
+    run is indistinguishable from any other ``failed`` -- the ``oom-kill``
+    assertion goes red and the campaign is back to reading journals by hand.
+    """
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+    state_root = tmp_path / "agentctl-jobs"
+    state_root.mkdir()
+    endings = {
+        "df109b43": (124, "timeout", "timeout"),
+        "b0ccb32f": (137, "failed", "oom-kill"),
+        "6e84077f": (130, "cancelled", None),
+    }
+    paths: dict[str, Path] = {}
+    for suffix, (exit_code, outcome, systemd_result) in endings.items():
+        job_id = f"polylogue-verify_all-{suffix}"
+        (state_root / f"{job_id}.outcome").write_text(
+            json.dumps(
+                {
+                    "exit_code": exit_code,
+                    "outcome": outcome,
+                    "systemd_result": systemd_result,
+                    "unit": f"agentctl-pytest-heavy-{job_id}.service",
+                }
+            ),
+            encoding="utf-8",
+        )
+        paths[suffix] = _running_run(tmp_path, pid=_dead_pid(), job_id=job_id)
+
+    verify_runs.reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
+
+    adopted = {suffix: cast(dict[str, object], verify_runs._read_json(path)) for suffix, path in paths.items()}
+    assert adopted["df109b43"]["termination_killer"] == "timeout"
+    assert adopted["b0ccb32f"]["termination_killer"] == "oom-kill"
+    # The coarse bucket alone would have made this one look ordinary.
+    assert adopted["b0ccb32f"]["termination_reason"] == "failed"
+    # A clean cancel records no killer rather than inventing one.
+    assert "termination_killer" not in adopted["6e84077f"]
+    assert adopted["6e84077f"]["termination_reason"] == "cancelled"
+    # The journal query a reader would need next.
+    assert adopted["b0ccb32f"]["termination_unit"] == ("agentctl-pytest-heavy-polylogue-verify_all-b0ccb32f.service")
