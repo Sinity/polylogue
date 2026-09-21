@@ -62,6 +62,36 @@ from polylogue.storage.sqlite.archive_tiers.types import (
 )
 
 _TOOL_COMMAND_SQL = sql_coalesced_json_extract("tool_input", TOOL_COMMAND_INPUT_KEYS)
+
+# Six index-tier tables store a row's owning message *and*, denormalized, its
+# owning session: blocks, action_pairs, attachment_refs, paste_spans,
+# file_edits and web_content_constructs. The denormalization is load-bearing --
+# each has a session-leading index or PRIMARY KEY that a session-scoped read or
+# a per-session full-replace DELETE depends on -- so the column stays.
+#
+# Declared as two independent single-column references it let the two owner
+# keys contradict each other. A row whose ``message_id`` belonged to session A
+# while its own ``session_id`` said B was accepted; ``PRAGMA foreign_key_check``
+# stayed clean; the session-scoped read counted it under B while the
+# message-joined read counted it under A; and deleting session B cascaded away
+# a row belonging to session A's message. Each reference held on its own while
+# their conjunction was false.
+#
+# Referencing the pair makes the two keys agree by construction, against
+# ``MESSAGES_SPEC``'s ``UNIQUE(message_id, session_id)`` parent key. A table
+# using this carries no separate single-column reference to ``messages`` or
+# ``sessions``: the first is implied by this constraint, the second
+# transitively through ``messages.session_id``. So there is exactly one
+# statement of who owns a row, and deleting a session still cascades down the
+# same chain, one link further along. SQLite resolves the constraint through an
+# index whose leftmost column is the first child key column, which all six
+# already have on ``message_id``; none needed a new child index.
+#
+# ``blocks`` was fixed first (polylogue-asp4b); the other five followed
+# (polylogue-dba5k), ``action_pairs`` among them after enumerating the shape
+# from the built schema rather than from the reported list.
+_MESSAGE_OWNER_FK = "FOREIGN KEY(message_id, session_id) REFERENCES messages(message_id, session_id) ON DELETE CASCADE"
+
 _TOOL_PATH_SQL = sql_coalesced_json_extract("tool_input", TOOL_PATH_INPUT_KEYS)
 
 
@@ -521,13 +551,7 @@ BLOCKS_SPEC = _make_table_spec(
             record_name="block_id",
             domain_name="id",
         ),
-        # polylogue-asp4b: the per-column references below are deliberately
-        # bare. The owning relation is the compound FK in
-        # ``table_constraints``; a second single-column FK to
-        # ``messages(message_id)`` would be implied by it and a second one to
-        # ``sessions(session_id)`` is implied transitively through
-        # ``messages.session_id``. Both are kept out so there is exactly one
-        # statement of who owns a block.
+        # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
         _raw_column(
             "message_id",
             "message_id TEXT NOT NULL",
@@ -614,17 +638,7 @@ BLOCKS_SPEC = _make_table_spec(
     record_only_columns=(_derived_column("metadata", "NULL"),),
     table_constraints=(
         "PRIMARY KEY(message_id, position)",
-        # polylogue-asp4b: ``session_id`` is a denormalized owner key kept for
-        # query locality (``idx_blocks_session_position`` and every
-        # session-scoped read use it). With two independent single-column
-        # references, the schema accepted a block whose ``message_id`` belongs
-        # to session A while ``session_id`` said B -- ``PRAGMA
-        # foreign_key_check`` stayed clean, the two read routes disagreed
-        # about which session the block belongs to, and deleting session B
-        # cascaded away a block of session A's message. Referencing the pair
-        # makes the two owner keys agree by construction instead of by
-        # convention.
-        "FOREIGN KEY(message_id, session_id) REFERENCES messages(message_id, session_id) ON DELETE CASCADE",
+        _MESSAGE_OWNER_FK,
         # An unknown structural outcome is only honest with a reason for it.
         # The reason describes a tool_result's missing outcome, so it may
         # appear on no other block shape: a tool_use mirrors its result's
@@ -1058,12 +1072,9 @@ WEB_CONTENT_CONSTRUCTS_SPEC = _make_table_spec(
         _raw_column(
             "construct_id", """construct_id    TEXT GENERATED ALWAYS AS (block_id || ':' || position) STORED UNIQUE"""
         ),
-        _raw_column(
-            "session_id", """session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
-        ),
-        _raw_column(
-            "message_id", """message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE"""
-        ),
+        # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
+        _raw_column("session_id", """session_id      TEXT NOT NULL"""),
+        _raw_column("message_id", """message_id      TEXT NOT NULL"""),
         _raw_column("block_id", """block_id        TEXT NOT NULL REFERENCES blocks(block_id) ON DELETE CASCADE"""),
         _raw_column("position", """position        INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column("provider", """provider        TEXT NOT NULL"""),
@@ -1087,7 +1098,7 @@ WEB_CONTENT_CONSTRUCTS_SPEC = _make_table_spec(
         _raw_column("start_index", """start_index     INTEGER"""),
         _raw_column("end_index", """end_index       INTEGER"""),
     ),
-    table_constraints=("""PRIMARY KEY(block_id, position)""",),
+    table_constraints=("""PRIMARY KEY(block_id, position)""", _MESSAGE_OWNER_FK),
 )
 
 FILE_EDITS_SPEC = _make_table_spec(
@@ -1097,12 +1108,9 @@ FILE_EDITS_SPEC = _make_table_spec(
             "tool_use_block_id",
             """tool_use_block_id   TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE""",
         ),
-        _raw_column(
-            "session_id", """session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
-        ),
-        _raw_column(
-            "message_id", """message_id          TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE"""
-        ),
+        # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
+        _raw_column("session_id", """session_id          TEXT NOT NULL"""),
+        _raw_column("message_id", """message_id          TEXT NOT NULL"""),
         _raw_column("file_path", """file_path           TEXT"""),
         _raw_column(
             "structured_patch_json",
@@ -1119,6 +1127,7 @@ FILE_EDITS_SPEC = _make_table_spec(
         ),
         _raw_column("observed_at_ms", """observed_at_ms      INTEGER"""),
     ),
+    table_constraints=(_MESSAGE_OWNER_FK,),
 )
 
 SESSION_REFS_SPEC = _make_table_spec(
@@ -1147,12 +1156,9 @@ ACTION_PAIRS_SPEC = _make_table_spec(
             "tool_use_block_id",
             """tool_use_block_id      TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE""",
         ),
-        _raw_column(
-            "session_id", """session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
-        ),
-        _raw_column(
-            "message_id", """message_id             TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE"""
-        ),
+        # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
+        _raw_column("session_id", """session_id             TEXT NOT NULL"""),
+        _raw_column("message_id", """message_id             TEXT NOT NULL"""),
         _raw_column("tool_id", """tool_id                TEXT"""),
         _raw_column("use_rank", """use_rank               INTEGER"""),
         _raw_column("tool_name", """tool_name              TEXT"""),
@@ -1170,7 +1176,7 @@ ACTION_PAIRS_SPEC = _make_table_spec(
         _raw_column("tool_outcome", """tool_outcome           TEXT"""),
         _raw_column("outcome_unknown_reason", """outcome_unknown_reason TEXT"""),
     ),
-    table_constraints=("""FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE""",),
+    table_constraints=(_MESSAGE_OWNER_FK,),
 )
 
 SESSION_EVENTS_SPEC = _make_table_spec(
@@ -1441,12 +1447,9 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
             "attachment_id",
             """attachment_id          TEXT NOT NULL REFERENCES attachments(attachment_id) ON DELETE CASCADE""",
         ),
-        _raw_column(
-            "session_id", """session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
-        ),
-        _raw_column(
-            "message_id", """message_id             TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE"""
-        ),
+        # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
+        _raw_column("session_id", """session_id             TEXT NOT NULL"""),
+        _raw_column("message_id", """message_id             TEXT NOT NULL"""),
         _raw_column("position", """position               INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "upload_origin",
@@ -1463,7 +1466,7 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         _raw_column("source_url", """source_url             TEXT"""),
         _raw_column("caption", """caption                TEXT"""),
     ),
-    table_constraints=("""PRIMARY KEY(message_id, position)""",),
+    table_constraints=("""PRIMARY KEY(message_id, position)""", _MESSAGE_OWNER_FK),
 )
 
 ATTACHMENT_NATIVE_IDS_SPEC = _make_table_spec(
@@ -1485,12 +1488,9 @@ PASTE_SPANS_SPEC = _make_table_spec(
         _raw_column(
             "paste_id", """paste_id        TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE"""
         ),
-        _raw_column(
-            "message_id", """message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE"""
-        ),
-        _raw_column(
-            "session_id", """session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
-        ),
+        # Bare by design: the owning relation is ``_MESSAGE_OWNER_FK``.
+        _raw_column("message_id", """message_id      TEXT NOT NULL"""),
+        _raw_column("session_id", """session_id      TEXT NOT NULL"""),
         _raw_column("position", """position        INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column("start_offset", """start_offset    INTEGER CHECK(start_offset IS NULL OR start_offset >= 0)"""),
         _raw_column(
@@ -1504,7 +1504,7 @@ PASTE_SPANS_SPEC = _make_table_spec(
         _raw_column("content_hash", """content_hash    BLOB NOT NULL CHECK(length(content_hash) = 32)"""),
         _raw_column("observed_at_ms", """observed_at_ms  INTEGER"""),
     ),
-    table_constraints=("""PRIMARY KEY(message_id, position)""",),
+    table_constraints=("""PRIMARY KEY(message_id, position)""", _MESSAGE_OWNER_FK),
 )
 
 SESSION_MODEL_USAGE_SPEC = _make_table_spec(
