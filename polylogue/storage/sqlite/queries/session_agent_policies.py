@@ -25,6 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 __all__ = [
     "get_session_agent_policies",
     "get_session_agent_policies_batch",
+    "sync_session_agent_policies",
 ]
 
 _SELECT_COLUMNS = (
@@ -44,6 +45,30 @@ def _row_to_agent_policy(row: sqlite3.Row) -> ArchiveAgentPolicy:
         observed_at_ms=row["observed_at_ms"],
         source_message_id=row["source_message_id"],
     )
+
+
+def sync_session_agent_policies(
+    conn: sqlite3.Connection,
+    session_id: str,
+) -> list[ArchiveAgentPolicy]:
+    """Read the same rows, in the same order, off a pinned sync connection.
+
+    The declared ``session.read`` operation runs inside a reader the daemon
+    already opened, so it cannot await an ``aiosqlite`` handle. The SQL and the
+    row mapper are shared with the async twin rather than restated, so the two
+    routes cannot answer the same session differently.
+    """
+
+    rows = conn.execute(
+        f"""
+        SELECT {_SELECT_COLUMNS}
+        FROM session_agent_policies
+        WHERE session_id = ?
+        ORDER BY position
+        """,
+        (session_id,),
+    ).fetchall()
+    return [_row_to_agent_policy(row) for row in rows]
 
 
 async def get_session_agent_policies(

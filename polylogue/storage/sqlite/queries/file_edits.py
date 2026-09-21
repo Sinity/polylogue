@@ -11,6 +11,7 @@ entirely (polylogue-cgfy). Follows the same shape as
 
 from __future__ import annotations
 
+import sqlite3
 from collections import defaultdict
 from collections.abc import Sequence
 
@@ -22,12 +23,34 @@ from polylogue.storage.sqlite.queries.mappers import _row_to_file_edit
 __all__ = [
     "get_file_edits_for_session",
     "get_file_edits_for_session_batch",
+    "sync_file_edits_for_session",
 ]
 
 _SELECT_COLUMNS = (
     "tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
     "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms"
 )
+
+
+def sync_file_edits_for_session(conn: sqlite3.Connection, session_id: str) -> list[FileEditRecord]:
+    """Read the same rows, in the same order, off a pinned sync connection.
+
+    The declared ``session.read`` operation runs inside a reader the daemon
+    already opened, so it cannot await an ``aiosqlite`` handle. The SQL and the
+    row mapper are shared with the async twin rather than restated, so the two
+    routes cannot answer the same session differently.
+    """
+
+    rows = conn.execute(
+        f"""
+        SELECT {_SELECT_COLUMNS}
+        FROM file_edits
+        WHERE session_id = ?
+        ORDER BY message_id, tool_use_block_id
+        """,
+        (session_id,),
+    ).fetchall()
+    return [_row_to_file_edit(row) for row in rows]
 
 
 async def get_file_edits_for_session(

@@ -88,7 +88,14 @@ class QueryAggregateResult(_ReadResult):
 #: exact reference but is not a message window and has no query-grammar unit
 #: of its own (design D3, ``cli/read_view_registry.py``): reading them through
 #: ``session.read`` is what keeps a read view from opening an archive itself.
-SessionReadKind = Literal["transcript", "messages", "hooks"]
+SessionReadKind = Literal[
+    "transcript",
+    "messages",
+    "hooks",
+    "file-edits",
+    "agent-policies",
+    "web-content",
+]
 
 #: Kinds that answer a bounded ``[offset, offset + limit)`` message window and
 #: therefore take window coordinates and issue continuations.
@@ -98,7 +105,7 @@ WINDOWED_SESSION_READ_KINDS: frozenset[str] = frozenset({"transcript", "messages
 #: that later needs paging graduates to the windowed contract rather than
 #: quietly truncating, which is why the result validator refuses a partial
 #: evidence body instead of allowing one.
-_WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks"})
+_WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks", "file-edits", "agent-policies", "web-content"})
 
 
 #: Kinds that accept ``around`` -- a *message* naming its own window instead
