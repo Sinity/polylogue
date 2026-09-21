@@ -19,6 +19,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
+    from polylogue.config import PolylogueConfig
     from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
     from polylogue.storage.embeddings.reconcile import EmbeddingOrphanReconcileReport
 
@@ -46,6 +47,30 @@ EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS = 60
 EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS = 900
 EMBEDDING_ORPHAN_RECONCILE_MAX_COUNT = 500
 EMBEDDING_ORPHAN_RECONCILE_QUIET_WINDOW_MS = 5 * 60 * 1000
+
+
+def embedding_convergence_unavailable_reason(config: PolylogueConfig) -> str | None:
+    """Why embedding convergence can do no work this process, or ``None``.
+
+    This is the selection-time reading of the two permanent deferrals
+    :func:`polylogue.daemon.embedding_owner.compose_embedding_convergence`
+    decides at composition time. Both are configuration read once per
+    process, so a daemon that composes one of them will keep returning it
+    unchanged until it restarts: scheduling
+    :func:`periodic_embedding_backlog_check` against it buys an identical
+    refusal on every ingest wake and never a pass that can progress.
+
+    The composer owns the authority; this mirrors it so the composition root
+    can withhold :attr:`~polylogue.daemon.services.ServiceCapability.EMBEDDINGS`
+    before a task exists. The two are held together by
+    ``test_the_capability_predicate_agrees_with_the_composed_callback``.
+    """
+
+    if not bool(config.embedding_enabled):
+        return "disabled"
+    if not config.voyage_api_key:
+        return "provider_unavailable"
+    return None
 
 
 def recover_embedding_catchup_receipts(archive_root: Path) -> int:
@@ -354,6 +379,7 @@ __all__ = [
     "TERMINAL_CATCHUP_RECEIPT_STATUSES",
     "UNFINISHED_CATCHUP_RECEIPT_STATUSES",
     "embedding_catchup_estimated_cost_this_month",
+    "embedding_convergence_unavailable_reason",
     "periodic_embedding_backlog_check",
     "periodic_embedding_orphan_reconcile_check",
     "reconcile_embedding_orphans_once",

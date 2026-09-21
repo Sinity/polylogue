@@ -4096,6 +4096,136 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
     assert unresolved == [], f"declared services the composition route never resolved: {unresolved}"
 
 
+@pytest.mark.parametrize("embeddings_configured", [False, True])
+def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_route(
+    tmp_path: Path, embeddings_configured: bool
+) -> None:
+    """An embedding backlog that can only refuse is never given a task.
+
+    With embeddings unconfigured -- the default -- ``compose_embedding_convergence``
+    returns a constant policy deferral for the life of the process, while this
+    loop is woken by every ``IngestCommitted``. Selected-and-refusing therefore
+    costs one identical refusal per commit and reports nothing: measured at
+    head, 25 ingest wakes produced 25 refusals. The capability moves that to
+    selection, where the supervisor resolves one ``skipped`` state that
+    ``supervised_service_states`` publishes.
+
+    ``embedding_orphan_reconcile`` is selected in both rows: stale embedding
+    rows are debt to drain regardless, so this is a gate on one loop rather
+    than on the embeddings owner.
+
+    Anti-vacuity: drop ``ServiceCapability.EMBEDDINGS`` from the
+    ``embedding_backlog`` spec, or stop resolving it in the composition root,
+    and the unconfigured row gets a task and settles ``stopped`` instead of
+    ``skipped``. Both mutations were executed and both fail here.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.services import ServiceState
+    from polylogue.daemon.status import supervised_service_states
+    from polylogue.daemon.supervisor import TASK_NAME_PREFIX
+    from tests.infra.embedding_config import embedding_config
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher(_NoIntakeHints):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.watcher_ready = asyncio.Event()
+
+        async def run(self) -> None:
+            self.watcher_ready.set()
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            return None
+
+    async def idle_loop(**_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    config = embedding_config(
+        embedding_enabled=embeddings_configured,
+        voyage_api_key="vk-synthetic" if embeddings_configured else None,
+    )
+    supervisors: list[Any] = []
+    projections: list[dict[str, str] | None] = []
+    real_setter = daemon_cli._set_active_supervisor
+
+    def capture(supervisor: Any) -> None:
+        if supervisor is not None:
+            supervisors.append(supervisor)
+        else:
+            # The last moment the process still has a composed supervisor, so
+            # the status projection is read the way a live daemon reads it.
+            projections.append(supervised_service_states())
+        real_setter(supervisor)
+
+    with contextlib.ExitStack() as stack:
+        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        created = _record_task_creation(stack)
+        stack.enter_context(patch.object(daemon_cli, "_set_active_supervisor", capture))
+        stack.enter_context(patch("polylogue.config.load_polylogue_config", return_value=config))
+        stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
+        stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
+        for attribute in (
+            "_periodic_lifecycle_heartbeat",
+            "_periodic_health_check",
+            "_periodic_wal_checkpoint",
+            "_periodic_fts_merge",
+            "_periodic_heartbeat",
+            "_periodic_db_optimize",
+            "_periodic_status_snapshot_refresh",
+            "_periodic_raw_materialization_convergence",
+            "_periodic_drive_source_catchup",
+        ):
+            stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
+        for target in (
+            "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+            "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
+            "polylogue.daemon.judgment_automation.periodic_judgment_automation_sweep",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+            "polylogue.daemon.secret_scan_sweep.periodic_secret_scan_sweep",
+        ):
+            stack.enter_context(patch(target, idle_loop))
+        stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    supervisor = supervisors[0]
+    # ``skipped`` is resolved at selection and survives shutdown; anything the
+    # supervisor did give a task to settles ``stopped`` when this run unwinds.
+    assert supervisor.state("embedding_backlog") is (
+        ServiceState.SKIPPED if not embeddings_configured else ServiceState.STOPPED
+    )
+    assert supervisor.state("embedding_orphan_reconcile") is ServiceState.STOPPED
+
+    backlog_tasks = [name for _filename, name in created if name == f"{TASK_NAME_PREFIX}embedding_backlog"]
+    assert backlog_tasks == ([] if not embeddings_configured else [f"{TASK_NAME_PREFIX}embedding_backlog"])
+
+    # The unschedulable half is only half the property: status must name it.
+    assert projections and projections[-1] is not None
+    projected = projections[-1]
+    assert projected["embedding_backlog"] == supervisor.state("embedding_backlog").value
+    assert (projected["embedding_backlog"] == "skipped") is not embeddings_configured
+
+    if not embeddings_configured:
+        skip = next(transition for transition in supervisor.transitions() if transition.service == "embedding_backlog")
+        assert skip.reason is not None and "embeddings" in skip.reason
+
+
 def test_daemon_composition_gives_raw_whale_its_own_discovery_cursor(tmp_path: Path) -> None:
     """Whale selection cannot consume fair intake's raw continuation.
 

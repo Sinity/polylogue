@@ -2485,6 +2485,11 @@ async def _run_daemon_services_under_active_writer_lease(
         capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
     else:
         capabilities.add(ServiceCapability.DERIVED_WRITES)
+        from polylogue.config import load_polylogue_config
+        from polylogue.daemon.embedding_backlog import embedding_convergence_unavailable_reason
+
+        if embedding_convergence_unavailable_reason(load_polylogue_config()) is None:
+            capabilities.add(ServiceCapability.EMBEDDINGS)
 
     halts = HaltRegistry(archive_root_path)
     supervisor = DaemonSupervisor(
