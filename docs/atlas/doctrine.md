@@ -173,8 +173,54 @@ against it.
 **Change procedure**: affirm, or record as lapsed with the reason, in the
 change that makes it lapse. Do not delete an entry to make it stop being true.
 
-The four entries below were rehomed from tracker comment text; see the
-non-goals commit that follows.
+### Not a general desktop-automation framework
+
+**Status**: affirmed. Polylogue owns branch-local capture plumbing and exposes
+inspectable control points; it does not drive the desktop. Browser evidence
+arrives through an opt-in MV3 extension posting to a local Python receiver
+(`polylogue/browser_capture/receiver.py:1-2`), and the recorded decision
+explicitly rejects headless automation
+(`docs/architecture-spine.md:134-142`).
+
+**Revisit trigger**: a real cross-tool orchestration need that no existing
+local tool already owns.
+
+### OTLP export is a projection, not internal authority
+
+**Status**: affirmed. The archive's own tables remain the source of truth and
+the OTel module is an outbound mapping only; its docstring says so directly
+(`polylogue/telemetry/otel_projection.py:1-6`).
+
+**Revisit trigger**: a proposal to make OTLP an *inbound* route, or to have a
+reader resolve archive truth through an exported span rather than a row.
+
+### Context images and bundles are evidence-backed projections, never authority
+
+**Status**: affirmed. The compiler is deliberately thin — it introduces no
+durable memory store and no new handoff ontology, composing refs, rows, and
+report transforms into one image (`polylogue/context/compiler.py:1-8`).
+Omissions are typed rather than silent, and admitted material carries a trust
+class derived from provenance, not from the bundle's own claim (see the
+injected-context trust stanza).
+
+**Revisit trigger**: any surface that presents a compiled context image as a
+queryable record, or that lets a bundle's contents grant authority its source
+material did not have.
+
+### No hard-coded one-off render palette
+
+**Status**: affirmed with a named residual. `polylogue/ui/theme.py:1-6` is the
+declared single source of truth for provider, role, status, and theme colors
+across CLI, HTML, and daemon web surfaces, and the WebUI consumes generated
+tokens rather than a second palette (`webui/src/generated/tokens.css:1`). The
+residual: nine per-tool-kind card accents are still literal CSS colour
+keywords in the stylesheet rather than generated tokens
+(`webui/src/styles.css:435-443`). No gate enforces palette centralization
+anywhere, so this entry rests on review.
+
+**Revisit trigger**: a second palette appearing outside `polylogue/ui/theme.py`
+and the generated token file — at which point the choice is to generate it or
+to retire this non-goal, not to leave both.
 
 ## Doctrine: injected-context trust
 
@@ -286,6 +332,13 @@ not establish an answer.
   (`devtools/scaffold.py:36-48`), and nothing validates that text. Either it is
   a dimension and belongs in `CompatibilityKey`, or it is review material and
   the sixth item should be dropped from the criteria.
+- **A fifth salvaged candidate is still unhomed.** The same tracker comment
+  that carried the four non-goals above also carried a closure-posture rule:
+  an agent without the operator's live deployment and archive may patch source,
+  docs and fixtures, but cannot certify deployed truth. It is not a non-goal,
+  so it does not belong in the register; it would belong with a degraded-modes
+  or closure-discipline doctrine that does not exist yet. Recorded here so the
+  retirement that orphaned it does not orphan it twice.
 - **Vocabulary drift is undetected.** No declaration surface exists that would
   let this sheet's terms be diffed against a generated vocabulary, so nothing
   catches a stanza that keeps using a term source has renamed. This is a named
