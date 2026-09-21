@@ -1,6 +1,6 @@
 # Polylogue Doctrine Index
 
-Seven standing invariants shape most non-obvious decisions in this repository.
+Eight standing invariants shape most non-obvious decisions in this repository.
 Before this sheet existed they were discoverable only by reading gate source
 and tracker prose, so an agent that needed one either rediscovered it or broke
 it. Each stanza below names the invariant, the code that owns it, the gate
@@ -90,6 +90,42 @@ path is `writer_module_uncensused_mutation`.
 durability, and interruption semantics, and put the marker in its docstring,
 in the same change that adds the mutation. A module that must span tiers needs
 the twin-write contract recorded in the manifest, not a comment.
+
+## Doctrine: controlled reads
+
+**Invariant**: opening the archive directly is one of exactly three things.
+It is a *read-boundary owner* — a read-only open that installs admission, a
+pinned tier snapshot, a cancellation guard and a receipt; or a *licensed
+writer* — an explicit `read_only=False` open taking the writer lease, which is
+not a read at all; or a violation. There are two boundary owners, not one,
+because read parity is an equivalence between two declared executors rather
+than convergence on one route.
+
+**Owner**: the two owners are `polylogue/archive/query/execution_control.py:424-560`
+(the in-process read control plane) and
+`polylogue/operations/operation_context.py:158-232` (the operation kernel's
+pinned snapshot, which re-resolves the archive identity after pinning and
+refuses a republication that landed mid-pin). Which module may own a
+controlled read is policy in `docs/plans/controlled-read-census.yaml:26-36`;
+the classification of every call site, with a reason each, is the rest of that
+file, and `devtools/verify_controlled_read.py:1-61` is the checker.
+
+**Owning gate**: `controlled-read`
+
+**Observable failure**: a surface reads the archive with no admission, no
+snapshot pin, no cancellation and no receipt, and its answer cannot say which
+archive revision produced it. The realistic silent form is not a new module —
+it is a declared writer that loses its explicit `read_only=False` and becomes
+an uncontrolled read while its census row still reads "writer"; the gate names
+that `controlled_read_writer_is_not_explicit`. An undeclared open is
+`controlled_read_site_undeclared` and is reported by `file:line`.
+
+**Change procedure**: a new archive open is declared in the census with a
+classification and a reason in the same change that adds it. A new
+*read-boundary owner* is a policy edit to `read_boundary_owners`, reviewed as
+such, because otherwise a new uncontrolled read could license itself by
+claiming to be the boundary. A licensed writer that is wrong in the long run
+carries a `debt` field rather than a silent pass.
 
 ## Doctrine: finding provenance
 
@@ -321,10 +357,14 @@ not establish an answer.
 - **Injected-context trust has no gate.** The derivation and the structural
   partition are production code proven by tests; there is no repository check
   that a newly registered context source cannot emit operator-class output.
-- **Process-level sole writership is not proven by the writer gate.** The
-  layering gate proves declaration and inventories mutation sites. That a
-  live CLI or API caller cannot write outside the daemon coordinator is a
-  separate, weaker claim; read the actual route before asserting it.
+- **Process-level sole writership is not proven by any gate.** The layering
+  gate proves declaration and inventories mutation sites; the controlled-read
+  gate proves every direct archive open is classified, and *records* which
+  licensed writers take the lease outside the daemon coordinator
+  (`docs/plans/controlled-read-census.yaml:58-97` — the four Python-API
+  facade mutations). Neither proves that a live CLI or API caller cannot
+  write outside the coordinator. That census is the evidence for the claim,
+  not the enforcement of it.
 - **cpf names a sixth unification dimension that code does not carry.** The
   epic's criteria list "remaining domain semantics" alongside the five
   compatibility dimensions. In source there is no sixth dimension: the family's

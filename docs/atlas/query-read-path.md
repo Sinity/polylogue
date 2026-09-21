@@ -40,6 +40,22 @@ CLI exit table is `OUTCOME_EXIT_CODES`, and the daemon's readiness chips are
 projections of it. A surface that re-derives readiness from `not rows` has
 reintroduced the ambiguity the type removes.
 
+## Controlled-read boundary
+
+A read may open the archive itself only through one of the two declared
+read-boundary owners; every other direct open is an explicit writer-lease
+open. The invariant, its owners and its change procedure are one stanza in
+`doctrine.md`. What an area reader needs here: `devtools gate controlled-read`
+censuses every `ArchiveStore.open_existing` in `polylogue/` against
+`docs/plans/controlled-read-census.yaml`, names an undeclared one by
+`file:line`, and prints the whole classification with `--census`. At this head
+the verdict is 3 read-boundary owners, 23 licensed writers, 0 uncontrolled
+reads.
+
+A read view that computes its own answer in-process is a different question
+from this one: those are declared, and shrink-only, in
+`polylogue/cli/read_view_registry.py:95-110`.
+
 ## Surface ownership
 
 - `polylogue/cli/` owns command grammar and human/machine presentation.

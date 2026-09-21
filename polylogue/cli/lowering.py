@@ -218,11 +218,17 @@ def lower_session_read(
     passing both is a caller error rather than a silently ignored argument.
     Evidence kinds are answered whole and take no window at all; passing one
     is a caller error for the same reason.
+
+    The windowed kinds are named by the operation contract rather than spelled
+    again here: a kind that graduates to a window would otherwise keep being
+    refused a window by this adapter.
     """
+
+    from polylogue.operations.read_contracts import WINDOWED_SESSION_READ_KINDS
 
     if continuation is not None and (limit is not None or offset):
         raise click.UsageError("A transcript continuation already carries its window coordinates.")
-    if kind != "transcript" and (limit is not None or offset or continuation is not None):
+    if kind not in WINDOWED_SESSION_READ_KINDS and (limit is not None or offset or continuation is not None):
         raise click.UsageError(f"A {kind} read is answered whole and takes no window coordinates.")
     payload: dict[str, object] = {"ref": ref}
     if kind != "transcript":

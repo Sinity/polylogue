@@ -2652,17 +2652,9 @@ def _resolve_target_session_id(request: RootModeRequest) -> str | None:
 
 
 def _request_config(request: RootModeRequest) -> Config:
-    """The configuration a resolution runs against.
+    """The configuration a resolution runs against."""
 
-    ``_config`` is the pinned configuration the root callback threaded through
-    the request; without it the resolution answers against whatever archive is
-    active, which is not necessarily the one the operator named with ``--db``.
-    """
-    from polylogue.config import Config as ConfigType
-    from polylogue.config import get_config
-
-    pinned = request.params.get("_config")
-    return pinned if isinstance(pinned, ConfigType) else get_config()
+    return cast("Config", request.config())
 
 
 def _resolve_query_action_session_id(

@@ -108,6 +108,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "controlled-read",
+        "Census every direct ArchiveStore.open_existing against docs/plans/controlled-read-census.yaml.",
+        "module",
+        ("devtools.verify_controlled_read", "--json"),
+        label="gate controlled-read",
+        in_quick=True,
+    ),
+    Gate(
         "patterns",
         "Enforce AST-shape defect-family rules with shrinking grandfathered baselines.",
         "module",

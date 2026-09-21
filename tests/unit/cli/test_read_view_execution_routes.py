@@ -158,10 +158,10 @@ def test_each_view_executes_the_route_it_declares(
 def test_session_read_projections_name_a_kind_the_operation_actually_serves() -> None:
     """The second mirror: what ``session.read`` serves, not what a row claims.
 
-    ``_session_read_payload`` answers ``transcript`` itself and delegates every
-    other kind to ``_SESSION_EVIDENCE_READERS``, raising for anything absent
-    from it.  A view declared as a ``session.read`` projection must therefore
-    name a kind in that union.
+    ``_session_read_payload`` answers the windowed kinds itself and delegates
+    every other kind to ``_SESSION_EVIDENCE_READERS``, raising for anything
+    absent from it.  A view declared as a ``session.read`` projection must
+    therefore name a kind in that union.
 
     Anti-vacuity: re-declare ``file-edits`` as a ``session.read`` projection and
     this goes red, because ``session.read`` raises
@@ -169,8 +169,9 @@ def test_session_read_projections_name_a_kind_the_operation_actually_serves() ->
     """
 
     from polylogue.operations.daemon_reads import _SESSION_EVIDENCE_READERS
+    from polylogue.operations.read_contracts import WINDOWED_SESSION_READ_KINDS
 
-    served = {"transcript", *_SESSION_EVIDENCE_READERS}
+    served = {*WINDOWED_SESSION_READ_KINDS, *_SESSION_EVIDENCE_READERS}
     declared = {
         view_id
         for view_id, metadata in READ_VIEW_HANDLER_METADATA.items()

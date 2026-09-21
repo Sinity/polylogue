@@ -114,6 +114,22 @@ class RootModeRequest:
     def append_query_terms(self, extra_terms: Sequence[str]) -> RootModeRequest:
         return self.with_query_terms(self.query_terms + tuple(str(term) for term in extra_terms))
 
+    def config(self) -> object:
+        """The configuration this request runs against.
+
+        ``_config`` is the pinned configuration the root callback threaded
+        through the request; without it a route answers against whatever
+        archive is active, which is not necessarily the one the operator named
+        with ``--db``.  A route that read ``params["_config"]`` directly got
+        ``None`` for every invocation the root callback did not pin -- which
+        every real ``polylogue read`` is.
+        """
+
+        from polylogue.config import Config, get_config
+
+        pinned = self.params.get("_config")
+        return pinned if isinstance(pinned, Config) else get_config()
+
     def should_show_stats(self) -> bool:
         if self.query_terms:
             return False

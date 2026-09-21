@@ -327,7 +327,15 @@ def _execute_directly(
         }
     except ValueError as exc:
         # Declared read handlers state a refused request as ``ValueError``.
-        return {"operation": operation, "outcome": "failed", "error": {"code": "invalid_request", "detail": str(exc)}}
+        # A refusal that carries its own declared code keeps it: a stale or
+        # foreign continuation is refused by the same token on every surface,
+        # and flattening every refusal to ``invalid_request`` dropped exactly
+        # the token a caller branches on.
+        return {
+            "operation": operation,
+            "outcome": "failed",
+            "error": {"code": str(getattr(exc, "code", "") or "invalid_request"), "detail": str(exc)},
+        }
 
 
 def dispatch(

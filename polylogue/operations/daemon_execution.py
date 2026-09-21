@@ -315,5 +315,8 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
             snapshot=snapshot,
             started_at=started,
             outcome="rejected",
-            error={"code": str(exc), "detail": str(exc), "retryable": False},
+            # A refusal that declares its own code keeps it, so a typed
+            # refusal reaches a client by the same token over the socket as
+            # it does in-process; an undeclared one keeps its message.
+            error={"code": str(getattr(exc, "code", "") or exc), "detail": str(exc), "retryable": False},
         )

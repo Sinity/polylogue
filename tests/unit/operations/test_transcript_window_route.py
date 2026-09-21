@@ -41,9 +41,6 @@ DECLARED_NON_WINDOW_CALLS: dict[str, str] = {
     "polylogue/api/archive.py": "the storage read's own definition and its material-origin composition branch",
     # A mechanical sync mirror of that same facade method, not a surface window.
     "polylogue/api/sync/sessions.py": "sync mirror of the facade storage read; the bound window is read_transcript_window",
-    # Asks for the session's message total before streaming a whole transcript
-    # to a file with iter_messages; it names no window.
-    "polylogue/cli/read_views/messages.py": "total-count probe for the whole-transcript file export, not a window",
 }
 
 

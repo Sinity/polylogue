@@ -9,8 +9,6 @@ from typing import cast
 
 import click
 
-from polylogue.api.archive import SessionNotFoundError
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import DEFAULT_MESSAGE_PAGE_LIMIT
 from polylogue.cli.read_view_registry import MESSAGE_READ_VIEW_OPTION_NAMES
 from polylogue.cli.read_views.base import (
@@ -22,7 +20,6 @@ from polylogue.cli.read_views.base import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.surfaces.payloads import message_row_envelope_from_domain, model_json_document
 from polylogue.surfaces.projection_spec import RenderDestination
 
 
@@ -111,74 +108,71 @@ def _write_messages_file(
     output_format: str,
     out_path: Path,
 ) -> None:
-    from polylogue.api import Polylogue
+    """Stream one message window sequence straight to a file.
 
-    async def _run() -> None:
-        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
-            try:
-                _, total, _completeness = await api.get_messages_paginated(session_id, limit=1, offset=0)
-            except SessionNotFoundError:
-                env.ui.error(f"Session not found: {session_id}")
-                return
+    Written window by window rather than composed in memory first: ``--full``
+    on a long session is exactly the case this destination exists for, and the
+    declared read answers it as a bounded sequence, so the rows are serialized
+    as they arrive.
+    """
 
-            effective_limit = max(total - offset, 0) if full else limit
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with out_path.open("w", encoding="utf-8") as fh:
-                if output_format == "ndjson":
-                    emitted = 0
-                    async for message in api.iter_messages(session_id, limit=offset + effective_limit):
-                        if emitted < offset:
-                            emitted += 1
-                            continue
-                        payload = {
-                            "session_id": session_id,
-                            **model_json_document(
-                                message_row_envelope_from_domain(message, session_id=session_id),
-                                exclude_none=True,
-                            ),
-                        }
-                        fh.write(json.dumps(payload))
-                        fh.write("\n")
-                        emitted += 1
-                    return
+    from polylogue.cli.messages import read_message_windows
+    from polylogue.cli.operation_kernel import OperationKernelError
+    from polylogue.cli.read_dispatch import daemon_route_disabled
+    from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
 
+    config = cast(Config, request.config())
+    windows = read_message_windows(
+        config,
+        session_id,
+        limit=limit,
+        offset=offset,
+        full=full,
+        continuation=None,
+        daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+    )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    emitted = 0
+    total = 0
+    first_offset = offset
+    try:
+        with out_path.open("w", encoding="utf-8") as fh:
+            if output_format != "ndjson":
                 fh.write("{\n")
                 fh.write(f'  "session_id": {json.dumps(session_id)},\n')
                 fh.write('  "messages": [')
-                first = True
-                emitted = 0
-                async for message in api.iter_messages(session_id, limit=offset + effective_limit):
-                    if emitted < offset:
-                        emitted += 1
-                        continue
-                    if not first:
-                        fh.write(",")
-                    fh.write("\n    ")
-                    fh.write(
-                        json.dumps(
-                            model_json_document(
-                                message_row_envelope_from_domain(message, session_id=session_id),
-                                exclude_none=True,
-                            ),
-                            indent=2,
-                        ).replace("\n", "\n    ")
-                    )
-                    first = False
+            for window in windows:
+                if emitted == 0:
+                    first_offset = window.offset
+                total = window.total
+                for row in window.rows:
+                    document = dict(row)
+                    if output_format == "ndjson":
+                        fh.write(json.dumps({"session_id": session_id, **document}))
+                        fh.write("\n")
+                    else:
+                        if emitted:
+                            fh.write(",")
+                        fh.write("\n    ")
+                        fh.write(json.dumps(document, indent=2).replace("\n", "\n    "))
                     emitted += 1
+            if output_format != "ndjson":
                 fh.write("\n  ],\n")
                 fh.write(f'  "total": {total},\n')
-                fh.write(f'  "limit": {effective_limit},\n')
-                fh.write(f'  "offset": {offset}\n')
+                fh.write(f'  "limit": {emitted if full else limit},\n')
+                fh.write(f'  "offset": {first_offset}\n')
                 fh.write("}\n")
+    except OperationKernelError as exc:
+        from polylogue.cli.messages import message_read_failure
 
-        from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
+        message_read_failure(env, exc, session_id=session_id)
+        return
 
-        notice = describe_path_scan_result(scan_path_for_secret_candidates(out_path))
-        if notice is not None:
-            click.echo(notice)
-        click.echo(f"Wrote to {out_path}")
-
-    run_coroutine_sync(_run())
+    notice = describe_path_scan_result(scan_path_for_secret_candidates(out_path))
+    if notice is not None:
+        click.echo(notice)
+    click.echo(f"Wrote to {out_path}")
 
 
 def run_read_raw(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -246,7 +240,7 @@ def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewIn
 
     assert invocation.session_id is not None
     output_format = invocation.output_format or "json"
-    config = cast(Config, request.params.get("_config"))
+    config = cast(Config, request.config())
 
     try:
         result = dispatch(config, lower_session_read(invocation.session_id, kind="hooks"))

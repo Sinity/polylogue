@@ -1,0 +1,239 @@
+# Controlled-read boundary census -- read by `devtools gate controlled-read`.
+#
+# The rule, in one sentence: a direct `ArchiveStore.open_existing` is either
+# one of the two declared read-boundary owners, or an explicit writer-lease
+# open with a stated writer role, and anything else is a read that escaped
+# admission, snapshot pinning, cancellation and receipts.
+#
+# `read_boundary_owners` is POLICY: which module (or which function inside a
+# mixed module) is allowed to own a controlled read at all. Read parity is an
+# equivalence between two declared executors (commit 6fcfe44d8), not
+# convergence on one route, so there are two owners and neither is "the"
+# boundary. Adding a third is a deliberate policy edit with its own review.
+#
+# `sites` is the CENSUS: every observed open, keyed `path::qualified_function`.
+# An entry may leave when its call site is gone; a new one cannot appear
+# without this edit. `reason` says why the site is allowed. `debt` -- optional
+# -- names an open item the site carries without making the gate red, so a
+# survivor that is licensed today but wrong in the long run is recorded rather
+# than forgotten.
+#
+# The prose statement of the rule, with code anchors, is the "Controlled-read
+# boundary" section of `docs/atlas/query-read-path.md`.
+
+package: polylogue
+
+read_boundary_owners:
+  # The whole module is the in-process read control plane: admission, a pinned
+  # read snapshot, the SQLite progress guard that makes a read cancellable,
+  # and the receipt that records what it did.
+  - polylogue/archive/query/execution_control.py
+  # One function, not the module: `operation_context.py` also holds the
+  # *control* and write-side contexts, and naming the module would let an
+  # accidental sibling open inherit the exemption.
+  - polylogue/operations/operation_context.py::open_operation_read
+
+sites:
+  # ── The read boundary ────────────────────────────────────────────────
+  - site: polylogue/archive/query/execution_control.py::InterruptibleSQLiteRead.run
+    classification: read_boundary
+    reason: >-
+      Opens the dedicated read-only store a worker thread executes against,
+      pins its read snapshot and installs the progress guard, so the read can
+      be interrupted and its receipt says whether it was.
+
+  - site: polylogue/archive/query/execution_control.py::InterruptibleSQLiteRead.open_context
+    classification: read_boundary
+    reason: >-
+      The synchronous read-surface adapter's entry to the same control plane:
+      blocking admission, read snapshot, progress guard, receipt state.
+
+  - site: polylogue/operations/operation_context.py::open_operation_read
+    classification: read_boundary
+    reason: >-
+      The operation kernel's pinned snapshot. Resolves the archive identity,
+      opens read-only, pins the tier snapshots, then re-resolves and refuses a
+      republication that landed mid-pin rather than serving a torn read.
+
+  # ── Python API facade mutations ──────────────────────────────────────
+  - site: polylogue/api/archive.py::_archive_capture_assertion_candidate
+    classification: writer
+    role: facade_mutation
+    reason: >-
+      Captures a terminal note into the durable user tier. The reference
+      resolution it performs runs inside the same writer transaction that
+      stores the assertion, so the read is part of the write, not a bypass.
+    debt: >-
+      A facade mutation that takes the writer lease in-process rather than
+      admitting through the daemon write coordinator. Completion work for the
+      sole-writer contract, not an alternate write policy.
+
+  - site: polylogue/api/archive.py::PolylogueArchiveMixin._execute_facade_mutation
+    classification: writer
+    role: facade_mutation
+    reason: >-
+      The shared facade mutation body: opens writable, builds the actuator
+      args, then previews, authorizes and executes through the one bound
+      mutation executor.
+    debt: >-
+      Same sole-writer completion work as the other facade mutations.
+
+  - site: polylogue/api/archive.py::PolylogueArchiveMixin.record_work_event
+    classification: writer
+    role: facade_mutation
+    reason: >-
+      Appends one typed live-agent work event through the archive writer.
+    debt: >-
+      Same sole-writer completion work as the other facade mutations.
+
+  - site: polylogue/api/archive.py::PolylogueArchiveMixin.delete_session_safe
+    classification: writer
+    role: facade_mutation
+    reason: >-
+      Resolves the delete target and runs the shared
+      preview/authorize/receipt delete contract inside one writer hold.
+    debt: >-
+      Same sole-writer completion work as the other facade mutations.
+
+  # ── Declared mutation and delete routes ──────────────────────────────
+  - site: polylogue/archive/query/archive_execution.py::_open_archive_for_write
+    classification: writer
+    role: facade_mutation
+    reason: >-
+      Named for what it is: the writable open `delete_archive` takes to apply
+      a whole-selection delete after the selection itself was read through the
+      ordinary query route.
+
+  - site: polylogue/operations/daemon_mutations.py::_execute_batch
+    classification: writer
+    role: daemon_write
+    reason: >-
+      The declared mutation operation's own writer hold, inside the daemon's
+      admitted write path.
+
+  - site: polylogue/operations/daemon_mutations.py::_execute_user_state_mutations
+    classification: writer
+    role: daemon_write
+    reason: >-
+      Durable user-tier state (tags, metadata, annotations) applied under the
+      same admitted daemon write.
+
+  - site: polylogue/operations/daemon_mutations.py::mutation_assertion_candidate_capture
+    classification: writer
+    role: daemon_write
+    reason: >-
+      The declared `mutation.assertion.candidate.capture` handler's writer hold.
+
+  - site: polylogue/operations/daemon_mutations.py::mutation_user_setting_set
+    classification: writer
+    role: daemon_write
+    reason: >-
+      The declared `mutation.user.setting.set` handler's writer hold.
+
+  - site: polylogue/operations/session_mutations.py::_execute
+    classification: writer
+    role: daemon_write
+    reason: >-
+      The shared session-mutation executor's writer hold for the declared
+      session write operations.
+
+  - site: polylogue/operations/mutation_actuators.py::IdentityResetActuator.apply
+    classification: writer
+    role: daemon_write
+    reason: >-
+      An actuator's apply step, which is the mutation itself; it runs under
+      the executor's authorization and receipt.
+
+  - site: polylogue/operations/delete_authorization.py::prepare_cli_delete
+    classification: writer
+    role: daemon_write
+    reason: >-
+      Mints the durable delete preview and authorization the CLI later
+      consumes; both halves are audit records, which are durable writes.
+
+  - site: polylogue/operations/delete_authorization.py::consume_cli_delete
+    classification: writer
+    role: daemon_write
+    reason: >-
+      Consumes that authorization and applies the delete, in one writer hold
+      so a consumed authorization cannot outlive its effect.
+
+  # ── Ingest and acquisition ───────────────────────────────────────────
+  - site: polylogue/operations/daemon_ingest.py::IngestExecution.archive_write.publish
+    classification: writer
+    role: ingest_write
+    reason: >-
+      The declared ingest operation's publish step: the writer hold that lands
+      parsed sessions into the archive.
+
+  - site: polylogue/pipeline/services/archive_ingest.py::parse_sources_archive
+    classification: writer
+    role: ingest_write
+    reason: >-
+      The pipeline's own archive write for a parse pass over acquired sources.
+
+  - site: polylogue/sources/live/archive_open.py::_open_archive_for_live_write
+    classification: writer
+    role: ingest_write
+    reason: >-
+      The single writable open every live-capture ingest path shares, so
+      append ingest, batch ingest and hook-event materialization cannot each
+      invent their own writer open.
+
+  - site: polylogue/sources/revision_backfill.py::census_historical_revision_evidence
+    classification: writer
+    role: ingest_write
+    reason: >-
+      The source-tier census stage writes its census results and parse spill
+      back to the source tier; it is a write pass that reports, not a read.
+
+  - site: polylogue/sources/revision_backfill.py::backfill_historical_revision_evidence
+    classification: writer
+    role: ingest_write
+    reason: >-
+      Applies the backfill the census planned, to the durable source tier.
+
+  # ── Index-generation lifecycle ───────────────────────────────────────
+  - site: polylogue/sources/live/cold_build.py::active_index_generation_is_empty
+    classification: writer
+    role: generation_lifecycle
+    reason: >-
+      The writable open is the point, not an accident: it bootstraps the
+      durable tiers before a cold build creates a generation, because a
+      generation created before `source.db` exists grows a second durable tier
+      inside the candidate directory. Its own docstring states this.
+    debt: >-
+      The question it answers ("is the active generation empty") is a read.
+      Separating the bootstrap it performs from the question it asks would let
+      the question be answered through the read boundary.
+
+  - site: polylogue/sources/live/cold_build.py::ColdBuildGeneration.begin
+    classification: writer
+    role: generation_lifecycle
+    reason: >-
+      Forces every durable member to exist before the candidate generation
+      links them; a member that appears afterwards is refused as an invalid
+      read-through target.
+
+  # ── Durable change-train probes ──────────────────────────────────────
+  - site: polylogue/storage/sqlite/durable_change_train.py::_probe_zip_container_coordinate_write
+    classification: writer
+    role: durable_probe
+    reason: >-
+      Builds a throwaway archive inside a TemporaryDirectory and writes probe
+      rows into it. It never touches an operator archive.
+
+  - site: polylogue/storage/sqlite/durable_change_train.py::_probe_revision_provider_resolution
+    classification: writer
+    role: durable_probe
+    reason: >-
+      Same shape: a throwaway temporary archive seeded with a raw whose
+      detected provider and acquisition origin disagree.
+
+  # ── Fixture seeding ──────────────────────────────────────────────────
+  - site: polylogue/scenarios/corpus.py::seed_demo_user_overlays
+    classification: writer
+    role: fixture_seeding
+    reason: >-
+      Seeds the deterministic scenario corpus' user-tier overlays into a
+      throwaway archive built by the same program.

@@ -129,14 +129,14 @@ def test_client_exposes_no_arbitrary_daemon_http_route() -> None:
 def test_daemon_escape_environment_is_explicit(
     monkeypatch: pytest.MonkeyPatch, environment: dict[str, str], expected: bool
 ) -> None:
-    from polylogue.cli.archive_query import _daemon_disabled
+    from polylogue.cli.read_dispatch import daemon_route_disabled
 
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
     for key, value in environment.items():
         monkeypatch.setenv(key, value)
 
-    assert _daemon_disabled() is expected
+    assert daemon_route_disabled() is expected
 
 
 def test_operation_rejects_a_socket_serving_a_different_archive(

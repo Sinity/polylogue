@@ -59,10 +59,11 @@ def test_the_decided_classification_partitions_every_view() -> None:
 
     These are the *executed* routes, not the intended ones: polylogue-dutav
     found this partition claiming ten ``session.read`` projections where only
-    ``hooks`` reaches ``session.read``
-    (``daemon_reads._SESSION_EVIDENCE_READERS`` serves that kind alone and the
-    handler raises for any other), and claiming ``neighbors`` as a ``cli.query``
-    renderer where it calls ``polylogue.neighbor_candidates`` directly.
+    ``hooks`` reached ``session.read``, and claiming ``neighbors`` as a
+    ``cli.query`` renderer where it calls ``polylogue.neighbor_candidates``
+    directly.  ``messages`` joined ``hooks`` when polylogue-fko9.3 moved it
+    onto the ``session.read`` ``messages`` window kind; the ratchet in
+    ``read_view_registry`` is what keeps that direction one-way.
     ``tests/unit/cli/test_read_view_execution_routes.py`` proves each row by
     dispatching it; this one pins the resulting shape.
 
@@ -73,7 +74,7 @@ def test_the_decided_classification_partitions_every_view() -> None:
     the affected paths the ``file`` unit reads) -- turns this red.
     """
 
-    assert read_views_by_execution_kind("session-read-projection") == ("hooks",)
+    assert read_views_by_execution_kind("session-read-projection") == ("hooks", "messages")
     assert read_views_by_execution_kind("query-units-projection") == ()
     assert read_views_by_execution_kind("distinct-operation") == (
         "context",
@@ -90,7 +91,6 @@ def test_the_decided_classification_partitions_every_view() -> None:
         "effective_context",
         "events",
         "file-edits",
-        "messages",
         "neighbors",
         "raw",
         "temporal",
