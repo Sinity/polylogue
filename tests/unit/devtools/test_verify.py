@@ -19,6 +19,7 @@ import tomllib
 from devtools import (
     agent_env,
     gate,
+    pytest_rerun,
     required_gate,
     verify,
     verify_runs,
@@ -37,9 +38,9 @@ from devtools.verify_runs import (
     env_for_pytest_step,
 )
 
-#: `_rerun_failed_once` and `_run` acquire the host's single pytest slot before
-#: executing. These tests drive that code inline through its documented escape
-#: rather than requiring a live pueue queue.
+#: `pytest_rerun.rerun_failed_once` and `_run` acquire the host's single pytest
+#: slot before executing. These tests drive that code inline through its
+#: documented escape rather than requiring a live pueue queue.
 _SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
 
 #: The prefix of the argument naming the report a managed step is judged from.
@@ -839,7 +840,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
     """Anti-vacuity: without the rerun a load-induced failure is a red step;
     without the still-failed check a real failure passes as flaky."""
     monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(verify, "venv_python", lambda root: "python")
+    monkeypatch.setattr(pytest_rerun, "venv_python", lambda root: "python")
     report_path = tmp_path / ".cache" / "verify" / "last-pytest.json"
     report_path.parent.mkdir(parents=True)
     report_path.write_text(
@@ -875,9 +876,10 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
         return SimpleNamespace(returncode=1)
 
     _stub_held_pytest(monkeypatch, fake_run)
-    command = ["python", "-m", "pytest", report_file_argument(report_path)]
 
-    result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
+    result = pytest_rerun.rerun_failed_once(
+        report_path=report_path, step_dir=step_dir, env=_SLOT_HELD_ENV, root=tmp_path
+    )
 
     assert result is not None
     assert result["flaky"] == ["tests/test_a.py::test_flaky"]
@@ -918,7 +920,9 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
         _stub_held_pytest(monkeypatch, fake)
 
     _rerun_passing_with(0)
-    result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
+    result = pytest_rerun.rerun_failed_once(
+        report_path=report_path, step_dir=step_dir, env=_SLOT_HELD_ENV, root=tmp_path
+    )
     assert result is not None and result["still_failed"] == []
     assert json.loads((step_dir / "summary.json").read_text())["exitstatus"] == 0
     assert json.loads(report_path.read_text())["summary"]["exitstatus"] == 0
@@ -933,7 +937,9 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
         )
     )
     _rerun_passing_with(3)
-    result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
+    result = pytest_rerun.rerun_failed_once(
+        report_path=report_path, step_dir=step_dir, env=_SLOT_HELD_ENV, root=tmp_path
+    )
     assert result is not None and result["still_failed"] == ["tests/test_a.py::test_flaky"] and result["flaky"] == []
 
 
@@ -995,10 +1001,11 @@ def test_accepted_flake_clears_both_recorded_exit_statuses(
     """
 
     report_path, _ = _flake_rerun_fixture(tmp_path, monkeypatch)
-    command = ["pytest", report_file_argument(report_path)]
-    artifacts = SimpleNamespace(step_dir=tmp_path / "step")
+    monkeypatch.setattr(pytest_rerun, "venv_python", lambda root: "python")
 
-    rerun = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=artifacts)
+    rerun = pytest_rerun.rerun_failed_once(
+        report_path=report_path, step_dir=tmp_path / "step", env=_SLOT_HELD_ENV, root=tmp_path
+    )
 
     assert rerun is not None
     assert rerun["flaky"] == ["tests/test_a.py::test_flaky"]
@@ -1223,12 +1230,12 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     """Anti-vacuity: passing the report node id through unchanged makes the
     rerun error with "not found" for every grouped test, which is what wiped
     the 2026-09-05 corpus rerun."""
-    from devtools.verify import _report_nodeid_to_selector
+    from devtools.pytest_rerun import report_nodeid_to_selector
 
-    assert _report_nodeid_to_selector("tests/a.py::test_x@web-reader") == "tests/a.py::test_x"
-    assert _report_nodeid_to_selector("tests/a.py::T::test_x[p]@grp") == "tests/a.py::T::test_x[p]"
-    assert _report_nodeid_to_selector("tests/a.py::test_x[a@b]") == "tests/a.py::test_x[a@b]"
-    assert _report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
+    assert report_nodeid_to_selector("tests/a.py::test_x@web-reader") == "tests/a.py::test_x"
+    assert report_nodeid_to_selector("tests/a.py::T::test_x[p]@grp") == "tests/a.py::T::test_x[p]"
+    assert report_nodeid_to_selector("tests/a.py::test_x[a@b]") == "tests/a.py::test_x[a@b]"
+    assert report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
 
 
 def test_complete_corpus_tier_traces_and_deselects_nothing() -> None:
