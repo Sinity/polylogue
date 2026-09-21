@@ -144,7 +144,7 @@ def render_insight_items(
     """Render insight items using the insight type descriptor."""
 
     if json_mode:
-        from polylogue.cli.shared.machine_errors import emit_success
+        from polylogue.surfaces.machine_envelope import emit_success
 
         emit_success(insight_items_payload(items, insight_type))
         return
