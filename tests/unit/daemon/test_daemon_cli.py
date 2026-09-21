@@ -4544,3 +4544,136 @@ async def test_an_undrained_writer_retains_rebuild_exclusion_for_the_process(tmp
             cast(Any, _Coordinator(RuntimeError("drain failed"))), cast(Any, raising_exclusion), timeout=5.0
         )
     assert raising_exclusion.retained is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("a shutdown deadline is wall-clock; the barrier bounds this one to 50ms")
+async def test_an_orphaned_service_retains_archive_ownership_on_the_production_route(tmp_path: Path) -> None:
+    """Incomplete shutdown keeps ownership; a successor writer cannot start beside it.
+
+    The supervisor cancels ``health_check`` and stops waiting after its
+    declared deadline. That child is still running. Every authority that
+    would let some *other* writer in -- the durable archive lease, the
+    pidfile, and rebuild exclusion -- must therefore stay held, and the
+    shutdown must be reported as incomplete rather than as a clean stop.
+
+    The deadline is made controllable rather than waited out: one registry
+    field is narrowed to 50 ms and the child is released explicitly at the
+    end, so nothing here depends on a wall-clock timeout elapsing.
+
+    Anti-vacuity: drop ``orphaned_services=shutdown_report.orphaned`` from
+    the ``_ownership_retention_reason`` call in ``run_daemon_services`` and
+    all three assertions invert -- the lease is released, the pidfile is
+    cleaned, and rebuild exclusion is dropped while the child still runs.
+    Executed.
+    """
+    import dataclasses as _dataclasses
+
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import supervisor as supervisor_module
+    from polylogue.daemon.services import ServiceProfile, ServiceState
+    from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
+    from polylogue.operations import durable_change_train
+
+    real_spec = supervisor_module.service_spec
+    ignoring = True
+    running = asyncio.Event()
+    retained: list[str] = []
+    released: list[str] = []
+    pidfile_cleanups: list[str] = []
+
+    def narrowed_spec(name: str) -> Any:
+        spec = real_spec(name)
+        if name != "health_check":
+            return spec
+        return _dataclasses.replace(spec, shutdown_deadline_s=0.05)
+
+    async def resident_loop(**_kwargs: object) -> None:
+        return None
+
+    async def uncancellable_health(**_kwargs: object) -> None:
+        running.set()
+        while True:
+            try:
+                await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                # Releasing at the end is teardown, not the behaviour under
+                # test: a child that ignores cancellation forever would hang
+                # the event loop's own shutdown instead of this one.
+                if not ignoring:
+                    raise
+
+    # Startup train reconciliation acquires and releases an archive ownership
+    # token of its own, so the daemon's token is identified by object, not by
+    # class: only *its* release is the ownership handover under test.
+    daemon_owners: list[OwnedArchiveLocation] = []
+    real_acquire = durable_change_train.acquire_durable_archive_ownership
+    real_release = OwnedArchiveLocation.release
+
+    def recording_acquire(root: Path, *, owner_id: str) -> OwnedArchiveLocation:
+        owner = real_acquire(root, owner_id=owner_id)
+        daemon_owners.append(owner)
+        return owner
+
+    def recording_release(self: OwnedArchiveLocation) -> None:
+        if daemon_owners and self is daemon_owners[0]:
+            released.append("archive_owner")
+        real_release(self)
+
+    def recording_cleanup() -> None:
+        pidfile_cleanups.append("pidfile")
+
+    with contextlib.ExitStack() as stack, capture() as events:
+        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        supervisors = _capture_supervisor(stack, daemon_cli)
+        stack.enter_context(patch.object(supervisor_module, "service_spec", narrowed_spec))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", resident_loop))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", uncancellable_health))
+        stack.enter_context(
+            patch.object(ArchiveWriterRebuildExclusion, "retain_until_process_exit", lambda _self: retained.append("x"))
+        )
+        stack.enter_context(patch.object(durable_change_train, "acquire_durable_archive_ownership", recording_acquire))
+        stack.enter_context(patch.object(OwnedArchiveLocation, "release", recording_release))
+        stack.enter_context(patch.object(daemon_cli, "_cleanup_pidfile", recording_cleanup))
+
+        task = asyncio.create_task(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=False,
+                service_profile=ServiceProfile.RESIDENT_CORE,
+            )
+        )
+        try:
+            await asyncio.wait_for(running.wait(), timeout=10.0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=10.0)
+        finally:
+            ignoring = False
+
+    supervisor = supervisors[0]
+    assert supervisor.state("health_check") is ServiceState.ORPHANED
+
+    assert released == [], "the durable archive lease was released beside a still-running child"
+    assert pidfile_cleanups == [], "the pidfile was released beside a still-running child"
+    assert retained == ["x"], "rebuild exclusion was not retained for the process"
+
+    records = [record for record in events if record.get("event") == "daemon.pidfile.retained"]
+    assert records, "the retained pidfile was not reported"
+    assert "services_outlived_shutdown_deadline" in str(records[-1].get("reason"))
+    assert "health_check" in str(records[-1].get("reason"))
+
+    orphan_reports = [record for record in events if record.get("event") == "daemon.shutdown.services_orphaned"]
+    assert orphan_reports, "incomplete shutdown was not reported"
+    assert "health_check" in str(orphan_reports[-1].get("error_detail"))
+
+    # ... and it is never reported as a stop. On this route the daemon was
+    # cancelled, so ``daemon.stopped`` is not reached at all; the assertion
+    # exists because the one thing shutdown must not do with a live child is
+    # claim the process stopped cleanly.
+    assert [record for record in events if record.get("event") == "daemon.stopped"] == []

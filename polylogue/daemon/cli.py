@@ -1829,14 +1829,19 @@ def _acquire_pidfile(pidfile: Path) -> int:
     return fd
 
 
-def _release_pidfile_after_writer_drain(pidfile_fd: int | None, *, writer_drained: bool) -> int | None:
+def _release_pidfile_after_writer_drain(
+    pidfile_fd: int | None,
+    *,
+    writer_drained: bool,
+    reason: str = "writer_coordinator_not_drained",
+) -> int | None:
     """Release daemon ownership only after every admitted writer is idle."""
     if not writer_drained:
         emit(
             "daemon.pidfile.retained",
             level=ERROR,
             outcome="degraded",
-            reason="writer_coordinator_not_drained",
+            reason=reason,
             path=_pidfile_path,
         )
         return pidfile_fd
@@ -1996,6 +2001,31 @@ def _retain_rebuild_exclusion_for_undrained_writer(
     """Transfer rebuild exclusion to process lifetime after a drain timeout."""
     if not writer_drained:
         rebuild_exclusion.retain_until_process_exit()
+
+
+def _ownership_retention_reason(*, writer_drained: bool, orphaned_services: Sequence[str]) -> str | None:
+    """Why this process must keep archive ownership, or ``None`` to release it.
+
+    Two independent facts retain it and they mean the same thing: this
+    process still contains something that can commit.
+
+    An undrained coordinator has admitted work in flight. An *orphaned*
+    service is a cancelled child that outlived its declared deadline and is
+    still running -- the supervisor reported incomplete shutdown precisely
+    because it could not prove the child had stopped. A ``failed`` service is
+    deliberately not here: it already terminated with an exception, so it
+    cannot write.
+
+    Releasing on either would drop the pidfile, the rebuild exclusion and the
+    durable archive lease beside live code, letting a successor writer -- an
+    offline rebuild, a second daemon, an interactive CLI mutation -- start
+    while the orphan can still commit (polylogue-avmq AC2).
+    """
+    if not writer_drained:
+        return "writer_coordinator_not_drained"
+    if orphaned_services:
+        return "services_outlived_shutdown_deadline: " + ", ".join(orphaned_services)
+    return None
 
 
 async def _shutdown_writer_coordinator_with_rebuild_exclusion(
@@ -2530,6 +2560,7 @@ async def _run_daemon_services_under_active_writer_lease(
     cleanup_cancel_requests = 0
     termination: BaseException | None = None
     writer_drained = False
+    ownership_retained_reason: str | None = "shutdown_not_reached"
     cold_build: ColdBuildGeneration | None = None
     try:
         if enable_browser_capture:
@@ -3187,12 +3218,24 @@ async def _run_daemon_services_under_active_writer_lease(
                         error_detail=str(exc),
                     )
 
-            writer_drained = await _shutdown_writer_coordinator_with_rebuild_exclusion(
-                write_coordinator,
-                rebuild_exclusion,
-                timeout=5.0,
+            ownership_retained_reason = _ownership_retention_reason(
+                writer_drained=await _shutdown_writer_coordinator_with_rebuild_exclusion(
+                    write_coordinator,
+                    rebuild_exclusion,
+                    timeout=5.0,
+                ),
+                orphaned_services=shutdown_report.orphaned,
             )
-            pidfile_fd = _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+            # From here ``writer_drained`` is the ownership question, not just
+            # the coordinator's: it gates the pidfile, the rebuild exclusion
+            # and the durable archive lease below, and an orphaned child is
+            # every bit as live a writer as an admitted operation.
+            writer_drained = ownership_retained_reason is None
+            pidfile_fd = _release_pidfile_after_writer_drain(
+                pidfile_fd,
+                writer_drained=writer_drained,
+                reason=ownership_retained_reason or "",
+            )
         finally:
             # Any exception or repeated cancellation before coordinator
             # shutdown leaves writer drain unproven.  The outer product
@@ -3234,7 +3277,7 @@ async def _run_daemon_services_under_active_writer_lease(
         "daemon.stopped",
         level=WARNING if not writer_drained else INFO,
         outcome="ok" if writer_drained else "degraded",
-        reason="clean" if writer_drained else "writer_not_drained",
+        reason="clean" if writer_drained else (ownership_retained_reason or "ownership_retained"),
         pid=os.getpid(),
         held=not writer_drained,
     )
