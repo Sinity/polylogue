@@ -122,6 +122,41 @@ def executable_gate_result(command: Sequence[str], *, gate: str, env: Mapping[st
     )
 
 
+#: The one sync command that provisions the repository-audit tooling every
+#: analysis gate needs (grimp, ast-grep, import-linter, vulture).
+#:
+#: ``audit`` is a ``[dependency-groups]`` entry, not an optional-dependencies
+#: extra, so ``uv sync --extra audit`` errors outright; and the obvious-looking
+#: ``uv sync --extra dev --frozen`` *prunes* the group back out again. Both
+#: mistakes leave a checkout whose analysis gates cannot run, which is why the
+#: whole command lives here once rather than being paraphrased per gate.
+AUDIT_GROUP_SYNC_COMMAND = "uv sync --extra dev --group audit --frozen"
+
+
+def missing_analysis_dependency_gate_result(
+    *, gate: str, dependency: str, reason: str, remedy: str, required_count: int = 1
+) -> GateResult:
+    """Classify "this checkout cannot run the check" separately from a finding.
+
+    A gate whose analysis library is absent inspected nothing, so reporting it
+    through ``semantic_violation_count`` would put an unprovisioned environment
+    in the same channel as a real finding.  ``gate_missing_executable`` is the
+    wrong name for it too: the executable is the interpreter and it resolved
+    fine.  This diagnosis exists so a reader can separate the two at a glance.
+    """
+
+    return GateResult(
+        gate=gate,
+        executable=None,
+        executable_available=None,
+        required_count=required_count,
+        inspected_count=0,
+        missing_count=1,
+        diagnosis="gate_missing_analysis_dependency",
+        details=(f"{dependency} is not importable ({reason}); run `{remedy}`",),
+    )
+
+
 def evidence_gate_result(
     *,
     gate: str,
@@ -175,4 +210,10 @@ def evidence_gate_result(
     )
 
 
-__all__ = ["GateResult", "evidence_gate_result", "executable_gate_result"]
+__all__ = [
+    "AUDIT_GROUP_SYNC_COMMAND",
+    "GateResult",
+    "evidence_gate_result",
+    "executable_gate_result",
+    "missing_analysis_dependency_gate_result",
+]

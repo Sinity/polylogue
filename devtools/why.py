@@ -71,6 +71,12 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "A required gate executable was unavailable.",
         "Install it or make it available on PATH, then re-run the gate.",
     ),
+    "gate_missing_analysis_dependency": Explanation(
+        "The gate's analysis library is not installed in this checkout, so nothing was inspected. "
+        "This is an environment fact, not a finding about the code -- do not go looking for the "
+        "offending import.",
+        "Run the sync command named in the gate details, then re-run the gate.",
+    ),
     "gate_missing_input": Explanation(
         "A required gate input was missing.",
         "Restore the input named in the gate details, then re-run the gate.",
