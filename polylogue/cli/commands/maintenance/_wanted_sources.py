@@ -153,7 +153,15 @@ def wanted_sources_command(freeze: bool, output_format: str) -> None:
             click.echo(json.dumps(refusal, indent=2, sort_keys=True))
         else:
             click.echo(f"Wanted sources: REFUSED ({exc})")
-        raise click.exceptions.Exit(1) from exc
+        # ``SystemExit``, not ``click.exceptions.Exit``: the CLI entrypoint
+        # runs Click with ``standalone_mode=False``
+        # (``polylogue/cli/machine_main.py``), and in that mode Click's own
+        # handler turns an explicit ``Exit`` into a return value the
+        # entrypoint discards -- so this refusal printed its reason and then
+        # exited 0. A rebuild driver reading the exit status would have read
+        # a refusal as authorization. ``SystemExit`` is the one signal both
+        # the plain and the JSON branch of that entrypoint re-raise.
+        raise SystemExit(1) from exc
 
     if output_format == "json":
         click.echo(json.dumps(payload, indent=2, sort_keys=True))

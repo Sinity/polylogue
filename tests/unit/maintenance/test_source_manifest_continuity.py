@@ -329,3 +329,81 @@ def test_policy_classification_is_bound_when_receipt_is_loaded_and_preflighted(t
     assert preflight.receipt_sha256 == receipt.receipt_sha256
     with pytest.raises(WantedSourceReceiptError, match="declaration mismatch"):
         load_wanted_source_receipt(archive, declarations=declarations)
+
+
+#: The receipt ``write_wanted_source_receipt`` produced for an empty
+#: declaration set before this guard existed -- byte-for-byte, and carrying no
+#: path or source identity. Keeping the real artifact makes the load-side
+#: refusal a regression against a receipt an operator could already hold, not
+#: against a hand-built approximation.
+_PRE_GUARD_EMPTY_RECEIPT = """{
+  "blockers": [],
+  "byte_count": 0,
+  "complete": true,
+  "declaration_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "declarations": [],
+  "excluded_source_ids": [],
+  "frontier_sha256": "8e13d2edfadffdfd8e6c99d9f21083f35bd347abc5b329ebc3d4b4ee6adc3153",
+  "item_count": 0,
+  "members": [],
+  "policy": {
+    "excluded_kinds": [
+      "discovery-only",
+      "experimental",
+      "optional",
+      "native-sinex"
+    ],
+    "identity": "6e526aba9b3e717874318e6c5c22bad801debe1801b6ea32302c404ac127d5f4",
+    "included_roles": [
+      "immutable-export",
+      "archive-member",
+      "append-jsonl",
+      "rewrite-leading-jsonl",
+      "mutable-sqlite",
+      "spool",
+      "queue",
+      "attachment",
+      "sidecar",
+      "provider-cache",
+      "directory"
+    ],
+    "name": "campaign-default",
+    "revision": "1"
+  },
+  "receipt_sha256": "7f4e8852955b3b34047a72e21c451373128be463c35041a181b71a017e39787b",
+  "root_states": {},
+  "schema": "polylogue.wanted-source.v1"
+}"""
+
+
+def test_an_empty_denominator_can_neither_be_frozen_nor_authorize_a_rebuild(tmp_path: Path) -> None:
+    """A receipt that selects no declaration is not a denominator.
+
+    Anti-vacuity: remove the empty-declaration guard from
+    ``WantedSourceReceipt.verify_integrity`` and the frozen artifact below
+    -- which this code really produced, and which a runtime with no
+    configured source root still produces -- loads as ``complete`` and
+    preflights the final rebuild against zero items and zero bytes. Every
+    conservation ratio measured against it is then vacuously satisfied.
+    """
+    archive = tmp_path / "archive-empty"
+    archive.mkdir()
+
+    with pytest.raises(WantedSourceReceiptError, match="no source is declared"):
+        write_wanted_source_receipt(archive, [])
+    assert not (archive / ".maintenance-state" / "wanted-sources" / "selected.json").exists()
+
+    excluded = _source(tmp_path, "discovery-everything")
+    with pytest.raises(WantedSourceReceiptError, match="excluded every declaration"):
+        build_wanted_source_receipt(
+            [SourceDeclaration("discovery", SourceRole.DIRECTORY, excluded, True)],
+            source_kinds={"discovery": "discovery-only"},
+        )
+
+    receipt_path = archive / ".maintenance-state" / "wanted-sources" / "selected.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(_PRE_GUARD_EMPTY_RECEIPT, encoding="utf-8")
+    with pytest.raises(WantedSourceReceiptError, match="selects no declaration"):
+        load_wanted_source_receipt(archive)
+    with pytest.raises(WantedSourceReceiptError, match="selects no declaration"):
+        preflight_rebuild(archive)

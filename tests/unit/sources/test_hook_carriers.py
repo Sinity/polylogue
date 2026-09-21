@@ -475,6 +475,113 @@ def test_compact_folds_the_retired_spool_into_carriers(tmp_path: Path, monkeypat
         assert conn.execute("SELECT COUNT(DISTINCT session_native_id) FROM raw_hook_events").fetchone()[0] == 3
 
 
+def _envelope(index: int, *, session: str = "legacy-session") -> str:
+    return json.dumps(
+        {
+            "event_id": f"{index:032x}",
+            "event_type": "PreToolUse",
+            "session_id": session,
+            "timestamp": "2026-09-14T08:00:00Z",
+            "provider": "claude-code",
+            "payload": {"tool_name": "Bash"},
+        }
+    )
+
+
+def test_compact_checkpoints_so_an_interrupted_fold_repeats_one_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted fold re-folds one checkpoint, not the whole spool.
+
+    The legacy spool holds ~716k envelopes. Retiring only after the final
+    carrier fsync means any interruption -- a signal, an OOM, a reboot --
+    retires nothing, so the next run re-folds every envelope and appends a
+    second full copy of every event to the carriers, on the filesystem that
+    also has to hold the rebuild's headroom.
+
+    Anti-vacuity: move the retirement back to a single pass after the loop and
+    the interrupted run below retires nothing, so the re-fold folds all 30
+    envelopes again and the carriers hold 55 lines instead of 35.
+    """
+
+    from polylogue.sources.hook_producer import _CompactionSink
+
+    _archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    pending = spool_root / "pending" / "2026-09-14"
+    pending.mkdir(parents=True)
+    for index in range(30):
+        (pending / f"{index:032x}.json").write_text(_envelope(index), encoding="utf-8")
+
+    real_append = _CompactionSink.append
+    appended = 0
+
+    def interrupt_after_25(self: _CompactionSink, record: dict[str, object]) -> Path:
+        nonlocal appended
+        appended += 1
+        if appended > 25:
+            raise KeyboardInterrupt("simulated interruption mid-batch")
+        return real_append(self, record)
+
+    monkeypatch.setattr(_CompactionSink, "append", interrupt_after_25)
+    with pytest.raises(KeyboardInterrupt):
+        compact_legacy_spool(spool_root, checkpoint_events=10)
+    monkeypatch.undo()
+
+    # Two checkpoints completed; the third batch never reached one.
+    assert len(list(pending.glob("*.json"))) == 10
+
+    resumed = compact_legacy_spool(spool_root, checkpoint_events=10)
+    assert resumed["folded"] == 10
+    assert resumed["retired"] == 10
+    assert list(pending.glob("*.json")) == []
+
+    # 25 lines from the interrupted run, 10 from the resumed one: the five
+    # envelopes folded into a carrier but not yet retired are the one
+    # checkpoint's worth of duplicate work this bound allows. The drain
+    # deduplicates them by ``event_id``; what is bounded here is the carrier
+    # bytes a repeated fold writes to the filesystem.
+    lines = sum(len(carrier.read_bytes().splitlines()) for carrier in _carriers(spool_root))
+    assert lines == 35
+
+
+def test_compact_accounts_for_every_member_by_count_and_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """k8wv AC4/AC6: every inspected member lands in exactly one outcome.
+
+    Conservation against the frozen manifest closes on counts *and* bytes, so
+    the fold reports both. A member that silently vanishes from the tally --
+    which is what a non-regular spool entry used to do -- makes the identity
+    below false.
+
+    Anti-vacuity: drop the ``is not a regular file`` refusal and the dangling
+    symlink stops being counted, so ``scanned`` exceeds
+    ``folded + sum(refused)``.
+    """
+
+    _archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    pending = spool_root / "pending" / "2026-09-14"
+    pending.mkdir(parents=True)
+    for index in range(5):
+        (pending / f"{index:032x}.json").write_text(_envelope(index), encoding="utf-8")
+    (pending / ".ffff.json.tmpsuffix").write_text("{}", encoding="utf-8")
+    (pending / "empty.json").write_text("", encoding="utf-8")
+    (pending / "notes.txt").write_text("not a spool member", encoding="utf-8")
+    (pending / "dangling").symlink_to(pending / "gone.json")
+    (spool_root / "claude-code-some-session.jsonl").write_text("{}\n", encoding="utf-8")
+
+    summary = compact_legacy_spool(spool_root)
+
+    refused_counts: dict[str, int] = summary["refused"]  # type: ignore[assignment]
+    refused_sizes: dict[str, int] = summary["refused_bytes"]  # type: ignore[assignment]
+    folded = int(summary["folded"])  # type: ignore[call-overload]
+    folded_bytes = int(summary["folded_bytes"])  # type: ignore[call-overload]
+    assert folded == 5
+    assert summary["scanned"] == folded + sum(refused_counts.values()) == 10
+    assert summary["scanned_bytes"] == folded_bytes + sum(refused_sizes.values())
+    assert refused_counts["spool member is not a regular file"] == 1
+    assert set(refused_sizes) == set(refused_counts)
+    assert folded_bytes > 0
+
+
 def test_compact_bounds_one_carrier_and_stays_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A fold splits at its size bound and a re-run folds nothing twice."""
 

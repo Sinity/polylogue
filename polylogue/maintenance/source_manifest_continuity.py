@@ -383,6 +383,13 @@ class WantedSourceReceipt:
 
     def verify_integrity(self) -> None:
         self.policy.__post_init__()
+        # A receipt exists to fix a denominator. One that selected nothing
+        # fixes zero, and every later conservation ratio over it is vacuously
+        # satisfied, so it is refused here -- at the one gate both the freeze
+        # and the load route pass through -- rather than authorizing a
+        # rebuild whose "complete" receipt covers no source at all.
+        if not self.declarations:
+            raise WantedSourceReceiptError("wanted-source receipt selects no declaration: the denominator is empty")
         declaration_ids = {declaration.source_id for declaration in self.declarations}
         if len(declaration_ids) != len(self.declarations):
             raise WantedSourceReceiptError("wanted-source receipt contains duplicate declarations")
@@ -512,15 +519,20 @@ def build_wanted_source_receipt(
     if len({row.source_id for row in rows}) != len(rows):
         raise WantedSourceReceiptError("wanted-source declarations contain duplicate source IDs")
     selected, excluded = selected_policy.select(rows, source_kinds=source_kinds)
+    # Name the cause at the point that knows it: an operator freezing a
+    # denominator from an unconfigured runtime and an operator whose policy
+    # classified every declared root away need different corrections, and
+    # ``verify_integrity`` downstream can only report the empty result.
     if not selected:
-        members: tuple[FrontierMember, ...] = ()
-        root_states: Mapping[str, FrontierState] = {}
-        blockers: tuple[str, ...] = ()
-    else:
-        frontier = build_source_frontier(selected)
-        members = frontier.members
-        root_states = frontier.root_states
-        blockers = frontier.blockers
+        if rows:
+            raise WantedSourceReceiptError(
+                "wanted-source policy excluded every declaration: " + ", ".join(sorted(excluded))
+            )
+        raise WantedSourceReceiptError("no source is declared: the rebuild denominator would be empty")
+    frontier = build_source_frontier(selected)
+    members = frontier.members
+    root_states = frontier.root_states
+    blockers = frontier.blockers
     frontier_digest = _frontier_digest(selected, members, root_states, blockers)
     provisional = WantedSourceReceipt(
         policy=selected_policy,

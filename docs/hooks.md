@@ -139,12 +139,22 @@ their events intact under their own ids.
 
 `polylogue-hook --compact [--sidecar-dir PATH]` is the one bridge from the
 retired file-per-event spool to the carriers. It reads every
-`pending/**/*.json`, appends each as a carrier line, fsyncs the carriers, and
-only then retires the originals under `acknowledged/` — durable carrier first,
-retirement second, so an interrupted fold re-folds at worst a prefix and a
-re-folded envelope is the same content-derived event. Hidden atomic-write
-tempnames, zero-byte files and the per-session journals are counted refusals
-reported in its JSON summary, never silent drops. It needs no daemon.
+`pending/**/*.json` and appends each as a carrier line, then checkpoints every
+`COMPACTION_CHECKPOINT_EVENTS` envelopes: fsync the carriers, and only then
+retire the envelopes already in them under `acknowledged/` — durable carrier
+first, retirement second, so an interrupted fold re-folds at most one
+checkpoint's worth and a re-folded envelope is the same content-derived event
+the drain deduplicates by `event_id`. It enumerates one directory at a time
+rather than materializing the tree, which matters at the retired spool's
+scale.
+
+Hidden atomic-write tempnames, zero-byte files, unrecognized suffixes,
+unreadable files, non-regular members, invalid envelopes and the per-session
+journal mirrors are each a counted, named refusal in its JSON summary, never a
+silent drop. Every inspected member lands in exactly one of `folded` or
+`refused` and its bytes in exactly one of `folded_bytes` or `refused_bytes`,
+so `scanned`/`scanned_bytes` reconcile against a frozen spool manifest by
+count and by size. It needs no daemon.
 
 The hooks sidecar directory always lives under the resolved archive root
 (`POLYLOGUE_ARCHIVE_ROOT`, default `~/.local/share/polylogue`), the same as
