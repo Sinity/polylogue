@@ -320,7 +320,31 @@ class QueryFirstGroupBase(click.Group):
         return list(super().parse_args(ctx, parse_args))
 
     def invoke(self, ctx: click.Context) -> object:
-        """Invoke the group, dispatching to query or stats mode if no subcommand."""
+        """Invoke the group, converting a refusal ``Exit`` into a real process exit.
+
+        The machine entrypoint runs Click with ``standalone_mode=False``
+        (``polylogue/cli/machine_main.py``). In that mode Click turns an
+        explicit ``click.exceptions.Exit`` into a *return value* of
+        ``BaseCommand.main`` instead of exiting, and ``run_machine_entry``
+        discards it -- so every command that signalled a refusal by raising
+        ``Exit`` printed the refusal and exited 0 (polylogue-1fu1a).
+
+        This is the single conversion point for the whole ``polylogue``
+        command tree: every subcommand is invoked beneath this group, so one
+        rule here covers the sites that exist today and the ones written
+        tomorrow. ``Exit(0)`` is left alone -- ``--help`` and the help-markdown
+        renderer reach the same handler and already mean success.
+        """
+        try:
+            return self._invoke_dispatch(ctx)
+        except click.exceptions.Exit as exc:
+            code = exc.exit_code
+            if code:
+                raise SystemExit(code) from None
+            raise
+
+    def _invoke_dispatch(self, ctx: click.Context) -> object:
+        """Dispatch to query or stats mode when no subcommand was named."""
         self._maybe_emit_diagnose(ctx)
 
         if ctx.meta.get("polylogue_has_subcommand", False):

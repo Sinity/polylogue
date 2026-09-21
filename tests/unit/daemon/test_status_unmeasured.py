@@ -243,3 +243,46 @@ def test_api_component_state_tracks_observed_daemon_liveness(
 
     assert status.daemon_liveness is daemon_alive
     assert status.component_state.api == ("running" if daemon_alive else "stopped")
+
+
+def test_health_fallback_probe_is_not_run_when_the_component_answered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``check_health`` is a status component, not also a per-call fallback.
+
+    ``build_daemon_status`` read health through
+    ``_v("health", _checked_health(health_tiers))``. Python evaluates that
+    argument before ``_v`` can decide whether it is needed, so the probe the
+    registry had just run as a component was re-run on every single call --
+    a fresh snapshot bought nothing (polylogue-20d.17 AC10).
+
+    Anti-vacuity: pass the fallback positionally again and a third call
+    appears, carrying the whole configured tier set at once instead of the
+    per-tier split the two components use.
+    """
+    configured = {HealthTier.FAST, HealthTier.MEDIUM}
+    monkeypatch.setattr(status_module, "_configured_health_tiers", lambda **_: set(configured))
+
+    _patch_healthy_collectors(monkeypatch, tmp_path)
+
+    calls: list[frozenset[HealthTier]] = []
+
+    def counting_check_health(**kwargs: Any) -> DaemonHealth:
+        tiers = kwargs.get("tiers") or ()
+        calls.append(frozenset(cast(set[HealthTier], tiers)))
+        return DaemonHealth()
+
+    monkeypatch.setattr(status_module, "check_health", counting_check_health)
+
+    status = build_daemon_status(
+        sources=(),
+        browser_capture_enabled=False,
+        include_raw_replay_backlog=False,
+        include_exact_raw_materialization_readiness=False,
+    )
+
+    assert isinstance(status.health, DaemonHealth)
+    assert sorted(calls, key=lambda tiers: sorted(tier.value for tier in tiers)) == [
+        frozenset({HealthTier.FAST}),
+        frozenset({HealthTier.MEDIUM}),
+    ], calls

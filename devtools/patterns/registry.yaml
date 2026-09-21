@@ -10,3 +10,4 @@ rules:
   - {id: no-insight-readiness-verdict, rule: no-insight-readiness-verdict.yml, baseline: baselines/no-insight-readiness-verdict.txt, owner: polylogue-ajxy4, status: enforcing}
   - {id: legacy-stdlib-logger, rule: legacy-stdlib-logger.yml, baseline: baselines/legacy-stdlib-logger.txt, owner: polylogue-logging, status: enforcing}
   - {id: legacy-prose-logging, rule: legacy-prose-logging.yml, baseline: baselines/legacy-prose-logging.txt, owner: polylogue-logging, status: enforcing}
+  - {id: cli-nonzero-click-exit, rule: cli-nonzero-click-exit.yml, baseline: baselines/cli-nonzero-click-exit.txt, owner: polylogue-1fu1a, status: enforcing}

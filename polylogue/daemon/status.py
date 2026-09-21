@@ -2922,19 +2922,34 @@ def build_daemon_status(
     # value would certify readiness for a frame that is no longer authoritative.
     unmeasured_states = {"stale", "refreshing", "timed_out", "unavailable", "degraded"}
 
-    def _v(name: str, default: Any, *, unmeasured: Any = _UNMEASURED_UNSET) -> Any:
+    def _v(
+        name: str,
+        default: Any = None,
+        *,
+        default_factory: Callable[[], Any] | None = None,
+        unmeasured: Any = _UNMEASURED_UNSET,
+    ) -> Any:
         """Return the component's collected value.
 
         ``unmeasured`` is required wherever the ordinary ``default`` would read
         as a positive claim (an all-zero readiness model renders as "ready");
         it is substituted whenever the collector timed out, was unavailable, or
         errored, even if a stale last-good value exists.
+
+        ``default_factory`` defers *building* the fallback until the collected
+        value is actually missing. A cheap model default is fine to pass
+        positionally; a fallback that re-runs a probe is not. Health's fallback
+        re-runs ``check_health`` -- the same probe the registry just ran as a
+        component -- and passing it positionally evaluated it on every call,
+        fresh snapshot or not (polylogue-20d.17 AC10).
         """
         snapshot = snapshots[name]
         if unmeasured is not _UNMEASURED_UNSET and snapshot.state in unmeasured_states:
             return unmeasured
         value = snapshot.value
-        return value if value is not None else default
+        if value is not None:
+            return value
+        return default_factory() if default_factory is not None else default
 
     db_info: dict[str, object] = _v("db_size", {})
     storage_info = _v("archive_storage", ArchiveStorageStatus())
@@ -3009,7 +3024,7 @@ def build_daemon_status(
         raw_lifecycle_reason = "raw failure lifecycle evidence is unavailable"
     blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())
     embedding_info: dict[str, object] = _v("embedding_readiness", {})
-    health = _v("health", _checked_health(health_tiers))
+    health = _v("health", default_factory=lambda: _checked_health(health_tiers))
     # Health is a separate projection.  It must not claim to be clean when
     # its own collector could not complete, but an unrelated optional status
     # detail being unavailable does not invalidate an otherwise measured

@@ -1,0 +1,21 @@
+# polylogue-1fu1a: a nonzero `click.exceptions.Exit` is not a process exit.
+#
+# Click converts an explicit `Exit` into a RETURN VALUE whenever it runs with
+# `standalone_mode=False`, which is how the machine entrypoint runs
+# (polylogue/cli/machine_main.py). Every site below therefore exits the
+# process nonzero only because QueryFirstGroupBase.invoke converts the
+# exception into `SystemExit` for the whole `polylogue` command tree. A cli/
+# helper reached from any other non-standalone Click entry still returns 0.
+#
+# Shrink this list by raising `SystemExit(code)` at the site. It must never grow.
+polylogue/cli/archive_query.py:344c703d541c62fce6fc985b8aeba59ce905f3e5
+polylogue/cli/commands/agent.py:1d019dd8a6d2828e4fcf77a6f0ba83b4d59fdccb:4
+polylogue/cli/commands/demo.py:5f9fb38eff874c620be9ee04743cf907a7756b83:2
+polylogue/cli/commands/diagnostics.py:673ca6b1d4163aebf42d2d252c033b40d6147c9b
+polylogue/cli/commands/diagnostics.py:7755e6f64143f444de1ecd00339ad3b2639bf52c
+polylogue/cli/commands/maintenance/_blob_conservation.py:1d019dd8a6d2828e4fcf77a6f0ba83b4d59fdccb
+polylogue/cli/commands/status.py:1d019dd8a6d2828e4fcf77a6f0ba83b4d59fdccb
+polylogue/cli/commands/status.py:7a0b58946dd1d7b0d486546e877d99fecf9f6ac2
+polylogue/cli/commands/status.py:95a3dc0321b9154f8fc403dd4041cbcb19b1bace:2
+polylogue/cli/commands/status.py:d852fae8e1d69721993c2a625bd74fe4847a1e66
+polylogue/cli/query_verbs.py:0e537b7a3fb4d30f4d0eea0fb89ce7689a787bee

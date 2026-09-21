@@ -690,7 +690,7 @@ def test_read_hooks_names_the_daemon_refusal_without_a_traceback(
     assert caught.value.code != EMPTY_EXIT_CODE
     err = capsys.readouterr().err
     assert "daemon is unavailable" in err
-    assert "polylogue run" in err  # the remedy, not just the fault
+    assert "polylogued run" in err  # the remedy, not just the fault
     assert "Usage:" not in err
 
 

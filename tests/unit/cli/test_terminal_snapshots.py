@@ -101,7 +101,11 @@ class TestCommandOutputs:
             env=drift_env,
         )
 
-        assert status.exit_code == 0
+        # A drifted archive read without a daemon is a degraded answer, and
+        # OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
+        # asserted 0 only because standalone_mode discarded the refusal; the
+        # subject here is the rendered drift evidence below, not the status.
+        assert status.exit_code == 1
         status_text = grid_to_text(status.grid)
         assert "Format drift sentinel" in status_text
         assert "codex-session" in status_text
