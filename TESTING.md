@@ -62,13 +62,21 @@ under host pressure is already the pool's decision when the job starts. The
 default is `worker_memory.CORPUS_MAX_WORKERS`, derived as
 `(agentctl-pytest.slice MemoryHigh - controller charge) // worker charge`,
 where a worker's *charge* is its anonymous peak plus the page cache and slab
-`memory.high` accounts alongside it -- dividing that ceiling by an
-anonymous-RSS figure alone sizes the run past what the slice allows; the
-slice's ceiling is Sinnix's to set (`flake/data/runtime-defaults.nix`) and it
-already carries the safety margin, so nothing is discounted a second time
-here. A `POLYLOGUE_PYTEST_WORKERS` override above what the slice's *remaining*
-budget holds is narrowed when the run takes the slot, and the receipt records
-which bound narrowed it.
+`memory.high` accounts alongside it. The slice's ceiling is Sinnix's to set
+(`flake/data/runtime-defaults.nix`) and it already carries the safety margin,
+so nothing is discounted a second time here. A `POLYLOGUE_PYTEST_WORKERS`
+override above what the slice's *remaining* budget holds is narrowed when the
+run takes the slot, and the receipt records which bound narrowed it.
+
+The constants behind that charge are measurements, and every managed run now
+checks them: the slot receipt carries a `corroboration` block comparing the
+profile a run was admitted under to what its own `/proc/smaps_rollup` sampler
+saw (`worker_memory.corroborate_profile`). Reading the 2026-09-21 complete-
+corpus receipt back that way is what corrected them — a worker's anonymous
+peak is ~4.7 GiB over 15,000 executed tests, not the ~583 MiB whole-corpus
+collection floor, and the page cache it maps is tens of MiB rather than the
+gigabytes a back-solved residual had claimed. A `verdict` of `understated`
+means the run took more than the width it was admitted at predicted.
 
 Managed runs keep their temporary trees under `.cache/verify/tmp-<pid>-*`
 inside the checkout and remove them on every exit except a failed run's,

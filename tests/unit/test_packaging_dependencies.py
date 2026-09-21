@@ -2,29 +2,33 @@
 
 ``polylogue.core.digest.IDENTITY`` -- the profile behind material-protocol v1
 canonical record and manifest bytes -- declares ``encoder="core-json"``, so its
-bytes come from whichever backend ``polylogue.core.json`` selected at import
-time. The two backends do not agree: stdlib ``json`` switches to exponent
-notation at a different magnitude than msgspec (and than the orjson formatter
-every pre-existing archive hash was computed under), so the same payload gets a
-different SHA-256 depending only on whether msgspec happened to be installed.
+bytes are msgspec's. stdlib ``json`` does not agree: it switches to exponent
+notation at a different magnitude (and than the orjson formatter every
+pre-existing archive hash was computed under), so the same payload would get a
+different SHA-256 under it.
 
 That makes msgspec a *correctness* dependency. While it sat in an optional
 ``speed`` extra, ``pip install polylogue`` produced an install that silently
-hashed differently from every other one. These tests pin the declaration that
-closes that hole, and the divergence that makes the declaration load-bearing.
+hashed differently from every other one. Three declarations now have to agree
+before such an install can exist -- ``[project] dependencies``, the flake's own
+program list, and ``polylogue.runtime.REQUIRED_NATIVE_PACKAGES`` -- and
+``polylogue.core.json`` imports msgspec unconditionally so a fourth, silent
+route is gone. These tests pin all of that, and the divergence that makes it
+load-bearing.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json as _stdlib_json
 import re
 from pathlib import Path
 from typing import Any
 
-import pytest
 import tomllib
 
-from polylogue.core import json as core_json
 from polylogue.core.digest import IDENTITY, canonical_bytes, digest
+from polylogue.runtime import REQUIRED_NATIVE_PACKAGES, probe_extensions, runtime_report
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -107,43 +111,55 @@ def test_identity_bytes_come_from_the_pluggable_backend() -> None:
     assert IDENTITY.encoder == "core-json"
 
 
-def test_the_active_backend_is_msgspec() -> None:
+def test_the_digest_runs_on_msgspec_bytes() -> None:
     """A supported install never runs the digest on the stdlib formatter.
 
-    Anti-vacuity: run this in an interpreter without msgspec -- precisely the
-    ``pip install polylogue`` that the old ``speed`` extra produced -- and it
-    goes red instead of silently hashing differently. It asserts the observed
-    import-time selection, not a re-read of the declaration, so a declaration
-    that failed to reach the environment does not satisfy it.
+    Anti-vacuity: this asserts the bytes the live interpreter actually
+    produces, not a re-read of a declaration, so a declaration that failed to
+    reach the environment does not satisfy it. In an interpreter without
+    msgspec, importing ``polylogue.core.json`` now fails outright and this
+    errors rather than silently hashing differently.
     """
-    assert core_json.backend() == "msgspec"
     assert canonical_bytes(_WITNESS, IDENTITY) == _WITNESS_MSGSPEC_BYTES
 
 
-@pytest.mark.skipif(
-    "stdlib" not in core_json.available_backends(),
-    reason="the stdlib backend module is unavailable in this interpreter",
-)
-def test_the_stdlib_backend_would_produce_a_different_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Show that losing msgspec changes the digest rather than degrading gracefully.
+def test_msgspec_is_a_required_runtime_extension() -> None:
+    """The startup contract refuses the install a lost msgspec would produce.
 
-    This is the defect the dependency promotion closes, kept executable so the
-    claim is not just a comment. Forcing the backend is the same monkeypatch
-    idiom ``tests/unit/core/test_json.py`` uses for cross-backend parity.
+    Declaring the dependency is not the same as observing it: every guarded
+    console script calls ``require_free_threaded_runtime`` before archive or
+    network work, and that check only refuses for packages it is told are
+    required. msgspec sat in an OPTIONAL tier while being identity-bearing,
+    which made ``runtime_report()`` report ``pass`` on an install that would
+    write foreign content hashes.
+
+    Anti-vacuity: move ``msgspec`` back to an optional tier, or drop it from
+    ``REQUIRED_NATIVE_PACKAGES``, and the probe below stops being taken and
+    this goes red.
+    """
+    assert "msgspec" in REQUIRED_NATIVE_PACKAGES
+    probed = {probe.name: probe for probe in probe_extensions()}
+    assert "msgspec" in probed, "the contract must actually probe what it declares required"
+    assert probed["msgspec"].safe
+    assert runtime_report()["extensions_safe"] is True
+
+
+def test_losing_msgspec_would_change_the_identity_rather_than_degrade() -> None:
+    """Why the dependency is load-bearing, kept executable rather than asserted in prose.
+
+    ``polylogue.core.json`` no longer has a stdlib codec to select, so this
+    compares the canonical bytes against what stdlib json would have written
+    for the same payload. That is the divergence the promotion closes.
 
     Anti-vacuity: if the two formatters were ever reconciled so canonical bytes
-    no longer depend on the backend, this goes red -- and then the base
+    no longer depend on the codec, this goes red -- and then the base
     dependency's stated justification, here and in pyproject.toml, needs
     rewriting rather than the test relaxing.
     """
     msgspec_bytes = canonical_bytes(_WITNESS, IDENTITY)
-    msgspec_digest = digest(_WITNESS, IDENTITY)
-
-    monkeypatch.setattr(core_json, "_BACKEND", "stdlib")
-    stdlib_bytes = canonical_bytes(_WITNESS, IDENTITY)
-    stdlib_digest = digest(_WITNESS, IDENTITY)
+    stdlib_bytes = _stdlib_json.dumps(_WITNESS, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     assert msgspec_bytes == _WITNESS_MSGSPEC_BYTES
     assert stdlib_bytes == b'{"x":1e-05}'
     assert stdlib_bytes != msgspec_bytes
-    assert stdlib_digest != msgspec_digest
+    assert digest(_WITNESS, IDENTITY) != hashlib.sha256(stdlib_bytes).hexdigest()

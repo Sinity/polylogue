@@ -44,9 +44,11 @@ dependencies = [
   "typing-extensions>=4.16.0",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=1.2.0",  # Rust-backed filesystem watcher for live ingestion
   "nh3>=0.3.7",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
-  # Identity-bearing, not an accelerator: `polylogue.core.json` selects its
-  # backend at import time, and only msgspec produces the canonical float
-  # bytes the `IDENTITY` digest profile (polylogue/core/digest.py) hashes.
+  # Identity-bearing, not an accelerator: `polylogue.core.json` imports it
+  # unconditionally, and only msgspec produces the canonical float bytes the
+  # `IDENTITY` digest profile (polylogue/core/digest.py) hashes. It is also in
+  # `polylogue.runtime.REQUIRED_NATIVE_PACKAGES`, so every guarded entrypoint
+  # refuses before archive or network work when it is absent.
   # stdlib json picks decimal-vs-exponent notation at a different magnitude
   # threshold, so the same payload gets a different content hash under it
   # (0.00001 vs 1e-05). msgspec ships cp314t wheels since 0.20.0 (Nov 2025),

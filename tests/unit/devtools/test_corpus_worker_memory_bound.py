@@ -77,6 +77,7 @@ from devtools.worker_memory import (
     ChargeProfile,
     available_memory_mib,
     cgroup_available_mib,
+    corroborate_profile,
     memory_bounded_worker_cap,
     resize_worker_argument,
     width_within,
@@ -759,49 +760,133 @@ def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monke
     assert current_mib + _peak_mib(workers) <= PYTEST_SLICE_HIGH_MIB
 
 
-def test_the_width_fits_the_whole_charge_not_only_anonymous_memory() -> None:
-    """``memory.high`` charges page cache and slab; the width must respect that.
+#: The 2026-09-21 complete-corpus run, as its own sampler recorded it.
+#:
+#: Receipt ``.cache/verify/runs/20260921T010003Z-all-2490183-814ed21d``: width
+#: 2, 23,526 collected, 9,783 s, no pressure kill. Reproduced here in the
+#: sampler's own shape so the profile constants are checked against a real
+#: observation rather than against themselves. Rounded to whole KiB from the
+#: receipt; the comparisons below are MiB-scale and do not turn on the digits.
+_OBSERVED_CORPUS_RUN: Mapping[str, object] = {
+    "peak": {"rss_kib": 9943256, "pss_kib": 9852903, "private_kib": 9840040, "swap_kib": 0},
+    "processes": [
+        {"pid": 2504863, "command": "python", "peak_rss_kib": 4852908, "peak_private_kib": 4837220},
+        {"pid": 2504843, "command": "python", "peak_rss_kib": 4608688, "peak_private_kib": 4588408},
+        {"pid": 2497861, "command": "python", "peak_rss_kib": 890344, "peak_private_kib": 872068},
+    ],
+}
+_OBSERVED_SIZING: Mapping[str, object] = {"workers": 2, "available_mib": 11478}
 
-    A per-process sampler sees anonymous memory. The ceiling being divided is a
-    cgroup ceiling, which also accounts the page cache the suite's own scratch
-    SQLite writes fill and the slab behind them -- 1.93x the anonymous
-    footprint on the worker measured 2026-09-20 (anon 544 MiB, file 457 MiB,
-    slab 44 MiB, ``memory.current`` 1050 MiB). Sizing from anon alone chose a
-    width whose real charge overran the slice, which is what systemd-oomd
-    killed.
+#: The profile that sized that run, before 2026-09-21. ``worker_cache_mib``
+#: was back-solved as the residual of ``11776 - 1075 - 3 * 700`` from one
+#: 2026-09-17 observation and nothing ever read a sampler back against it.
+_SUPERSEDED_PROFILE = ChargeProfile(worker_anon_mib=700.0, worker_cache_mib=2850.0, controller_mib=1075.0)
 
-    Anti-vacuity: divide the ceiling by the anonymous term alone -- the shipped
-    form, ``(budget - controller) // WORKER_PEAK_MIB`` over an anon constant --
-    and this profile answers one worker wider than its charge fits, so the
-    charge assertion below goes red.
+
+def test_the_superseded_profile_understates_the_run_it_admitted() -> None:
+    """The constants a run was admitted under, checked against that run.
+
+    This is the falsification polylogue-b054.1.1.2 records as missing: the
+    sampler wrote per-PID peaks into every receipt and nothing compared them
+    to the profile. Doing it once shows the old numbers were wrong in BOTH
+    directions -- a worker's anonymous peak was 4,724 MiB against a declared
+    700, while the 2,850 MiB declared as its page cache was 15 MiB of mapped
+    file. The residual that produced 2,850 was absorbing the anon
+    understatement, so ``fadvise(DONTNEED)`` on discarded basetemps, the
+    remedy that residual suggested, would recover tens of MiB and not width.
+
+    Anti-vacuity: restore ``WORKER_PEAK_ANON_MIB = 700`` /
+    ``WORKER_PEAK_CACHE_MIB = 2850`` and the shipped-profile assertion goes
+    red -- the shipped profile would then be this same understating one.
     """
-    profile = ChargeProfile(worker_anon_mib=700.0, worker_cache_mib=2850.0, controller_mib=1075.0)
-    budget = PYTEST_SLICE_HIGH_MIB
+    superseded = corroborate_profile(_OBSERVED_CORPUS_RUN, _OBSERVED_SIZING, profile=_SUPERSEDED_PROFILE)
+    assert superseded is not None
+    assert superseded["verdict"] == "understated"
+    assert superseded["worker_anon_headroom_mib"] < 0
+    assert superseded["group_headroom_mib"] < 0
 
-    workers = width_within(budget, profile=profile)
+    shipped = corroborate_profile(_OBSERVED_CORPUS_RUN, _OBSERVED_SIZING)
+    assert shipped is not None
+    assert shipped["verdict"] == "corroborated"
+    assert shipped["worker_anon_headroom_mib"] >= 0
+    assert shipped["group_headroom_mib"] >= 0
 
-    assert workers == 3
-    assert profile.charge_mib(workers) <= budget
-    assert profile.charge_mib(workers + 1) > budget
+    # The two terms, as measured, against what each profile declared.
+    assert shipped["observed_worker_anon_mib"] == pytest.approx(4723.8, abs=0.5)
+    assert shipped["observed_worker_file_mib"] < 32
+    assert _SUPERSEDED_PROFILE.worker_cache_mib > 100 * shipped["observed_worker_file_mib"]
 
-    # The anonymous-only model, in both of the forms it shipped in: the
-    # measured per-worker anon peak, and the 2263 MiB constant that stood in
-    # this module until 2026-09-20. Each picks a width whose real charge
-    # against the same ceiling is an overrun, and the wider it is the worse.
-    for anon_peak_mib in (profile.worker_anon_mib, 2263.0):
-        anon_only = max(1, int((budget - profile.controller_mib) // anon_peak_mib))
-        assert anon_only > workers
-        assert profile.charge_mib(anon_only) > budget
+
+def test_the_corroboration_reports_an_understatement_rather_than_averaging_it_away() -> None:
+    """One over-large worker is the finding, not a datum to be diluted.
+
+    ``width_within`` charges every worker the same constant, so the profile is
+    falsified by the LARGEST worker, not the mean. A run whose heaviest worker
+    exceeds the declared anonymous term is understated even when the group
+    total still fits.
+
+    Anti-vacuity: take the mean of the per-PID peaks instead of the maximum,
+    or compare only the group total, and this goes red -- the group here is
+    well inside the predicted charge and only the single heavy worker is out.
+    """
+    lopsided = {
+        "peak": {"rss_kib": 1024 * 1024},  # 1 GiB group total: far inside the budget
+        "processes": [
+            {"pid": 11, "peak_rss_kib": 900 * 1024, "peak_private_kib": 900 * 1024},
+            {"pid": 12, "peak_rss_kib": 10 * 1024, "peak_private_kib": 10 * 1024},
+        ],
+    }
+    profile = ChargeProfile(worker_anon_mib=500.0, worker_cache_mib=25.0, controller_mib=1075.0)
+
+    verdict = corroborate_profile(lopsided, {"workers": 2}, profile=profile)
+
+    assert verdict is not None
+    assert verdict["verdict"] == "understated"
+    assert verdict["heaviest_pid"] == 11
+    assert verdict["observed_worker_anon_mib"] == pytest.approx(900.0, abs=0.5)
+    assert verdict["worker_anon_headroom_mib"] == pytest.approx(-400.0, abs=0.5)
+    assert verdict["group_headroom_mib"] > 0, "the group total alone would have said nothing was wrong"
+
+    inside = corroborate_profile(
+        {
+            "peak": {"rss_kib": 1024 * 1024},
+            "processes": [{"pid": 11, "peak_rss_kib": 400 * 1024, "peak_private_kib": 400 * 1024}],
+        },
+        {"workers": 2},
+        profile=profile,
+    )
+    assert inside is not None
+    assert inside["verdict"] == "corroborated"
+
+
+def test_an_unmeasured_run_reports_no_verdict_rather_than_a_false_one() -> None:
+    """A run too short to sample must not be recorded as corroborating anything.
+
+    Anti-vacuity: drop the ``unmeasured``/empty guards and a run with no
+    observation returns a verdict built from zeros, which reads as
+    ``corroborated`` -- a profile confirmed by the absence of evidence.
+    """
+    assert corroborate_profile(None, _OBSERVED_SIZING) is None
+    assert corroborate_profile(_OBSERVED_CORPUS_RUN, None) is None
+    assert corroborate_profile({"unmeasured": "no sample observed the process group"}, _OBSERVED_SIZING) is None
+    assert corroborate_profile({"peak": {"rss_kib": 0}, "processes": []}, _OBSERVED_SIZING) is None
+    assert corroborate_profile(_OBSERVED_CORPUS_RUN, {"workers": "wide"}) is None
 
 
 def test_the_shipped_profile_is_the_charge_the_slice_accounts() -> None:
     """The default width leaves margin under the declared ceiling, at the charge.
 
-    Anti-vacuity: drop ``worker_cache_mib`` from ``MEASURED_CHARGE`` (or set it
-    to zero) and the declared width rises to a number whose charge exceeds
-    ``PYTEST_SLICE_MEMORY_HIGH_MIB``, which the second assertion catches.
+    Anti-vacuity: restore ``WORKER_PEAK_ANON_MIB = 700`` -- the collection
+    floor that stood here as the peak until 2026-09-21 -- and the declared
+    width rises to a number whose charge exceeds
+    ``PYTEST_SLICE_MEMORY_HIGH_MIB``, which the third assertion catches. The
+    cache term no longer carries that weight: it is now a measured ~25 MiB, so
+    zeroing it does not move the width, and the anon term is what does.
     """
     assert MEASURED_CHARGE.worker_cache_mib > 0, "page cache is part of what memory.high accounts"
+    assert MEASURED_CHARGE.worker_anon_mib > MEASURED_CHARGE.worker_cache_mib, (
+        "anon dominates the charge; the 2026-09-21 sampler read-back is what says so"
+    )
     assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS) <= PYTEST_SLICE_MEMORY_HIGH_MIB
     assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS + 1) > PYTEST_SLICE_MEMORY_HIGH_MIB
 
@@ -821,11 +906,15 @@ def test_the_sizing_receipt_records_the_estimate_a_run_was_admitted_on() -> None
     the margin a fraction of the charge instead of the budget and the
     over-budget case below stops being negative.
     """
-    estimate = MEASURED_CHARGE.admission_estimate(3, 12288)
+    # The declared width rather than a literal: which width fits 12 GiB is a
+    # property of the constants, and pinning it here made this test assert a
+    # positive margin for a width the 2026-09-21 profile refuses.
+    admitted = CORPUS_MAX_WORKERS
+    estimate = MEASURED_CHARGE.admission_estimate(admitted, 12288)
 
-    assert estimate["predicted_charge_mib"] == pytest.approx(MEASURED_CHARGE.charge_mib(3), abs=0.1)
+    assert estimate["predicted_charge_mib"] == pytest.approx(MEASURED_CHARGE.charge_mib(admitted), abs=0.1)
     assert estimate["budget_mib"] == 12288.0
-    assert estimate["margin_mib"] == pytest.approx(12288 - MEASURED_CHARGE.charge_mib(3), abs=0.1)
+    assert estimate["margin_mib"] == pytest.approx(12288 - MEASURED_CHARGE.charge_mib(admitted), abs=0.1)
     assert 0 < estimate["margin_fraction"] < 1
 
     # A width that does not fit reports a negative margin rather than a

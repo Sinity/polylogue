@@ -132,12 +132,22 @@ def available_cpus(
 
 
 MINIMUM_PYTHON = (3, 14)
+#: Every packaged extension the contract refuses to start without.
+#:
+#: ``msgspec`` belongs here rather than in an optional tier because it is not
+#: an accelerator: ``polylogue.core.json`` encodes canonical bytes with it, and
+#: the stdlib formatter writes a *different* byte string for the same float
+#: (``1e-05`` where msgspec writes ``0.00001``), so an install without it would
+#: hash the same payload to a different content identity with nothing
+#: observable to say so. It became a ``[project]`` dependency in #5319; listing
+#: it as OPTIONAL here left the runtime contract reporting ``pass`` on an
+#: interpreter that would silently write foreign identities.
 REQUIRED_NATIVE_PACKAGES: tuple[str, ...] = (
     "sqlite_vec",
     "nh3",
     "watchfiles",
+    "msgspec",
 )
-OPTIONAL_NATIVE_PACKAGES: tuple[str, ...] = ("msgspec",)
 
 
 class RuntimeContractError(RuntimeError):
@@ -289,9 +299,7 @@ def runtime_report() -> dict[str, object]:
 
     identity = runtime_identity()
     extensions = probe_extensions()
-    extensions_safe = all(
-        probe.safe or (probe.name in OPTIONAL_NATIVE_PACKAGES and not probe.importable) for probe in extensions
-    )
+    extensions_safe = all(probe.safe for probe in extensions)
     return {
         "runtime": identity.to_dict(),
         "extensions": [probe.to_dict() for probe in extensions],
@@ -304,7 +312,6 @@ def runtime_report() -> dict[str, object]:
 __all__ = [
     "ExtensionProbe",
     "MINIMUM_PYTHON",
-    "OPTIONAL_NATIVE_PACKAGES",
     "REQUIRED_NATIVE_PACKAGES",
     "RuntimeContractError",
     "RuntimeIdentity",
