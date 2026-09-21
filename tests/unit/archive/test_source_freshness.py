@@ -1147,3 +1147,64 @@ def test_revision_applications_order_by_decided_at_ms_not_insertion_order(tmp_pa
     details = [application.detail for application in projection.revision_applications]
     assert details == ["newer decision", "older decision"]
     assert projection.revision_applications[0].observed_at_ms == 9_000
+
+
+def _production_ops_tier(root: Path) -> Path:
+    """Build ops.db from the shipped OPS DDL, not from this module's fixture schema.
+
+    ``_create_schema`` above declares its own ``ingest_attempts`` with its own
+    ``source_path`` index, so every test built on it planned an indexed lookup
+    that production could not plan. That gap is why ``ops status --source``
+    was refused on every real archive while this suite stayed green.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root.mkdir(parents=True, exist_ok=True)
+    ops_db = root / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    return ops_db
+
+
+def test_exact_attempt_lookup_is_indexed_under_the_shipped_ops_schema(tmp_path: Path) -> None:
+    """``ops status --source`` must reach an answer on a production ops.db.
+
+    ``_exact_attempt_row`` keys on ``source_path``; the shipped OPS tier
+    indexed ``status``, ``storage_route`` and ``outcome_code`` and nothing
+    that leads with ``source_path``, so the plan was ``SCAN ingest_attempts``
+    and the read boundary refused it. The boundary is right -- the missing
+    index was the defect.
+
+    Anti-vacuity, executed: drop ``idx_ingest_attempts_source_path`` below and
+    the same call is refused again, with the same rejection string.
+    """
+    root = tmp_path / "archive"
+    ops_db = _production_ops_tier(root)
+    source = _source(root, size=64)
+    with sqlite3.connect(ops_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO ingest_attempts
+                (attempt_id, source_path, status, phase, error_message, started_at_ms, heartbeat_at_ms)
+            VALUES ('attempt-1', ?, 'failed', 'parse', 'parser refused the tail', 1000, 2000)
+            """,
+            (str(source),),
+        )
+        conn.commit()
+
+    projection = project_named_source_freshness(root, source, now=_NOW)
+
+    assert projection.receipt.unsafe_scan_rejections == ()
+    assert projection.retry.reason == "parser refused the tail"
+    assert projection.retry.reason_source == "ops.ingest_attempts"
+
+    with sqlite3.connect(ops_db) as conn:
+        conn.execute("DROP INDEX idx_ingest_attempts_source_path")
+        conn.commit()
+
+    unindexed = project_named_source_freshness(root, source, now=_NOW)
+
+    assert any("ingest-attempts-by-source-path" in item for item in unindexed.receipt.unsafe_scan_rejections), (
+        unindexed.receipt.unsafe_scan_rejections
+    )
+    assert unindexed.retry.reason is None

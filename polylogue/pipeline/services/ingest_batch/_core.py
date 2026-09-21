@@ -222,139 +222,182 @@ def _format_foreign_key_violations(
     return repr(formatted)
 
 
+@dataclass(frozen=True)
+class _ScopedForeignKey:
+    """One foreign key of one table, with the session column that scopes it."""
+
+    table: str
+    fkid: int
+    parent: str
+    scope_column: str
+    child_columns: tuple[str, ...]
+    parent_columns: tuple[str, ...]
+
+
+def _table_column_names(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    # ``table_xinfo`` and not ``table_info``: the latter omits VIRTUAL
+    # generated columns, which is exactly what ``sessions.session_id`` is.
+    return tuple(str(row[1]) for row in conn.execute(f"PRAGMA table_xinfo({_quote_identifier(table)})"))
+
+
+def _primary_key_columns(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
+    rows = [row for row in conn.execute(f"PRAGMA table_xinfo({_quote_identifier(table)})") if int(row[5]) > 0]
+    return tuple(str(row[1]) for row in sorted(rows, key=lambda row: int(row[5])))
+
+
+def _session_scope_column(
+    conn: sqlite3.Connection,
+    table: str,
+    groups: Mapping[int, Sequence[Sequence[object]]],
+) -> str | None:
+    """Return the column that ties one row of ``table`` to one session, if any."""
+    if "session_id" in _table_column_names(conn, table):
+        return "session_id"
+    # No ``session_id``: a table that still cascades from exactly one
+    # single-column reference to ``sessions`` is owned by that session
+    # (``session_links.src_session_id``, ``delegation_facts.parent_session_id``).
+    owners = {
+        str(rows[0][3])
+        for rows in groups.values()
+        if len(rows) == 1 and str(rows[0][2]) == "sessions" and str(rows[0][6] or "").upper() == "CASCADE"
+    }
+    return owners.pop() if len(owners) == 1 else None
+
+
+def _foreign_key_check_plan(
+    conn: sqlite3.Connection,
+) -> tuple[tuple[_ScopedForeignKey, ...], tuple[str, ...]]:
+    """Partition every foreign key in the schema into scoped and unscoped checks.
+
+    Derived from ``PRAGMA foreign_key_list``/``table_xinfo`` on the live
+    connection rather than from a written-down table list, because a written
+    list drifts: the one this replaced named three tables and the wrong parent
+    for two of them, while the schema declares foreign keys on twenty-seven.
+
+    The partition is total over the schema's foreign keys. Every table that
+    names an owning session is probed with that session in scope; every table
+    that does not is checked whole by SQLite itself. Nothing is skipped.
+    """
+    scoped: list[_ScopedForeignKey] = []
+    unscoped: list[str] = []
+    table_rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    for table_row in table_rows:
+        table = str(table_row[0])
+        foreign_keys = conn.execute(f"PRAGMA foreign_key_list({_quote_identifier(table)})").fetchall()
+        if not foreign_keys:
+            continue
+        groups: dict[int, list[Sequence[object]]] = {}
+        for fk in foreign_keys:
+            groups.setdefault(int(fk[0]), []).append(fk)
+        scope_column = _session_scope_column(conn, table, groups)
+        if scope_column is None:
+            unscoped.append(table)
+            continue
+        for fkid, rows in sorted(groups.items()):
+            ordered = sorted(rows, key=lambda row: int(cast(int, row[1])))
+            parent = str(ordered[0][2])
+            child_columns = tuple(str(row[3]) for row in ordered)
+            parent_columns = tuple(None if row[4] is None else str(row[4]) for row in ordered)
+            if any(column is None for column in parent_columns):
+                # ``REFERENCES parent`` without a column list means the
+                # parent's primary key, in declaration order.
+                resolved = _primary_key_columns(conn, parent)
+                if len(resolved) != len(child_columns):
+                    raise sqlite3.IntegrityError(
+                        f"cannot resolve implicit parent key for {table}.fk{fkid} -> {parent}: "
+                        f"{len(child_columns)} child columns against primary key {resolved}"
+                    )
+                parent_columns = resolved
+            scoped.append(
+                _ScopedForeignKey(
+                    table=table,
+                    fkid=fkid,
+                    parent=parent,
+                    scope_column=scope_column,
+                    child_columns=child_columns,
+                    parent_columns=cast(tuple[str, ...], parent_columns),
+                )
+            )
+    return tuple(scoped), tuple(unscoped)
+
+
+def _scoped_foreign_key_sql(check: _ScopedForeignKey, placeholders: str) -> str:
+    child = _quote_identifier(check.table)
+    parent = _quote_identifier(check.parent)
+    scope = _quote_identifier(check.scope_column)
+    selected = ", ".join(f"c.{_quote_identifier(column)}" for column in check.child_columns)
+    # SQLite's default MATCH SIMPLE: a row with ANY NULL child column
+    # satisfies the constraint, so those rows are not violations.
+    not_null = " AND ".join(f"c.{_quote_identifier(column)} IS NOT NULL" for column in check.child_columns)
+    joined = " AND ".join(
+        f"p.{_quote_identifier(parent_column)} = c.{_quote_identifier(child_column)}"
+        for child_column, parent_column in zip(check.child_columns, check.parent_columns, strict=True)
+    )
+    return f"""
+        SELECT c.rowid AS violation_rowid, c.{scope} AS scope_value, {selected}
+        FROM {child} AS c
+        WHERE c.{scope} IN ({placeholders})
+          AND {not_null}
+          AND NOT EXISTS (SELECT 1 FROM {parent} AS p WHERE {joined})
+        """
+
+
 def _foreign_key_violations_for_sessions(
     conn: sqlite3.Connection,
     session_ids: Iterable[str],
     *,
     limit: int = 10,
 ) -> list[dict[str, object | None]]:
-    """Return transcript FK violations scoped to sessions changed in this batch."""
+    """Return FK violations the bulk path's ``foreign_keys=OFF`` window admitted.
+
+    ``PRAGMA foreign_key_check`` is the correct-by-construction check, but its
+    only scoping granularity is a whole table -- SQLite offers no row-scoped
+    form -- and this runs before every bulk commit, on an archive whose
+    ``blocks`` table is not the batch. So the probes are generated from the
+    live schema instead of written down, which is the property the previous
+    hand-rolled list lacked: it probed each column of a compound key
+    independently and therefore could not see two owners disagreeing.
+    """
     scoped_session_ids = tuple(sorted({session_id for session_id in session_ids if session_id}))
     if not scoped_session_ids:
         return []
     placeholders = ",".join("?" for _ in scoped_session_ids)
-    checks: tuple[tuple[str, str, int], ...] = (
-        (
-            "messages",
-            f"""
-            SELECT rowid, session_id, message_id, parent_message_id AS child_key
-            FROM messages
-            WHERE session_id IN ({placeholders})
-              AND parent_message_id IS NOT NULL
-              AND NOT EXISTS (
-                SELECT 1 FROM messages parent
-                WHERE parent.message_id = messages.parent_message_id
-              )
-            """,
-            0,
-        ),
-        (
-            "messages",
-            f"""
-            SELECT rowid, session_id, message_id, session_id AS child_key
-            FROM messages
-            WHERE session_id IN ({placeholders})
-              AND NOT EXISTS (
-                SELECT 1 FROM sessions parent
-                WHERE parent.session_id = messages.session_id
-              )
-            """,
-            1,
-        ),
-        (
-            "blocks",
-            f"""
-            SELECT rowid, session_id, message_id, session_id AS child_key
-            FROM blocks
-            WHERE session_id IN ({placeholders})
-              AND NOT EXISTS (
-                SELECT 1 FROM sessions parent
-                WHERE parent.session_id = blocks.session_id
-              )
-            """,
-            0,
-        ),
-        (
-            "blocks",
-            f"""
-            SELECT rowid, session_id, message_id, message_id AS child_key
-            FROM blocks
-            WHERE session_id IN ({placeholders})
-              AND NOT EXISTS (
-                SELECT 1 FROM messages parent
-                WHERE parent.message_id = blocks.message_id
-              )
-            """,
-            1,
-        ),
-        (
-            "web_content_constructs",
-            f"""
-            SELECT rowid, session_id, message_id, block_id AS child_key
-            FROM web_content_constructs
-            WHERE session_id IN ({placeholders})
-              AND NOT EXISTS (
-                SELECT 1 FROM blocks parent
-                WHERE parent.block_id = web_content_constructs.block_id
-              )
-            """,
-            0,
-        ),
-        (
-            "web_content_constructs",
-            f"""
-            SELECT rowid, session_id, message_id, message_id AS child_key
-            FROM web_content_constructs
-            WHERE session_id IN ({placeholders})
-              AND NOT EXISTS (
-                SELECT 1 FROM messages parent
-                WHERE parent.message_id = web_content_constructs.message_id
-              )
-            """,
-            1,
-        ),
-        (
-            "web_content_constructs",
-            f"""
-            SELECT rowid, session_id, message_id, session_id AS child_key
-            FROM web_content_constructs
-            WHERE session_id IN ({placeholders})
-              AND NOT EXISTS (
-                SELECT 1 FROM sessions parent
-                WHERE parent.session_id = web_content_constructs.session_id
-              )
-            """,
-            2,
-        ),
-    )
+    scoped_checks, unscoped_tables = _foreign_key_check_plan(conn)
     violations: list[dict[str, object | None]] = []
-    for table, sql, fkid in checks:
+    for check in scoped_checks:
+        sql = _scoped_foreign_key_sql(check, placeholders)
         for row in conn.execute(sql, scoped_session_ids).fetchall():
             violations.append(
                 {
-                    "table": table,
-                    "rowid": row["rowid"],
-                    "parent": _SCOPED_FK_PARENTS[(table, fkid)],
-                    "fkid": fkid,
-                    "session_id": row["session_id"],
-                    "message_id": row["message_id"],
-                    "child_key": row["child_key"],
+                    "table": check.table,
+                    "rowid": row["violation_rowid"],
+                    "parent": check.parent,
+                    "fkid": check.fkid,
+                    "session_id": row["scope_value"],
+                    "child_key": {column: row[column] for column in check.child_columns},
+                }
+            )
+            if len(violations) >= limit:
+                return violations
+    for table in unscoped_tables:
+        # Reachable only through a scoped parent, so there is no session to
+        # scope by. SQLite checks these whole rather than leaving them out.
+        for row in conn.execute(f"PRAGMA foreign_key_check({_quote_identifier(table)})").fetchall():
+            violations.append(
+                {
+                    "table": str(row[0]),
+                    "rowid": row[1],
+                    "parent": str(row[2]),
+                    "fkid": row[3],
+                    "session_id": None,
+                    "child_key": None,
                 }
             )
             if len(violations) >= limit:
                 return violations
     return violations
-
-
-_SCOPED_FK_PARENTS = {
-    ("messages", 0): "messages",
-    ("messages", 1): "sessions",
-    ("blocks", 0): "sessions",
-    ("blocks", 1): "messages",
-    ("web_content_constructs", 0): "blocks",
-    ("web_content_constructs", 1): "messages",
-    ("web_content_constructs", 2): "sessions",
-}
 
 
 def _incoming_has_ingest_flag(payload: SessionWritePayload, flag: str | Sequence[str]) -> bool:
