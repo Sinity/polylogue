@@ -13,6 +13,7 @@ payload model are both resolved from the query-unit descriptor registry
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.archive.query.metadata import QueryUnitDescriptor, query_unit_descriptor
@@ -30,11 +31,34 @@ if TYPE_CHECKING:
     from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-#: Defensive cap on rows fetched per page across all selected sessions, so a
+#: Declared ceiling on rows fetched per page across all selected sessions, so a
 #: pathological session with thousands of assertions cannot blow up one page.
+#: The ceiling is real work protection and stays; what changed is that hitting
+#: it is now *reported*. It used to cut the projection in silence: a session
+#: with 250 messages answered ``with messages`` with exactly 200 rows, no flag
+#: anywhere in the result and a clean ``ok`` outcome -- a complete-looking
+#: projection over a truncated row set.
 _MAX_ROWS_PER_SESSION = 200
 _MAX_ROWS_PER_PAGE = 5000
 _MAX_ATTACHED_TEXT_CHARS = 2000
+
+#: Named gap a bounded projection carries so the envelope degrades instead of
+#: reporting a cut row set as the session's complete one.
+ATTACHED_UNIT_TRUNCATED_GAP = "attached_unit_truncated"
+
+
+@dataclass(frozen=True, slots=True)
+class AttachedUnitRows:
+    """Attached-unit rows plus every named gap the fetch had to accept.
+
+    The gaps are a return value rather than an optional out-parameter on
+    purpose: an optional collector is a gap channel a caller can forget, and
+    a caller forgetting one is exactly how a truncated facet scope reached
+    the daemon route as ``outcome: ok`` (see ``_facets_payload``).
+    """
+
+    rows: dict[str, dict[str, tuple[JSONDocument, ...]]]
+    gaps: tuple[str, ...] = ()
 
 
 def _session_id_field_predicate(session_id: str) -> QueryFieldPredicate:
@@ -200,13 +224,23 @@ def fetch_attached_units(
     units: Sequence[str],
     unit_fields: dict[str, tuple[str, ...]] | None = None,
     unit_windows: Mapping[str, WithUnitWindow] | None = None,
-) -> dict[str, dict[str, tuple[JSONDocument, ...]]]:
+) -> AttachedUnitRows:
     """Return attached-unit rows per unit, bucketed by session id.
 
-    Shape: ``{unit_name: {session_id: (row_payload, ...)}}`` where each
-    ``row_payload`` is a JSON-ready dict produced by the descriptor-owned row
-    payload model. Sessions with no rows for a unit are omitted from that unit's
-    bucket.
+    ``rows`` has shape ``{unit_name: {session_id: (row_payload, ...)}}`` where
+    each ``row_payload`` is a JSON-ready dict produced by the descriptor-owned
+    row payload model. Sessions with no rows for a unit are omitted from that
+    unit's bucket.
+
+    ``gaps`` names every unit whose fetch reached ``fetch_limit``. One row past
+    the ceiling is requested and discarded, so reaching it is observed rather
+    than inferred from a row count that could legitimately equal the bound. The
+    gap is suppressed only when every selected session is *provably* complete
+    for that unit -- a ``first:N``/``last:N`` window whose ``N`` every session's
+    bucket already satisfies, which the matching fetch direction guarantees is
+    the correct N. Otherwise the ceiling may have cut a session's rows, and the
+    caller must degrade rather than present the bucket as that session's whole
+    row set.
 
     ``unit_windows`` (polylogue-fnm.2) carries an optional per-unit
     :class:`~polylogue.archive.query.expression.WithUnitWindow`: bracket
@@ -222,17 +256,18 @@ def fetch_attached_units(
     silently capturing only its head -- without this, `last:N` on a session
     with more than the cap's worth of rows would trim the wrong end.
     Predicate + ``last:N`` together on a session whose *matching* rows are
-    still sparser than the fetch cap can still under-fetch; this is the same
-    bounded-fetch caveat as every other post-fetch filter here, not a
-    window-specific gap.
+    still sparser than the fetch cap can still under-fetch; that now lands in
+    ``gaps`` like every other bounded fetch here rather than passing as a
+    complete answer.
     """
 
     result: dict[str, dict[str, tuple[JSONDocument, ...]]] = {}
+    gaps: list[str] = []
     if not session_ids or not units:
-        return result
+        return AttachedUnitRows(result)
     predicate = _session_scope_predicate(session_ids)
     if predicate is None:
-        return result
+        return AttachedUnitRows(result)
     fetch_limit = min(len(session_ids) * _MAX_ROWS_PER_SESSION, _MAX_ROWS_PER_PAGE)
     selected = set(session_ids)
     for unit in units:
@@ -247,11 +282,20 @@ def fetch_attached_units(
         window = None if unit_windows is None else unit_windows.get(descriptor.unit)
         wants_tail = window is not None and window.window is not None and window.window[0] == "last"
         fetch_direction: Literal["asc", "desc"] = "desc" if wants_tail else "asc"
+        # One row beyond the ceiling makes "the ceiling bound this fetch"
+        # observable. Without the probe row a fetch returning exactly
+        # ``fetch_limit`` rows is indistinguishable from a population that
+        # happens to hold exactly that many.
+        probe_limit = fetch_limit + 1
         rows = _fetch_session_unit_rows(
-            archive, descriptor, session_ids, limit=fetch_limit, sort_direction=fetch_direction
+            archive, descriptor, session_ids, limit=probe_limit, sort_direction=fetch_direction
         )
         if rows is None:
-            rows = _fetch_unit_rows(archive, descriptor, predicate, limit=fetch_limit, sort_direction=fetch_direction)
+            rows = _fetch_unit_rows(archive, descriptor, predicate, limit=probe_limit, sort_direction=fetch_direction)
+        ceiling_reached = len(rows) > fetch_limit
+        # Trim in fetch order, then restore ascending order: the probe row is
+        # the last row the fetch produced in whichever direction it ran.
+        rows = list(rows[:fetch_limit])
         if fetch_direction == "desc":
             rows = list(reversed(rows))
         buckets: dict[str, list[JSONDocument]] = {}
@@ -276,7 +320,15 @@ def fetch_attached_units(
         result[descriptor.unit] = {
             session_id: tuple(_apply_window_trim(rows, window)) for session_id, rows in buckets.items()
         }
-    return result
+        if ceiling_reached:
+            window_count = window.window[1] if window is not None and window.window is not None else None
+            provably_complete = window_count is not None and all(
+                len(buckets.get(session_id, ())) >= window_count for session_id in selected
+            )
+            gap = f"{ATTACHED_UNIT_TRUNCATED_GAP}:{descriptor.unit}:{fetch_limit}"
+            if not provably_complete and gap not in gaps:
+                gaps.append(gap)
+    return AttachedUnitRows(result, tuple(gaps))
 
 
-__all__ = ["fetch_attached_units"]
+__all__ = ["ATTACHED_UNIT_TRUNCATED_GAP", "AttachedUnitRows", "fetch_attached_units"]

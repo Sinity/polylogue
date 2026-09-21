@@ -319,3 +319,91 @@ def test_a_grammar_completion_still_needs_no_archive() -> None:
     )
     assert "value_completions" not in result
     assert cast("dict[str, Any]", result["query_completions"])["kind"] == "field"
+
+
+class TestBoundedReadsDegradeByName:
+    """A declared bound that shapes a read must reach the envelope as a gap.
+
+    Both cases below produced a complete-looking ``ok`` envelope over a
+    truncated population, which the terminal-outcome contract exists to make
+    impossible: ``degraded`` means named gaps shaped the answer.
+    """
+
+    @staticmethod
+    def _seed_sessions(root: Path, count: int, messages: int = 1) -> list[str]:
+        from tests.infra.storage_records import SessionBuilder
+
+        session_ids: list[str] = []
+        for index in range(count):
+            name = f"bounded-{index:03d}"
+            builder = SessionBuilder(root / "index.db", name).provider("claude-code").title(name)
+            for message in range(messages):
+                builder = builder.add_message(
+                    f"m-{message:04d}",
+                    role="user" if message % 2 == 0 else "assistant",
+                    text=f"body {message}",
+                )
+            builder.save()
+            session_ids.append(f"claude-code-session:ext-{name}")
+        return session_ids
+
+    def test_facets_route_reports_a_capped_scope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The daemon facets route names ``facet_scope_truncated`` like the API route.
+
+        The cap is read through ``polylogue.api.archive``; both routes call the
+        same ``_archive_facet_buckets``, but this one dropped the ``scope_gaps``
+        collector, so only the API route reported it. The daemon route is the
+        one the CLI reads through, so the unreported answer was the one
+        operators saw.
+
+        Anti-vacuity: stop passing ``scope_gaps`` to either
+        ``_archive_facet_buckets`` call or to ``build_facets_response`` and the
+        capped read returns ``outcome.state == "ok"`` with every family still
+        in ``complete_families`` -- a one-session denominator for a two-session
+        archive, rendered as measured and complete.
+        """
+        self._seed_sessions(tmp_path, 2)
+        params = {"query": "origin:claude-code-session"}
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            uncapped = execute_read_operation("facets", {"params": params}, archive=archive, serving_identity="test")
+            assert cast(dict[str, Any], uncapped["outcome"])["state"] == "ok"
+            assert uncapped["total_sessions"] == 2
+
+            monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
+            capped = execute_read_operation(
+                "facets", {"params": {**params, "no_idf": True}}, archive=archive, serving_identity="test"
+            )
+
+        outcome = cast(dict[str, Any], capped["outcome"])
+        family_errors = cast(dict[str, str], capped["family_errors"])
+        assert outcome["state"] == "degraded"
+        assert outcome["reason"] == "facet_scope_truncated:1"
+        assert capped["complete_families"] == []
+        assert family_errors
+        assert all(reason == "facet_scope_truncated:1" for reason in family_errors.values())
+
+    def test_query_envelope_degrades_when_the_attached_projection_is_cut(self, tmp_path: Path) -> None:
+        """``with messages`` over a 250-message session degrades, it does not lie.
+
+        250 is strictly more than the 200-row per-session ceiling, so the
+        projection genuinely cannot carry the session's whole row set.
+
+        Anti-vacuity: decide the outcome before the projection runs again
+        (``outcome = decide_outcome(matched=total)`` above the
+        ``_attached_units_payload`` call) and this envelope is ``ok`` while
+        carrying 200 of 250 rows.
+        """
+        session_id = self._seed_sessions(tmp_path, 1, messages=250)[0]
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            result = execute_read_operation(
+                "cli.query",
+                {"params": {"query": f"id:{session_id}", "with_units": ["message"]}},
+                archive=archive,
+                serving_identity="test",
+            )
+
+        attached = cast(dict[str, Any], result["attached_units"])["message"][session_id]
+        outcome = cast(dict[str, Any], result["outcome"])
+        assert len(attached) == 200
+        assert outcome["state"] == "degraded"
+        assert outcome["reason"] == "attached_unit_truncated:message:200"

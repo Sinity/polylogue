@@ -495,12 +495,19 @@ def _raw_materialization_readiness_from_pinned_index(
         FROM materialization LEFT JOIN gaps ON 1 = 1
         """
     ).fetchone()
+    # ``source_family_counts`` is a per-origin breakdown of the same gap
+    # population ``total`` counts exactly, so it is exhaustive by construction:
+    # the group key is ``raw_sessions.origin``, whose vocabulary is validated
+    # at the write boundary, and the aggregate is one row per distinct origin.
+    # A ``LIMIT`` here would silently drop whole origins out of a census whose
+    # total kept counting them -- the two numbers would stop adding up with no
+    # gap named anywhere.
     family_rows = conn.execute(
         f"""
         SELECT r.origin, COUNT(*) FROM {source_schema}.raw_sessions r
         LEFT JOIN main.sessions s ON s.raw_id = r.raw_id
         WHERE s.raw_id IS NULL AND COALESCE(r.validation_status, '') != 'skipped'
-        GROUP BY r.origin ORDER BY COUNT(*) DESC, r.origin LIMIT 16
+        GROUP BY r.origin ORDER BY COUNT(*) DESC, r.origin
         """
     ).fetchall()
     skipped = int(

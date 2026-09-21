@@ -317,9 +317,12 @@ def _query_payload(
         archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT, limit=limit, offset=offset
     )
     total = _archive_count_sessions_for_spec(archive, spec)
-    outcome = decide_outcome(matched=total)
     session_ids = [summary.session_id for summary in summaries]
-    attached = _attached_units_payload(session_ids, spec=spec, params=params, archive=archive)
+    attached, attached_gaps = _attached_units_payload(session_ids, spec=spec, params=params, archive=archive)
+    # Decided after the projection runs: the attached-unit row ceiling is one
+    # of this operation's own facts, and an envelope carrying a cut projection
+    # is not an ``ok`` answer about those sessions.
+    outcome = decide_outcome(matched=total, degraded=attached_gaps)
     lineage_edges = _lineage_edges_payload(session_ids, spec=spec, archive=archive)
     return {
         "outcome": outcome.to_dict(),
@@ -728,6 +731,14 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     handling, so a too-large scope raised instead of degrading. Building the
     shared model and dumping it keeps the two surfaces equal by construction
     rather than by matching key lists.
+
+    ``scope_gaps`` is the one input that still had to be threaded by hand, and
+    it was not: this route dropped the collector, so a scope that hit
+    ``FACET_SCOPE_SESSION_CAP`` reported buckets rolled from a truncated
+    denominator as ``outcome: ok`` with every family in ``complete_families``,
+    while the API route on the identical cap reported ``degraded`` and named
+    the gap. This is the production route the CLI reads through, so the
+    truncated answer was the one operators actually saw.
     """
 
     import time
@@ -749,11 +760,14 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     scoped_to_query = spec.has_filters()
 
     started_at = time.perf_counter()
-    global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred)
+    scope_gaps: list[str] = []
+    global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred, scope_gaps=scope_gaps)
     post_filter_gap: str | None = None
     if scoped_to_query:
         try:
-            scoped_buckets = _archive_facet_buckets(archive, spec, include_deferred=include_deferred)
+            scoped_buckets = _archive_facet_buckets(
+                archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps
+            )
         except PostFilterScopeTooLargeError as exc:
             from polylogue.archive.query.facets import FacetBuckets
 
@@ -769,6 +783,7 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
         elapsed_s=time.perf_counter() - started_at,
         include_idf=not _truthy(params.get("no_idf")),
         post_filter_gap=post_filter_gap,
+        scope_gaps=scope_gaps,
     )
     return cast(dict[str, object], response.model_dump(by_alias=True, mode="json"))
 
@@ -839,21 +854,26 @@ def _attached_units_payload(
     spec: SessionQuerySpec,
     params: Mapping[str, object],
     archive: ArchiveStore,
-) -> dict[str, object] | None:
+) -> tuple[dict[str, object] | None, tuple[str, ...]]:
     """Project ``with <unit>`` rows for the sessions on this page.
 
     The rows come from the shared attached-unit executor; this seam only
     decodes the wire form of the projection and densifies the sparse result so
     every requested unit names every session on the page.
+
+    Returns the projection and the executor's named gaps, which the operation
+    boundary folds into its terminal outcome: a projection cut by the
+    attached-unit row ceiling must reach the caller as ``degraded``, not as a
+    short row list inside an ``ok`` envelope.
     """
 
     units = _string_tuple(params.get("with_units")) or spec.with_units
     if not units:
-        return None
+        return None, ()
     fields = _unit_fields(params.get("with_unit_fields")) or spec.with_unit_fields
     windows = _unit_windows(params.get("with_unit_windows")) or spec.with_unit_windows
     if not session_ids:
-        return {unit: {} for unit in units}
+        return {unit: {} for unit in units}, ()
 
     from polylogue.archive.query.attached_units import fetch_attached_units
 
@@ -865,9 +885,9 @@ def _attached_units_payload(
         unit_windows=dict(windows) or None,
     )
     return {
-        unit: {session_id: list(attached.get(unit, {}).get(session_id, ())) for session_id in session_ids}
+        unit: {session_id: list(attached.rows.get(unit, {}).get(session_id, ())) for session_id in session_ids}
         for unit in units
-    }
+    }, attached.gaps
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:

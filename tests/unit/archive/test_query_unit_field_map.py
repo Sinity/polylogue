@@ -76,8 +76,8 @@ def test_bracket_predicate_reads_the_descriptor_row_field_map(workspace_env: dic
             unit_windows={"message": WithUnitWindow(predicates=(("type", "summary"),))},
         )
 
-    assert [row["role"] for row in attached["message"][_SESSION_ID]] == ["user", "assistant"]
-    assert empty["message"] == {}
+    assert [row["role"] for row in attached.rows["message"][_SESSION_ID]] == ["user", "assistant"]
+    assert empty.rows["message"] == {}
 
     # The bracket grammar's accepted vocabulary is the same map's key set.
     from polylogue.archive.query.expression import compile_expression

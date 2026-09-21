@@ -612,6 +612,79 @@ class TestFieldStatsCollection:
         assert "unix-epoch" in ts_stats.detected_formats
 
 
+class TestObservedValueAnnotationIsExhaustive:
+    """A published vocabulary lists every observed value, not the first 20.
+
+    ``annotate_schema`` publishes ``x-polylogue-values`` only from a slot in
+    ``PUBLISHABLE_VOCABULARY_ROLES`` and only when the leaf is enum-like
+    (``len(observed_values) <= ENUM_MAX_CARDINALITY``). That slot is a
+    *declared protocol vocabulary*, so its member list is the answer. A third,
+    flat ceiling of 20 output entries cut that answer with no entry in
+    ``loss_inventory``, and
+    ``polylogue.sources.origin_specs.schema_observed_leaf_values`` reads the
+    annotation as every value the committed schema recorded.
+    """
+
+    @staticmethod
+    def _uniform_role_samples(distinct: int, repeat: int) -> tuple[list[JSONDocument], list[str]]:
+        """Build a role leaf with ``distinct`` values, each seen ``repeat`` times.
+
+        ``repeat`` clears ``_ENUM_MIN_COUNT``; ``repeat / (distinct * repeat)``
+        must clear ``_ENUM_MIN_FREQ`` (0.03) so the frequency filter is not what
+        decides the outcome. Both filters stay in place: this pins the removed
+        ceiling, not the selection criteria.
+        """
+        samples: list[JSONDocument] = []
+        session_ids: list[str] = []
+        for index in range(distinct):
+            for occurrence in range(repeat):
+                samples.append({"role": f"role_{index:02d}"})
+                session_ids.append(f"s{index}-{occurrence}")
+        return samples, session_ids
+
+    @staticmethod
+    def _role_schema() -> JSONDocument:
+        return {
+            "type": "object",
+            "properties": {"role": {"type": "string", "x-polylogue-semantic-role": "message_role"}},
+        }
+
+    def test_every_observed_value_survives_past_the_removed_output_ceiling(self) -> None:
+        """25 distinct role tokens, each above both filters, all reach the annotation.
+
+        Anti-vacuity: 25 is strictly larger than the removed ceiling of 20, and
+        every value clears ``_ENUM_MIN_COUNT``/``_ENUM_MIN_FREQ``. Reinstating
+        ``if len(values) >= 20: break`` in ``_enum_values`` makes this publish
+        20 values and lose ``role_20``..``role_24``.
+        """
+        distinct, repeat = 25, 20
+        samples, session_ids = self._uniform_role_samples(distinct, repeat)
+        stats = _collect_field_stats(samples, session_ids=session_ids)
+        role_stats = stats["$.role"]
+        assert role_stats.is_enum_like, (
+            "the leaf must stay inside ENUM_MAX_CARDINALITY for the output ceiling to be the bound under test"
+        )
+        assert len(role_stats.observed_values) == distinct
+
+        annotated = annotate_schema(self._role_schema(), stats)
+        values = schema_values(schema_property(annotated, "role"))
+        assert values == [f"role_{index:02d}" for index in range(distinct)]
+
+    def test_frequency_filter_still_selects(self) -> None:
+        """Removing the ceiling did not remove the declared selection filters.
+
+        40 distinct values at 10 occurrences each is 0.025, under the 0.03
+        frequency floor, so the filter -- not a ceiling -- excludes them.
+
+        Anti-vacuity: drop the ``min_freq`` test in ``_enum_values`` and all 40
+        rare values are published, so this fails.
+        """
+        samples, session_ids = self._uniform_role_samples(40, 10)
+        stats = _collect_field_stats(samples, session_ids=session_ids)
+        annotated = annotate_schema(self._role_schema(), stats)
+        assert "x-polylogue-values" not in schema_property(annotated, "role")
+
+
 class TestFieldFirstLastSeenAnnotation:
     """polylogue-2qx.3: per-field first/last-seen, from field_annotations.py.
 

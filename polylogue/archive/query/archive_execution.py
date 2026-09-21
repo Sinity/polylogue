@@ -267,19 +267,35 @@ def _attach_units_to_domain(
 
     Returns updated copies carrying ``attached_units`` (pydantic models are
     treated as immutable for safety). A no-op when no units are requested.
+
+    ``SessionSummary``/``Session`` carry rows, not an outcome envelope, so a
+    bounded projection cannot degrade a terminal outcome on this route the way
+    it can on the daemon operation. It is emitted as a named degraded event
+    instead -- the same disposition ``archive.postmortem_bundle.truncated``
+    uses -- rather than dropped, which is what made the cut invisible.
     """
 
     if not with_units or not items:
         return items
     from polylogue.archive.query.attached_units import fetch_attached_units
+    from polylogue.logging import WARNING, emit
 
     session_ids = [item.id for item in items]
     attached = fetch_attached_units(
         archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
     )
+    for gap in attached.gaps:
+        emit(
+            "archive.attached_units.truncated",
+            level=WARNING,
+            outcome="degraded",
+            reason=gap,
+            sessions=len(session_ids),
+            units=list(with_units),
+        )
     updated: builtins.list[_AttachableT] = []
     for item in items:
-        per_session = {unit: tuple(by_session.get(item.id, ())) for unit, by_session in attached.items()}
+        per_session = {unit: tuple(by_session.get(item.id, ())) for unit, by_session in attached.rows.items()}
         updated.append(item.model_copy(update={"attached_units": per_session}))
     return updated
 
