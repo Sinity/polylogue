@@ -2856,8 +2856,15 @@ async def _run_daemon_services_under_active_writer_lease(
         # (the ``if not watcher_blocked:`` block above was skipped), so the
         # watcher runs acquire-only: raw acquisition proceeds, no
         # convergence coupling (polylogue-gbs02).
+        # Ask the supervisor what it will actually run rather than building
+        # the intake stack and discarding it. A profile that declares no
+        # intake service -- or one whose intake is durably halted -- must not
+        # open an archive generation, register adapters or begin a cold build
+        # on their behalf: constructing work nothing will schedule is how a
+        # focused daemon test ends up doing real materialization.
+        intake_scheduled = supervisor.is_schedulable("fair_intake") or supervisor.is_schedulable("watcher")
         try:
-            if not watcher_creation_blocked:
+            if not watcher_creation_blocked and intake_scheduled:
                 async with Polylogue() as polylogue:
                     from polylogue.daemon.intake_adapters import (
                         ColdBuildGeneration,
@@ -3095,16 +3102,18 @@ async def _run_daemon_services_under_active_writer_lease(
                         )
                     await supervisor.wait()
             else:
-                # Watcher disabled or preflight-blocked: keep HTTP/health and
-                # other components serving so operators see the degraded state.
+                # Preflight-blocked, or no intake service is schedulable under
+                # this profile: keep HTTP/health and other components serving
+                # so operators see the degraded state.
                 if lifecycle_events_enabled:
                     await _emit_daemon_lifecycle_event(
                         "component_skipped",
                         archive_root_path=archive_root_path,
                         component="watcher",
                         payload={
-                            "reason": "schema_blocked",
+                            "reason": "schema_blocked" if watcher_creation_blocked else "not_scheduled_by_profile",
                             "watch_enabled": enable_watch,
+                            "profile": service_profile.value,
                         },
                     )
                 await supervisor.wait()

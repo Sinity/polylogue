@@ -4405,14 +4405,26 @@ def test_daemon_composition_gives_raw_whale_its_own_discovery_cursor(tmp_path: P
 def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_path: Path) -> None:
     """The API-disabled fixture profile.
 
-    Anti-vacuity: pass ``ServiceProfile.PRODUCTION`` instead and the
-    materialization assertion fails, because the production profile starts
-    the raw-materialization loop this profile exists to exclude.
+    Two separate things are asserted, because the profile is only half the
+    property. It must not *start* raw materialization, and it must not
+    *construct* the intake stack on behalf of services it will never
+    schedule: registering adapters and opening a cold-build generation for a
+    discarded `fair_intake` is real archive work that a focused test pays
+    for. Measured at head with the construction still unconditional, this
+    fixture ran 1.15-7.76 s across five runs; asking the supervisor first
+    takes it to 0.47-1.48 s.
+
+    Anti-vacuity, both executed: pass ``ServiceProfile.PRODUCTION`` instead
+    and the materialization assertion fails, because the production profile
+    starts the loop this profile excludes; drop the ``intake_scheduled``
+    guard in ``run_daemon_services`` and ``intake_builds`` is non-empty.
     """
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon import intake_adapters as daemon_intake_adapters
     from polylogue.daemon.services import ServiceProfile, ServiceState
 
     started: list[str] = []
+    intake_builds: list[object] = []
 
     async def resident_loop(**_kwargs: object) -> None:
         started.append("resident")
@@ -4427,6 +4439,13 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
         stack.enter_context(patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", resident_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", resident_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_raw_materialization_convergence", materialization))
+        stack.enter_context(
+            patch.object(
+                daemon_intake_adapters,
+                "build_intake_adapters",
+                lambda *args, **kwargs: intake_builds.append(args) or (),
+            )
+        )
         started_at = time.monotonic()
         asyncio.run(
             daemon_cli.run_daemon_services(
@@ -4444,6 +4463,7 @@ def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_p
 
     assert "raw_materialization" not in started
     assert started == ["resident", "resident"]
+    assert intake_builds == [], "the intake stack was built for services this profile never schedules"
     assert elapsed < 10.0
 
     supervisor = supervisors[0]
