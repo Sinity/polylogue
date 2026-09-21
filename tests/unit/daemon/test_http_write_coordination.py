@@ -178,7 +178,7 @@ def _delete_operation(client: _DeleteDaemonClient, step: str, body: dict[str, ob
     or ``execute``. A typed envelope error is re-raised in the shape the
     surrounding assertions read.
     """
-    from polylogue.daemon_client import DaemonResponseError
+    from polylogue.operations.daemon_errors import DaemonResponseError
 
     operation = f"mutation.session.delete.{step}"
     envelope = client.operation_to_completion(
@@ -221,7 +221,7 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
 ) -> None:
     """Real daemon HTTP/client/API proof of prepared, single-use delete authority."""
 
-    from polylogue.daemon_client import DaemonResponseError
+    from polylogue.operations.daemon_errors import DaemonResponseError
     from polylogue.operations.delete_authorization import DeleteAuthorizationError, consume_cli_delete
     from polylogue.operations.mutation_transaction import MutationPrincipal
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -386,7 +386,7 @@ def test_cli_delete_real_daemon_route_cancels_an_unconfirmed_preview(
 ) -> None:
     """A declined CLI confirmation has the daemon retire its durable preview."""
 
-    from polylogue.daemon_client import DaemonResponseError
+    from polylogue.operations.daemon_errors import DaemonResponseError
 
     archive_root = tmp_path / "archive"
     archive_root.mkdir()

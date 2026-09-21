@@ -11,7 +11,10 @@ entry belongs to exactly one of three tables:
     The CLI can lower a request for it and render its result today.
 ``CLI_PENDING_ADOPTION``
     Declared and directly executable, with the CLI route that will call it
-    named.  Each entry states which migration step adopts it.
+    named.  Each entry states which migration step adopts it.  The table is
+    empty: every declared operation the CLI serves now has a lowering and a
+    renderer, and the mechanism is retained so that a *new* declaration must
+    be classified by an explicit decision rather than by silence.
 ``CLI_EXTERNAL_OPERATIONS``
     Deliberately not a CLI concern (transport-owned control verbs, or
     operations whose only consumers are other surfaces).
@@ -164,11 +167,18 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.commands.maintenance._raw_identity:_submit",
         renderers=("polylogue.cli.commands.maintenance._raw_identity:raw_authority_blocker_resolve_command",),
     ),
+    # Archive-backed shell completion lowers through Seam A and renders the
+    # typed result; ``daemon_only`` dispatch is what keeps a TAB press from
+    # opening the archive at all, which
+    # ``tests/unit/cli/test_completion_daemon_boundary.py`` proves under a
+    # ``sqlite3.connect`` audit hook.
+    "completion": CliOperationBinding(
+        lowering=f"{_LOWERING}:lower_completion",
+        renderers=("polylogue.cli.shell_completion_values:render_completion_values",),
+    ),
 }
 
-CLI_PENDING_ADOPTION: Mapping[str, str] = {
-    "completion": "archive-backed shell completion still opens a store in-process; S7 routes it here",
-}
+CLI_PENDING_ADOPTION: Mapping[str, str] = {}
 
 CLI_EXTERNAL_OPERATIONS: Mapping[str, str] = {
     "operation.await": "transport-owned: DaemonClient.operation_to_completion drives it, not a CLI route",

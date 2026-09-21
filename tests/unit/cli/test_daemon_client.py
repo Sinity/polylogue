@@ -9,12 +9,32 @@ import sys
 import tempfile
 import threading
 from collections.abc import Iterator
-from os import getpid
 from pathlib import Path
 
 import pytest
 
 from tests.infra.daemon_operations import running_daemon_operations
+
+
+def _recorded_exchanges(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Record every socket exchange the client performs, delegating to the real one.
+
+    The transport itself is untouched, so this observes the production route
+    rather than replacing it: any extra request -- a liveness preflight, a
+    compatibility status read, a retry -- appears as an extra entry.
+    """
+
+    from polylogue.daemon_client import DaemonClient
+
+    seen: list[tuple[str, str]] = []
+    original = DaemonClient._request_json_response
+
+    def record(self: DaemonClient, method: str, path: str, body: object = None, **kwargs: object) -> object:
+        seen.append((method, path))
+        return original(self, method, path, body, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(DaemonClient, "_request_json_response", record)
+    return seen
 
 
 @pytest.fixture
@@ -68,6 +88,22 @@ def test_client_exposes_no_generic_offline_operation_fallback() -> None:
 
     assert not hasattr(DaemonClient, "operation_with_direct_fallback")
     assert hasattr(DaemonClient, "operation_with_read_fallback")
+
+
+def test_client_exposes_no_arbitrary_daemon_http_route() -> None:
+    """The transport speaks the operation protocol, not the daemon's web routes.
+
+    Anti-vacuity: restore a public ``request_json(method, path, ...)`` -- the
+    generic route caller this client used to carry -- and this is red.  While
+    it existed, "the CLI never calls a browser HTTP endpoint" was a claim about
+    who happened to call what, and the two tests that guarded it patched a
+    method the operation path never reached.
+    """
+
+    from polylogue.daemon_client import DaemonClient
+
+    assert not hasattr(DaemonClient, "request_json")
+    assert not hasattr(DaemonClient, "_raise_response_error")
 
 
 @pytest.mark.parametrize(
@@ -126,22 +162,22 @@ def test_operation_rejects_a_socket_serving_a_different_archive(
 def test_operation_reaches_the_production_uds_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """The stdlib client reaches the maintained production operation stack.
 
-    Anti-vacuity: the client fails the test if it issues a health probe before
-    its canonical status operation.
+    Anti-vacuity: add any preflight -- a health GET, a status probe, a second
+    exchange of any kind -- to :meth:`DaemonClient.operation` and ``exchanges``
+    grows past the single declared POST, which is red.  The predecessor of this
+    assertion patched ``DaemonClient.request_json`` instead, and a health
+    preflight issued through the real transport left it green.
     """
 
-    from polylogue.daemon_client import DaemonClient
     from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
 
-    def refuse_health(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("the CLI path must not issue a health probe")
-
-    monkeypatch.setattr(DaemonClient, "request_json", refuse_health)
+    exchanges = _recorded_exchanges(monkeypatch)
     with running_daemon_operations(tmp_path / "archive") as stack:
         envelope = stack.client.operation("status", {}, archive_root=str(stack.archive_root))
     assert envelope is not None
     assert envelope["protocol"] == DAEMON_OPERATION_PROTOCOL
     assert envelope["result"]["total_sessions"] == 0
+    assert exchanges == [("POST", "/api/operation")], exchanges
 
 
 @contextlib.contextmanager
@@ -208,31 +244,6 @@ def test_operation_transport_refuses_invalid_response_framing(
         if mutation:
             assert isinstance(raised.value, DaemonMutationIndeterminateError)
             assert raised.value.request_id == "framing-request"
-
-
-def test_transport_preserves_typed_non_operation_error_payload(
-    _short_uds_runtime_dir: Path,
-) -> None:
-    """Arbitrary HTTP response transport preserves the peer's typed refusal."""
-    from http import HTTPStatus
-
-    from polylogue.daemon_client import DaemonClient, DaemonResponseError
-
-    socket_path = _short_uds_runtime_dir / f"canary-4xx-{getpid()}.sock"
-    with _raw_unix_http_responder(
-        socket_path,
-        status=404,
-        payload={"error": "canary_report_invalid", "detail": "receipt is missing the canonical acceptance profile"},
-    ):
-        client = DaemonClient(socket_path, auth_token="uds-test-token")
-        with pytest.raises(DaemonResponseError, match="receipt is missing") as raised:
-            client.request_json(
-                "POST",
-                "/api/maintenance/rebuild-index",
-                {"promote": False},
-                raise_for_status=True,
-            )
-        assert raised.value.status == HTTPStatus.NOT_FOUND
 
 
 def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

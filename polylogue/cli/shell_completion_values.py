@@ -116,7 +116,8 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
     """
 
     try:
-        from polylogue.cli.operation_kernel import OperationRequest, OperationUnavailableError, dispatch
+        from polylogue.cli.lowering import lower_completion
+        from polylogue.cli.operation_kernel import OperationUnavailableError, dispatch
         from polylogue.config import get_config
     except Exception:
         return []
@@ -124,7 +125,7 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
     try:
         result = dispatch(
             get_config(),
-            OperationRequest("completion", {"source": source, "incomplete": incomplete, "limit": limit}),
+            lower_completion(source, incomplete, limit=limit),
             deadline_ms=_COMPLETION_DEADLINE_MS,
             daemon_only=True,
         )
@@ -135,8 +136,22 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
         # transport failure is rendered as no completion rather than a
         # traceback in the prompt.
         return []
-    value = result.value if isinstance(result.value, dict) else {}
-    completions = value.get("value_completions")
+    return render_completion_values(result.value)
+
+
+def render_completion_values(value: object) -> list[CompletionItem]:
+    """Render a typed ``completion`` result as shell candidates.
+
+    The renderer half of the ``completion`` binding: it consumes the declared
+    operation result and never queries the archive, so a daemon-served and a
+    directly-executed result render identically.  A result that carries the
+    grammar vocabulary rather than a value vocabulary produces nothing here —
+    it is a different question, and guessing which was asked is exactly what
+    the two-field result contract exists to prevent.
+    """
+
+    body = value if isinstance(value, Mapping) else {}
+    completions = body.get("value_completions")
     if not isinstance(completions, Mapping):
         return []
     rows = completions.get("values")
@@ -625,5 +640,6 @@ __all__ = [
     "query_structural_unit_candidates",
     "query_terminal_field_candidates",
     "query_terminal_source_candidates",
+    "render_completion_values",
     "QueryCompletionCandidate",
 ]

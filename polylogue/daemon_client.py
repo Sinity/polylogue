@@ -1,4 +1,14 @@
-"""Minimal stdlib UDS client for daemon-owned maintenance and read routes."""
+"""Transport-only stdlib UDS client for the declared daemon operation protocol.
+
+The public surface is deliberately the operation vocabulary and nothing else:
+:meth:`DaemonClient.operation`, the control verbs built on it, and the one
+named read fallback.  There is no way to ask this client for an arbitrary
+daemon HTTP path, because the CLI rewrite's contract is that the warm path
+speaks the archive-scoped operation protocol and never a browser route or a
+separate liveness probe.  A generic ``request_json(method, path, ...)`` used
+to sit here with no production caller, which made "the CLI issues no health
+preflight" a claim about discipline rather than about the code.
+"""
 
 from __future__ import annotations
 
@@ -23,7 +33,6 @@ from polylogue.operations.daemon_errors import (
     DaemonOperationProtocolError,
     DaemonOperationRejected,
     DaemonOperationRejectedError,
-    DaemonResponseError,
     DaemonSocketOwnershipError,
 )
 from polylogue.operations.daemon_protocol import (
@@ -125,37 +134,6 @@ class DaemonClient:
     def auth_token(self, value: str | None | Callable[[], str | None]) -> None:
         """Allow callers to override the credential, thunk or resolved alike."""
         self._auth_token = value
-
-    def request_json(
-        self,
-        method: str,
-        path: str,
-        body: dict[str, object] | None = None,
-        *,
-        raise_for_status: bool = False,
-        accepted_statuses: frozenset[int] = frozenset({200}),
-    ) -> dict[str, Any] | None:
-        response = self._request_json_response(method, path, body, mutation=False)
-        if response is None:
-            return None
-        status, payload = response
-        if status not in accepted_statuses:
-            if raise_for_status:
-                self._raise_response_error(status, payload)
-            return None
-        return payload
-
-    @staticmethod
-    def _raise_response_error(status: int, payload: dict[str, Any] | None) -> None:
-        envelope = payload if isinstance(payload, dict) else {}
-        code = envelope.get("error")
-        detail = envelope.get("detail")
-        raise DaemonResponseError(
-            status=status,
-            code=code if isinstance(code, str) else None,
-            detail=detail if isinstance(detail, str) else None,
-            payload=envelope,
-        )
 
     def _request_json_response(
         self,
@@ -570,6 +548,5 @@ __all__ = [
     "DaemonOperationProtocolError",
     "DaemonOperationRejected",
     "DaemonOperationRejectedError",
-    "DaemonResponseError",
     "DaemonSocketOwnershipError",
 ]

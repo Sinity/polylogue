@@ -45,7 +45,13 @@ def _seed_sessions(root: Path, *, count: int, title: str = "Operation route sess
 def test_one_uds_operation_request_returns_canonical_read_without_health_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mutation: add a health preflight and the patched client entrypoint fails."""
+    """Mutation: add a health preflight to the real transport and ``exchanges``
+    holds two entries instead of the one declared POST, which is red.
+
+    The predecessor of this assertion patched ``DaemonClient.request_json``,
+    which ``operation()`` never called, so a preflight issued through the
+    transport the client actually uses left it green.
+    """
 
     session_ids: tuple[str, ...] = ()
 
@@ -53,10 +59,14 @@ def test_one_uds_operation_request_returns_canonical_read_without_health_probe(
         nonlocal session_ids
         session_ids = _seed_sessions(root, count=2)
 
-    def unexpected_health_probe(*args: object, **kwargs: object) -> object:
-        raise AssertionError("operation client must not issue a health probe")
+    exchanges: list[tuple[str, str]] = []
+    original = DaemonClient._request_json_response
 
-    monkeypatch.setattr(DaemonClient, "request_json", unexpected_health_probe)
+    def record(self: DaemonClient, method: str, path: str, body: object = None, **kwargs: object) -> object:
+        exchanges.append((method, path))
+        return original(self, method, path, body, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(DaemonClient, "_request_json_response", record)
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
         envelope = stack.client.operation(
             "cli.query",
@@ -70,6 +80,7 @@ def test_one_uds_operation_request_returns_canonical_read_without_health_probe(
     assert envelope["authority"]["writes"] == "daemon-owned"
     assert envelope["result"]["total"] == len(session_ids)
     assert {item["id"] for item in envelope["result"]["items"]} == set(session_ids)
+    assert exchanges == [("POST", "/api/operation")], exchanges
 
 
 def test_repeated_daemon_query_uses_revision_scoped_result_cache(
@@ -488,7 +499,7 @@ def test_uds_refuses_when_kernel_peer_credentials_cannot_be_read(
 
     with running_daemon_operations(tmp_path / "archive") as stack:
         monkeypatch.setattr(socket.socket, "getsockopt", unavailable)
-        refused = stack.client.request_json(
+        exchange = stack.client._request_json_response(
             "POST",
             "/api/operation",
             {
@@ -497,8 +508,10 @@ def test_uds_refuses_when_kernel_peer_credentials_cannot_be_read(
                 "operation": "completion",
                 "payload": {"kind": "field"},
             },
-            accepted_statuses=frozenset({401}),
         )
+    assert exchange is not None
+    status, refused = exchange
+    assert status == 401
     assert refused is not None
     assert refused["outcome"] == "rejected"
     assert refused["error"]["code"] == "peer_authentication_unavailable"
