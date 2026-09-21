@@ -243,134 +243,210 @@ def _request(tmp_path: Path) -> RootModeRequest:
     )
 
 
-def test_run_messages_emits_json_and_passes_pagination(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    env = _env()
-    api = _FakeApi(
-        messages_result=(
-            [
-                {
-                    "id": "msg-1",
-                    "role": "user",
-                    "message_type": "message",
-                    "text": "hello",
-                }
-            ],
-            1,
+def _seed_dangling_fork(tmp_path: Path) -> str:
+    """Seed a prefix-sharing fork whose parent branch point was hard-deleted.
+
+    ``session_links.branch_point_message_id`` is deliberately not a foreign
+    key, so deleting the parent's messages leaves the edge in place and the
+    composed read falls back to the child's own divergent tail -- the exact
+    shape polylogue-ppkj reports as ``dangling_branch_point``.
+    """
+
+    import sqlite3
+
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    SessionBuilder(db_path, "parent").provider("codex").title("parent").add_message(
+        "p0", role="user", text="hello"
+    ).add_message("p1", role="assistant", text="hi there").save()
+    child = SessionBuilder(db_path, "child")
+    child.provider("codex").title("child").parent_session("ext-parent").branch_type("fork")
+    child.add_message("c0", role="user", text="hello")
+    child.add_message("c1", role="assistant", text="hi there")
+    child.add_message("cx", role="user", text="child diverges")
+    child.save()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM messages WHERE session_id = (SELECT session_id FROM sessions WHERE native_id = 'ext-parent')"
         )
+        conn.commit()
+    return child.native_session_id()
+
+
+def _seeded_request(tmp_path: Path) -> RootModeRequest:
+    """A root request pinned at ``tmp_path`` with the daemon route opted out.
+
+    ``no_daemon`` is explicit so these tests measure the declared read's own
+    in-process executor rather than whichever daemon happens to be listening
+    on the developer's machine.
+    """
+
+    return RootModeRequest.from_params(
+        {
+            "_config": Config(
+                archive_root=tmp_path,
+                render_root=tmp_path / "render",
+                sources=[],
+                db_path=tmp_path / "index.db",
+            ),
+            "no_daemon": True,
+        }
     )
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(
-            env,
-            _request(tmp_path),
-            session_id="conv-1",
-            limit=5,
-            offset=2,
-            output_format="json",
+
+def _seed_messages(tmp_path: Path, *messages: dict[str, object], title: str = "Seeded") -> str:
+    """Seed one real archive session and return its archive session id."""
+
+    from tests.infra.storage_records import SessionBuilder
+
+    builder = SessionBuilder(tmp_path / "index.db", "seeded")
+    builder.provider("codex").title(title)
+    for index, message in enumerate(messages):
+        blocks = message.get("blocks")
+        builder.add_message(
+            cast(str, message.get("id") or f"m{index + 1}"),
+            role=cast(str, message.get("role", "user")),
+            text=cast(str, message.get("text", "")),
+            blocks=blocks if blocks is not None else [],
         )
+    builder.save()
+    return builder.native_session_id()
+
+
+def test_run_messages_emits_json_and_passes_pagination(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The verb's window coordinates reach the declared read, not a local page.
+
+    Anti-vacuity: serve the window from offset 0 and the asserted row text
+    changes, because the seeded rows are distinguishable by position.
+    """
+
+    session_id = _seed_messages(
+        tmp_path,
+        {"id": "m1", "role": "user", "text": "first"},
+        {"id": "m2", "role": "assistant", "text": "second"},
+        {"id": "m3", "role": "user", "text": "third"},
+        {"id": "m4", "role": "assistant", "text": "fourth"},
+    )
+
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, limit=1, offset=2, output_format="json")
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["messages"][0]["text"] == "hello"
-    assert api.messages_kwargs["session_id"] == "conv-1"
-    assert api.messages_kwargs["limit"] == 5
-    assert api.messages_kwargs["offset"] == 2
+    assert [message["text"] for message in payload["messages"]] == ["third"]
+    assert payload["offset"] == 2
+    assert payload["limit"] == 1
+    assert payload["total"] == 4
+
+
+def test_run_messages_json_names_the_executor_that_answered(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The rendered authority names the executor the result reported.
+
+    Anti-vacuity: hard-code ``server_identity="daemon"`` in ``run_messages``
+    and this goes red, because the in-process executor answered this read.
+    """
+
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "hi"})
+
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, output_format="json")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["authority"]["server_identity"] == "direct"
+
+
+def test_run_messages_verbose_prints_the_serving_executor(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``--verbose`` names which executor served the page, on stderr.
+
+    Anti-vacuity: drop the ``verbose`` branch and no ``served-by:`` line is
+    emitted at all.
+    """
+
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "hi"})
+    request = _seeded_request(tmp_path).with_param_updates(verbose=True)
+
+    run_messages(_env(), request, session_id=session_id, output_format="json")
+
+    captured = capsys.readouterr()
+    assert captured.err.strip().startswith("served-by: direct")
+    assert "served-by:" not in captured.out
 
 
 def test_run_messages_json_surfaces_truncated_lineage(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """polylogue-ppkj: a dangling branch point must not silently render a
-    partial transcript as if it were the whole conversation -- the JSON
-    output must carry the lineage_complete/lineage_truncation_reason signal
-    `get_messages_paginated` now reports (fails against the pre-fix code,
-    which unpacked a 2-tuple and never threaded a completeness signal at
-    all)."""
-    env = _env()
-    api = _FakeApi(
-        messages_result=(
-            [{"id": "cx", "role": "user", "message_type": "message", "text": "child diverges"}],
-            1,
-        ),
-        lineage_completeness=LineageCompleteness(complete=False, truncation_reason="dangling_branch_point"),
-    )
+    partial transcript as if it were the whole conversation.
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="json")
+    Anti-vacuity: leave the parent's messages in place and the composed read
+    reports ``lineage_complete: true``, so the assertions below go red.
+    """
+
+    child_id = _seed_dangling_fork(tmp_path)
+
+    run_messages(_env(), _seeded_request(tmp_path), session_id=child_id, output_format="json")
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["lineage_complete"] is False
     assert payload["lineage_truncation_reason"] == "dangling_branch_point"
+    assert payload["outcome"]["state"] == "degraded"
 
 
 def test_run_messages_json_lineage_complete_by_default(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    env = _env()
-    api = _FakeApi(
-        messages_result=([{"id": "m1", "role": "user", "message_type": "message", "text": "hi"}], 1),
-    )
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "hi"})
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="json")
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, output_format="json")
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["lineage_complete"] is True
     assert "lineage_truncation_reason" not in payload
 
 
-def test_run_messages_full_rereads_with_total_limit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    env = _env()
-    api = _FakeApi(
-        messages_result=(
-            [
-                {"id": "msg-1", "role": "user", "message_type": "message", "text": "hello"},
-                {"id": "msg-2", "role": "assistant", "message_type": "message", "text": "world"},
-            ],
-            2,
-        ),
-        paginate_messages=True,
+def test_run_messages_full_composes_every_remaining_window(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``--full`` composes the rest of the transcript out of bounded windows.
+
+    Anti-vacuity: stop the window loop after the first window and only one of
+    the two seeded messages is rendered.
+    """
+
+    session_id = _seed_messages(
+        tmp_path,
+        {"id": "msg-1", "role": "user", "text": "hello"},
+        {"id": "msg-2", "role": "assistant", "text": "world"},
     )
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(
-            env,
-            _request(tmp_path),
-            session_id="conv-1",
-            limit=1,
-            offset=0,
-            full=True,
-            output_format="json",
-        )
+    run_messages(
+        _env(),
+        _seeded_request(tmp_path),
+        session_id=session_id,
+        limit=1,
+        offset=0,
+        full=True,
+        output_format="json",
+    )
 
     payload = json.loads(capsys.readouterr().out)
-    assert len(payload["messages"]) == 2
+    assert [message["text"] for message in payload["messages"]] == ["hello", "world"]
     assert payload["limit"] == 2
-    assert api.messages_calls == [
-        {"session_id": "conv-1", "limit": 1, "offset": 0},
-        {"session_id": "conv-1", "limit": 2, "offset": 0},
-    ]
+    assert payload["total"] == 2
+    assert "continuation" not in payload
 
 
 def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """`read --view messages --format json` emits one finite JSON value (#1818)."""
     import jsonschema
 
-    env = _env()
-    api = _FakeApi(
-        messages_result=(
-            [
-                # Rich-markup-like text must survive byte-for-byte: machine output
-                # goes through raw click.echo, not the markup-interpreting console.
-                {"id": "m1", "role": "user", "message_type": "message", "text": "[bold]first[/bold]"},
-                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
-            ],
-            2,
-        )
+    session_id = _seed_messages(
+        tmp_path,
+        # Rich-markup-like text must survive byte-for-byte: machine output
+        # goes through raw click.echo, not the markup-interpreting console.
+        {"id": "m1", "role": "user", "text": "[bold]first[/bold]"},
+        {"id": "m2", "role": "assistant", "text": "second"},
     )
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="json")
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, output_format="json")
 
     # Output is a single finite JSON value on stdout (one json.loads succeeds).
     payload = json.loads(capsys.readouterr().out)
     jsonschema.validate(instance=payload, schema=_load_schema("session-messages-response"))
-    assert payload["session_id"] == "conv-1"
+    assert payload["session_id"] == session_id
     assert [m["text"] for m in payload["messages"]] == ["[bold]first[/bold]", "second"]
     assert payload["total"] == 2
 
@@ -378,30 +454,25 @@ def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pyt
 def test_write_messages_file_streams_json_payload(tmp_path: Path) -> None:
     env = _env()
     out = tmp_path / "messages.json"
-    api = _FakeApi(
-        messages_result=(
-            [
-                {"id": "m1", "role": "user", "message_type": "message", "text": "first"},
-                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
-            ],
-            2,
-        )
+    session_id = _seed_messages(
+        tmp_path,
+        {"id": "m1", "role": "user", "text": "first"},
+        {"id": "m2", "role": "assistant", "text": "second"},
     )
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        _write_messages_file(
-            env,
-            _request(tmp_path),
-            session_id="conv-1",
-            limit=1,
-            offset=1,
-            full=False,
-            output_format="json",
-            out_path=out,
-        )
+    _write_messages_file(
+        env,
+        _seeded_request(tmp_path),
+        session_id=session_id,
+        limit=1,
+        offset=1,
+        full=False,
+        output_format="json",
+        out_path=out,
+    )
 
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["session_id"] == "conv-1"
+    assert payload["session_id"] == session_id
     assert payload["total"] == 2
     assert payload["limit"] == 1
     assert payload["offset"] == 1
@@ -414,19 +485,13 @@ def test_run_messages_ndjson_emits_one_json_document_per_line(
     """`--format ndjson` streams one parseable JSON document per message (#1818)."""
     import jsonschema
 
-    env = _env()
-    api = _FakeApi(
-        messages_result=(
-            [
-                {"id": "m1", "role": "user", "message_type": "message", "text": "[bold]first[/bold]"},
-                {"id": "m2", "role": "assistant", "message_type": "message", "text": "second"},
-            ],
-            2,
-        )
+    session_id = _seed_messages(
+        tmp_path,
+        {"id": "m1", "role": "user", "text": "[bold]first[/bold]"},
+        {"id": "m2", "role": "assistant", "text": "second"},
     )
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="ndjson")
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, output_format="ndjson")
 
     lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
     assert len(lines) == 2
@@ -436,7 +501,7 @@ def test_run_messages_ndjson_emits_one_json_document_per_line(
         jsonschema.validate(instance=doc, schema=schema)
     # Rich markup in text survives byte-for-byte (raw click.echo, no console markup).
     assert [d["text"] for d in docs] == ["[bold]first[/bold]", "second"]
-    assert all(d["session_id"] == "conv-1" for d in docs)
+    assert all(d["session_id"] == session_id for d in docs)
 
 
 def test_run_messages_markdown_and_not_found_paths(
@@ -444,10 +509,9 @@ def test_run_messages_markdown_and_not_found_paths(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     env = _env()
-    api = _FakeApi(messages_result=([{"role": "assistant", "message_type": "message", "text": "x" * 501}], 1))
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "assistant", "text": "x" * 501})
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), session_id="conv-1")
+    run_messages(env, _seeded_request(tmp_path), session_id=session_id)
 
     rendered = capsys.readouterr().out
     assert "**assistant · message**" in rendered
@@ -455,80 +519,65 @@ def test_run_messages_markdown_and_not_found_paths(
     _ui_print(env).assert_not_called()
 
     missing_env = _env()
-    with patch("polylogue.api.Polylogue.open", return_value=_FakeApi(messages_result=None)):
-        run_messages(missing_env, _request(tmp_path), session_id="missing")
+    run_messages(missing_env, _seeded_request(tmp_path), session_id="codex-session:missing")
 
-    _ui_error(missing_env).assert_called_once_with("Session not found: missing")
+    _ui_error(missing_env).assert_called_once_with("Session not found: codex-session:missing")
 
 
 def test_run_messages_text_alias_emits_human_rows(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    env = _env()
-    api = _FakeApi(
-        messages_result=(
-            [{"id": "m1", "role": "user", "message_type": "message", "text": "text alias works"}],
-            1,
-        )
+    session_id = _seed_messages(
+        tmp_path,
+        {"id": "m1", "role": "user", "text": "hello there"},
+        {"id": "m2", "role": "assistant", "text": "general kenobi"},
     )
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="text")
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, output_format="text")
 
     rendered = capsys.readouterr().out
-    assert "**user · message**" in rendered
-    assert "text alias works" in rendered
-    _ui_print(env).assert_not_called()
+    assert "hello there" in rendered
+    assert "general kenobi" in rendered
 
 
 def test_run_messages_markdown_uses_structural_shell_outcome(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    env = _env()
-    api = _FakeApi(
-        messages_result=(
-            [
+    session_id = _seed_messages(
+        tmp_path,
+        {
+            "id": "m-use",
+            "role": "assistant",
+            "text": "",
+            "blocks": [
                 {
-                    "id": "m-use",
-                    "role": "assistant",
-                    "message_type": "tool_use",
-                    "text": None,
-                    "blocks": [
-                        {
-                            "id": "b-use",
-                            "type": "tool_use",
-                            "tool_name": "exec_command",
-                            "tool_id": "call-1",
-                            "tool_input": {"command": "pytest -q"},
-                            "semantic_type": "shell",
-                        }
-                    ],
-                },
-                {
-                    "id": "m-result",
-                    "role": "tool",
-                    "message_type": "tool_result",
-                    "text": None,
-                    "blocks": [
-                        {
-                            "id": "b-result",
-                            "type": "tool_result",
-                            "tool_id": "call-1",
-                            "text": "ERROR appears in output",
-                            "tool_result_is_error": False,
-                            "tool_result_exit_code": 0,
-                        }
-                    ],
-                },
+                    "type": "tool_use",
+                    "tool_name": "exec_command",
+                    "tool_id": "call-1",
+                    "tool_input": {"command": "pytest -q"},
+                    "semantic_type": "shell",
+                }
             ],
-            2,
-        )
+        },
+        {
+            "id": "m-result",
+            "role": "tool",
+            "text": "",
+            "blocks": [
+                {
+                    "type": "tool_result",
+                    "tool_id": "call-1",
+                    "text": "ERROR appears in output",
+                    "tool_result_is_error": 0,
+                    "tool_result_exit_code": 0,
+                }
+            ],
+        },
     )
 
-    with patch("polylogue.api.Polylogue.open", return_value=api):
-        run_messages(env, _request(tmp_path), session_id="conv-1")
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id)
 
     rendered = capsys.readouterr().out
     assert "### Shell command · succeeded" in rendered

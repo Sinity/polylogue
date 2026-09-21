@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 from click.testing import CliRunner
@@ -146,6 +147,80 @@ def test_find_daemon_proxied_path_authenticates_with_auto_minted_token(
 
     assert daemon_payload["source"] == "daemon"
     assert daemon_payload["items"], "fixture query must actually match rows, or parity is vacuous"
+
+
+def _run_read_messages_json(session_id: str, *, no_daemon: bool = False) -> tuple[dict[str, object], str]:
+    from polylogue.cli import cli
+
+    runner = CliRunner()
+    # `--no-daemon` is a root option (`click_app.py::cli`) and must precede the
+    # verb; `--verbose` is what makes the route name its own executor on
+    # stderr, which is the marker this parity test reads.
+    result = runner.invoke(
+        cli,
+        [
+            "--plain",
+            "--verbose",
+            *(["--no-daemon"] if no_daemon else []),
+            "read",
+            f"session:{session_id}",
+            "--view",
+            "messages",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    return dict(json.loads(result.stdout)), result.stderr
+
+
+def test_read_messages_json_parity_between_direct_and_daemon(
+    golden_parity_workspace: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-fko9.3: ``read --view messages`` is served by a reachable daemon.
+
+    The messages view was the one read view that still computed its answer in
+    this process, so a healthy daemon paid for a local archive open on every
+    invocation.  Both legs now run one declared ``session.read`` window: the
+    rendered document must agree field for field except the authority
+    envelope, which names the executor that actually answered.
+
+    Anti-vacuity: the ``messages`` assertion below -- two empty documents would
+    agree trivially -- plus the per-leg ``served-by``/``server_identity``
+    assertions, which a route that silently answered as the other one fails.
+    """
+
+    archive_root = golden_parity_workspace["archive_root"]
+    session_id = "chatgpt-export:ext-conv1"
+
+    with running_daemon_operations(archive_root, seed_archive=_seed_golden_archive) as stack:
+        _pin_cli_daemon_socket(monkeypatch, stack)
+        direct_payload, direct_err = _run_read_messages_json(session_id, no_daemon=True)
+        daemon_payload, daemon_err = _run_read_messages_json(session_id)
+
+    assert "served-by: direct" in direct_err, direct_err
+    assert "served-by: daemon (uds," in daemon_err, daemon_err
+    assert cast("dict[str, object]", direct_payload["authority"])["server_identity"] == "direct"
+    assert cast("dict[str, object]", daemon_payload["authority"])["server_identity"] == "daemon"
+    assert _strip_read_provenance(daemon_payload) == _strip_read_provenance(direct_payload)
+    assert direct_payload["messages"], "fixture session must actually hold rows, or parity is vacuous"
+    assert [message["text"] for message in cast("list[dict[str, object]]", direct_payload["messages"])] == [
+        "How to handle exceptions in Python?",
+        "Use try-except blocks.",
+    ]
+
+
+def _strip_read_provenance(payload: dict[str, object]) -> dict[str, object]:
+    """Drop the per-call authority envelope, which is provenance, not content.
+
+    It carries the serving executor and that call's own wall-clock elapsed
+    time; both necessarily differ between two independent invocations, and the
+    executor identity is asserted explicitly on each leg above rather than
+    merely stripped here.
+    """
+
+    return {key: value for key, value in payload.items() if key != "authority"}
 
 
 def test_facets_json_parity_between_direct_and_daemon(

@@ -1051,11 +1051,71 @@ def _session_identity_projection(
     }
 
 
-def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
-    """Read one bounded transcript window for an exact session reference.
+def _session_header_projection(envelope: ArchiveSessionEnvelope) -> dict[str, object]:
+    """Project the session header a message window is read against.
 
-    A whole transcript can exceed the declared 8 MiB result bound, so this
-    operation is windowed by construction: the reader composes only
+    The ``messages`` kind carries its rows at the top level, so this header
+    deliberately holds no ``messages`` key.  It carries the bounded lineage
+    facts this exact read established, which is what lets a client render a
+    lineage boundary without a second archive read of its own.
+    """
+
+    return {
+        "session_id": envelope.session_id,
+        "native_id": envelope.native_id,
+        "origin": envelope.origin,
+        "title": envelope.title,
+        "active_leaf_message_id": envelope.active_leaf_message_id,
+        "created_at": envelope.created_at,
+        "updated_at": envelope.updated_at,
+        "parent_session_id": envelope.parent_session_id,
+        "root_session_id": envelope.root_session_id,
+        "branch_type": envelope.branch_type,
+        "lineage_inheritance": envelope.lineage_inheritance,
+        "lineage_branch_point_message_id": envelope.lineage_branch_point_message_id,
+    }
+
+
+def _message_row_projection(
+    envelope: ArchiveSessionEnvelope,
+    *,
+    session_id: str,
+    excluded_blocks: frozenset[str],
+) -> list[dict[str, object]]:
+    """Project one message window as the shared message-row envelope documents.
+
+    The rows reach the envelope through the canonical hydration declaration
+    (``archive/hydration.py``) and the declared surface payload, so this
+    operation owns no field mapping of its own: what the CLI renders here is
+    what the Python API and MCP render for the same rows.
+    """
+
+    from polylogue.archive.hydration import archive_message_to_domain
+    from polylogue.surfaces.payloads import message_row_envelope_from_domain, model_json_document
+
+    rows: list[dict[str, object]] = []
+    for message in envelope.messages:
+        if excluded_blocks:
+            message = replace(
+                message, blocks=tuple(block for block in message.blocks if block.block_type not in excluded_blocks)
+            )
+        rows.append(
+            cast(
+                "dict[str, object]",
+                model_json_document(
+                    message_row_envelope_from_domain(archive_message_to_domain(message), session_id=session_id),
+                    exclude_none=True,
+                ),
+            )
+        )
+    return rows
+
+
+def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
+    """Read one bounded window or evidence relation for an exact session reference.
+
+    A whole transcript can exceed the declared 8 MiB result bound, so the
+    windowed kinds are windowed by construction: the reader composes only
     ``[offset, offset + limit)`` at the storage layer and hands back a
     snapshot-bound continuation for the next window.
     """
@@ -1074,6 +1134,8 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     if not ref:
         raise ValueError("session.read requires a session reference")
     kind = str(payload.get("kind") or "transcript")
+    if kind == "messages":
+        return _session_messages_payload(payload, ref=ref, archive=archive)
     if kind != "transcript":
         return _session_evidence_payload(ref, kind=kind, archive=archive)
     raw_projection = payload.get("projection")
@@ -1140,6 +1202,100 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         "complete": next_offset is None,
     }
     _require_deliverable_window(result, limit=limit)
+    return result
+
+
+def _session_messages_payload(
+    payload: Mapping[str, object],
+    *,
+    ref: str,
+    archive: ArchiveStore,
+) -> dict[str, object]:
+    """Read one message-row window through the shared transcript-window route.
+
+    This kind exists so a read view can answer ``read --view messages`` without
+    opening an archive of its own.  It is deliberately framed by
+    ``operations/transcript_window.py`` rather than by this module's own
+    ``session.read`` framing: the CLI, Python API, MCP and HTTP message
+    surfaces mint and resume *one* continuation vocabulary, and a token minted
+    on any of them resumes here (``test_continuation_surface_parity``).  A
+    second framing would have made the CLI's messages window the one member of
+    that family whose tokens no other surface could read.
+
+    The three message filters are part of a continuation's request identity.
+    This reader composes windows from the pinned archive page reader, which has
+    no filter vocabulary, so a filtered request is refused by name rather than
+    answered with unfiltered rows.
+    """
+
+    from types import SimpleNamespace
+
+    from polylogue.operations.transcript_window import read_transcript_window_sync, window_request
+    from polylogue.surfaces.outcome import lineage_page_outcome
+    from polylogue.surfaces.projection_spec import ProjectionSpec
+
+    raw_projection = payload.get("projection")
+    if raw_projection is not None and not isinstance(raw_projection, Mapping):
+        raise ValueError("projection must be an object")
+    projection = ProjectionSpec.model_validate(dict(raw_projection)) if raw_projection else None
+    limit = _non_negative_int(payload.get("limit"), default=_SESSION_READ_WINDOW) or _SESSION_READ_WINDOW
+    offset = _non_negative_int(payload.get("offset"), default=0)
+    if projection is not None:
+        limit = projection.body_limit or limit
+        offset = projection.body_offset if projection.body_offset is not None else offset
+    excluded_blocks = frozenset(projection.exclude_block_kinds) if projection is not None else frozenset()
+
+    continuation_token = payload.get("continuation")
+    request = window_request(
+        ref,
+        limit=limit,
+        offset=offset,
+        continuation=str(continuation_token) if continuation_token else None,
+    )
+    if request.message_role or request.message_type is not None or request.material_origin:
+        raise ValueError("session.read messages does not serve a filtered message window")
+
+    try:
+        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
+    except KeyError as exc:
+        raise ValueError(f"session not found: {ref}") from exc
+
+    header: dict[str, object] = {}
+
+    def read(window_limit: int, window_offset: int) -> tuple[list[object], int, object]:
+        envelope = archive.read_session_page(session_id, limit=window_limit, offset=window_offset)
+        header.update(_session_header_projection(envelope))
+        total = envelope.total_message_count if envelope.total_message_count is not None else len(envelope.messages)
+        return (
+            list(_message_row_projection(envelope, session_id=session_id, excluded_blocks=excluded_blocks)),
+            total,
+            SimpleNamespace(
+                complete=envelope.lineage_complete,
+                truncation_reason=envelope.lineage_truncation_reason,
+            ),
+        )
+
+    window = read_transcript_window_sync(archive, request, read=read)
+    result: dict[str, object] = {
+        "outcome": lineage_page_outcome(
+            matched=window.total,
+            complete=window.lineage_complete,
+            truncation_reason=window.lineage_truncation_reason,
+        ).to_dict(),
+        "session": header,
+        "session_id": session_id,
+        "kind": "messages",
+        "messages": list(window.rows),
+        "lineage_complete": window.lineage_complete,
+        "lineage_truncation_reason": window.lineage_truncation_reason,
+        "total": window.total,
+        "limit": window.limit,
+        "offset": window.offset,
+        "next_offset": window.next_offset,
+        "continuation": window.continuation,
+        "complete": window.complete,
+    }
+    _require_deliverable_window(result, limit=window.limit)
     return result
 
 

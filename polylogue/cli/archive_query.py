@@ -8,7 +8,6 @@ import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import redirect_stdout
-from dataclasses import dataclass
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 from urllib.parse import quote
@@ -33,9 +32,9 @@ from polylogue.archive.query.spec import (
     session_count_unit_label,
 )
 from polylogue.cli.lowering import aggregate_mode
-from polylogue.cli.operation_kernel import OperationRequest
 from polylogue.cli.query_contracts import QueryOutputSpec
 from polylogue.cli.query_output_contracts import QueryOutputDocument
+from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
 from polylogue.cli.render.outcome import EMPTY_EXIT_CODE, emit_empty_page, maybe_subcommand_typo_hint
 from polylogue.cli.render.rows import (
     TIMING_ENV,
@@ -155,46 +154,6 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
         TIMING_ENV.reset(timing_token)
 
 
-@dataclass(frozen=True, slots=True)
-class _ServedBy:
-    """Which executor answered, as the result's own authority reports it."""
-
-    identity: str
-    elapsed_ms: int | None
-
-    def line(self) -> str:
-        if self.elapsed_ms is None:
-            return self.identity
-        transport = "uds, " if self.identity == "daemon" else ""
-        return f"{self.identity} ({transport}{self.elapsed_ms}ms)"
-
-
-def _dispatch_read(
-    config: Config,
-    request: OperationRequest,
-    *,
-    daemon_disabled: bool,
-) -> tuple[dict[str, object], _ServedBy]:
-    """Run one declared read and return its result body plus the daemon timing.
-
-    Every root-query capability goes through here, so "which executor answered"
-    is a transport fact recorded in the envelope rather than a semantic fork in
-    the adapter.
-    """
-    from polylogue.cli.operation_kernel import OperationEnvelopeError, dispatch
-
-    result = dispatch(config, request, daemon_disabled=daemon_disabled)
-    if not isinstance(result.value, dict):
-        raise OperationEnvelopeError(f"{request.operation} returned a non-object result")
-    timing = result.envelope.get("timing") if result.envelope is not None else None
-    elapsed_ms = timing.get("elapsed_ms") if isinstance(timing, Mapping) else None
-    # The executor is named by the result's own authority, not by which branch
-    # of this adapter ran: a rendered "daemon" provenance for a read the
-    # in-process executor answered would be a claim the result does not support.
-    identity = str(result.authority.get("server_identity") or result.authority.get("mode") or "unknown")
-    return dict(result.value), _ServedBy(identity, elapsed_ms if isinstance(elapsed_ms, int) else None)
-
-
 def _read_failure_detail(exc: Exception) -> str:
     return str(getattr(exc, "detail", None) or exc)
 
@@ -265,7 +224,7 @@ def _emit_reference_query(
     from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
-        payload, _ = _dispatch_read(
+        payload, _ = dispatch_read(
             config,
             lower_session_reference(expression, limit=limit),
             daemon_disabled=daemon_disabled,
@@ -336,7 +295,7 @@ def _read_session_windows(
             if remaining <= 0:
                 break
             window_limit = min(remaining, _SESSION_READ_WINDOW)
-        payload, _ = _dispatch_read(
+        payload, _ = dispatch_read(
             config,
             (
                 lower_session_read(ref, continuation=continuation)
@@ -632,7 +591,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     typo_hint = maybe_subcommand_typo_hint(request.query_terms)
     raw_query = _query_text(request.query_terms, params)
     output_format = str(params.get("output_format") or "markdown")
-    daemon_disabled = _daemon_disabled(flag=bool(params.get("no_daemon")))
+    daemon_disabled = daemon_route_disabled(flag=bool(params.get("no_daemon")))
 
     if _emit_reference_query(
         config,
@@ -775,7 +734,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
 
     if unit_source is not None:
         try:
-            payload, _ = _dispatch_read(
+            payload, _ = dispatch_read(
                 config,
                 lower_query_units(request, expression=unit_source_query, limit=limit, offset=page_offset),
                 daemon_disabled=daemon_disabled,
@@ -797,7 +756,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
 
     if aggregate is not None:
         try:
-            payload, _ = _dispatch_read(
+            payload, _ = dispatch_read(
                 config,
                 lower_query_aggregate(request, mode=aggregate),
                 daemon_disabled=daemon_disabled,
@@ -872,7 +831,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
 
     # --- Ordinary page: one declared session query, rendered as list or search.
     try:
-        payload, served_by = _dispatch_read(
+        payload, served_by = dispatch_read(
             config,
             lower_cli_query(
                 request,
@@ -1037,17 +996,6 @@ def _single_query_token_looks_like_ref(query: str) -> bool:
     return bool(token and " " not in token and (":" in token or _NATIVE_REF_RE.fullmatch(token)))
 
 
-def _daemon_disabled(*, flag: bool = False) -> bool:
-    if flag:
-        return True
-    from polylogue.config import load_polylogue_config
-
-    settings = load_polylogue_config()
-    if settings.no_daemon:
-        return True
-    return settings.daemon_client_mode == "off"
-
-
 def _submit_mutation_operation(
     config: Config,
     operation: str,
@@ -1063,7 +1011,7 @@ def _submit_mutation_operation(
     """
     from polylogue.cli.operation_kernel import OperationUnavailableError, configured_mutation_operation
 
-    if _daemon_disabled():
+    if daemon_route_disabled():
         raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
     return configured_mutation_operation(config, operation, payload)
 

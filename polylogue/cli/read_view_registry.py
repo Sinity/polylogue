@@ -101,7 +101,6 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
         "effective_context",
         "events",
         "file-edits",
-        "messages",
         "neighbors",
         "raw",
         "temporal",
@@ -119,9 +118,10 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset(
 # ``file`` unit reads affected file *paths* via ``query_files``, not the
 # structured ``file_edits`` diffs -- so none of them lowers to ``query.units``
 # with a ``session:`` filter, and ``query-units-projection`` is unpopulated.
-# Only ``hooks`` has actually been moved onto ``session.read``
-# (``daemon_reads._SESSION_EVIDENCE_READERS``); the rest are ``in-process``
-# until S8/S9 declare their operations.
+# ``hooks`` and ``messages`` have been moved onto ``session.read`` -- the
+# former as an evidence kind (``daemon_reads._SESSION_EVIDENCE_READERS``), the
+# latter as the ``messages`` message-row window kind; the rest are
+# ``in-process`` until S8/S9 declare their operations.
 READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
@@ -147,7 +147,8 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "messages",
         "required",
         MESSAGE_READ_VIEW_OPTION_NAMES,
-        execution_kind="in-process",
+        execution_kind="session-read-projection",
+        operations=("session.read",),
     ),
     "raw": ReadViewHandlerMetadata(
         "raw",
