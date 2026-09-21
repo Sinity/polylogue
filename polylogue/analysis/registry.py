@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, cast
 
 import click
 
@@ -77,6 +77,86 @@ class CliOption:
     expose_value_as: str | None = None
 
 
+RetentionDecision: TypeAlias = Literal["keep", "reduce"]
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionVerdict:
+    """One recorded adjudication of whether an insight type earns its place.
+
+    polylogue-4p1.3 asked for a per-type keep/reduce/delete verdict with the
+    discrimination evidence that decided it. Carrying the verdict on the
+    descriptor rather than in prose is what makes it enforceable: ``register``
+    refuses a type that arrives without one, so a new insight cannot ship
+    unreviewed and the review set can never drift out of step with the
+    registry it is supposed to cover.
+
+    ``decision`` is deliberately only ``keep`` or ``reduce``. A ``delete``
+    verdict has no descriptor to live on once it is executed; retirements are
+    recorded in :data:`RETIRED_INSIGHT_TYPES` instead.
+    """
+
+    decision: RetentionDecision
+    evidence: str
+    """Why this type is distinguishable from a named query over the DSL.
+
+    The load-bearing property (polylogue-4p1.3) is that an insight pairs an
+    aggregate with explicit coverage semantics -- it can say "unavailable"
+    where a query can only say "zero".
+    """
+    recorded_in: str
+    """The task record that adjudicated this type."""
+
+    def __post_init__(self) -> None:
+        if not self.evidence.strip():
+            raise ValueError("a retention verdict requires discrimination evidence")
+        if not self.recorded_in.strip():
+            raise ValueError("a retention verdict must name the record that decided it")
+
+
+@dataclass(frozen=True, slots=True)
+class RetiredInsightType:
+    """One insight type whose recorded verdict was executed as a deletion.
+
+    Keeping the retirement is not compatibility: nothing reads a retired type.
+    It exists so a later pass cannot re-attempt a completed deletion, and so
+    re-registering the name is a hard error rather than a silent resurrection
+    of a shape that was already adjudicated away.
+    """
+
+    name: str
+    evidence: str
+    retired_in: str
+
+
+#: Types deleted by an executed verdict. ``session_phases`` and
+#: ``session_work_events`` were removed in dafcfc612; polylogue-4p1.3's
+#: verdict list still names them, so re-reading that list without this record
+#: re-attempts two completed deletions.
+RETIRED_INSIGHT_TYPES: dict[str, RetiredInsightType] = {
+    record.name: record
+    for record in (
+        RetiredInsightType(
+            name="session_phases",
+            evidence=(
+                "82% of materialized rows were a single span, no span carried a label, and the span "
+                "timestamps were synthesized from message index rather than observed -- an aggregate "
+                "with neither a second value to compare nor a coverage signal to qualify it."
+            ),
+            retired_in="dafcfc612",
+        ),
+        RetiredInsightType(
+            name="session_work_events",
+            evidence=(
+                "82% of materialized rows were a single event and the rows duplicated action_pairs, "
+                "which the query DSL already reaches directly."
+            ),
+            retired_in="dafcfc612",
+        ),
+    )
+}
+
+
 @dataclass(frozen=True, slots=True)
 class InsightType:
     """Descriptor for one kind of derived insight."""
@@ -84,6 +164,8 @@ class InsightType:
     name: str
     display_name: str
     json_key: str
+    retention: RetentionVerdict | None = None
+    """Recorded keep/reduce adjudication. ``register`` refuses ``None``."""
     fields: tuple[InsightField, ...] = ()
     item_model: type[ArchiveInsightModel] | None = None
     empty_message: str = "No items matched."
@@ -274,11 +356,49 @@ def _count_with_percentage(count_attr: str, percentage_attr: str) -> InsightAcce
 INSIGHT_REGISTRY: dict[str, InsightType] = {}
 
 
-def register(insight_type: InsightType) -> InsightType:
-    """Register an insight type and return it."""
+class InsightRegistrationError(PolylogueError):
+    """Raised when an insight type is registered without a recorded verdict."""
 
+    http_status_code = 500
+
+
+def register(insight_type: InsightType) -> InsightType:
+    """Register an insight type and return it.
+
+    Registration is the review boundary: a type with no recorded
+    :class:`RetentionVerdict`, or one reusing a retired name, is refused here
+    rather than discovered later by whoever reads the registry.
+    """
+
+    retired = RETIRED_INSIGHT_TYPES.get(insight_type.name)
+    if retired is not None:
+        raise InsightRegistrationError(
+            f"insight type {insight_type.name!r} was retired in {retired.retired_in}; "
+            "record a new verdict under a new name rather than resurrecting it"
+        )
+    if insight_type.retention is None:
+        raise InsightRegistrationError(
+            f"insight type {insight_type.name!r} has no recorded retention verdict; "
+            "adjudicate it (keep/reduce) with discrimination evidence before registering it"
+        )
     INSIGHT_REGISTRY[insight_type.name] = insight_type
     return insight_type
+
+
+def unverdicted_insight_types() -> tuple[str, ...]:
+    """Return registered names carrying no usable retention verdict.
+
+    Derived from :data:`INSIGHT_REGISTRY` so the review set is exactly the
+    registered set; nothing restates the count.
+    """
+
+    return tuple(
+        sorted(
+            name
+            for name, insight_type in INSIGHT_REGISTRY.items()
+            if insight_type.retention is None or not insight_type.retention.evidence.strip()
+        )
+    )
 
 
 def get_insight_type(name: str) -> InsightType:
@@ -345,6 +465,18 @@ _SESSION_TIME_SORT_OPTION = CliOption(
 register(
     InsightType(
         name="session_profiles",
+        retention=RetentionVerdict(
+            decision="reduce",
+            evidence=(
+                "Earns its place: the only session read model that separates measured evidence from "
+                "probabilistic inference and enrichment, each with its own provenance, support_level and "
+                "time_confidence, so a consumer can tell a counted span from an inferred one. Reduce: "
+                "polylogue-4p1.3 recorded surplus constant version/family columns and 100%-NULL cost columns "
+                "on the materialized table; that reduction is owned by polylogue-f2qv.6 and is not re-derived "
+                "here."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Session Profiles",
         json_key="session_profiles",
         item_model=SessionProfileInsight,
@@ -398,6 +530,16 @@ register(
 register(
     InsightType(
         name="threads",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "Recomposes a root session's lineage tree from parent/child links. Lineage children store "
+                "only their divergent tail, so the tree is a recomposition rather than a selection -- the "
+                "query DSL can filter sessions but cannot rebuild the replayed prefix. Single-session threads "
+                "are correct, not degenerate."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Work Threads",
         json_key="threads",
         item_model=ThreadInsight,
@@ -421,6 +563,17 @@ register(
 register(
     InsightType(
         name="session_tag_rollups",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "Splits explicit_count from auto_count, so an operator-asserted tag is never summed together "
+                "with a probabilistic enrichment tag. polylogue-4p1.3 filed this as reduce on the evidence "
+                "that explicit_count was constant 0; re-checked at head, build_session_tag_rollups increments "
+                "explicit_count from each profile's explicit tag set, so the observed zero was a fact about "
+                "the then-live archive's tag population, not a dead column."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Session Tag Rollups",
         json_key="session_tag_rollups",
         item_model=SessionTagRollupInsight,
@@ -443,6 +596,16 @@ register(
 register(
     InsightType(
         name="archive_coverage",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "A coverage rollup whose provenance is populated only for day/week grouping, which is itself "
+                "the declared signal that a default origin-grouped row carries no materialization stamp. That "
+                "'the stamp is absent, and that absence is meaningful' distinction has no expression in the "
+                "query DSL."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Archive Coverage",
         json_key="archive_coverage",
         item_model=ArchiveCoverageInsight,
@@ -484,6 +647,15 @@ register(
 register(
     InsightType(
         name="tool_usage",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "The canonical example of the coverage pairing: has_coverage_gaps and the per-entry "
+                "origin_coverage[].data_available separate a genuine zero tool-use count from an origin with "
+                "no ingested action evidence at all. A DSL aggregate can only report zero."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Tool Usage",
         json_key="tool_usage",
         item_model=ToolUsageInsight,
@@ -516,6 +688,17 @@ register(
 register(
     InsightType(
         name="tool_episodes",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "Not a named query over the actions view. result_state plus caveat state why an outcome is "
+                "absent -- 'outcome unknown: no paired structural result' is never collapsed into success -- "
+                "and each episode carries a bounded three-message context window either side of the call plus "
+                "its follow-up class. actions joins tool_use to tool_result and stops there; neither the "
+                "unknown-outcome reason nor the surrounding context is reachable from the DSL."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Tool Episodes",
         json_key="tool_episodes",
         item_model=ToolEpisodeInsight,
@@ -545,6 +728,19 @@ register(
 register(
     InsightType(
         name="command_shapes",
+        retention=RetentionVerdict(
+            decision="reduce",
+            evidence=(
+                "Earns its place: normalize_command_shapes is a shell-aware normalization (pipeline and "
+                "separator splitting, transparent leading env assignments and sh -c wrappers, path-like "
+                "positionals dropped so an argument cannot become a new shape) that no GROUP BY over "
+                "actions.tool_command can express, and the declared readiness semantics make an empty result "
+                "mean 'no execution observed in this window' rather than 'unused'. Reduce, executed with this "
+                "verdict: last_used_sort_key was a byte-identical restatement of provenance.source_sort_key "
+                "on the same row with no reader anywhere in the repository, and is deleted."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Command Shape Usage",
         json_key="command_shapes",
         item_model=CommandShapeUsage,
@@ -573,6 +769,15 @@ register(
 register(
     InsightType(
         name="session_costs",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "estimate.status separates exact, priced, partial and unavailable pricing, and "
+                "missing_reasons/unavailable_reason name why a row could not be priced. A SUM over stored "
+                "costs reports a number for all four cases and cannot say which one it is."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Session Costs",
         json_key="session_costs",
         item_model=SessionCostInsight,
@@ -600,6 +805,14 @@ register(
 register(
     InsightType(
         name="cost_rollups",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "Carries unavailable_session_count and status_counts beside the totals, so a rollup states "
+                "how much of itself is unpriced. A DSL aggregate silently omits the rows it could not price."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Cost Rollups",
         json_key="cost_rollups",
         item_model=CostRollupInsight,
@@ -629,6 +842,15 @@ register(
 register(
     InsightType(
         name="usage_timeline",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "cost_provenance_counts reports how much of each bucket is stored versus catalog-estimated, "
+                "which matters precisely because subscription_credits is otherwise indistinguishable in the "
+                "payload from a stored credit figure."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Usage Timeline",
         json_key="usage_timeline",
         item_model=UsageTimelineInsight,
@@ -667,6 +889,15 @@ register(
 register(
     InsightType(
         name="archive_debt",
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence=(
+                "Not an aggregate over archived content at all: each row is a live health check over current "
+                "archive tables (FTS sync, orphaned profile rows, materialization staleness). There is no "
+                "query-DSL expression of 'this derived tier disagrees with its source'."
+            ),
+            recorded_in="polylogue-4p1.5",
+        ),
         display_name="Archive Debt",
         json_key="archive_debt",
         item_model=ArchiveDebtInsight,
@@ -754,9 +985,15 @@ async def fetch_insights_async(
 __all__ = [
     "CliOption",
     "INSIGHT_REGISTRY",
+    "RETIRED_INSIGHT_TYPES",
     "InsightField",
     "InsightQueryError",
+    "InsightRegistrationError",
     "InsightType",
+    "RetentionDecision",
+    "RetentionVerdict",
+    "RetiredInsightType",
+    "unverdicted_insight_types",
     "fetch_insights",
     "fetch_insights_async",
     "get_insight_type",

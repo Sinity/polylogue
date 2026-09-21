@@ -136,17 +136,19 @@ def test_every_exposed_disposition_names_a_real_domain_field() -> None:
 def test_retained_title_policy_is_a_named_input_not_a_forked_mapping() -> None:
     """The one semantic difference between session and summary title handling.
 
-    A full session read suppresses a legacy ``TitleSource.PATH`` title (a
-    structural fallback, not provider evidence) and lets the display-label
-    projection speak; the summary keeps the stored row value beside
-    ``display_label``. That difference is this single policy function -- it
-    forks no other field. Red if the policy starts accepting ``path`` (or
-    starts rejecting real provider evidence).
+    A full session read suppresses a title that is not provider evidence -- a
+    legacy ``TitleSource.PATH`` structural fallback, or a
+    ``TitleSource.HEURISTIC`` echo of the user's own opening prompt
+    (polylogue-4p1.6) -- and lets the display-label projection speak; the
+    summary keeps the stored row value beside ``display_label``. That
+    difference is this single policy function -- it forks no other field. Red
+    if the policy starts accepting a non-provider source (or starts rejecting
+    real provider evidence).
     """
     from polylogue.core.enums import TitleSource
 
     assert hydration.archive_provider_title("Real title", TitleSource.ORIGIN.value) == "Real title"
-    assert hydration.archive_provider_title("Derived title", TitleSource.HEURISTIC.value) == "Derived title"
+    assert hydration.archive_provider_title("please fix the parser", TitleSource.HEURISTIC.value) is None
     assert hydration.archive_provider_title("/home/me/project", TitleSource.PATH.value) is None
     assert hydration.archive_provider_title("Untyped", None) is None
 

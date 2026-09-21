@@ -15,6 +15,7 @@ from polylogue.analysis.registry import (
     InsightField,
     InsightQueryError,
     InsightType,
+    RetentionVerdict,
     fetch_insights,
     fetch_insights_async,
     get_insight_type,
@@ -77,6 +78,11 @@ def test_insight_type_registry_helpers_cover_register_lookup_and_sorting() -> No
         display_name="Runtime Dummy",
         json_key="items",
         cli_options=(CliOption("flag", ("--flag",), help="flag"),),
+        retention=RetentionVerdict(
+            decision="keep",
+            evidence="synthetic fixture type; not a product surface",
+            recorded_in="tests/unit/core/test_insight_registry_runtime.py",
+        ),
     )
 
     try:

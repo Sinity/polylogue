@@ -12,7 +12,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_runtime import SessionRuntimeMixin
 from polylogue.archive.session.events import SessionEvent
 from polylogue.archive.session.summary_runtime import SessionSummaryRuntimeMixin
-from polylogue.core.enums import Origin, SessionKind, TitleSource
+from polylogue.core.enums import DisplayLabelSource, Origin, SessionKind, TitleSource
 from polylogue.core.sources import source_name_to_origin
 from polylogue.core.types import SessionId
 from polylogue.core.web_urls import canonical_session_url, native_id_from_session_id
@@ -30,6 +30,12 @@ def _coerce_title_source(v: object) -> TitleSource | None:
     return TitleSource(str(v))
 
 
+def _coerce_display_label_source(v: object) -> DisplayLabelSource | None:
+    if v is None or isinstance(v, DisplayLabelSource):
+        return v
+    return DisplayLabelSource(str(v))
+
+
 class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     """Lightweight session metadata without messages."""
 
@@ -38,6 +44,9 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     title: str | None = None
     # Read-time projection over current structural evidence. Never persisted.
     display_label: str | None = None
+    # Provenance of ``display_label``: a synthesized label is distinguishable
+    # here from one a provider asserted (polylogue-4p1.6).
+    display_label_source: DisplayLabelSource | None = None
     title_source: TitleSource | None = None
     # Specific provenance beyond title_source's coarse strategy label: exact
     # evidence reference plus a 0..1 confidence signal (polylogue-ih67).
@@ -88,6 +97,11 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     def coerce_title_source(cls, v: object) -> TitleSource | None:
         return _coerce_title_source(v)
 
+    @field_validator("display_label_source", mode="before")
+    @classmethod
+    def coerce_display_label_source(cls, v: object) -> DisplayLabelSource | None:
+        return _coerce_display_label_source(v)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def canonical_url(self) -> str | None:
@@ -103,6 +117,9 @@ class Session(SessionRuntimeMixin, BaseModel):
     title: str | None = None
     # Read-time projection over current structural evidence. Never persisted.
     display_label: str | None = None
+    # Provenance of ``display_label``: a synthesized label is distinguishable
+    # here from one a provider asserted (polylogue-4p1.6).
+    display_label_source: DisplayLabelSource | None = None
     title_source: TitleSource | None = None
     # Specific provenance beyond title_source's coarse strategy label: exact
     # evidence reference plus a 0..1 confidence signal (polylogue-ih67).
@@ -149,6 +166,11 @@ class Session(SessionRuntimeMixin, BaseModel):
     @classmethod
     def coerce_title_source(cls, v: object) -> TitleSource | None:
         return _coerce_title_source(v)
+
+    @field_validator("display_label_source", mode="before")
+    @classmethod
+    def coerce_display_label_source(cls, v: object) -> DisplayLabelSource | None:
+        return _coerce_display_label_source(v)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -378,10 +378,19 @@ def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> Se
 #: and cost were derived rather than what the session is. They belong to the
 #: reader surfaces that render provenance affordances, not to a terminal row,
 #: and no CLI format has ever printed them.
+#:
+#: ``title_is_synthesized`` is deliberately NOT in that group. It does not
+#: describe a derivation the row merely happens to have; it qualifies the
+#: value of ``title`` in this very row. Without it a terminal row publishes a
+#: string the archive composed itself -- for a session whose stored title is a
+#: recognized prompt echo, say -- as though a provider had asserted it
+#: (polylogue-4p1.6). A false value is a real answer here, so it is projected
+#: whenever present rather than dropped as a default.
 _SESSION_LIST_ROW_FIELDS = (
     "id",
     "origin",
     "title",
+    "title_is_synthesized",
     "target_ref",
     "anchor",
     "actions",

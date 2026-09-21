@@ -975,6 +975,13 @@ _SessionSummaryEnvelopeBase = _create_projection_model(
             dict[str, ReaderActionAvailabilityPayload],
             Field(default_factory=reader_session_actions),
         ),
+        # ``title`` is the read-time display label, which the archive composes
+        # from structural evidence when nothing asserted a name -- notably for
+        # a session whose stored title is a recognized prompt echo. Without
+        # this flag ``title_source`` describes the *stored* title while
+        # ``title`` carries a derivation, and a consumer reads the derivation
+        # as provider data (polylogue-4p1.6).
+        "title_is_synthesized": (bool, Field(default=False)),
         "terminal_state": (str | None, Field(default=None)),
         "total_cost_usd": (float | None, Field(default=None)),
         "cost_provenance": (str | None, Field(default=None)),
@@ -990,6 +997,7 @@ _SessionSummaryEnvelopeBase = _create_projection_model(
         "origin",
         "title",
         "title_source",
+        "title_is_synthesized",
         "title_ref",
         "message_count",
         "target_ref",
@@ -1020,6 +1028,13 @@ _SessionDetailEnvelopeBase = _create_projection_model(
             dict[str, ReaderActionAvailabilityPayload],
             Field(default_factory=reader_session_actions),
         ),
+        # ``title`` is the read-time display label, which the archive composes
+        # from structural evidence when nothing asserted a name -- notably for
+        # a session whose stored title is a recognized prompt echo. Without
+        # this flag ``title_source`` describes the *stored* title while
+        # ``title`` carries a derivation, and a consumer reads the derivation
+        # as provider data (polylogue-4p1.6).
+        "title_is_synthesized": (bool, Field(default=False)),
         "messages": (tuple[MessageRenderEnvelope, ...], Field(...)),
     },
     annotation_overrides={
@@ -1032,6 +1047,7 @@ _SessionDetailEnvelopeBase = _create_projection_model(
         "origin",
         "title",
         "title_source",
+        "title_is_synthesized",
         "title_ref",
         "message_count",
         "target_ref",
@@ -1059,6 +1075,13 @@ _SessionListEnvelopeBase = _create_projection_model(
             dict[str, ReaderActionAvailabilityPayload],
             Field(default_factory=reader_session_actions),
         ),
+        # ``title`` is the read-time display label, which the archive composes
+        # from structural evidence when nothing asserted a name -- notably for
+        # a session whose stored title is a recognized prompt echo. Without
+        # this flag ``title_source`` describes the *stored* title while
+        # ``title`` carries a derivation, and a consumer reads the derivation
+        # as provider data (polylogue-4p1.6).
+        "title_is_synthesized": (bool, Field(default=False)),
         "message_count": (int, Field(default=0)),
         "terminal_state": (str | None, Field(default=None)),
         "total_cost_usd": (float | None, Field(default=None)),
@@ -1086,6 +1109,7 @@ _SessionListEnvelopeBase = _create_projection_model(
         "origin",
         "title",
         "title_source",
+        "title_is_synthesized",
         "title_ref",
         "target_ref",
         "anchor",
@@ -1252,6 +1276,7 @@ def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnve
         title=session.display_title,
         origin=role_label(session.origin),
         title_source=session.title_source.value if session.title_source else None,
+        title_is_synthesized=session.display_title_is_synthesized,
         message_count=len(session.messages),
         terminal_state=_session_terminal_state(session),
         total_cost_usd=session.total_cost_usd,
@@ -1277,6 +1302,7 @@ def session_summary_envelope_from_summary(
         title=bound_display_title(summary.display_title, session_id),
         origin=role_label(summary.origin),
         title_source=summary.title_source.value if summary.title_source else None,
+        title_is_synthesized=summary.display_title_is_synthesized,
         message_count=summary.message_count or 0 if message_count is None else message_count,
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
@@ -1302,6 +1328,7 @@ def session_detail_envelope_from_domain(
         title=session.display_title,
         origin=role_label(session.origin),
         title_source=session.title_source.value if session.title_source else None,
+        title_is_synthesized=session.display_title_is_synthesized,
         message_count=len(session.messages),
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
@@ -1328,6 +1355,7 @@ def session_list_envelope_from_domain(
         ),
         origin=role_label(session.origin),
         title_source=session.title_source.value if session.title_source else None,
+        title_is_synthesized=session.display_title_is_synthesized,
         created_at=session.created_at.isoformat() if session.created_at else None,
         updated_at=session.updated_at.isoformat() if session.updated_at else None,
         target_ref=TargetRefPayload.session(session_id),
@@ -1365,6 +1393,7 @@ def session_list_envelope_from_summary(
         title=bound_display_title(summary.display_title, session_id),
         origin=role_label(summary.origin),
         title_source=summary.title_source.value if summary.title_source else None,
+        title_is_synthesized=summary.display_title_is_synthesized,
         created_at=summary.created_at.isoformat() if summary.created_at else None,
         updated_at=summary.updated_at.isoformat() if summary.updated_at else None,
         target_ref=TargetRefPayload.session(session_id),

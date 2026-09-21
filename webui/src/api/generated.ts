@@ -690,6 +690,7 @@ export type SessionListEnvelope = {
   readonly target_ref?: TargetRefPayload | null;
   readonly terminal_state?: string | null;
   readonly title?: string;
+  readonly title_is_synthesized?: boolean;
   readonly title_ref?: string | null;
   readonly title_source?: string | null;
   readonly total_cost_usd?: number | null;
@@ -767,6 +768,7 @@ export type SessionSummaryEnvelope = {
   readonly target_ref?: TargetRefPayload | null;
   readonly terminal_state?: string | null;
   readonly title?: string;
+  readonly title_is_synthesized?: boolean;
   readonly title_ref?: string | null;
   readonly title_source?: string | null;
   readonly total_cost_usd?: number | null;

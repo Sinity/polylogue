@@ -18,8 +18,11 @@ from polylogue.analysis.archive_models import (
 )
 from polylogue.analysis.registry import (
     INSIGHT_REGISTRY,
+    RETIRED_INSIGHT_TYPES,
     InsightQueryError,
+    InsightRegistrationError,
     InsightType,
+    RetentionVerdict,
     _attr,
     _build_query,
     _count_with_percentage,
@@ -34,6 +37,7 @@ from polylogue.analysis.registry import (
     list_insight_types,
     register,
     render_insight_items,
+    unverdicted_insight_types,
 )
 from polylogue.archive.semantic.pricing import CostUsagePayload
 
@@ -126,6 +130,11 @@ class TestRegistryOperations:
             name=unique_name,
             display_name="Unique Test Type",
             json_key=unique_name,
+            retention=RetentionVerdict(
+                decision="keep",
+                evidence="synthetic fixture type; not a product surface",
+                recorded_in="tests/unit/insights/test_registry.py",
+            ),
         )
         # Clean up if it somehow exists
         INSIGHT_REGISTRY.pop(unique_name, None)
@@ -462,3 +471,79 @@ class TestBuildQuery:
         insight_type = get_insight_type("archive_coverage")
         query = _build_query(insight_type, group_by="day")
         assert isinstance(query, ArchiveCoverageInsightQuery)
+
+
+class TestRetentionVerdicts:
+    """Every registered insight type carries an executed adjudication.
+
+    polylogue-4p1.3 asked for a per-type keep/reduce/delete verdict. The
+    review set here is derived from ``INSIGHT_REGISTRY`` rather than written
+    down, so registering a twelfth type cannot silently escape review by
+    leaving a hard-coded count untouched.
+
+    Anti-vacuity: blanking any registered type's ``retention.evidence``, or
+    weakening ``register`` so a verdictless type can enter the registry, turns
+    ``test_every_registered_type_carries_a_verdict`` red.
+    """
+
+    def test_every_registered_type_carries_a_verdict(self) -> None:
+        assert unverdicted_insight_types() == ()
+        # Derived, never restated: the review set is exactly the registered set.
+        reviewed = {name for name, it in INSIGHT_REGISTRY.items() if it.retention is not None}
+        assert reviewed == set(INSIGHT_REGISTRY)
+        assert len(reviewed) == len(INSIGHT_REGISTRY)
+
+    def test_every_verdict_records_a_decision_and_its_source(self) -> None:
+        for name, insight_type in INSIGHT_REGISTRY.items():
+            verdict = insight_type.retention
+            assert verdict is not None, f"{name}: no retention verdict"
+            assert verdict.decision in {"keep", "reduce"}, f"{name}: {verdict.decision}"
+            assert verdict.recorded_in.strip(), f"{name}: verdict names no record"
+
+    def test_registering_without_a_verdict_is_refused(self) -> None:
+        name = "verdictless_fixture_type"
+        INSIGHT_REGISTRY.pop(name, None)
+        with pytest.raises(InsightRegistrationError, match="no recorded retention verdict"):
+            register(InsightType(name=name, display_name="Verdictless", json_key=name))
+        assert name not in INSIGHT_REGISTRY
+
+    def test_a_verdictless_registration_is_reported_by_the_review_helper(self) -> None:
+        """The review helper, not only ``register``, detects the gap.
+
+        Proves the helper is not vacuous: it reports a type that bypassed the
+        registration boundary (a direct dict write, as a future refactor of
+        ``register`` could produce).
+        """
+        name = "bypassed_fixture_type"
+        INSIGHT_REGISTRY[name] = InsightType(name=name, display_name="Bypassed", json_key=name)
+        try:
+            assert name in unverdicted_insight_types()
+        finally:
+            INSIGHT_REGISTRY.pop(name, None)
+
+    def test_blank_evidence_is_refused_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="discrimination evidence"):
+            RetentionVerdict(decision="keep", evidence="   ", recorded_in="polylogue-4p1.5")
+
+    def test_retired_types_are_recorded_not_re_attempted(self) -> None:
+        assert set(RETIRED_INSIGHT_TYPES) == {"session_phases", "session_work_events"}
+        for name, record in RETIRED_INSIGHT_TYPES.items():
+            assert name not in INSIGHT_REGISTRY, f"{name}: retired type is registered again"
+            assert record.evidence.strip(), f"{name}: retirement carries no evidence"
+            assert record.retired_in.strip(), f"{name}: retirement names no commit"
+
+    def test_registering_a_retired_name_is_refused(self) -> None:
+        with pytest.raises(InsightRegistrationError, match="was retired in"):
+            register(
+                InsightType(
+                    name="session_phases",
+                    display_name="Session Phases",
+                    json_key="session_phases",
+                    retention=RetentionVerdict(
+                        decision="keep",
+                        evidence="resurrection attempt",
+                        recorded_in="tests",
+                    ),
+                )
+            )
+        assert "session_phases" not in INSIGHT_REGISTRY

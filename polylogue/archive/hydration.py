@@ -39,7 +39,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from polylogue.core.enums import Origin, SessionKind, TitleSource
+from polylogue.core.enums import DisplayLabelSource, Origin, SessionKind, TitleSource
 from polylogue.core.json import loads
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
@@ -130,6 +130,10 @@ def _optional_title_source(value: object) -> TitleSource | None:
     return TitleSource(str(value)) if value is not None else None
 
 
+def _optional_display_label_source(value: object) -> DisplayLabelSource | None:
+    return DisplayLabelSource(str(value)) if value is not None else None
+
+
 def _optional_branch_type(value: object) -> Any:
     from polylogue.archive.session.branch_type import BranchType
 
@@ -169,13 +173,16 @@ def archive_provider_title(title: str | None, title_source: str | None) -> str |
 
     ``TitleSource.PATH`` is a legacy structural fallback, not provider title
     evidence, so the detail route suppresses it and lets the display-label
-    projection speak instead. Summaries deliberately keep the stored title as
-    stored (``ArchiveSessionSummary.title`` is the row value and
-    ``display_label`` carries the read-time projection beside it); that
-    difference is a declared policy, tested independently, and it does not
-    fork any other field.
+    projection speak instead. ``TitleSource.HEURISTIC`` is suppressed for the
+    same reason (polylogue-4p1.6): it marks a title the parser already
+    recognized as an echo of the user's own opening prompt, so presenting it
+    as the session's title republishes the prompt as if the provider had named
+    the session. Summaries deliberately keep the stored title as stored
+    (``ArchiveSessionSummary.title`` is the row value and ``display_label``
+    carries the read-time projection beside it); that difference is a declared
+    policy, tested independently, and it does not fork any other field.
     """
-    return title if title_source in {TitleSource.ORIGIN.value, TitleSource.HEURISTIC.value} else None
+    return title if title_source == TitleSource.ORIGIN.value else None
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +297,7 @@ ARCHIVE_SUMMARY_DISPOSITIONS: Dispositions = {
     "provider_project_ref": exposed("provider_project_ref"),
     "display_name": exposed("display_name"),
     "display_label": exposed("display_label"),
+    "display_label_source": exposed("display_label_source", _optional_display_label_source),
     "terminal_state": exposed("terminal_state"),
     "total_cost_usd": exposed("total_cost_usd"),
     "cost_provenance": exposed("cost_provenance"),
@@ -510,6 +518,7 @@ def archive_envelope_to_session(
     session: ArchiveSessionEnvelope,
     *,
     display_label: str | None = None,
+    display_label_source: DisplayLabelSource | str | None = None,
     display_text: Callable[[Iterable[ArchiveBlockRow]], str] = archive_display_text,
 ) -> Session:
     """Hydrate a full session envelope into ``Session``."""
@@ -532,6 +541,7 @@ def archive_envelope_to_session(
         **values,
         title=archive_provider_title(session.title, session.title_source),
         display_label=display_label,
+        display_label_source=_optional_display_label_source(display_label_source),
         messages=MessageCollection(messages=messages),
         created_at=stored_created or (min(timestamps) if timestamps else None),
         updated_at=stored_updated or (max(timestamps) if timestamps else None),

@@ -137,6 +137,59 @@ class ArchiveActionQueryRow:
     followup_message_ref: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveSequenceStepBinding:
+    """One step of a sequence match, bound to the action that satisfied it."""
+
+    step_index: int
+    action_id: str
+    """``actions.tool_use_block_id`` -- the citable identity of the action."""
+    message_id: str
+    message_position: int
+    variant_index: int
+    block_position: int
+    occurred_at_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveSequenceWitnessRow:
+    """One match of a ``seq()`` pattern, with the actions that produced it."""
+
+    session_id: str
+    bindings: tuple[ArchiveSequenceStepBinding, ...]
+
+    @property
+    def span(self) -> tuple[str, str]:
+        """First and last bound action id -- the extent of this match."""
+        return self.bindings[0].action_id, self.bindings[-1].action_id
+
+    @property
+    def action_ids(self) -> tuple[str, ...]:
+        return tuple(binding.action_id for binding in self.bindings)
+
+
+def _archive_sequence_witness_row(row: sqlite3.Row, *, step_count: int) -> ArchiveSequenceWitnessRow:
+    return ArchiveSequenceWitnessRow(
+        session_id=str(row["session_id"]),
+        bindings=tuple(
+            ArchiveSequenceStepBinding(
+                step_index=index,
+                action_id=str(row[f"step_{index}_action_id"]),
+                message_id=str(row[f"step_{index}_message_id"]),
+                message_position=int(row[f"step_{index}_message_position"]),
+                variant_index=int(row[f"step_{index}_variant_index"] or 0),
+                block_position=int(row[f"step_{index}_block_position"]),
+                occurred_at_ms=(
+                    int(row[f"step_{index}_occurred_at_ms"])
+                    if row[f"step_{index}_occurred_at_ms"] is not None
+                    else None
+                ),
+            )
+            for index in range(step_count)
+        ),
+    )
+
+
 def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
     tool_result_block_id = str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None
     is_error = int(row["is_error"]) if row["is_error"] is not None else None
@@ -2551,11 +2604,83 @@ def _action_sequence_clause(table_alias: str, action_sequence: tuple[str, ...]) 
     return _action_sequence_steps_clause(table_alias, steps)
 
 
-def _action_sequence_steps_clause(
-    table_alias: str,
+@dataclass(frozen=True, slots=True)
+class _SequenceWitnessRelation:
+    """The one relation of ``seq()`` matches, before it is used.
+
+    A sequence match is a tuple of concrete actions -- one per step -- that
+    satisfies every ordering and edge constraint. The relation below *is* that
+    set. The existential predicate is a semijoin over it (``SELECT 1``) and the
+    witness read is a projection of it (``SELECT`` the bindings), so the two
+    cannot disagree about what matched: there is one FROM/JOIN/WHERE
+    construction, used twice.
+
+    Multiplicity is **all-pairs**, which is what the joins express: a session
+    where three edits precede two tests yields every ordered (edit, test) pair,
+    not one representative. Callers that only need existence take the semijoin,
+    which SQLite short-circuits; callers that page witnesses get a total order
+    over the binding coordinates, so a ``LIMIT`` returns the first matches
+    rather than an arbitrary subset of them.
+    """
+
+    relation_sql: str
+    """``WITH`` prefix for the follow-up CTE, or empty."""
+    joins: str
+    predicates: str
+    step_count: int
+    params: tuple[object, ...]
+
+    def semijoin_clause(self, table_alias: str) -> str:
+        """Return the existential predicate over this relation."""
+        return (
+            "EXISTS ("
+            f"{self.relation_sql} "
+            "SELECT 1 FROM sessions sequence_root "
+            f"{self.joins} "
+            f"WHERE sequence_root.session_id = {table_alias}.session_id "
+            f"AND {self.predicates}"
+            ")"
+        )
+
+    @property
+    def binding_columns(self) -> str:
+        """Per-step binding projection, ordered by step index."""
+        return ", ".join(
+            f"seq_a{index}.tool_use_block_id AS step_{index}_action_id, "
+            f"seq_a{index}.message_id AS step_{index}_message_id, "
+            f"seq_m{index}.position AS step_{index}_message_position, "
+            f"seq_m{index}.variant_index AS step_{index}_variant_index, "
+            f"seq_b{index}.position AS step_{index}_block_position, "
+            f"seq_m{index}.occurred_at_ms AS step_{index}_occurred_at_ms"
+            for index in range(self.step_count)
+        )
+
+    @property
+    def binding_order(self) -> str:
+        """Total order over the binding coordinates.
+
+        Without this a ``LIMIT`` would return an arbitrary member of the
+        all-pairs relation; with it, ``LIMIT n`` is the first ``n`` matches
+        under a stated order.
+        """
+        coordinates = ["sequence_root.session_id"]
+        for index in range(self.step_count):
+            coordinates.extend(
+                [
+                    f"seq_m{index}.position",
+                    f"seq_m{index}.variant_index",
+                    f"seq_b{index}.position",
+                    f"seq_a{index}.tool_use_block_id",
+                ]
+            )
+        return ", ".join(coordinates)
+
+
+def _action_sequence_witness_relation(
     steps: tuple[QueryPredicate, ...],
     constraints: tuple[QuerySequenceConstraint, ...] = (),
-) -> tuple[str, list[object]]:
+) -> _SequenceWitnessRelation:
+    """Build the relation of concrete action tuples that match ``steps``."""
     needs_followup = any(_predicate_uses_unit_field(step, "followup_class", unit="action") for step in steps)
     relation_sql = _ACTION_FOLLOWUP_RELATION_SQL if needs_followup else ""
     action_relation = "action_rows" if needs_followup else "actions"
@@ -2570,7 +2695,7 @@ def _action_sequence_steps_clause(
         joins.append(
             f"""
             JOIN {action_relation} {action_alias}
-              ON {action_alias}.session_id = {table_alias}.session_id
+              ON {action_alias}.session_id = sequence_root.session_id
             JOIN messages {message_alias}
               ON {message_alias}.message_id = {action_alias}.message_id
             JOIN blocks {block_alias}
@@ -2593,16 +2718,23 @@ def _action_sequence_steps_clause(
                     f"AND {message_alias}.occurred_at_ms - seq_m{index - 1}.occurred_at_ms <= ?"
                 )
                 params.append(constraint.within_ms)
-    sql = (
-        "EXISTS ("
-        f"{relation_sql} "
-        "SELECT 1 FROM sessions sequence_root "
-        f"{' '.join(joins)} "
-        f"WHERE sequence_root.session_id = {table_alias}.session_id "
-        f"AND {' AND '.join(predicates)}"
-        ")"
+    return _SequenceWitnessRelation(
+        relation_sql=relation_sql,
+        joins=" ".join(joins),
+        predicates=" AND ".join(predicates),
+        step_count=len(steps),
+        params=tuple(params),
     )
-    return sql, params
+
+
+def _action_sequence_steps_clause(
+    table_alias: str,
+    steps: tuple[QueryPredicate, ...],
+    constraints: tuple[QuerySequenceConstraint, ...] = (),
+) -> tuple[str, list[object]]:
+    """Return the existential predicate as a semijoin over the match relation."""
+    relation = _action_sequence_witness_relation(steps, constraints)
+    return relation.semijoin_clause(table_alias), list(relation.params)
 
 
 def _action_after_predicate(previous: int | str, current: int | str) -> str:
@@ -2634,6 +2766,52 @@ def _no_action_between_predicate(previous: int, current: int, action_relation: s
         f"AND {after_previous} AND {before_current}"
         ")"
     )
+
+
+def query_action_sequence_witnesses(
+    self: _ArchiveQueryReadsHost,
+    predicate: QuerySequencePredicate,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    session_filters: Mapping[str, object] | None = None,
+) -> list[ArchiveSequenceWitnessRow]:
+    """Return the concrete action tuples that satisfy a ``seq()`` pattern.
+
+    The pattern predicate answers *which sessions* contain the pattern; this
+    answers *where*, so a match can be projected, grouped or cited. Both read
+    the same relation (:func:`_action_sequence_witness_relation`) -- the
+    predicate as a semijoin, this as a projection -- so a witness is by
+    construction a row the predicate would have accepted.
+
+    Multiplicity is all-pairs and the order is total over the binding
+    coordinates, so ``limit`` pages the matches rather than sampling them.
+    """
+    if len(predicate.steps) < 2:
+        raise ValueError("action sequence predicates require at least two steps")
+    normalized_limit = max(int(limit), 0)
+    normalized_offset = max(int(offset), 0)
+    relation = _action_sequence_witness_relation(predicate.steps, predicate.constraints)
+    session_clause = ""
+    session_params: list[object] = []
+    if session_filters:
+        session_clause, session_params = cast(Any, _session_filter_clause)(
+            "sequence_root", prefix="AND", **session_filters
+        )
+    rows = self._conn.execute(
+        f"""
+        {relation.relation_sql}
+        SELECT sequence_root.session_id AS session_id, {relation.binding_columns}
+        FROM sessions sequence_root
+        {relation.joins}
+        WHERE {relation.predicates}
+        {session_clause}
+        ORDER BY {relation.binding_order}
+        LIMIT ? OFFSET ?
+        """,
+        (*relation.params, *session_params, normalized_limit, normalized_offset),
+    ).fetchall()
+    return [_archive_sequence_witness_row(row, step_count=relation.step_count) for row in rows]
 
 
 def query_messages(

@@ -381,6 +381,31 @@ class TitleSource(PolylogueStrEnum):
     HEURISTIC = "heuristic"
 
 
+class DisplayLabelSource(PolylogueStrEnum):
+    """What produced the read-time ``display_label`` a surface renders.
+
+    ``display_label`` is a read-time projection with three possible
+    provenances, and a consumer that cannot tell them apart will present a
+    derivation as if the provider had said it. ``SYNTHESIZED`` is the
+    load-bearing member: it means the archive composed the string from
+    structural evidence it holds, which is exactly the case for a session
+    whose stored title is a recognized prompt echo
+    (``TitleSource.HEURISTIC``).
+
+    This is a read-time vocabulary and is never persisted, so it carries no
+    durable DDL membership check.
+    """
+
+    ORIGIN = "origin"
+    """The provider supplied the title (``TitleSource.ORIGIN``)."""
+
+    DISPLAY_NAME = "display_name"
+    """The provider assigned a human-readable name distinct from the title."""
+
+    SYNTHESIZED = "synthesized"
+    """Composed here from structural evidence; no provider asserted it."""
+
+
 class BranchType(PolylogueStrEnum):
     """Classification for how a session relates to its parent."""
 
@@ -924,6 +949,7 @@ __all__ = [
     "BlockType",
     "BranchType",
     "DelegationMappingState",
+    "DisplayLabelSource",
     "DelegationResultStatus",
     "LinkType",
     "MaterialOrigin",

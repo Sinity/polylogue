@@ -6,6 +6,7 @@ import pytest
 
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.query import runtime_matching
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -14,6 +15,7 @@ from polylogue.archive.query.predicate import (
     QuerySequenceConstraint,
 )
 from polylogue.archive.query.runtime_matching import (
+    action_predicate_sequence_witnesses,
     matches_action_predicate_sequence,
     matches_action_sequence,
     matches_action_terms,
@@ -258,3 +260,95 @@ def test_matches_action_predicate_sequence_enforces_known_within_boundary(
         ),
     )
     assert matches_action_predicate_sequence(steps, session, constraint) is False
+
+
+def test_sequence_witnesses_name_the_matching_actions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The in-memory matcher returns which actions matched, not only whether.
+
+    Anti-vacuity: have ``action_predicate_sequence_witnesses`` keep only the
+    last index of each partial tuple (the pre-4p1.7 ``candidates`` shape) and
+    the binding assertion below goes red, because the first step's action can
+    no longer be recovered.
+    """
+    session = _session()
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit"),
+            _event(ToolCategory.SHELL, tool_name="Bash", command="pytest"),
+        ),
+    )
+    steps = (_action_predicate("action", "file_edit"), _action_predicate("action", "shell"))
+
+    result = action_predicate_sequence_witnesses(steps, session)
+
+    assert result.truncated is False
+    assert [witness.action_indices for witness in result.witnesses] == [(0, 1)]
+    assert result.witnesses[0].span == (0, 1)
+
+
+def test_sequence_multiplicity_is_all_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two edits before two shells yield four matches, matching the SQL relation."""
+    session = _session()
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit"),
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit"),
+            _event(ToolCategory.SHELL, tool_name="Bash", command="pytest"),
+            _event(ToolCategory.SHELL, tool_name="Bash", command="ruff"),
+        ),
+    )
+    steps = (_action_predicate("action", "file_edit"), _action_predicate("action", "shell"))
+
+    result = action_predicate_sequence_witnesses(steps, session)
+
+    assert sorted(witness.action_indices for witness in result.witnesses) == [(0, 2), (0, 3), (1, 2), (1, 3)]
+
+
+def test_the_boolean_answer_is_derived_from_the_witnesses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One matcher, two answers -- a reported match always has a witness.
+
+    Anti-vacuity: reintroducing a separate traversal inside
+    ``matches_action_predicate_sequence`` would let the two disagree; this
+    pins them to the same call for both a matching and a non-matching pattern.
+    """
+    session = _session()
+    _patch_events(
+        monkeypatch,
+        (
+            _event(ToolCategory.FILE_EDIT, tool_name="Edit"),
+            _event(ToolCategory.SHELL, tool_name="Bash", command="pytest"),
+        ),
+    )
+    hit = (_action_predicate("action", "file_edit"), _action_predicate("action", "shell"))
+    miss = (_action_predicate("action", "shell"), _action_predicate("action", "search"))
+
+    for steps in (hit, miss):
+        witnesses = action_predicate_sequence_witnesses(steps, session)
+        assert matches_action_predicate_sequence(steps, session) is bool(witnesses.witnesses)
+
+
+def test_the_witness_expansion_is_bounded_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A combinatorial match set is capped, and the cap is reported.
+
+    Anti-vacuity: removing the ``MAX_SEQUENCE_WITNESSES`` break makes
+    ``truncated`` False and the witness count exceed the ceiling.
+    """
+    session = _session()
+    monkeypatch.setattr(runtime_matching, "MAX_SEQUENCE_WITNESSES", 3)
+    _patch_events(
+        monkeypatch,
+        (
+            *(_event(ToolCategory.FILE_EDIT, tool_name="Edit") for _ in range(4)),
+            *(_event(ToolCategory.SHELL, tool_name="Bash", command="pytest") for _ in range(4)),
+        ),
+    )
+    steps = (_action_predicate("action", "file_edit"), _action_predicate("action", "shell"))
+
+    result = action_predicate_sequence_witnesses(steps, session)
+
+    assert result.truncated is True
+    assert len(result.witnesses) <= 3
+    # Truncation can only drop matches after one was found, so existence stays sound.
+    assert matches_action_predicate_sequence(steps, session) is True

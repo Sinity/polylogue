@@ -23,7 +23,6 @@ class CommandShapeUsage(ArchiveInsightModel):
     execution_count: int
     session_count: int
     last_used_at: str | None = None
-    last_used_sort_key: float | None = None
     window_since: str | None = None
     window_until: str | None = None
     provenance: ArchiveInsightProvenance
@@ -150,7 +149,6 @@ def build_command_shape_usage(
                 execution_count=int(item["count"]),
                 session_count=len(item["sessions"]),
                 last_used_at=_iso_ms(last_ms),
-                last_used_sort_key=float(last_ms) / 1000 if last_ms is not None else None,
                 window_since=query.since,
                 window_until=query.until,
                 provenance=ArchiveInsightProvenance(

@@ -126,6 +126,7 @@ SESSION_COLUMNS = (
     "origin",
     "title",
     "title_source",
+    "title_is_synthesized",
     "title_ref",
     "target_ref",
     "anchor",

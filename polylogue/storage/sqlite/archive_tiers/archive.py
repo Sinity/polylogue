@@ -91,6 +91,7 @@ from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
     QueryPredicate,
+    QuerySequencePredicate,
 )
 from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
@@ -116,7 +117,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import DisplayLabelSource, Origin, Provider
 from polylogue.core.errors import (
     ArchiveTierUnavailableError,
     PostFilterAfterLimitError,
@@ -169,6 +170,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
     ArchiveQueryUnitAggregateRow,
     ArchiveQueryUnitMultiAggregatePage,
     ArchiveRunQueryRow,
+    ArchiveSequenceWitnessRow,
     _action_command_expression,
     _session_filter_clause,
 )
@@ -460,6 +462,10 @@ class ArchiveSessionSummary:
     display_name: str | None = None
     # Read-time projection over current structural evidence. Never persisted.
     display_label: str | None = None
+    # Which of the three display_label provenances produced the value above
+    # (DisplayLabelSource). A synthesized label must never be mistaken for a
+    # string the provider asserted.
+    display_label_source: str | None = None
     terminal_state: str | None = None
     total_cost_usd: float | None = None
     cost_provenance: str | None = None
@@ -6837,6 +6843,22 @@ class ArchiveStore:
             sort_direction=sort_direction,
         )
 
+    def query_action_sequence_witnesses(
+        self,
+        predicate: QuerySequencePredicate,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+    ) -> list[ArchiveSequenceWitnessRow]:
+        return _archive_query_reads.query_action_sequence_witnesses(
+            self,
+            predicate,
+            limit=limit,
+            offset=offset,
+            session_filters=session_filters,
+        )
+
     def query_session_actions(
         self,
         session_ids: Sequence[str],
@@ -7378,6 +7400,12 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
     # they did before.
     has_real_title = bool(raw_title and raw_title.strip()) and raw_title_source in {"origin", "heuristic"}
     provider_title = raw_title if has_real_title else None
+    # A HEURISTIC title is a prompt echo the parser already recognized as one
+    # (polylogue-4p1.6). It is retained as ``title``/``title_source`` because
+    # it is real stored evidence, but it is not display authority: rendering
+    # it verbatim republishes the user's own first message as if the provider
+    # had named the session. Only an ORIGIN title speaks for the provider.
+    display_authoritative_title = provider_title if raw_title_source == "origin" else None
     try:
         raw_display_name = row["display_name"]
     except IndexError:
@@ -7400,7 +7428,22 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         duration_ms=duration_ms,
         session_date=session_date,
     )
-    display_label = provider_title or display_name or structural_label
+    # One decision produces both the label and its provenance, so a caller can
+    # never be told a composed string came from the provider.
+    display_label, display_label_source = next(
+        (
+            (label, source)
+            for label, source in (
+                (display_authoritative_title, DisplayLabelSource.ORIGIN.value),
+                (display_name, DisplayLabelSource.DISPLAY_NAME.value),
+                (structural_label, DisplayLabelSource.SYNTHESIZED.value),
+            )
+            if label
+        ),
+        # compute_session_structural_label always emits a message count, so
+        # this is unreachable today; it stays total rather than raising.
+        (session_id, DisplayLabelSource.SYNTHESIZED.value),
+    )
     title = provider_title
     title_source = raw_title_source if provider_title is not None else None
     parent_id: str | None
@@ -7432,6 +7475,7 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         branch_type=branch_type,
         title=title,
         display_label=display_label,
+        display_label_source=display_label_source,
         title_source=title_source,
         parent_id=parent_id,
         title_ref=str(row["title_ref"]) if row["title_ref"] is not None else None,
