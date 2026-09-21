@@ -2971,6 +2971,7 @@ def test_source_008_009_collision_names_both_owners_and_blocks_admission() -> No
         migrated_version=8,
         fresh_version=8,
         migrated_inventory_sha256="a" * 64,
+        parity_inventory_sha256="a" * 64,
         fresh_inventory_sha256="a" * 64,
         missing_objects=(),
         unexpected_objects=(),
@@ -3879,3 +3880,45 @@ def test_durable_change_train_execution_carries_the_bootstrap_seal(
     assert reconcile_durable_change_train_startup(archive_root) == ()
     # The marker's authority is the recorded bootstrap versions, not its seal.
     assert json.loads(marker.read_text(encoding="utf-8"))["versions"] == sealed_versions
+
+
+def test_a_manifest_written_before_the_projected_digest_still_verifies() -> None:
+    """A recorded train stays verifiable across the parity-digest split.
+
+    polylogue-jkoah separated ``DurableFreshDDLParityProof``'s projected digest
+    from its unprojected one. Every manifest written before that split carries
+    a single digest, and it is necessarily both: the split only separates two
+    values on a tier that retains a declared retirement, and such a tier could
+    not have been recorded while the proof that consumes the parity refused it.
+    So the decoder completes the missing slot from the recorded digest rather
+    than declaring the manifest unverifiable.
+
+    The manifest checksum is verified before the backfill, so this cannot be
+    used to admit an unauthenticated payload.
+
+    Anti-vacuity: without the decoder backfill this raises
+    ``train.fresh_ddl_parity fields differ: missing=['parity_inventory_sha256']``.
+    A manifest carrying the field is decoded untouched, which the second half
+    pins.
+    """
+    train = _admitted(ArchiveTier.SOURCE)
+    payload = migration_runner.durable_change_train_to_payload(train)
+    parity_payload = payload["fresh_ddl_parity"]
+    assert isinstance(parity_payload, dict)
+    assert "parity_inventory_sha256" in parity_payload
+
+    # Exactly the bytes a pre-split writer produced: the field absent, and the
+    # checksum computed over the payload without it.
+    legacy = {key: value for key, value in payload.items() if key != "manifest_sha256"}
+    legacy["fresh_ddl_parity"] = {
+        key: value for key, value in parity_payload.items() if key != "parity_inventory_sha256"
+    }
+    legacy["manifest_sha256"] = migration_runner._canonical_json_sha256(legacy)
+
+    decoded = migration_runner.durable_change_train_from_payload(legacy)
+    assert decoded.fresh_ddl_parity is not None
+    assert decoded.fresh_ddl_parity.parity_inventory_sha256 == decoded.fresh_ddl_parity.migrated_inventory_sha256
+    assert decoded == train
+
+    # A manifest that already carries the field is not rewritten by the backfill.
+    assert migration_runner.durable_change_train_from_payload(payload) == train

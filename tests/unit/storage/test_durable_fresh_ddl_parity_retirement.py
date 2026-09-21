@@ -23,9 +23,11 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
+from pathlib import Path
 
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source import (
     RETIRED_SOURCE_SCHEMA_OBJECTS,
     SOURCE_DDL,
@@ -35,6 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
     DurableFreshDDLParityProof,
     MigrationError,
+    capture_durable_database_evidence,
     capture_durable_schema_inventory,
     prove_durable_fresh_ddl_parity,
 )
@@ -139,7 +142,8 @@ def test_a_migrated_tier_keeping_a_retired_column_has_fresh_ddl_parity() -> None
     assert proof.unexpected_objects == ()
     assert proof.missing_objects == ()
     assert proof.matches is True
-    assert proof.migrated_inventory_sha256 == proof.fresh_inventory_sha256
+    assert proof.parity_inventory_sha256 == proof.fresh_inventory_sha256
+    assert proof.migrated_inventory_sha256 != proof.parity_inventory_sha256
 
 
 def test_the_retired_column_projection_is_not_a_blanket_table_exemption() -> None:
@@ -207,3 +211,87 @@ def test_the_projection_does_not_depend_on_how_the_retired_column_was_declared(d
         proof = _prove(migrated, fresh)
 
     assert proof.matches is True
+
+
+def test_the_unprojected_digest_is_the_one_the_apply_evidence_records(tmp_path: Path) -> None:
+    """polylogue-jkoah: the train gates compare parity against unprojected bytes.
+
+    ``prove_durable_change_train``, ``_validate_train_proof`` and
+    ``_historical_schema_evidence`` all require
+    ``parity.migrated_inventory_sha256 == apply_evidence.post.schema_inventory_sha256``.
+    ``apply_durable_change_train`` builds that ``post`` with
+    ``capture_durable_database_evidence``, which captures the inventory with no
+    retirement projection at all. Pointing the parity side at the projected
+    digest makes the two equal only on a tier that retires nothing -- so the
+    proof would refuse exactly the tier the retirement exemption exists for.
+
+    The evidence below is the same production pair those gates compare: a
+    ``capture_durable_database_evidence`` capture of a real source tier, and a
+    ``prove_durable_fresh_ddl_parity`` proof over the same connection.
+
+    Anti-vacuity: the fixture retains a declared retirement at both grains and
+    the test *requires* the projected and unprojected digests to differ. On a
+    tier retiring nothing they are equal and every assertion here holds both
+    before and after the fix. Restoring the projected digest as
+    ``migrated_inventory_sha256`` turns the ``post`` comparison red.
+    """
+    source_path = tmp_path / "source.db"
+    # A real file, because ``capture_durable_database_evidence`` binds its
+    # evidence to the tier's own archive identity on disk.
+    initialize_archive_database(source_path, ArchiveTier.SOURCE)
+    with closing(sqlite3.connect(source_path)) as migrated:
+        migrated.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+        # A historical tier that migration carried forward carrying exactly
+        # what the retirement declaration says it would carry.
+        migrated.execute(f"CREATE TABLE {RETIRED_TABLE_NAME} (census_id TEXT PRIMARY KEY) STRICT")
+        migrated.execute(
+            f"ALTER TABLE {RETIRED_COLUMN_TABLE} "
+            f"ADD COLUMN {RETIRED_COLUMN_NAME} INTEGER NOT NULL DEFAULT 0 CHECK({RETIRED_COLUMN_NAME} >= 0)"
+        )
+        migrated.commit()
+        post = capture_durable_database_evidence(migrated, ArchiveTier.SOURCE)
+        with _fresh_source() as fresh:
+            proof = _prove(migrated, fresh)
+
+    assert proof.matches is True
+    assert proof.unexpected_objects == ()
+    assert proof.changed_objects == ()
+    # The unprojected digest is the operand the applied-bytes gates compare.
+    assert proof.migrated_inventory_sha256 == post.schema_inventory_sha256
+    # The projected digest is the operand fresh DDL can equal.
+    assert proof.parity_inventory_sha256 == proof.fresh_inventory_sha256
+    # The fixture must actually exercise the exemption: on a tier retiring
+    # nothing these two are equal and neither assertion above can fail.
+    assert proof.parity_inventory_sha256 != proof.migrated_inventory_sha256
+
+
+def test_a_parity_proof_over_different_bytes_still_fails_the_applied_binding(tmp_path: Path) -> None:
+    """The binding the equality provides is not lost by splitting the digests.
+
+    A parity proof captured from a database whose schema is not the one the
+    apply recorded must still be unequal to that ``post`` evidence, or the fix
+    would have traded a false refusal for a false acceptance.
+
+    Anti-vacuity: making ``migrated_inventory_sha256`` anything other than the
+    migrated database's own unprojected inventory -- a constant, the fresh
+    digest, the projected digest -- turns this green while the test above stays
+    green too, so the pair pins both directions.
+    """
+    source_path = tmp_path / "source.db"
+    # A real file, because ``capture_durable_database_evidence`` binds its
+    # evidence to the tier's own archive identity on disk.
+    initialize_archive_database(source_path, ArchiveTier.SOURCE)
+    with closing(sqlite3.connect(source_path)) as migrated:
+        migrated.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+        migrated.execute(f"CREATE TABLE {RETIRED_TABLE_NAME} (census_id TEXT PRIMARY KEY) STRICT")
+        migrated.commit()
+        post = capture_durable_database_evidence(migrated, ArchiveTier.SOURCE)
+        # The applied file then gains an object the recorded evidence never saw.
+        migrated.execute("CREATE TABLE raw_undeclared_drift (id TEXT PRIMARY KEY) STRICT")
+        migrated.commit()
+        with _fresh_source() as fresh:
+            drifted = _prove(migrated, fresh)
+
+    assert drifted.unexpected_objects == ("table:raw_undeclared_drift",)
+    assert drifted.matches is False
+    assert drifted.migrated_inventory_sha256 != post.schema_inventory_sha256
