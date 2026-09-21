@@ -561,10 +561,6 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
             "execution_count",
             "session_count",
             "materializer_version",
-        )
-        + _true_zero_fields(
-            "The epoch sort key is a timestamp projection and is nullable when no provider or session time exists.",
-            "last_used_sort_key",
         ),
     ),
     RigorContract(

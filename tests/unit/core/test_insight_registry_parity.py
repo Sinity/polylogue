@@ -22,6 +22,7 @@ def _consumer_report() -> dict[str, dict[str, str | None]]:
             "export_eligible": "yes" if it.export_eligible else "no",
             "reader_panel": it.reader_panel,
             "readiness_required": "no" if it.readiness_exempt else "yes",
+            "retention": it.retention.decision if it.retention else None,
         }
     return report
 
@@ -78,3 +79,15 @@ def test_descriptor_parity_report() -> None:
     for name in exempt_readiness:
         it = INSIGHT_REGISTRY[name]
         assert it.readiness_exempt, f"{name}: listed as exempt but readiness_exempt=False"
+
+
+def test_descriptor_parity_covers_the_retention_verdict() -> None:
+    """The consumer parity report names the recorded verdict for every type.
+
+    Anti-vacuity: dropping ``retention`` from one registration makes
+    ``register`` refuse it, so the registry -- and this report -- shrink.
+    """
+    report = _consumer_report()
+    assert set(report) == set(INSIGHT_REGISTRY)
+    for name, row in report.items():
+        assert row["retention"] in {"keep", "reduce"}, f"{name}: {row['retention']!r}"
