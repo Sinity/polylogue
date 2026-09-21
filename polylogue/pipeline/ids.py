@@ -5,11 +5,14 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime, time
+from decimal import Decimal
+from enum import Enum
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONValue, dumps
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.text_identity import nfc
@@ -298,8 +301,37 @@ class SessionRevisionProjection:
     anchor_free_event_identities: frozenset[tuple[bytes, bytes]] = frozenset()
 
 
-def _normalize_nested_for_hash(value: object) -> object:
-    """NFC-normalize every string inside a nested payload, recursively.
+class UnhashablePayloadValueError(TypeError):
+    """A nested payload value outside the declared hash vocabulary.
+
+    Raised by :func:`_normalize_nested_for_hash` instead of letting the JSON
+    facade fail later with a backend-flavoured ``TypeError`` that names
+    neither the hash vocabulary nor the field that carried the value. It
+    subclasses :class:`TypeError` so the boundary's error contract is
+    unchanged for anything that already caught the facade's own refusal.
+    """
+
+
+def _canonical_sort_key(value: object) -> str:
+    """Total, type-independent ordering key for already-normalized values.
+
+    Sorting a set's members directly is not total -- ``sorted({"z", 1})``
+    raises, and the members of a ``dict[str, object]`` metadata payload carry
+    no common order. Ordering by each member's canonical JSON text is total
+    over everything the vocabulary below admits, and is the same idiom the
+    publication encoder already uses (``sinex/material_adapter.py``).
+    """
+    return dumps(value, sort_keys=True)
+
+
+def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> object:
+    """Canonicalize a nested payload for hashing, recursively.
+
+    Two jobs, both required for the declared vocabulary to be *total* over
+    what parsers actually emit into ``ParsedContentBlock.metadata`` /
+    ``.tool_input`` and ``ParsedSessionEvent.payload`` -- all three typed
+    ``object``-valued, so nothing at the parser boundary constrains them to
+    JSON-native shapes.
 
     ``_normalize_for_hash`` covers scalar fields, but two nested payloads --
     ``ParsedContentBlock.tool_input`` and ``ParsedSessionEvent.payload`` --
@@ -318,20 +350,76 @@ def _normalize_nested_for_hash(value: object) -> object:
     Dict keys are normalized as well as values: a key is just as capable of
     carrying an NFD form, and an un-normalized key would split the hash the
     same way.
+
+    Second job (polylogue-m706z): lower every non-JSON-native value the
+    vocabulary admits to a declared canonical form. Nothing outside
+    ``None``/``bool``/``int``/``float``/``str``/``list``/``tuple``/``dict``
+    survives the digest encoder -- so a ``set`` in block metadata made
+    :func:`message_content_identity` raise rather than hash, and the
+    content-derived half of the message identity fallback was simply
+    unavailable for that message. An unserializable member is a gap in this
+    declaration, not a caller's mistake, so the cases below name the canonical
+    form of each admitted type rather than leaving it to the JSON backend:
+
+    - ``set``/``frozenset``: sorted by canonical JSON text. An unordered
+      collection has no order to preserve, so ordering it is the only way to
+      hash it deterministically at all (Python's set iteration order is
+      hash-randomized per process). It lowers to a plain array, deliberately
+      *not* a tagged wrapper: which container a parser chose for a member list
+      is an implementation detail, and a parser normalizing ``{"a", "b"}`` to
+      ``["a", "b"]`` must not move every affected ``content_identity``.
+    - ``Decimal``: ``float``, the same lowering ``core/json.py`` declares for
+      a JSON parser's ``Decimal`` (``_lower_decimals``, ``_default_encoder``).
+      The ``QUERY`` digest profile ``hash_payload`` uses reaches stdlib
+      ``json.dumps`` with no ``default`` hook at all, so a ``Decimal`` in
+      block metadata raised here too.
+    - ``datetime``/``date``/``time``: ISO-8601 text. ``bytes``-family: hex.
+      ``Enum``: its value. Same canonical forms the publication encoder uses.
+
+    Anything else raises :class:`UnhashablePayloadValueError` naming the type and
+    the field path, so the next gap arrives as a named vocabulary refusal
+    rather than a JSON backend message. Stringifying the unknown value instead
+    would be worse than refusing: ``str(object())`` embeds a memory address,
+    which would make an identity that is supposed to be content-derived vary
+    per process.
+
+    **No stored identity moves.** Every value type newly admitted here
+    previously raised inside ``hash_payload``, and ``content_identity`` is
+    computed on the write path (``archive_tiers/write.py``) before any row is
+    inserted -- so a message carrying one of these shapes could never have been
+    written to an archive in the first place. ``Decimal`` is the one type that
+    already hashed successfully, and its lowering is unchanged.
     """
     if value is None:
         return _NULL_SENTINEL
-    if value == "":
-        return _EMPTY_SENTINEL
     if isinstance(value, str):
-        return nfc(value)
+        return _EMPTY_SENTINEL if value == "" else nfc(value)
     if isinstance(value, Mapping):
         return {
-            nfc(key) if isinstance(key, str) else key: _normalize_nested_for_hash(item) for key, item in value.items()
+            nfc(key) if isinstance(key, str) else key: _normalize_nested_for_hash(item, path=f"{path}.{key}")
+            for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
-        return [_normalize_nested_for_hash(item) for item in value]
-    return value
+        return [_normalize_nested_for_hash(item, path=f"{path}[]") for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted(
+            (_normalize_nested_for_hash(item, path=f"{path}{{}}") for item in value),
+            key=_canonical_sort_key,
+        )
+    if isinstance(value, Enum):
+        return _normalize_nested_for_hash(value.value, path=path)
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, (int, float)):
+        return value
+    raise UnhashablePayloadValueError(
+        f"{type(value).__name__} at {path} is outside the declared hash vocabulary "
+        f"(polylogue/pipeline/ids.py:_normalize_nested_for_hash); declare its canonical form there"
+    )
 
 
 def _normalize_for_hash(value: HashScalar) -> JSONValue:
