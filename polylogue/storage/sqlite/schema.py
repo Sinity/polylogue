@@ -102,6 +102,16 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
                 raise RuntimeError(
                     f"{ArchiveTier.INDEX.value} schema semantic manifest mismatch: {json.dumps(diff, sort_keys=True)}"
                 )
+            # Inside the handler, not after it: inspecting the identity is the
+            # same kind of read as inspecting the manifest, so a lock or I/O
+            # error while reading it is equally a failure of this read rather
+            # than evidence about the schema on disk. Left outside, a transient
+            # fault on a sound index surfaced as a non-transient
+            # ``SchemaSkewError`` telling the operator to rebuild it. A genuine
+            # identity mismatch is a ``SchemaSkewError``, which is neither
+            # ``sqlite3.Error`` nor ``RuntimeError``, so it still propagates
+            # unchanged through both handlers below.
+            assert_derived_schema_identity(conn, "index")
         except sqlite3.Error as exc:
             # The manifest could not be read at all. That is a failure of this
             # read, not evidence about the schema on disk, and prescribing a
@@ -123,8 +133,6 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
                 generation_id=generation_id,
                 lifecycle_action="rebuild_index",
             ) from exc
-
-        assert_derived_schema_identity(conn, "index")
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
