@@ -8289,9 +8289,10 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
         _path: Path,
         *,
         cursor: object | None = None,
+        cursor_is_known: bool = False,
         source_index: int = -1,
     ) -> None:
-        del cursor, source_index
+        del cursor, cursor_is_known, source_index
 
     monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
     monkeypatch.setattr(processor, "_ingest_full_paths", fake_full_ingest)
@@ -8330,9 +8331,10 @@ async def test_live_append_plans_flush_in_bounded_groups(
         path: Path,
         *,
         cursor: object | None = None,
+        cursor_is_known: bool = False,
         source_index: int = -1,
     ) -> _AppendPlan:
-        del cursor
+        del cursor, cursor_is_known
         return _AppendPlan(
             path=path,
             source_name="codex",
