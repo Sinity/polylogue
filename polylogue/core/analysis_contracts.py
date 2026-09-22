@@ -122,13 +122,16 @@ class FrozenMapping(dict):  # type: ignore[type-arg]
     def _frozen(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError("canonical analysis-contract payloads are immutable")
 
+    # Each alias replaces a mutating entry point with the refusal. Where the
+    # base signature is not assignable (``popitem`` returns a pair, ``__ior__``
+    # returns ``Self``), the override is deliberate: the method never returns.
     __setitem__ = _frozen
     __delitem__ = _frozen
-    setdefault = _frozen  # type: ignore[assignment]
-    pop = _frozen  # type: ignore[assignment]
+    setdefault = _frozen
+    pop = _frozen
     popitem = _frozen  # type: ignore[assignment]
-    clear = _frozen  # type: ignore[assignment]
-    update = _frozen  # type: ignore[assignment]
+    clear = _frozen
+    update = _frozen
     __ior__ = _frozen  # type: ignore[assignment]
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
@@ -230,9 +231,9 @@ def test_canonical_payload_cannot_be_mutated_after_identity() -> None:
     with pytest.raises(TypeError, match="immutable"):
         definition.content["bounds"]["since"] = "1999-01-01"  # type: ignore[index]
     with pytest.raises(TypeError, match="immutable"):
-        definition.content.setdefault("extra", 1)  # type: ignore[union-attr]
+        cast(dict[str, object], definition.content).setdefault("extra", 1)
     with pytest.raises(AttributeError):
-        definition.content["tags"].append("c")  # type: ignore[union-attr]
+        cast(list[object], definition.content["tags"]).append("c")
     assert definition.ref_text == before
 
     world = _world()
@@ -254,19 +255,24 @@ def test_result_value_requires_a_known_state() -> None:
     valueless cases below pin that the rule is not a blanket refusal.
     """
     relation = _relation()
-    common = {
-        "result_ref": relation.relation_ref,
-        "definition_ref": relation.definition_ref,
-        "evaluation_world": relation.evaluation_world,
-        "relation": relation,
-    }
+
+    def envelope(state: str, value: object | None = None) -> ResultEnvelope:
+        return ResultEnvelope(
+            result_ref=relation.relation_ref,
+            definition_ref=relation.definition_ref,
+            evaluation_world=relation.evaluation_world,
+            relation=relation,
+            value_state=cast(Any, state),
+            value=value,
+        )
+
     for state in ("unknown", "unavailable", "redacted"):
         with pytest.raises(AnalysisContractError, match="cannot carry a value"):
-            ResultEnvelope(**common, value_state=state, value=42)  # type: ignore[arg-type]
-        assert ResultEnvelope(**common, value_state=state).value is None  # type: ignore[arg-type]
+            envelope(state, 42)
+        assert envelope(state).value is None
     with pytest.raises(AnalysisContractError, match="unsupported result value state"):
-        ResultEnvelope(**common, value_state="maybe")  # type: ignore[arg-type]
-    assert ResultEnvelope(**common, value_state="known", value=42).value == 42
+        envelope("maybe")
+    assert envelope("known", 42).value == 42
 
 
 def test_receipt_privacy_inherits_the_embedded_definition() -> None:
