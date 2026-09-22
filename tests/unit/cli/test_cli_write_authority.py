@@ -106,17 +106,32 @@ def test_resident_daemon_refuses_a_writable_tier_open(
 ) -> None:
     """An ordinary CLI process may not create tier files a live daemon owns.
 
+    The refusal is asserted as the *boundary's* relabelled error, not as the
+    command's own "Blocked:" line. ``archive-init`` used to catch
+    ``RuntimeError`` around ``initialize_archive_tier_files_from_plan``, which
+    swallowed ``UnleasedWriteError`` and printed its internal text ("open it
+    inside ``write_lease(...)``") as a blocked plan -- so this assertion was
+    satisfied by a message that never named the resident daemon and never
+    reached the relabelling the boundary exists to do (polylogue-re6s3 AC4).
+    The catch is now narrowed to ``ArchiveInitBlockedError``.
+
     Anti-vacuity: drop ``ctx.with_resource(cli_archive_writer_ownership())``
     from the root callback in ``polylogue/cli/click_app.py`` and this test goes
     red with ``executed: true`` and all six tier files on disk -- the defect.
     """
     root = _archive_root(monkeypatch, tmp_path)
-    resident_daemon(root / "daemon.pid")
+    resident_pid = resident_daemon(root / "daemon.pid")
 
-    result = _init_archive(cli_runner)
+    result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "archive-init", "--yes", "--output-format", "json"],
+        catch_exceptions=True,
+    )
 
     assert result.exit_code == 1, result.output
-    assert "write lease" in result.output
+    assert isinstance(result.exception, ArchiveWriterOwnershipError), result.output
+    assert f"PID {resident_pid}" in str(result.exception)
+    assert "write lease" in str(result.exception)
     assert [name for name in TIER_FILES if (root / name).exists()] == []
 
 

@@ -93,7 +93,10 @@ def archive_init_command(replace_existing: bool, yes: bool, output_format: str) 
     then creates fresh source, index, embeddings, user, and ops databases.
     Ingest and read surfaces populate and consume the archive.
     """
-    from polylogue.storage.sqlite.archive_tiers.archive_init import initialize_archive_tier_files_from_plan
+    from polylogue.storage.sqlite.archive_tiers.archive_init import (
+        ArchiveInitBlockedError,
+        initialize_archive_tier_files_from_plan,
+    )
     from polylogue.storage.sqlite.archive_tiers.archive_plan import build_archive_init_plan
 
     plan = build_archive_init_plan(
@@ -114,7 +117,15 @@ def archive_init_command(replace_existing: bool, yes: bool, output_format: str) 
 
     try:
         result = initialize_archive_tier_files_from_plan(plan)
-    except RuntimeError as exc:
+    except ArchiveInitBlockedError as exc:
+        # Narrowed from ``except RuntimeError``. That catch also swallowed
+        # ``UnleasedWriteError`` -- the single-writer boundary's refusal -- and
+        # printed its internal text ("open it inside write_lease(...)") to the
+        # operator as a blocked plan, so the refusal never reached the root
+        # callback that relabels it with the resident daemon's PID and the
+        # remedy, and ``--output-format json`` reported it as a plan document
+        # with no machine error code at all (polylogue-re6s3 AC4). A plan this
+        # command itself declared blocked is still its own to render.
         if output_format == "json":
             payload = _archive_plan_payload(plan)
             payload["executed"] = False

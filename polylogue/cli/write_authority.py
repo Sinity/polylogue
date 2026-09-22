@@ -85,9 +85,28 @@ __all__ = [
 
 
 class ArchiveWriterOwnershipError(RuntimeError):
-    """A CLI write was refused because a resident daemon owns the archive."""
+    """A CLI write was refused because a resident daemon owns the archive.
+
+    ``archive_root`` and ``resident_writer`` travel as attributes as well as
+    inside the message. A ``--format json`` client that wants to route the
+    write to the right daemon needs the archive it must reach as a field, not
+    as prose it has to parse back out -- the same reason
+    :class:`~polylogue.cli.shared.helper_support.DaemonRequiredError` carries
+    its operation and archive root (polylogue-re6s3 AC4).
+    """
 
     code = "archive_writer_ownership_unavailable"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        archive_root: object = None,
+        resident_writer: str | None = None,
+    ) -> None:
+        self.archive_root = None if archive_root is None else str(archive_root)
+        self.resident_writer = resident_writer
+        super().__init__(message)
 
 
 class ArchiveWriterOwnershipUndecidableError(ArchiveWriterOwnershipError):
@@ -135,7 +154,8 @@ def resident_archive_writer(root: Path | None = None) -> tuple[Path, str] | None
     except DaemonResidencyUndecidableError as exc:
         raise ArchiveWriterOwnershipUndecidableError(
             f"this CLI process cannot prove whether a resident daemon owns {resolved}: {exc}. "
-            "Refusing rather than writing durable tiers beside a writer this platform cannot see"
+            "Refusing rather than writing durable tiers beside a writer this platform cannot see",
+            archive_root=resolved,
         ) from exc
     if pid is None:
         return None
@@ -172,7 +192,9 @@ def cli_archive_writer_ownership() -> Iterator[None]:
                 f"this CLI process may not write {path}: {reason}. The daemon started after this "
                 f"command did, so {owned_root} is no longer this process's to write. Route the "
                 "mutation through the resident daemon, or stop it and run the command again as "
-                "the archive's exclusive offline owner"
+                "the archive's exclusive offline owner",
+                archive_root=owned_root,
+                resident_writer=reason,
             )
 
         with refuse_writable_tier_opens(refuse_a_later_arrival):
@@ -197,5 +219,7 @@ def cli_archive_writer_ownership() -> Iterator[None]:
             raise ArchiveWriterOwnershipError(
                 f"this CLI process may not write {owned_root}: {reason}. "
                 "Route the mutation through the resident daemon, or stop it to run "
-                f"this operation as the archive's exclusive offline owner ({exc})"
+                f"this operation as the archive's exclusive offline owner ({exc})",
+                archive_root=owned_root,
+                resident_writer=reason,
             ) from exc

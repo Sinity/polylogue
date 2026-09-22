@@ -46,6 +46,15 @@ NO_RESULTS = "no_results"
 #: apart from "something went wrong", and the remedy that the terminal format
 #: prints was not on the wire at all (polylogue-re6s3 AC4, polylogue-3eexy AC4).
 DAEMON_REQUIRED = "daemon_required"
+#: A resident daemon owns this archive, so the CLI process may not write it.
+#:
+#: The mirror image of :data:`DAEMON_REQUIRED`, and deliberately a different
+#: code: the remedy there is "start the daemon", and the remedy here is the
+#: opposite -- route the write through the daemon that is *already* running,
+#: or stop it and own the archive offline. Folding both into one code would
+#: tell a machine caller to start a second daemon for the archive whose first
+#: one is exactly what refused it.
+ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE = "archive_writer_ownership_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,6 +202,41 @@ def error_daemon_required(
         details["archive_root"] = archive_root
     return MachineError(
         code=DAEMON_REQUIRED,
+        message=message,
+        command=tuple(command or ()),
+        details=details,
+    )
+
+
+def error_archive_writer_ownership(
+    message: str,
+    *,
+    code: str = ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE,
+    command: list[str] | None = None,
+    archive_root: str | None = None,
+    resident_writer: str | None = None,
+) -> MachineError:
+    """Build the machine envelope for the CLI single-writer boundary's refusal.
+
+    Before this existed the boundary's refusal reached a ``--format json``
+    client as ``runtime_error`` and an operator as ``unexpected error:
+    ArchiveWriterOwnershipError: ...`` -- the generic branch of
+    :func:`polylogue.cli.machine_main.run_machine_entry`, shared with a corrupt
+    tier and a genuine crash. It is the most deliberate refusal the CLI makes,
+    and "unexpected" is the one thing it is not (polylogue-re6s3 AC4).
+
+    ``code`` is a parameter because the undecidable case is a distinct answer:
+    "a daemon owns this archive" and "this platform cannot tell whether one
+    does" call for different operator action, and collapsing them would report
+    a resident writer that was never observed.
+    """
+    details: JSONDocument = {"remedy": "route the write through the resident polylogued, or stop it"}
+    if archive_root:
+        details["archive_root"] = archive_root
+    if resident_writer:
+        details["resident_writer"] = resident_writer
+    return MachineError(
+        code=code,
         message=message,
         command=tuple(command or ()),
         details=details,
