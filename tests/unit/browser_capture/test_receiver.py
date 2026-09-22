@@ -744,6 +744,53 @@ def test_mission_control_resolves_the_canonical_session_for_an_archived_capture(
     assert projection["assertions"] == {"status": "unknown", "items": []}
 
 
+def test_mission_control_resolves_the_default_archive_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production receiver is built with no explicit archive root.
+
+    `run_daemon_services` calls `make_server(...)` without `archive_root`, so
+    `_mission_control` saw `None` and degraded every projection to
+    `archive_projection_unavailable` -- cost and assertions were permanently
+    unavailable in production while every test that passed a temporary root
+    saw them. `existing_capture_state` above already resolves the same
+    default, which is why the indexed session was still found.
+
+    Anti-vacuity: drop the `or default_archive_root()` fallback and the
+    handler never calls `mission_control_archive_facts` -- `roots` stays empty
+    and the projection degrades.
+    """
+    import polylogue.browser_capture.server as server_mod
+
+    write_capture_envelope(BrowserCaptureEnvelope.model_validate(_payload()), spool_path=tmp_path)
+    _seed_browser_capture_archive(tmp_path)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+
+    roots: list[Path] = []
+
+    def _facts(root: Path, session_id: str) -> tuple[dict[str, object], dict[str, object]]:
+        del session_id
+        roots.append(root)
+        return (
+            {"status": "available", "total_usd": 1.5, "provenance": []},
+            {"status": "available", "items": []},
+        )
+
+    monkeypatch.setattr(server_mod, "mission_control_archive_facts", _facts)
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(
+            host,
+            port,
+            "GET",
+            "/v1/mission-control?provider=chatgpt&provider_session_id=conv-123",
+            origin=_EXTENSION_ORIGIN,
+        )
+        projection = json.loads(response.read())
+
+    assert roots == [tmp_path]
+    assert projection["status"] == "available"
+    assert projection["cost"] == {"status": "available", "total_usd": 1.5, "provenance": []}
+
+
 def test_mission_control_archive_facts_read_a_real_archive(empty_archive_template: Path, tmp_path: Path) -> None:
     """A schema-complete archive answers the projection instead of degrading.
 
