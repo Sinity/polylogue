@@ -367,12 +367,13 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert affected["cache"] == "tree+environment"
     assert affected["timeout_seconds"] == 7200
     assert complete["exec"] == ["devtools", "verify", "--all"]
-    # polylogue-p2mbi: no `checkout` key. "default" does not select a tree, it
-    # REFUSES every workspace but the project root -- which is the operator's
-    # working checkout and deliberately divergent, so the corpus run could
-    # only ever qualify that branch and a coordinator could not point it at an
-    # integrated candidate. Anti-vacuity: restoring the key makes this red.
-    assert "checkout" not in complete
+    # polylogue-p2mbi AC4 (#5405): `checkout = "candidate"`. The unset default
+    # does not select a tree, it REFUSES every workspace but the project root
+    # -- which is the operator's working checkout and deliberately divergent,
+    # so the corpus run could only ever qualify that branch and a coordinator
+    # could not point it at an integrated candidate. Anti-vacuity: removing the
+    # key makes this red.
+    assert complete["checkout"] == "candidate"
     assert complete["pool"] == "pytest-heavy"
     assert complete["result"] == "pytest"
     assert complete["cache"] == "tree+environment"
@@ -434,11 +435,10 @@ print(json.dumps({
             "pool": "pytest-heavy",
             "result": "pytest",
             "timeout": 14400,
-            # The production parser's own default for an undeclared key
-            # (polylogue-p2mbi). Asserted through agentctl rather than through
-            # the TOML so the meaning of "no checkout key" is the parser's,
-            # not this test's guess at it.
-            "checkout": "any",
+            # Read back through the production parser rather than the TOML, so
+            # what "candidate" resolves to is agentctl's answer and not this
+            # test's guess at it (polylogue-p2mbi AC4, #5405).
+            "checkout": "candidate",
         },
     }
 
@@ -500,6 +500,30 @@ def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) ->
 )
 def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], expected: str) -> None:
     assert verify._selection_for_changes(changed) == expected
+
+
+def test_a_markdown_test_fixture_still_selects_tests() -> None:
+    """Markdown under ``tests/`` is fixture content, not documentation.
+
+    ``tests/data/golden/chatgpt-simple.md`` is read and compared byte-for-byte
+    by ``tests/unit/ui/test_ui_visual.py``'s
+    ``TestGoldenMarkdownRendering::test_chatgpt_simple_session``. The blanket
+    ``.md`` suffix exemption made a change set containing only that fixture
+    select no pytest at all, and the hosted check accepted the resulting
+    no-test receipt while reporting that no test exercises the path.
+
+    Anti-vacuity: drop the ``tests/`` carve-out from ``_no_test_path`` and the
+    first two assertions go red. The last two pin the opposite direction, so
+    retiring the exemption wholesale -- which would route every README edit
+    through the testmon graph -- does not pass either.
+    """
+    fixture = "tests/data/golden/chatgpt-simple.md"
+    checkout = Path(__file__).resolve().parents[3]
+    assert (checkout / fixture).is_file(), "the fixture this case is anchored to moved"
+    assert verify._selection_for_changes(frozenset({fixture})) == "affected"
+    assert verify._no_test_path(fixture) is False
+    assert verify._no_test_path("docs/devtools.md") is True
+    assert verify._selection_for_changes(frozenset({"docs/devtools.md"})) == "none"
 
 
 def test_verify_main_records_why_no_pytest_step_ran(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1181,20 +1205,29 @@ def test_agent_tier_refusal_honors_the_json_contract(
 
 
 def test_schema_promotion_audits_the_tree_it_writes_to(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: restore the "polylogue/schemas" literal and this resolves
-    to a bare relative path that only exists from the checkout root.
+    """The audited root is the registry storage root promotion writes to.
 
-    Promotion writes to the installed schema package; auditing a relative
-    literal audits whatever happens to sit under the caller's cwd.
+    This case previously asserted only that the root is an absolute existing
+    directory named ``schemas``, which the installed ``polylogue/schemas``
+    package satisfies -- and that is NOT where promotion writes.
+    ``promote_schema_cluster`` goes through
+    ``polylogue.schemas.operator.registry.schema_registry()``, whose
+    ``storage_root`` is ``data_home()/schemas``, so the audit was inspecting
+    bundled artifacts promotion never touched.
+
+    Anti-vacuity: restore ``Path(next(iter(polylogue.schemas.__path__)))`` and
+    the equality below fails, because that path is inside the checkout and
+    does not move with ``XDG_DATA_HOME``.
     """
 
     from devtools import schema_promote
+    from polylogue.schemas.registry import SchemaRegistry
 
     root = schema_promote._schema_registry_root()
 
     assert root.is_absolute()
-    assert root.is_dir()
     assert root.name == "schemas"
+    assert root == SchemaRegistry().storage_root
 
 
 def test_schema_promotion_json_stays_one_document(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -95,6 +95,13 @@ _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 #: step; the static gates still run.
 _NO_TEST_PATH_PREFIXES = (".agentctl/", ".github/")
 _NO_TEST_PATH_SUFFIXES = (".md",)
+#: Where the ``.md`` suffix stops meaning "documentation". Markdown under
+#: ``tests/`` is fixture content a test reads and asserts --
+#: ``tests/data/golden/chatgpt-simple.md`` is compared byte-for-byte by
+#: ``tests/unit/ui/test_ui_visual.py::TestGoldenMarkdownRendering::test_chatgpt_simple_session``
+#: -- so exempting it by suffix let a change set consisting only of that
+#: fixture report "no test exercises them" and run no pytest at all.
+_TEST_TREE_PREFIX = "tests/"
 #: Selections that do not consult the testmon graph.
 _GRAPH_FREE_SELECTIONS = frozenset({"descriptor", "none"})
 # These tests read the AgentCTL descriptor directly. They are the bounded
@@ -283,6 +290,14 @@ def _git_changed_paths(root: Path) -> frozenset[str] | None:
 
 
 def _no_test_path(path: str) -> bool:
+    """Whether no test exercises ``path``.
+
+    The suffix exemption is about documentation, so it stops at the test tree:
+    a file under ``tests/`` is fixture content by construction, whatever its
+    extension.
+    """
+    if path.startswith(_TEST_TREE_PREFIX):
+        return False
     return path.startswith(_NO_TEST_PATH_PREFIXES) or path.endswith(_NO_TEST_PATH_SUFFIXES)
 
 
@@ -306,7 +321,8 @@ def _selection_reason(selection: str) -> str | None:
         return (
             "every changed path is orchestration metadata, documentation or a hosted workflow "
             f"({', '.join(f'{prefix}**' for prefix in _NO_TEST_PATH_PREFIXES)}, "
-            f"{', '.join(f'*{suffix}' for suffix in _NO_TEST_PATH_SUFFIXES)}); no test exercises them"
+            f"{', '.join(f'*{suffix}' for suffix in _NO_TEST_PATH_SUFFIXES)} "
+            f"outside {_TEST_TREE_PREFIX}**); no test exercises them"
         )
     if selection == "descriptor":
         return "the change stays inside orchestration metadata and includes the AgentCTL descriptor"

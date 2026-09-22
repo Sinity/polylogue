@@ -532,7 +532,7 @@ def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None =
 
 
 @contextlib.contextmanager
-def _on_exit(*actions: Callable[[], None]) -> Iterator[None]:
+def _on_exit(*actions: Callable[[], None], on_signal: Callable[[int], None] | None = None) -> Iterator[None]:
     """Run ``actions`` if this process is signalled or unwound inside the block.
 
     A signal runs the actions, restores the previous handler and re-raises the
@@ -545,6 +545,11 @@ def _on_exit(*actions: Callable[[], None]) -> Iterator[None]:
     bounded well inside :data:`UNIT_STOP_BUDGET_S` -- see
     :data:`STOP_ESCALATION_BUDGET_S`. An action that can block is a receipt
     that does not get written.
+
+    ``on_signal`` runs first and is told which signal arrived, so a caller can
+    preserve the run's own evidence before the disposal actions remove the
+    scratch it was sampled from. It runs on the signal path only: an ordinary
+    unwind reaches the caller's own ``finally``.
     """
 
     def run_actions() -> None:
@@ -553,6 +558,9 @@ def _on_exit(*actions: Callable[[], None]) -> Iterator[None]:
                 action()
 
     def handle(signal_number: int, frame: object) -> None:
+        if on_signal is not None:
+            with contextlib.suppress(Exception):
+                on_signal(signal_number)
         run_actions()
         signal.signal(signal_number, previous.get(signal.Signals(signal_number), signal.SIG_DFL))
         os.kill(os.getpid(), signal_number)
@@ -887,12 +895,22 @@ def _run_held(
     stdout: IO[Any] | None,
     on_exit: Callable[[], None],
     telemetry_path: Path | None = None,
+    result_path: Path | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """Run pytest here, in its own process group so a signalled waiter takes it along.
 
     The width is narrowed to what memory allows at this moment for the same
     reason the queued path narrows it inside the slot: this is where the run
     starts, and the corpus operation reaches pytest through here.
+
+    ``result_path`` is where a terminated run's receipt is preserved. This
+    path is the one ``verify_all``/``verify_affected`` take when they already
+    hold the pytest pool, and it used to write nothing at all on SIGTERM: the
+    handler stopped the child and re-raised, so neither ``sampler.stop()`` nor
+    the return value was ever reached, and the caller's disposal removed the
+    live telemetry sidecar on the way out. The selected width and the measured
+    peak were lost on exactly the runs -- deadline kills -- whose sizing
+    evidence is worth the most.
     """
     started = time.monotonic()
     command, sizing = resize_worker_argument(list(argv))
@@ -903,6 +921,10 @@ def _run_held(
     progress = _ProgressSnapshot(env)
     if telemetry_path is not None:
         _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
+    if result_path is not None:
+        # A previous run of this pid may have left one; reading that would
+        # report someone else's interruption.
+        _slot_result_path(result_path).unlink(missing_ok=True)
     process = subprocess.Popen(command, cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout, process_group=0)
     sampler = ProcessGroupMemorySampler(
         process.pid,
@@ -916,6 +938,27 @@ def _run_held(
         },
     )
     sampler.start()
+
+    def preserve(signal_number: int) -> None:
+        """Write the terminated run's receipt before anything is disposed."""
+        if result_path is None:
+            return
+        # One reading taken here rather than trusting the sampling thread's
+        # last one: this handler runs before ``stop()``, so the group is still
+        # alive and this is the truest peak the run ever reaches. A run
+        # signalled before the thread's first pass would otherwise persist a
+        # receipt whose measurement is "no sample observed the process group".
+        with contextlib.suppress(Exception):
+            sampler.sample()
+        with contextlib.suppress(OSError):
+            _write_interrupted_result(
+                result_path,
+                environment=env,
+                started=started,
+                signal_number=signal_number,
+                sizing=sizing,
+                memory=sampler.persist(),
+            )
 
     def stop() -> None:
         if process.poll() is not None:
@@ -931,7 +974,10 @@ def _run_held(
                 process.wait(timeout=STOP_KILL_GRACE_S)
 
     try:
-        with _on_exit(stop, on_exit):
+        # ``preserve`` runs before ``stop`` so the sampler reads the group
+        # while it is still alive, and before ``on_exit`` so the caller's
+        # disposal cannot remove the evidence first.
+        with _on_exit(stop, on_exit, on_signal=preserve):
             returncode = process.wait()
     finally:
         memory = sampler.stop()
@@ -965,6 +1011,10 @@ def run_pytest(
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
     basetemp = scratch.with_name(scratch.name.removesuffix(".tmpdir"))
     telemetry_path = scratch.parent / f"telemetry-{scratch.name}.json"
+    # A terminated held run writes its receipt beside the queued path's, under
+    # the checkout's retained artifact directory, not into the scratch tree
+    # ``dispose`` removes.
+    held_result_path = root / LAUNCH_DIR / f"pytest-slot-held-{os.getpid()}.log"
     sweep_stale_temp_trees(basetemp.parent)
     guard = guard_temp_trees(scratch, basetemp)
     keep = False
@@ -985,6 +1035,7 @@ def run_pytest(
                 stdout=stdout,
                 on_exit=dispose,
                 telemetry_path=telemetry_path,
+                result_path=held_result_path,
             )
             outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD, receipt=receipt)
         else:
@@ -1012,6 +1063,7 @@ def run_pytest_isolated(
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
     basetemp = scratch.with_name(scratch.name.removesuffix(".tmpdir"))
     telemetry_path = scratch.parent / f"telemetry-{scratch.name}.json"
+    held_result_path = root / LAUNCH_DIR / f"pytest-slot-held-{os.getpid()}.log"
     sweep_stale_temp_trees(basetemp.parent)
     guard = guard_temp_trees(scratch, basetemp)
     keep = False
@@ -1031,6 +1083,7 @@ def run_pytest_isolated(
             stdout=stdout,
             on_exit=dispose,
             telemetry_path=telemetry_path,
+            result_path=held_result_path,
         )
         keep = returncode != 0
         return SlotOutcome(returncode=returncode, slot="isolated", receipt=receipt)

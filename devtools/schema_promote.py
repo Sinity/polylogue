@@ -32,10 +32,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _schema_registry_root() -> Path:
-    """The schema package tree promotion writes to."""
-    import polylogue.schemas
+    """The schema tree ``promote_schema_cluster`` actually writes to.
 
-    return Path(next(iter(polylogue.schemas.__path__)))
+    ``promote_schema_cluster`` resolves its registry through
+    ``polylogue.schemas.operator.registry.schema_registry()``, whose
+    ``storage_root`` defaults to ``data_home()/schemas`` -- an XDG location,
+    not the installed ``polylogue/schemas`` package. Auditing the package tree
+    inspected artifacts promotion never touched, so a malformed or
+    privacy-unsafe newly promoted artifact returned success uninspected. The
+    root is taken from the same registry construction promotion uses, so the
+    two cannot drift apart again.
+    """
+    from polylogue.schemas.registry import SchemaRegistry
+
+    return SchemaRegistry().storage_root
 
 
 def main(argv: list[str] | None = None) -> int:

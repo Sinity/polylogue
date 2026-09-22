@@ -265,6 +265,67 @@ def test_a_namespace_package_module_is_inspected(tmp_path: Path) -> None:
     ]
 
 
+def test_a_fully_qualified_call_is_reported(tmp_path: Path) -> None:
+    """``import pkg.rebuild`` then ``pkg.rebuild.rebuild_index(conn)``.
+
+    This is ordinary Python, and it is an ``ast.Attribute`` whose ``value`` is
+    another ``ast.Attribute``. Reading only the chains rooted directly at an
+    ``ast.Name`` saw ``pkg.rebuild`` -- the intermediate module -- and never
+    the function, so a second rebuild route written with a fully qualified
+    import kept this blocking gate green.
+    """
+    modules = _base_modules()
+    modules["pkg/maintenance/__init__.py"] = ""
+    modules["pkg/maintenance/qualified.py"] = (
+        "import pkg.rebuild\n\n\ndef run_qualified_rebuild(conn):\n    pkg.rebuild.rebuild_index(conn)\n"
+    )
+    # The route names no symbol this census could pick up from a ``from``
+    # import: the only mention of the entrypoint is the attribute chain.
+    assert "from pkg.rebuild import" not in modules["pkg/maintenance/qualified.py"]
+
+    violations, observation = _run(tmp_path, modules, _base_routes())
+
+    assert "pkg.maintenance.qualified.run_qualified_rebuild" in observation.direct_callers
+    undeclared = [item for item in violations if item["rule"] == "rebuild_route_undeclared"]
+    assert [item["function"] for item in undeclared] == ["pkg.maintenance.qualified.run_qualified_rebuild"]
+    assert undeclared[0]["entrypoints"] == ["pkg.rebuild.rebuild_index"]
+
+
+def test_a_later_local_import_does_not_erase_an_earlier_route(tmp_path: Path) -> None:
+    """Two functions, one name, two different imports.
+
+    ``harmless`` locally imports an unrelated ``rebuild_index``. When every
+    import in a module was merged into one dictionary the later binding won
+    module-wide, ``real_rebuild`` lost its edge to the entrypoint, and the
+    census reported no new route for a caller that reaches it.
+    """
+    modules = _base_modules()
+    modules["pkg/noop.py"] = (
+        '"""Unrelated function that shares a name."""\n\n\ndef rebuild_index(conn) -> None:\n    return None\n'
+    )
+    modules["pkg/shadow.py"] = (
+        "def real_rebuild(conn):\n"
+        "    from pkg.rebuild import rebuild_index\n\n"
+        "    return rebuild_index(conn)\n\n\n"
+        "def harmless(conn):\n"
+        "    from pkg.noop import rebuild_index\n\n"
+        "    return rebuild_index(conn)\n"
+    )
+    # Source order matters: the shadowing import is the LAST one in the file,
+    # which is what a module-wide merge would keep.
+    body = modules["pkg/shadow.py"]
+    assert body.index("pkg.noop") > body.index("pkg.rebuild")
+
+    violations, observation = _run(tmp_path, modules, _base_routes())
+
+    assert "pkg.shadow.real_rebuild" in observation.direct_callers
+    # The opposite direction is pinned too: scoping must not invent an edge
+    # for the function that imported the harmless name.
+    assert "pkg.shadow.harmless" not in observation.direct_callers
+    undeclared = [item for item in violations if item["rule"] == "rebuild_route_undeclared"]
+    assert [item["function"] for item in undeclared] == ["pkg.shadow.real_rebuild"]
+
+
 def test_a_route_reached_through_a_package_reexport_is_resolved(tmp_path: Path) -> None:
     """Importing through a package ``__init__`` must not hide the route."""
     modules = _base_modules()
