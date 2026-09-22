@@ -141,7 +141,6 @@ def test_session_enrichment_payload_reuses_text_band_outputs() -> None:
         "actions",
         "touched_paths",
         "repo_names",
-        "heuristic_work_events",
         "assistant_outcome_text",
     )
 
