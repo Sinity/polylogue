@@ -409,6 +409,21 @@ def get_watched_query_baseline(conn: sqlite3.Connection, query_hash: str) -> Res
     return _manifest_from_row(row) if row is not None else None
 
 
+def watched_query_baseline_updated_at_ms(conn: sqlite3.Connection, query_hash: str) -> int | None:
+    """Return when this watch's baseline was last advanced, or ``None``.
+
+    polylogue-rxdo.5: the clock-boundary trigger needs to know *when* a watch
+    was last evaluated, not just what it resolved to, and that fact already
+    lives on this row. Exposing the column keeps the standing-query stage from
+    re-deriving a user-tier table layout in the daemon ring.
+    """
+    row = conn.execute(
+        "SELECT updated_at_ms FROM watched_query_baselines WHERE query_hash = ?",
+        (query_hash,),
+    ).fetchone()
+    return None if row is None else int(row[0])
+
+
 def put_watched_query_baseline(
     conn: sqlite3.Connection,
     *,
@@ -656,4 +671,5 @@ __all__ = [
     "put_result_set",
     "promote_result_set",
     "put_watched_query_baseline",
+    "watched_query_baseline_updated_at_ms",
 ]
