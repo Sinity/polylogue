@@ -42,6 +42,7 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import get_logger
+from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
     parser_defect_disposition,
@@ -496,9 +497,16 @@ def _append_delta_payload(
         delta_messages.append(message.model_copy(update={"position": None}))
     if not delta_messages and not payload.attachment_count:
         return None, len(payload.parsed_session.messages)
-    return payload.parsed_session.model_copy(update={"messages": delta_messages}), len(
-        payload.parsed_session.messages
-    ) - len(delta_messages)
+    # polylogue-3hfl7: the copy must NOT inherit the full session's bound
+    # ``content_hash``. ``ParsedSession.content_hash`` is the parse-side
+    # identity carrier every digest consumer prefers over recomputing
+    # (``pipeline.ids.bound_session_content_hash``), so a delta that kept it
+    # would report the MERGED session's digest while carrying only the new
+    # messages -- ``prepare_session_rows(delta).session_content_hash`` would
+    # name a row set it does not cover. Rebind it to the delta's own digest.
+    delta = payload.parsed_session.model_copy(update={"messages": delta_messages, "content_hash": None})
+    delta = delta.model_copy(update={"content_hash": str(session_content_hash(delta))})
+    return delta, len(payload.parsed_session.messages) - len(delta_messages)
 
 
 def _append_payload_changes_existing_message(
@@ -1399,7 +1407,14 @@ def _write_session(
     write_parsed_session_to_archive(
         conn,
         session_to_write,
+        # ``content_hash`` is the digest STORED on the sessions row, so it
+        # stays the full session's even on an append: the next ingest of this
+        # session compares its own full-session digest against that row to
+        # decide the content is unchanged. ``pending_input_content_hash``
+        # separately names what this call publishes -- the delta -- which is
+        # the digest a prepared identity carrier must match (polylogue-3hfl7).
         content_hash=payload.content_hash,
+        pending_input_content_hash=(bound_session_content_hash(session_to_write) if merge_append else None),
         raw_id=payload.raw_id,
         fallback_timestamp=payload.fallback_timestamp,
         source_conn=source_conn,
