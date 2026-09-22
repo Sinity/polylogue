@@ -40,6 +40,24 @@ from tests.infra.sqlite_work_counter import mutating_statements
 )
 @given(st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1))
 def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int) -> None:
+    """Re-ingesting a converged corpus changes nothing the archive durably holds.
+
+    ``SemanticProjection`` is FTS membership plus aggregate role counts, and
+    ``execute_convergence_plan`` deliberately owns route execution rather than
+    row inspection. Both are the right shape for the semantic oracle and both
+    are blind to the failure this law exists to exclude: a re-ingest that
+    duplicates a raw-authority, attachment or provenance row leaves indexed
+    text and role totals untouched, so the projection agrees while the durable
+    tiers have diverged. The canonical snapshot is the durable-identity half of
+    the same law, compared between an archive ingested once and one ingested
+    twice, exactly as the interrupted-resume test below compares routes.
+
+    Anti-vacuity: make ``write_source_raw_session`` mint a fresh raw row
+    instead of returning the existing content-hash match, and the projection
+    still matches the oracle while the snapshot comparison reports the extra
+    ``source.raw_sessions`` row. That mutation is invisible to every other
+    assertion in this test.
+    """
     workload = generated_convergence_workload()
     composed = workload.sources
     order = rotated_session_order(composed, shift)
@@ -65,6 +83,10 @@ def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int)
             expected,
             law=ConvergenceLaw.IDEMPOTENCE,
         )
+    assert_canonical_snapshots_equal(
+        capture_canonical_snapshot(baseline.root),
+        capture_canonical_snapshot(reingested.root),
+    )
 
 
 def test_second_convergence_pass_over_unchanged_inputs_writes_nothing(tmp_path: Path) -> None:
