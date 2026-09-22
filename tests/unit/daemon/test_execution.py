@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -457,3 +458,72 @@ def test_uds_status_uses_reserved_capacity_under_background_saturation(tmp_path:
             for operation in operations:
                 operation.future.result(timeout=5)
         assert kernel.snapshot().used_units == 0
+
+
+def test_combined_classes_cannot_take_the_interactive_reserve() -> None:
+    """Two saturated non-interactive groups may not occupy the whole pool.
+
+    ``control`` and ``incremental-background`` each have a four-slot ceiling on
+    an eight-worker pool, so four blocking tasks in each stay inside their own
+    bound while jointly holding every worker -- and the three slots the
+    snapshot reports as reserved for ``interactive-read`` stop existing.
+
+    Anti-vacuity: restore the per-group-only dispatch check
+    (``self._active_slots + task.slots > self.max_workers``) and the
+    interactive task below never starts. A uniform single-class fixture cannot
+    separate the two rules: each group alone is already capped at its ceiling
+    by the surviving check.
+    """
+
+    control_body = _Blocker()
+    background_body = _Blocker()
+    interactive_body = _Blocker()
+    with _adapter(max_workers=8, queue_units=16) as adapter:
+        try:
+            control_slots = adapter.snapshot().by_class("control").ceiling_slots
+            background_slots = adapter.snapshot().by_class("incremental-background").ceiling_slots
+            assert control_slots + background_slots >= adapter.max_workers, "otherwise nothing is being proved"
+
+            for _index in range(control_slots):
+                adapter.submit(control_body, admission_class="control")
+            for _index in range(background_slots):
+                adapter.submit(background_body, admission_class="incremental-background")
+            assert control_body.wait_started(control_slots)
+
+            reserved = adapter.snapshot().by_class("interactive-read").reserved_slots
+            assert reserved >= 1
+            adapter.submit(interactive_body, admission_class="interactive-read")
+            assert interactive_body.wait_started(1)
+            assert adapter.snapshot().by_class("interactive-read").dispatched == 1
+        finally:
+            control_body.release.set()
+            background_body.release.set()
+            interactive_body.release.set()
+
+
+def test_combined_classes_cannot_take_the_interactive_queue() -> None:
+    """The same complement bounds queue admission, not only dispatch.
+
+    Anti-vacuity: restore ``self._used_units + units > self.capacity_units``
+    and the two non-interactive groups fill the queue to capacity, so the
+    interactive submit below raises ``DaemonBackpressureError``.
+    """
+
+    blocker = _Blocker()
+    with _adapter(max_workers=8, queue_units=16) as adapter:
+        try:
+            reserved_units = adapter.snapshot().by_class("interactive-read").reserved_units
+            assert reserved_units >= 1
+            for admission_class in ("control", "incremental-background", "bulk-candidate"):
+                with contextlib.suppress(DaemonBackpressureError):
+                    for _index in range(adapter.capacity_units):
+                        adapter.submit(blocker, admission_class=admission_class)  # type: ignore[arg-type]
+
+            admitted = 0
+            with contextlib.suppress(DaemonBackpressureError):
+                for _index in range(adapter.capacity_units):
+                    adapter.submit(blocker, admission_class="interactive-read")
+                    admitted += 1
+            assert admitted >= reserved_units
+        finally:
+            blocker.release.set()
