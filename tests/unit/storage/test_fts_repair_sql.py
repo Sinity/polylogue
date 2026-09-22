@@ -436,3 +436,133 @@ def test_write_path_partition_convergence_replaces_identity_drift(test_conn: sql
     assert not session_partition_is_valid_sync(test_conn, session_id)
     assert converge_fts_partition_sync(test_conn, session_id) is True
     assert session_partition_is_valid_sync(test_conn, session_id)
+
+
+def _transaction_statements(traced: list[str]) -> tuple[int, int]:
+    """Count the ``BEGIN``/``COMMIT`` statements in a trace, in order."""
+    begins = sum(1 for statement in traced if statement.lstrip().upper().startswith("BEGIN"))
+    commits = sum(1 for statement in traced if statement.lstrip().upper().startswith("COMMIT"))
+    return begins, commits
+
+
+def _seed_repair_batch(conn: sqlite3.Connection, count: int) -> list[str]:
+    session_ids = []
+    for index in range(count):
+        native = f"conv-batch-{index}"
+        _seed_text_block(
+            conn,
+            native_session_id=native,
+            native_message_id=f"msg-batch-{index}",
+            text=f"batched repair needle {index}",
+        )
+        session_ids.append(f"unknown-export:{native}")
+    return session_ids
+
+
+def test_repair_message_fts_batch_commits_once(test_conn: sqlite3.Connection) -> None:
+    """A multi-session repair is one transaction, not one per session.
+
+    ``repair_message_fts_index_sync`` looped ``replace_fts_partition_sync`` per
+    session, and ``publish_partition`` opens its own ``BEGIN IMMEDIATE`` when
+    the connection is not already inside one -- so a four-session repair paid
+    four commits, and four FTS5 segment flushes, for one logical repair
+    (polylogue-av5j1). Measured on a 2000-session x 40-block synthetic index
+    tier: min-of-6 3.286 s before, 2.281 s after.
+
+    Anti-vacuity: restore the per-session loop and the counts become 4/4.
+    The opposite direction is pinned by
+    ``test_repair_message_fts_batch_is_all_or_nothing`` (a batch that commits
+    nothing at all fails there) and by the membership assertion below, so
+    "never open a transaction" cannot pass either.
+    """
+    restore_fts_triggers_sync(test_conn)
+    session_ids = _seed_repair_batch(test_conn, 4)
+    test_conn.commit()
+    assert not test_conn.in_transaction
+
+    traced: list[str] = []
+    test_conn.set_trace_callback(traced.append)
+    try:
+        repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+    finally:
+        test_conn.set_trace_callback(None)
+
+    begins, commits = _transaction_statements(traced)
+    assert (begins, commits) == (1, 1), f"expected one transaction for the batch, saw {begins} BEGIN / {commits} COMMIT"
+    for session_id in session_ids:
+        assert session_partition_is_valid_sync(test_conn, session_id)
+
+
+def test_repair_message_fts_batch_is_all_or_nothing(
+    test_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repair that fails part-way publishes no partition at all.
+
+    Per-session transactions left the sessions already visited committed and
+    the rest unpublished, so an interrupted repair produced a half-published
+    batch that no caller could distinguish from a completed one. Batching the
+    transaction makes the failure leave the partition set exactly as it was.
+
+    Anti-vacuity: restore the per-session loop and the first two partitions
+    stay published, so the "no session became valid" assertion goes red.
+    """
+    restore_fts_triggers_sync(test_conn)
+    session_ids = _seed_repair_batch(test_conn, 4)
+    # Drift every partition's recorded identity so each one genuinely needs the
+    # repair; the trigger-maintained rows are otherwise already valid.
+    for session_id in session_ids:
+        test_conn.execute(
+            "UPDATE messages_fts_identity SET source_hash = ? WHERE block_id LIKE ?",
+            (b"drift" + b"\x00" * 27, f"{session_id}:%"),
+        )
+    test_conn.commit()
+    assert not any(session_partition_is_valid_sync(test_conn, sid) for sid in session_ids)
+
+    from polylogue.storage.fts import derivation as derivation_module
+
+    real_replace = derivation_module.replace_fts_partition_sync
+    calls: list[str] = []
+
+    def failing_replace(conn: sqlite3.Connection, session_id: str) -> bool:
+        calls.append(session_id)
+        if len(calls) == 3:
+            raise RuntimeError("interrupted mid-batch")
+        return real_replace(conn, session_id)
+
+    monkeypatch.setattr(derivation_module, "replace_fts_partition_sync", failing_replace)
+    with pytest.raises(RuntimeError, match="interrupted mid-batch"):
+        repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+    monkeypatch.undo()
+
+    assert len(calls) == 3
+    assert not test_conn.in_transaction, "a failed batch must not leave its transaction open"
+    published = [sid for sid in session_ids if session_partition_is_valid_sync(test_conn, sid)]
+    assert published == [], f"an interrupted batch published {published}"
+
+
+def test_repair_message_fts_defers_to_a_caller_transaction(test_conn: sqlite3.Connection) -> None:
+    """A caller that already owns the transaction keeps owning it.
+
+    ``archive/write_effects`` runs this inside the canonical write's own
+    transaction. Opening one unconditionally would raise "cannot start a
+    transaction within a transaction" there.
+
+    Anti-vacuity: make the ``BEGIN IMMEDIATE`` unconditional and this raises;
+    the count assertion additionally refuses a stray COMMIT that would end the
+    caller's transaction early.
+    """
+    restore_fts_triggers_sync(test_conn)
+    session_ids = _seed_repair_batch(test_conn, 3)
+    assert test_conn.in_transaction, "seeding leaves the caller inside its own transaction"
+
+    traced: list[str] = []
+    test_conn.set_trace_callback(traced.append)
+    try:
+        repair_message_fts_index_sync(test_conn, session_ids, record_exact_snapshot=False)
+    finally:
+        test_conn.set_trace_callback(None)
+
+    assert _transaction_statements(traced) == (0, 0), f"the repair took over the caller's transaction: {traced[:8]}"
+    assert test_conn.in_transaction
+    for session_id in session_ids:
+        assert session_partition_is_valid_sync(test_conn, session_id)

@@ -577,3 +577,122 @@ def test_new_shard_entry_persists_blob_root(tmp_path: Path, monkeypatch: pytest.
     # reachable "shard already exists" case and must not re-persist the root.
     store.write_from_bytes(b"first blob in a fresh shard")
     assert root not in fsynced
+
+
+def _payload_in_shard(shard: str, *, seed: int) -> bytes:
+    """Find deterministic bytes whose SHA-256 begins with *shard*.
+
+    Two blobs land in the same shard directory only when their digests share a
+    two-hex prefix, so the batch-durability law below cannot be written from
+    arbitrary content. Brute force is ~256 attempts per hit and deterministic.
+    """
+    counter = seed
+    while True:
+        candidate = f"polylogue-rk0it shard probe {counter}".encode()
+        if hashlib.sha256(candidate).hexdigest().startswith(shard):
+            return candidate
+        counter += 1
+
+
+def _directory_fsync_recorder(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record the path of every directory ``os.fsync`` the production route makes."""
+    recorded: list[Path] = []
+    real_fsync = os.fsync
+
+    def _record(fd: int) -> None:
+        try:
+            target = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            target = None
+        if target is not None and target.is_dir():
+            recorded.append(target)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _record)
+    return recorded
+
+
+def test_publish_many_persists_each_shard_once_per_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A published batch pays one directory fsync per touched shard, not per blob.
+
+    ``publish_many`` was a plain loop over ``publish_prepared``, so four blobs
+    sharing one hash prefix fsynced the same shard directory four times for one
+    directory's worth of durability (polylogue-rk0it AC5). The durability
+    boundary is the batch: every touched shard, and the root when the batch
+    created a shard, is persisted before ``publish_many`` returns.
+
+    Anti-vacuity, both directions:
+      * restore the per-blob loop and the shard count becomes 4, not 1;
+      * drop the fsyncs entirely and the ``== 1`` assertions become ``== 0``.
+    Durability is pinned separately: every blob is readable at its final path
+    after the call, so a batch that skipped the ``os.replace`` cannot pass.
+    """
+    store = BlobStore(tmp_path / "blob")
+    root = (tmp_path / "blob").resolve()
+    shard = "a1"
+    payloads = []
+    seed = 0
+    for _ in range(4):
+        payload = _payload_in_shard(shard, seed=seed)
+        payloads.append(payload)
+        seed = int(payload.rsplit(b" ", 1)[1]) + 1
+    assert len({hashlib.sha256(p).hexdigest() for p in payloads}) == 4
+
+    prepared = [store.prepare_from_bytes(payload) for payload in payloads]
+    fsynced = _directory_fsync_recorder(monkeypatch)
+    published = store.publish_many(prepared)
+
+    shard_directory = (root / shard).resolve()
+    assert fsynced.count(shard_directory) == 1, (
+        f"one shard needs one fsync per batch, saw {fsynced.count(shard_directory)}; fsynced={fsynced}"
+    )
+    assert fsynced.count(root) == 1, f"the new shard's own root entry must be persisted once; fsynced={fsynced}"
+    assert len(fsynced) == 2, f"a four-blob single-shard batch persisted {len(fsynced)} directories: {fsynced}"
+
+    assert len(published) == 4
+    for payload, (hash_hex, size) in zip(payloads, published, strict=True):
+        assert hash_hex == hashlib.sha256(payload).hexdigest()
+        assert size == len(payload)
+        assert store.blob_path(hash_hex).read_bytes() == payload
+
+
+def test_publish_many_persists_every_shard_it_touches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deduplicating the fsync must not drop a shard the batch actually wrote.
+
+    Anti-vacuity: fsync only the first shard (or only the root) and the missing
+    directory's ``in`` assertion fails. This is the opposite direction from the
+    count law above -- a blanket "persist nothing twice" that persisted only one
+    directory would pass that test and fail this one.
+    """
+    store = BlobStore(tmp_path / "blob")
+    root = (tmp_path / "blob").resolve()
+    payloads = [_payload_in_shard("b2", seed=0), _payload_in_shard("c3", seed=0)]
+    prepared = [store.prepare_from_bytes(payload) for payload in payloads]
+
+    fsynced = _directory_fsync_recorder(monkeypatch)
+    store.publish_many(prepared)
+
+    assert (root / "b2").resolve() in fsynced
+    assert (root / "c3").resolve() in fsynced
+    assert fsynced.count(root) == 1, f"two new shards still persist the root once; fsynced={fsynced}"
+
+
+def test_publish_many_existing_shards_leave_root_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A batch that creates no shard leaves the blob root alone.
+
+    Anti-vacuity: replace the batch's ``shard_created`` bookkeeping with an
+    unconditional root fsync and this goes red, so the cheap "always persist the
+    root" shortcut is refused.
+    """
+    store = BlobStore(tmp_path / "blob")
+    root = (tmp_path / "blob").resolve()
+    first = _payload_in_shard("d4", seed=0)
+    second = _payload_in_shard("d4", seed=int(first.rsplit(b" ", 1)[1]) + 1)
+    store.publish_many([store.prepare_from_bytes(first)])
+
+    prepared = [store.prepare_from_bytes(second)]
+    fsynced = _directory_fsync_recorder(monkeypatch)
+    store.publish_many(prepared)
+
+    assert (root / "d4").resolve() in fsynced
+    assert root not in fsynced, f"an existing-shard batch re-persisted the root; fsynced={fsynced}"

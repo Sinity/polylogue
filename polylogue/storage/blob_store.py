@@ -308,37 +308,85 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def publish_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
-        """Atomically expose one prepared blob, preserving deduplication."""
-        dest = self.blob_path(prepared.hash_hex)
-        if dest.exists():
-            self.discard_prepared(prepared)
-            return prepared.hash_hex, prepared.size_bytes
-        # Publishing the first blob under a hash prefix creates the shard
-        # directory itself, so record that before mkdir makes it exist.
-        shard_created = not dest.parent.is_dir()
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(prepared.temporary_path, dest)
-        directory_fd = os.open(dest.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    def _fsync_directory(self, directory: Path) -> None:
+        """Persist *directory*'s own entries, not the files they name."""
+        directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
+
+    def _place_prepared(self, prepared: PreparedBlob) -> tuple[tuple[str, int], Path | None, bool]:
+        """Move one prepared blob into place without persisting the directory.
+
+        Returns the publication outcome, the shard directory that still needs an
+        fsync (``None`` when the blob deduplicated away and nothing changed),
+        and whether this call created the shard directory itself. The caller
+        owns the durability boundary, so a batch can persist one shard once
+        instead of once per member.
+        """
+        dest = self.blob_path(prepared.hash_hex)
+        if dest.exists():
+            self.discard_prepared(prepared)
+            return (prepared.hash_hex, prepared.size_bytes), None, False
+        # Publishing the first blob under a hash prefix creates the shard
+        # directory itself, so record that before mkdir makes it exist.
+        shard_created = not dest.parent.is_dir()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # The parent fsync is the caller's, and it is not optional: this method
+        # is private, both of its callers persist every directory it reports
+        # before returning, and `test_publish_many_persists_each_shard_once_per_batch`
+        # plus `test_publish_many_persists_every_shard_it_touches` fail if either
+        # stops. The rule cannot see a durability boundary carried across a
+        # return value, which is exactly what batching one fsync per shard
+        # requires (polylogue-rk0it AC5).
+        # ast-grep-ignore: replace-without-parent-fsync
+        os.replace(prepared.temporary_path, dest)
+        return (prepared.hash_hex, prepared.size_bytes), dest.parent, shard_created
+
+    def publish_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
+        """Atomically expose one prepared blob, preserving deduplication."""
+        outcome, shard_directory, shard_created = self._place_prepared(prepared)
+        if shard_directory is not None:
+            self._fsync_directory(shard_directory)
         if shard_created:
             # Fsyncing the shard persists the entries *inside* it, never the
             # shard's own entry in the blob root. A power loss after the durable
             # source-db receipt/reference commit could therefore take the whole
             # new shard with it while this method had already reported success.
-            root_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(root_fd)
-            finally:
-                os.close(root_fd)
-        return prepared.hash_hex, prepared.size_bytes
+            self._fsync_directory(self.root)
+        return outcome
 
     def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:
-        """Publish a prepared batch in input order."""
-        return tuple(self.publish_prepared(item) for item in prepared)
+        """Publish a prepared batch in input order, persisting each directory once.
+
+        The durability boundary is the batch, not its members: this returns only
+        after every shard that received a blob -- and the blob root, when the
+        batch created a shard -- has been fsynced. Publishing member-by-member
+        fsynced the same shard once per member, so a page whose blobs share a
+        hash prefix paid one directory fsync per blob for one directory's worth
+        of durability (polylogue-rk0it AC5). Nothing observable is weakened: no
+        caller may advance a cursor or certify retention on a partial return,
+        and a batch that raises leaves the same on-disk state the per-blob loop
+        left -- bytes in place, the directory entry not yet persisted, and the
+        retained source still the recovery authority.
+        """
+        results: list[tuple[str, int]] = []
+        # Insertion-ordered distinct shards: one fsync per directory, in the
+        # order the batch first touched them.
+        shard_directories: dict[Path, None] = {}
+        root_needs_fsync = False
+        for item in prepared:
+            outcome, shard_directory, shard_created = self._place_prepared(item)
+            results.append(outcome)
+            if shard_directory is not None:
+                shard_directories[shard_directory] = None
+            root_needs_fsync = root_needs_fsync or shard_created
+        for shard_directory in shard_directories:
+            self._fsync_directory(shard_directory)
+        if root_needs_fsync:
+            self._fsync_directory(self.root)
+        return tuple(results)
 
     def discard_prepared(self, prepared: PreparedBlob) -> None:
         """Remove a private staged file that will not be published."""

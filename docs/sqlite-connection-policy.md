@@ -5,6 +5,11 @@ connection profiles, named timeout classes, WAL checkpoint escalation, the
 checkpoint hold budget and read-frame lifetime. `wal_checkpoint.py` executes
 the checkpoint half of that policy and declares none of it.
 
+These are the *mechanisms*. The guarantee each of them is chosen to meet --
+what a process crash costs, what a power loss costs, what reconstructs a tier
+afterwards, and where a caller may certify retention -- is
+[Durability by tier](durability-by-tier.md).
+
 ## Named timeout classes
 
 Callers select a role, never a lock-wait duration.
