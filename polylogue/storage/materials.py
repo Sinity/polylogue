@@ -274,6 +274,28 @@ def _declared_content_length(response: object) -> int | None:
     return declared.pop()
 
 
+def _connection_blob_store(conn: sqlite3.Connection) -> BlobStore:
+    """Return the blob store that belongs to *conn*'s own archive.
+
+    A byte-bearing admission writes a durable ``material_observations`` row in
+    one archive; its bytes must land in that archive's CAS. Defaulting to the
+    process-wide active store put the observation and the bytes in different
+    archives whenever ``conn`` was a scratch, probe or test source tier -- so
+    archive-local reads, backup, integrity checks and GC could not treat the
+    pair consistently, and private bytes leaked into the operator's live
+    archive. Derive the root from the connection's own database file; fall back
+    to the configured store only for a connection that has no file (``:memory:``).
+    """
+    for _seq, name, file_name in conn.execute("PRAGMA database_list"):
+        if str(name) != "main":
+            continue
+        path = str(file_name or "")
+        if not path or path == ":memory:" or path.startswith("file::memory:"):
+            break
+        return BlobStore(Path(path).resolve().parent / "blob")
+    return get_blob_store()
+
+
 def admit_material(
     conn: sqlite3.Connection,
     *,
@@ -298,7 +320,7 @@ def admit_material(
         raise ValueError("synthetic materials cannot carry arbitrary raw bytes")
     material_state: MaterialState = state or ("acquired" if payload is not None else "claimed")
     if payload is not None:
-        resolved_blob_store = blob_store or get_blob_store()
+        resolved_blob_store = blob_store or _connection_blob_store(conn)
         blob_hash, byte_size = resolved_blob_store.write_from_bytes(payload)
         custody: Literal["claimed", "retained", "verified", "released"] = "retained"
         media_type = media_type or mimetypes.guess_type(filename or "")[0]
@@ -659,7 +681,9 @@ def read_material(conn: sqlite3.Connection, material_id: str, *, blob_store: Blo
         raise KeyError(material_id)
     if observation.blob_hash is None:
         raise FileNotFoundError(f"material {material_id!r} has no retained bytes")
-    return (blob_store or get_blob_store()).read_all(observation.blob_hash)
+    # Read from the same archive the observation was committed in; see
+    # ``_connection_blob_store``.
+    return (blob_store or _connection_blob_store(conn)).read_all(observation.blob_hash)
 
 
 def list_materials(conn: sqlite3.Connection, *, evidence_ref: str | None = None) -> list[MaterialObservation]:

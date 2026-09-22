@@ -444,3 +444,45 @@ def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.Mon
         observed_at_ms=12,
     )
     assert undeclared.acquisition_state == "acquired"
+
+
+def test_admission_keeps_bytes_in_own_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A byte-bearing admission must write into *this* connection's archive.
+
+    ``blob_store=None`` used to fall through to the process-wide active store,
+    so a scratch, probe or test source tier committed a durable
+    ``material_observations`` row in one archive while its bytes landed in
+    another: archive-local reads, backup, integrity checks and GC could not
+    treat the pair consistently, and private bytes leaked into the operator's
+    live archive.
+
+    Anti-vacuity: restore ``get_blob_store()`` as the default and the bytes
+    appear under ``active/blob`` instead of ``scratch/blob``, and the
+    ``read_material`` assertion below fails because the scratch archive has no
+    such blob. The opposite direction -- ignoring an explicitly supplied store
+    -- is pinned by every other test in this file, which passes one.
+    """
+    scratch = tmp_path / "scratch"
+    active = tmp_path / "active"
+    scratch.mkdir()
+    (active / "blob").mkdir(parents=True)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(active))
+
+    conn = sqlite3.connect(scratch / "source.db")
+    try:
+        conn.executescript(SOURCE_DDL)
+        observation = admit_material(
+            conn,
+            blob_store=None,
+            source_uri="https://example.test/private.bin",
+            referrer_ref="message:codex-session:abc:m1",
+            observed_at_ms=100,
+            payload=b"private scratch bytes",
+        )
+        assert observation.blob_hash is not None
+        assert read_material(conn, observation.material_id) == b"private scratch bytes"
+    finally:
+        conn.close()
+
+    assert list((scratch / "blob").rglob("*")), "scratch archive retained no bytes"
+    assert not [path for path in (active / "blob").rglob("*") if path.is_file()], "bytes leaked into the active archive"

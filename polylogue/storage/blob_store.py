@@ -314,6 +314,9 @@ class BlobStore:
         if dest.exists():
             self.discard_prepared(prepared)
             return prepared.hash_hex, prepared.size_bytes
+        # Publishing the first blob under a hash prefix creates the shard
+        # directory itself, so record that before mkdir makes it exist.
+        shard_created = not dest.parent.is_dir()
         dest.parent.mkdir(parents=True, exist_ok=True)
         os.replace(prepared.temporary_path, dest)
         directory_fd = os.open(dest.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -321,6 +324,16 @@ class BlobStore:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
+        if shard_created:
+            # Fsyncing the shard persists the entries *inside* it, never the
+            # shard's own entry in the blob root. A power loss after the durable
+            # source-db receipt/reference commit could therefore take the whole
+            # new shard with it while this method had already reported success.
+            root_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(root_fd)
+            finally:
+                os.close(root_fd)
         return prepared.hash_hex, prepared.size_bytes
 
     def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:

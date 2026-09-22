@@ -534,3 +534,46 @@ def test_get_blob_store_singleton_is_race_safe_under_concurrent_first_access(
         )
     finally:
         reset_blob_store()
+
+
+def test_new_shard_entry_persists_blob_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creating a shard must persist its entry in the blob root, not only inside it.
+
+    ``publish_prepared`` fsynced ``dest.parent`` only. That persists the entries
+    *inside* the shard; the shard's own directory entry in the blob root stayed
+    unpersisted, so a power loss after the durable source-db reference commit
+    could take the whole new shard with it while publication had reported
+    success.
+
+    The assertion observes the ``os.fsync`` calls the production route actually
+    makes and resolves each descriptor back to a path, so it does not depend on
+    any private helper existing.
+
+    Anti-vacuity: drop the root fsync and the first assertion fails -- the root
+    never appears among the fsynced directories. The second assertion is the
+    opposite direction: republishing into an existing shard must not fsync the
+    root again, so a blanket "always fsync the root" is refuted too.
+    """
+    store = BlobStore(tmp_path / "blob")
+    fsynced: list[Path] = []
+    real_fsync = os.fsync
+
+    def _record(fd: int) -> None:
+        try:
+            fsynced.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
+        except OSError:
+            pass
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _record)
+
+    store.write_from_bytes(b"first blob in a fresh shard")
+    root = (tmp_path / "blob").resolve()
+    assert root in fsynced, f"blob root was never persisted; fsynced={fsynced}"
+
+    fsynced.clear()
+    # A second blob whose hash shares the first one's shard prefix is hard to
+    # arrange; republishing the same bytes into the now-existing shard is the
+    # reachable "shard already exists" case and must not re-persist the root.
+    store.write_from_bytes(b"first blob in a fresh shard")
+    assert root not in fsynced

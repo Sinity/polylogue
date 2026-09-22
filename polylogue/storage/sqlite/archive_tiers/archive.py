@@ -881,6 +881,10 @@ class ArchiveStore:
         self.operation_identity: ArchiveIdentity | None = None
         self.operation_vector_connection: sqlite3.Connection | None = None
         self._operation_read_guard: tuple[Callable[[], int], int] | None = None
+        #: True between ``begin_read_snapshot()`` and ``end_read_snapshot()``.
+        #: Read paths that would otherwise end a stale transaction must leave
+        #: a caller-owned snapshot alone.
+        self._read_snapshot_owned = False
         self.operation_schema_versions: dict[str, int] | None = None
         self.operation_degraded_components: tuple[str, ...] = ()
         self.source_db_path = archive_root / "source.db"
@@ -1331,6 +1335,7 @@ class ArchiveStore:
         """Begin the owned read transaction used by one controlled query call."""
 
         self._conn.execute("BEGIN")
+        self._read_snapshot_owned = True
 
     def pin_operation_snapshot(self) -> tuple[dict[str, int], tuple[str, ...]]:
         """Pin every available tier while the caller holds publication exclusion.
@@ -1375,6 +1380,7 @@ class ArchiveStore:
     def end_read_snapshot(self) -> None:
         """Release the owned read snapshot without ever committing read work."""
 
+        self._read_snapshot_owned = False
         if self._conn.in_transaction:
             self._conn.rollback()
         if self._source_conn is not None and self._source_conn.in_transaction:
@@ -3800,6 +3806,21 @@ class ArchiveStore:
         if until_ms is not None:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
+        if only_stuck:
+            # The stuck verdict is materialized -- `stuck_tool_count` is read
+            # from `session_latency_profiles` and from nowhere else (see
+            # `_session_latency_profile_from_archive_row`). Applying it after
+            # SQL LIMIT/OFFSET made the page a window over *all* sessions and
+            # the filter a post-pass over that window, so a default 50-row
+            # `stuck_sessions` request returned an empty or underfilled page
+            # whenever the newest 50 sessions were not stuck, while qualifying
+            # profiles sat further down the archive. Filter first so the limit
+            # bounds stuck profiles, which is what the caller asked for.
+            where.append(
+                "EXISTS (SELECT 1 FROM session_latency_profiles stuck_profiles "
+                "WHERE stuck_profiles.session_id = s.session_id "
+                "AND stuck_profiles.stuck_tool_count > 0)"
+            )
         clause = "WHERE " + " AND ".join(where) if where else ""
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
         if limit is not None:
@@ -4398,7 +4419,19 @@ class ArchiveStore:
         # Release any transaction opened by a prior read/write boundary before
         # constructing the next read view so externally committed derived rows
         # are visible to this long-lived store connection.
-        self._conn.commit()
+        #
+        # Never while a caller owns the read snapshot. `begin_read_snapshot()`
+        # is how a controlled read (`run_archive_read`, `control_store`) binds
+        # every statement of one operation to one database generation;
+        # committing here ends that transaction, so an insight built from
+        # several statements -- tool usage plus origin coverage, or time-bucket
+        # totals plus their breakdown queries -- could mix generations if the
+        # daemon committed between them. On a writable store the same commit
+        # published a caller-owned bulk transaction and removed its rollback.
+        # A stale long-lived reader is refreshed outside the snapshot, by its
+        # owner, which is the only caller that knows the snapshot ended.
+        if not self._read_snapshot_owned:
+            self._conn.commit()
         return ArchiveReadInsights(
             self._conn,
             normalize_origin=_origin_value,
