@@ -374,8 +374,23 @@ def publish_session_usage_rollup(
         if exists is None:
             # Retirement: the binding row outlived its session. The rollup rows
             # themselves cascade with the session row, so absence is the whole
-            # correct output here.
-            conn.execute("DELETE FROM session_usage_rollup_bindings WHERE session_id = ?", (session_id,))
+            # correct output here -- but only when there was a binding row to
+            # retire. A *required* key names a session the caller expects to
+            # exist (a live intake hint names it before ingest has committed
+            # the row), and for that key absence is not an output at all: the
+            # rollup this key requires has simply not been produced yet.
+            # Reporting success there tells the convergence kernel a required
+            # output was published when the relation stays empty, which it
+            # correctly reads as a broken publication rather than the
+            # retryable race it actually is. Deleting nothing is the honest
+            # discriminator: no binding row means nothing was retired, so the
+            # publication refuses and the key converges on a later pass.
+            retired = conn.execute(
+                "DELETE FROM session_usage_rollup_bindings WHERE session_id = ?", (session_id,)
+            ).rowcount
+            if retired < 1:
+                conn.execute("ROLLBACK")
+                return False
             conn.execute("COMMIT")
             return True
         current = session_input_bindings(conn, (session_id,)).get(session_id, "")
