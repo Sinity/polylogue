@@ -1800,13 +1800,23 @@ def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_pa
             session_content_hash(merge_parsed_session_chunks([baseline_session, append_session])[0])
         )
         assert applied_raw_ids == (baseline, append)
-        assert (
-            archive._conn.execute(
-                "SELECT COUNT(*) FROM raw_revision_applications WHERE logical_source_key = ?",
+        # By identity, not by cardinality. A count of two is also what a replay
+        # that wrote two rows for the append raw under different decisions
+        # while dropping the baseline receipt would report, which is precisely
+        # the missing-receipt mutation this assertion exists to catch.
+        # Anti-vacuity: record either raw's receipt against the other raw_id,
+        # or omit the baseline receipt, and this goes red while the count did
+        # not move.
+        assert {
+            (str(row[0]), str(row[1]))
+            for row in archive._conn.execute(
+                "SELECT raw_id, decision FROM raw_revision_applications WHERE logical_source_key = ?",
                 ("claude-code:session",),
-            ).fetchone()[0]
-            == 2
-        )
+            ).fetchall()
+        } == {
+            (baseline, ApplicationDecision.SELECTED_BASELINE.value),
+            (append, ApplicationDecision.APPLIED_APPEND.value),
+        }
 
 
 def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(tmp_path: Path) -> None:

@@ -195,7 +195,15 @@ def test_committed_gemini_schema_declares_current_shape_without_fixture_values()
         if value.startswith("synthetic") or "example.invalid" in value or value == "AAAA" or value.startswith("2026-")
     }
     assert fixture_sentinels
-    assert fixture_sentinels.isdisjoint(serialized)
+    # Each sentinel must be absent as a SUBSTRING. ``set.isdisjoint(str)``
+    # iterates the string one character at a time, so every multi-character
+    # sentinel is disjoint from every possible schema and the guard passed for
+    # any input at all -- including a package that embedded the whole fixture.
+    # Anti-vacuity: put any one of these values into the committed Gemini
+    # package (for example as a JSON Schema ``example``/``const``) and this
+    # goes red; under the old form it stayed green.
+    leaked = sorted(sentinel for sentinel in fixture_sentinels if sentinel in serialized)
+    assert not leaked, f"committed schema embedded fixture values: {leaked}"
 
 
 @pytest.mark.parametrize("label,payload", _STILL_UNSEEN, ids=[label for label, _ in _STILL_UNSEEN])
