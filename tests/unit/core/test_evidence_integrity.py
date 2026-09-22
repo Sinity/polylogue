@@ -151,7 +151,7 @@ def test_unknown_authority_never_grounds_a_claim() -> None:
 def test_declared_authority_still_supports_a_claim() -> None:
     """The opposite direction: a named grounding authority is not refused."""
     for authority in ("raw", "human", "tool", "git", "pr"):
-        nodes, edges = _graph(authority=authority)  # type: ignore[arg-type]
+        nodes, edges = _graph(authority=authority)
         verdict = evaluate_evidence("finding:f", nodes, edges, frame_hash="frame", definition_hash="def")
         assert verdict.status == "supported", authority
 
