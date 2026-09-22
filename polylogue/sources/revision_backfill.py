@@ -2516,6 +2516,22 @@ def _required_shard_prepared_rows(
         raise ShardRefusedError(f"sealed shard has no rows for replay session {session_id}") from exc
 
 
+def _owned_generation_is_empty(archive_root: Path, *, generation: tuple[str, str]) -> bool:
+    """Whether an owned inactive generation currently holds no sessions.
+
+    Opened read-only and without initialization so the probe cannot create
+    schema, defer an index, or otherwise mutate the candidate it is measuring:
+    a resumed generation must be refused in exactly the state it was found.
+    """
+    with ArchiveStore(
+        archive_root,
+        initialize=False,
+        read_only=True,
+        owned_inactive_generation=generation,
+    ) as probe:
+        return probe._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is None
+
+
 def backfill_historical_revision_evidence(
     archive_root: Path,
     *,
@@ -2637,12 +2653,30 @@ def backfill_historical_revision_evidence(
     # opener and writer independently infer safety from incidental flags.
     # Opening with index deferral proves emptiness before either optimization
     # is used; a resumed/non-empty candidate is refused before any mutation.
+    owns_whole_generation = owned_inactive_generation is not None and selected_raw_ids is None
+    # polylogue-neeq4: emptiness is MEASURED here, never inferred from the
+    # deferral flags above. ``owns_whole_generation`` says only that this call
+    # owns the generation and was not narrowed to a raw subset -- a RESUMED
+    # candidate satisfies it while already holding sessions. Passing it as
+    # ``archive_empty`` therefore handed a nonempty generation ``fresh_build``
+    # and the cold-build writer shortcut, whose own absence check
+    # (archive_tiers/write.py, "fresh_build requires an empty archive
+    # generation") is an AssertionError raised mid-write. Refuse here instead,
+    # before the generation is opened for writing and before any mutation.
+    archive_empty = False
+    if owned_inactive_generation is not None and selected_raw_ids is None:
+        archive_empty = _owned_generation_is_empty(archive_root, generation=owned_inactive_generation)
+        if not archive_empty:
+            raise ValueError(
+                "cold-build deferral requires an empty archive generation; "
+                f"generation {owned_inactive_generation[0]!r} already holds sessions"
+            )
     cold_build_shape = select_cold_build_shape(
         destination=WriteDestination(
             tier="index",
-            owned_rebuildable_generation=owned_inactive_generation is not None and selected_raw_ids is None,
+            owned_rebuildable_generation=owns_whole_generation,
         ),
-        archive_empty=owned_inactive_generation is not None and selected_raw_ids is None,
+        archive_empty=archive_empty,
     )
     fresh_build = cold_build_shape.fresh_build
     if fresh_build:
