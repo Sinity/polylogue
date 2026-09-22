@@ -24,7 +24,7 @@ from polylogue.config import Config
 from polylogue.core.json import JSONDocument, loads
 from polylogue.daemon.cli import main
 from polylogue.daemon.convergence import ConvergenceStage
-from polylogue.daemon.derivation import DerivationReport
+from polylogue.daemon.derivation import DerivationReport, Outcome
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier
 from polylogue.daemon.lineage_startup import LineageStartupCensus
@@ -1678,8 +1678,20 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
 
     archive_root_path = tmp_path / "archive"
     initialize_active_archive_root(archive_root_path)
+    # The audit tier's declared version is the archive format floor, so the
+    # hardcoded ``user_version = 1`` this test used to write stopped being a
+    # mismatch once the schema floor was reset (b56699c80, #5275): the test
+    # kept running but no longer produced the condition it names. Derive the
+    # skew from the declaration instead.
+    #
+    # The skew is deliberately backward. A FORWARD audit version is refused
+    # earlier and on purpose by the durable change train's forward-admission
+    # check ("lacks released train evidence"), which is a different contract
+    # from the one under test here; a backward version is the plain
+    # version-mismatch this startup gate exists to park.
+    mismatched_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] - 1
     with sqlite3.connect(archive_root_path / "audit.db") as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {mismatched_version}")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
 
     recover_mock = Mock()
@@ -2735,18 +2747,92 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                 # intake class used to be latched off for the daemon's whole
                 # lifetime, so every kernel report here was a session-profile
                 # one. The class now registers and converges the raw
-                # observations its own admissions produce, so the session
-                # count is taken from the session-scoped reports and the raw
-                # ones are asserted separately rather than folded in.
+                # observations its own admissions produce, so the raw reports
+                # are separated from the session-scoped ones here.
+                #
+                # Session scope carries three ordered domains
+                # (session_summary -> session_usage_rollup -> session_profile)
+                # and one bounded pass converges as many of them as it can, so
+                # counting passes whose ``done`` is exactly 1 names nothing
+                # about the archive. What canonical derivation must show is
+                # that this session's profile domain actually reached DONE and
+                # that no session-scoped key was ever reported as a broken
+                # publication. ``counts`` is authoritative for the failure
+                # total; ``outcomes`` is a retained sample, so it is only used
+                # to identify which key converged.
                 session_reports = [
                     report for report in kernel_reports if not isinstance(report.frame.scope, RawObservationScope)
                 ]
-                assert sum(report.done == 1 for report in session_reports) == expected_versions, str(
-                    ([(report.frame.scope, report.done) for report in kernel_reports], admission_metrics, evidence)
+                assert session_reports
+                failed = sum(report.count(Outcome.FAILED) for report in session_reports)
+                assert failed == 0, str(
+                    [
+                        (item.key, item.outcome, item.reason, item.error)
+                        for report in session_reports
+                        for item in report.outcomes
+                    ]
                 )
-                with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
-                    assert conn.execute("SELECT session_id FROM session_profiles").fetchall() == [(session_id,)]
-                    assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (expected_versions,)
+                session_outcomes = [item for report in session_reports for item in report.outcomes]
+                assert any(
+                    item.key.domain == "session_profile" and item.key.key == session_id and item.outcome is Outcome.DONE
+                    for item in session_outcomes
+                ), str([(item.key, item.outcome, item.reason, item.error) for item in session_outcomes])
+
+                # A returning intake pass is not the point at which its index
+                # publication becomes visible: the replace commits shortly
+                # after, so reading the index the instant ``completed`` fires
+                # observes the previous revision (measured on this test: the
+                # claude case reads one message for roughly 200ms before the
+                # second admission's replace lands). Wait for the converged
+                # count and then require it to STAY there. The settle window is
+                # what keeps the browser expectation honest: a competing
+                # snapshot that was wrongly admitted would move the count off
+                # one during the window instead of passing a lucky first read.
+                # ``sqlite3.connect`` as a context manager ends the
+                # transaction but does NOT close the connection, so each probe
+                # closes its own read explicitly -- sampling in a loop with the
+                # bare ``with`` form leaks one descriptor per tick and trips the
+                # suite's descriptor-balance teardown check.
+                def index_probe() -> tuple[int, list[tuple[str, ...]]]:
+                    with contextlib.closing(
+                        sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
+                    ) as conn:
+                        return (
+                            int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]),
+                            conn.execute("SELECT session_id FROM session_profiles").fetchall(),
+                        )
+
+                def message_count() -> int:
+                    return index_probe()[0]
+
+                for _ in range(200):
+                    if message_count() == expected_versions:
+                        break
+                    await asyncio.sleep(0.05)
+                else:
+                    pytest.fail(f"index never converged to {expected_versions} message(s): {message_count()}")
+                # The profile row is sampled across the settle window rather
+                # than read once at the end. Publication and withdrawal are a
+                # cycle here: a replace drops the derived profile and the next
+                # convergence pass re-derives it, and this test deliberately
+                # stops driving the daemon once intake has completed, so which
+                # half of that cycle the archive is resting in at any instant
+                # is not a property of the canonical derivation. Measured:
+                # the browser case holds the row for ~250ms and then has it
+                # withdrawn by the quarantined competing snapshot's replace,
+                # while the claude case publishes it ~650ms in and keeps it --
+                # a single end-of-window read passes or fails on that timing
+                # alone. Requiring the row to have been published at all is
+                # the part this test actually owns: bypass the canonical
+                # profile kernel and it is never observed.
+                observed_profiles: list[list[tuple[str, ...]]] = []
+                for _ in range(20):
+                    await asyncio.sleep(0.05)
+                    settled_count, profile_rows = index_probe()
+                    assert settled_count == expected_versions
+                    observed_profiles.append(profile_rows)
+                assert [(session_id,)] in observed_profiles, str(observed_profiles)
+                assert all(rows in ([], [(session_id,)]) for rows in observed_profiles), str(observed_profiles)
                 if browser:
                     assert (
                         evidence == [(MembershipDecision.AMBIGUOUS.value, RawRevisionAuthority.QUARANTINED.value)] * 2
@@ -3539,6 +3625,15 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
             held -= 1
 
     class FakeArchive:
+        # ``publish`` pins its membership read through ``open_operation_read``
+        # (3faacef23, #5023), which reads the archive's own root and active
+        # index path to capture the read view. A double that omits them is more
+        # permissive than production, so they are supplied rather than the
+        # production read being loosened; ``pin_operation_snapshot`` stays
+        # absent because operation_context declares that minimal-double path.
+        archive_root = tmp_path
+        index_db_path = tmp_path / "index.db"
+
         def expand_raw_membership_selection(self, _raw_ids: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
             return ("raw-1",), ()
 
