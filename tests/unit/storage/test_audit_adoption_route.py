@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -64,7 +65,7 @@ def test_adoption_route_needs_lineage_proof(tmp_path: Path, damage: str) -> None
         payload["tier_versions"]["source"] = 99
         marker.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
     elif damage == "foreign":
-        with sqlite3.connect(root / "source.db") as connection:
+        with closing(sqlite3.connect(root / "source.db")) as connection:
             connection.execute("CREATE TABLE intruder (x TEXT)")
             connection.commit()
     else:
