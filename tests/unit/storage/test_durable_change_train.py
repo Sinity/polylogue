@@ -3180,9 +3180,13 @@ def test_failed_transaction_exposes_exact_retry_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Two conflicting CREATEs: the second raises "table durable_items already
+    # exists" mid-apply, which is the transaction failure these tests exercise.
+    # An `INSERT` here would make the file's own statement set contradict its
+    # `additive-no-backup` header, which the runner now refuses at discovery.
     failing_sql = """-- migration-safety: additive-no-backup
 CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
-INSERT INTO table_that_does_not_exist VALUES (1);
+CREATE TABLE durable_items (item_id TEXT PRIMARY KEY) STRICT;
 """
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
@@ -3393,9 +3397,13 @@ def test_startup_recovers_persisted_rollback_failure_to_admitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Two conflicting CREATEs: the second raises "table durable_items already
+    # exists" mid-apply, which is the transaction failure these tests exercise.
+    # An `INSERT` here would make the file's own statement set contradict its
+    # `additive-no-backup` header, which the runner now refuses at discovery.
     failing_sql = """-- migration-safety: additive-no-backup
 CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
-INSERT INTO table_that_does_not_exist VALUES (1);
+CREATE TABLE durable_items (item_id TEXT PRIMARY KEY) STRICT;
 """
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
@@ -3424,9 +3432,13 @@ def test_startup_blocks_persisted_rollback_failure_after_replacement(
     monkeypatch: pytest.MonkeyPatch,
     replacement: str,
 ) -> None:
+    # Two conflicting CREATEs: the second raises "table durable_items already
+    # exists" mid-apply, which is the transaction failure these tests exercise.
+    # An `INSERT` here would make the file's own statement set contradict its
+    # `additive-no-backup` header, which the runner now refuses at discovery.
     failing_sql = """-- migration-safety: additive-no-backup
 CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
-INSERT INTO table_that_does_not_exist VALUES (1);
+CREATE TABLE durable_items (item_id TEXT PRIMARY KEY) STRICT;
 """
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
