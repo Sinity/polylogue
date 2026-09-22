@@ -23,18 +23,46 @@ def native_host_manifest_path(*, browser: str = "chrome", home: Path | None = No
     return root / ".config" / "google-chrome" / "NativeMessagingHosts" / f"{NATIVE_HOST_NAME}.json"
 
 
+def resolve_native_host_executable(executable: str) -> str:
+    """Return the absolute launcher path a native-messaging manifest requires.
+
+    A manifest's ``path`` is what the browser execs. Chrome and Firefox both
+    require an absolute path on Linux and macOS, so writing the bare console
+    script name -- which is the installer's own default -- produced a manifest
+    the browser cannot launch while the command reported success. A relative
+    name is resolved on ``PATH`` here, and an unresolvable one is refused
+    rather than written.
+    """
+    import shutil
+
+    candidate = executable.strip()
+    if not candidate:
+        raise ValueError("native host executable must be a non-empty path or command name")
+    path = Path(candidate)
+    if path.is_absolute():
+        return str(path)
+    resolved = shutil.which(candidate)
+    if resolved is None:
+        raise ValueError(
+            f"native host executable {candidate!r} is not on PATH; "
+            "pass --executable with the absolute path to the installed launcher"
+        )
+    return str(Path(resolved).resolve())
+
+
 def install_native_host(
     extension_ids: tuple[str, ...], *, executable: str, browser: str = "chrome", destination: Path | None = None
 ) -> Path:
     ids = tuple(sorted({item.strip() for item in extension_ids if item.strip()}))
     if not ids or any("/" in item or ":" in item for item in ids):
         raise ValueError("at least one valid extension ID is required")
+    launcher = resolve_native_host_executable(executable)
     target = destination or native_host_manifest_path(browser=browser)
     target.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "name": NATIVE_HOST_NAME,
         "description": "Polylogue browser-capture secure credential bootstrap",
-        "path": executable,
+        "path": launcher,
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{item}/" for item in ids],
     }
