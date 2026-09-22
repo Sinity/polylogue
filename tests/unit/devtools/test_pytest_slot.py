@@ -438,13 +438,16 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
     Anti-vacuity: removing the signal handler loses the sibling receipt; omitting
     ``start_new_session`` from the ``Popen`` in ``devtools.pytest_slot`` leaves
     the sleeping descendant in the runner's own process group, where
-    ``killpg`` never reaches it, and the marker below appears.
+    ``killpg`` never reaches it, and the marker below appears. Both were
+    executed against this file: the second one is red here.
 
-    That second mutation is only observable after the descendant would have
-    written its marker. The wait below is therefore load-bearing, not
-    padding: with the previous ``time.sleep(0.1)`` the unreaped descendant was
-    still inside its own ``sleep 2`` when the assertion ran, so the test
-    passed under the exact mutation it names.
+    The wait is derived from the descendant's own marker delay rather than
+    left at a fixed 0.1 s. Measured, the 0.1 s form is red under that mutation
+    too -- but only because the runner's SIGTERM escalation happens to take
+    longer than the descendant's 2 s sleep, so ``process.wait()`` returns after
+    the marker already exists. That is a property of the reap's escalation
+    budget, not of this test; shorten the escalation and the fixed margin
+    silently stops proving anything.
     """
     log_path = tmp_path / "pytest-slot-1.log"
     launch_path = tmp_path / "launch.json"
