@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeGuard
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -728,6 +729,47 @@ class BrowserActionCapabilitiesPayload(BaseModel):
     providers: dict[str, object]
 
 
+#: The bridge projection whose ``mapping`` the extension synthesizes rather
+#: than receiving it from ChatGPT. It is deliberately not provider evidence.
+COMPACT_CHATGPT_BRIDGE_PROJECTION = "chatgpt-native-compact-v1"
+
+
+def has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
+    """Whether a raw provider payload is a trusted ChatGPT conversation mapping."""
+    return (
+        isinstance(payload, dict)
+        and payload.get("polylogue_bridge_projection") != COMPACT_CHATGPT_BRIDGE_PROJECTION
+        and isinstance(payload.get("mapping"), dict)
+    )
+
+
+def has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
+    """Whether a raw provider payload is a trusted Claude.ai conversation body."""
+    return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
+
+
+def envelope_has_native_provider_payload(envelope: BrowserCaptureEnvelope) -> bool:
+    """Whether this capture carries a provider-native transcript, not a DOM read.
+
+    One definition, three readers: the parser routes a native payload to the
+    provider parser and tags the session
+    ``NATIVE_BROWSER_CAPTURE_INGEST_FLAG``; the conservation census lowers the
+    same documents production materializes; and the receiver's spool
+    admission must not discard that fidelity in favour of a DOM fallback that
+    happens to list more turns. The archive boundary
+    (``archive_tiers.ingest_precedence.browser_capture_precedence``) already
+    admits a lower-count native capture over a DOM fallback, so a receiver
+    rule that drops it first makes the two disagree and retains the
+    lower-fidelity content permanently.
+    """
+    payload = envelope.raw_provider_payload
+    if envelope.session.provider is Provider.CHATGPT:
+        return has_chatgpt_native_payload(payload)
+    if envelope.session.provider is Provider.CLAUDE_AI:
+        return has_claude_ai_native_payload(payload)
+    return False
+
+
 def looks_like_browser_capture(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     if not isinstance(payload, dict):
@@ -785,5 +827,9 @@ __all__ = [
     "BrowserCaptureSession",
     "BrowserCaptureSessionKind",
     "BrowserCaptureTurn",
+    "COMPACT_CHATGPT_BRIDGE_PROJECTION",
+    "envelope_has_native_provider_payload",
+    "has_chatgpt_native_payload",
+    "has_claude_ai_native_payload",
     "looks_like_browser_capture",
 ]

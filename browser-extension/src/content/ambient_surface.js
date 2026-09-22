@@ -39,6 +39,24 @@
     return anchorMessage && anchorMessage === focusMessage ? anchorMessage : null;
   }
 
+  function selectionIdempotencyKey(evidenceRef, kind, body) {
+    // The receiver bounds an idempotency key at 240 characters
+    // (`_archive_capture_assertion_candidate`), and the editor accepts up to
+    // 10,000 while a derived selection reaches 2,000, so embedding the body
+    // made an ordinary paragraph selection fail every save with
+    // `idempotency_key exceeds 240 characters`. Carry a fixed-width digest of
+    // the same three fields: identical drafts still collapse to one candidate,
+    // and the key can no longer grow with the selection.
+    const material = `${evidenceRef}\u0000${kind}\u0000${body}`;
+    let hash = 0xcbf29ce484222325n;
+    for (let index = 0; index < material.length; index += 1) {
+      const code = material.charCodeAt(index);
+      hash = BigInt.asUintN(64, (hash ^ BigInt(code & 0xff)) * 0x100000001b3n);
+      hash = BigInt.asUintN(64, (hash ^ BigInt(code >>> 8)) * 0x100000001b3n);
+    }
+    return `selection:${hash.toString(16).padStart(16, "0")}`;
+  }
+
   function deriveSelectionCandidate(selection, {
     url = root.location?.href || "",
     provider = providerForUrl(url),
@@ -529,7 +547,7 @@
             evidence_ref: selectionCandidate.evidence_ref,
             message_ref: selectionCandidate.message_ref,
             source_observation: selectionCandidate.identity_observation,
-            idempotency_key: `selection:${selectionCandidate.evidence_ref}:${kindSelect.value}:${bodyInput.value}`,
+            idempotency_key: selectionIdempotencyKey(selectionCandidate.evidence_ref, kindSelect.value, bodyInput.value),
             context_policy: { inject: false },
           },
         });
@@ -561,7 +579,11 @@
     }
 
     function focusables() {
-      return [...shadow.querySelectorAll("button:not([disabled]), a[href]")]
+      // Scoped to the dialog, not the whole shadow root. The chip is rendered
+      // after the panel, so a shadow-root query made it the wrap target and
+      // Shift+Tab from the first control moved focus OUT of an aria-modal
+      // dialog -- the trap wrapped to the one element it exists to exclude.
+      return [...panel.querySelectorAll("button:not([disabled]), a[href]")]
         .filter((node) => !node.hidden && !node.closest("[hidden]"));
     }
 
@@ -632,6 +654,7 @@
     deriveSelectionCandidate,
     mount,
     providerForUrl,
+    selectionIdempotencyKey,
   });
 
   if (root.top === root.self && !root.polylogueAmbientSurfaceMounted) {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from polylogue.core.outcomes import OutcomeCheck as CheckResult
@@ -143,6 +144,82 @@ def audit_all_providers(
     return report
 
 
+_OPAQUE_SCOPE_IDENTITY = re.compile(r"^scope:[0-9a-f]{64}$")
+
+
+def _scope_identity_checks(manifest: SchemaVersionPackage, *, scope: str) -> list[AuditCheck]:
+    """Refuse a manifest that publishes a readable bundle scope.
+
+    ``bundle_scope_identity()`` exists so a catalog carries routing capability
+    without serializing the local path or session identifier it was derived
+    from. Nothing validated the field, so a manual promotion (or a generator
+    regression) writing the raw scope published it in both ``catalog.json`` and
+    ``package.json`` with every gate green.
+    """
+    checks: list[AuditCheck] = []
+    declared: list[tuple[str, str]] = [(scope, value) for value in manifest.bundle_scope_identities]
+    for element in manifest.elements:
+        declared.extend((f"{scope}/{element.element_kind}", value) for value in element.bundle_scope_identities)
+    for site, value in declared:
+        if _OPAQUE_SCOPE_IDENTITY.fullmatch(value):
+            continue
+        checks.append(
+            AuditCheck(
+                name="privacy_guards",
+                status=OutcomeStatus.ERROR,
+                summary="Bundle scope identity is not an opaque scope digest",
+                details=[f"length={len(value)}"],
+                provider=site,
+            )
+        )
+    return checks
+
+
+def _workload_profile_checks(
+    registry: SchemaRegistry,
+    manifest: SchemaVersionPackage,
+    *,
+    provider: str,
+    version: str,
+    scope: str,
+) -> list[AuditCheck]:
+    """Audit the workload profile a manifest declares.
+
+    ``SchemaRegistry.get_workload_profile()`` serves this artifact at runtime
+    and it is committed alongside the element schemas, but the bundle audit
+    inventoried element files only. A profile records observed structural
+    values under ``tokens``, so an identifier or address landing there
+    published with both required quick gates green.
+    """
+    name = manifest.workload_profile_file
+    if name is None:
+        return []
+    try:
+        profile = registry.load_committed_version_document(provider, version, name)
+    except Exception as error:
+        return [
+            AuditCheck(
+                name="privacy_guards",
+                status=OutcomeStatus.ERROR,
+                summary=f"Declared workload profile is unreadable: {type(error).__name__}",
+                provider=scope,
+            )
+        ]
+    if profile is None:
+        return [
+            AuditCheck(
+                name="privacy_guards",
+                status=OutcomeStatus.ERROR,
+                summary="Declared workload profile is missing",
+                provider=scope,
+            )
+        ]
+    return [
+        _scoped(scope, check_privacy_guards(profile)),
+        _scoped(scope, check_published_paths(profile)),
+    ]
+
+
 def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> AuditReport:
     """Run the registered privacy predicate over every committed schema element.
 
@@ -250,6 +327,21 @@ def audit_schema_bundle_privacy(*, registry: SchemaRegistry | None = None) -> Au
                 manifests.append(catalog_package)
             if package is not None and package is not catalog_package:
                 manifests.append(package)
+
+            audited_workload_profiles: set[str] = set()
+            for manifest in manifests:
+                report.checks.extend(_scope_identity_checks(manifest, scope=scope))
+                if manifest.workload_profile_file not in audited_workload_profiles:
+                    audited_workload_profiles.add(manifest.workload_profile_file or "")
+                    report.checks.extend(
+                        _workload_profile_checks(
+                            bundle_registry,
+                            manifest,
+                            provider=provider,
+                            version=version,
+                            scope=scope,
+                        )
+                    )
 
             declared_artifacts: dict[str, tuple[bool, str]] = {}
             for manifest in manifests:

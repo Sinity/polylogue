@@ -78,6 +78,7 @@ from polylogue.browser_capture.receiver import (
 from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import get_logger
+from polylogue.paths import archive_root as default_archive_root
 
 # polylogue.daemon.events is imported lazily inside the capture-health route
 # handlers below, not at module scope: polylogue.daemon's package __init__
@@ -691,7 +692,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         try:
             from polylogue.api.archive import _archive_capture_assertion_candidate, candidate_capture_kind
             from polylogue.config import Config
-            from polylogue.paths import archive_root as default_archive_root
 
             root = self.server.config.archive_root or default_archive_root()
             envelope = _archive_capture_assertion_candidate(
@@ -986,7 +986,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         )
         indexed_value = state.get("indexed_session_id")
         indexed = indexed_value if isinstance(indexed_value, str) else None
-        archive_root = self.server.config.archive_root
+        # `run_daemon_services` constructs the receiver without an explicit
+        # archive root, so the configured value is None on the production
+        # route. `existing_capture_state` above already resolves the same
+        # default to find the indexed session; refusing to resolve it here
+        # made cost and assertions permanently unavailable in production while
+        # every test that passed a temporary root saw them. The assertion
+        # candidate handler resolves it the same way.
+        archive_root = self.server.config.archive_root or default_archive_root()
         projection: _MissionControlPayload = {
             "status": "available" if indexed else "uncaptured",
             "archive": {
@@ -997,16 +1004,14 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             "cost": {"status": "unknown", "total_usd": None, "provenance": []},
             "assertions": {"status": "unknown", "items": []},
         }
-        if indexed and archive_root is None:
-            logger.warning(
-                "browser_capture.mission_control_degraded",
-                error="archive root is not configured",
-            )
-            projection["status"] = "unknown"
-            projection["reason"] = "archive_projection_unavailable"
-        elif indexed and archive_root is not None:
+        if indexed:
             facts = mission_control_archive_facts(archive_root, indexed)
             if facts is None:
+                logger.warning(
+                    "browser_capture.mission_control_degraded",
+                    error="archive projection is unavailable",
+                    archive_root=str(archive_root),
+                )
                 projection["status"] = "unknown"
                 projection["reason"] = "archive_projection_unavailable"
             else:

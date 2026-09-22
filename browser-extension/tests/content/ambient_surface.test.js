@@ -181,10 +181,14 @@ describe("ambient capture status surface", () => {
     dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "p", altKey: true, bubbles: true }));
     const panel = api.shadow.querySelector(".panel");
     expect(panel.hidden).toBe(false);
-    const nodes = [...api.shadow.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
+    // Dialog-scoped: the chip lives outside `[role="dialog"]`, so including it
+    // here would assert that forward-Tab wraps from a control the trap must
+    // never treat as inside the modal.
+    const nodes = [...panel.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
     nodes.at(-1).focus();
     panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, composed: true }));
     expect(api.shadow.activeElement).toBe(nodes[0]);
+    expect(panel.contains(api.shadow.activeElement)).toBe(true);
   });
 
   it("opens as a modal slide-over, closes on Escape, and restores focus to the chip", async () => {
@@ -281,14 +285,46 @@ describe("ambient capture status surface", () => {
     expect(panel.hidden).toBe(false);
     expect(api.shadow.activeElement?.getAttribute("aria-label")).toBe("Close Polylogue capture status");
 
-    const nodes = [...api.shadow.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
+    // Scoped to the dialog on purpose. The chip is rendered after the panel,
+    // so a shadow-root-wide query makes `nodes.at(-1)` the chip -- outside the
+    // aria-modal dialog -- and the assertion would bless the focus escape it
+    // exists to detect. Anti-vacuity: restore `focusables()` to
+    // `shadow.querySelectorAll` and the wrap lands on the chip, failing both
+    // the identity and the containment assertion below.
+    const nodes = [...panel.querySelectorAll("button:not([disabled]), a[href]")].filter((node) => !node.hidden);
+    expect(nodes.at(-1)).not.toBe(chip);
     nodes[0].focus();
     panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, composed: true }));
     expect(api.shadow.activeElement).toBe(nodes.at(-1));
+    expect(panel.contains(api.shadow.activeElement)).toBe(true);
 
     panel.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, composed: true }));
     expect(panel.hidden).toBe(true);
     expect(api.shadow.activeElement).toBe(chip);
+  });
+
+  it("bounds the selection idempotency key below the receiver limit", async () => {
+    // `_archive_capture_assertion_candidate` refuses a key over 240
+    // characters, and the previous `selection:<ref>:<kind>:<body>` template
+    // exceeded that for an ordinary paragraph selection, so every save
+    // returned `idempotency_key exceeds 240 characters`.
+    //
+    // Anti-vacuity: restore the raw concatenation and the length assertion
+    // fails at 2,000+ characters; a key that ignored the body would fail the
+    // "different drafts differ" assertion.
+    const dom = freshDom();
+    const { selectionIdempotencyKey } = dom.window.PolylogueAmbientSurface;
+    const evidenceRef = `browser-capture/chatgpt/${"c".repeat(200)}.json#message:msg-1`;
+    const body = "paragraph ".repeat(200);
+
+    const key = selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", body);
+
+    expect(body.length).toBeGreaterThan(240);
+    expect(key.length).toBeLessThanOrEqual(240);
+    expect(key).toMatch(/^selection:[0-9a-f]{16}$/);
+    expect(selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", body)).toBe(key);
+    expect(selectionIdempotencyKey(evidenceRef, "selection_assertion_candidate", `${body}!`)).not.toBe(key);
+    expect(selectionIdempotencyKey(`${evidenceRef}x`, "selection_assertion_candidate", body)).not.toBe(key);
   });
 
   it("removes itself calmly when globally disabled or hidden for the current site", async () => {

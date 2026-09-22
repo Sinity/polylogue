@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from collections.abc import Mapping
-from typing import TypeGuard
 
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
@@ -19,6 +18,8 @@ from polylogue.browser_capture.models import (
     BrowserCaptureBlock,
     BrowserCaptureEnvelope,
     BrowserCaptureTurn,
+    has_chatgpt_native_payload,
+    has_claude_ai_native_payload,
     looks_like_browser_capture,
 )
 from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource
@@ -163,23 +164,11 @@ def looks_like(payload: object) -> bool:
     return looks_like_browser_capture(payload)
 
 
-def _has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
-    return (
-        isinstance(payload, dict)
-        and payload.get("polylogue_bridge_projection") != "chatgpt-native-compact-v1"
-        and isinstance(payload.get("mapping"), dict)
-    )
-
-
 def _is_compact_native_capture(envelope: BrowserCaptureEnvelope) -> bool:
     return (
         envelope.provider_meta.get("capture_fidelity") == "native_compact"
         or envelope.session.provider_meta.get("capture_fidelity") == "native_compact"
     )
-
-
-def _has_claude_ai_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
-    return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
 
 
 def _ingest_flags_for_browser_capture(envelope: BrowserCaptureEnvelope, provider_session_id: str) -> list[str]:
@@ -774,7 +763,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         legacy_browser_capture_native_id(provider, envelope.session.provider_session_id) or fallback_id
     )
     raw_provider_payload = envelope.raw_provider_payload
-    if envelope.session.provider is Provider.CHATGPT and _has_chatgpt_native_payload(raw_provider_payload):
+    if envelope.session.provider is Provider.CHATGPT and has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
         return _merge_envelope_session_events(
@@ -789,7 +778,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             ),
             envelope,
         )
-    if envelope.session.provider is Provider.CLAUDE_AI and _has_claude_ai_native_payload(raw_provider_payload):
+    if envelope.session.provider is Provider.CLAUDE_AI and has_claude_ai_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.claude.ai_parser import parse_ai as parse_claude_ai
 
         return _merge_envelope_session_events(

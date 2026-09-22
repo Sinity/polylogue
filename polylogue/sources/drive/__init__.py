@@ -6,6 +6,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+import ijson
+
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.logging import get_logger
@@ -104,6 +106,41 @@ def _read_valid_cache(path: Path) -> bytes | None:
         return raw
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
         return None
+
+
+def _cache_document_is_readable(path: Path) -> bool:
+    """Prove a cached Drive document still decodes, without materializing it.
+
+    The cursor skip must not treat a truncated or corrupt cache as authority,
+    but proving that needs a decode, not the decoded object. Running
+    ``_read_valid_cache`` ahead of the revision comparison meant an unchanged
+    AI Studio document paid ``json.loads`` -- its whole object graph, several
+    times the file size -- on every scan, which is what this memory-bounded
+    route exists to avoid. ``ijson`` and a line iterator prove the same thing
+    in bounded memory, and admit exactly the same documents
+    ``_read_valid_cache`` returns bytes for.
+    """
+    try:
+        if path.suffix.lower() in {".jsonl", ".ndjson"}:
+            saw_record = False
+            with path.open("rb") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    saw_record = True
+                    if json.loads(line) is None:
+                        return False
+            return saw_record
+        with path.open("rb") as handle:
+            # Consume every event: short-circuiting on the first one would
+            # accept a truncated document, which is exactly the cache
+            # ``_read_valid_cache`` refuses to hand back.
+            events = 0
+            for _event in ijson.parse(handle, use_float=True):
+                events += 1
+            return events > 0
+    except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
+        return False
 
 
 def _write_cache_atomically(path: Path, raw: bytes) -> None:
@@ -250,16 +287,17 @@ def iter_drive_raw_data(
         blob_hash: str | None = None
         blob_size: int = 0
         cache_exists = cache_path.exists()
-        cached_bytes = _read_valid_cache(cache_path) if cache_exists else None
         if (
             known_mtimes is not None
             and file_meta.modified_time is not None
             and known_mtimes.get(source_path) == file_meta.modified_time
-            and (not cache_exists or cached_bytes is not None)
+            and (not cache_exists or _cache_document_is_readable(cache_path))
         ):
+            # Unchanged revision with a still-decodable cache: nothing here
+            # needs the payload, so nothing here reads it.
             continue
 
-        raw_bytes = cached_bytes
+        raw_bytes = _read_valid_cache(cache_path) if cache_exists else None
         if raw_bytes is None:
             try:
                 raw_bytes = drive_client.download_bytes(file_meta.file_id)
