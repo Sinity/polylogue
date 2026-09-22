@@ -486,3 +486,68 @@ def test_transcript_total_is_the_composed_length(tmp_path: Path) -> None:
     assert first["total"] == 4
     assert first["next_offset"] == 2, "pagination must reach the divergent tail"
     assert messages_kind["total"] == first["total"], "two vocabularies, one window"
+
+
+def test_search_continuation_survives_a_session_grain_total(tmp_path: Path) -> None:
+    """A ranked page full of one session's hits still offers the next page.
+
+    `search_summaries` selects FTS *block* rows with no DISTINCT over
+    `session_id`, so several matching blocks in one session are several hits.
+    `total` is deliberately session-grain -- it is what `total_unit` labels --
+    so comparing `offset + len(hits)` against it is a unit error: the first
+    page fills with one session's blocks while another session's hit waits at
+    the next offset, and a small session total makes that page look final.
+
+    Anti-vacuity: passing `total=total` to `page_next_offset` again makes
+    `next_offset` `None` here, ending the walk before the second session's
+    hit is ever returned.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    crowded = SessionBuilder(tmp_path / "index.db", "crowded").provider("claude-code").title("crowded")
+    for index in range(4):
+        crowded = crowded.add_message(f"m-{index:04d}", role="user", text=f"needle body {index}")
+    crowded.save()
+    SessionBuilder(tmp_path / "index.db", "later").provider("claude-code").title("later").add_message(
+        "m-0000", role="user", text="needle body tail"
+    ).save()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        page = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 4, "offset": 0}},
+            archive=archive,
+            serving_identity="test",
+        )
+        hits = cast(list[dict[str, Any]], page["hits"])
+        assert len(hits) == 4
+        # Four block-grain hits, two sessions: the session total is smaller
+        # than the hits already returned.
+        assert cast(int, page["total"]) < len(hits)
+        assert page["next_offset"] == 4
+
+        second = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 4, "offset": 4}},
+            archive=archive,
+            serving_identity="test",
+        )
+    assert cast(list[dict[str, Any]], second["hits"]), "the second page must still carry the remaining hit"
+
+
+def test_a_short_ranked_page_still_terminates(tmp_path: Path) -> None:
+    """The opposite direction: a page under its own bound ends the walk."""
+    from tests.infra.storage_records import SessionBuilder
+
+    SessionBuilder(tmp_path / "index.db", "only").provider("claude-code").title("only").add_message(
+        "m-0000", role="user", text="needle body"
+    ).save()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        page = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 50, "offset": 0}},
+            archive=archive,
+            serving_identity="test",
+        )
+    assert page["next_offset"] is None

@@ -582,8 +582,21 @@ def _search_payload(
     # The ranked envelope's own continuation is ``next_cursor``; ``next_offset``
     # is the offset-shaped answer the list page also gives, decided by the one
     # helper so a client walking pages cannot see the two paths disagree.
+    #
+    # ``total`` is deliberately session-grain -- it is what ``total_unit``
+    # labels and what ``_archive_count_sessions_for_spec`` counts -- while the
+    # hits are block-grain: ``ArchiveStore.search_summaries`` selects FTS block
+    # rows with no DISTINCT over ``session_id``, so ten matching blocks in one
+    # session are ten hits. Comparing ``offset + len(hits)`` against a session
+    # total is a unit error that terminates the walk early: ten hits from one
+    # session fill the first page while another session's hit waits at offset
+    # ten, and a total of two makes that page look final. There is no
+    # hit-grain denominator to compare against, so continuation is decided by
+    # the helper's own no-total rule -- a page that filled its bound continues,
+    # a short page terminates -- rather than by a denominator in the wrong
+    # unit.
     envelope["next_offset"] = page_next_offset(
-        offset=spec.offset, returned=len(hit_payloads), total=total, limit=display_limit
+        offset=spec.offset, returned=len(hit_payloads), total=None, limit=display_limit
     )
     return envelope
 
