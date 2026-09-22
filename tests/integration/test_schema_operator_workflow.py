@@ -24,6 +24,9 @@ from click.testing import CliRunner
 
 from devtools import schema_audit, schema_promote
 from devtools.click_dispatch import main as devtools_main
+from polylogue.core.outcomes import OutcomeStatus
+from polylogue.core.schema_subjects import CORE_SCHEMA_PROVIDERS
+from polylogue.schemas.audit.models import AuditCheck, AuditReport
 from polylogue.schemas.registry import SchemaRegistry
 
 pytestmark = pytest.mark.integration
@@ -232,12 +235,20 @@ class TestSchemaListCommand:
 
 class TestSchemaAuditCommand:
     def test_schema_audit_json_scopes_checks_by_provider(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """The audit's JSON payload and its exit code, tied to the report rather than a snapshot.
+
+        This assertion used to read ``exit_code == 1`` and ``warned > 0``,
+        which recorded a moment when the committed packages carried warnings
+        instead of a contract.  Once those warnings were repaired the test
+        could only stay green while some other subject failed the audit, so it
+        went red the moment the audit stopped reporting a declared-absent
+        package as an error.  The exit code is now checked against the summary
+        the same payload carries: red if ``main`` ever stops deriving one from
+        the other, and red either way if the scoping disappears.
+        """
         exit_code = schema_audit.main(["--json"])
 
         captured = capsys.readouterr()
-        assert exit_code == 1, (
-            f"schema audit should exit nonzero while committed schemas carry warnings: {captured.out}{captured.err}"
-        )
         outer = _extract_json(captured.out)
         assert outer["status"] == "ok"
         data = _extract_result_json(captured.out)
@@ -246,11 +257,49 @@ class TestSchemaAuditCommand:
         warned = summary["warned"]
         assert isinstance(failed, int)
         assert isinstance(warned, int)
-        assert failed == 0
-        assert warned > 0
+        expected_exit = 0 if failed == 0 and warned == 0 else 1
+        assert exit_code == expected_exit, (
+            f"exit code must follow the reported summary {summary}: {captured.out}{captured.err}"
+        )
         checks = _expect_object_list(data["checks"], "checks")
         assert checks
         assert any(check.get("provider") for check in checks[:-1])
+        scoped = {check.get("provider") for check in checks if check.get("provider")}
+        assert CORE_SCHEMA_PROVIDERS
+        assert set(CORE_SCHEMA_PROVIDERS) <= scoped, "every package-requiring subject must be reported by name"
+
+    @pytest.mark.parametrize(
+        ("status", "expected_exit"),
+        [
+            (OutcomeStatus.OK, 0),
+            (OutcomeStatus.SKIP, 0),
+            (OutcomeStatus.WARNING, 1),
+            (OutcomeStatus.ERROR, 1),
+        ],
+    )
+    def test_audit_exit_code_follows_the_report(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        status: OutcomeStatus,
+        expected_exit: int,
+    ) -> None:
+        """The exit table, pinned against a constructed report.
+
+        The sibling test can only compare the exit code with a healthy tree's
+        own summary, so it cannot prove the mapping on its own -- a ``main``
+        that returned 0 unconditionally would stay green there.  Here the
+        report is supplied, so a constant return value is red for two of the
+        four rows.  An adjudicated absence (``SKIP``) must not be an exit.
+        """
+        report = AuditReport()
+        report.checks.append(AuditCheck(name="schema_exists", status=status, summary="synthetic", provider="probe"))
+        monkeypatch.setattr(schema_audit, "audit_schemas", lambda request: report)
+
+        exit_code = schema_audit.main(["--json"])
+
+        captured = capsys.readouterr()
+        assert exit_code == expected_exit, f"{status} must exit {expected_exit}: {captured.out}{captured.err}"
 
 
 # =============================================================================
