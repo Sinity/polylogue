@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from polylogue.archive.query.evaluator import QueryEvaluation, QueryEvaluationRequest
 from polylogue.core.enums import AssertionKind, AssertionStatus
@@ -26,9 +26,16 @@ from polylogue.storage.sqlite.query_objects import (
 
 
 class _Evaluator:
-    def __init__(self, *, members: tuple[str, ...], cache_only: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        members: tuple[str, ...],
+        cache_only: bool = False,
+        exactness: Literal["exact", "capped", "sampled", "estimate"] = "exact",
+    ) -> None:
         self.members = members
         self.cache_only = cache_only
+        self.exactness = exactness
         self.corpus_epoch = "index:g1"
         self.requests: list[QueryEvaluationRequest] = []
 
@@ -38,7 +45,7 @@ class _Evaluator:
             grain="session",
             member_refs=self.members,
             corpus_epoch=self.corpus_epoch,
-            exactness="exact",
+            exactness=self.exactness,
             cache_only=self.cache_only,
             receipt=EvaluationReceipt(
                 receipt_id=f"receipt-{len(self.requests)}-{request.purpose}",
@@ -636,3 +643,45 @@ def test_an_evaluator_without_a_scope_claim_keeps_every_changed_session(tmp_path
         "codex-session:a",
         "claude-code-session:b",
     }
+
+
+def test_a_capped_evaluation_claims_no_membership_delta(tmp_path: Path) -> None:
+    """A non-exact evaluation never emits ``query-delta`` (polylogue-uwm6y).
+
+    ``member_refs`` from a capped, sampled or estimated evaluation is a bounded
+    view of the watched relation, not the relation, so its merkle root answers
+    a different question than the baseline's.  Comparing them would let a
+    shifting cap window alone emit an unconditional "membership changed"
+    assertion.
+
+    Emitting nothing would be the mirror defect -- an unmeasured negative
+    reported as a measured one -- so the degraded receipt is always written and
+    a baselined watch gets exactly one ``query-delta-unmeasured`` candidate
+    naming the condition.
+
+    Anti-vacuity: drop the ``exactness != "exact"`` branch and this asserts
+    ``query-delta`` on a membership the evaluator never enumerated, and the
+    baseline advances to a capped root.
+    """
+    index_db, query_hash = _seed_watch(tmp_path)
+    evaluator = _Evaluator(members=("session:one",))
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.execute_sessions is not None
+
+    # An exact tick first, so there is a real drift question to answer.
+    assert stage.execute_sessions(("session:changed",)) is True
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        before = conn.execute("SELECT result_set_id, updated_at_ms FROM watched_query_baselines").fetchone()
+    assert before is not None
+
+    evaluator.members = ("session:one", "session:two")
+    evaluator.exactness = "capped"
+    assert stage.execute_sessions(("session:changed",)) is True
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        rows = conn.execute("SELECT status, value_json FROM assertions WHERE kind = 'finding'").fetchall()
+        after = conn.execute("SELECT result_set_id, updated_at_ms FROM watched_query_baselines").fetchone()
+    kinds = [str(row[1]) for row in rows]
+    assert not any('"query-delta"' in kind for kind in kinds), "a capped view is not a membership"
+    assert any("query-delta-unmeasured" in kind for kind in kinds), "the unanswered question is still recorded"
+    assert after == before, "a non-exact tick never advances the baseline"

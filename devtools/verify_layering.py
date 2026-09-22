@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from devtools.durable_write_census import collect_violations as collect_durable_write_violations
 from devtools.manifest_models import validate_layering_manifest
 from devtools.required_gate import (
     AUDIT_GROUP_SYNC_COMMAND,
@@ -1217,6 +1218,13 @@ def main(argv: list[str] | None = None) -> int:
 
     violations.extend(_collect_writer_module_violations(repo_root, writer_modules))
     violations.extend(_collect_writer_module_census_violations(repo_root, writer_modules))
+    # polylogue-6kur AC4: the file-grain writer-module census above proves WHICH
+    # modules execute DML; it cannot see new DML added inside a module it already
+    # lists. This statement-grain census is the other half -- it names every route
+    # that can rewrite an already-durable row, including the shapes a grep for
+    # ``UPDATE <table>`` structurally cannot see (``INSERT OR REPLACE``,
+    # ``ON CONFLICT ... DO UPDATE``, and delete-then-reinsert).
+    violations.extend(collect_durable_write_violations(repo_root=repo_root))
     violations.extend(_top_level_package_docstring_violations(repo_root))
     sqlite_violations, sqlite_shrunk = _sqlite_degradation_findings(repo_root, manifest)
     violations.extend(sqlite_violations)

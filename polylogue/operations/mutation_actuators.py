@@ -1778,6 +1778,7 @@ class SavedViewSaveArgs:
     view_id: str
     name: str
     query_json: str
+    watch: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1802,6 +1803,18 @@ class SavedViewSaveActuator(_FailClosedRecovery):
         target_refs: tuple[str, ...] = (f"saved_view:{args.view_id}",)
         if collision_view_id is not None:
             target_refs = (*target_refs, f"saved_view:{collision_view_id}")
+        if args.watch:
+            # A watched view is also a durable standing-query definition. Compile
+            # it here so a preview refuses an unwatchable selection instead of a
+            # green plan whose apply fails (polylogue-pm8cj).
+            import json as _json
+
+            from polylogue.storage.sqlite.query_watch import validate_watch_definition
+
+            parsed = _json.loads(args.query_json)
+            if not isinstance(parsed, dict):
+                raise ValueError("query_json must encode an object")
+            validate_watch_definition(parsed)
         return build_plan(
             operation=self.operation,
             destructive_class="reversible",
@@ -1813,6 +1826,7 @@ class SavedViewSaveActuator(_FailClosedRecovery):
                 "name": args.name,
                 "query_json": args.query_json,
                 "collision_view_id": collision_view_id,
+                "watch": args.watch,
             },
         )
 
@@ -1821,7 +1835,8 @@ class SavedViewSaveActuator(_FailClosedRecovery):
         name = str(plan.context["name"])
         query_json = str(plan.context["query_json"])
         collision_view_id = plan.context["collision_view_id"]
-        created = args.archive.save_view(view_id, name, query_json)
+        watch = bool(plan.context.get("watch"))
+        created = args.archive.save_view(view_id, name, query_json, watch=watch)
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
@@ -1831,7 +1846,7 @@ class SavedViewSaveActuator(_FailClosedRecovery):
             detail=None,
             receipt_ref=None,
             applied_at=plan.prepared_at,
-            domain_receipt={"created": created, "collision_view_id": collision_view_id},
+            domain_receipt={"created": created, "collision_view_id": collision_view_id, "watch": watch},
         )
 
 

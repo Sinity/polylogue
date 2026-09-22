@@ -338,6 +338,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
+from polylogue.storage.sqlite.query_watch import register_query_watch, validate_watch_definition
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
@@ -5147,14 +5148,29 @@ class ArchiveStore:
         finally:
             user_conn.close()
 
-    def save_view(self, view_id: str, name: str, query_json: str) -> bool:
-        """Create or update one saved view in archive user.db."""
+    def save_view(self, view_id: str, name: str, query_json: str, *, watch: bool = False) -> bool:
+        """Create or update one saved view in archive user.db.
+
+        ``watch=True`` additionally promotes the view into the durable
+        watched-query substrate the standing-query convergence stage reads
+        (``queries`` + ``query_names.watch``), in the *same* transaction as
+        the saved-view assertion: a name whose view committed but whose watch
+        did not would be silently unwatched. This is the product's only
+        creation route for a standing query (polylogue-pm8cj); a view whose
+        selection has no evaluable predicate is refused rather than watched
+        under a different set (see
+        :mod:`polylogue.storage.sqlite.query_watch`).
+        """
         normalized_name = name.strip()
         if not normalized_name:
             raise ValueError("name must not be empty")
         query = json.loads(query_json)
         if not isinstance(query, dict):
             raise ValueError("query_json must encode an object")
+        if watch:
+            # Compile before opening the write connection so an unwatchable
+            # definition never reaches a transaction at all.
+            validate_watch_definition(query)
         user_conn = self._open_user_write_connection(initialize=True)
         try:
             assertion_id = assertion_id_for_saved_view(view_id)
@@ -5164,7 +5180,14 @@ class ArchiveStore:
             with user_conn:
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
                     mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
-                upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
+                envelope = upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
+                register_query_watch(
+                    user_conn,
+                    name=normalized_name,
+                    query_params=query,
+                    watch=watch,
+                    now_ms=envelope.updated_at_ms,
+                )
             return not exists
         finally:
             user_conn.close()

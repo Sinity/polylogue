@@ -702,7 +702,10 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         description=(
             "Create or update a named saved query view. Every apply writes; created-vs-updated is a "
             "receipt detail, not an idempotency short-circuit. Routed through OperationExecutor/"
-            "SavedViewSaveActuator (reversible class, role_only confirmation)."
+            "SavedViewSaveActuator (reversible class, role_only confirmation). watch=true additionally "
+            "promotes the name into the durable watched-query substrate the daemon's standing-query "
+            "convergence stage re-evaluates, and is refused at plan time when the selection has no "
+            "predicate the canonical-plan evaluator can execute."
         ),
         surfaces=("mcp", "api"),
         mutates_state=True,

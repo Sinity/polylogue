@@ -12,6 +12,7 @@ import sqlite3
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 from polylogue.archive.query.evaluator import (
@@ -34,6 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 from polylogue.storage.sqlite.query_objects import (
+    EvaluationReceipt,
     QueryObject,
     get_query,
     get_result_set,
@@ -225,6 +227,23 @@ def _watch_result_set_id(query_hash: str, evaluation: QueryEvaluation) -> str:
     return f"watch-{hash_payload(snapshot)}"
 
 
+#: The detector that owns every candidate this stage writes.
+_DETECTOR_REF = "agent:standing-query-detector.v1"
+
+
+def _degraded_receipt(evaluation: QueryEvaluation, *, purpose: str) -> EvaluationReceipt:
+    """Stamp why an evaluation could not answer its question."""
+    return replace(
+        evaluation.receipt,
+        degradation={
+            **(evaluation.receipt.degradation or {}),
+            "reason": "non-exact-evaluation",
+            "exactness": evaluation.exactness,
+            "purpose": purpose,
+        },
+    )
+
+
 def _materialize_watch_evaluation(
     conn: sqlite3.Connection,
     query_hash: str,
@@ -232,6 +251,9 @@ def _materialize_watch_evaluation(
     *,
     now_ms: int,
 ) -> None:
+    if evaluation.exactness != "exact":
+        _materialize_unmeasured_watch_evaluation(conn, query_hash, evaluation, now_ms=now_ms)
+        return
     baseline = get_watched_query_baseline(conn, query_hash)
     root = membership_merkle_root(evaluation.member_refs)
     rank_hash = hash_payload(list(evaluation.member_refs))
@@ -305,7 +327,73 @@ def _materialize_watch_evaluation(
                 result_set_ref=current_reference,
                 baseline_ref=baseline_reference,
                 current_ref=current_reference,
-                detector_ref="agent:standing-query-detector.v1",
+                detector_ref=_DETECTOR_REF,
+                scope_ref=query_reference,
+            )
+        ],
+        now_ms=now_ms,
+    )
+
+
+def _materialize_unmeasured_watch_evaluation(
+    conn: sqlite3.Connection,
+    query_hash: str,
+    evaluation: QueryEvaluation,
+    *,
+    now_ms: int,
+) -> None:
+    """Record a non-exact watch evaluation without claiming a membership delta.
+
+    ``member_refs`` from a capped, sampled or estimated evaluation is not the
+    watched relation, only a bounded view of it. Its merkle root therefore
+    answers a different question than the baseline's, and a shifting cap window
+    alone would emit an unconditional "membership changed" assertion
+    (polylogue-uwm6y). So this path never advances the baseline, never writes a
+    ``watch`` result set, and never emits ``query-delta``.
+
+    Emitting *nothing* would be the mirror defect -- an unmeasured negative
+    reported as a measured one -- so the degraded receipt is always written,
+    and when a measured baseline existed (there was a real drift question this
+    tick was supposed to answer) exactly one degraded candidate names the
+    condition. With no baseline there is no question yet: the receipt is the
+    whole record, and the next exact evaluation establishes the baseline it
+    always would have.
+    """
+    put_evaluation_receipt(
+        conn,
+        query_hash=query_hash,
+        receipt=_degraded_receipt(evaluation, purpose="standing-watch"),
+        result_set_id=None,
+        created_at_ms=now_ms,
+    )
+    baseline = get_watched_query_baseline(conn, query_hash)
+    if baseline is None:
+        return
+    query_reference = query_ref(query_hash).format()
+    baseline_reference = result_set_ref(baseline.result_set_id).format()
+    upsert_findings_as_assertions(
+        conn,
+        [
+            FindingAssertion(
+                claim_key="standing-query-membership-unmeasured",
+                target_ref=query_reference,
+                body_text=(
+                    "Watched query membership could not be compared after archive convergence: the "
+                    f"evaluation was {evaluation.exactness}, not an exact enumeration. The stored "
+                    "baseline is unchanged and no membership change is claimed."
+                ),
+                finding_kind="query-delta-unmeasured",
+                statistic={
+                    "op": "unmeasured",
+                    "value": None,
+                    "unit": "members",
+                    "reason": f"evaluation exactness is {evaluation.exactness}",
+                },
+                n=0,
+                query_ref=query_reference,
+                result_set_ref=baseline_reference,
+                baseline_ref=baseline_reference,
+                detector_ref=_DETECTOR_REF,
                 scope_ref=query_reference,
             )
         ],
@@ -342,7 +430,21 @@ def _materialize_promoted_finding_drifts(
                 excluded_origin_prefixes=("notice.",),
             )
         )
-        if evaluation.cache_only or _matches_expected_count(expected, len(evaluation.member_refs)):
+        if evaluation.cache_only:
+            continue
+        if evaluation.exactness != "exact":
+            _materialize_unmeasured_finding_drift(
+                conn,
+                assertion_id=finding.assertion_id,
+                query_hash=query_hash,
+                query_reference=query_reference,
+                declared_result_set_ref=value.get("result_set_ref"),
+                expected=expected,
+                evaluation=evaluation,
+                now_ms=now_ms,
+            )
+            continue
+        if _matches_expected_count(expected, len(evaluation.member_refs)):
             continue
         current_id = f"finding-{hash_payload((query_hash, membership_merkle_root(evaluation.member_refs)))}"
         current = get_result_set(conn, current_id)
@@ -380,12 +482,72 @@ def _materialize_promoted_finding_drifts(
                     result_set_ref=current_reference,
                     current_ref=current_reference,
                     expected=expected,
-                    detector_ref="agent:standing-query-detector.v1",
+                    detector_ref=_DETECTOR_REF,
                     scope_ref=f"assertion:{finding.assertion_id}",
                 )
             ],
             now_ms=now_ms,
         )
+
+
+def _materialize_unmeasured_finding_drift(
+    conn: sqlite3.Connection,
+    *,
+    assertion_id: str,
+    query_hash: str,
+    query_reference: str,
+    declared_result_set_ref: object,
+    expected: Mapping[str, object],
+    evaluation: QueryEvaluation,
+    now_ms: int,
+) -> None:
+    """Record that an expected-count check could not be performed.
+
+    ``_matches_expected_count`` reads ``len(member_refs)`` as the relation's
+    member count. On a capped, sampled or estimated evaluation that count is a
+    property of the evaluation's bound, not of the relation, so comparing it
+    against a stored expectation would promote a truncation into a definitive
+    ``query-drift`` claim about accepted evidence (polylogue-uwm6y).
+    """
+    put_evaluation_receipt(
+        conn,
+        query_hash=query_hash,
+        receipt=_degraded_receipt(evaluation, purpose="finding-drift"),
+        result_set_id=None,
+        created_at_ms=now_ms,
+    )
+    if not isinstance(declared_result_set_ref, str) or not declared_result_set_ref.strip():
+        # finding.v1 always declares one; without it there is no relation to
+        # name as the subject of the degraded claim, and inventing a ref would
+        # be the fabrication this path exists to prevent.
+        return
+    upsert_findings_as_assertions(
+        conn,
+        [
+            FindingAssertion(
+                claim_key="promoted-finding-expected-count-unmeasured",
+                target_ref=f"assertion:{assertion_id}",
+                body_text=(
+                    "Promoted finding could not be re-checked against its expected member count: the "
+                    f"evaluation was {evaluation.exactness}, not an exact enumeration. No drift is claimed."
+                ),
+                finding_kind="query-drift-unmeasured",
+                statistic={
+                    "op": "unmeasured",
+                    "value": None,
+                    "unit": "members",
+                    "reason": f"evaluation exactness is {evaluation.exactness}",
+                },
+                n=0,
+                query_ref=query_reference,
+                result_set_ref=declared_result_set_ref.strip(),
+                expected=dict(expected),  # type: ignore[arg-type]
+                detector_ref=_DETECTOR_REF,
+                scope_ref=f"assertion:{assertion_id}",
+            )
+        ],
+        now_ms=now_ms,
+    )
 
 
 def _has_promoted_expected_findings(conn: sqlite3.Connection) -> bool:
