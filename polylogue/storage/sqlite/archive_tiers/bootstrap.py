@@ -877,9 +877,29 @@ def _initialize_active_archive_root(root: Path) -> None:
         missing_audit_with_recovery_receipt = (
             pending_audit_adoption and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
         )
+        # A lineage member that has lost only ``audit.db`` has a named recovery
+        # route, and the generic marker text describes none of it. Prove the
+        # surviving durable pair belongs to this lineage -- which also reports
+        # a symlinked or multiply-linked source/user tier first, because that
+        # is the more severe finding -- and then raise the adoption refusal the
+        # operator can act on.
+        established_pair_without_audit = (
+            format_marker.is_file()
+            and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).exists()
+            and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_symlink()
+            and all(
+                (root / archive_tier_spec(tier).filename).is_file() for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
+            )
+        )
         if any_durable_tier_exists and not (
             (has_pending_bootstrap and not has_bootstrap_marker) or missing_audit_with_recovery_receipt
         ):
+            if established_pair_without_audit:
+                assert_archive_format_lineage(root, tiers=frozenset({ArchiveTier.SOURCE, ArchiveTier.USER}))
+                raise RuntimeError(
+                    "established archive is missing audit.db; use maintenance migrate-tier audit "
+                    "--adopt-established-audit with a verified full_evidence backup"
+                )
             assert_archive_format_lineage(root)
         elif format_marker.exists() and not any_durable_tier_exists:
             raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
