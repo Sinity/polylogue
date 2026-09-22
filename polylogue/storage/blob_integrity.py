@@ -575,8 +575,12 @@ def _source_schema_capabilities(conn: sqlite3.Connection) -> SourceBlobCapabilit
         # canonical query, which is blocked for it, so its existing blob
         # references became unavailable to integrity and recovery tooling.
         # ``blob_refs`` is the typed ledger only this lineage writes, so the
-        # stamp earns authority only alongside it.
-        current_authority = current_capabilities or (user_version == stamped_source_version and current_blob_refs)
+        # stamp earns authority alongside it -- or where the catalog offers no
+        # historical carrier at all to contradict it, since then there is no
+        # legacy classification to preserve.
+        current_authority = current_capabilities or (
+            user_version == stamped_source_version and (current_blob_refs or not legacy_carriers)
+        )
         if not current_authority and current_blob_refs:
             legacy_carriers.append("blob_refs")
         if current_authority:

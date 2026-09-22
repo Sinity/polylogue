@@ -3,13 +3,16 @@
 The format marker records the durable version each tier was bootstrapped at.
 ``assert_archive_format_lineage`` compared the live file against the lineage
 *floor* and only checked the recorded schema fingerprint when the live version
-equalled the recorded birth version -- so once a tier is born above the floor
+*equalled* the recorded birth version -- so once a tier is born above the floor
 (the source tier is, at numbered slot 002), a transplanted historical version-1
 file cleared the floor, skipped the fingerprint on the version mismatch, and
 was admitted as lineage evidence before bootstrap, migration or backup
-verification trusted it.
+verification trusted it. The fingerprint now also decides the below-birth case,
+which keeps this lineage's own tier -- one numbered slot behind, carrying the
+recorded schema -- on the migration route rather than refusing it as foreign.
 
-Anti-vacuity: drop the birth-version comparison in
+Anti-vacuity: narrow the fingerprint condition back to ``version ==
+versions[tier.value]`` in
 ``polylogue/storage/sqlite/archive_tiers/archive_plan.py`` and
 ``test_transplanted_older_tier_is_refused`` goes red -- the transplanted
 version-1 source tier is accepted with no error at all.
@@ -68,7 +71,7 @@ class TestArchiveFormatBirthVersion:
         finally:
             conn.close()
 
-        with pytest.raises(RuntimeError, match="below the version"):
+        with pytest.raises(RuntimeError, match="historical version-1 schema"):
             assert_archive_format_lineage(tmp_path)
 
     def test_a_migrated_tier_above_its_birth_version_is_accepted(self, tmp_path: Path) -> None:
