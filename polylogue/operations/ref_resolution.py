@@ -150,7 +150,13 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
 
         def read_anchor(archive: ArchiveStore) -> PublicRefResolutionPayload:
             resolution = resolve_block_anchor(archive._conn, block_anchor)
-            resolved = resolution.state in {"ok", "drifted_position", "drifted_message"}
+            # ``relocated_lineage`` is a resolution, not a miss: the resolver
+            # found the hash in a composed lineage view reached through a
+            # concrete inheritance edge and returns a concrete message and
+            # position, with the edge named in ``detail``. Omitting it here
+            # reported ``resolved=false`` plus a caveat for an anchor that did
+            # resolve, so clients could not consume the relocation at all.
+            resolved = resolution.state in {"ok", "drifted_position", "drifted_message", "relocated_lineage"}
             object_refs = (
                 (f"message:{resolution.resolved_message_id}",) if resolution.resolved_message_id is not None else ()
             )

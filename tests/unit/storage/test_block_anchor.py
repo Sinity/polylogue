@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.operations.ref_resolution import plan_ref_resolution
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.block_anchor import (
     BlockAnchor,
@@ -17,6 +20,7 @@ from polylogue.storage.block_anchor import (
     parse_block_anchor,
     resolve_block_anchor,
 )
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
@@ -375,6 +379,35 @@ def test_resolve_block_anchor_relocated_lineage_in_composed_child_view(tmp_path:
         assert resolution.resolved_position == 0
         assert f"{child_id} -> {parent_id}" in resolution.detail
         assert "inheritance=prefix-sharing" in resolution.detail
+
+        # The public boundary must consume that resolution. It classified only
+        # ok/drifted_* as resolved, so a relocated anchor carrying a concrete
+        # message and position was reported ``resolved=false`` with a caveat.
+        #
+        # Anti-vacuity: dropping ``relocated_lineage`` from the resolved set in
+        # ``operations/ref_resolution.py`` makes ``resolved`` false, the caveat
+        # non-empty, and the object ref unusable -- executed against the
+        # pre-change file. The ``missing`` case below pins the other direction,
+        # so treating every state as resolved cannot pass.
+        plan = plan_ref_resolution(child_anchor.to_text(), archive_root=tmp_path)
+        assert plan.read is not None
+        payload = plan.read(cast("ArchiveStore", SimpleNamespace(_conn=conn, archive_root=tmp_path)))
+        assert payload.resolved is True
+        assert payload.caveats == ()
+        assert payload.object_refs == (f"message:{anchor.message_id}",)
+        assert isinstance(payload.payload, dict)
+        assert payload.payload["state"] == "relocated_lineage"
+
+        absent = BlockAnchor(
+            session_id=child_id,
+            message_id=anchor.message_id,
+            content_hash_hex="f" * 64,
+        )
+        absent_plan = plan_ref_resolution(absent.to_text(), archive_root=tmp_path)
+        assert absent_plan.read is not None
+        absent_payload = absent_plan.read(cast("ArchiveStore", SimpleNamespace(_conn=conn, archive_root=tmp_path)))
+        assert absent_payload.resolved is False
+        assert absent_payload.caveats != ()
     finally:
         conn.close()
 
