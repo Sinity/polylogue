@@ -58,9 +58,20 @@ if TYPE_CHECKING:
 _SESSION_ARCHIVE_ROOT: Path | None = None
 
 
+#: Opt-in destination for the anonymous-memory retention probe
+#: (``tests/infra/retention_probe.py``).  Unset, nothing is imported and no
+#: hook runs; the probe is a diagnostic for the worker-memory ceiling that
+#: sizes ``devtools.worker_memory.CORPUS_MAX_WORKERS``, not a standing cost.
+RETENTION_PROBE_ENV = "POLYLOGUE_TEST_RETENTION_PROBE"
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Refuse a test run that imports the product from another checkout, or bypasses the harness in a lane."""
-    del config
+    destination = os.environ.get(RETENTION_PROBE_ENV, "").strip()
+    if destination:
+        from tests.infra.retention_probe import RetentionProbe
+
+        config.pluginmanager.register(RetentionProbe(report_path=Path(destination)), "polylogue-retention-probe")
     if _CHECKOUT_GUARD_ERROR is not None:
         raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
     bare = refuse_bare_pytest(os.environ)
