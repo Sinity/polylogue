@@ -258,6 +258,27 @@ class _StubCursor:
             f"expected at least {at_least} completed ops write scope(s), saw {self.completed_scopes}"
         )
 
+    def assert_no_ops_bookkeeping(self) -> None:
+        """The degraded gate returned before any ops-tier bookkeeping at all.
+
+        The scope is no longer entered once per batch. #5265 moved ops-tier
+        publication to one admitted section per write and #5388 put the scope
+        inside that section, so a batch that performs no ops write enters no
+        scope -- and a degraded batch performs none: ``ingest_files`` returns
+        synthetic skip metrics before ``begin_ingest_attempt``. Asserting a
+        completed scope here therefore demanded exactly the ops work #1003
+        exists to suppress. What the degraded path does guarantee is that it
+        touched the ops tier zero times, which is what this asserts.
+        """
+        assert getattr(self._ops_scope, "depth", 0) == 0, "ops write scope was left open"
+        assert not getattr(self._ops_scope, "pending", []), "buffered stage events were never flushed"
+        assert self.completed_scopes == 0, (
+            f"degraded ingest entered {self.completed_scopes} ops write scope(s); it must not reach ops bookkeeping"
+        )
+        assert self.flushed_stage_events == [], (
+            f"degraded ingest published stage events {self.flushed_stage_events}; it must publish none"
+        )
+
     def begin_ingest_attempt(self, **kwargs: object) -> str:
         return "attempt-stub"
 
@@ -320,7 +341,7 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
     assert metrics.succeeded_file_count == 0
     assert metrics.failed_file_count == 0
     assert metrics.skipped_file_count == len(files)
-    cursor.assert_scopes_balanced()
+    cursor.assert_no_ops_bookkeeping()
 
 
 # ---------------------------------------------------------------------------
@@ -427,9 +448,9 @@ async def test_ingest_files_short_circuits_under_burst_after_degraded(
     # full-parse path because the degraded gate fired first.
     assert total_read == 0
     assert db_path.stat().st_size == db_size_before
-    # Each batch is one bounded ops.db write scope, entered and left inside
-    # the batch: five batches, five completed scopes, none carried across.
-    cursor.assert_scopes_balanced(at_least=5)
+    # Five degraded batches publish nothing to the ops tier: no attempt row,
+    # no stage event, and therefore no ops write scope at all.
+    cursor.assert_no_ops_bookkeeping()
 
 
 @pytest.mark.asyncio
