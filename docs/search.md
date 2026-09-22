@@ -274,7 +274,7 @@ has, not a window-specific gap.
 | `session` | Exact session ref alias for `id` | `session:codex-session:abc` |
 | `title` | Session title substring | `title:refactor` |
 | `since` / `until` | Session time bounds, ISO or relative | `since:7d` |
-| `contains` | Exact content substring filter | `contains:sqlite` |
+| `contains` | Content term, FTS-tokenized (not a substring scan) | `contains:sqlite` |
 | `near` | Vector similarity from text or a session id | `near:"semantic search"` / `near:id:<session>` |
 | `lane` | Retrieval lane | `lane:dialogue` |
 | `lineage` | Sessions sharing topology with a seed | `lineage:id:<session>` |
@@ -829,6 +829,27 @@ Two facts survive the removal, because whoever builds the measured trigram lane
    estimates 1.5-2x `messages_fts`) and a precision/recall report before it
    ships enabled for any caller — the retired index is not that evidence, and
    the new lane declares its own index rather than resurrecting this one.
+
+What the tree actually lacks, measured rather than assumed: there is no
+sub-word retrieval route of any kind. `contains:` is not one — it is folded
+into the FTS terms (`SessionQueryPlan.fts_terms` in
+`polylogue/archive/query/plan.py` is `query_terms + contains_terms`, and the
+CLI simply concatenates them into the query string), so it is tokenized on
+word boundaries exactly like a bare term and carries no `LIKE` leg. No
+runtime post-filter does a substring check on it either. The field table
+above used to call it a substring filter; that was wrong.
+
+That does not by itself justify building the lane. The concrete recall gap
+that motivated this line of work — Polish diacritics — was closed by
+polylogue-9jsi's `pl_fold` plus `remove_diacritics 2`, with no trigram index,
+and no query has since been reproduced that FTS5 plus the fold misses and a
+sub-word lane would find. The measurements acceptance criteria 2 and 3
+demand are also not available before the archive is rebuilt: an index-size
+delta and a precision/recall comparison both need a real or representative
+corpus. So the order is: name and reproduce a missed query on the built
+archive first; declare the lane second. Building the index on the strength of
+a plausible-sounding gap is what produced `blocks_command_trigram`, which ran
+for forty-one schema versions with no reader at all.
 
 ### Embedding Activation And Catch-Up
 
