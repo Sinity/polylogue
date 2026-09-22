@@ -176,6 +176,33 @@ def _reject_sqlite_sidecars(path: Path) -> None:
             raise RuntimeError(f"backup tier has an unbound SQLite sidecar: {sidecar}")
 
 
+def _sqlite_sidecar_paths(root: Path) -> frozenset[Path]:
+    return frozenset(
+        candidate
+        for candidate in root.rglob("*")
+        if candidate.name.endswith(_SQLITE_SIDECAR_SUFFIXES) and not stat.S_ISDIR(candidate.lstat().st_mode)
+    )
+
+
+def _discard_scratch_verification_sidecars(scratch_root: Path, *, copied: frozenset[Path]) -> list[Path]:
+    """Drop the WAL/SHM files verification's own reads materialized.
+
+    A tier copied out of a WAL-mode archive still declares WAL journalling in
+    its header even though the backup carries no ``-wal``: ``_backup_sqlite``
+    checkpoints TRUNCATE and copies the main file alone. The archive-format
+    lineage gate then inspects that copy through a ``mode=ro`` connection,
+    and SQLite materializes an empty ``-shm``/``-wal`` pair for it. Those
+    bytes are the verifier's own side effect, not backup content, so leaving
+    them would make the scratch inventory disagree with the published backup
+    and refuse a valid backup. Sidecars that arrived with the copy are kept so
+    the published-sidecar refusal still fires on them.
+    """
+    created = sorted(_sqlite_sidecar_paths(scratch_root) - copied)
+    for sidecar in created:
+        sidecar.unlink(missing_ok=True)
+    return created
+
+
 def _backup_artifact_inventory(
     backup_root: Path,
     *,
@@ -1536,6 +1563,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
         restored = _copy_backup_artifact_to_scratch(path, Path(raw_tmp))
         if not restored.is_dir():
             return {"ok": False, "mode": "archive_file_set", "error": "backup output is not a directory"}
+        copied_sidecars = _sqlite_sidecar_paths(restored)
 
         manifest_path = restored / "manifest.json"
         if not manifest_path.exists() and not manifest_path.is_symlink():
@@ -1774,6 +1802,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
             not missing_canonical_blobs and reference_evidence_ok and source_scope_ok
         )
         ok = all(tier_integrity.values()) and omitted_absent and blobs_ok and canonical_blobs_resolved
+        _discard_scratch_verification_sidecars(restored, copied=copied_sidecars)
         receipt_evidence = _receipt_evidence(restored, verified_file_hashes=verified_blob_file_hashes) if ok else None
         return {
             "ok": ok,
