@@ -1,121 +1,171 @@
-"""CLI annotation import delegates to the shared product operation."""
+"""Behavioral proof for the ``polylogue annotations import`` command.
+
+``annotations import`` writes ``user.db``, the archive's one irreplaceable
+tier, so it lowers to the declared ``mutation.annotation.import_batch``
+operation and the daemon is its sole writer (polylogue-gjwto / polylogue-r29bv
+AC3). The write tests here therefore run a real daemon stack rather than an
+in-process writer; ``annotations join`` (a read) is untouched and stays direct.
+"""
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
+import pytest
 from click.testing import CliRunner
 
-from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
-from polylogue.cli.click_app import cli
+from polylogue.archive.message.roles import Role
+from polylogue.cli import cli
+from polylogue.core.enums import Provider
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.daemon_operations import cli_daemon_archive
+from tests.infra.live_ingest import write_index_session
 
 
-class _PolylogueContext:
-    async def __aenter__(self) -> _PolylogueContext:
-        return self
+def _seed_session(archive_root: Path) -> str:
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="annotation-target",
+                title="Annotation target",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+            ),
+        )
+    assert session_id == "codex-session:annotation-target"
+    return session_id
 
-    async def __aexit__(self, *args: object) -> None:
-        return None
+
+def _import_args(source: Path, *, target_ref: str) -> list[str]:
+    return [
+        "--plain",
+        "annotations",
+        "import",
+        str(source),
+        "--batch-id",
+        "cli-batch",
+        "--schema-id",
+        "seed.activity",
+        "--schema-version",
+        "1",
+        "--target-ref",
+        target_ref,
+        "--source-result-ref",
+        "result-set:cli-evidence",
+        "--actor-ref",
+        "agent:labeler",
+        "--model-ref",
+        "agent:model",
+        "--prompt-ref",
+        "block:prompt:0",
+        "--metadata-json",
+        json.dumps({"campaign": "cli"}),
+    ]
 
 
-def test_cli_annotation_import_delegates_to_product_operation(tmp_path: Path) -> None:
-    source = tmp_path / "labels.jsonl"
-    source.write_text('{"row_key":"r1","value":{},"evidence_refs":[]}\n', encoding="utf-8")
-    product_result = AnnotationBatchImportResult(
-        status="ok",
-        batch_ref="annotation-batch:cli-batch",
-        qualified_schema_id="delegation.discourse@v1",
-        target_ref="delegation:d1",
-        total_count=1,
-        valid_count=1,
-        invalid_count=0,
-        abstained_count=0,
-        rows=(),
+def test_annotations_import_writes_through_the_resident_daemon(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The daemon applies the import and audits the attempt.
+
+    Anti-vacuity: point ``annotations import`` at a second in-process writer
+    (the old ``Polylogue.import_annotation_batch`` -> ``import_annotation_batch``
+    route this replaced) and this still passes, which is why
+    ``test_annotations_import_refuses_without_a_daemon`` below is the
+    load-bearing half -- together they say the write happened *and* that it
+    could only have happened through the daemon.
+    """
+    archive_root = cli_workspace["archive_root"]
+    session_id = _seed_session(archive_root)
+    source = cli_workspace["inbox_dir"] / "labels.jsonl"
+    source.write_text(
+        json.dumps(
+            {"row_key": "r1", "value": {"activity": "debugging", "confidence": 0.9}, "evidence_refs": [session_id]}
+        )
+        + "\n",
+        encoding="utf-8",
     )
-    with (
-        patch("polylogue.cli.commands.annotations.Polylogue", return_value=_PolylogueContext()),
-        patch(
-            "polylogue.cli.commands.annotations.import_annotation_batch",
-            new=AsyncMock(return_value=product_result),
-        ) as operation,
-    ):
-        result = CliRunner().invoke(
+
+    with cli_daemon_archive(archive_root, monkeypatch):
+        result = cli_runner.invoke(
             cli,
-            [
-                "annotations",
-                "import",
-                str(source),
-                "--batch-id",
-                "cli-batch",
-                "--schema-id",
-                "delegation.discourse",
-                "--schema-version",
-                "1",
-                "--target-ref",
-                "delegation:d1",
-                "--source-result-ref",
-                "result-set:r1",
-                "--actor-ref",
-                "agent:a1",
-                "--model-ref",
-                "agent:m1",
-                "--prompt-ref",
-                "block:p1:0",
-                "--metadata-json",
-                '{"campaign":"cli"}',
-            ],
+            _import_args(source, target_ref=f"session:{session_id}"),
+            catch_exceptions=False,
         )
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.output)["batch_ref"] == "annotation-batch:cli-batch"
-    operation.assert_awaited_once()
-    assert operation.await_args is not None
-    _, request = operation.await_args.args
-    assert request == AnnotationBatchImportRequest(
-        jsonl='{"row_key":"r1","value":{},"evidence_refs":[]}\n',
-        batch_id="cli-batch",
-        schema_id="delegation.discourse",
-        schema_version=1,
-        target_ref="delegation:d1",
-        source_result_ref="result-set:r1",
-        actor_ref="agent:a1",
-        model_ref="agent:m1",
-        prompt_ref="block:p1:0",
-        metadata={"campaign": "cli"},
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    assert payload["batch_ref"] == "annotation-batch:cli-batch"
+    assert payload["valid_count"] == 1
+    assert payload["invalid_count"] == 0
+
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone() == (1,)
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM operation_attempts AS attempt "
+            "JOIN operation_runs AS run ON run.operation_id = attempt.operation_id "
+            "WHERE run.operation_name = ?",
+            ("mutate-import-annotation-batch",),
+        ).fetchone() == (1,)
+
+
+def test_annotations_import_refuses_without_a_daemon(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    """No daemon means no write, not a second writer in the CLI process.
+
+    Anti-vacuity: restore the old direct call to
+    ``polylogue.annotations.importer.import_annotation_batch`` behind this
+    command and the row lands with no daemon at all, so the empty-assertions
+    assertion below goes red. That is the whole defect polylogue-gjwto names.
+    """
+    archive_root = cli_workspace["archive_root"]
+    session_id = _seed_session(archive_root)
+    source = cli_workspace["inbox_dir"] / "labels.jsonl"
+    source.write_text(
+        json.dumps(
+            {"row_key": "r1", "value": {"activity": "debugging", "confidence": 0.9}, "evidence_refs": [session_id]}
+        )
+        + "\n",
+        encoding="utf-8",
     )
 
-
-def test_cli_annotation_import_rejects_non_object_metadata(tmp_path: Path) -> None:
-    source = tmp_path / "labels.jsonl"
-    source.write_text('{"row_key":"r1","value":{},"evidence_refs":[]}\n', encoding="utf-8")
-    result = CliRunner().invoke(
+    result = cli_runner.invoke(
         cli,
-        [
-            "annotations",
-            "import",
-            str(source),
-            "--batch-id",
-            "cli-batch",
-            "--schema-id",
-            "delegation.discourse",
-            "--schema-version",
-            "1",
-            "--target-ref",
-            "delegation:d1",
-            "--source-result-ref",
-            "result-set:r1",
-            "--actor-ref",
-            "agent:a1",
-            "--model-ref",
-            "agent:m1",
-            "--prompt-ref",
-            "block:p1:0",
-            "--metadata-json",
-            "[]",
-        ],
+        _import_args(source, target_ref=f"session:{session_id}"),
     )
+
+    assert result.exit_code != 0, result.output
+    assert "daemon" in result.output.lower()
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'assertions'")
+        }
+        if tables:
+            assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone() == (0,)
+
+
+def test_cli_annotation_import_rejects_non_object_metadata(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner
+) -> None:
+    archive_root = cli_workspace["archive_root"]
+    session_id = _seed_session(archive_root)
+    source = cli_workspace["inbox_dir"] / "labels.jsonl"
+    source.write_text('{"row_key":"r1","value":{},"evidence_refs":[]}\n', encoding="utf-8")
+
+    args = _import_args(source, target_ref=f"session:{session_id}")
+    args[args.index("--metadata-json") + 1] = "[]"
+    result = cli_runner.invoke(cli, args)
 
     assert result.exit_code != 0
     assert "must decode to a JSON object" in result.output

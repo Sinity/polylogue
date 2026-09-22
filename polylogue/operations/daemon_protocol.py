@@ -16,6 +16,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from polylogue.annotations.importer import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import OperationStatus
 from polylogue.operations.machine_receipts import IngestHistoricalReceipt
 from polylogue.operations.read_contracts import (
@@ -287,6 +288,50 @@ class UserSettingSetRequest(_OperationPayload):
             raise ValueError("setting_key must not be blank")
         if not self.author_ref.strip():
             raise ValueError("author_ref must not be blank")
+        return self
+
+
+class AnnotationBatchImportOperationRequest(_OperationPayload):
+    """One bounded JSONL annotation batch import, framed for the wire.
+
+    Mirrors ``polylogue.annotations.importer.AnnotationBatchImportRequest``
+    field-for-field. Declared separately rather than reused directly: this
+    layer is the transport contract (what a client may send), while the
+    product-layer request is what the actuator validates once the daemon
+    process holds it -- the same separation every other mutation operation
+    here already keeps. ``polylogue annotations import`` used to build the
+    product-layer request and drive ``OperationExecutor`` itself from the CLI
+    process, invisible to the mutation-authority layering rule because
+    ``polylogue.annotations.importer`` is not one of the four executor
+    modules it names (polylogue-gjwto / polylogue-r29bv AC3).
+    """
+
+    jsonl: str = Field(min_length=1, max_length=MAX_ANNOTATION_IMPORT_BYTES)
+    batch_id: str = Field(min_length=1, max_length=256)
+    schema_id: str = Field(min_length=1, max_length=256)
+    schema_version: int = Field(ge=1)
+    target_ref: str = Field(min_length=1, max_length=4_096)
+    source_result_ref: str = Field(min_length=1, max_length=4_096)
+    actor_ref: str = Field(min_length=1, max_length=4_096)
+    model_ref: str = Field(min_length=1, max_length=4_096)
+    prompt_ref: str = Field(min_length=1, max_length=4_096)
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def nonblank_refs(self) -> AnnotationBatchImportOperationRequest:
+        if any(
+            not value.strip()
+            for value in (
+                self.batch_id,
+                self.schema_id,
+                self.target_ref,
+                self.source_result_ref,
+                self.actor_ref,
+                self.model_ref,
+                self.prompt_ref,
+            )
+        ):
+            raise ValueError("annotation batch import identifiers and refs must not be blank")
         return self
 
 
@@ -1094,6 +1139,21 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=UserSettingSetRequest,
         result_model=MutationResult,
         handler="mutation_user_setting_set",
+    ),
+    DaemonOperationSpec(
+        "mutation.annotation.import_batch",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.import_annotation_batch",
+        deadline_s=120.0,
+        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES + 64 * 1024,
+        request_contract="mutation.annotation.import_batch.request/v1",
+        result_contract="mutation.result/v1",
+        request_type="AnnotationBatchImportOperationRequest",
+        result_type="MutationResult",
+        request_model=AnnotationBatchImportOperationRequest,
+        result_model=MutationResult,
+        handler="mutation_annotation_import_batch",
     ),
     DaemonOperationSpec(
         "mutation.judgment.record",

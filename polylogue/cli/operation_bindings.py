@@ -112,6 +112,10 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.commands.setting:setting_set_command",
         renderers=("polylogue.cli.commands.setting:setting_set_command",),
     ),
+    "mutation.annotation.import_batch": CliOperationBinding(
+        lowering="polylogue.cli.commands.annotations:import_annotations_command",
+        renderers=("polylogue.cli.commands.annotations:import_annotations_command",),
+    ),
     "mutation.judgment.record": CliOperationBinding(
         lowering="polylogue.cli.commands.compare:compare_command",
         renderers=(
