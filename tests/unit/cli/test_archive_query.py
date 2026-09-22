@@ -1173,10 +1173,18 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert archive_query._submit_mutation_operation(config, "mutation.session.delete.preview", {}) == {
             "status": "prepared"
         }
-        assert initialized == [configured_root / "daemon.sock"]
-        # The operation carries the selected archive identity, so a daemon
-        # serving a different root refuses instead of writing the wrong one.
-        assert roots == [str(configured_root)]
+        # A `--db` split-root pin names the file set the operator selected,
+        # and `configured_read_operation` resolves it that way -- so selection
+        # and confirmation already ran against `selected_root`. Addressing the
+        # mutation at `configured_root` relied on a daemon serving that root
+        # refusing the request; when one IS running it accepts, and the
+        # confirmed session ids are deleted from the wrong archive.
+        #
+        # Anti-vacuity: restoring `daemon_socket_path(config.archive_root)` in
+        # `configured_mutation_operation` makes both assertions report
+        # `configured_root`.
+        assert initialized == [selected_root / "daemon.sock"]
+        assert roots == [str(selected_root)]
 
     def test_interactive_forceless_delete_still_prompts(self, capsys: pytest.CaptureFixture[str]) -> None:
         # Human interactive use (non-plain) must keep the confirmation prompt.
