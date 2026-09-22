@@ -53,10 +53,10 @@ import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.daemon.convergence_stages import make_default_convergence_stages
-from polylogue.sources.live import cursor as live_cursor
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 _FILES = 6
 _MESSAGES_PER_SESSION = 4
@@ -81,10 +81,11 @@ class _OpsWork:
 def _ops_work(monkeypatch: pytest.MonkeyPatch) -> Iterator[_OpsWork]:
     """Count ``CursorStore``'s own ops-tier write connections and commits."""
     work = _OpsWork()
-    real_open = live_cursor.open_connection
 
     def counting_open(path: Any, **kwargs: Any) -> sqlite3.Connection:
-        conn = cast(sqlite3.Connection, real_open(path, **kwargs))
+        # ``cursor.py`` imports the factory by name, so the binding patched
+        # below is exactly the store's own ops-tier write connections.
+        conn: sqlite3.Connection = open_connection(path, **kwargs)
         if "ops.db" in str(path):
             work.connections += 1
 
@@ -99,7 +100,7 @@ def _ops_work(monkeypatch: pytest.MonkeyPatch) -> Iterator[_OpsWork]:
             conn.set_trace_callback(trace)
         return conn
 
-    monkeypatch.setattr(live_cursor, "open_connection", counting_open)
+    monkeypatch.setattr("polylogue.sources.live.cursor.open_connection", counting_open)
     yield work
 
 
