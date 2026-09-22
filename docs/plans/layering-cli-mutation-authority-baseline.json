@@ -10,5 +10,11 @@
     "file": "polylogue/api/archive.py",
     "import": "polylogue.operations.mutation_transaction",
     "reason": "Reviewed 2026-09-21 (polylogue-r29bv AC5). Same owner and same blocker as the mutation_actuators entry above: _execute_facade_mutation and delete_session_safe both construct OperationExecutor/MutationPrincipal here. Removing this import requires every facade mutation to have left, which decision D2 defers to the MCP owner."
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/server_cutover.py",
+    "import": "polylogue.annotations.importer",
+    "reason": "Reviewed 2026-09-23 (polylogue-gjwto / polylogue-r29bv AC5). This entry RECORDS a write that no rule could previously see; it is not new debt. polylogue/mcp had no mutation-authority rule at all until this one, so write(operation='import_annotation_batch') drove OperationExecutor against user.db in the MCP process while passing every gate -- the exact MCP twin of the CLI writer #5310 recorded, and the same defect decision D1 fixed for polylogue/api. Blocked on decision D2, not on effort: the MCP owner has not yet accepted that MCP writes require a running daemon (they work today with none), and lowering this one alongside the other twenty MCP-reached facade mutations needs _resolve_user_state_target (polylogue/api/archive.py:6721, five call sites) moved into polylogue/operations/ first. PR #5370 moved resolve_ref, NOT _resolve_user_state_target, so that blocker is still live at eab6e8507. The honest per-slice signal for the facade-routed writes this import rule structurally cannot see is the twenty-method inventory pinned by tests/unit/api/test_facade_mutation_census.py."
   }
 ]
