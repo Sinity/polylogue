@@ -46,6 +46,15 @@ NO_RESULTS = "no_results"
 #: apart from "something went wrong", and the remedy that the terminal format
 #: prints was not on the wire at all (polylogue-re6s3 AC4, polylogue-3eexy AC4).
 DAEMON_REQUIRED = "daemon_required"
+#: A resident daemon owns this archive, so the CLI process may not write it.
+#:
+#: The mirror image of :data:`DAEMON_REQUIRED`, and deliberately a different
+#: code: the remedy there is "start the daemon", and the remedy here is the
+#: opposite -- route the write through the daemon that is *already* running,
+#: or stop it and own the archive offline. Folding both into one code would
+#: tell a machine caller to start a second daemon for the archive whose first
+#: one is exactly what refused it.
+ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE = "archive_writer_ownership_unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +208,41 @@ def error_daemon_required(
     )
 
 
+def error_archive_writer_ownership(
+    message: str,
+    *,
+    code: str = ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE,
+    command: list[str] | None = None,
+    archive_root: str | None = None,
+    resident_writer: str | None = None,
+) -> MachineError:
+    """Build the machine envelope for the CLI single-writer boundary's refusal.
+
+    Before this existed the boundary's refusal reached a ``--format json``
+    client as ``runtime_error`` and an operator as ``unexpected error:
+    ArchiveWriterOwnershipError: ...`` -- the generic branch of
+    :func:`polylogue.cli.machine_main.run_machine_entry`, shared with a corrupt
+    tier and a genuine crash. It is the most deliberate refusal the CLI makes,
+    and "unexpected" is the one thing it is not (polylogue-re6s3 AC4).
+
+    ``code`` is a parameter because the undecidable case is a distinct answer:
+    "a daemon owns this archive" and "this platform cannot tell whether one
+    does" call for different operator action, and collapsing them would report
+    a resident writer that was never observed.
+    """
+    details: JSONDocument = {"remedy": "route the write through the resident polylogued, or stop it"}
+    if archive_root:
+        details["archive_root"] = archive_root
+    if resident_writer:
+        details["resident_writer"] = resident_writer
+    return MachineError(
+        code=code,
+        message=message,
+        command=tuple(command or ()),
+        details=details,
+    )
+
+
 def error_no_results(
     message: str,
     *,
@@ -225,15 +269,30 @@ def error_no_results(
 # ---------------------------------------------------------------------------
 
 
+#: Every spelling of "give me machine output" the CLI actually accepts.
+#:
+#: ``--output-format`` is not a synonym this probe invented: it is the spelling
+#: the entire ``ops maintenance`` family uses (plus ``materialize-incident-
+#: evidence`` and ``reconcile-work-effects``), and it was invisible here. So
+#: ``polylogue ops maintenance archive-init --yes --output-format json`` beside
+#: a resident daemon printed an empty stdout and a prose ``Error:`` line on
+#: stderr -- the terminal branch of :func:`polylogue.cli.machine_main.
+#: run_machine_entry`, because ``wants_json`` said the caller had not asked for
+#: JSON. Roughly twenty mutating maintenance commands reached a machine caller
+#: that way on every unhandled failure (polylogue-re6s3 AC4, polylogue-5vps8
+#: AC9). Unifying the two option names is a separate, breaking change; making
+#: the error envelope honour the intent the operator already declared is not.
+_JSON_FORMAT_FLAGS = ("--format", "--output-format", "-f")
+
+
 def wants_json(argv: list[str]) -> bool:
     """Detect JSON machine-output intent from raw argv before Click parses."""
     for index, arg in enumerate(argv):
-        if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
-            return True
-        if arg.startswith("--format=") and arg.split("=", 1)[1] == "json":
-            return True
-        if arg == "-f" and index + 1 < len(argv) and argv[index + 1] == "json":
-            return True
+        for flag in _JSON_FORMAT_FLAGS:
+            if arg == flag and index + 1 < len(argv) and argv[index + 1] == "json":
+                return True
+            if arg.startswith(f"{flag}=") and arg.split("=", 1)[1] == "json":
+                return True
     return False
 
 

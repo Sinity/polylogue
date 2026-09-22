@@ -84,12 +84,14 @@ def run_machine_entry(
     """Run the CLI, emitting JSON machine errors when requested."""
     from polylogue.cli.shared.helper_support import DaemonRequiredError
     from polylogue.cli.shared.machine_errors import (
+        error_archive_writer_ownership,
         error_daemon_required,
         error_invalid_arguments,
         error_runtime,
         extract_command,
         wants_json,
     )
+    from polylogue.cli.write_authority import ArchiveWriterOwnershipError
     from polylogue.core.errors import PolylogueError
 
     if not wants_json(argv):
@@ -101,6 +103,20 @@ def run_machine_entry(
         except click.ClickException as exc:
             exc.show()
             raise SystemExit(exc.exit_code) from exc
+        except ArchiveWriterOwnershipError as exc:
+            # Before the generic branch: the single-writer boundary's refusal
+            # is a decision, not a crash, and reaching the operator as
+            # ``unexpected error: ArchiveWriterOwnershipError`` buried the one
+            # sentence that says what to do next (polylogue-re6s3 AC4).
+            click.ClickException(str(exc)).show()
+            raise SystemExit(1) from exc
+        except click.Abort as exc:
+            # ``standalone_mode=False`` hands Click's own abort signal back to
+            # us, so ``raise click.Abort()`` -- the CLI's declined-confirmation
+            # and refuse-here path -- rendered as ``unexpected error: Abort:``
+            # with an empty message.
+            click.echo("Aborted.", err=True)
+            raise SystemExit(1) from exc
         except PolylogueError as exc:
             click.ClickException(str(exc)).show()
             raise SystemExit(1) from exc
@@ -146,6 +162,20 @@ def run_machine_entry(
             exc.format_message(),
             command=command,
         ).emit(exit_code=exc.exit_code)
+    except ArchiveWriterOwnershipError as exc:
+        # Same reasoning as the terminal branch above, and the same reason the
+        # ``DaemonRequiredError`` branch precedes ``ClickException``: a machine
+        # caller that cannot tell "a daemon already owns this archive" from
+        # "something went wrong" cannot route the write anywhere.
+        error_archive_writer_ownership(
+            str(exc),
+            code=exc.code,
+            command=command,
+            archive_root=exc.archive_root,
+            resident_writer=exc.resident_writer,
+        ).emit(exit_code=1)
+    except click.Abort as exc:
+        error_runtime("aborted", command=command, exception_type=type(exc).__qualname__).emit(exit_code=1)
     except PolylogueError as exc:
         error_runtime(
             str(exc),
