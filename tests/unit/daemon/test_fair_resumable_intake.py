@@ -1704,3 +1704,98 @@ async def test_a_halted_source_survives_a_restart(tmp_path: Path) -> None:
     assert record is not None
     assert record.reason is HaltReason.TERMINAL_REFUSAL
     assert record.frame == "daemon:1"
+
+
+@pytest.mark.asyncio
+async def test_a_structural_ingest_halt_reaches_the_durable_policy(tmp_path: Path) -> None:
+    """The halt production actually raises stops costing the writer lease.
+
+    ``CLASS_TERMINAL`` is the outcome this policy was written against, and no
+    production adapter emits it. What production does emit is a structural
+    ``DatabaseError`` inside live ingest: ``handle_structural_database_error``
+    records the source in ``polylogue.core.source_halts`` and the refusal
+    reaches ``FileIntakeAdapter.admit_page`` only as ``failed_paths``, which
+    becomes ``RETRYABLE``. So the planner rediscovered the dead source on every
+    pass and took the writer lease for it forever -- polylogue-kqrbw, in the
+    one shape the policy could not see.
+
+    Anti-vacuity, executed: remove the ``source_halt(unit)`` bridge from
+    ``MultiplexIntakeAdapter.schedulable_adapters`` and the dead source is
+    planned again on every pass, so ``discover_calls`` and
+    ``lease_acquisitions`` keep climbing and nothing is ever recorded in the
+    durable registry. The live sibling assertion pins the other direction: a
+    bridge that halted the whole class would stop it too.
+    """
+    from polylogue.core.degraded import DegradedReason
+    from polylogue.core.source_halts import clear_all_source_halts, set_source_halt
+    from polylogue.operations.intake_adapters import MultiplexIntakeAdapter
+
+    halts = HaltRegistry(tmp_path)
+    dead = _LeaseTakingSourceAdapter("claude-code", (), archive_root=tmp_path, endless=True)
+    live = _LeaseTakingSourceAdapter("codex", ["x0", "x1"], archive_root=tmp_path)
+    multiplex = MultiplexIntakeAdapter((dead, live), halts=_source_halt_policy(halts))
+    dispatcher = FairIntakeDispatcher(
+        [IntakeClassSpec(name="configured_local", adapter=multiplex, page_size=8)],
+        halts=halts,
+        frame="daemon:1",
+    )
+
+    try:
+        set_source_halt(
+            "claude-code",
+            DegradedReason(
+                code="schema_version_mismatch",
+                message="db schema v9, runtime expects v11",
+                detail={"current_version": 9, "expected_version": 11},
+            ),
+        )
+
+        for _ in range(3):
+            await dispatcher.run_once(budget=8)
+    finally:
+        clear_all_source_halts()
+
+    assert dead.discover_calls == [], "a structurally halted source was planned again"
+    assert dead.lease_acquisitions == 0, "a structurally halted source kept taking the writer lease"
+    assert live.acknowledged == ["x0", "x1"], "a sibling source stopped draining behind the halt"
+
+    record = halts.record_for(unit_id(UnitKind.SOURCE, "claude-code"))
+    assert record is not None, "the ingest halt was never copied into the durable policy"
+    assert record.reason is HaltReason.TERMINAL_REFUSAL
+    assert "schema_version_mismatch" in record.message
+
+
+@pytest.mark.asyncio
+async def test_an_unhalted_source_is_still_planned(tmp_path: Path) -> None:
+    """The opposite direction: the bridge must not exclude a healthy source.
+
+    Anti-vacuity: treat any recorded halt for *any* source as halting this one
+    (or skip every adapter unconditionally) and this goes red with nothing
+    drained.
+    """
+    from polylogue.core.degraded import DegradedReason
+    from polylogue.core.source_halts import clear_all_source_halts, set_source_halt
+    from polylogue.operations.intake_adapters import MultiplexIntakeAdapter
+
+    halts = HaltRegistry(tmp_path)
+    live = _LeaseTakingSourceAdapter("codex", ["x0"], archive_root=tmp_path)
+    dispatcher = FairIntakeDispatcher(
+        [
+            IntakeClassSpec(
+                name="configured_local",
+                adapter=MultiplexIntakeAdapter((live,), halts=_source_halt_policy(halts)),
+                page_size=8,
+            )
+        ],
+        halts=halts,
+        frame="daemon:1",
+    )
+
+    try:
+        set_source_halt("claude-code", DegradedReason(code="schema_version_mismatch", message="other source"))
+        await dispatcher.run_once(budget=8)
+    finally:
+        clear_all_source_halts()
+
+    assert live.acknowledged == ["x0"]
+    assert halts.record_for(unit_id(UnitKind.SOURCE, "codex")) is None
