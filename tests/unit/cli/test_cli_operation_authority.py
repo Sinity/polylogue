@@ -162,6 +162,36 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
         "mutation.session",
     ),
     ("reset-identity", ("ops", "reset", "--session", _SESSION_ID, "--yes"), "mutation.identity-reset"),
+    (
+        "annotations-import",
+        (
+            "annotations",
+            "import",
+            # ``click.Path(exists=True)`` and the command's own UTF-8 decode
+            # both run before the daemon probe, so the row needs a real,
+            # valid-UTF8 file on disk -- this module's own source stands in;
+            # its content is never parsed as JSONL because the refusal fires
+            # first.
+            __file__,
+            "--batch-id",
+            "b1",
+            "--schema-id",
+            "seed.activity",
+            "--schema-version",
+            "1",
+            "--target-ref",
+            f"session:{_SESSION_ID}",
+            "--source-result-ref",
+            "result-set:r",
+            "--actor-ref",
+            "agent:a",
+            "--model-ref",
+            "agent:m",
+            "--prompt-ref",
+            "block:p:0",
+        ),
+        "mutation.annotation.import_batch",
+    ),
 )
 
 #: Mutating operations whose CLI route refuses before it reaches the daemon

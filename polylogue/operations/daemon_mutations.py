@@ -937,6 +937,91 @@ def mutation_user_setting_set(
     }
 
 
+def mutation_annotation_import_batch(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    snapshot: PinnedOperationRead,
+) -> dict[str, object]:
+    """Import one bounded JSONL annotation batch under the daemon's writer.
+
+    ``polylogue annotations import`` used to build the product-layer request
+    and drive ``OperationExecutor`` against ``user.db`` from the CLI process
+    itself (``Polylogue.import_annotation_batch`` ->
+    ``polylogue.annotations.importer.import_annotation_batch``), invisible to
+    the mutation-authority layering rule because
+    ``polylogue.annotations.importer`` names neither
+    ``_execute_facade_mutation`` nor one of the four executor modules the CLI
+    rule matched (polylogue-gjwto / polylogue-r29bv AC3). The actuator cycle
+    inside ``import_annotation_batch`` is unchanged; what moves is which
+    process holds the write authority and the ref resolver it uses --
+    ``resolve_ref_against_archive`` runs the *same* plan
+    ``Polylogue.resolve_ref`` runs, against the pinned reader this operation
+    already holds, so a durable ``user.db`` admission decision cannot diverge
+    between the facade and this handler (polylogue-j5u2b).
+
+    ``import_annotation_batch`` is ``async`` for API parity with the other
+    ``Polylogue`` methods it shares a signature shape with, not because it
+    awaits anything genuinely concurrent, but running it means driving a
+    coroutine from this synchronous handler. A bare ``asyncio.run(...)`` here
+    would mint a *new* asyncio task, and the write lease is bound to the task
+    (or thread, absent a task) that acquired it -- so the actuator's write
+    would run as an unauthorized child task and ``open_verified_sqlite_write_
+    connection`` would raise ``UnleasedWriteError`` (polylogue-5vps8 /
+    polylogue-1oa7o). ``delegate_write_lease`` / ``adopt_write_lease`` is the
+    declared mechanism for exactly this: mint the delegation on this thread,
+    which already holds the lease, and adopt it inside the new task.
+    """
+    import asyncio
+
+    from polylogue.annotations.importer import (
+        AnnotationBatchImportRequest,
+        AnnotationBatchImportResult,
+        import_annotation_batch,
+    )
+    from polylogue.core.write_lease import adopt_write_lease, delegate_write_lease
+    from polylogue.operations.ref_resolution import resolve_ref_against_archive
+
+    assert context.runtime is not None
+    payload = request.payload
+    product_request = AnnotationBatchImportRequest(
+        jsonl=str(payload["jsonl"]),
+        batch_id=str(payload["batch_id"]),
+        schema_id=str(payload["schema_id"]),
+        schema_version=int(cast(int, payload["schema_version"])),
+        target_ref=str(payload["target_ref"]),
+        source_result_ref=str(payload["source_result_ref"]),
+        actor_ref=str(payload["actor_ref"]),
+        model_ref=str(payload["model_ref"]),
+        prompt_ref=str(payload["prompt_ref"]),
+        metadata=cast(dict[str, object], payload.get("metadata") or {}),
+    )
+
+    class _DaemonImportArchiveHandle:
+        """Supplies exactly what ``import_annotation_batch`` reads off ``poly``."""
+
+        archive_root = context.archive_root
+
+        async def resolve_ref(self, ref: str) -> Any:
+            return resolve_ref_against_archive(snapshot.archive, ref, archive_root=context.archive_root)
+
+    delegation = delegate_write_lease()
+
+    async def _run() -> AnnotationBatchImportResult:
+        with adopt_write_lease(delegation):
+            return await import_annotation_batch(cast(Any, _DaemonImportArchiveHandle()), product_request)
+
+    result = asyncio.run(_run())
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "committed" if result.valid_count else "no-effect",
+        "affected_count": result.valid_count,
+        "result": result.model_dump(mode="json"),
+    }
+
+
 def mutation_judgment_record(
     request: DaemonOperationRequest,
     context: OperationContext,

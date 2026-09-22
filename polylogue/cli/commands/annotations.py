@@ -9,13 +9,6 @@ from typing import cast
 
 import click
 
-from polylogue.annotations.importer import (
-    MAX_ANNOTATION_IMPORT_BYTES,
-    AnnotationBatchImportError,
-    AnnotationBatchImportRequest,
-    AnnotationBatchImportResult,
-    import_annotation_batch,
-)
 from polylogue.annotations.join import (
     AnnotationGroupDimension,
     AnnotationStructuralJoinError,
@@ -25,8 +18,19 @@ from polylogue.annotations.join import (
 )
 from polylogue.api import Polylogue
 from polylogue.cli.shared.helpers import fail
+from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionStatus
 from polylogue.paths import archive_root
+
+#: Mirrors ``polylogue.annotations.importer.MAX_ANNOTATION_IMPORT_BYTES`` and
+#: the ``jsonl`` bound on ``mutation.annotation.import_batch``'s request
+#: contract. Duplicated as a literal rather than imported: importing that
+#: module from ``polylogue/cli`` is exactly the direct substrate-driving
+#: import the mutation-authority layering rule (docs/plans/layering.yaml)
+#: disallows for this package (polylogue-gjwto / polylogue-r29bv AC3), and
+#: this bound is not the enforcement -- it only keeps a CLI process from
+#: buffering more than the operation would ever accept before sending it.
+_MAX_ANNOTATION_JSONL_READ_BYTES = 1_048_576
 
 
 @click.group("annotations")
@@ -45,7 +49,10 @@ def annotations_command() -> None:
 @click.option("--model-ref", required=True)
 @click.option("--prompt-ref", required=True)
 @click.option("--metadata-json", default="{}", show_default=True, help="Batch provenance metadata JSON object.")
+@click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="json", show_default=True)
+@click.pass_obj
 def import_annotations_command(
+    env: AppEnv,
     path: Path,
     batch_id: str,
     schema_id: str,
@@ -56,38 +63,58 @@ def import_annotations_command(
     model_ref: str,
     prompt_ref: str,
     metadata_json: str,
+    output_format: str,
 ) -> None:
-    """Import bounded JSONL labels as candidate assertions."""
+    """Import bounded JSONL labels as candidate assertions.
+
+    ``user.db`` is the archive's one irreplaceable tier and the daemon is its
+    sole writer, so this lowers to the declared
+    ``mutation.annotation.import_batch`` operation instead of driving
+    ``OperationExecutor`` against ``user.db`` from the CLI process
+    (polylogue-gjwto / polylogue-r29bv). With no daemon the command refuses
+    rather than becoming a second writer.
+    """
 
     try:
         with path.open("rb") as source:
-            raw_jsonl = source.read(MAX_ANNOTATION_IMPORT_BYTES + 1)
-        if len(raw_jsonl) > MAX_ANNOTATION_IMPORT_BYTES:
-            raise AnnotationBatchImportError(f"annotation JSONL exceeds {MAX_ANNOTATION_IMPORT_BYTES} byte limit")
+            raw_jsonl = source.read(_MAX_ANNOTATION_JSONL_READ_BYTES + 1)
+        if len(raw_jsonl) > _MAX_ANNOTATION_JSONL_READ_BYTES:
+            raise ValueError(f"annotation JSONL exceeds {_MAX_ANNOTATION_JSONL_READ_BYTES} byte limit")
         metadata = json.loads(metadata_json)
         if not isinstance(metadata, dict):
-            raise AnnotationBatchImportError("--metadata-json must decode to a JSON object")
-        request = AnnotationBatchImportRequest(
-            jsonl=raw_jsonl.decode("utf-8"),
-            batch_id=batch_id,
-            schema_id=schema_id,
-            schema_version=schema_version,
-            target_ref=target_ref,
-            source_result_ref=source_result_ref,
-            actor_ref=actor_ref,
-            model_ref=model_ref,
-            prompt_ref=prompt_ref,
-            metadata=metadata,
-        )
-
-        async def run() -> AnnotationBatchImportResult:
-            async with Polylogue(archive_root=archive_root()) as poly:
-                return await import_annotation_batch(poly, request)
-
-        result = asyncio.run(run())
-    except (OSError, UnicodeError, AnnotationBatchImportError, ValueError) as exc:
+            raise ValueError("--metadata-json must decode to a JSON object")
+        jsonl_text = raw_jsonl.decode("utf-8")
+    except (OSError, UnicodeError, ValueError) as exc:
         fail("annotations import", str(exc))
-    click.echo(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, sort_keys=True))
+
+    from polylogue.cli.archive_query import submit_cli_mutation
+
+    written = submit_cli_mutation(
+        env,
+        "mutation.annotation.import_batch",
+        {
+            "jsonl": jsonl_text,
+            "batch_id": batch_id,
+            "schema_id": schema_id,
+            "schema_version": schema_version,
+            "target_ref": target_ref,
+            "source_result_ref": source_result_ref,
+            "actor_ref": actor_ref,
+            "model_ref": model_ref,
+            "prompt_ref": prompt_ref,
+            "metadata": metadata,
+        },
+    )
+    result = written.get("result")
+    if not isinstance(result, dict):
+        raise click.ClickException("daemon accepted the annotation batch but returned no result")
+    if output_format == "json":
+        click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return
+    click.echo(
+        f"Imported {result.get('valid_count')}/{result.get('total_count')} row(s) into "
+        f"{result.get('batch_ref')} ({result.get('status')})."
+    )
 
 
 @annotations_command.command("join")
