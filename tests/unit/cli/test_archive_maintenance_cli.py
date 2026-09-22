@@ -7,7 +7,7 @@ import shutil
 import sqlite3
 import stat
 import subprocess
-import time
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1905,14 +1905,35 @@ def test_migrate_tier_cli_refuses_live_daemon_before_sql(
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
     _create_user_v3(user_db)
+    pidfile = cli_workspace["archive_root"] / "daemon.pid"
+    # The daemon proves ownership by holding an exclusive ``flock`` on its
+    # pidfile for the whole run (``polylogue.daemon.cli._acquire_pidfile``), and
+    # residency is decided from that lock rather than from a command line --
+    # ``/proc`` does not exist on every supported platform. So the stand-in
+    # holds the real lock instead of renaming itself ``polylogued``.
     daemon = subprocess.Popen(
-        ["bash", "-c", "exec -a polylogued python3 -c 'import time; time.sleep(30)'"],
-        stdout=subprocess.DEVNULL,
+        [
+            sys.executable,
+            "-c",
+            (
+                "import fcntl, os, sys, time\n"
+                "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)\n"
+                "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                "os.write(fd, str(os.getpid()).encode())\n"
+                "os.fsync(fd)\n"
+                "sys.stdout.write('ready\\n')\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(30)\n"
+            ),
+            str(pidfile),
+        ],
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        text=True,
     )
     try:
-        (cli_workspace["archive_root"] / "daemon.pid").write_text(f"{daemon.pid}\n", encoding="utf-8")
-        time.sleep(0.1)
+        assert daemon.stdout is not None
+        assert daemon.stdout.readline().strip() == "ready"
         result = cli_runner.invoke(
             cli,
             ["--plain", "ops", "maintenance", "migrate-tier", "user", "--output-format", "json"],
@@ -1921,6 +1942,8 @@ def test_migrate_tier_cli_refuses_live_daemon_before_sql(
     finally:
         daemon.terminate()
         daemon.wait(timeout=5)
+        if daemon.stdout is not None:
+            daemon.stdout.close()
 
     assert result.exit_code == 1
     payload = json.loads(result.stdout)
@@ -3552,9 +3575,11 @@ def test_migrate_tier_cli_adoption_refuses_live_writer_before_receipt_or_sql(
     root = cli_workspace["archive_root"]
     (root / "audit.db").unlink()
     manifest = _full_evidence_backup_without_audit(root)
+    # The stopped-daemon proof is the shared residency probe now, not a local
+    # ``/proc`` read; this stub stands in for a resident daemon at that seam.
     monkeypatch.setattr(
-        "polylogue.cli.commands.maintenance._migrate_tier._daemon_pidfile_is_live",
-        lambda _pidfile: True,
+        "polylogue.cli.commands.maintenance._migrate_tier.resident_daemon_pid",
+        lambda _root: 4242,
     )
 
     result = cli_runner.invoke(

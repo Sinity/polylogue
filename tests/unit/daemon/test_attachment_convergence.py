@@ -421,6 +421,67 @@ def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
     source.close()
 
 
+def test_a_contradicted_destination_blocks_the_acquired_outcome(tmp_path: Path) -> None:
+    """Republished original bytes must not be reported acquired over a bad file.
+
+    ``BlobStore.publish_prepared`` returns early whenever the destination
+    already exists -- content-addressed deduplication -- and discards the
+    staged payload. So when the canonical object under a hash has decayed and
+    Drive still serves the *original* payload, the pass staged the good bytes,
+    threw them away at ``flush()``, left the corrupted file in place, and wrote
+    ``acquisition_status = 'acquired'`` with the original hash anyway.
+    Convergence reported a recovery it had not performed, and the only signal
+    the archive had lost those bytes was erased.
+
+    Anti-vacuity: delete the ``publisher.exists(...) and not
+    publisher.verify(...)`` refusal in ``converge_drive_attachments`` and this
+    goes red on every assertion below -- ``result.acquired`` becomes 1, the row
+    reads ``acquired`` with the original hash, and the object on disk still
+    hashes to nothing.
+    ``test_polylogue_ck5v_legacy_route_attachment_is_backfilled_and_bounded``
+    pins the other direction, so refusing every publication cannot pass.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("decayed", file_id="drive-file-1"), raw_id="decayed-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    source.row_factory = sqlite3.Row
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    payload = b"bytes the archive published once"
+    assert (
+        converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=lambda _f: payload).acquired
+        == 1
+    )
+
+    store = BlobStore(tmp_path / "blob")
+    blob_hash = hashlib.sha256(payload).hexdigest()
+    with index:
+        index.execute("UPDATE attachments SET blob_hash = NULL, byte_count = 0, acquisition_status = 'unfetched'")
+    store.blob_path(blob_hash).write_bytes(b"not the bytes that were fetched")
+    assert store.verify(blob_hash) is False
+
+    # Drive still serves the original payload: the republished bytes hash to
+    # the contradicted destination, which is the collision that made the
+    # dedupe silently discard them.
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_bytes=lambda _f: payload)
+
+    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert result.acquired == 0
+    assert result.terminal == 0
+    assert result.contradicted == 1
+    assert result.deferred >= 1
+    assert result.complete is False
+    assert row["acquisition_status"] == "unfetched"
+    assert row["blob_hash"] is None
+    # The refusal must not have "repaired" the object either: the contradiction
+    # is still on disk and still visible, which is what an operator acts on.
+    assert store.verify(blob_hash) is False
+    index.close()
+    source.close()
+
+
 def _multi_attachment_session(session_id: str, file_ids: tuple[str, ...]) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.GEMINI,

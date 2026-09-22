@@ -53,6 +53,12 @@ class AttachmentConvergenceResult:
     #: assert a permanent absence nobody measured. They stay ``unfetched`` and
     #: out of the bounded window so one contested reference cannot starve it.
     unresolved_identity: int = 0
+    #: Candidates whose canonical object exists under its SHA-256 path but no
+    #: longer hashes to that name. A *sub-count* of ``deferred``, not a
+    #: separate outcome: the row stays ``unfetched`` and retryable, because
+    #: neither of the two states this pass can otherwise produce is true --
+    #: the bytes are not acquired, and their absence is not permanent.
+    contradicted: int = 0
 
     @property
     def complete(self) -> bool:
@@ -177,11 +183,18 @@ def _surviving_blob_ref(
     the re-bind it gates writes ``acquisition_status = 'acquired'`` -- a
     positive claim that these exact bytes were fetched and stored.  A path
     that survived with content the recorded hash no longer names is not a
-    survivor: it falls through to the provider, which either republishes real
-    bytes or terminates the row ``unavailable``.  The fresh-acquisition path
-    in :func:`converge_drive_attachments` hashes the payload it actually read,
+    survivor.  The fresh-acquisition path in
+    :func:`converge_drive_attachments` hashes the payload it actually read,
     so this keeps both routes to ``acquired`` backed by the same evidence
     instead of leaving the cheaper one trusted.
+
+    A contradicted object falls through to the provider, which either
+    republishes real bytes under a *different* hash or terminates the row
+    ``unavailable``.  It does not follow that the republished bytes may be
+    written over the contradiction: when the provider returns the original
+    payload, its destination is the contradicted path, and
+    :func:`converge_drive_attachments` refuses the publication there rather
+    than deduping a good payload onto a bad file.
     """
     rows = source_conn.execute(
         """
@@ -267,6 +280,9 @@ def converge_drive_attachments(
     rebound_rows: list[tuple[str, bytes, int]] = []
     terminal_ids: list[str] = []
     excised_ids: list[str] = []
+    #: Rows this pass refuses to acquire because the canonical destination
+    #: for their recorded hash holds different bytes. They stay ``unfetched``.
+    contradicted_ids: list[str] = []
     deferred = 0
     # One content-addressed attachment can have refs in several sessions.  A
     # bounded pass must not spend one Drive request per ref; retain only the
@@ -309,6 +325,13 @@ def converge_drive_attachments(
                 if outcome == "deferred":
                     deferred += 1
                     continue
+                if outcome == "contradicted":
+                    # One provider file, several attachment rows: the blocked
+                    # publication is a property of the destination, so every
+                    # row sharing it is blocked too rather than re-downloading.
+                    contradicted_ids.append(attachment_id)
+                    deferred += 1
+                    continue
                 assert outcome == "acquired" and cached_hash is not None
                 blob_hash = cached_hash
                 byte_count = cached_size
@@ -348,6 +371,34 @@ def converge_drive_attachments(
                         attachment_id=attachment_id,
                         blob_hash=candidate_hash.hex(),
                         reason="durable excision ledger",
+                    )
+                    continue
+                if publisher.exists(candidate_hash.hex()) and not publisher.verify(candidate_hash.hex()):
+                    # The destination these bytes would publish to already
+                    # holds *different* bytes. ``ArchiveBlobPublisher.flush()``
+                    # reaches ``BlobStore.publish_prepared``, which discards a
+                    # staged payload whenever its destination exists -- so
+                    # publishing here would throw the good payload away, leave
+                    # the contradicted object in place, and still write the
+                    # index row ``acquired`` under that hash. Convergence would
+                    # report a recovery it had not performed.
+                    #
+                    # Refuse before staging anything. The row stays
+                    # ``unfetched`` and retryable: the bytes are not acquired,
+                    # and their absence is not permanent -- what is broken is a
+                    # durable object, which this pass has no authority to
+                    # replace.
+                    fetch_outcomes[provider_file_id] = ("contradicted", None, 0)
+                    contradicted_ids.append(attachment_id)
+                    deferred += 1
+                    emit(
+                        "operations.attachment_convergence.publication_blocked",
+                        level=WARNING,
+                        outcome="degraded",
+                        attachment_id=attachment_id,
+                        raw_id=raw_id,
+                        blob_hash=candidate_hash.hex(),
+                        reason="canonical blob destination does not hash to its own name",
                     )
                     continue
                 blob_hash_hex, byte_count = publisher.write_from_bytes(payload)
@@ -441,6 +492,7 @@ def converge_drive_attachments(
         deferred=deferred,
         excised=len(excised_ids),
         unresolved_identity=unresolved_identity,
+        contradicted=len(contradicted_ids),
     )
 
 

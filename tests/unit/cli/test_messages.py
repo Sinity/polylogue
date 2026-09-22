@@ -480,6 +480,70 @@ def test_write_messages_file_streams_json_payload(tmp_path: Path) -> None:
     assert [message["text"] for message in payload["messages"]] == ["second"]
 
 
+def test_write_messages_file_preserves_the_destination_when_the_read_fails(tmp_path: Path) -> None:
+    """A failed first window must not destroy the file it was going to replace.
+
+    ``read_message_windows`` is a generator: nothing is read until the write
+    loop pulls from it. Opening the destination with ``"w"`` therefore
+    truncated the operator's previous export and wrote a partial JSON header
+    *before* the read could fail, so a mistyped session reference reported a
+    read failure and silently destroyed a good file, leaving malformed JSON.
+
+    Anti-vacuity: restore ``with out_path.open("w", encoding="utf-8") as fh:``
+    in ``_write_messages_file`` and this goes red -- the destination is then
+    the truncated header ``{\n  "session_id": ...`` instead of the previous
+    export.
+    """
+    env = _env()
+    out = tmp_path / "messages.json"
+    previous = json.dumps({"session_id": "kept", "messages": [{"text": "previous export"}]})
+    out.write_text(previous, encoding="utf-8")
+    _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "first"})
+
+    _write_messages_file(
+        env,
+        _seeded_request(tmp_path),
+        session_id="codex-session:does-not-exist",
+        limit=1,
+        offset=0,
+        full=False,
+        output_format="json",
+        out_path=out,
+    )
+
+    assert out.read_text(encoding="utf-8") == previous
+    assert _ui_error(env).called
+    assert sorted(child.name for child in tmp_path.iterdir() if child.name.startswith(".messages.json")) == []
+
+
+def test_write_messages_file_replaces_the_destination_on_success(tmp_path: Path) -> None:
+    """The opposite direction: a successful read still rewrites the file.
+
+    Anti-vacuity: leave the staged file in place and never ``os.replace`` it
+    and this goes red with the previous export still on disk -- a fix that
+    only ever preserved the old file would be no fix at all.
+    """
+    out = tmp_path / "messages.json"
+    out.write_text(json.dumps({"session_id": "stale", "messages": []}), encoding="utf-8")
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "first"})
+
+    _write_messages_file(
+        _env(),
+        _seeded_request(tmp_path),
+        session_id=session_id,
+        limit=10,
+        offset=0,
+        full=False,
+        output_format="json",
+        out_path=out,
+    )
+
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["session_id"] == session_id
+    assert [message["text"] for message in payload["messages"]] == ["first"]
+    assert sorted(child.name for child in tmp_path.iterdir() if child.name.startswith(".messages.json")) == []
+
+
 def test_run_messages_ndjson_emits_one_json_document_per_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

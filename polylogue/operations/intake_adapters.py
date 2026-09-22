@@ -668,14 +668,47 @@ class MultiplexIntakeAdapter(IntakeAdapter):
         A halted source is excluded *here*, where work is selected. Its files
         are never discovered, so nothing downstream forms a batch from them
         or takes the writer lease on their behalf.
+
+        Two halt signals are read, and the second is what makes the policy
+        reach production. ``self._halts`` records refusals this policy itself
+        classified as ``CLASS_TERMINAL`` -- and **no production adapter emits
+        that outcome**. The real structural halt is raised inside live ingest:
+        a ``SchemaVersionMismatchError`` or another structural ``DatabaseError``
+        goes through ``handle_structural_database_error``, which records the
+        source in ``polylogue.core.source_halts`` and then surfaces to
+        :meth:`FileIntakeAdapter.admit_page` only as ``failed_paths`` -- that
+        is, as ``RETRYABLE``. Without this bridge the planner rediscovered the
+        halted source on every pass and took the writer lease for it forever,
+        which is exactly the polylogue-kqrbw shape this class exists to stop.
+        The bridge is one-way and recorded: observing the ingest halt also
+        copies it into the durable policy, so the exclusion survives a pass
+        that does not re-raise it.
         """
-        if self._halts is None:
-            return self.adapters
-        return tuple(
-            adapter
-            for adapter in self.adapters
-            if not (_sub_unit_name(adapter) and self._halts.is_halted(cast("str", _sub_unit_name(adapter))))
-        )
+        from polylogue.core.source_halts import source_halt
+
+        schedulable: list[IntakeAdapter] = []
+        for adapter in self.adapters:
+            unit = _sub_unit_name(adapter)
+            if unit is None:
+                schedulable.append(adapter)
+                continue
+            if self._halts is not None and self._halts.is_halted(unit):
+                continue
+            halted = source_halt(unit)
+            if halted is not None:
+                if self._halts is not None:
+                    self._halts.halt(unit, f"{halted.code}: {halted.message}")
+                    emit(
+                        "daemon.intake.source_halted",
+                        level=WARNING,
+                        outcome="refused",
+                        reason="structural_ingest_halt",
+                        component=unit,
+                        error_detail=halted.message,
+                    )
+                continue
+            schedulable.append(adapter)
+        return tuple(schedulable)
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
         if limit <= 0:

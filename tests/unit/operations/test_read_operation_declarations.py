@@ -8,7 +8,7 @@ of the shared executors would have to reproduce these numbers by accident.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 
 import pytest
 
@@ -20,6 +20,9 @@ from polylogue.operations.daemon_protocol import (
 )
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.operations.read_contracts import SessionReadKind
+
+_DECLARED_KINDS: tuple[str, ...] = tuple(get_args(SessionReadKind))
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -285,11 +288,37 @@ class TestSessionReadEvidenceKinds:
 
     def test_an_unserved_kind_is_refused_by_name(self, tmp_path: Path) -> None:
         """Mutation: fall through to the transcript branch for an unknown kind
-        and a caller silently receives a transcript it did not ask for."""
+        and a caller silently receives a transcript it did not ask for.
+
+        The kind has to be one ``session.read`` genuinely does not serve.
+        ``events`` was used here until it graduated onto the windowed evidence
+        contract (``_WINDOWED_EVIDENCE_READERS``), after which a seeded session
+        answered it with a valid empty page and this assertion could never
+        hold -- so the refusal it exists to pin went unchecked.
+        """
 
         sessions = _seed(tmp_path, count=1, messages=1)
+        assert "attachments" not in _DECLARED_KINDS
         with pytest.raises(ValueError):
-            _run(tmp_path, "session.read", {"ref": sessions[0], "kind": "events"})
+            _run(tmp_path, "session.read", {"ref": sessions[0], "kind": "attachments"})
+
+    def test_every_declared_kind_is_actually_served(self, tmp_path: Path) -> None:
+        """The opposite direction, so the refusal above cannot pass by refusing
+        everything: each kind the contract declares answers for a real session.
+
+        Mutation: drop a kind's reader from ``_SESSION_EVIDENCE_READERS`` or
+        ``_WINDOWED_EVIDENCE_READERS`` while leaving it in ``SessionReadKind``
+        and this goes red naming that kind, which is the exact drift that left
+        the refusal test above vacuous in the other direction.
+        """
+
+        sessions = _seed(tmp_path, count=1, messages=1)
+        served = {
+            kind: _run(tmp_path, "session.read", {"ref": sessions[0], "kind": kind})["session_id"]
+            for kind in _DECLARED_KINDS
+        }
+        assert set(served) == set(_DECLARED_KINDS)
+        assert set(served.values()) == {sessions[0]}
 
     def test_a_transcript_result_cannot_carry_an_evidence_body(self) -> None:
         """Mutation: relax the result model and a transcript window can smuggle

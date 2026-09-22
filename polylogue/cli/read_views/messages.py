@@ -101,6 +101,23 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     )
 
 
+def _fsync_directory(directory: Path) -> None:
+    """Make a rename into ``directory`` durable, not merely visible.
+
+    ``os.replace`` publishes the new name atomically with respect to readers,
+    but the directory entry itself is not on stable storage until its parent is
+    synced; a crash between the two can leave the operator with neither the old
+    export nor the new one.
+    """
+    import os
+
+    descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_messages_file(
     env: AppEnv,
     request: RootModeRequest,
@@ -119,7 +136,20 @@ def _write_messages_file(
     on a long session is exactly the case this destination exists for, and the
     declared read answers it as a bounded sequence, so the rows are serialized
     as they arrive.
+
+    The destination is replaced, never truncated in place. ``read_message_windows``
+    is a generator, so the first read does not happen until the loop below --
+    and opening ``out_path`` with ``"w"`` had already destroyed the operator's
+    previous file and written a partial JSON header by then. A failing read
+    (a missing session reference is the ordinary case) then reported the
+    failure while leaving malformed output where a good file used to be. The
+    rows still stream: they stream into a sibling temporary file, which is
+    renamed over the destination only once the sequence has completed.
     """
+
+    import os
+    import stat
+    import tempfile
 
     from polylogue.cli.messages import read_message_windows
     from polylogue.cli.operation_kernel import OperationKernelError
@@ -142,8 +172,23 @@ def _write_messages_file(
     emitted = 0
     total = 0
     first_offset = offset
+    # A sibling of the destination, so the rename below is within one
+    # filesystem and therefore atomic; a temporary directory elsewhere would
+    # degrade the replacement into a copy that can fail half-written.
+    descriptor, staged_name = tempfile.mkstemp(dir=out_path.parent, prefix=f".{out_path.name}.", suffix=".partial")
+    staged = Path(staged_name)
     try:
-        with out_path.open("w", encoding="utf-8") as fh:
+        # ``mkstemp`` creates at 0600. Replacing an existing destination keeps
+        # that destination's mode, so a rewrite does not silently change the
+        # permissions of a file the operator already placed; a new destination
+        # keeps the private default rather than widening it to the umask.
+        existing_mode = out_path.stat().st_mode if out_path.exists() else None
+        if existing_mode is not None:
+            os.chmod(staged, stat.S_IMODE(existing_mode))
+    except OSError:
+        pass
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as fh:
             if output_format != "ndjson":
                 fh.write("{\n")
                 fh.write(f'  "session_id": {json.dumps(session_id)},\n')
@@ -170,10 +215,16 @@ def _write_messages_file(
                 fh.write(f'  "offset": {first_offset}\n')
                 fh.write("}\n")
     except OperationKernelError as exc:
+        staged.unlink(missing_ok=True)
         from polylogue.cli.messages import message_read_failure
 
         message_read_failure(env, exc, session_id=session_id)
         return
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    os.replace(staged, out_path)
+    _fsync_directory(out_path.parent)
 
     notice = describe_path_scan_result(scan_path_for_secret_candidates(out_path))
     if notice is not None:

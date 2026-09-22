@@ -22,6 +22,7 @@ empty relations from agreeing trivially.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -106,7 +107,7 @@ def seeded_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 async def test_file_edit_rows_match_the_facade_reader_they_replaced(seeded_root: Path) -> None:
     from polylogue.api import Polylogue
-    from polylogue.operations.session_evidence import read_file_edits_evidence
+    from polylogue.operations.session_evidence import read_file_edits_page
 
     archive = Polylogue(archive_root=seeded_root)
     try:
@@ -115,12 +116,11 @@ async def test_file_edit_rows_match_the_facade_reader_they_replaced(seeded_root:
         await archive.close()
 
     with ArchiveStore(seeded_root) as store:
-        evidence = read_file_edits_evidence(store, _SESSION_ID)
+        rows, total = read_file_edits_page(store, _SESSION_ID, limit=len(facade_rows or ()) or 1, offset=0)
 
     assert facade_rows, "the fixture must actually record file edits, or this comparison is vacuous"
-    assert evidence["file_edits"] == facade_rows
-    assert evidence["total"] == len(facade_rows)
-    assert evidence["session_id"] == _SESSION_ID
+    assert rows == facade_rows
+    assert total == len(facade_rows or ())
 
 
 async def test_agent_policy_rows_match_the_facade_reader_they_replaced(seeded_root: Path) -> None:
@@ -145,7 +145,7 @@ async def test_agent_policy_rows_match_the_facade_reader_they_replaced(seeded_ro
 
 async def test_web_content_rows_match_the_facade_reader_they_replaced(seeded_root: Path) -> None:
     from polylogue.api import Polylogue
-    from polylogue.operations.session_evidence import read_web_content_constructs_evidence
+    from polylogue.operations.session_evidence import read_web_content_constructs_page
 
     archive = Polylogue(archive_root=seeded_root)
     try:
@@ -154,11 +154,11 @@ async def test_web_content_rows_match_the_facade_reader_they_replaced(seeded_roo
         await archive.close()
 
     with ArchiveStore(seeded_root) as store:
-        evidence = read_web_content_constructs_evidence(store, _SESSION_ID)
+        rows, total = read_web_content_constructs_page(store, _SESSION_ID, limit=len(facade_rows or ()) or 1, offset=0)
 
     assert facade_rows is not None
-    assert evidence["web_content_constructs"] == facade_rows
-    assert evidence["total"] == len(facade_rows)
+    assert rows == facade_rows
+    assert total == len(facade_rows or ())
 
 
 def _seed_events(archive_root: Path, count: int) -> str:
@@ -260,3 +260,151 @@ def test_evidence_token_cannot_resume_messages(tmp_path: Path) -> None:
                 archive=archive,
                 serving_identity="test",
             )
+
+
+def _seed_large_file_edits(archive_root: Path, *, rows: int, original_file_bytes: int) -> str:
+    """One session whose file edits carry deliberately large ``original_file`` bodies.
+
+    ``original_file`` is the pre-edit contents of the touched file, so it is
+    the field that makes a file-edit row unbounded in production. The fixture
+    is synthetic and deterministic; the size is the point, not the content.
+    """
+    payload = "x" * original_file_bytes
+    with ArchiveStore(archive_root) as archive_db:
+        archive_db.write_raw_and_parsed(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="ext-large-file-edits",
+                title="Large file edits",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id=f"m{index}",
+                        role=Role.ASSISTANT,
+                        position=index * 2,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Edit",
+                                tool_id=f"edit-{index}",
+                                tool_input={"file_path": f"/tmp/big-{index}.py"},
+                            )
+                        ],
+                    )
+                    for index in range(rows)
+                ]
+                + [
+                    ParsedMessage(
+                        provider_message_id=f"r{index}",
+                        role=Role.USER,
+                        position=index * 2 + 1,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                outcome_unknown_reason="not_reported",
+                                tool_id=f"edit-{index}",
+                                text="applied",
+                                file_edit=ParsedFileEdit(
+                                    file_path=f"/tmp/big-{index}.py",
+                                    structured_patch=[],
+                                    original_file=payload,
+                                    old_string="old",
+                                    new_string="new",
+                                ),
+                            )
+                        ],
+                    )
+                    for index in range(rows)
+                ],
+            ),
+            payload=b'{"raw": "large file edit payload"}',
+            source_path="/tmp/large-file-edits.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+    return "claude-code-session:ext-large-file-edits"
+
+
+def test_a_large_file_edits_relation_is_readable_one_page_at_a_time(tmp_path: Path) -> None:
+    """A valid session whose file edits exceed one result is still readable.
+
+    ``file-edits`` was classified whole. The handler materialized every row and
+    ``_require_deliverable_window`` then refused the result, advising a smaller
+    limit -- which a whole kind rejects, because it takes no window
+    coordinates. There was no successful retry, so a session with one big
+    ``original_file`` (or enough of them) could not be read through this view
+    at all.
+
+    Anti-vacuity, executed: move ``"file-edits"`` back into
+    ``_WHOLE_EVIDENCE_KINDS`` in ``operations/read_contracts.py`` and this goes
+    red -- the paged read raises the deliverability refusal instead of
+    answering, and the continuation walk never starts.
+    """
+    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+    from polylogue.operations.daemon_reads import execute_read_operation
+
+    root = tmp_path / "archive"
+    # Three rows of ~4 MiB: no single row is undeliverable, the whole relation
+    # is roughly 12 MiB, and one page of one row is comfortably inside 8 MiB.
+    row_bytes = MAX_OPERATION_RESULT_BYTES // 2
+    session_id = _seed_large_file_edits(root, rows=3, original_file_bytes=row_bytes)
+
+    seen: list[str] = []
+    with ArchiveStore.open_existing(root) as archive:
+        page = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{session_id}", "kind": "file-edits", "limit": 1, "offset": 0},
+            archive=archive,
+            serving_identity="test",
+        )
+        while True:
+            window = cast("dict[str, Any]", page["evidence_window"])
+            assert window["total"] == 3, "total is the relation's own row count, not the page's"
+            assert window["returned"] == 1
+            seen.extend(str(row["tool_use_block_id"]) for row in window["rows"])
+            if window["continuation"] is None:
+                assert window["complete"] is True
+                break
+            page = execute_read_operation(
+                "session.read",
+                {
+                    "ref": f"session:{session_id}",
+                    "kind": "file-edits",
+                    "continuation": window["continuation"],
+                },
+                archive=archive,
+                serving_identity="test",
+            )
+
+    assert len(seen) == 3
+    assert len(set(seen)) == 3, "the walk must not repeat a row"
+
+
+def test_a_single_undeliverable_row_is_refused_without_inventing_a_retry(tmp_path: Path) -> None:
+    """The opposite direction: paging is not a promise that everything fits.
+
+    One row larger than a whole operation result cannot be delivered by any
+    window, and the refusal must say so rather than repeat "retry with a
+    smaller limit" -- the advice that made this class of failure look like
+    caller error.
+
+    Anti-vacuity: restore the single unconditional "retry with a smaller
+    limit" message in ``_require_deliverable_window`` and this goes red,
+    because the refusal again advertises a retry that cannot exist.
+    """
+    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+    from polylogue.operations.daemon_reads import execute_read_operation
+
+    root = tmp_path / "archive"
+    session_id = _seed_large_file_edits(root, rows=1, original_file_bytes=MAX_OPERATION_RESULT_BYTES + 4096)
+
+    with ArchiveStore.open_existing(root) as archive:
+        with pytest.raises(ValueError) as caught:
+            execute_read_operation(
+                "session.read",
+                {"ref": f"session:{session_id}", "kind": "file-edits", "limit": 1, "offset": 0},
+                archive=archive,
+                serving_identity="test",
+            )
+
+    message = str(caught.value)
+    assert "no retry can deliver it" in message
+    assert "retry with a smaller limit" not in message

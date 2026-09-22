@@ -741,19 +741,42 @@ def test_read_views_json_outputs_profile_payload(cli_runner: CliRunner) -> None:
     }
 
 
-def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner) -> None:
-    """read --view raw routes pagination and format to run_raw."""
-    with patch("polylogue.cli.messages.run_raw") as mock_run_raw:
-        result = cli_runner.invoke(
-            click_cli,
-            ["--plain", "--id", "conv-1", "read", "--view", "raw", "--limit", "3", "--offset", "2", "-f", "json"],
-            catch_exceptions=False,
-        )
+def test_read_verb_raw_view_forwards_options(cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """read --view raw routes its session reference and pagination to the raw view.
+
+    The spy is installed in ``READ_VIEW_HANDLERS``, which ``run_read_view``
+    reads per invocation, because the raw view is bound into that table at
+    import. It used to patch ``polylogue.cli.messages.run_raw``, a symbol that
+    no longer exists since the evidence views moved to
+    ``polylogue.cli.read_views.session_evidence`` -- so the patch raised
+    ``AttributeError`` and the assertions below never ran.
+    """
+    import dataclasses
+
+    from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS
+    from polylogue.cli.read_views.base import ReadViewInvocation, ReadViewMessageOptions
+
+    seen: list[ReadViewInvocation] = []
+
+    def spy(env: object, request: object, invocation: ReadViewInvocation) -> None:
+        seen.append(invocation)
+
+    monkeypatch.setitem(READ_VIEW_HANDLERS, "raw", dataclasses.replace(READ_VIEW_HANDLERS["raw"], handler=spy))
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "--id", "conv-1", "read", "--view", "raw", "--limit", "3", "--offset", "2", "-f", "json"],
+        catch_exceptions=False,
+    )
 
     assert result.exit_code == 0
-    assert mock_run_raw.call_args.kwargs["session_id"] == "conv-1"
-    assert mock_run_raw.call_args.kwargs["limit"] == 3
-    assert mock_run_raw.call_args.kwargs["offset"] == 2
+    assert len(seen) == 1
+    invocation = seen[0]
+    assert invocation.session_id == "conv-1"
+    assert invocation.output_format == "json"
+    options = invocation.options
+    assert isinstance(options, ReadViewMessageOptions)
+    assert options.limit == 3
+    assert options.offset == 2
 
 
 def test_read_verb_raw_requires_id(cli_runner: CliRunner) -> None:

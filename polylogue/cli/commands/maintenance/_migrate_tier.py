@@ -24,6 +24,7 @@ from typing import Annotated, Literal
 import click
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
+from polylogue.maintenance.offline_guard import DaemonResidencyUndecidableError, resident_daemon_pid
 from polylogue.operations.durable_change_train import (
     ArchiveOwnershipError,
     AuditContinuityError,
@@ -93,20 +94,24 @@ class MigrateTierResultPayload(
     """Published success/error union for the migrate-tier JSON surface."""
 
 
-def _daemon_pidfile_is_live(pidfile: Path) -> bool:
-    """Return whether the archive pidfile names a live polylogued process."""
-    try:
-        pid = int(pidfile.read_text(encoding="utf-8").strip())
-        os.kill(pid, 0)
-        return b"polylogued" in Path(f"/proc/{pid}/cmdline").read_bytes()
-    except (OSError, ValueError):
-        return False
-
-
 def _require_stopped_daemon(root: Path) -> str:
-    """Refuse before opening SQLite when the daemon still owns the archive."""
+    """Refuse before opening SQLite when the daemon still owns the archive.
+
+    The residency question is asked through
+    :func:`~polylogue.maintenance.offline_guard.resident_daemon_pid` rather
+    than restated here. This function used to read ``/proc/<pid>/cmdline``
+    itself and swallow ``OSError``, so on a platform without ``/proc`` -- macOS
+    is a supported install target -- a live daemon read as "stopped" and a
+    durable tier migration proceeded beside it. A platform that cannot answer
+    the question at all raises, and the refusal below names it, because an
+    undecidable owner is not a stopped one.
+    """
     pidfile = root / "daemon.pid"
-    if _daemon_pidfile_is_live(pidfile):
+    try:
+        pid = resident_daemon_pid(root)
+    except DaemonResidencyUndecidableError as exc:
+        raise MigrationError(f"durable migration cannot prove the daemon is stopped on this platform: {exc}") from exc
+    if pid is not None:
         raise MigrationError(f"durable migration requires the daemon to be stopped; live pidfile: {pidfile}")
     return "proof:daemon-stopped"
 
