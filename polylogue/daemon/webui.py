@@ -1713,6 +1713,22 @@ def render_webui_asset_error(detail: str) -> str:
 """
 
 
+def _scalar_projection(value: object) -> str:
+    """Project one envelope value into the scalar ``<dd>`` slot.
+
+    ``str()`` on a nested structure is a Python ``repr``, escaped into HTML.
+    On an envelope whose values are whole session payloads that is unreadable
+    *and* unbounded: it prints every message of every side, once per key that
+    holds it. A structure gets a bounded count here and a real renderer
+    elsewhere; only scalars are shown verbatim.
+    """
+    if isinstance(value, Mapping):
+        return f"{len(value)} field{'' if len(value) == 1 else 's'}"
+    if isinstance(value, list | tuple):
+        return f"{len(value)} entr{'y' if len(value) == 1 else 'ies'}"
+    return str(value)
+
+
 def render_typed_data_page(
     bundle: WebUIAssetBundle,
     *,
@@ -1777,7 +1793,7 @@ def render_typed_data_page(
             ):
                 scalar_rows.append(
                     f"<div><dt>{html.escape(str(key).replace('_', ' ').title())}</dt>"
-                    f"<dd>{html.escape(str(value))}</dd></div>"
+                    f"<dd>{html.escape(_scalar_projection(value))}</dd></div>"
                 )
     content = ""
     if scalar_rows:
@@ -1794,6 +1810,135 @@ def render_typed_data_page(
 <main id="main" class="page-shell"><h1>{html.escape(heading)}</h1><p class="lede">{html.escape(description)}</p>
 <section class="activity-panel" aria-labelledby="typed-data-title"><h2 id="typed-data-title">{html.escape(heading)}</h2>
 {content}</section></main></body></html>"""
+
+
+def _compare_side_label(side: Mapping[str, object] | None, fallback: str) -> str:
+    """Name one compare side from its payload, degraded target included."""
+    if not isinstance(side, Mapping):
+        return fallback
+    for key in ("title", "session_id", "target_id", "id"):
+        value = side.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return fallback
+
+
+def _render_compare_message(message: object, *, side: str) -> str:
+    """Render one side of one pair as role plus a bounded preview."""
+    if not isinstance(message, Mapping):
+        return f'<td class="compare-cell" data-side="{side}" data-present="false"><em>absent</em></td>'
+    role = str(message.get("role") or "unknown")
+    text = message.get("text")
+    preview = _compact_preview(str(text)) if isinstance(text, str) else ""
+    identity = message.get("id") or message.get("message_id") or ""
+    return (
+        f'<td class="compare-cell" data-side="{side}" data-present="true" '
+        f'data-message-id="{html.escape(str(identity), quote=True)}">'
+        f'<span class="compare-role">{html.escape(role)}</span>'
+        f"<p>{html.escape(preview) or '<em>[empty message]</em>'}</p></td>"
+    )
+
+
+def render_compare_page(
+    bundle: WebUIAssetBundle,
+    *,
+    payload: Mapping[str, object] | None,
+    empty: str,
+) -> str:
+    """Render ``GET /w/compare`` as an actual side-by-side comparison.
+
+    The compare envelope's ``left``, ``right``, ``pairs`` and
+    ``metadata_diff`` are whole session payloads and a full pairing over them.
+    Projecting each of those into the generic scalar slot printed an escaped
+    Python ``repr`` of every message, once per key that holds it -- measured at
+    four copies of every message's text for a twelve-message fixture, and
+    unbounded in the session's length.
+
+    This renderer shows each message exactly once, as its role plus a
+    ``_compact_preview``-bounded excerpt, so the page's size is bounded by the
+    served window rather than by the transcripts behind it. The window, the
+    alignment mode and the degraded sides stay on the page because the pairing
+    covers exactly that window (polylogue-o0zju).
+    """
+    entry = bundle.entrypoint()
+    styles = "\n".join(
+        f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
+    )
+    data = payload or {}
+    left_label = _compare_side_label(
+        data.get("left") if isinstance(data.get("left"), Mapping) else None,
+        "left",
+    )
+    right_label = _compare_side_label(
+        data.get("right") if isinstance(data.get("right"), Mapping) else None,
+        "right",
+    )
+    degraded = data.get("degraded_sides")
+    degraded_names = [str(name) for name in degraded] if isinstance(degraded, list) else []
+
+    facts: list[tuple[str, str]] = [
+        ("Left", left_label),
+        ("Right", right_label),
+        ("Alignment", str(data.get("alignment") or data.get("align") or "unknown")),
+        ("Pairs", _scalar_projection(data.get("pairs") or [])),
+        ("Window", f"limit {data.get('limit', '?')} offset {data.get('offset', '?')}"),
+    ]
+    if degraded_names:
+        facts.append(("Unresolved sides", ", ".join(degraded_names)))
+    meta = "".join(f"<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>" for label, value in facts)
+
+    diff = data.get("metadata_diff")
+    diff_rows = ""
+    if isinstance(diff, Mapping) and diff:
+        diff_rows = "".join(
+            f'<tr data-field="{html.escape(str(field), quote=True)}" '
+            f'data-status="{html.escape(str(entry_value.get("status", "unknown")), quote=True)}">'
+            f'<th scope="row">{html.escape(str(field).replace("_", " "))}</th>'
+            f"<td>{html.escape(_scalar_projection(entry_value.get('left')))}</td>"
+            f"<td>{html.escape(_scalar_projection(entry_value.get('right')))}</td></tr>"
+            for field, entry_value in diff.items()
+            if isinstance(entry_value, Mapping)
+        )
+
+    pairs = data.get("pairs")
+    pair_rows = ""
+    if isinstance(pairs, list) and pairs:
+        pair_rows = "".join(
+            f'<tr data-pair-index="{html.escape(str(pair.get("index", "")), quote=True)}" '
+            f'data-diff-status="{html.escape(str(pair.get("diff_status", "unknown")), quote=True)}">'
+            f"{_render_compare_message(pair.get('left'), side='left')}"
+            f"{_render_compare_message(pair.get('right'), side='right')}</tr>"
+            for pair in pairs
+            if isinstance(pair, Mapping)
+        )
+
+    sections = ""
+    if meta:
+        sections += f'<dl class="pl-reader-meta">{meta}</dl>'
+    if diff_rows:
+        sections += (
+            '<table class="compare-metadata"><caption>Metadata</caption><thead><tr>'
+            f'<th scope="col">Field</th><th scope="col">{html.escape(left_label)}</th>'
+            f'<th scope="col">{html.escape(right_label)}</th></tr></thead><tbody>{diff_rows}</tbody></table>'
+        )
+    if pair_rows:
+        sections += (
+            '<table class="compare-pairs"><caption>Aligned messages</caption><thead><tr>'
+            f'<th scope="col">{html.escape(left_label)}</th>'
+            f'<th scope="col">{html.escape(right_label)}</th></tr></thead><tbody>{pair_rows}</tbody></table>'
+        )
+    if not sections:
+        sections = f'<p class="lede">{html.escape(empty)}</p>'
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark"><title>Workspace · compare · Polylogue</title>{styles}</head>
+<body><a class="skip-link" href="#main">Skip to workspace compare</a>
+{_render_site_header("/")}
+<main id="main" class="page-shell"><h1>Workspace compare</h1>
+<p class="lede">A bounded side-by-side projection over the served message window.</p>
+<section class="activity-panel" aria-labelledby="compare-title"><h2 id="compare-title">Workspace compare</h2>
+{sections}</section></main></body></html>"""
 
 
 def _message_rows(page: QueryUnitEnvelope | None) -> tuple[MessageQueryRowPayload, ...]:
@@ -1888,6 +2033,7 @@ __all__ = [
     "build_observability_payload",
     "load_archive_overview_page",
     "render_archive_overview_page",
+    "render_compare_page",
     "render_cost_page",
     "render_observability_page",
     "render_search_page",

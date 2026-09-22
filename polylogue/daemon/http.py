@@ -2286,6 +2286,26 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         self._send_webui_html(HTTPStatus.OK, body)
 
+    def _serve_webui_compare(self, payload: Mapping[str, object] | None) -> None:
+        from polylogue.daemon.webui import (
+            WebUIAssetBundle,
+            WebUIAssetError,
+            render_compare_page,
+            render_webui_asset_error,
+        )
+
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+            body = render_compare_page(
+                bundle,
+                payload=payload,
+                empty="Choose two valid session targets to compare.",
+            )
+        except WebUIAssetError as exc:
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+        self._send_webui_html(HTTPStatus.OK, body)
+
     def _serve_webui_workspace(self, mode: str, params: dict[str, list[str]]) -> None:
         archive_root = _web_reader_archive_root()
         payload: Mapping[str, object] | None = None
@@ -2294,14 +2314,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ids = workspace_routes.parse_id_list(params)
             if ids:
                 payload = self._do_archive_stack(archive_root, ids, self._get_param(params, "focus"), window)
-        elif archive_root is not None and mode == "compare":
-            left = self._get_param(params, "left")
-            right = self._get_param(params, "right")
-            if left and right:
-                result = self._do_archive_compare(
-                    archive_root, left, right, self._get_param(params, "align", "prompt") or "prompt", window
-                )
-                payload = result if isinstance(result, Mapping) else None
+        elif mode == "compare":
+            if archive_root is not None:
+                left = self._get_param(params, "left")
+                right = self._get_param(params, "right")
+                if left and right:
+                    result = self._do_archive_compare(
+                        archive_root, left, right, self._get_param(params, "align", "prompt") or "prompt", window
+                    )
+                    payload = result if isinstance(result, Mapping) else None
+            # Compare's envelope nests whole session payloads under four keys.
+            # The generic typed-data projection renders those through ``str``,
+            # which is an escaped Python repr of every message, repeated once
+            # per key that holds it. Compare owns a structure-aware renderer.
+            self._serve_webui_compare(payload)
+            return
         self._serve_webui_secondary(
             title=f"Workspace · {mode}",
             heading=f"Workspace {mode}",
