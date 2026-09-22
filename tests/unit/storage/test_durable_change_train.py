@@ -72,7 +72,7 @@ from polylogue.storage.sqlite.migration_runner import (
     write_durable_change_train_manifest,
 )
 from tests.infra.durable_schema_reset import reset_source_fixture_to_version
-from tests.infra.durable_tier_fixtures import refresh_archive_format_marker
+from tests.infra.durable_tier_fixtures import checkpoint_durable_tier, refresh_archive_format_marker
 
 _CURRENT_VERSION = 1
 _TARGET_VERSION = 2
@@ -1893,7 +1893,15 @@ def test_adopted_audit_restore_rejects_version_skew(
     skewed_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] + 1
     with sqlite3.connect(backup_root / "audit.db") as staged:
         staged.execute(f"PRAGMA user_version = {skewed_version}")
+    # The staged tier is in WAL mode and admission reads it with
+    # ``immutable=1``. Without this checkpoint the stamp stays in the WAL, the
+    # reader still sees the current version, and the refusal below fires on
+    # the receipt-vs-file leg instead of the one under test -- which is
+    # exactly how this test survived its own mutation.
+    checkpoint_durable_tier(backup_root / "audit.db")
     staged_bytes = (backup_root / "audit.db").read_bytes()
+    with closing(sqlite3.connect(f"file:{backup_root / 'audit.db'}?immutable=1", uri=True)) as observed:
+        assert int(observed.execute("PRAGMA user_version").fetchone()[0]) == skewed_version
     receipt = archive_root.parent / "version-skew-receipt.json"
     receipt.write_text(
         json.dumps(
