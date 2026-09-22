@@ -6,6 +6,7 @@ from pathlib import Path
 
 from polylogue.core.outcomes import OutcomeCheck as CheckResult
 from polylogue.core.outcomes import OutcomeStatus
+from polylogue.core.schema_subjects import SCHEMA_SUBJECT_BY_TOKEN
 from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
     check_cross_provider_consistency,
@@ -45,12 +46,40 @@ def _scoped(provider: str, check: CheckResult) -> AuditCheck:
     )
 
 
+def _package_not_required_reason(provider: str) -> str | None:
+    """Return the declared reason this subject needs no committed package.
+
+    ``polylogue.core.schema_subjects`` is the authority on which subjects owe a
+    package.  A subject declared ``requires_package=False`` with a reason has an
+    adjudicated absence, so an audit that reported it as a missing package would
+    be contradicting the declaration it is meant to enforce.  A subject that is
+    undeclared, or declared as requiring a package, gets no reason here and a
+    missing package stays an error.
+    """
+    subject = SCHEMA_SUBJECT_BY_TOKEN.get(provider)
+    if subject is None or subject.requires_package:
+        return None
+    return subject.package_not_required_reason or "declared as not requiring a committed package"
+
+
 def audit_provider(provider: str, *, db_path: Path | None = None) -> AuditReport:
     """Run all audit checks on a single provider's committed schema."""
     report = AuditReport(provider=provider)
 
     schema = _load_committed_schema(provider)
     if schema is None:
+        not_required = _package_not_required_reason(provider)
+        if not_required is not None:
+            report.checks.append(
+                AuditCheck(
+                    name="schema_exists",
+                    status=OutcomeStatus.SKIP,
+                    summary=f"No committed package required for {provider}",
+                    details=[not_required],
+                    provider=provider,
+                )
+            )
+            return report
         report.checks.append(
             AuditCheck(
                 name="schema_exists",
