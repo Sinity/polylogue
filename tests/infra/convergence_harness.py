@@ -41,6 +41,7 @@ from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWri
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.operations.session_profile_convergence import (
+    make_session_marker_derivation,
     make_session_profile_derivation,
     make_session_profile_frame,
     make_session_summary_derivation,
@@ -364,6 +365,11 @@ def converge_session_profiles(
                     make_session_summary_derivation(index_db, archive_root=archive_root),
                     make_session_usage_rollup_derivation(index_db, archive_root=archive_root, now=now),
                     adapter,
+                    # Markers are their own domain, driven after the profile by
+                    # the production composition (polylogue-ylh7v). A harness
+                    # that omitted it would be more permissive than production
+                    # and would report marker delivery as unreachable.
+                    make_session_marker_derivation(index_db, archive_root=archive_root),
                 ),
             )
             owner = SessionProfileConvergenceOwner(

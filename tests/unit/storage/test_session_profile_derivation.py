@@ -24,7 +24,6 @@ from polylogue.storage.derived.session.derivation import (
     SESSION_PROFILE_DOMAIN,
     SESSION_PROFILE_RECIPE_VERSION,
     SessionProfileDerivation,
-    _marker_assertions_present,
     excess_session_profiles,
     inspect_session_profiles,
     publish_session_profile,
@@ -33,6 +32,7 @@ from polylogue.storage.derived.session.input_binding import (
     SESSION_INPUT_PROJECTION_COLUMNS,
     session_input_bindings,
 )
+from polylogue.storage.derived.session.marker_domain import marker_assertions_present as _marker_assertions_present
 from polylogue.storage.derived.session.summary import (
     SESSION_SUMMARY_DOMAIN,
     SESSION_SUMMARY_RECIPE_VERSION,
@@ -500,18 +500,26 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
         ] == [0, 0]
 
 
-def test_marker_recovery_retries_without_replacing_a_valid_index_partition(
+def test_marker_recovery_is_its_own_domain_and_never_rewrites_the_profile(
     archive: tuple[Path, str],
 ) -> None:
-    """Marker absence is restart-discoverable and never authorizes index rewrites.
+    """polylogue-ylh7v: markers converge separately; the profile stays valid.
 
-    Anti-vacuity: omit marker inspection and a post-crash user-tier assertion
-    stays absent forever; remove the valid-profile fast path and recovery
-    changes the already-valid index partition just to retry user-tier work.
+    Before this, ``SessionProfileDerivation.inspect`` downgraded a valid index
+    family to ``stale`` when a user-tier marker assertion was absent, so a
+    user-tier outage re-derived index profiles that were never wrong -- and
+    publication lowered markers in a second, non-atomic transaction behind an
+    already-committed index write.
+
+    Anti-vacuity: restore the marker read to ``SessionProfileDerivation.inspect``
+    and the first ``valid`` assertion below goes red; delete the marker
+    domain's own ``inspect`` marker check and the deleted assertion is never
+    rediscovered, so the ``missing`` assertion goes red instead. One direction
+    alone would admit either a permanently-stale profile or a marker that is
+    never recovered.
     """
-    from polylogue.markers import lower_markers
     from polylogue.storage.derived.session.derivation import SessionProfileDerivation
-    from polylogue.storage.derived.session.rebuild import marker_candidates_for_session_sync
+    from polylogue.storage.derived.session.marker_domain import SessionMarkerDerivation
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -525,50 +533,127 @@ def test_marker_recovery_retries_without_replacing_a_valid_index_partition(
         )
         conn.commit()
 
+    def index_reader() -> sqlite3.Connection:
+        return sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+
     adapter = SessionProfileDerivation(
-        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        index_reader,
         lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
-        marker_read_connection=lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
-        marker_write_connection=lambda: sqlite3.connect(user_db),
+    )
+    markers = SessionMarkerDerivation(
+        index_reader,
+        lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
+        lambda: sqlite3.connect(user_db),
+        session_scope=lambda _frame: [session_id],
     )
     frame = type("Frame", (), {"scope": (session_id,)})()
+
     first = adapter.compute(frame, session_id)
     assert adapter.publish(frame, first) is True
     assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+    with closing(index_reader()) as conn:
         materialized_at = conn.execute(
             "SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)
         ).fetchone()[0]
+
+    # Publication wrote no user-tier row: that is the marker domain's job.
+    assert markers.inspect(frame, (session_id,))[session_id] == "missing"
+    assert markers.publish(frame, markers.compute(frame, session_id)) is True
+    assert markers.inspect(frame, (session_id,))[session_id] == "valid"
+
     with closing(sqlite3.connect(user_db)) as conn:
         assertion_id = conn.execute("SELECT assertion_id FROM assertions").fetchone()[0]
         conn.execute("DELETE FROM assertions WHERE assertion_id = ?", (assertion_id,))
         conn.commit()
 
-    assert adapter.inspect(frame, (session_id,))[session_id] == "stale"
-    retry = adapter.compute(frame, session_id)
-    assert adapter.publish(frame, retry) is True
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+    # The index family is untouched by a user-tier loss.
+    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
+    assert markers.inspect(frame, (session_id,))[session_id] == "missing"
+    assert markers.publish(frame, markers.compute(frame, session_id)) is True
+    assert markers.inspect(frame, (session_id,))[session_id] == "valid"
+    with closing(index_reader()) as conn:
         assert (
             conn.execute("SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[
                 0
             ]
             == materialized_at
         )
+
+    # A human judgment at the same deterministic id is still never replaced.
     with closing(sqlite3.connect(user_db)) as conn:
         conn.execute(
             "UPDATE assertions SET author_kind = ?, body_text = ? WHERE assertion_id = ?",
             ("user", "keep", assertion_id),
         )
         conn.commit()
-    with closing(_write_connection(index_db)) as index_conn, closing(sqlite3.connect(user_db)) as marker_conn:
-        lower_markers(marker_conn, marker_candidates_for_session_sync(index_conn, session_id))
-        marker_conn.commit()
+    assert markers.publish(frame, markers.compute(frame, session_id)) is True
     with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as conn:
         assert conn.execute(
             "SELECT author_kind, body_text FROM assertions WHERE assertion_id = ?", (assertion_id,)
         ).fetchone() == ("user", "keep")
+
+
+def test_marker_domain_publish_failure_leaves_the_profile_valid(
+    archive: tuple[Path, str],
+) -> None:
+    """A user-tier failure is this domain's failure and nothing else's.
+
+    The retired shape raised ``SessionProfileMarkerLoweringError`` *after* the
+    index family had committed, and the daemon owner carried a whole
+    partial-commit branch to describe that state. With markers as their own
+    domain there is no committed index write waiting on a second transaction.
+
+    Anti-vacuity (executed): restore the marker read to
+    ``SessionProfileDerivation.inspect`` and the final ``valid`` assertion
+    reports ``stale`` -- a user-tier outage once again rewrites index profiles
+    that were never wrong.
+    """
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+    from polylogue.storage.derived.session.marker_domain import SessionMarkerDerivation
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index_db, session_id = archive
+    user_db = index_db.with_name("user.db")
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    with write_lease("test.seed-marker"), closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            "UPDATE blocks SET text = ? WHERE message_id = (SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1)",
+            ("::finding: the user tier is down", session_id),
+        )
+        conn.commit()
+
+    def index_reader() -> sqlite3.Connection:
+        return sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+
+    def broken_user_writer() -> sqlite3.Connection:
+        raise sqlite3.OperationalError("user tier unavailable")
+
+    adapter = SessionProfileDerivation(
+        index_reader,
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+    )
+    markers = SessionMarkerDerivation(
+        index_reader,
+        lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
+        broken_user_writer,
+        session_scope=lambda _frame: [session_id],
+    )
+    frame = type("Frame", (), {"scope": (session_id,)})()
+
+    assert adapter.publish(frame, adapter.compute(frame, session_id)) is True
+    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
+
+    with pytest.raises(sqlite3.OperationalError):
+        markers.publish(frame, markers.compute(frame, session_id))
+
+    # The failure belongs to the marker domain alone.
+    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
+    assert markers.inspect(frame, (session_id,))[session_id] == "missing"
 
 
 def test_marker_assertion_presence_deduplicates_identical_marker_ids() -> None:
@@ -746,6 +831,7 @@ def _converge_session_profile(
     """Drive the same adapters, frame and kernel the daemon owner drives."""
     from polylogue.daemon.derivation import DerivationRegistry, converge
     from polylogue.operations.session_profile_convergence import (
+        make_session_marker_derivation,
         make_session_profile_derivation,
         make_session_profile_frame,
         make_session_summary_derivation,
@@ -762,6 +848,10 @@ def _converge_session_profile(
             make_session_summary_derivation(index_db, archive_root=root),
             make_session_usage_rollup_derivation(index_db, archive_root=root, now=now),
             make_session_profile_derivation(index_db, archive_root=root, now=now),
+            # The production composition drives markers as their own domain
+            # after the profile (polylogue-ylh7v); this helper mirrors it so
+            # "the production route" means the route production runs.
+            make_session_marker_derivation(index_db, archive_root=root),
         )
     )
     frame = make_session_profile_frame(index_db, archive_root=root, scope=[session_id])
