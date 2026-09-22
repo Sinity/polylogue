@@ -646,12 +646,23 @@ class DaemonOperationRuntime:
                 raise QueryCancelledError("operation control exchange disconnected")
             if execution_context.deadline_exceeded():
                 raise QueryTimeoutError("operation control exchange deadline expired")
+        # Set only when *this* request cancelled a live, pre-acceptance
+        # exchange. The scheduler completes a queued task's future
+        # synchronously inside ``cancel()`` and the runtime's ``settled``
+        # callback removes the exchange in the same call, so by the time the
+        # loop below looks there is neither a live exchange nor a durable
+        # record. Reading that absence as ``operation_reference_unknown`` told
+        # the caller there is no such operation -- about the operation it had
+        # just cancelled. Nothing is committed before acceptance, so the
+        # cancellation is the whole outcome.
+        cancelled_before_acceptance = False
         if request.operation == "operation.cancel":
             with self._condition:
                 exchange = self._exchanges.get(target)
                 if exchange is not None:
                     if exchange.context.principal != principal:
                         raise PermissionError("operation reference belongs to another principal")
+                    cancelled_before_acceptance = not exchange.acceptance_started
                     exchange.cancellation.cancel()
                     self._condition.notify_all()
             if exchange is None:
@@ -716,6 +727,19 @@ class DaemonOperationRuntime:
                     state = {"outcome": "indeterminate", "sequence": 0}
                 if state is None:
                     if exchange is None:
+                        if cancelled_before_acceptance:
+                            # This request released a queued exchange that had
+                            # committed nothing. Its absence here is that act,
+                            # not an unknown reference.
+                            return OperationControlResult(
+                                {
+                                    "outcome": "cancelled",
+                                    "sequence": 0,
+                                    "effect": "no-effect",
+                                    "cancellation_requested": True,
+                                },
+                                snapshot,
+                            )
                         raise ValueError("operation_reference_unknown")
                     state = {"outcome": "running", "sequence": 0}
                 if request.operation != "operation.await":
