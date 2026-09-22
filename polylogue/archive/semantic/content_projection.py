@@ -219,7 +219,21 @@ def _segments_for_message(
         text = strip_system_reminders((message.text or "").strip())
         return [_Segment(whole_message_kind, text or (message.text or "").strip())]
     if message.blocks:
-        return _segments_from_blocks(message.blocks, tool_semantics)
+        # The persisted message type outranks the block fallback.  A text-only
+        # ``message_type=thinking`` row reaches storage with no blocks, and
+        # ``archive_tiers/write.py::_message_blocks`` materializes ``message.text``
+        # as a plain ``text`` block; every hydrated read of that row therefore
+        # arrives here with ``blocks`` non-empty and took the ordinary block path,
+        # where the fallback block was classified PROSE.  ``prose_only()`` /
+        # ``include_reasoning=False`` then KEPT the private reasoning, while the
+        # same message pre-write (``_segments_from_text`` below) correctly
+        # suppressed it -- the projection contradicted itself across the writer.
+        return _segments_from_blocks(
+            message.blocks,
+            tool_semantics,
+            message_is_typed_thinking=MessageType.normalize(getattr(message, "message_type", MessageType.MESSAGE))
+            is MessageType.THINKING,
+        )
     return _segments_from_text(message)
 
 
@@ -243,12 +257,22 @@ def _whole_message_kind(message: Message, *, has_content_blocks: bool) -> Conten
 def _segments_from_blocks(
     blocks: Sequence[Mapping[str, object]],
     tool_semantics: Mapping[str, str],
+    *,
+    message_is_typed_thinking: bool = False,
 ) -> list[_Segment]:
     segments: list[_Segment] = []
     for raw_block in blocks:
         block = dict(raw_block)
         block_type = str(block.get("type") or "text")
         if block_type == "text":
+            if message_is_typed_thinking:
+                # Only the ``text`` carrier is reclassified: a tool_use,
+                # tool_result or attachment block on the same message states
+                # its own structure and keeps it.  Fenced code inside the
+                # reasoning body stays reasoning too, so this does not route
+                # through _text_block_segments' prose/code split.
+                segments.append(_Segment(ContentKind.REASONING, _block_text(block), block=block))
+                continue
             segments.extend(_text_block_segments(block))
             continue
         if block_type == "code":
