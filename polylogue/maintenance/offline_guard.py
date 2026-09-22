@@ -26,6 +26,52 @@ class DaemonResidencyUndecidableError(RuntimeError):
     code = "daemon_residency_undecidable"
 
 
+class ArchiveWriterOwnershipError(RuntimeError):
+    """An archive write was refused because a resident daemon owns the archive.
+
+    Raised by the CLI writer-ownership boundary
+    (:mod:`polylogue.cli.write_authority`) and by the backup snapshot route
+    (:func:`polylogue.daemon.backup.backup_archive`), which is a writer in its
+    own right. It is defined here, beside the residency probe that decides it,
+    so a non-CLI entry point can raise the same refusal without a
+    ``daemon -> cli`` import edge (polylogue-8qm4k AC1).
+
+    ``archive_root`` and ``resident_writer`` travel as attributes as well as
+    inside the message. A ``--format json`` client that wants to route the
+    write to the right daemon needs the archive it must reach as a field, not
+    as prose it has to parse back out -- the same reason
+    :class:`~polylogue.cli.shared.helper_support.DaemonRequiredError` carries
+    its operation and archive root (polylogue-re6s3 AC4).
+    """
+
+    code = "archive_writer_ownership_unavailable"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        archive_root: object = None,
+        resident_writer: str | None = None,
+    ) -> None:
+        self.archive_root = None if archive_root is None else str(archive_root)
+        self.resident_writer = resident_writer
+        super().__init__(message)
+
+
+class ArchiveWriterOwnershipUndecidableError(ArchiveWriterOwnershipError):
+    """An archive write was refused because ownership could not be proven at all.
+
+    The boundary fails **closed**. A platform that cannot answer "does a live
+    daemon own this archive?" gets a loud refusal naming the reason, never a
+    silently disarmed boundary. Before this existed the probe read
+    ``/proc/<pid>/cmdline`` and swallowed ``OSError``, so on macOS -- a
+    supported install target (``docs/installation.md``) -- every pid answered
+    "no daemon" and the boundary armed nothing on every single invocation.
+    """
+
+    code = "archive_writer_ownership_undecidable"
+
+
 def _pidfile_holder_is_live(pidfile: Path) -> bool:
     """Whether a live process holds the daemon's exclusive lock on ``pidfile``.
 
