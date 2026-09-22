@@ -2672,7 +2672,9 @@ class TestReaderQueryUnits:
 
         def frame() -> tuple[int, int]:
             with sqlite3.connect(index_db) as conn:
-                epoch = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
+                # The index-tier frame is a per-relation vector; this test
+                # only needs "did any tracked relation move", so sum it.
+                epoch = int(conn.execute("SELECT total(epoch) FROM query_unit_frame_state").fetchone()[0])
                 profiles = int(conn.execute("SELECT count(*) FROM session_profiles").fetchone()[0])
             return epoch, profiles
 

@@ -1299,7 +1299,7 @@
         "index": {
           "exists": true,
           "wal_bytes": null,
-          "sqlite_stat1_rows": 41,
+          "sqlite_stat1_rows": 42,
           "planner_stats_present": true,
           "state": "fresh",
           "wal_metadata": {

@@ -42,6 +42,7 @@ from typing import Any
 import pytest
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.query_unit_frame import INDEX_FRAME_RELATIONS
 
 __all__ = ["ArchiveStoreDouble", "install_archive_store_double"]
 
@@ -180,8 +181,8 @@ def _check_method(owner: str, name: str, func: Callable[..., Any]) -> None:
 def _query_unit_frame_connection() -> sqlite3.Connection:
     """A minimal ``_conn`` carrying the query-unit frame epoch surface.
 
-    ``archive_snapshot_epoch`` reads the index and user tiers' schema versions
-    and frame epochs off the opened store's connection to bind a windowed
+    ``archive_snapshot_epoch`` reads the index tier's per-relation frame rows
+    and the user tier's singleton off the opened store's connection to bind a windowed
     read's continuation to one snapshot. A double with no connection at all
     made every ``session.read`` window fail as unframeable, which is a missing
     double rather than a real refusal -- and the refusal it raises is the one
@@ -190,11 +191,13 @@ def _query_unit_frame_connection() -> sqlite3.Connection:
 
     connection = sqlite3.connect(":memory:")
     connection.execute("ATTACH DATABASE ':memory:' AS user_tier")
-    for schema in ("main", "user_tier"):
-        connection.execute(
-            f"CREATE TABLE {schema}.query_unit_frame_state (singleton INTEGER PRIMARY KEY, epoch INTEGER)"
-        )
-        connection.execute(f"INSERT INTO {schema}.query_unit_frame_state VALUES (1, 1)")
+    connection.execute("CREATE TABLE main.query_unit_frame_state (relation TEXT PRIMARY KEY, epoch INTEGER)")
+    connection.executemany(
+        "INSERT INTO main.query_unit_frame_state VALUES (?, 1)",
+        [(relation,) for relation in INDEX_FRAME_RELATIONS],
+    )
+    connection.execute("CREATE TABLE user_tier.query_unit_frame_state (singleton INTEGER PRIMARY KEY, epoch INTEGER)")
+    connection.execute("INSERT INTO user_tier.query_unit_frame_state VALUES (1, 1)")
     return connection
 
 

@@ -54,6 +54,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     literal_check,
     nullable_check,
 )
+from polylogue.storage.sqlite.archive_tiers.query_unit_frame import INDEX_FRAME_RELATIONS
 from polylogue.storage.sqlite.archive_tiers.types import (
     DelegationMappingState,
     DelegationResultStatus,
@@ -659,10 +660,15 @@ BLOCKS_SPEC = _make_table_spec(
 # and virtual tables remain in index.py because they are not row schemas.
 
 
+# One row per tracked relation, not one archive-wide row: a continuation is
+# invalidated by a write to a relation it actually read, and by nothing else.
 QUERY_UNIT_FRAME_STATE_SPEC = _make_table_spec(
     "query_unit_frame_state",
     (
-        _raw_column("singleton", """singleton INTEGER PRIMARY KEY CHECK (singleton = 1)"""),
+        _raw_column(
+            "relation",
+            f"""relation TEXT PRIMARY KEY CHECK ({literal_check("relation", *INDEX_FRAME_RELATIONS)})""",
+        ),
         _raw_column("epoch", """epoch INTEGER NOT NULL DEFAULT 0 CHECK (epoch >= 0)"""),
     ),
 )
