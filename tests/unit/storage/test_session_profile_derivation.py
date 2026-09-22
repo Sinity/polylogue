@@ -41,6 +41,8 @@ from polylogue.storage.derived.session.summary import (
 from polylogue.storage.derived.session.usage_rollup import (
     SESSION_USAGE_ROLLUP_DOMAIN,
     SessionUsageRollupDerivation,
+    publish_session_usage_rollup,
+    session_usage_rollup_recipe_version,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -110,8 +112,21 @@ def _usage_rollup(index_db: Path, session_id: str, *, quiet: bool = False) -> Se
 
 
 def _materialize(index_db: Path, session_id: str) -> bool:
+    """Converge the usage prerequisite, then publish the profile it feeds.
+
+    The profile derivation names ``SESSION_USAGE_ROLLUP_DOMAIN`` in
+    ``prerequisite_keys``, and ``publish_session_profile`` refuses a session
+    whose rollup that domain has not settled. Doing both here is the ordering
+    the kernel drives, not a workaround.
+    """
     with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
+        publish_session_usage_rollup(
+            conn,
+            session_id,
+            input_binding=binding,
+            recipe_version=session_usage_rollup_recipe_version(),
+        )
         return publish_session_profile(conn, session_id, input_binding=binding)
 
 

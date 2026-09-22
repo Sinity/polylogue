@@ -1,12 +1,19 @@
 """Canonical usage reconciliation is a stage, not a side effect of publication.
 
 The measured defect (polylogue-bp12n.1 AC2): the session-profile publisher ran
-``_refresh_provider_usage_rollup`` and committed it *before* checking whether
+``reconcile_session_usage_rollup`` and committed it *before* checking whether
 the partition it had already prepared was still applicable. The prepared bundle
 had read the pre-refresh rollup, so the check that followed necessarily failed
 for every session whose rollup had drifted: the first computation was doomed by
 construction, a second pass did the real work, and ``False`` came back from a
 call that had already committed a usage change.
+
+The surviving half, fixed here: the *unprepared* publisher
+``publish_session_profile`` reached the same reconciliation through the bulk
+rebuild it calls, so every profile publication also rewrote canonical usage and
+stamped the usage domain's binding. It no longer does; the reconciliation is
+owned by ``usage_rollup`` and the publisher refuses a session that domain has
+not settled.
 
 These laws run against a real archive written by the production writer.
 """
@@ -177,8 +184,23 @@ def _frame(index_db: Path) -> DerivationFrame:
 
 
 def _materialize(index_db: Path, session_id: str) -> bool:
+    """Converge the usage prerequisite, then publish the profile it feeds.
+
+    Two calls because they are two domains. ``publish_session_profile`` refuses
+    a session whose rollup ``SESSION_USAGE_ROLLUP_DOMAIN`` has not settled; it
+    does not reconcile one behind the caller's back.
+    """
     with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
+        assert (
+            publish_session_usage_rollup(
+                conn,
+                session_id,
+                input_binding=binding,
+                recipe_version=session_usage_rollup_recipe_version(),
+            )
+            is True
+        )
         return publish_session_profile(conn, session_id, input_binding=binding)
 
 
@@ -192,7 +214,7 @@ def test_a_drifted_rollup_no_longer_dooms_the_first_profile_computation(
     rollup's key as a prerequisite, so the kernel reconciles first and the
     profile publishes on its first attempt.
 
-    Anti-vacuity (measured): restore ``_refresh_provider_usage_rollup`` and its
+    Anti-vacuity (measured): restore ``reconcile_session_usage_rollup`` and its
     commit inside ``publish_prepared_session_profile``, drop
     ``SESSION_USAGE_ROLLUP_DOMAIN`` from the profile's ``prerequisites`` and
     ``prerequisite_keys``, and drop the adapter from the registry -- the
@@ -231,7 +253,7 @@ def test_a_drifted_rollup_no_longer_dooms_the_first_profile_computation(
 def test_a_refused_reconciliation_commits_nothing(archive: tuple[Path, str]) -> None:
     """``False`` from the rollup publisher means no effect, not "usage moved anyway".
 
-    Anti-vacuity: move ``_refresh_provider_usage_rollup`` above the binding
+    Anti-vacuity: move ``reconcile_session_usage_rollup`` above the binding
     comparison in ``publish_session_usage_rollup``, or commit before it, and
     the stored rollup changes while the call reports refusal -- exactly the
     untruth the profile publisher used to tell.
@@ -256,7 +278,7 @@ def test_a_refused_reconciliation_commits_nothing(archive: tuple[Path, str]) -> 
 def test_the_profile_publisher_writes_no_canonical_usage(archive: tuple[Path, str]) -> None:
     """Profile publication owns the four-table family and nothing else.
 
-    Anti-vacuity: restore the ``_refresh_provider_usage_rollup`` +
+    Anti-vacuity: restore the ``reconcile_session_usage_rollup`` +
     ``conn.commit()`` pair inside ``publish_prepared_session_profile`` and the
     stored rollup moves inside a call that is supposed to publish a profile.
     """
@@ -280,17 +302,25 @@ def test_the_profile_publisher_writes_no_canonical_usage(archive: tuple[Path, st
 def test_a_bulk_rebuild_stamps_the_binding_it_reconciled(archive: tuple[Path, str]) -> None:
     """A build leaves no rollup work behind for the first recurring pass.
 
-    ``rebuild_session_insights_sync`` refreshes every chunk's rollup already.
-    Without the stamp, the derivation would report every one of those sessions
-    MISSING and reconcile the whole archive a second time for no change.
+    The bulk index rebuild owns both jobs and runs the reconciliation before
+    the profiles that read it. Without the stamp, the derivation would report
+    every one of those sessions MISSING and reconcile the whole archive a
+    second time for no change.
 
-    Anti-vacuity: delete the ``_stamp_refreshed_usage_bindings`` call from the
+    This drives ``rebuild_session_insights_sync`` directly: it is the route
+    that reconciles usage, and reaching it through a profile publisher was the
+    conflation polylogue-bp12n.1 AC2 removed.
+
+    Anti-vacuity: delete the ``reconcile_session_usage_rollups`` call from the
     rebuild chunk loop and this reports ``missing``.
     """
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
+
     index_db, session_id = archive
     assert _rollup_status(index_db, session_id) == "missing"
 
-    assert _materialize(index_db, session_id) is True
+    with write_lease("test.rebuild"), closing(_write_connection(index_db)) as conn:
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
 
     assert _rollup_status(index_db, session_id) == "valid"
 
@@ -355,3 +385,105 @@ def test_a_binding_row_whose_session_is_gone_retires(archive: tuple[Path, str]) 
     assert adapter.publish(None, replacement) is True
 
     assert adapter.excess_page(None, cursor=None, limit=10) == ((), None)
+
+
+def _skew_stored_rollup(index_db: Path, session_id: str, amount: int) -> None:
+    """Move the rollup's stored *rows* without moving its binding.
+
+    The binding digests the rollup's inputs -- messages and provider usage
+    events -- not the totals it produced, so a direct row edit leaves the
+    derivation reporting VALID. That skew is what makes a reconciliation
+    observable: on an archive whose rollup already agrees with its inputs, a
+    refresh rewrites the same numbers and no assertion can tell a publisher
+    that reconciles from one that does not.
+    """
+    with write_lease("test.skew"), closing(_write_connection(index_db)) as conn:
+        changed = conn.execute(
+            "UPDATE session_model_usage SET input_tokens = input_tokens + ? WHERE session_id = ?",
+            (amount, session_id),
+        ).rowcount
+        conn.commit()
+    assert changed >= 1, "the skew must reach a stored rollup row"
+
+
+def test_profile_publish_writes_no_usage(archive: tuple[Path, str]) -> None:
+    """Publishing a profile touches no canonical usage row (AC2/AC7).
+
+    ``publish_session_profile`` rebuilds through
+    ``rebuild_session_insights_sync``, which is also the bulk index rebuild and
+    therefore owns the canonical-usage stage. Reaching that stage from a
+    profile publication is the surviving half of the defect PR #5312 fixed
+    only for the prepared publisher: a usage change committed by a call whose
+    subject is a profile, which the call's own refusal cannot take back.
+
+    The stored rollup is skewed first *without* moving its binding, so the
+    derivation still reports it settled and this publication has no business
+    revisiting it. Whether the rollup is right is the other domain's job.
+
+    Anti-vacuity (executed): pass ``reconcile_usage_rollup=True`` from
+    ``publish_session_profile`` and the skew is silently reconciled away
+    inside a profile publication -- the assertion below reports the ingest
+    totals instead of the skewed ones.
+    """
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    assert _rollup_status(index_db, session_id) == "valid"
+
+    _skew_stored_rollup(index_db, session_id, 9000)
+    skewed = _usage_rows(index_db, session_id)
+    assert _rollup_status(index_db, session_id) == "valid", "a row edit does not move the binding"
+
+    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+        binding = session_input_bindings(conn, (session_id,))[session_id]
+        # True, not a blanket refusal: the profile is published, and it is
+        # published without writing usage.
+        assert publish_session_profile(conn, session_id, input_binding=binding) is True
+
+    assert _usage_rows(index_db, session_id) == skewed
+    assert _profile_status(index_db, session_id) == "valid"
+
+
+def test_profile_needs_a_settled_rollup(archive: tuple[Path, str]) -> None:
+    """An unsettled rollup is a refusal with no effects, not a silent refresh.
+
+    The profile's stored binding covers the rollup's inputs, not its rows, so
+    a profile published against a rollup this derivation has never reconciled
+    would certify cost values nothing checked. The publisher refuses instead
+    of reconciling, which is what makes the prerequisite real: the key stays
+    pending for the pass that converges the owner first.
+
+    The second half pins the opposite direction. A publisher that refused
+    everything would satisfy the first half and fail here.
+
+    Anti-vacuity (executed): delete the ``inspect_session_usage_rollups``
+    guard from ``publish_session_profile`` and the first publication succeeds
+    against a MISSING rollup.
+    """
+    index_db, session_id = archive
+    assert _rollup_status(index_db, session_id) == "missing"
+    before = _usage_rows(index_db, session_id)
+
+    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
+        binding = session_input_bindings(conn, (session_id,))[session_id]
+        assert publish_session_profile(conn, session_id, input_binding=binding) is False
+
+    # A refusal for this cause commits nothing at all: no profile row, no
+    # usage row, and no binding stamped by a domain that did not run.
+    assert _profile_status(index_db, session_id) == "missing"
+    assert _rollup_status(index_db, session_id) == "missing"
+    assert _usage_rows(index_db, session_id) == before
+
+    with write_lease("test.rollup"), closing(_write_connection(index_db)) as conn:
+        binding = session_input_bindings(conn, (session_id,))[session_id]
+        assert (
+            publish_session_usage_rollup(
+                conn,
+                session_id,
+                input_binding=binding,
+                recipe_version=session_usage_rollup_recipe_version(),
+            )
+            is True
+        )
+        assert publish_session_profile(conn, session_id, input_binding=binding) is True
+
+    assert _profile_status(index_db, session_id) == "valid"
