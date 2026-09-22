@@ -21,7 +21,7 @@ parsed sessions before the storage writer lowers them
    tool uses, tool results, and lineage hints.
 4. `write_parsed_session_to_archive` computes public origin and identities,
    writes the parsed tree, and resolves asserted parent links
-   (`polylogue/storage/sqlite/archive_tiers/write.py:1053-1069`).
+   (`polylogue/storage/sqlite/archive_tiers/write.py:1108-1124`).
 5. The daemon converger materializes FTS, embeddings, and insight read models.
 
 ## Detector tightness order
@@ -68,11 +68,11 @@ provider (`docs/provider-origin-identity.md:15-30`;
   `_authoritative_parent_claim` returns a hook-asserted parent, the write
   replaces the parser's `parent_session_provider_id` with it and promotes the
   session to `SessionKind.SUBAGENT`
-  (`polylogue/storage/sqlite/archive_tiers/write.py:791-812`).
+  (`polylogue/storage/sqlite/archive_tiers/write.py:846-867`).
 - Replaying identical normalized content is idempotent by content hash;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
-  write choke point (`polylogue/storage/sqlite/archive_tiers/write.py:1053`).
+  write choke point (`polylogue/storage/sqlite/archive_tiers/write.py:1108`).
 - Batch ingest keeps source membership and precedence checks read-only: the
   batch opens one read-only `source.db` handle for `raw_session_memberships`
   reads, while index publication and the later blob-publication receipt

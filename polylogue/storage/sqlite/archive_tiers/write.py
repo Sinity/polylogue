@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 import unicodedata
 from collections import Counter, OrderedDict, defaultdict
@@ -737,6 +738,60 @@ class PreparedSessionShardRows:
 PreparedRows = PreparedSessionRows | PreparedSessionShardRows
 
 
+#: How each session write resolved the prepared-rows question, counted by
+#: reason (polylogue-i07pw AC1). A parse worker that builds rows and a shard
+#: only removes writer work on the writes that actually consume them; profiles
+#: of real ingest showed the writer rebuilding rows, but nothing recorded WHY,
+#: so "parallel preparation removes writer-side work" could be neither
+#: confirmed nor refuted from a run. These counters make it falsifiable:
+#: AC1 is proven by the declined reasons reading zero on a stratified run,
+#: and a non-zero reason names the gate to fix.
+#:
+#: Diagnostic only -- no code branches on it. Incremented once per session
+#: write under the single-writer contract; the lock is for a reader on
+#: another thread, not for concurrent writers.
+_PREPARED_DISPOSITIONS: Counter[str] = Counter()
+_PREPARED_DISPOSITIONS_LOCK = threading.Lock()
+
+#: Reasons that mean the writer used the prepared work. Everything else is a
+#: decline, and the split is what a measurement reads.
+PREPARED_ACCEPTED_DISPOSITIONS = frozenset({"prepared_write", "prepared_rows", "append_prepared_rows"})
+
+
+def _record_prepared_disposition(reason: str) -> None:
+    with _PREPARED_DISPOSITIONS_LOCK:
+        _PREPARED_DISPOSITIONS[reason] += 1
+
+
+def _declined_prepared_reason(
+    prepared: PreparedRows | None,
+    *,
+    merge_append: bool,
+    lineage_inheritance: str | None,
+    session_content_hash: bytes,
+) -> str:
+    """Name the gate that made the writer rebuild rows for one session."""
+    if prepared is None:
+        return "absent"
+    if prepared.session_content_hash != session_content_hash:
+        return "content_hash_mismatch"
+    if not merge_append and lineage_inheritance == "prefix-sharing":
+        return "prefix_sharing"
+    return "declined"
+
+
+def prepared_row_dispositions() -> dict[str, int]:
+    """Snapshot of how session writes resolved the prepared-rows question."""
+    with _PREPARED_DISPOSITIONS_LOCK:
+        return dict(_PREPARED_DISPOSITIONS)
+
+
+def reset_prepared_row_dispositions() -> None:
+    """Clear the counters so a caller can measure one bounded interval."""
+    with _PREPARED_DISPOSITIONS_LOCK:
+        _PREPARED_DISPOSITIONS.clear()
+
+
 def _validated_prepared_content_identities(
     prepared: PreparedRows,
     messages: Sequence[ParsedMessage],
@@ -1294,6 +1349,7 @@ def write_parsed_session_to_archive(
     if prepared_write is not None:
         prepared_rows_to_use = prepared_write.rows
         prepared_identity_carrier = prepared_write.rows
+        _record_prepared_disposition("prepared_write")
     elif (
         prepared is not None
         and not merge_append
@@ -1302,6 +1358,7 @@ def write_parsed_session_to_archive(
     ):
         prepared_rows_to_use = prepared
         prepared_identity_carrier = prepared
+        _record_prepared_disposition("prepared_rows")
     elif prepared is not None and merge_append:
         if prepared.session_content_hash == pending_content_hash:
             # Append-frontier validation happens inside the write transaction.
@@ -1309,6 +1366,9 @@ def write_parsed_session_to_archive(
             # if the pinned frontier is stale, the branch below replaces it
             # with a fresh identity tuple before any rows are published.
             prepared_identity_carrier = prepared
+            # No disposition here: this carrier is provisional, and the
+            # terminal answer for an append is decided against the live
+            # frontier inside the transaction below.
         elif prepared.session_content_hash == input_content_hash:
             # polylogue-3hfl7: the carrier describes the MERGED session while
             # this call publishes the delta. Covering a different row set, it
@@ -1318,6 +1378,29 @@ def write_parsed_session_to_archive(
             raise PreparedSessionWriteRefusedError(
                 "prepared rows describe the merged session, not the append delta this write publishes"
             )
+        else:
+            _record_prepared_disposition(
+                _declined_prepared_reason(
+                    prepared,
+                    merge_append=merge_append,
+                    lineage_inheritance=lineage_inheritance,
+                    session_content_hash=pending_content_hash,
+                )
+            )
+    else:
+        # polylogue-i07pw AC1: the writer rebuilt rows this session. Name the
+        # gate that declined rather than leaving a fallback that only a
+        # profile can see. "Parallel preparation removes writer-side work"
+        # is exactly the claim these counters make falsifiable, and the
+        # 2026-09-16 design note asks for it by name.
+        _record_prepared_disposition(
+            _declined_prepared_reason(
+                prepared,
+                merge_append=merge_append,
+                lineage_inheritance=lineage_inheritance,
+                session_content_hash=pending_content_hash,
+            )
+        )
     if prepared_identity_carrier is not None:
         content_identities = _validated_prepared_content_identities(prepared_identity_carrier, messages)
     else:
@@ -1505,6 +1588,7 @@ def write_parsed_session_to_archive(
                     and prepared.content_occurrence_offsets == stored_content_occurrences
                 ):
                     prepared_rows_to_use = prepared
+                    _record_prepared_disposition("append_prepared_rows")
                 elif prepared_required:
                     raise PreparedSessionWriteRefusedError(
                         "prepared replay append lowering no longer matches its pinned frontier"
@@ -1513,6 +1597,11 @@ def write_parsed_session_to_archive(
                     # The provisional carrier was pinned to a different
                     # append frontier. Recompute only this rejected path so
                     # the fallback rows and active leaf use the live offsets.
+                    _record_prepared_disposition(
+                        "append_frontier_stale"
+                        if isinstance(prepared, PreparedSessionRows)
+                        else "append_carrier_not_row_tuples"
+                    )
                     content_identities = message_content_identities(
                         messages,
                         occurrence_offsets=dict(stored_content_occurrences),
