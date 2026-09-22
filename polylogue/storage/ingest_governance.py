@@ -31,7 +31,11 @@ from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.timestamp_authority import normalize_session_timestamps
-from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
+from polylogue.pipeline.ids import (
+    SessionRevisionProjection,
+    bound_session_content_hash,
+    session_revision_projection,
+)
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
@@ -453,6 +457,34 @@ def _membership_revision(
     )
 
 
+def _with_projected_content_hash(session: ParsedSession, projection: SessionRevisionProjection) -> ParsedSession:
+    """Carry the parse-side session digest on the session it was computed from.
+
+    ``session_revision_projection`` and ``session_content_hash`` return the
+    same value: both hash ``_session_tree_hash`` over the payloads
+    ``_session_hash_components`` builds from the declared field partition, and
+    ``test_session_revision_projection_session_hash_matches_session_content_hash``
+    pins that equality. Binding the projected digest onto the session it came
+    from is therefore an identity-preserving carry, never a second derivation
+    of identity: every downstream reader resolves it through
+    ``bound_session_content_hash``, which validates the carried value as a
+    SHA-256 digest and refuses anything else.
+
+    Without it, ``prepare_session_rows`` rebuilt every message's semantic
+    payload and re-hashed the whole session tree purely to recover the digest
+    this cohort preparation had already computed one statement earlier
+    (polylogue-fdzb3).
+
+    A session that already carries a digest keeps it: the projection reuses a
+    bound hash rather than recomputing one, so ``projection.session_hash``
+    equals the carried value in that case and nothing is overwritten.
+    """
+    projected = projection.session_hash.hex()
+    if bound_session_content_hash(session) == projected:
+        return session
+    return session.model_copy(update={"content_hash": projected})
+
+
 def _session_for_key(
     archive: Any,
     raw_id: str,
@@ -586,6 +618,7 @@ def prepare_ingest_cohort(
     for raw_id in selector:
         session = _session_for_key(reader_archive, raw_id, logical_source_key, parse_retained_raw)
         projection = session_revision_projection(session)
+        session = _with_projected_content_hash(session, projection)
         parsed_by_raw_id[raw_id] = session
         projections_by_raw_id[raw_id] = projection
         revisions.append(_membership_revision(reader_archive, raw_id, session, projection))
