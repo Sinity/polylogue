@@ -11,7 +11,6 @@ operator should see — never a traceback. (#1263)
 from __future__ import annotations
 
 import importlib.util
-import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -194,22 +193,40 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
 
 
 def _probe_stale_pidfile(daemon_alive: bool) -> StatusDiagnostic | None:
-    """Detect a pidfile pointing at a dead or non-polylogued process.
+    """Detect a pidfile whose daemon is no longer holding it.
 
-    Mirrors ``polylogue.daemon.cli._verify_pidfile``: a pidfile is valid
-    only when ``/proc/<pid>/cmdline`` contains ``polylogued``. If the
-    daemon HTTP probe already succeeded we trust that signal and skip
-    the pidfile check.
+    Residency is asked through
+    :func:`~polylogue.maintenance.offline_guard.resident_daemon_pid`, the same
+    probe the CLI write boundary arms on, rather than restated here. This
+    function used to read ``/proc/<pid>/cmdline`` itself, so on a platform
+    without ``/proc`` -- macOS is a supported install target -- it reported a
+    *live* daemon's pidfile as stale and told the operator to delete it.
+
+    A platform that cannot answer at all reports nothing rather than an
+    invented verdict: "stale" is a positive claim about the daemon, and the
+    diagnostic has no evidence for it. If the daemon HTTP probe already
+    succeeded we trust that signal and skip the pidfile check.
     """
     if daemon_alive:
         return None
+    from polylogue.maintenance.offline_guard import DaemonResidencyUndecidableError, resident_daemon_pid
     from polylogue.paths import archive_root
 
-    pidfile = archive_root() / "daemon.pid"
+    root = archive_root()
+    pidfile = root / "daemon.pid"
     if not pidfile.exists():
         return None
     try:
-        old_pid = int(pidfile.read_text().strip())
+        resident = resident_daemon_pid(root)
+    except DaemonResidencyUndecidableError:
+        return None
+    if resident is not None:
+        # A polylogued holds the pidfile but our HTTP probe failed — likely
+        # bind issue or unreachable URL, not a stale pidfile.
+        return None
+
+    try:
+        old_pid: object = int(pidfile.read_text().strip())
     except (ValueError, OSError):
         return StatusDiagnostic(
             kind="stale_pidfile",
@@ -220,26 +237,6 @@ def _probe_stale_pidfile(daemon_alive: bool) -> StatusDiagnostic | None:
             ),
             next_action="polylogued run",
         )
-
-    alive = False
-    try:
-        os.kill(old_pid, 0)
-        alive = True
-    except OSError:
-        alive = False
-
-    is_polylogued = False
-    if alive:
-        try:
-            cmdline = Path(f"/proc/{old_pid}/cmdline").read_bytes()
-            is_polylogued = b"polylogued" in cmdline
-        except OSError:
-            is_polylogued = False
-
-    if alive and is_polylogued:
-        # A polylogued is alive but our HTTP probe failed — likely
-        # bind issue or unreachable URL, not a stale pidfile.
-        return None
 
     return StatusDiagnostic(
         kind="stale_pidfile",

@@ -3,9 +3,72 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from polylogue.config import Config
+
+
+class DaemonResidencyUndecidableError(RuntimeError):
+    """This platform cannot prove whether a live daemon owns an archive.
+
+    The residency probe below is the only fact the CLI write boundary arms
+    on. A platform that cannot answer it must make the boundary *refuse*, not
+    disappear: an unguarded durable write beside a live daemon is exactly the
+    outcome the boundary exists to prevent, so "unknown" is raised rather than
+    folded into "no daemon is running".
+    """
+
+    code = "daemon_residency_undecidable"
+
+
+def _pidfile_holder_is_live(pidfile: Path) -> bool:
+    """Whether a live process holds the daemon's exclusive lock on ``pidfile``.
+
+    ``polylogued run`` takes ``fcntl.flock(fd, LOCK_EX)`` on its pidfile in
+    :func:`polylogue.daemon.cli._acquire_pidfile` and holds it for the whole
+    run, so a *failed* non-blocking shared acquisition here is the daemon's own
+    ownership token, observed rather than inferred. The kernel releases it when
+    the holder's last descriptor closes, which process exit does, so a pidfile
+    left behind by a crashed daemon answers "not held" without a liveness
+    heuristic of its own.
+
+    This replaced reading ``/proc/<pid>/cmdline``. That probe was not portable:
+    ``/proc`` does not exist on macOS, a supported install target
+    (``docs/installation.md``), so the read raised ``OSError`` for every pid
+    and the boundary silently concluded that no daemon was running. It was also
+    weaker where it did work -- a recycled pid whose command line happens to
+    contain ``polylogued`` is not evidence that *this* archive is owned.
+    """
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover - POSIX-only build target
+        raise DaemonResidencyUndecidableError(
+            "this platform provides no fcntl.flock, so archive writer residency cannot be proven"
+        ) from exc
+    try:
+        fd = os.open(pidfile, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise DaemonResidencyUndecidableError(
+            f"cannot read the daemon pidfile to prove archive residency: {exc}"
+        ) from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        except OSError as exc:
+            raise DaemonResidencyUndecidableError(f"cannot probe the daemon pidfile lock: {exc}") from exc
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
 
 
 def resident_daemon_pid(archive_root: Path) -> int | None:
@@ -15,21 +78,24 @@ def resident_daemon_pid(archive_root: Path) -> int | None:
     -- the CLI writer-ownership boundary does exactly that, before any config
     object exists -- asks the same question as the config-shaped callers
     rather than reimplementing the pidfile contract.
+
+    Ownership is decided by the pidfile lock, not by the recorded number: the
+    pid is read only to *name* the holder. A pidfile whose contents are
+    unreadable while the lock is held still reports a resident daemon (with
+    pid ``-1``) rather than reporting none, because the lock is the fact that
+    decides whether this process may write.
+
+    Raises :class:`DaemonResidencyUndecidableError` where the question cannot be
+    answered at all; a caller that arms a write boundary on the answer must
+    refuse rather than treat the refusal as an absent daemon.
     """
     pidfile = archive_root / "daemon.pid"
+    if not _pidfile_holder_is_live(pidfile):
+        return None
     try:
-        pid = int(pidfile.read_text().strip())
+        return int(pidfile.read_text().strip())
     except (OSError, ValueError):
-        return None
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return None
-    try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-    except OSError:
-        return None
-    return pid if b"polylogued" in cmdline else None
+        return -1
 
 
 def running_daemon_pid(config: Config) -> int | None:
@@ -74,9 +140,75 @@ def offline_maintenance_block_reason(
     )
 
 
+_INTERCEPT_LOCK = threading.Lock()
+_INTERCEPT_DEPTH = 0
+_ORIGINAL_CONNECT: Callable[..., sqlite3.Connection] | None = None
+_REFUSE: Callable[[Path], None] | None = None
+
+
+def _residency_checked_connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+    original = _ORIGINAL_CONNECT
+    assert original is not None
+    refuse = _REFUSE
+    if refuse is not None:
+        from polylogue.storage.sqlite.write_guard import guarded_archive_tier_path
+
+        path = guarded_archive_tier_path(database, uri=bool(kwargs.get("uri", False)))
+        if path is not None:
+            refuse(path)
+    return original(database, *args, **kwargs)
+
+
+@contextmanager
+def refuse_writable_tier_opens(refuse: Callable[[Path], None]) -> Iterator[None]:
+    """Call ``refuse`` before every writable archive-tier open in this process.
+
+    The seam a one-shot writer needs to re-ask "does a daemon own this archive
+    *now*?" at each mutation rather than once at entry. It lives here rather
+    than in the CLI because deciding *which* opens are writable archive-tier
+    opens is storage's definition
+    (:func:`~polylogue.storage.sqlite.write_guard.guarded_archive_tier_path`),
+    and restating it beside the caller would fork a load-bearing rule; the
+    surface layering ratchet also forbids a fresh ``cli -> storage`` edge.
+
+    Process-wide rather than thread-local, because the CLI writes from
+    ``asyncio`` tasks and worker threads: a thread-local boundary would leave
+    exactly those writes unchecked.
+
+    This is *not* the write lease and does not replace
+    :func:`~polylogue.storage.sqlite.write_guard.install_archive_write_guard`.
+    It asks one question -- is someone else the archive's writer right now --
+    and answers only with the caller's refusal.
+    """
+    global _INTERCEPT_DEPTH, _ORIGINAL_CONNECT, _REFUSE
+    with _INTERCEPT_LOCK:
+        if _INTERCEPT_DEPTH == 0:
+            _ORIGINAL_CONNECT = sqlite3.connect
+            _REFUSE = refuse
+            sqlite3.connect = _residency_checked_connect  # type: ignore[assignment]
+        _INTERCEPT_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _INTERCEPT_LOCK:
+            _INTERCEPT_DEPTH -= 1
+            if _INTERCEPT_DEPTH == 0 and _ORIGINAL_CONNECT is not None:
+                sqlite3.connect = _ORIGINAL_CONNECT  # type: ignore[assignment]
+                _ORIGINAL_CONNECT = None
+                _REFUSE = None
+
+
+def writable_tier_opens_are_checked() -> bool:
+    """Whether a later-arriving writer would be noticed at the next open."""
+    return _INTERCEPT_DEPTH > 0
+
+
 __all__ = [
+    "DaemonResidencyUndecidableError",
     "offline_maintenance_block_reason",
     "offline_writer_block_reason",
+    "refuse_writable_tier_opens",
     "resident_daemon_pid",
     "running_daemon_pid",
+    "writable_tier_opens_are_checked",
 ]
