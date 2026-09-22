@@ -50,11 +50,11 @@ _CURVE_EVERY = 50
 #: than no diagnostic: an unbounded traversal of this heap reached 20 GiB in a
 #: self-test before it was killed, which inside the pytest slice would take
 #: another lane's run down with it. Every walk stops at these and says so.
-_MAX_VISITS = 3_000_000
+_MAX_VISITS = 6_000_000
 #: Extra resident memory the walk may add above where the session ended.
-_WALK_RSS_HEADROOM_MIB = 768
+_WALK_RSS_HEADROOM_MIB = 512
 #: How often the budget is re-read, in visited objects.
-_BUDGET_CHECK_EVERY = 100_000
+_BUDGET_CHECK_EVERY = 50_000
 
 _OPAQUE = (ModuleType, type, FunctionType, MethodType, BuiltinFunctionType, FrameType)
 
@@ -248,36 +248,59 @@ def _named_containers(tracked: list[Any], module_index: dict[int, str], budget: 
     return rows
 
 
-def _attribute_owners(rows: list[dict[str, Any]], module_index: dict[int, str]) -> None:
-    """Name what refers to each reported container, in one referrer pass."""
-    targets = [row["_obj"] for row in rows[:_OWNER_REPORT_COUNT]]
+def _attribute_owners(rows: list[dict[str, Any]], tracked: list[Any], module_index: dict[int, str]) -> None:
+    """Name what refers to each reported container.
+
+    ``gc.get_referrers`` is deliberately not used: it added 1.6 GiB resident in
+    a self-test, and a probe that costs a worker more than the retention it is
+    measuring is worse than none. Every tracked container is scanned once
+    instead, which allocates nothing and names the same owners.
+    """
+    targets = rows[:_OWNER_REPORT_COUNT]
     if not targets:
         return
-    by_id = {id(obj): rows[index] for index, obj in enumerate(targets)}
-    try:
-        referrers = gc.get_referrers(*targets)
-    except Exception:  # pragma: no cover
-        return
+    by_id = {id(row["_obj"]): row for row in targets}
     owners: dict[int, list[str]] = defaultdict(list)
-    for referrer in referrers:
-        if isinstance(referrer, FrameType) or referrer is targets or referrer is rows:
-            continue
-        if isinstance(referrer, dict):
-            module_name = module_index.get(id(referrer))
-            for key, value in list(referrer.items()):
-                marker = id(value)
-                if marker in by_id and len(owners[marker]) < 4:
-                    owners[marker].append(f"{module_name}.{key}" if module_name else f"<dict>[{key!r}]")
-            continue
-        described = f"{_type_name(referrer)} {_brief(referrer)}"
+    instance_dicts: dict[int, str] = {}
+    for holder in tracked:
+        # A hostile ``__getattr__`` is ordinary here: pydantic's mock validator
+        # raises on every attribute, and a probe must survive the code it walks.
         try:
-            referents = gc.get_referents(referrer)
-        except Exception:  # pragma: no cover
+            namespace = getattr(holder, "__dict__", None)
+        except Exception:
             continue
-        for value in referents:
-            marker = id(value)
-            if marker in by_id and len(owners[marker]) < 4 and described not in owners[marker]:
-                owners[marker].append(described)
+        if isinstance(namespace, dict) and not isinstance(holder, _OPAQUE):
+            instance_dicts.setdefault(id(namespace), _type_name(holder))
+
+    def record(marker: int, label: str) -> None:
+        bucket = owners[marker]
+        if len(bucket) < 4 and label not in bucket:
+            bucket.append(label)
+
+    for holder in tracked:
+        if isinstance(holder, FrameType) or holder is rows:
+            continue
+        if isinstance(holder, dict):
+            module_name = module_index.get(id(holder))
+            owner = module_name or instance_dicts.get(id(holder))
+            try:
+                items = holder.items()
+                for key, value in items:
+                    marker = id(value)
+                    if marker in by_id:
+                        record(marker, f"{owner}.{key}" if owner else f"<dict>[{key!r}]")
+            except RuntimeError:  # pragma: no cover - mutated while scanned
+                continue
+            continue
+        if isinstance(holder, (list, tuple, set, frozenset)):
+            described = f"{_type_name(holder)}(len={len(holder)})"
+            try:
+                for value in holder:
+                    marker = id(value)
+                    if marker in by_id:
+                        record(marker, described)
+            except RuntimeError:  # pragma: no cover
+                continue
     for marker, row in by_id.items():
         row["owners"] = owners.get(marker) or ["<unattributed>"]
 
@@ -359,25 +382,38 @@ class _RetentionProbe:
         try:
             gc.collect()
             payload["after_gc_rss_mib"] = round(_rss_kib() / 1024, 1)
-            budget = _Budget()
             payload["walk_budget"] = {
-                "max_visits": _MAX_VISITS,
-                "rss_ceiling_mib": round(budget.ceiling_mib, 1),
+                "max_visits_per_phase": _MAX_VISITS,
+                "rss_headroom_mib": _WALK_RSS_HEADROOM_MIB,
             }
-            payload["wire_support"] = _wire_support_report(budget)
+            # One budget per phase: the wire-support caches alone exhaust a
+            # shared one, and a starved phase reports nothing while looking
+            # like a measurement.
+            wire_budget = _Budget()
+            payload["wire_support"] = _wire_support_report(wire_budget)
             module_index = _module_global_index()
-            by_type, walked, tracked = _heap_by_type(budget)
+            heap_budget = _Budget()
+            by_type, walked, tracked = _heap_by_type(heap_budget)
             payload["heap_objects_walked"] = walked
             payload["heap_by_type"] = by_type
-            rows = _named_containers(tracked, module_index, budget)
-            _attribute_owners(rows, module_index)
+            container_budget = _Budget()
+            rows = _named_containers(tracked, module_index, container_budget)
+            _attribute_owners(rows, tracked, module_index)
             for row in rows:
                 row.pop("_obj", None)
             payload["large_containers"] = rows
             del tracked
             payload["walk_wall_s"] = round(time.monotonic() - self.started - wall_s, 1)
-            payload["walk_truncated"] = budget.exhausted
-            payload["walk_visits"] = budget.visits
+            payload["walk_truncated"] = {
+                "wire_support": wire_budget.exhausted,
+                "heap_by_type": heap_budget.exhausted,
+                "large_containers": container_budget.exhausted,
+            }
+            payload["walk_visits"] = {
+                "wire_support": wire_budget.visits,
+                "heap_by_type": heap_budget.visits,
+                "large_containers": container_budget.visits,
+            }
             payload["post_walk_rss_mib"] = round(_rss_kib() / 1024, 1)
         except BaseException as exc:  # pragma: no cover - diagnostic only
             payload["walk_error"] = f"{type(exc).__name__}: {exc}"
