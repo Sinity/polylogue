@@ -217,12 +217,12 @@ class TestWantsJsonDetection:
     ]
 
     @pytest.mark.parametrize(("argv", "expected"), _SPELLINGS, ids=[str(index) for index in range(len(_SPELLINGS))])
-    def test_wants_json_matches_every_accepted_spelling(self, argv: list[str], expected: bool) -> None:
+    def test_accepted_spellings(self, argv: list[str], expected: bool) -> None:
         assert wants_json(argv) is expected
 
     @given(argv=st.lists(st.text(max_size=30), max_size=10))
     @example(argv=[])
-    def test_wants_json_needs_a_flag_and_the_json_value(self, argv: list[str]) -> None:
+    def test_needs_flag_and_json_value(self, argv: list[str]) -> None:
         """No argv without both a format flag and the literal ``json`` qualifies.
 
         The direction the table above cannot cover: a detector that simply
