@@ -1132,3 +1132,108 @@ def test_capture_job_routes_do_not_inherit_the_capture_envelope_body_cap(tmp_pat
         status, refused = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", body)
         assert status == 400
         assert refused["error"] == "invalid_body_size"
+
+
+def test_checkpoint_after_terminal_update_is_kept(tmp_path: Path) -> None:
+    """The production call order must not make a job collect its own timeline.
+
+    ``browser-extension/src/background/runtime.js`` calls ``update()`` and then
+    ``checkpoint()``. For a job already at a terminal retry state,
+    ``_retention_after_retry`` therefore ran while the job held no timeline
+    event and recorded ``eligible``/``timeline_authoritative=false`` -- and
+    checkpointing is the only route that ever creates a timeline event, so the
+    one it appended a moment later never revised that verdict. Housekeeping
+    then deleted the fresh checkpoint, its receipts and the timeline itself
+    once the lease expired.
+
+    Anti-vacuity: the second half drives the terminal update with no
+    checkpoint at all and the job must still record
+    ``timeline_authoritative=false`` -- the recomputation is conditional on
+    retained timeline evidence, not an unconditional claim, and
+    ``_retention_after_retry`` is unchanged.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        status, completed = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "lease_id": adopted["lease"]["lease_id"],
+                "generation": adopted["lease"]["generation"],
+                "proof": adopted["lease"]["proof"],
+                "request_id": "terminal-first",
+                "expected_revision": adopted["job"]["revision"],
+                "retry": {"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+            },
+        )
+        assert status == 200
+        # The receiver has no timeline evidence yet, so it correctly records
+        # the job as non-authoritative at this instant.
+        assert completed["receipt"]["retention"] == {
+            "state": "eligible",
+            "hold_reason": None,
+            "timeline_authoritative": False,
+        }
+
+        checkpointed = _checkpoint(
+            host,
+            port,
+            job["job_id"],
+            adopted["lease"],
+            completed["job"]["revision"],
+            0,
+            {"cursor": 1, "conversation_ref": "conversation:9"},
+            "cp-after-terminal",
+        )
+        assert checkpointed["job"]["retention"]["state"] == "eligible"
+        assert checkpointed["job"]["retention"]["timeline_authoritative"] is True
+        assert housekeeping(host, port, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
+        status, page = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert set(page["timelines"]) == {"conversation:9"}
+
+    with receiver(tmp_path / "second") as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        status, abandoned = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "lease_id": adopted["lease"]["lease_id"],
+                "generation": adopted["lease"]["generation"],
+                "proof": adopted["lease"]["proof"],
+                "request_id": "terminal-only",
+                "expected_revision": adopted["job"]["revision"],
+                "retry": {"state": "abandoned", "attempt": 5, "reason": "gave up", "next_eligible_at": None},
+            },
+        )
+        assert status == 200
+        assert abandoned["receipt"]["retention"] == {
+            "state": "eligible",
+            "hold_reason": None,
+            "timeline_authoritative": False,
+        }
+        status, refetched = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert refetched["job"]["retention"]["timeline_authoritative"] is False

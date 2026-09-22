@@ -713,16 +713,49 @@ class CaptureJobRegistry:
             return current
         if current != {"state": "active", "hold_reason": None, "timeline_authoritative": True}:
             return current
-        timeline_events = connection.execute(
-            "SELECT COUNT(*) FROM capture_job_events "
-            "WHERE job_id=? AND json_extract(refs_json, '$.conversation_ref') IS NOT NULL",
-            (job_id,),
-        ).fetchone()[0]
         return {
             "state": "eligible",
             "hold_reason": None,
-            "timeline_authoritative": bool(timeline_events),
+            "timeline_authoritative": CaptureJobRegistry._holds_conversation_timeline(connection, job_id),
         }
+
+    @staticmethod
+    def _holds_conversation_timeline(connection: sqlite3.Connection, job_id: str) -> bool:
+        """Whether this job still holds conversation-bearing timeline evidence."""
+        return bool(
+            connection.execute(
+                "SELECT COUNT(*) FROM capture_job_events "
+                "WHERE job_id=? AND json_extract(refs_json, '$.conversation_ref') IS NOT NULL",
+                (job_id,),
+            ).fetchone()[0]
+        )
+
+    @staticmethod
+    def _retention_after_checkpoint(connection: sqlite3.Connection, job_id: str, current: dict[str, object]) -> None:
+        """Re-read authoritativeness once the checkpoint's timeline event exists.
+
+        The production extension calls ``update()`` and then ``checkpoint()``
+        (``browser-extension/src/background/runtime.js``). For a job that is
+        already at a terminal retry state, ``_retention_after_retry`` therefore
+        runs while the job holds NO timeline event and records
+        ``eligible``/``timeline_authoritative=false`` -- and checkpointing is
+        the only route that ever creates one, so the event it appends a moment
+        later would never revise that verdict. ``gc()`` then deleted the fresh
+        checkpoint, its receipts and that very timeline once the lease expired.
+
+        Authoritativeness is a fact about retained evidence, not a client
+        policy choice, so it is recomputed here whatever wrote the retention
+        row. Nothing else about the retention is touched: a ``held`` job keeps
+        its hold and an ``active`` job keeps its state.
+        """
+        if current.get("timeline_authoritative") is True:
+            return
+        if not CaptureJobRegistry._holds_conversation_timeline(connection, job_id):
+            return
+        connection.execute(
+            "UPDATE capture_jobs SET retention_json=? WHERE job_id=?",
+            (canonical_json({**current, "timeline_authoritative": True}), job_id),
+        )
 
     def update(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         request_id = body.get("request_id")
@@ -982,6 +1015,7 @@ class CaptureJobRegistry:
                 {"checkpoint_sequence": checkpoint["sequence"], "checkpoint_digest": checkpoint["digest"]},
                 advance_revision=False,
             )
+            self._retention_after_checkpoint(connection, job_id, json.loads(row["retention_json"]))
             next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
             return {"job": self._summary(next_row), "receipt": receipt, "duplicate": False}
 
