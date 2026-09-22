@@ -1071,10 +1071,6 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
         patch("polylogue.config.get_config", return_value=config),
         patch("polylogue.services.build_runtime_services", return_value=FakeServices()) as build_services,
         patch("polylogue.pipeline.services.parsing.ParsingService", FakeParser),
-        patch(
-            "polylogue.pipeline.services.ingest_batch.refresh_session_insights_bulk",
-            side_effect=AssertionError("Drive catch-up bypassed the composed derivation owner"),
-        ),
     ):
         changed = asyncio.run(daemon_cli._run_drive_source_catchup_once(canonical_callback))
 

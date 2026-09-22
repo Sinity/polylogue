@@ -42,7 +42,6 @@ from polylogue.pipeline.services.ingest_batch import (
     _successful_raw_state_update,
     _topo_sort_session_entries,
     _unattributed_batch_elapsed_s,
-    refresh_session_insights_bulk,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_worker import (
@@ -67,7 +66,6 @@ from polylogue.sources.parsers.base import (
 from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.derived.session.refresh import SessionInsightRefreshChunkObservation
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
@@ -3758,74 +3756,6 @@ def test_drain_ready_session_entries_preserves_same_result_parent_fk(tmp_path: P
         ).fetchone()
         assert row is not None
         assert row["parent_session_id"] == "codex-session:parent"
-
-
-@pytest.mark.asyncio
-async def test_refresh_session_insights_bulk_dedupes_related_refreshes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_conn = _FakeRefreshConnection()
-
-    @asynccontextmanager
-    async def _connection() -> AsyncIterator[aiosqlite.Connection]:
-        yield fake_conn
-
-    fake_backend = _FakeConnectionBackend(_connection)
-
-    async def _fake_apply(conn: object, session_ids: list[str], *, transaction_depth: int) -> object:
-        del conn, transaction_depth
-        assert session_ids == ["conv-1", "conv-2", "conv-3"]
-        return SimpleNamespace(
-            counts={
-                "profiles": 3,
-                "threads": 0,
-                "tag_rollups": 0,
-                "day_summaries": 0,
-            },
-            affected_groups={
-                ("chatgpt", "2026-04-02"),
-                ("chatgpt", "2026-04-03"),
-            },
-            thread_root_ids={"root-a", "root-b"},
-            chunk_observations=[
-                SessionInsightRefreshChunkObservation(
-                    session_count=3,
-                    estimated_message_count=3,
-                    max_estimated_session_messages=1,
-                    hydrated_count=3,
-                    profiles_written=3,
-                    load_ms=12.5,
-                    hydrate_ms=3.1,
-                    build_ms=9.9,
-                    write_ms=7.7,
-                    total_ms=33.2,
-                ),
-            ],
-        )
-
-    monkeypatch.setattr(
-        "polylogue.storage.derived.session.refresh._apply_session_insight_session_updates_async",
-        _fake_apply,
-    )
-    observation = await refresh_session_insights_bulk(
-        fake_backend,
-        ["conv-1", "conv-2", "conv-3"],
-    )
-
-    fake_conn.commit_mock.assert_awaited_once()
-    assert observation is not None
-    assert observation["sessions"] == 3
-    assert observation["unique_thread_roots"] == 2
-    assert observation["unique_provider_days"] == 2
-    assert _float_value(observation["elapsed_ms"]) >= 0.0
-    assert _float_value(observation["update_ms"]) >= 0.0
-    assert observation["update_chunk_count"] == 1
-    assert observation["update_slow_chunk_count"] == 0
-    assert observation["update_max_chunk_ms"] == 33.2
-    assert observation["update_max_chunk_load_ms"] == 12.5
-    assert observation["update_max_chunk_hydrate_ms"] == 3.1
-    assert observation["update_max_chunk_build_ms"] == 9.9
-    assert observation["update_max_chunk_write_ms"] == 7.7
 
 
 def test_successful_raw_state_update_combines_parse_and_validation_fields() -> None:

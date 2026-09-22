@@ -26,7 +26,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.derived.session.derivation import inspect_session_profiles
-from polylogue.storage.derived.session.refresh import refresh_session_insights_for_session_async
+from polylogue.storage.derived.session.rebuild import rebuild_session_insights_async
 from polylogue.storage.derived.session.threads import load_thread_profile_records_by_root_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -84,7 +84,7 @@ def _stored_profile_lineage(index_db: Path) -> tuple[str | None, bool | None]:
 async def _materialize_child(index_db: Path) -> None:
     backend = SQLiteBackend(db_path=index_db)
     async with backend.connection() as conn:
-        await refresh_session_insights_for_session_async(conn, _CHILD_ID, transaction_depth=1)
+        await rebuild_session_insights_async(conn, session_ids=[_CHILD_ID], transaction_depth=1)
         await conn.commit()
 
 

@@ -7,8 +7,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from typing_extensions import TypedDict
-
 ProviderDayGroup: TypeAlias = tuple[str, str]
 
 
@@ -28,20 +26,6 @@ def session_profile_candidates(
 
     statuses = inspect_session_profiles(conn, session_ids, materializer_version=materializer_version)
     return sorted(session_id for session_id, status in statuses.items() if status != "valid")
-
-
-class SessionInsightRefreshChunkPayload(TypedDict):
-    session_count: int
-    estimated_message_count: int
-    max_estimated_session_messages: int
-    hydrated_count: int
-    profiles_written: int
-    load_ms: float
-    hydrate_ms: float
-    build_ms: float
-    write_ms: float
-    total_ms: float
-    slow: bool
 
 
 @dataclass(slots=True)

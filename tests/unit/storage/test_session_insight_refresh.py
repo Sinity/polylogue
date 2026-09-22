@@ -3,24 +3,18 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Sequence
 from pathlib import Path
 
 import aiosqlite
 import pytest
 
 import polylogue.storage.derived.session.rebuild as rebuild_mod
-import polylogue.storage.derived.session.refresh as refresh_mod
+from polylogue.storage.derived.session.derivation import publish_session_profile
 from polylogue.storage.derived.session.rebuild import (
     _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
     _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
     load_sync_batch,
     rebuild_session_insights_sync,
-)
-from polylogue.storage.derived.session.refresh import (
-    _apply_session_insight_session_updates_async,
-    _refresh_thread_roots_async,
-    refresh_session_insights_for_session_async,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -132,48 +126,7 @@ def test_latency_materialization_uses_latency_record_fallback_sort_key(
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_batches_hydrated_sessions(
-    tmp_path: Path,
-) -> None:
-    db_path = _current_index_db(tmp_path, "refresh")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("conv-refresh", title="Refresh Test"),
-            messages=[
-                make_message("conv-refresh:msg-1", "conv-refresh", text="Need help with batching"),
-                make_message(
-                    "conv-refresh:msg-2",
-                    "conv-refresh",
-                    role="assistant",
-                    text="Let's batch the refresh path.",
-                ),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
-
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection() as conn:
-        update = await _apply_session_insight_session_updates_async(
-            conn,
-            [_sid("conv-refresh")],
-            transaction_depth=1,
-            page_size=10,
-        )
-
-    assert update.counts.profiles == 1
-    assert update.thread_root_ids == {_sid("conv-refresh")}
-    assert update.affected_groups
-    assert len(update.chunk_observations) == 1
-    assert _chunk_metric(update.chunk_observations[0], "load_ms") >= 0.0
-    assert _chunk_metric(update.chunk_observations[0], "hydrate_ms") >= 0.0
-    assert _chunk_metric(update.chunk_observations[0], "build_ms") >= 0.0
-    assert _chunk_metric(update.chunk_observations[0], "write_ms") >= 0.0
-
-
-@pytest.mark.asyncio
-async def test_session_insight_refresh_materializes_logical_session_identity(
+async def test_rebuild_materializes_logical_session_identity(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "logical-session")
@@ -202,9 +155,9 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_session_updates_async(
+        await rebuild_mod.rebuild_session_insights_async(
             conn,
-            [
+            session_ids=[
                 _sid("root", "claude-code-session"),
                 _sid("continuation", "claude-code-session"),
                 _sid("fork", "claude-code-session"),
@@ -304,7 +257,7 @@ def test_degraded_session_insight_rebuild_preserves_logical_thread_root(
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_counts_session_event_compactions(
+async def test_rebuild_counts_session_event_compactions(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-session-events")
@@ -345,15 +298,15 @@ async def test_apply_session_insight_session_updates_async_counts_session_event_
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_session_updates_async(
+        counts = await rebuild_mod.rebuild_session_insights_async(
             conn,
-            ["codex-session:conv-session-event"],
+            session_ids=["codex-session:conv-session-event"],
             transaction_depth=1,
             page_size=10,
         )
         await conn.commit()
 
-    assert update.counts.profiles == 1
+    assert counts.profiles == 1
     with open_connection(db_path) as conn:
         row = conn.execute(
             "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
@@ -365,7 +318,7 @@ async def test_apply_session_insight_session_updates_async_counts_session_event_
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_uses_session_events_for_terminal_state(
+async def test_rebuild_uses_session_events_for_terminal_state(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-provider-terminal")
@@ -399,9 +352,9 @@ async def test_apply_session_insight_session_updates_async_uses_session_events_f
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_session_updates_async(
+        await rebuild_mod.rebuild_session_insights_async(
             conn,
-            ["codex-session:conv-provider-terminal"],
+            session_ids=["codex-session:conv-provider-terminal"],
             transaction_depth=1,
             page_size=10,
         )
@@ -431,7 +384,7 @@ async def test_apply_session_insight_session_updates_async_uses_session_events_f
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_persists_terminal_state_method_for_action_outcome(
+async def test_rebuild_persists_terminal_state_method_for_action_outcome(
     tmp_path: Path,
 ) -> None:
     """polylogue-vhjs regression: a session whose final tool outcome is a
@@ -483,9 +436,9 @@ async def test_apply_session_insight_session_updates_async_persists_terminal_sta
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_session_updates_async(
+        await rebuild_mod.rebuild_session_insights_async(
             conn,
-            ["claude-code-session:conv-action-outcome"],
+            session_ids=["claude-code-session:conv-action-outcome"],
             transaction_depth=1,
             page_size=10,
         )
@@ -1632,7 +1585,7 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_preserves_thread_roots_for_children(
+async def test_rebuild_preserves_thread_roots_for_children(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-thread")
@@ -1657,115 +1610,47 @@ async def test_apply_session_insight_session_updates_async_preserves_thread_root
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_session_updates_async(
+        counts = await rebuild_mod.rebuild_session_insights_async(
             conn,
-            [_sid("conv-root"), _sid("conv-child")],
+            session_ids=[_sid("conv-root"), _sid("conv-child")],
             transaction_depth=1,
             page_size=10,
         )
+        await conn.commit()
 
-    assert update.counts.profiles == 2
-    assert update.thread_root_ids == {_sid("conv-root")}
-    assert len(update.chunk_observations) == 1
+    assert counts.profiles == 2
 
-
-@pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_uses_small_default_chunks(
-    tmp_path: Path,
-) -> None:
-    db_path = _current_index_db(tmp_path, "refresh-default-chunks")
-    session_ids: list[str] = []
     with open_connection(db_path) as conn:
-        for index in range(11):
-            session_id = f"conv-{index:02d}"
-            session_ids.append(_sid(session_id))
-            store_records(
-                session=make_session(session_id, title=f"Session {index:02d}"),
-                messages=[
-                    make_message(
-                        f"{session_id}:msg-1",
-                        session_id,
-                        text=f"Message for {session_id}",
-                    )
-                ],
-                attachments=[],
-                conn=conn,
-            )
-        conn.commit()
-
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection() as conn:
-        update = await _apply_session_insight_session_updates_async(
-            conn,
-            session_ids,
-            transaction_depth=1,
+        roots = dict(
+            conn.execute("SELECT session_id, logical_session_id FROM session_profiles ORDER BY session_id").fetchall()
         )
 
-    assert update.counts.profiles == 11
-    assert len(update.chunk_observations) == 2
-    assert update.chunk_observations[0].session_count == 10
-    assert update.chunk_observations[0].estimated_message_count == 10
-    assert update.chunk_observations[1].session_count == 1
-    assert update.chunk_observations[1].estimated_message_count == 1
+    # The child's profile must carry the topology root as its logical identity,
+    # not its own id -- that is what keeps a fork from being counted as a second
+    # logical session in every rollup downstream.
+    assert roots == {
+        _sid("conv-child"): _sid("conv-root"),
+        _sid("conv-root"): _sid("conv-root"),
+    }
 
 
-@pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_splits_large_message_batches(
+def test_publish_clears_a_profile_whose_session_is_gone(
     tmp_path: Path,
 ) -> None:
-    db_path = _current_index_db(tmp_path, "refresh-message-budget")
-    session_ids: list[str] = []
-    with open_connection(db_path) as conn:
-        for index in range(3):
-            session_id = f"conv-budget-{index:02d}"
-            session_ids.append(_sid(session_id))
-            store_records(
-                session=make_session(session_id, title=f"Budget {index:02d}"),
-                messages=[
-                    make_message(
-                        f"{session_id}:msg-1",
-                        session_id,
-                        text=f"Message for {session_id}",
-                    )
-                ],
-                attachments=[],
-                conn=conn,
-            )
-        conn.executemany(
-            """
-            UPDATE sessions
-            SET message_count = ?
-            WHERE session_id = ?
-            """,
-            [
-                (4_000, _sid("conv-budget-00")),
-                (4_000, _sid("conv-budget-01")),
-                (100, _sid("conv-budget-02")),
-            ],
-        )
-        conn.commit()
+    """An excess key converges to no rows, and does so without a rebuild.
 
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection() as conn:
-        update = await _apply_session_insight_session_updates_async(
-            conn,
-            session_ids,
-            transaction_depth=1,
-        )
+    This was the refresh route's "clears deleted sessions" behavior. It belongs
+    to the domain publisher: a scoped rebuild reconciles the canonical usage
+    rollup for its scope, which a session that no longer exists cannot satisfy,
+    so ``publish_session_profile`` short-circuits an absent session straight to
+    the delete instead of rebuilding it.
 
-    assert update.counts.profiles == 3
-    assert len(update.chunk_observations) == 2
-    assert update.chunk_observations[0].session_count == 1
-    assert update.chunk_observations[0].estimated_message_count == 4_000
-    assert update.chunk_observations[1].session_count == 2
-    assert update.chunk_observations[1].estimated_message_count == 4_100
-
-
-@pytest.mark.asyncio
-async def test_apply_session_insight_session_updates_async_clears_deleted_sessions(
-    tmp_path: Path,
-) -> None:
-    db_path = _current_index_db(tmp_path, "refresh-delete")
+    Anti-vacuity: remove the absent-session branch at the top of
+    ``publish_session_profile`` and the orphan row survives (the binding
+    revalidation below it returns False without touching the row), so the
+    profile count stays 1 and the domain livelocks on the key.
+    """
+    db_path = _current_index_db(tmp_path, "excess-key")
     with open_connection(db_path) as conn:
         store_records(
             session=make_session("conv-stale", title="Stale"),
@@ -1775,114 +1660,31 @@ async def test_apply_session_insight_session_updates_async_clears_deleted_sessio
         )
         conn.commit()
 
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection() as conn:
-        first_update = await _apply_session_insight_session_updates_async(
-            conn,
-            [_sid("conv-stale")],
-            transaction_depth=1,
-            page_size=10,
+    session_id = _sid("conv-stale")
+    with open_connection(db_path) as conn:
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+        conn.commit()
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()[0]
+            == 1
         )
-        await conn.commit()
-
-    assert first_update.counts.profiles == 1
 
     with open_connection(db_path) as conn:
-        conn.execute("DELETE FROM messages WHERE session_id = ?", (_sid("conv-stale"),))
-        conn.execute("DELETE FROM sessions WHERE session_id = ?", (_sid("conv-stale"),))
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
 
-    async with backend.connection() as conn:
-        second_update = await _apply_session_insight_session_updates_async(
-            conn,
-            [_sid("conv-stale")],
-            transaction_depth=1,
-            page_size=10,
-        )
-        await conn.commit()
-
-    assert second_update.counts.profiles == 0
-    assert len(second_update.chunk_observations) == 1
-
     with open_connection(db_path) as conn:
+        assert publish_session_profile(conn, session_id, input_binding="whatever") is True
         profile_count = conn.execute(
             "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
-            (_sid("conv-stale"),),
+            (session_id,),
         ).fetchone()[0]
 
     assert profile_count == 0
-
-
-@pytest.mark.asyncio
-async def test_refresh_thread_roots_async_batches_root_rebuilds(
-    tmp_path: Path,
-) -> None:
-    db_path = _current_index_db(tmp_path, "refresh-thread-roots")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("conv-root-a", title="Root A"),
-            messages=[make_message("conv-root-a:msg-1", "conv-root-a", text="Root A message")],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session(
-                "conv-child-a",
-                title="Child A",
-                parent_session_id="conv-root-a",
-            ),
-            messages=[make_message("conv-child-a:msg-1", "conv-child-a", text="Child A message")],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session("conv-root-b", title="Root B"),
-            messages=[make_message("conv-root-b:msg-1", "conv-root-b", text="Root B message")],
-            attachments=[],
-            conn=conn,
-        )
-        store_records(
-            session=make_session(
-                "conv-child-b",
-                title="Child B",
-                parent_session_id="conv-root-b",
-            ),
-            messages=[make_message("conv-child-b:msg-1", "conv-child-b", text="Child B message")],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
-
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection() as conn:
-        update = await _apply_session_insight_session_updates_async(
-            conn,
-            [_sid("conv-root-a"), _sid("conv-child-a"), _sid("conv-root-b"), _sid("conv-child-b")],
-            transaction_depth=1,
-            page_size=10,
-        )
-        refreshed = await _refresh_thread_roots_async(
-            conn,
-            sorted(update.thread_root_ids),
-            transaction_depth=1,
-        )
-        await conn.commit()
-
-    assert refreshed == 2
-
-    with open_connection(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT thread_id, thread_id AS root_id, session_count
-            FROM threads
-            ORDER BY thread_id
-            """
-        ).fetchall()
-
-    assert [(row["thread_id"], row["root_id"], row["session_count"]) for row in rows] == [
-        (_sid("conv-root-a"), _sid("conv-root-a"), 2),
-        (_sid("conv-root-b"), _sid("conv-root-b"), 2),
-    ]
 
 
 @pytest.mark.asyncio
@@ -1952,9 +1754,9 @@ async def test_session_tag_rollups_are_derived_for_multiple_groups(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_session_updates_async(
+        await rebuild_mod.rebuild_session_insights_async(
             conn,
-            [
+            session_ids=[
                 _sid("conv-chatgpt-a", "chatgpt-export"),
                 _sid("conv-chatgpt-b", "chatgpt-export"),
                 _sid("conv-claude-a", "claude-ai-export"),
@@ -2003,150 +1805,6 @@ def _seed_heavy_session(db_path: Path, native: str, *, origin: str = "codex-sess
         )
         conn.commit()
     return session_id
-
-
-@pytest.mark.asyncio
-async def test_refresh_single_session_heavy_uses_bounded_degraded_profile(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Production dependency: refresh_session_insights_for_session_async must
-    branch heavy sessions into rebuild's bounded bundle. Removing the heavy
-    check in _apply_session_insight_session_update_async makes this fail (the
-    patched load_async_batch raises, and workflow_shape reverts to full analysis)."""
-    db_path = tmp_path / "refresh-heavy-single.db"
-    session_id = _seed_heavy_session(db_path, "conv-refresh-heavy-single")
-
-    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
-
-    async def fail_full_load(_conn: object, _session_ids: object) -> object:
-        raise AssertionError("heavy-session refresh single path must not hydrate the full session")
-
-    monkeypatch.setattr(refresh_mod, "load_async_batch", fail_full_load)
-    async with aiosqlite.connect(db_path) as async_conn:
-        async_conn.row_factory = sqlite3.Row
-        counts = await refresh_session_insights_for_session_async(async_conn, session_id)
-        profile = await (
-            await async_conn.execute(
-                "SELECT * FROM session_profiles WHERE session_id = ?",
-                (session_id,),
-            )
-        ).fetchone()
-
-    assert counts.profiles == 1
-    assert profile is not None
-    assert profile["workflow_shape"] == "bounded_large_session"
-    assert profile["message_count"] == 50
-    assert "large_session_bounded" in profile["inference_payload_json"]
-
-
-@pytest.mark.asyncio
-async def test_refresh_bulk_heavy_uses_bounded_degraded_profile_and_keeps_light_full(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The bulk refresh path (ordinary ingest tick) must degrade heavy sessions
-    without hydrating them while still fully analyzing light sessions in the
-    same call. A tool-count-heavy session has a small message count, so it
-    genuinely shares a chunk with light sessions (message-heavy sessions
-    always chunk alone under the message budget). Dropping the heavy split in
-    _apply_session_insight_session_updates_async fails this test."""
-    db_path = tmp_path / "refresh-heavy-bulk.db"
-    heavy_id = _seed_heavy_session(db_path, "conv-refresh-heavy-bulk")
-    light_native = "conv-refresh-light-bulk"
-    light_id = _sid(light_native, "codex-session")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(light_native, source_name="codex", title="Light bulk refresh"),
-            messages=[
-                make_message(f"{light_native}:msg-1", light_native, text="hello"),
-                make_message(f"{light_native}:msg-2", light_native, role="assistant", text="world"),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
-
-    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_TOOL_THRESHOLD", 5)
-
-    real_load = rebuild_mod.load_async_batch
-
-    async def guarded_load(
-        conn: aiosqlite.Connection,
-        session_ids: Sequence[str],
-    ) -> rebuild_mod.SessionInsightArchiveBatch:
-        assert heavy_id not in {str(session_id) for session_id in session_ids}, (
-            "heavy session must not reach hydration on the bulk refresh path"
-        )
-        return await real_load(conn, session_ids)
-
-    monkeypatch.setattr(refresh_mod, "load_async_batch", guarded_load)
-    async with aiosqlite.connect(db_path) as async_conn:
-        async_conn.row_factory = sqlite3.Row
-        update = await _apply_session_insight_session_updates_async(
-            async_conn,
-            [heavy_id, light_id],
-            transaction_depth=0,
-        )
-        rows = {
-            str(row["session_id"]): row
-            for row in await (
-                await async_conn.execute(
-                    "SELECT * FROM session_profiles WHERE session_id IN (?, ?)",
-                    (heavy_id, light_id),
-                )
-            ).fetchall()
-        }
-
-    assert update.counts.profiles == 2
-    assert rows[heavy_id]["workflow_shape"] == "bounded_large_session"
-    assert rows[light_id]["workflow_shape"] != "bounded_large_session"
-
-
-@pytest.mark.asyncio
-async def test_heavy_session_profile_agrees_between_refresh_and_rebuild(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """polylogue-61zb acceptance: a heavy session's stored profile must be the
-    same degraded shape whether the incremental refresh or a convergence
-    rebuild materialized it last — no flip-flopping."""
-    db_path = tmp_path / "refresh-rebuild-parity.db"
-    session_id = _seed_heavy_session(db_path, "conv-refresh-parity")
-
-    monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
-
-    volatile_columns = {"materialized_at"}
-
-    async def profile_snapshot(async_conn: aiosqlite.Connection) -> dict[str, object]:
-        row = await (
-            await async_conn.execute(
-                "SELECT * FROM session_profiles WHERE session_id = ?",
-                (session_id,),
-            )
-        ).fetchone()
-        assert row is not None
-        columns: list[str] = row.keys()
-        return {key: row[key] for key in columns if key not in volatile_columns}
-
-    async with aiosqlite.connect(db_path) as async_conn:
-        async_conn.row_factory = sqlite3.Row
-        await refresh_session_insights_for_session_async(async_conn, session_id)
-        await async_conn.commit()
-        refreshed = await profile_snapshot(async_conn)
-
-        await rebuild_mod.rebuild_session_insights_async(async_conn, session_ids=[session_id])
-        await async_conn.commit()
-        rebuilt = await profile_snapshot(async_conn)
-
-        # And back again: refresh after rebuild must not flip the shape.
-        await refresh_session_insights_for_session_async(async_conn, session_id)
-        await async_conn.commit()
-        refreshed_again = await profile_snapshot(async_conn)
-
-    assert refreshed["workflow_shape"] == "bounded_large_session"
-    assert refreshed == rebuilt
-    assert refreshed_again == rebuilt
 
 
 def test_bounded_and_unbounded_terminal_state_agree_on_shared_fixture(
@@ -2306,22 +1964,21 @@ def test_bounded_tail_reports_the_block_budget_it_had_to_apply(
 
 
 @pytest.mark.asyncio
-async def test_ingest_refresh_publishes_a_partition_convergence_reads_as_valid(
+async def test_rebuild_publishes_a_partition_convergence_reads_as_valid(
     tmp_path: Path,
 ) -> None:
-    """The ingest-time refresh must not write a profile that is stale on arrival.
+    """A scoped rebuild must not write a profile that is stale on arrival.
 
-    ``refresh_session_insights_bulk`` (pipeline/services/ingest_batch/_core.py)
-    is the live materialize stage: it hydrates every changed session and writes
-    its profile family. When that row carried no ``input_content_hash``,
-    :func:`inspect_session_profiles` classified it ``stale`` -- a row that
+    ``rebuild_session_insights_async`` is the profile writer the convergence
+    domain drives. When the row it writes carries no ``input_content_hash``,
+    :func:`inspect_session_profiles` classifies it ``stale`` -- a row that
     cannot say what it was computed from never certifies itself -- so the
-    daemon converger hydrated, rebuilt and rewrote the identical family on its
-    next pass. Every ingested session was materialized twice by construction.
+    daemon converger hydrates, rebuilds and rewrites the identical family on
+    its next pass, materializing every session twice by construction.
 
-    Anti-vacuity: drop ``input_content_hash=input_bindings.get(session_id)``
-    from ``_apply_session_insight_session_updates_async`` and this reads
-    ``stale``.
+    Anti-vacuity: drop ``input_content_hash_by_session=await
+    session_input_bindings_async(conn, chunk_full_ids)`` from
+    ``rebuild_session_insights_async`` and this reads ``stale``.
     """
     db_path = _current_index_db(tmp_path, "refresh-binding-bulk")
     with open_connection(db_path) as conn:
@@ -2339,46 +1996,14 @@ async def test_ingest_refresh_publishes_a_partition_convergence_reads_as_valid(
     session_id = _sid("conv-binding")
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_session_updates_async(conn, [session_id], transaction_depth=1)
+        await rebuild_mod.rebuild_session_insights_async(conn, session_ids=[session_id], transaction_depth=1)
         await conn.commit()
 
     assert _inspect_one(db_path, session_id) == "valid"
 
 
 @pytest.mark.asyncio
-async def test_single_session_refresh_publishes_a_partition_convergence_reads_as_valid(
-    tmp_path: Path,
-) -> None:
-    """The single-session sibling of the bulk path stamps the same binding.
-
-    ``refresh_session_insights_for_session_async`` is the per-session route the
-    repository write helpers use; it built the identical bundle and left the
-    same unstamped row behind.
-
-    Anti-vacuity: drop the stamp from
-    ``_apply_session_insight_session_update_async`` and this reads ``stale``.
-    """
-    db_path = _current_index_db(tmp_path, "refresh-binding-single")
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session("conv-binding-one", title="Binding Test"),
-            messages=[make_message("conv-binding-one:msg-1", "conv-binding-one", text="only")],
-            attachments=[],
-            conn=conn,
-        )
-        conn.commit()
-
-    session_id = _sid("conv-binding-one")
-    backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection() as conn:
-        await refresh_session_insights_for_session_async(conn, session_id, transaction_depth=1)
-        await conn.commit()
-
-    assert _inspect_one(db_path, session_id) == "valid"
-
-
-@pytest.mark.asyncio
-async def test_refresh_binding_still_goes_stale_when_an_input_value_moves(
+async def test_rebuild_binding_goes_stale_when_an_input_value_moves(
     tmp_path: Path,
 ) -> None:
     """The stamp must name the input, not merely silence the inspector.
@@ -2389,8 +2014,10 @@ async def test_refresh_binding_still_goes_stale_when_an_input_value_moves(
     changes no timestamp, no row count and no entity id, so it is exactly the
     mutation an identity-shaped binding would miss.
 
-    Anti-vacuity: stamp any fixed string instead of
-    ``session_input_bindings_async`` and this reads ``valid``.
+    Anti-vacuity, executed: drop ``"role"`` from
+    ``SESSION_INPUT_PROJECTION_COLUMNS`` and the second read is ``valid`` --
+    the binding stops naming an input the profile depends on. (Stamping a
+    constant instead fails the *first* read, so it does not discriminate here.)
     """
     db_path = _current_index_db(tmp_path, "refresh-binding-moves")
     with open_connection(db_path) as conn:
@@ -2408,7 +2035,7 @@ async def test_refresh_binding_still_goes_stale_when_an_input_value_moves(
     session_id = _sid("conv-binding-move")
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        await _apply_session_insight_session_updates_async(conn, [session_id], transaction_depth=1)
+        await rebuild_mod.rebuild_session_insights_async(conn, session_ids=[session_id], transaction_depth=1)
         await conn.commit()
 
     assert _inspect_one(db_path, session_id) == "valid"

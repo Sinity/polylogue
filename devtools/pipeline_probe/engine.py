@@ -612,15 +612,29 @@ async def _probe_materialize_stage(
     processed_ids: set[str],
     backend: SQLiteBackend,
 ) -> _MaterializeStageOutcome:
-    """Materialize probe-ingested sessions through the production insights writer."""
-    from polylogue.pipeline.services.ingest_batch import refresh_session_insights_bulk
+    """Materialize probe-ingested sessions through the production insights writer.
+
+    ``rebuild_session_insights_async`` is the one surviving profile writer
+    (polylogue-foour): the scoped ``refresh_session_insights_bulk`` route this
+    probe used to call was the predecessor lifecycle and is gone.  Scoping it by
+    ``session_ids`` keeps the probe measuring the same bounded work.
+    """
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_async
+
+    async def _rebuild_scope(session_ids: list[str]) -> None:
+        async with backend.connection() as conn:
+            await rebuild_session_insights_async(
+                conn,
+                session_ids=session_ids,
+                progress_total=len(session_ids),
+            )
+            await conn.commit()
 
     if stage in {"all", "reprocess"}:
         session_ids = sorted(processed_ids)
         if not session_ids:
             return _MaterializeStageOutcome(item_count=0)
-        await refresh_session_insights_bulk(backend, session_ids)
+        await _rebuild_scope(session_ids)
         return _MaterializeStageOutcome(item_count=len(session_ids))
 
     if stage != "materialize":
@@ -632,7 +646,7 @@ async def _probe_materialize_stage(
         if not materialize_total:
             return _MaterializeStageOutcome(item_count=0)
         session_ids = [session_id async for session_id in backend.iter_session_ids(source_names=scoped_source_names)]
-        await refresh_session_insights_bulk(backend, session_ids)
+        await _rebuild_scope(session_ids)
         return _MaterializeStageOutcome(item_count=materialize_total)
 
     async with backend.connection() as conn:

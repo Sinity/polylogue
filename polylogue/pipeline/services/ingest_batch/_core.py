@@ -48,7 +48,7 @@ from polylogue.pipeline.ingest_outcomes import (
     parser_defect_disposition,
     transient_error_disposition,
 )
-from polylogue.pipeline.payload_types import MaterializeStageObservation, ParseBatchObservation
+from polylogue.pipeline.payload_types import ParseBatchObservation
 from polylogue.pipeline.services.ingest_worker import (
     IngestRecordResult,
     SessionWritePayload,
@@ -3122,75 +3122,6 @@ async def _persist_batch_raw_state_updates(
     return time.perf_counter() - raw_state_update_started
 
 
-async def refresh_session_insights_bulk(
-    backend: _ConnectionBackendLike,
-    changed_session_ids: list[str],
-) -> MaterializeStageObservation | None:
-    """Bulk session insight refresh — once after all batches, not per-batch."""
-    if not changed_session_ids:
-        return None
-
-    t_start = time.perf_counter()
-    update_elapsed = 0.0
-    try:
-        from polylogue.storage.derived.session.refresh import (
-            _apply_session_insight_session_updates_async,
-        )
-
-        async with backend.connection() as conn:
-            t_updates = time.perf_counter()
-            update = await _apply_session_insight_session_updates_async(
-                conn,
-                changed_session_ids,
-                transaction_depth=1,
-            )
-            update_elapsed = time.perf_counter() - t_updates
-            thread_root_ids = update.thread_root_ids
-            affected_groups = update.affected_groups
-            await conn.commit()
-
-        elapsed = time.perf_counter() - t_start
-        chunk_observations = update.chunk_observations
-        observation: MaterializeStageObservation = {
-            "sessions": len(changed_session_ids),
-            "unique_thread_roots": len(thread_root_ids),
-            "unique_provider_days": len(affected_groups),
-            "elapsed_ms": round(elapsed * 1000.0, 1),
-            "update_ms": round(update_elapsed * 1000.0, 1),
-            "update_chunk_count": len(chunk_observations),
-            "update_slow_chunk_count": sum(1 for chunk in chunk_observations if chunk.slow),
-        }
-        if chunk_observations:
-            observation.update(
-                {
-                    "update_max_chunk_ms": round(max(chunk.total_ms for chunk in chunk_observations), 1),
-                    "update_max_chunk_load_ms": round(max(chunk.load_ms for chunk in chunk_observations), 1),
-                    "update_max_chunk_hydrate_ms": round(max(chunk.hydrate_ms for chunk in chunk_observations), 1),
-                    "update_max_chunk_build_ms": round(max(chunk.build_ms for chunk in chunk_observations), 1),
-                    "update_max_chunk_write_ms": round(max(chunk.write_ms for chunk in chunk_observations), 1),
-                }
-            )
-            observation["update_chunks"] = [chunk.to_observation() for chunk in chunk_observations]
-        if elapsed > 2.0:
-            logger.info(
-                "session_insight_refresh",
-                sessions=len(changed_session_ids),
-                unique_thread_roots=len(thread_root_ids),
-                unique_provider_days=len(affected_groups),
-                elapsed_s=round(elapsed, 2),
-                update_s=round(update_elapsed, 2),
-                rate=round(len(changed_session_ids) / elapsed, 1) if elapsed > 0 else 0,
-            )
-        return observation
-    except Exception as exc:
-        logger.warning("Session insight refresh failed (non-fatal): %s", exc, exc_info=True)
-        return {
-            "sessions": len(changed_session_ids),
-            "failed": True,
-            "error": str(exc),
-        }
-
-
 async def repair_message_fts_bulk(
     backend: _ConnectionBackendLike,
     changed_session_ids: Sequence[str],
@@ -3210,6 +3141,5 @@ async def repair_message_fts_bulk(
 __all__ = [
     "_INGEST_RESULT_CHUNK_SIZE",
     "process_ingest_batch",
-    "refresh_session_insights_bulk",
     "repair_message_fts_bulk",
 ]
