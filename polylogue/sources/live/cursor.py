@@ -445,6 +445,29 @@ class CursorStore:
                 held.commit()
 
     @contextmanager
+    def _connect_ops_read(self) -> Iterator[sqlite3.Connection]:
+        """Read ``ops.db`` without asking to be admitted as a writer.
+
+        A SELECT is not a write, and ``_connect_ops`` opens a write-mode
+        connection, so every read routed through it had to present the daemon
+        write lease. On the daemon that refused the whole live-ingest page:
+        :meth:`get_records` runs during batch planning on the event loop,
+        outside the per-publication ``_run_sync`` hold that owns the lease, so
+        an armed boundary raised ``UnleasedWriteError`` there and no page was
+        ever admitted.
+
+        A held :meth:`ops_write_scope` connection is still reused, so a read
+        inside a publication continues to observe that scope's uncommitted
+        rows; only the unscoped case changes, and it opens read-only.
+        """
+        held = cast(sqlite3.Connection | None, getattr(self._ops_scope, "conn", None))
+        if held is not None:
+            yield held
+            return
+        with self._connect_ops_readonly() as conn:
+            yield conn
+
+    @contextmanager
     def _connect_ops_readonly(self) -> Iterator[sqlite3.Connection]:
         """Read retry scheduling state without taking the daemon writer lease."""
         conn = open_readonly_connection(
@@ -1210,7 +1233,7 @@ class CursorStore:
 
     def recent_ingest_attempts(self, *, limit: int = 5) -> list[LiveIngestAttempt]:
         """Return recent live-ingest attempts for status/debug surfaces."""
-        with self._connect_ops() as conn:
+        with self._connect_ops_read() as conn:
             rows = conn.execute(
                 """
                 SELECT
@@ -1326,7 +1349,7 @@ class CursorStore:
         return record.byte_offset if record is not None else 0
 
     def get_record(self, path: Path) -> CursorRecord | None:
-        with self._connect_ops() as conn:
+        with self._connect_ops_read() as conn:
             return self._get_record_on_conn(conn, path)
 
     @staticmethod
@@ -1367,7 +1390,7 @@ class CursorStore:
         if not unique_paths:
             return {}
         records_by_source_path: dict[str, CursorRecord] = {}
-        with self._connect_ops() as conn:
+        with self._connect_ops_read() as conn:
             for offset in range(0, len(unique_paths), 500):
                 chunk = unique_paths[offset : offset + 500]
                 placeholders = ",".join("?" for _path in chunk)
@@ -1666,14 +1689,14 @@ class CursorStore:
 
     def list_excluded(self) -> list[str]:
         """Return quarantined source paths."""
-        with self._connect_ops() as conn:
+        with self._connect_ops_read() as conn:
             rows = conn.execute("SELECT source_path FROM ingest_cursor WHERE excluded = 1").fetchall()
         return [str(row[0]) for row in rows]
 
     def list_failed_with_retry(self) -> list[str]:
         """Return sources that have failed and are NOT currently in backoff."""
         now = datetime.now(UTC).isoformat()
-        with self._connect_ops() as conn:
+        with self._connect_ops_read() as conn:
             rows = conn.execute(
                 "SELECT source_path FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0 AND (next_retry_at IS NULL OR next_retry_at <= ?)",
                 (now,),
@@ -1804,7 +1827,7 @@ class CursorStore:
         # Placeholder order follows the statement text: the WHERE clauses, then
         # the ORDER BY's retry-due discriminator, then LIMIT.
         params.extend((now, limit))
-        with self._connect_ops() as conn:
+        with self._connect_ops_read() as conn:
             rows = conn.execute(
                 f"""
                 SELECT
@@ -1871,7 +1894,7 @@ class CursorStore:
 
     def open_whole_archive_convergence_pledges(self) -> tuple[WholeArchiveConvergencePledge, ...]:
         """Return every catch-up pledge whose archive-wide flush never ran."""
-        with self._connect_ops() as conn:
+        with self._connect_ops_read() as conn:
             rows = conn.execute(
                 """
                 SELECT pledge_id, anchor_path, created_at_ms

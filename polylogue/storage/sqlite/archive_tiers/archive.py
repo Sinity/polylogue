@@ -1443,6 +1443,11 @@ class ArchiveStore:
                 # different roots and refused the open. These durable members
                 # belong to the real archive either way -- the candidate only
                 # carries read-through symlinks to them.
+                # Confirmed against the real daemon, not only in tests: with
+                # the candidate directory as the binding, live ingest died on
+                # "is outside the archive bound to writer
+                # watcher.live_ingest.full" for every file, and a
+                # `polylogued run` over a 3-session corpus ingested 0 messages.
                 conn = open_source_tier_write_connection(
                     self.source_db_path, archive_root=self._write_lease_archive_root
                 )

@@ -1650,7 +1650,15 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
     from polylogue.sources.live.cursor import CursorStore
 
-    cursor = CursorStore(db)
+    # ``initialize=True`` bootstraps the ops tier and rewrites interrupted
+    # attempt rows, which are writes. This drain runs on a maintenance worker
+    # whose writes are admitted one section at a time through
+    # ``admit_stage_write``, so constructing the store took the daemon's own
+    # ops tier through an unleased ``sqlite3.connect`` and every debt pass
+    # died on ``UnleasedWriteError``. The daemon bootstraps the archive root
+    # before this loop starts; the drain only reads the ledger here and writes
+    # it back under admission below.
+    cursor = CursorStore(db, initialize=False)
     now = datetime.now(UTC)
     candidate_debt = [
         debt

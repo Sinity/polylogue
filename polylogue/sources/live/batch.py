@@ -1521,7 +1521,19 @@ class LiveBatchProcessor:
             time_budget_exceeded=full_ingest_time_budget_exceeded,
         )
         if emit_event and self._event_emitter is not None:
-            self._event_emitter("ingestion_batch", metrics.to_payload())
+            # The daemon's emitter appends to the ops-tier event ledger, so it
+            # is an ops publication like every other one in this method and
+            # takes the writer through ``_run_sync``. Called inline it ran on
+            # the event loop with no lease held, and an armed single-writer
+            # boundary raised ``UnleasedWriteError`` at the very end of a batch
+            # that had already done its work -- the page was then reported
+            # refused and its files were never re-offered.
+            await self._run_sync(
+                "watcher.live_ingest.ops.batch_event",
+                self._event_emitter,
+                "ingestion_batch",
+                metrics.to_payload(),
+            )
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="completed",
