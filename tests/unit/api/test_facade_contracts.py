@@ -109,6 +109,7 @@ LIFECYCLE_METHODS: frozenset[str] = frozenset({"close"})
 READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
     {
         "get_session",
+        "get_session_page",  # the bounded window over the same read; same None
         "get_session_summary",
         "get_session_profile_insight",
         "get_session_profile_record",

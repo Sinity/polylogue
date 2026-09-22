@@ -905,6 +905,22 @@ def _action_relation_for_query(
     return f"WITH {bounded_cte},\n{followup_ctes}", "action_rows", relation_params
 
 
+def _per_partition_rank_sql(partition_expression: str, order_by: str) -> str:
+    """Return the ``ROW_NUMBER()`` window that bounds each partition separately.
+
+    A session-scoped read that bounds only the whole page hands its allowance
+    out in the page's global order, so what one session receives depends on
+    how many sessions share the page and where their rows sort -- a long
+    session takes the allowance a short one never gets, and under a
+    descending (tail-first) read a short session can receive zero rows while
+    every other session is truncated (polylogue-fvsjn). Ranking within the
+    partition makes the bound each session's own, and therefore exactly
+    answerable: a session whose rank reaches the bound is the truncated one.
+    """
+
+    return f"ROW_NUMBER() OVER (PARTITION BY {partition_expression} ORDER BY {order_by}) AS unit_rank"
+
+
 def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
     """Return a closed SQL direction token for terminal row ordering."""
 
@@ -2918,8 +2934,15 @@ def query_session_messages(
     roles: Sequence[str] = (),
     message_type: str | None = None,
     material_origins: Sequence[str] = (),
+    per_session_limit: int | None = None,
 ) -> list[ArchiveMessageQueryRow]:
-    """Return message rows for known sessions in transcript order."""
+    """Return message rows for known sessions in transcript order.
+
+    ``per_session_limit`` bounds each selected session separately instead of
+    letting ``limit`` decide how the page's rows are shared out; see
+    ``_per_partition_rank_sql`` for what that changes. ``None`` leaves the
+    single-window read exactly as it is for callers that page one session.
+    """
 
     normalized_session_ids = tuple(
         dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
@@ -2945,6 +2968,20 @@ def query_session_messages(
         origin_placeholders = ", ".join("?" for _ in normalized_origins)
         predicates.append(f"m.material_origin IN ({origin_placeholders})")
         filter_params.extend(normalized_origins)
+    order_by = f"m.position {order_direction}, m.variant_index {order_direction}, m.message_id {order_direction}"
+    filter_clause = " AND ".join(predicates)
+    rank_params: list[object] = []
+    if per_session_limit is None:
+        source_sql = "messages m INDEXED BY idx_messages_session_position"
+        row_clause = filter_clause
+    else:
+        source_sql = f"""(
+            SELECT m.*, {_per_partition_rank_sql("m.session_id", order_by)}
+            FROM messages m INDEXED BY idx_messages_session_position
+            WHERE {filter_clause}
+        ) m"""
+        row_clause = "m.unit_rank <= ?"
+        rank_params = [max(int(per_session_limit), 0)]
     rows = self._conn.execute(
         f"""
         SELECT
@@ -2980,13 +3017,13 @@ def query_session_messages(
                     ORDER BY b.position, b.block_id
                 ) AS ordered
             ), '') AS text
-        FROM messages m INDEXED BY idx_messages_session_position
+        FROM {source_sql}
         JOIN sessions s ON s.session_id = m.session_id
-        WHERE {" AND ".join(predicates)}
-        ORDER BY m.position {order_direction}, m.variant_index {order_direction}, m.message_id {order_direction}
+        WHERE {row_clause}
+        ORDER BY {order_by}
         LIMIT ? OFFSET ?
         """,
-        [*filter_params, normalized_limit, normalized_offset],
+        [*filter_params, *rank_params, normalized_limit, normalized_offset],
     ).fetchall()
     message_ids = tuple(str(row["message_id"]) for row in rows)
     blocks_by_message = _fetch_blocks_for_messages(self._conn, message_ids)
@@ -3707,8 +3744,13 @@ def query_session_actions(
     limit: int = 50,
     offset: int = 0,
     sort_direction: Literal["asc", "desc"] = "asc",
+    per_session_limit: int | None = None,
 ) -> list[ArchiveActionQueryRow]:
-    """Return action rows for known sessions using the session-position block index."""
+    """Return action rows for known sessions using the session-position block index.
+
+    ``per_session_limit`` bounds each selected session separately; see
+    ``_per_partition_rank_sql``.
+    """
 
     normalized_session_ids = tuple(
         dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
@@ -3723,8 +3765,8 @@ def query_session_actions(
         session_ids=normalized_session_ids,
         include_followup=True,
     )
-    rows = self._conn.execute(
-        f"""
+    if per_session_limit is None:
+        query_sql = f"""
         {prefix_sql}
         SELECT
             {_ARCHIVE_ACTION_QUERY_SELECT_SQL}
@@ -3735,8 +3777,36 @@ def query_session_actions(
         ORDER BY COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction},
                  a.tool_use_block_id {order_direction}
         LIMIT ? OFFSET ?
-        """,
-        [*relation_params, *normalized_session_ids, normalized_limit, normalized_offset],
+        """
+        rank_params: list[object] = []
+    else:
+        # The rank orders by the same key the page does, so the rows each
+        # session keeps are the rows the page would have shown it first.
+        ranked_order_by = f"scanned.unit_sort_key {order_direction}, scanned.tool_use_block_id {order_direction}"
+        query_sql = f"""
+        {prefix_sql}
+        SELECT *
+        FROM (
+            SELECT scanned.*, {_per_partition_rank_sql("scanned.session_id", ranked_order_by)}
+            FROM (
+                SELECT
+                    {_ARCHIVE_ACTION_QUERY_SELECT_SQL},
+                    COALESCE(m.occurred_at_ms, s.sort_key_ms) AS unit_sort_key
+                FROM {action_relation_name} a
+                JOIN sessions s ON s.session_id = a.session_id
+                JOIN messages m ON m.message_id = a.message_id
+                WHERE a.session_id IN ({placeholders})
+            ) scanned
+        )
+        WHERE unit_rank <= ?
+        ORDER BY unit_sort_key {order_direction},
+                 tool_use_block_id {order_direction}
+        LIMIT ? OFFSET ?
+        """
+        rank_params = [max(int(per_session_limit), 0)]
+    rows = self._conn.execute(
+        query_sql,
+        [*relation_params, *normalized_session_ids, *rank_params, normalized_limit, normalized_offset],
     ).fetchall()
     return [_archive_action_query_row(row) for row in rows]
 
@@ -4171,8 +4241,13 @@ def query_session_files(
     limit: int = 50,
     offset: int = 0,
     sort_direction: Literal["asc", "desc"] = "asc",
+    per_session_limit: int | None = None,
 ) -> list[ArchiveFileQueryRow]:
-    """Return affected file-path rows for known sessions using indexed tool-use blocks."""
+    """Return affected file-path rows for known sessions using indexed tool-use blocks.
+
+    ``per_session_limit`` bounds each selected session separately; see
+    ``_per_partition_rank_sql``.
+    """
 
     normalized_session_ids = tuple(
         dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
@@ -4183,11 +4258,7 @@ def query_session_files(
     normalized_offset = max(int(offset), 0)
     order_direction = _query_unit_order_direction(sort_direction)
     placeholders = ", ".join("?" for _ in normalized_session_ids)
-    rows = self._conn.execute(
-        f"""
-        SELECT
-            {_ARCHIVE_FILE_QUERY_SELECT_SQL}
-        FROM (
+    grouped_sql = f"""
             SELECT
                 u.session_id,
                 REPLACE(u.tool_path, char(92), '/') AS path,
@@ -4205,13 +4276,30 @@ def query_session_files(
               AND u.tool_path IS NOT NULL
               AND u.tool_path != ''
             GROUP BY u.session_id, path
-        ) f
+    """
+    file_order_by = f"f.first_seen_ms {order_direction}, f.path {order_direction}"
+    rank_params: list[object] = []
+    if per_session_limit is None:
+        source_sql = f"({grouped_sql}) f"
+        row_clause = "1=1"
+    else:
+        source_sql = f"""(
+            SELECT f.*, {_per_partition_rank_sql("f.session_id", file_order_by)}
+            FROM ({grouped_sql}) f
+        ) f"""
+        row_clause = "f.unit_rank <= ?"
+        rank_params = [max(int(per_session_limit), 0)]
+    rows = self._conn.execute(
+        f"""
+        SELECT
+            {_ARCHIVE_FILE_QUERY_SELECT_SQL}
+        FROM {source_sql}
         JOIN sessions s ON s.session_id = f.session_id
-        ORDER BY f.first_seen_ms {order_direction},
-                 f.path {order_direction}
+        WHERE {row_clause}
+        ORDER BY {file_order_by}
         LIMIT ? OFFSET ?
         """,
-        [*normalized_session_ids, normalized_limit, normalized_offset],
+        [*normalized_session_ids, *rank_params, normalized_limit, normalized_offset],
     ).fetchall()
     return [_hydrate_archive_file_query_row(row) for row in rows]
 
@@ -4345,8 +4433,14 @@ def query_assertions(
     session_filters: Mapping[str, object] | None = None,
     sort: Literal["time"] | None = None,
     sort_direction: Literal["asc", "desc"] = "asc",
+    per_target_limit: int | None = None,
 ) -> list[ArchiveAssertionQueryRow]:
-    """Return user-tier assertion rows matching a unit-scoped predicate."""
+    """Return user-tier assertion rows matching a unit-scoped predicate.
+
+    ``per_target_limit`` bounds each ``target_ref`` separately -- the
+    assertion unit's partition is its target, which for the session-scoped
+    projection is the session. See ``_per_partition_rank_sql``.
+    """
 
     self.require_user_tier()
     normalized_limit = max(int(limit), 0)
@@ -4361,8 +4455,12 @@ def query_assertions(
     session_params: list[object] = []
     if session_filters:
         session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
-    rows = self._conn.execute(
-        f"""
+    rank_params: list[object] = []
+    rank_clause = ""
+    if per_target_limit is not None:
+        rank_clause = f", {_per_partition_rank_sql('a.target_ref', order_by)}"
+        rank_params = [max(int(per_target_limit), 0)]
+    selected_sql = f"""
         SELECT
             a.assertion_id,
             a.target_ref,
@@ -4379,15 +4477,28 @@ def query_assertions(
             a.staleness_json,
             a.context_policy_json,
             a.created_at_ms,
-            a.updated_at_ms
+            a.updated_at_ms{rank_clause}
         FROM user_tier.assertions a
         LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id
         WHERE {clause}
         {session_clause}
+    """
+    if per_target_limit is None:
+        query_sql = f"""
+        {selected_sql}
         ORDER BY {order_by}
         LIMIT ? OFFSET ?
-        """,
-        [*params, *session_params, normalized_limit, normalized_offset],
+        """
+    else:
+        query_sql = f"""
+        SELECT * FROM ({selected_sql}) a
+        WHERE a.unit_rank <= ?
+        ORDER BY {order_by}
+        LIMIT ? OFFSET ?
+        """
+    rows = self._conn.execute(
+        query_sql,
+        [*params, *session_params, *rank_params, normalized_limit, normalized_offset],
     ).fetchall()
     return [
         ArchiveAssertionQueryRow(
