@@ -651,6 +651,18 @@ writes:
     classification: unclassified
     reason: "pinned by the initial census; adjudication is follow-up work"
   - file: "polylogue/storage/sqlite/archive_tiers/source_items.py"
+    function: "publish_source_generation"
+    table: "excision_policy_projections"
+    kind: "upsert_do_update"
+    tier: "source"
+    classification: unclassified
+    reason: >-
+      newly visible to the census because polylogue-j264r AC3 moved
+      excision_policy_projections into canonical SOURCE_DDL; the write itself
+      is unchanged. Whether re-publishing a generation may replace the policy
+      revision it was admitted under is the separate j264r decision to bind
+      the selection to the actual revision, so this is pinned, not adjudicated
+  - file: "polylogue/storage/sqlite/archive_tiers/source_items.py"
     function: "complete_source_item_enumeration"
     table: "source_items"
     kind: "update"

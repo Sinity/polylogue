@@ -35,6 +35,15 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 # holds that line.
 ARCHIVE_FORMAT_FLOOR_VERSION = 1
 
+#: The source tier's current durable target. It sits above
+#: ``ARCHIVE_FORMAT_FLOOR_VERSION`` because slot 002 -- the first numbered
+#: source train of this lineage -- registered ``excision_policy_projections``
+#: in canonical DDL after an ordinary writer had been creating it at write
+#: time (polylogue-j264r AC3). An archive born before that slot carries the
+#: table only if a policy-bearing generation happened to be published into it,
+#: so the shape has to be reached by migration, not by fresh DDL alone.
+SOURCE_TIER_VERSION = 2
+
 AUDIT_COLUMN_DISPOSITIONS = audit_column_dispositions()
 assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
@@ -48,7 +57,7 @@ ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
 }
 
 ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
-    ArchiveTier.SOURCE: ARCHIVE_FORMAT_FLOOR_VERSION,
+    ArchiveTier.SOURCE: SOURCE_TIER_VERSION,
     ArchiveTier.INDEX: INDEX_SCHEMA_VERSION,
     ArchiveTier.EMBEDDINGS: EMBEDDINGS_SCHEMA_VERSION,
     ArchiveTier.USER: ARCHIVE_FORMAT_FLOOR_VERSION,
@@ -72,5 +81,6 @@ __all__ = [
     "ARCHIVE_VERSION_BY_TIER",
     "archive_ddl_for_tier",
     "SCHEMA_DISPOSITIONS",
+    "SOURCE_TIER_VERSION",
     "SourceAttachment",
 ]

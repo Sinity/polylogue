@@ -84,6 +84,21 @@ CREATE TABLE IF NOT EXISTS source_generations (
     created_at_ms        INTEGER NOT NULL CHECK(created_at_ms >= 0)
 ) STRICT;
 
+-- The excision policy revision one source generation was admitted under.
+-- Canonical because it is durable: a later policy edit must not retroactively
+-- change what an earlier generation claims it excluded, and a writer that
+-- created this table on the fly left the reader probing sqlite_schema to find
+-- out whether the archive had the shape at all (polylogue-j264r AC3).
+CREATE TABLE IF NOT EXISTS excision_policy_projections (
+    source_generation_id TEXT PRIMARY KEY REFERENCES source_generations(source_generation_id) ON DELETE CASCADE,
+    policy_digest TEXT NOT NULL CHECK(length(policy_digest) = 64),
+    user_generation INTEGER NOT NULL CHECK(user_generation >= 0),
+    audit_generation INTEGER NOT NULL CHECK(audit_generation >= 0),
+    audit_head TEXT NOT NULL CHECK(length(audit_head) = 64),
+    assertion_refs_json TEXT NOT NULL DEFAULT '[]',
+    generated_at_ms INTEGER NOT NULL CHECK(generated_at_ms >= 0)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS source_items (
     source_generation_id TEXT NOT NULL REFERENCES source_generations(source_generation_id) ON DELETE CASCADE,
     source_item_id       TEXT NOT NULL,

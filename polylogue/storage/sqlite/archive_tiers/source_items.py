@@ -331,15 +331,10 @@ def publish_source_generation(
             ),
         )
     if policy_snapshot is not None:
-        conn.execute("""CREATE TABLE IF NOT EXISTS excision_policy_projections (
-            source_generation_id TEXT PRIMARY KEY REFERENCES source_generations(source_generation_id) ON DELETE CASCADE,
-            policy_digest TEXT NOT NULL CHECK(length(policy_digest) = 64),
-            user_generation INTEGER NOT NULL CHECK(user_generation >= 0),
-            audit_generation INTEGER NOT NULL CHECK(audit_generation >= 0),
-            audit_head TEXT NOT NULL CHECK(length(audit_head) = 64),
-            assertion_refs_json TEXT NOT NULL DEFAULT '[]',
-            generated_at_ms INTEGER NOT NULL CHECK(generated_at_ms >= 0)
-        ) STRICT""")
+        # ``excision_policy_projections`` is canonical source DDL. An ordinary
+        # write must never create a durable shape: it leaves the table absent
+        # from every archive this generation was not written into, and forces
+        # readers to probe sqlite_schema instead of querying (polylogue-j264r).
         conn.execute(
             """INSERT INTO excision_policy_projections(
                source_generation_id, policy_digest, user_generation, audit_generation,

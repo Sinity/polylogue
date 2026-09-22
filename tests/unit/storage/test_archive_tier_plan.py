@@ -81,8 +81,20 @@ def test_archive_plan_creates_targets_when_targets_are_absent(tmp_path: Path) ->
     assert {tier_plan.action for tier_plan in plan.tiers} == {ArchiveInitAction.CREATE}
 
 
-def test_format_marker_refuses_a_historical_version_one_durable_file_before_writes(tmp_path: Path) -> None:
-    """A reset version needs format evidence, not a coincidentally equal integer."""
+def test_marker_refuses_a_foreign_lineage_tier(tmp_path: Path) -> None:
+    """A stamped version needs format evidence, not a coincidentally equal integer.
+
+    The transplant carries the *birth* version this archive's marker recorded,
+    because that is the only integer a foreign file can borrow to look current.
+    A tier standing at any other version is already refused by the ordinary
+    version comparison, so pinning this to the literal ``1`` would stop
+    exercising the marker the moment a numbered migration raised the durable
+    target above the floor.
+
+    Anti-vacuity: binding the fingerprint check to ``ARCHIVE_FORMAT_FLOOR_VERSION``
+    instead of the recorded birth version admits this file, and ``user.db``
+    is then rewritten by a bootstrap that should never have started.
+    """
     initialize_active_archive_root(tmp_path)
 
     marker = json.loads((tmp_path / ".polylogue-format.json").read_text(encoding="utf-8"))
@@ -90,15 +102,41 @@ def test_format_marker_refuses_a_historical_version_one_durable_file_before_writ
     assert marker["floor_version"] == ARCHIVE_FORMAT_FLOOR_VERSION
     assert marker["tier_versions"] == {tier.value: ARCHIVE_VERSION_BY_TIER[tier] for tier in ArchiveTier}
 
+    birth_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
     user_path = tmp_path / "user.db"
     user_before = user_path.read_bytes()
     source_path = tmp_path / "source.db"
     source_path.unlink()
     with sqlite3.connect(source_path) as historical:
-        historical.execute("CREATE TABLE historical_v1 (id INTEGER PRIMARY KEY) STRICT")
-        historical.execute("PRAGMA user_version = 1")
+        historical.execute("CREATE TABLE historical_lineage (id INTEGER PRIMARY KEY) STRICT")
+        historical.execute(f"PRAGMA user_version = {birth_version}")
 
-    with pytest.raises(RuntimeError, match="historical version-1 schema"):
+    with pytest.raises(RuntimeError, match=f"historical version-{birth_version} schema"):
         initialize_active_archive_root(tmp_path)
 
     assert user_path.read_bytes() == user_before
+
+
+def test_bootstrap_refuses_a_tier_below_target(tmp_path: Path) -> None:
+    """A source tier left behind by a numbered migration is named, not rebuilt.
+
+    Separated from the marker case above because the two refusals answer
+    different questions: this file is this lineage's own, it is simply one
+    numbered slot behind, and the operator is owed the migration route rather
+    than "move it aside".
+
+    Anti-vacuity: letting bootstrap re-apply fresh DDL over an older durable
+    tier makes this pass silently and strands every row the missing slot was
+    supposed to carry forward.
+    """
+    initialize_active_archive_root(tmp_path)
+    target = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    if target <= ARCHIVE_FORMAT_FLOOR_VERSION:
+        pytest.skip("source has no numbered migration slot yet")
+
+    source_path = tmp_path / "source.db"
+    with sqlite3.connect(source_path) as behind:
+        behind.execute(f"PRAGMA user_version = {target - 1}")
+
+    with pytest.raises(RuntimeError, match="run an explicit durable-tier migration"):
+        initialize_active_archive_root(tmp_path)
