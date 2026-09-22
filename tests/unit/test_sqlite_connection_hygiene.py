@@ -117,5 +117,5 @@ def test_index_generation_checkpoint_truncate_closes_connection(
         conn.close()
 
     captured = _capture_connections(monkeypatch, "polylogue.storage.index_generation")
-    _checkpoint_truncate(db_path, label="test-checkpoint")
+    _checkpoint_truncate(db_path, label="test-checkpoint", archive_root=tmp_path)
     _assert_all_closed(captured)

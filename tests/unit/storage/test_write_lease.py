@@ -171,6 +171,52 @@ def test_index_generation_lifecycle_receipts_and_recovery_require_admission(
         store.complete_promotion_recovery(generation.generation_id)
 
 
+def test_generation_checkpoint_binds_to_its_archive_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exclusive WAL TRUNCATE is the one writable open the guard cannot see.
+
+    ``_checkpoint_truncate`` reaches SQLite through ``/proc/self/fd/N`` --
+    deliberately, so the validated descriptor cannot be swapped between the
+    identity check and the open -- and ``guarded_archive_tier_path`` decides
+    tier membership from the *file name*, which for that alias is a descriptor
+    number. The connection-level guard is therefore structurally blind here
+    (asserted below), so the site has to assert ownership itself.
+
+    Anti-vacuity: delete the ``require_write_lease`` call from
+    ``_checkpoint_truncate`` and both refusals disappear -- the checkpoint
+    rewrites the tier file from its WAL with no lease at all while the
+    daemon's process-wide enforcement is armed.
+    """
+    from polylogue.storage.index_generation import _checkpoint_truncate
+    from polylogue.storage.sqlite.write_guard import guarded_archive_tier_path
+
+    # The premise: were the guard able to classify the alias, the assertion
+    # inside ``_checkpoint_truncate`` would be redundant rather than load-bearing.
+    assert guarded_archive_tier_path("/proc/self/fd/7") is None
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    index_db = root / "index.db"
+
+    with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+        _checkpoint_truncate(index_db, label="active index", archive_root=root)
+
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    with (
+        arm_write_lease_enforcement(),
+        write_lease("test.generation", archive_root=other_root),
+        pytest.raises(UnleasedWriteError, match="outside the archive"),
+    ):
+        _checkpoint_truncate(index_db, label="active index", archive_root=root)
+
+    # The opposite direction: a properly owned checkpoint still runs, so
+    # "refuse every checkpoint" cannot pass as a fix.
+    with arm_write_lease_enforcement(), write_lease("test.generation", archive_root=root):
+        _checkpoint_truncate(index_db, label="active index", archive_root=root)
+    assert index_db.is_file()
+
+
 def test_cold_generation_open_binds_to_the_declared_archive_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

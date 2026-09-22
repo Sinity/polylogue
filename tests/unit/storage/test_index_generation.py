@@ -499,15 +499,20 @@ def test_promotion_checkpoints_candidate_and_active_index(tmp_path: Path, monkey
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
-    calls: list[tuple[Path, str]] = []
+    calls: list[tuple[Path, str, Path]] = []
     monkeypatch.setattr(
         "polylogue.storage.index_generation._checkpoint_truncate",
-        lambda path, *, label: calls.append((path, label)),
+        lambda path, *, label, archive_root: calls.append((path, label, archive_root)),
     )
 
     store.promote(generation)
 
-    assert calls == [(Path(generation.index_path).resolve(), "new index"), (tmp_path / "index.db", "active index")]
+    # Each checkpoint names the archive it is promoting into, which is what
+    # makes its own ownership assertion archive-bound (polylogue-8qm4k AC1).
+    assert calls == [
+        (Path(generation.index_path).resolve(), "new index", store.archive_root),
+        (tmp_path / "index.db", "active index", store.archive_root),
+    ]
 
 
 def test_recover_promotion_without_active_pointer_marks_inactive(tmp_path: Path) -> None:

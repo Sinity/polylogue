@@ -791,13 +791,13 @@ class IndexGenerationStore:
         if stat.S_ISLNK(target_metadata.st_mode) or not stat.S_ISREG(target_metadata.st_mode):
             raise RuntimeError("generation index is not a regular, non-symlink file")
         target = target_path.absolute()
-        _checkpoint_truncate(target, label="new index")
+        _checkpoint_truncate(target, label="new index", archive_root=self.archive_root)
         pointer = self.active_pointer
         predecessor_generation_id = self._generation_id_for_active_target(pointer)
         retired = self.generations_root / f"retired-{int(time.time() * 1000)}-{uuid.uuid4().hex[:8]}"
         retired.mkdir(parents=True, exist_ok=False)
         if pointer.exists() or pointer.is_symlink():
-            _checkpoint_truncate(pointer, label="active index")
+            _checkpoint_truncate(pointer, label="active index", archive_root=self.archive_root)
             for suffix in ("-wal", "-shm"):
                 sidecar = pointer.with_name(pointer.name + suffix)
                 if sidecar.exists():
@@ -1411,8 +1411,27 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     return digest.hexdigest()
 
 
-def _checkpoint_truncate(path: Path, *, label: str) -> None:
-    """Checkpoint one inode without a path check-then-reopen race."""
+def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
+    """Checkpoint one inode without a path check-then-reopen race.
+
+    An exclusive ``TRUNCATE`` checkpoint is a durable mutation of an archive
+    tier: it rewrites the database file from the WAL and empties the WAL. It
+    is also the one writable open in this module that the connection-level
+    guard structurally cannot see. The open goes through
+    ``/proc/self/fd/N`` -- deliberately, so the checked descriptor cannot be
+    swapped between validation and ``sqlite3.connect`` -- and
+    ``guarded_archive_tier_path`` decides tier membership from the *file
+    name*, which for that alias is a descriptor number and never ``index.db``.
+
+    So this site asserts ownership itself, before any descriptor is opened,
+    naming the real path rather than the alias. ``archive_root`` is required
+    rather than defaulted: the assertion is archive-bound or it is not an
+    assertion, and every caller already knows which archive it is promoting
+    into (polylogue-8qm4k AC1).
+    """
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease(f"index generation {label} WAL checkpoint({path})", archive_root=archive_root)
     try:
         open_path = path.resolve(strict=True)
         fd = os.open(open_path, os.O_RDWR | os.O_NOFOLLOW)

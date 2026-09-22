@@ -8,9 +8,15 @@ from pathlib import Path
 from polylogue.config import Config
 
 
-def running_daemon_pid(config: Config) -> int | None:
-    """Return a live polylogued PID for this archive, if one is present."""
-    pidfile = config.archive_root / "daemon.pid"
+def resident_daemon_pid(archive_root: Path) -> int | None:
+    """Return a live polylogued PID owning ``archive_root``, if one is present.
+
+    The root-shaped probe, so a caller that has only resolved an archive root
+    -- the CLI writer-ownership boundary does exactly that, before any config
+    object exists -- asks the same question as the config-shaped callers
+    rather than reimplementing the pidfile contract.
+    """
+    pidfile = archive_root / "daemon.pid"
     try:
         pid = int(pidfile.read_text().strip())
     except (OSError, ValueError):
@@ -24,6 +30,11 @@ def running_daemon_pid(config: Config) -> int | None:
     except OSError:
         return None
     return pid if b"polylogued" in cmdline else None
+
+
+def running_daemon_pid(config: Config) -> int | None:
+    """Return a live polylogued PID for this archive, if one is present."""
+    return resident_daemon_pid(config.archive_root)
 
 
 def offline_writer_block_reason(config: Config) -> str | None:
@@ -63,4 +74,9 @@ def offline_maintenance_block_reason(
     )
 
 
-__all__ = ["offline_maintenance_block_reason", "offline_writer_block_reason", "running_daemon_pid"]
+__all__ = [
+    "offline_maintenance_block_reason",
+    "offline_writer_block_reason",
+    "resident_daemon_pid",
+    "running_daemon_pid",
+]
