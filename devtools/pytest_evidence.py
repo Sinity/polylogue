@@ -36,9 +36,18 @@ def evaluate_pytest_evidence(
     exit is only one input, never the success decision. ``ordinary_eligible``
     keeps collection-only evidence explicit without allowing it into a normal
     verification receipt.
+
+    ``summary`` is ``None`` when the terminal ``summary.json`` was never
+    published or could not be read, which is not the same fact as a summary
+    that disagrees. The progress plugin writes it from ``pytest_sessionfinish``
+    under ``contextlib.suppress(OSError)``, so a full verification volume loses
+    the terminal artifact while pytest still exits zero with the earlier
+    report, selection and collection events in place. Accepting a missing
+    exitstatus recorded ``pytest_passed`` on evidence that was never published.
     """
+    summary_published = isinstance(summary, Mapping)
     selection = selection if isinstance(selection, Mapping) else {}
-    summary = summary if isinstance(summary, Mapping) else {}
+    summary = summary if summary_published else {}
     event_rows = tuple(events)
     selected_count = _int(selection.get("selected_count"))
     report_tests = _tests(report)
@@ -68,7 +77,9 @@ def evaluate_pytest_evidence(
         diagnosis = "pytest_collection_incomplete"
     elif exit_code != 0:
         diagnosis = "pytest_failed"
-    elif summary.get("exitstatus") not in (None, exit_code):
+    elif not summary_published:
+        diagnosis = "pytest_summary_missing"
+    elif summary.get("exitstatus") != exit_code:
         diagnosis = "pytest_summary_inconsistent"
     elif collection_only:
         diagnosis = "pytest_collection_only"
@@ -81,6 +92,7 @@ def evaluate_pytest_evidence(
         "ordinary_eligible": ordinary_eligible,
         "diagnosis": diagnosis,
         "report_status": "present" if report is not None else "missing",
+        "summary_status": "present" if summary_published else "missing",
         "collection_status": "complete" if collection_finished else "incomplete",
         "selected_count": selected_count,
         "terminal_count": terminal_count,

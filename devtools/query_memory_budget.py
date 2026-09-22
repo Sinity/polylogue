@@ -100,24 +100,34 @@ def run_memory_budget(command: list[str], *, max_rss_mb: int, poll_interval_s: f
     """Execute a command and track peak process-tree RSS."""
     started = time.perf_counter()
     proc = subprocess.Popen(command)
-    peak_parent_rss_kb = 0
-    peak_children_rss_kb = 0
+    # Two different quantities, deliberately tracked apart. The receipt reports
+    # a self/child split that ``WorkloadPhaseObservation`` requires to sum to
+    # the tree peak, so both components must come from the ONE sample the tree
+    # peaked on. The legacy top-level ``peak_parent_rss_mb`` is the parent's own
+    # high-water across all samples, which is a different maximum: a later
+    # sample can raise the parent while the tree total falls. Folding them into
+    # one variable reported 150 + 100 against a 200 KiB peak and the receipt
+    # constructor refused the run.
+    peak_parent_high_water_kb = 0
+    tree_peak_parent_kb = 0
+    tree_peak_children_kb = 0
     peak_tree_rss_kb = 0
-    peak_rss_kb = 0
 
     while proc.poll() is None:
-        peak_parent_rss_kb = max(peak_parent_rss_kb, _read_vm_rss_kb(proc.pid))
         parent_rss_kb, children_rss_kb = _read_process_tree_components_kb(proc.pid)
+        peak_parent_high_water_kb = max(peak_parent_high_water_kb, parent_rss_kb)
         combined_rss_kb = parent_rss_kb + children_rss_kb
         if combined_rss_kb > peak_tree_rss_kb:
             peak_tree_rss_kb = combined_rss_kb
-            peak_parent_rss_kb = parent_rss_kb
-            peak_children_rss_kb = children_rss_kb
+            tree_peak_parent_kb = parent_rss_kb
+            tree_peak_children_kb = children_rss_kb
         time.sleep(poll_interval_s)
 
-    peak_rss_kb = peak_tree_rss_kb or peak_parent_rss_kb
+    # Every sample's combined total is at least its own parent reading, so the
+    # tree peak bounds the parent high-water and needs no fallback.
+    peak_rss_kb = peak_tree_rss_kb
     exit_code = int(proc.returncode or 0)
-    peak_parent_rss_mb = round(peak_parent_rss_kb / 1024, 1)
+    peak_parent_rss_mb = round(peak_parent_high_water_kb / 1024, 1)
     peak_rss_mb = round(peak_rss_kb / 1024, 1)
     duration_ms = round((time.perf_counter() - started) * 1000, 3)
     workload_spec = WorkloadEnvelopeSpec(
@@ -148,8 +158,8 @@ def run_memory_budget(command: list[str], *, max_rss_mb: int, poll_interval_s: f
                 name="execute",
                 wall_ms=duration_ms,
                 peak_rss_bytes=peak_rss_kb * 1024,
-                peak_rss_self_bytes=peak_parent_rss_kb * 1024,
-                peak_rss_children_bytes=peak_children_rss_kb * 1024,
+                peak_rss_self_bytes=tree_peak_parent_kb * 1024,
+                peak_rss_children_bytes=tree_peak_children_kb * 1024,
                 unavailable=(
                     "cpu_ms",
                     "current_rss_bytes",

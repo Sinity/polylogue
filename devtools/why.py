@@ -59,6 +59,10 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "Pytest selected tests but did not record a terminal result for each one.",
         "Re-run the same selection; do not treat this receipt as a test verdict.",
     ),
+    "pytest_summary_missing": Explanation(
+        "Pytest exited without publishing its terminal summary, so the run has no end-of-session evidence.",
+        "Check free space and permissions under the run's artifact directory, then re-run the same selection.",
+    ),
     "pytest_collection_only": Explanation(
         "Pytest collected tests without running them.",
         "Re-run without --collect-only to execute the selected tests.",
@@ -66,6 +70,11 @@ _EXPLANATIONS: dict[str, Explanation] = {
     "pytest_no_tests_selected": Explanation(
         "Pytest's selection matched no tests.",
         "Use a selector that matches at least one test.",
+    ),
+    "gate_foreign_environment": Explanation(
+        "A gate tool inside this checkout's .venv is a console script bound to another checkout's interpreter, "
+        "so running it would resolve that tree's dependencies.",
+        "Re-provision this checkout: nix develop --accept-flake-config --command true. Never copy or symlink a venv.",
     ),
     "gate_missing_executable": Explanation(
         "A required gate executable was unavailable.",

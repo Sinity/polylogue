@@ -117,3 +117,52 @@ def test_maxfail_is_an_ordinary_pytest_failure_not_incomplete_evidence() -> None
 
     assert result["ok"] is False
     assert result["diagnosis"] == "pytest_failed"
+
+
+def test_unpublished_terminal_summary_is_refused() -> None:
+    """Exit zero plus every earlier artifact is not a terminal verdict.
+
+    ``pytest_progress_plugin._write_summary`` writes ``summary.json`` from
+    ``pytest_sessionfinish`` under ``contextlib.suppress(OSError)``: a full
+    verification volume loses the terminal artifact while pytest still exits
+    zero with its report, selection and collection event already on disk.
+
+    Anti-vacuity: restoring ``summary.get("exitstatus") not in (None,
+    exit_code)`` accepts the absent summary and this test reports
+    ``pytest_passed``, which is the defect.
+    """
+    result = evaluate_pytest_evidence(
+        report={"tests": [{"nodeid": "tests/test_ok.py::test_ok", "outcome": "passed"}]},
+        selection={"selected_count": 1},
+        summary=None,
+        events=[{"event": "collection_finished", "selected_count": 1}],
+        exit_code=0,
+    )
+
+    assert result["ok"] is False
+    assert result["ordinary_eligible"] is False
+    assert result["diagnosis"] == "pytest_summary_missing"
+    assert result["summary_status"] == "missing"
+
+
+def test_summary_without_exitstatus_is_inconsistent() -> None:
+    """A summary present but silent about its exit is not agreement either."""
+    result = evaluate_pytest_evidence(
+        report={"tests": [{"nodeid": "tests/test_ok.py::test_ok", "outcome": "passed"}]},
+        selection={"selected_count": 1},
+        summary={"selected_count": 1},
+        events=[{"event": "collection_finished", "selected_count": 1}],
+        exit_code=0,
+    )
+
+    assert result["ok"] is False
+    assert result["diagnosis"] == "pytest_summary_inconsistent"
+    assert result["summary_status"] == "present"
+
+
+def test_agreeing_summary_still_passes() -> None:
+    """The opposite direction: the tightened check must not refuse a real run."""
+    result = _evidence(Path("."))
+
+    assert result["diagnosis"] == "pytest_passed"
+    assert result["summary_status"] == "present"
