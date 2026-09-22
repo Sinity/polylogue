@@ -280,6 +280,28 @@ _NEXT_SOURCE_SQL_NAME = f"{_NEXT_SOURCE_SLOT:03d}_future_items.sql"
 _NEXT_SOURCE_SIDECAR_NAME = f"{_NEXT_SOURCE_SLOT:03d}.train.json"
 
 
+#: Every module that rebinds the durable version map at import time, plus the
+#: package attribute the lazily-importing durable-train helpers read. A test
+#: that pins only one of them leaves the others disagreeing about the tier's
+#: target, which no production configuration ever does.
+_VERSION_MAP_OWNERS = (
+    "polylogue.storage.sqlite.archive_tiers.ARCHIVE_VERSION_BY_TIER",
+    "polylogue.storage.sqlite.archive_tiers.bootstrap.ARCHIVE_VERSION_BY_TIER",
+    "polylogue.storage.sqlite.archive_tiers.archive_plan.ARCHIVE_VERSION_BY_TIER",
+    "polylogue.storage.sqlite.migration_runner.ARCHIVE_VERSION_BY_TIER",
+    "polylogue.operations.durable_change_train.ARCHIVE_VERSION_BY_TIER",
+)
+
+
+def _pin_source_runtime_version(monkeypatch: pytest.MonkeyPatch, version: int) -> dict[ArchiveTier, int]:
+    """Pin the source tier's durable target everywhere the runtime reads it."""
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = version
+    for target in _VERSION_MAP_OWNERS:
+        monkeypatch.setattr(target, versions)
+    return versions
+
+
 def _install_synthetic_migration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -550,7 +572,14 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
 
 
 def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A marker-admitted v1 archive advances through the retained v2 route.
+    """An archive born at the floor advances through the slot-2 route.
+
+    The archive is bootstrapped with the source target pinned to the adoption
+    floor, so its format marker records a birth version of 1 -- the shape of
+    every archive created before the first numbered source slot shipped. The
+    runtime target is then raised to 2 and the train migrates it. Bootstrapping
+    at the current target instead would model no migration at all once source
+    itself sits above the floor.
 
     Anti-vacuity: removing the fresh floor from durable train discovery leaves
     slot 2 occupied by the retired history; removing marker admission lets an
@@ -558,6 +587,7 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+    _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
     initialize_active_archive_root(tmp_path)
     package_root = tmp_path / "fixture_migrations_maintenance"
     source_package = package_root / "source"
@@ -612,12 +642,9 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
         "polylogue.storage.sqlite.durable_change_train._migration_package",
         lambda _tier: "fixture_migrations_maintenance.source",
     )
-    versions = dict(ARCHIVE_VERSION_BY_TIER)
-    versions[ArchiveTier.SOURCE] = 2
-    monkeypatch.setattr("polylogue.storage.sqlite.migration_runner.ARCHIVE_VERSION_BY_TIER", versions)
+    _pin_source_runtime_version(monkeypatch, 2)
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
-    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
     ddl = dict(ARCHIVE_DDL_BY_TIER)
     ddl[ArchiveTier.SOURCE] = ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE] + "\n" + sql
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
