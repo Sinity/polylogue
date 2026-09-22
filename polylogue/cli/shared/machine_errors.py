@@ -269,15 +269,30 @@ def error_no_results(
 # ---------------------------------------------------------------------------
 
 
+#: Every spelling of "give me machine output" the CLI actually accepts.
+#:
+#: ``--output-format`` is not a synonym this probe invented: it is the spelling
+#: the entire ``ops maintenance`` family uses (plus ``materialize-incident-
+#: evidence`` and ``reconcile-work-effects``), and it was invisible here. So
+#: ``polylogue ops maintenance archive-init --yes --output-format json`` beside
+#: a resident daemon printed an empty stdout and a prose ``Error:`` line on
+#: stderr -- the terminal branch of :func:`polylogue.cli.machine_main.
+#: run_machine_entry`, because ``wants_json`` said the caller had not asked for
+#: JSON. Roughly twenty mutating maintenance commands reached a machine caller
+#: that way on every unhandled failure (polylogue-re6s3 AC4, polylogue-5vps8
+#: AC9). Unifying the two option names is a separate, breaking change; making
+#: the error envelope honour the intent the operator already declared is not.
+_JSON_FORMAT_FLAGS = ("--format", "--output-format", "-f")
+
+
 def wants_json(argv: list[str]) -> bool:
     """Detect JSON machine-output intent from raw argv before Click parses."""
     for index, arg in enumerate(argv):
-        if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
-            return True
-        if arg.startswith("--format=") and arg.split("=", 1)[1] == "json":
-            return True
-        if arg == "-f" and index + 1 < len(argv) and argv[index + 1] == "json":
-            return True
+        for flag in _JSON_FORMAT_FLAGS:
+            if arg == flag and index + 1 < len(argv) and argv[index + 1] == "json":
+                return True
+            if arg.startswith(f"{flag}=") and arg.split("=", 1)[1] == "json":
+                return True
     return False
 
 

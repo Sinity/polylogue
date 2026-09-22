@@ -197,25 +197,41 @@ class TestSuccessBuilder:
 class TestWantsJsonDetection:
     """Property: wants_json detects explicit JSON machine-output intent."""
 
+    #: ``(argv, whether the caller asked for JSON)``, written out rather than
+    #: recomputed from ``wants_json``'s own rule: a property that restates the
+    #: implementation cannot notice a spelling the implementation never knew
+    #: about, which is how ``--output-format json`` -- the spelling the whole
+    #: ``ops maintenance`` family uses -- stayed undetected while the module
+    #: had a green property test over it (polylogue-re6s3 AC4).
+    _SPELLINGS: list[tuple[list[str], bool]] = [
+        ([], False),
+        (["read", "--all", "--format", "json"], True),
+        (["--format=json", "read", "--all"], True),
+        (["-f", "json", "read", "--all"], True),
+        (["ops", "maintenance", "archive-init", "--yes", "--output-format", "json"], True),
+        (["ops", "maintenance", "blob-gc", "--output-format=json"], True),
+        (["read", "--all", "--format", "text"], False),
+        (["ops", "maintenance", "blob-gc", "--output-format", "plain"], False),
+        (["find", "json"], False),
+        (["find", "--output-format"], False),
+    ]
+
+    @pytest.mark.parametrize(("argv", "expected"), _SPELLINGS, ids=[str(index) for index in range(len(_SPELLINGS))])
+    def test_wants_json_matches_every_accepted_spelling(self, argv: list[str], expected: bool) -> None:
+        assert wants_json(argv) is expected
+
     @given(argv=st.lists(st.text(max_size=30), max_size=10))
     @example(argv=[])
-    @example(argv=["read", "--all", "--format", "json"])
-    @example(argv=["--format=json", "read", "--all"])
-    @example(argv=["-f", "json", "read", "--all"])
-    def test_wants_json_only_matches_exact_flag(self, argv: list[str]) -> None:
-        result = wants_json(argv)
-        has_json_flag = False
-        for index, arg in enumerate(argv):
-            if arg == "--format" and index + 1 < len(argv) and argv[index + 1] == "json":
-                has_json_flag = True
-                break
-            if arg.startswith("--format=") and arg.split("=", 1)[1] == "json":
-                has_json_flag = True
-                break
-            if arg == "-f" and index + 1 < len(argv) and argv[index + 1] == "json":
-                has_json_flag = True
-                break
-        assert result == has_json_flag
+    def test_wants_json_needs_a_flag_and_the_json_value(self, argv: list[str]) -> None:
+        """No argv without both a format flag and the literal ``json`` qualifies.
+
+        The direction the table above cannot cover: a detector that simply
+        returned ``True``, or that matched a bare ``json`` argument anywhere,
+        would route ordinary terminal failures into the machine envelope.
+        """
+        if wants_json(argv):
+            assert any("json" in arg for arg in argv), argv
+            assert any(arg.startswith(("--format", "--output-format", "-f")) for arg in argv), argv
 
 
 class TestExtractCommand:
