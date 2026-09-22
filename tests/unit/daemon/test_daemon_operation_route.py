@@ -39,6 +39,17 @@ def _seed_sessions(root: Path, *, count: int, title: str = "Operation route sess
         )
         builder.save()
         session_ids.append(builder.native_session_id())
+    # ``SessionBuilder.save`` writes through the thread-local cached
+    # connection, which ATTACHes the sibling durable tiers and keeps them
+    # locked for the life of the thread. Seeding is setup: it must hand the
+    # daemon stack an archive no other writer holds, exactly as a fresh
+    # ``polylogued`` start would find one. Leaving the cache open made
+    # ``PRAGMA journal_mode`` on ``source.db`` in a caller's own seed raise
+    # ``database is locked`` -- a lock the daemon this file exercises can
+    # never encounter, so the failure was the harness's, not the route's.
+    from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+    _clear_connection_cache()
     return tuple(session_ids)
 
 
