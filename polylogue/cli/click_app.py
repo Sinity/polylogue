@@ -468,6 +468,17 @@ def cli(
     if _is_help_request(ctx):
         return
 
+    # The single-writer boundary for this process. Every CLI route passes this
+    # callback, so arming here covers the ``polylogue``/``plg``/``plog``
+    # console scripts, ``python -m polylogue`` and an embedded caller driving
+    # ``cli`` directly -- none of which armed anything before, which made every
+    # ``require_write_lease`` assertion on the CLI route a no-op
+    # (polylogue-8qm4k AC1). The context owns the teardown, so the boundary
+    # lasts exactly as long as the invoked command.
+    from polylogue.cli.write_authority import cli_archive_writer_ownership
+
+    ctx.with_resource(cli_archive_writer_ownership())
+
     from polylogue.cli.shared.formatting import normalize_output_dialect
 
     output_format = normalize_output_dialect(output_format)
