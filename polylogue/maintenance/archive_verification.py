@@ -2198,7 +2198,14 @@ def _check_attachment_coverage(archive_root: Path, sample_limit: int) -> Archive
 def _check_attachment_coverage_at_index_path(
     archive_root: Path, index_path: Path, sample_limit: int
 ) -> ArchiveVerificationCheck:
-    """Acquired attachment bytes must exist and remain reachable by a ref."""
+    """Acquired attachment bytes must exist and remain reachable by a ref.
+
+    ``acquisition_status`` is the row's claim; the blob store is the evidence.
+    A contradicted claim (a recorded hash the store does not hold) and an
+    unverifiable one (``acquired`` with no hash at all) are both debt, so the
+    green summary below can only be printed for an archive where every
+    acquired row was actually checked against bytes (polylogue-o0uw5).
+    """
     if not index_path.exists():
         return _skip_check("attachment-coverage", "index.db not present")
     try:
@@ -2211,17 +2218,20 @@ def _check_attachment_coverage_at_index_path(
         return _error_check("attachment-coverage", f"could not scan attachment coverage: {exc}", exc=exc)
 
     missing = report.acquired_missing_blob_count
+    unverifiable = report.acquired_unverifiable_count
     unreachable = report.acquired_unreachable_count
-    debt_count = missing + unreachable
+    debt_count = missing + unverifiable + unreachable
     details = [
         *(f"acquired-missing-blob:{attachment_id}" for attachment_id in report.acquired_missing_blob_sample),
+        *(f"acquired-unverifiable:{attachment_id}" for attachment_id in report.acquired_unverifiable_sample),
         *(f"acquired-unreachable:{attachment_id}" for attachment_id in report.acquired_unreachable_sample),
     ]
     return ArchiveVerificationCheck(
         name="attachment-coverage",
         status=OutcomeStatus.ERROR if debt_count else OutcomeStatus.OK,
         summary=(
-            f"acquired attachment debt: missing_blob={missing:,}, unreachable={unreachable:,}"
+            f"acquired attachment debt: missing_blob={missing:,}, "
+            f"unverifiable={unverifiable:,}, unreachable={unreachable:,}"
             if debt_count
             else (
                 f"all {report.acquired_reachable_count:,} acquired attachment(s) have bytes and a live attachment reference"
@@ -2230,7 +2240,12 @@ def _check_attachment_coverage_at_index_path(
         ),
         count=debt_count,
         details=details,
-        evidence={"scan": report.to_dict(), "missing_blob_count": missing, "unreachable_count": unreachable},
+        evidence={
+            "scan": report.to_dict(),
+            "missing_blob_count": missing,
+            "unverifiable_count": unverifiable,
+            "unreachable_count": unreachable,
+        },
     )
 
 

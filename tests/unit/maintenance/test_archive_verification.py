@@ -1745,6 +1745,55 @@ def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> Non
     assert "unreachable-attachment" in check.details[0]
 
 
+def test_hashless_acquired_attachment_is_blocking(tmp_path: Path) -> None:
+    """An ``acquired`` row with no blob hash is debt, not coverage.
+
+    polylogue-o0uw5: ``acquisition_status`` is the row's claim and the blob
+    store is the evidence. A row claiming acquisition with no ``blob_hash``
+    has no evidence at all, and the scanner used to skip it -- so this gate
+    reported "all 1 acquired attachment(s) have bytes and a live attachment
+    reference" for an archive where it had checked nothing.
+
+    Anti-vacuity: restore the skip (or drop ``unverifiable`` from
+    ``debt_count``) and this check goes OK with that exact summary. The
+    companion assertion that a corroborated row keeps the check green is in
+    ``test_owner_ambiguous_attachment_is_not_coverage_or_closure_debt`` and
+    the blob-integrity partition test, so "report every acquired row as debt"
+    fails too.
+    """
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        session_id = str(conn.execute("SELECT session_id FROM sessions LIMIT 1").fetchone()[0])
+        message_id = str(
+            conn.execute("SELECT message_id FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()[0]
+        )
+        conn.execute(
+            """
+            INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
+            VALUES ('att-no-identity', NULL, 0, 'acquired', 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin, direction)
+            VALUES ('att-no-identity', ?, ?, 0, 'drive', 'user_input')
+            """,
+            (session_id, message_id),
+        )
+        conn.commit()
+
+    report = verify_archive(tmp_path, checks=("attachment-coverage",))
+
+    check = _check(report, "attachment-coverage")
+    assert check.status is OutcomeStatus.ERROR
+    assert report.blocking
+    assert check.evidence["unverifiable_count"] == 1
+    assert check.evidence["missing_blob_count"] == 0
+    assert check.evidence["unreachable_count"] == 0
+    assert "acquired-unverifiable:att-no-identity" in check.details
+    assert "have bytes" not in check.summary
+
+
 def test_owner_ambiguous_attachment_is_not_coverage_or_closure_debt(tmp_path: Path) -> None:
     """The writer's typed unowned retention is not attachment debt.
 

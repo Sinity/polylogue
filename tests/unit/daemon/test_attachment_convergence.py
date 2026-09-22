@@ -11,6 +11,7 @@ from polylogue.operations.attachment_convergence import converge_drive_attachmen
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.drive.types import DriveNotFoundError
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
@@ -345,6 +346,77 @@ def test_surviving_blob_is_rebound_without_a_provider_request(tmp_path: Path) ->
     assert row["acquisition_status"] == "acquired"
     # The re-bind adds no duplicate durable ref.
     assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 1
+    index.close()
+    source.close()
+
+
+def test_contradicted_survivor_is_not_rebound(tmp_path: Path) -> None:
+    """A stored object that no longer hashes right is not a survivor.
+
+    polylogue-o0uw5: the survival probe used ``exists`` -- "a file sits at
+    that path" -- and the re-bind it gated then wrote
+    ``acquisition_status = 'acquired'``, a positive claim that these exact
+    bytes were fetched and stored. Corrupting the published object in place
+    made the archive assert acquisition of content it no longer held, with no
+    provider request and no signal. The claim now carries the evidence it
+    asserts: the object is re-hashed, a contradicted one falls through to the
+    provider, and a dead provider leaves the row explicitly ``unavailable``
+    rather than falsely ``acquired``.
+
+    Anti-vacuity: restore ``blob_store.exists`` in ``_surviving_blob_ref`` and
+    the row comes back ``acquired`` with the stale hash, ``attempted`` stays
+    empty, and ``result.acquired`` is 1 -- every assertion below flips.
+    ``test_surviving_blob_is_rebound_without_a_provider_request`` keeps an
+    intact object re-binding without a download, so "never re-bind" fails.
+    """
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("decayed", file_id="drive-file-1"), raw_id="decayed-raw")
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    source.row_factory = sqlite3.Row
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    payload = b"bytes the archive published once"
+    first = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=lambda file_id: payload,
+    )
+    assert first.acquired == 1
+    store = BlobStore(tmp_path / "blob")
+    blob_hash = hashlib.sha256(payload).hexdigest()
+    assert store.verify(blob_hash) is True
+
+    # Rebuild the derived tier, then decay the published object in place: the
+    # path survives, the content no longer matches the recorded identity.
+    with index:
+        index.execute("UPDATE attachments SET blob_hash = NULL, byte_count = 0, acquisition_status = 'unfetched'")
+    store.blob_path(blob_hash).write_bytes(b"not the bytes that were fetched")
+    assert store.exists(blob_hash) is True
+    assert store.verify(blob_hash) is False
+
+    attempted: list[str] = []
+
+    def gone(file_id: str) -> bytes:
+        attempted.append(file_id)
+        raise DriveNotFoundError(file_id)
+
+    result = converge_drive_attachments(
+        index,
+        source,
+        archive_root=tmp_path,
+        download_bytes=gone,
+    )
+
+    row = index.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert attempted == ["drive-file-1"]
+    assert result.acquired == 0
+    assert result.terminal == 1
+    assert row["acquisition_status"] == "unavailable"
+    assert row["blob_hash"] is None
+    assert row["byte_count"] == 0
     index.close()
     source.close()
 
