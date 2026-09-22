@@ -9,12 +9,13 @@ their throughput denominators.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
@@ -27,7 +28,7 @@ import pytest
 from polylogue.daemon.execution import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
 from polylogue.daemon_client import DaemonClient
 from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, PROFILE_METRICS, profile_manifest, record_metrics
-from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot, benchmark_repeated
+from tests.benchmarks.helpers import BenchmarkFixture, benchmark_repeated
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
 from tests.infra.workload_declarations import BenchmarkWorkloadTier
@@ -168,6 +169,38 @@ def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon
     record_metrics(benchmark, concurrent_interference_p95_ms=max(elapsed, default=0))
 
 
+#: Sessions in the SMOKE tier this lane seeds (tests/infra/workload_declarations.py:313).
+#: Every offset below stays far inside it, so no read can be handed an empty page.
+_MIXED_LOAD_SEEDED_SESSIONS = 1_000
+
+#: Distinct tag names each write worker cycles over one session. The write load
+#: has to stay bounded for the lane to take repeated rounds -- see
+#: ``keep_writing`` -- and this is the bound.
+_MIXED_LOAD_TAG_CYCLE = 8
+
+
+def mixed_load_read_params(read_index: int) -> dict[str, int]:
+    """Return ``cli.query`` params for read ``read_index`` of the mixed-load window.
+
+    Every read in the window must reach the archive query path, and in this
+    lane nothing but the params can make it. The daemon read cache keys on
+    ``(operation, archive_root, generation, epoch, params fingerprint)``
+    (polylogue/storage/search/cache.py:157-165), and the epoch only moves for a
+    write that reports ``changed_session_ids``
+    (polylogue/archive/write_effects.py:166-167). ``mutation.session.tag``
+    commits with ``changed_session_ids=()``
+    (polylogue/storage/sqlite/archive_tiers/archive.py:4262), so this lane's
+    entire write load leaves the cache epoch untouched.
+
+    That is why the previous ``2 + index % 4`` was not merely inelegant: over
+    ``range(8)`` it yields ``2,3,4,5,2,3,4,5``, so four of the eight reads this
+    lane reported as archive latency were cache hits. Pairing the limit with a
+    monotonic offset makes the fingerprint unique for every read of the whole
+    repeated window, not just within one round.
+    """
+    return {"limit": 2 + read_index % 4, "offset": read_index}
+
+
 @pytest.fixture
 def bench_mixed_load_stack(
     tmp_path: Path,
@@ -223,9 +256,17 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
       into the same bounded kernel the interactive reads are admitted to.
 
     The measured operation is the interactive side: eight ``cli.query`` reads
-    over four connections. The background denominator is completed background
-    operations per mixed-load second, and queue delay is the kernel's own
-    longest admission-to-dispatch wait.
+    over four connections, taken over five rounds. The background denominator
+    is completed background operations per mixed-load second, and queue delay
+    is the kernel's own longest admission-to-dispatch wait.
+
+    The lane takes rounds rather than one shot, which is a change of claim as
+    much as of shape: a latency budget describes a distribution, and a
+    ``rounds=1`` lane reports its single sample as p50 and p95 alike. Two
+    things used to make a second round measure something the first one did
+    not, and both are removed above -- the write load now cycles a bounded tag
+    set instead of growing one the measured read joins, and the read params
+    stay unique across the whole window rather than repeating per round.
 
     Anti-vacuity: this is red if the daemon stops *serving* reads under that
     load rather than merely being constructible. A read that is refused,
@@ -285,25 +326,62 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
                     background_completed += 1
 
     def keep_writing(worker: int) -> None:
-        """Hold the daemon's single writer with real audited tag mutations."""
+        """Hold the daemon's single writer with real audited tag mutations.
+
+        Each worker cycles a bounded set of tag names over one session, and the
+        bound is what makes the repeated rounds legitimate rather than a
+        convenience. ``cli.query`` is not blind to tags: ``list_summaries``
+        ``LEFT JOIN``s the user-overlay tag relation on every plain listing
+        (polylogue/storage/sqlite/archive_tiers/archive.py:6335-6337, over the
+        ``user_tier.assertions`` union at :7844), and ``tags`` is an
+        unconditional field of every returned row
+        (polylogue/operations/daemon_reads.py:407). So a tag backlog IS an
+        input to the operation this lane times, and a fresh tag per write would
+        have made round N read a session carrying everything rounds 1..N-1 left
+        on it -- the lane really could only have taken one honest round.
+
+        Cycling instead of growing holds the tag set at
+        ``_MIXED_LOAD_TAG_CYCLE`` per session for the whole window, so every
+        round reads the same shape. Re-adding a present tag is idempotent in
+        the archive but is still a full ``mutation.session.tag`` operation
+        taking the daemon's single write coordinator, the mutation transaction
+        and the audit tier -- which is the contention this lane is about. The
+        assertion after the window checks the bound actually held.
+
+        Measured, not reasoned: with a fresh tag per write instead of the cycle,
+        the later rounds' reads do not merely slow down, they breach the 5s
+        client deadline and come back ``outcome == "timed-out"``.
+
+        Add-only rather than add/remove: ``mutate-remove-tag`` never sets
+        ``allowed_surfaces`` (polylogue/operations/specs.py:380-388), so it
+        defaults to the empty tuple (:69) and
+        ``MutationTransaction.prepare_bound`` refuses it on EVERY surface
+        (polylogue/operations/mutation_transaction.py:773-774). Removal is not
+        available to this lane to undo its own writes with.
+        """
 
         nonlocal writes_completed
         client = DaemonClient(socket_path, timeout_s=10)
+        target = [session_ids[worker % len(session_ids)]]
         round_index = 0
         while not stop.is_set():
-            tag = f"bench-mixed-load-{worker}-{round_index}"
+            params: dict[str, object] = {
+                "session_ids": target,
+                "tags": [f"bench-mixed-load-{worker}-{round_index % _MIXED_LOAD_TAG_CYCLE}"],
+            }
             round_index += 1
             try:
                 envelope = client.operation(
                     "mutation.session.tag",
-                    {"session_ids": session_ids[:1], "tags": [tag]},
+                    params,
                     archive_root=archive_root,
                 )
             except Exception as error:  # recorded, then asserted after the window
                 write_failures.append(f"{type(error).__name__}: {error}")
                 return
             if not isinstance(envelope, dict) or envelope.get("error") is not None:
-                write_failures.append(f"write envelope carried an error: {envelope}")
+                error_detail = envelope.get("error") if isinstance(envelope, dict) else envelope
+                write_failures.append(f"write envelope carried an error: {error_detail!r} for {params}")
                 return
             with counters:
                 writes_completed += 1
@@ -314,14 +392,18 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
             sleep(0.01)
 
     elapsed: list[int] = []
+    read_index = itertools.count()
 
     def run() -> list[dict[str, object]]:
-        def one(index: int) -> dict[str, object]:
+        def one(_slot: int) -> dict[str, object]:
             client = DaemonClient(socket_path, timeout_s=5)
-            # Distinct page sizes per read: identical params would be served
-            # from the daemon's read cache, and the lane would time the cache
-            # rather than reads executed against the archive under write load.
-            result = _operation(client, "cli.query", {"params": {"limit": 2 + index % 4}})
+            # A monotonic counter, not the in-round index: the counter keeps
+            # every read of every round on the archive path (see
+            # ``mixed_load_read_params``), which an in-round index cannot do
+            # because round 2 would repeat round 1's fingerprints exactly.
+            params = mixed_load_read_params(next(read_index))
+            assert params["offset"] + params["limit"] < _MIXED_LOAD_SEEDED_SESSIONS
+            result = _operation(client, "cli.query", {"params": params})
             elapsed.append(client.last_elapsed_ms or 0)
             return result
 
@@ -334,7 +416,7 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     for feeder in feeders:
         feeder.start()
     try:
-        results = benchmark_one_shot(benchmark, run)
+        results = benchmark_repeated(benchmark, run)
     finally:
         stop.set()
         for feeder in feeders:
@@ -369,9 +451,29 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     assert snapshot.used_units == 0, snapshot
     assert peak_queue_units <= snapshot.capacity_units
     assert peak_queue_bytes <= snapshot.capacity_bytes
+    # The repeatability precondition, checked rather than asserted in prose:
+    # every round must read the same session shape, and `cli.query` rows carry
+    # user tags, so the write load must not have grown the tag set it reads.
+    # A per-write fresh tag makes this red -- and that is the whole reason this
+    # lane could previously take only one round.
+    tagged = _operation(bench_mixed_load_stack.client, "cli.query", {"params": {"limit": 5}})
+    tagged_page = tagged["result"]
+    assert isinstance(tagged_page, dict)
+    for row in tagged_page["items"]:
+        assert isinstance(row, dict)
+        bench_tags = [tag for tag in (row.get("tags") or []) if str(tag).startswith("bench-mixed-load-")]
+        assert len(bench_tags) <= _MIXED_LOAD_TAG_CYCLE, (
+            f"the write load grew the tag set the measured read joins: {len(bench_tags)} tags on "
+            f"{row.get('id')}, bound {_MIXED_LOAD_TAG_CYCLE}; later rounds were not reading round 1's shape"
+        )
+    # A real percentile over the whole repeated window's reads, not the single
+    # worst sample ``max()`` used to report under a p95's name. With five
+    # rounds of eight reads there are forty samples to take it from.
+    ordered = sorted(elapsed)
+    interference_p95 = ordered[min(int(len(ordered) * 0.95), len(ordered) - 1)] if ordered else 0
     record_metrics(
         benchmark,
-        concurrent_interference_p95_ms=max(elapsed, default=0),
+        concurrent_interference_p95_ms=interference_p95,
         writer_hold_ms=max(write_latency_ms, default=0),
         background_operations=background_completed,
         background_throughput=background_completed / duration_s,
@@ -488,3 +590,76 @@ def test_profile_declares_mixed_load_queue_high_water_metrics() -> None:
     assert isinstance(manifest_metrics, list)
     assert expected <= set(PROFILE_METRICS)
     assert expected <= set(manifest_metrics)
+
+
+def test_mixed_load_series_stays_on_the_archive_path_across_rounds(
+    bench_daemon_uds_client: DaemonClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mixed-load lane's params must miss the read cache for a whole window.
+
+    ``test_read_series_separates_cache_hits_from_archive`` proves the
+    *concurrent-reads* series reaches the archive. It says nothing about this
+    lane, and this lane needed saying: its write load is
+    ``mutation.session.tag``, which commits ``changed_session_ids=()``
+    (polylogue/storage/sqlite/archive_tiers/archive.py:4262) and so never bumps
+    the cache epoch. Params are the only thing keeping a read off the cache
+    here, and once the lane takes repeated rounds they have to stay distinct
+    across all of them, not just within one.
+
+    The proof is two-sided on purpose, because "every read paid the injection"
+    is satisfiable by a run where caching was simply not reachable:
+
+    * the series ``mixed_load_read_params`` actually generates must pay the
+      archive-path injection on every read of a multi-round window;
+    * the superseded ``2 + index % 4`` must NOT, on exactly the same daemon and
+      the same injection -- its repeats are served from the cache.
+
+    The second half is the positive control. If it also paid, the first half
+    would be evidence about the injection rather than about the params.
+
+    Anti-vacuity: restore ``2 + index % 4`` as the lane's generator and the
+    first assertion goes red; make the superseded formula's offsets unique and
+    the second goes red.
+    """
+    import polylogue.operations.daemon_reads as daemon_reads
+
+    real_query_payload = daemon_reads._query_payload
+    injected: list[float] = []
+
+    def slow_query_payload(*args: Any, **kwargs: Any) -> Any:
+        injected.append(perf_counter())
+        sleep(_ARCHIVE_PATH_INJECTION_MS / 1000)
+        return real_query_payload(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", slow_query_payload)
+    socket_path = bench_daemon_uds_client.socket_path
+
+    def read(params: Mapping[str, object]) -> int:
+        client = DaemonClient(socket_path, timeout_s=10)
+        _operation(client, "cli.query", {"params": dict(params)})
+        return client.last_elapsed_ms or 0
+
+    # Two rounds of the lane's eight reads. A base offset no other lane in this
+    # module uses keeps the window's first reads from being served a hit some
+    # earlier test left in the shared daemon's cache.
+    base = 700
+    window = 2 * 8
+    live = [read(mixed_load_read_params(base + index)) for index in range(window)]
+    assert min(live) >= _ARCHIVE_PATH_INJECTION_MS, (
+        f"a mixed-load read was served from the cache instead of the archive: {live} ms, "
+        f"injection {_ARCHIVE_PATH_INJECTION_MS} ms"
+    )
+    assert len(injected) == window, f"{len(injected)} archive queries for {window} distinct reads"
+
+    # Positive control: the formula this lane used to carry, on the same daemon.
+    # Its params repeat every four reads, so the repeats are cache hits -- which
+    # is what made half of the lane's reported archive latency a cache timing.
+    superseded = [read({"limit": 2 + index % 4, "offset": base + 500}) for index in range(window)]
+    assert max(superseded[4:]) < _ARCHIVE_PATH_INJECTION_MS, (
+        "the superseded params reached the archive on every read, so this control proves nothing "
+        f"about the cache: {superseded} ms"
+    )
+    assert len(injected) == window + 4, (
+        f"the superseded series ran {len(injected) - window} archive queries for {window} reads; "
+        "four distinct params should have produced exactly four"
+    )
