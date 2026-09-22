@@ -142,3 +142,59 @@ def test_receipt_with_wrong_self_hash_is_rejected(tmp_path: Path) -> None:
     receipt_path.write_text(json.dumps(body), encoding="utf-8")
     with pytest.raises(AssertionError, match="hash mismatch"):
         verify_receipt(receipt_path)
+
+
+def test_full_retry_invalidation_clears_a_stale_exclusion(tmp_path: Path) -> None:
+    """An admitted-but-stale handoff must stay visible to the next scan.
+
+    ``_invalidate_cursor_for_full_retry`` records the NEWEST filesystem
+    observation. Anti-vacuity: carry ``excluded`` forward and the watcher's
+    exclusion branch sees an unchanged identity with a matching parser
+    fingerprint and reports no work for this path forever, so the current
+    bytes are never acquired and nothing lands in retry state.
+    """
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    source_root = tmp_path / "codex"
+    source_root.mkdir()
+    path = source_root / "replaced.jsonl"
+    path.write_text('{"a":1}\n', encoding="utf-8")
+    cursor = CursorStore(tmp_path / "ops.db")
+    stale = path.stat()
+    cursor.set(
+        path,
+        stale.st_size,
+        byte_offset=stale.st_size,
+        last_complete_newline=stale.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="payload-hash",
+        source_name="codex",
+        st_dev=stale.st_dev,
+        st_ino=stale.st_ino,
+        mtime_ns=stale.st_mtime_ns,
+        excluded=True,
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=source_root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    path.write_text('{"a":1}\n{"b":2}\n', encoding="utf-8")
+    current = path.stat()
+    processor._invalidate_cursor_for_full_retry(path, source_name="codex", stat=current)
+
+    invalidated = cursor.get_record(path)
+    assert invalidated is not None
+    assert invalidated.excluded is False
+
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=source_root),),
+        cursor=cursor,
+    )
+    try:
+        assert watcher._needs_work(path)
+    finally:
+        watcher.stop()

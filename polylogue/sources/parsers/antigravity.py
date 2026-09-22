@@ -13,7 +13,7 @@ import stat as stat_module
 import subprocess
 import time
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -640,6 +640,16 @@ def _trajectory_step_supported(step_type: str, step_format: str) -> bool:
     )
 
 
+def _any_step_carries_a_key(connection: sqlite3.Connection, step_columns: Collection[str]) -> bool:
+    """Whether any ``steps`` row carries a non-empty trajectory/cascade key."""
+    key_columns = [name for name in ("trajectory_id", "cascade_id") if name in step_columns]
+    if not key_columns:
+        return False
+    predicate = " OR ".join(f'"{name}" IS NOT NULL AND "{name}" != \'\'' for name in key_columns)
+    row = connection.execute(f"SELECT EXISTS(SELECT 1 FROM steps WHERE {predicate})").fetchone()
+    return bool(row[0])
+
+
 def _parent_reference_id(reference: Mapping[str, object]) -> str | None:
     """Extract an asserted parent identity without joining on cascade names."""
     for key in ("parent_trajectory_id", "parent_cascade_id", "parent_session_id", "parent_id"):
@@ -668,6 +678,7 @@ def _trajectory_message(
     row: Mapping[str, object],
     payload: Mapping[str, object],
     position: int,
+    step_ordinal: int,
     step_type: str,
     step_format: str,
 ) -> ParsedMessage | None:
@@ -683,7 +694,11 @@ def _trajectory_message(
         role = Role.TOOL
     else:
         role = Role.ASSISTANT
-    native_step_id = row.get("step_id") or row.get("id") or position
+    # ``step_ordinal`` is the source ``idx``, not a count of materialized
+    # messages: a malformed earlier step that later becomes materializable
+    # must not renumber -- and so re-identify -- every unchanged message
+    # after it.
+    native_step_id = row.get("step_id") or row.get("id") or step_ordinal
     provider_message_id = f"{row.get('trajectory_id') or row.get('cascade_id') or 'trajectory'}:step:{native_step_id}"
     timestamp = _step_timestamp(row, payload)
     text = _step_text(payload)
@@ -739,6 +754,7 @@ def _trajectory_message(
         blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=text))
     if not blocks and text is None:
         return None
+    message_type = MessageType.TOOL_USE if toolish else MessageType.MESSAGE
     return ParsedMessage(
         provider_message_id=provider_message_id,
         role=role,
@@ -748,6 +764,15 @@ def _trajectory_message(
         position=position,
         variant_index=0,
         is_active_path=True,
+        # An explicit ``role`` is positive evidence about who authored the
+        # content. Leaving it UNKNOWN excluded every imported Antigravity
+        # prompt from human-authored/user-word and honest-cost accounting --
+        # the same classification this module's Markdown parser applies.
+        material_origin=human_authored_override(
+            role,
+            message_type,
+            classify_material_origin(role=role, message_type=message_type, text=text),
+        ),
     )
 
 
@@ -851,6 +876,16 @@ def parse_trajectory_db(
                     if predicates
                     else []
                 )
+                if not steps and len(meta_rows) == 1 and not _any_step_carries_a_key(connection, step_columns):
+                    # A legacy single-trajectory export can declare the key
+                    # columns and still leave every cell NULL. The keyed query
+                    # then returns nothing and the safe single-meta fallback
+                    # below is unreachable, so the parser emitted an empty
+                    # session whose own accounting denominator was 0 -- every
+                    # real step silently absent from messages AND from
+                    # admission. Attribute them to the sole trajectory only
+                    # when no step row carries any key at all.
+                    steps = connection.execute("SELECT * FROM steps ORDER BY idx").fetchall()
             elif len(meta_rows) == 1:
                 # Older exports have one trajectory_meta row and no key on
                 # steps. That shape is safe only for the single trajectory.
@@ -931,7 +966,12 @@ def parse_trajectory_db(
                     )
                     continue
                 message = _trajectory_message(
-                    row=row_map, payload=payload, position=len(messages), step_type=step_type, step_format=step_format
+                    row=row_map,
+                    payload=payload,
+                    position=len(messages),
+                    step_ordinal=step_ordinal,
+                    step_type=step_type,
+                    step_format=step_format,
                 )
                 if message is None:
                     outcomes.append(
@@ -989,7 +1029,18 @@ def parse_trajectory_db(
             matching_parent_refs = list(parent_refs.get(cascade_id or "", ()))
             if trajectory_id and trajectory_id != cascade_id:
                 matching_parent_refs.extend(parent_refs.get(trajectory_id, ()))
-            parent_id = _parent_reference_id(matching_parent_refs[0]) if matching_parent_refs else None
+            parent_ids = {
+                resolved
+                for reference in matching_parent_refs
+                for resolved in (_parent_reference_id(reference),)
+                if resolved is not None
+            }
+            # Two references naming different parents are an ambiguity, not a
+            # choice: asserting whichever row the unordered SELECT returned
+            # first persisted an arbitrary durable topology edge and could
+            # extract the child against the wrong parent's prefix.
+            parent_id = next(iter(parent_ids)) if len(parent_ids) == 1 else None
+            parent_ambiguous = len(parent_ids) > 1
             if matching_parent_refs:
                 events.append(
                     ParsedSessionEvent(
@@ -997,10 +1048,18 @@ def parse_trajectory_db(
                         payload={
                             "references": matching_parent_refs,
                             "parent_provider_id": parent_id,
+                            "parent_provider_ids": sorted(parent_ids),
                             "parent_observed": parent_id in known_native_ids if parent_id else False,
                         },
                     )
                 )
+                if parent_ambiguous:
+                    events.append(
+                        ParsedSessionEvent(
+                            event_type="antigravity_ambiguous_parent_reference",
+                            payload={"parent_provider_ids": sorted(parent_ids)},
+                        )
+                    )
                 if parent_id is not None and parent_id not in known_native_ids:
                     events.append(
                         ParsedSessionEvent(

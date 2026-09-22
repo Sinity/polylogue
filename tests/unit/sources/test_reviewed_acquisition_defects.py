@@ -126,3 +126,137 @@ def test_source_signature_is_keyed_by_contents(tmp_path: Path) -> None:
     assert module.stat().st_size == stat.st_size
     assert module.stat().st_mtime_ns == stat.st_mtime_ns
     assert _source_signature(module) != before
+
+
+def test_gemini_cli_parsing_is_not_path_independent() -> None:
+    """A path-dependent parser must not share one parse across source paths.
+
+    ``dispatch`` passes ``source_path`` into ``parse_gemini_cli``, which
+    resolves its ``tool-outputs/`` sidecar scope from it. Anti-vacuity: put
+    ``GEMINI_CLI`` back in the set and ``_parse_retained_raws`` fans one
+    representative's recovered output out to every byte-identical row,
+    regardless of which sidecar directory each row's path names.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import _PATH_INDEPENDENT_PARSE_PROVIDERS
+
+    assert Provider.GEMINI_CLI not in _PATH_INDEPENDENT_PARSE_PROVIDERS
+    # The opposite direction: emptying the set would also pass the assertion
+    # above, so pin a provider that is genuinely path-independent.
+    assert Provider.CHATGPT in _PATH_INDEPENDENT_PARSE_PROVIDERS
+
+
+def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) -> None:
+    """The ``.pb`` prepass role must not swallow a schema-verified ``.db``.
+
+    ``classify_source_path`` gives a trajectory SQLite store the
+    ``CONVERSATION_PROTOBUF`` compatibility role, and the configured-source
+    and API ingest loops skip that role. Anti-vacuity: drop the ``.pb``
+    suffix guard from either loop and the database produces no raw record and
+    no session at all, because the language-server prepass only emits ``.pb``
+    conversations.
+    """
+    import inspect
+
+    from polylogue.pipeline.services import archive_ingest
+    from polylogue.sources import source_parsing
+    from polylogue.sources.parsers import antigravity
+
+    trajectory = tmp_path / "trajectory.db"
+    connection = sqlite3.connect(trajectory)
+    connection.executescript(
+        """
+        CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+        CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    classification = antigravity.classify_source_path(trajectory)
+    assert classification.role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+
+    for module in (source_parsing, archive_ingest):
+        source = inspect.getsource(module)
+        skip_count = source.count("AntigravitySourceRole.CONVERSATION_PROTOBUF")
+        suffix_count = source.count('path.suffix.lower() == ".pb"')
+        assert skip_count == suffix_count, module.__name__
+
+
+def test_drive_acquisition_refuses_a_foreign_archive_cache(tmp_path: Path) -> None:
+    """The Drive branch bypasses ``iter_source_raw_data``'s root refusal.
+
+    Anti-vacuity: remove the guard from ``iter_drive_raw_data`` and the
+    foreign archive's drive cache is accepted as a capture location, so its
+    bytes are copied into the destination blob store.
+    """
+    import pytest
+
+    from polylogue.config import Source
+    from polylogue.sources.drive import iter_drive_raw_data
+    from polylogue.sources.source_root_admission import SourceRootRefusedError
+    from polylogue.storage.blob_store import BlobStore
+
+    foreign_archive = tmp_path / "foreign-archive"
+    (foreign_archive / "drive-cache" / "gemini").mkdir(parents=True)
+    (foreign_archive / "source.db").write_bytes(b"")
+    destination = tmp_path / "destination-archive"
+    (destination / "blob").mkdir(parents=True)
+    (destination / "source.db").write_bytes(b"")
+
+    source = Source(name="aistudio", folder="AI Studio", path=foreign_archive / "drive-cache" / "gemini")
+    with pytest.raises(SourceRootRefusedError):
+        list(iter_drive_raw_data(source=source, blob_store=BlobStore(destination / "blob")))
+
+    # The opposite direction: a blanket refusal must not pass. The
+    # destination's own drive cache is the live capture route and stays
+    # admissible under the same guard, without reaching the Drive client.
+    from polylogue.sources.source_root_admission import refuse_non_capture_source_root
+
+    own_cache = destination / "drive-cache" / "gemini"
+    own_cache.mkdir(parents=True)
+    refuse_non_capture_source_root(own_cache, destination=destination)
+
+
+def test_blocked_source_paths_match_through_a_symlinked_watch_root(tmp_path: Path) -> None:
+    """A stored symlink spelling must still refuse its real-path candidate.
+
+    A cursor-ahead violation recorded through a symlinked watch root is stored
+    under that spelling; a restart configured with the real path selects the
+    physically identical file. Anti-vacuity: resolve only the candidate side
+    and ``refused`` is empty, so the per-path gate admits a source the
+    frontier proof already refuses.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.sources.live import WatchSource
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cursor import CursorStore
+    from polylogue.storage.raw_retention import RawFrontierBlockedPaths
+
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    violating = real_root / "session.jsonl"
+    violating.write_text('{"a":1}\n', encoding="utf-8")
+    linked_root = tmp_path / "linked"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="codex", root=real_root),),
+        cursor=CursorStore(tmp_path / "cursors.db"),
+        parser_fingerprint="test-parser",
+    )
+    healthy = real_root / "healthy.jsonl"
+    healthy.write_text('{"b":2}\n', encoding="utf-8")
+
+    processor.cursor_authority_block_reason = lambda: "cursor ahead of accepted raw material"  # type: ignore[method-assign]
+    processor._blocked_source_paths = lambda: RawFrontierBlockedPaths(  # type: ignore[method-assign]
+        source_paths=frozenset({str(linked_root / "session.jsonl")}),
+        unattributed_reason=None,
+    )
+
+    admitted = processor.admit_paths([violating, healthy])
+
+    assert admitted == [healthy]

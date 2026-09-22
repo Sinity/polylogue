@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.antigravity import (
     AntigravitySessionSummary,
@@ -263,3 +263,111 @@ def test_trajectory_sqlite_parser_refuses_malformed_step_without_fabricating_tex
     assert len(session.messages) == 4
     assert any(event.event_type == "antigravity_unsupported_step" for event in session.session_events)
     assert "degraded:unsupported-trajectory-steps" in session.ingest_flags
+
+
+def test_trajectory_step_identity_uses_the_source_index(tmp_path: Path) -> None:
+    """A later step's identity must not depend on an earlier step's admission.
+
+    Anti-vacuity: key the fallback on the count of materialized messages and
+    the unchanged step at ``idx=1`` is renamed from ``:step:1`` to ``:step:0``
+    the moment the malformed step at ``idx=0`` becomes unparseable.
+    """
+    path = _trajectory_db(tmp_path / "conversation.db")
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM steps WHERE idx > 1")
+        connection.execute("UPDATE steps SET step_payload = 'not-json' WHERE idx = 0")
+
+    session = list(parse_trajectory_db(path))[0]
+
+    assert [message.provider_message_id for message in session.messages] == ["trajectory:step:1"]
+
+
+def test_trajectory_user_step_is_classified_human_authored(tmp_path: Path) -> None:
+    """An explicit ``role`` is positive material-origin evidence.
+
+    Anti-vacuity: drop the classification and the prompt stays ``UNKNOWN``,
+    which excludes it from human-authored/user-word and cost accounting.
+    """
+    path = _trajectory_db(tmp_path / "conversation.db")
+
+    session = list(parse_trajectory_db(path))[0]
+
+    user_message = session.messages[0]
+    assert user_message.role is Role.USER
+    assert user_message.material_origin is MaterialOrigin.HUMAN_AUTHORED
+    # The opposite direction: a tool result is not human-authored.
+    assert session.messages[2].material_origin is not MaterialOrigin.HUMAN_AUTHORED
+
+
+def _keyed_trajectory_db(path: Path, *, key_value: str | None) -> Path:
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+        CREATE TABLE steps (
+            idx INTEGER, trajectory_id TEXT, cascade_id TEXT, step_type TEXT,
+            step_format TEXT, step_payload TEXT, status TEXT, error_details TEXT
+        );
+        CREATE TABLE conversation_summaries (cascade_id TEXT, title TEXT, last_modified_time TEXT);
+        """
+    )
+    connection.execute("INSERT INTO trajectory_meta VALUES (?, ?)", ("trajectory-1", "cascade-1"))
+    connection.execute(
+        "INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (0, key_value, key_value, "message", "v1", '{"role":"user","text":"hello"}', None, None),
+    )
+    connection.commit()
+    connection.close()
+    return path
+
+
+def test_sole_trajectory_with_null_step_keys_keeps_its_steps(tmp_path: Path) -> None:
+    """A declared-but-unset key column must not erase the only trajectory.
+
+    Anti-vacuity: leave the keyed query as the only branch and this session
+    reports ``step_count: 0`` with an accounting denominator of 0 -- every
+    real step silently absent from both messages and admission.
+    """
+    path = _keyed_trajectory_db(tmp_path / "legacy.db", key_value=None)
+
+    session = list(parse_trajectory_db(path))[0]
+
+    assert [message.text for message in session.messages] == ["hello"]
+    assert not any(event.event_type == "antigravity_trajectory_empty" for event in session.session_events)
+
+
+def test_keyed_steps_are_not_reattributed_to_a_foreign_trajectory(tmp_path: Path) -> None:
+    """The opposite direction: a real key that does not match stays unmatched."""
+    path = _keyed_trajectory_db(tmp_path / "keyed.db", key_value="other-trajectory")
+
+    session = list(parse_trajectory_db(path))[0]
+
+    assert session.messages == []
+
+
+def test_conflicting_parent_references_assert_no_parent(tmp_path: Path) -> None:
+    """Disagreeing parent rows are an ambiguity, not a first-row choice.
+
+    Anti-vacuity: take ``matching_parent_refs[0]`` and whichever row the
+    unordered SELECT returns first becomes a durable topology edge.
+    """
+    path = _trajectory_db(tmp_path / "conversation.db")
+    with sqlite3.connect(path) as connection:
+        connection.execute("INSERT INTO parent_references VALUES (?, ?)", ("cascade-1", "parent-2"))
+
+    session = list(parse_trajectory_db(path))[0]
+
+    assert session.parent_session_provider_id is None
+    ambiguity = next(
+        event for event in session.session_events if event.event_type == "antigravity_ambiguous_parent_reference"
+    )
+    assert ambiguity.payload == {"parent_provider_ids": ["parent-1", "parent-2"]}
+
+
+def test_single_parent_reference_still_asserts_its_edge(tmp_path: Path) -> None:
+    """The opposite direction: a blanket refusal must not pass."""
+    path = _trajectory_db(tmp_path / "conversation.db")
+
+    session = list(parse_trajectory_db(path))[0]
+
+    assert session.parent_session_provider_id == "parent-1"

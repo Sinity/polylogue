@@ -52,9 +52,24 @@ def record_deferred_append_cursor(
         return 0
     try:
         stat = path.stat()
+    except OSError:
+        # Without an observation there is nothing to record against; the next
+        # pass observes the path again.
+        return 0
+    tail_bytes = 0
+    tail_hash: str | None = None
+    try:
         tail_hash, tail_bytes = tail_hash_from_path(path, stat.st_size)
     except FileNotFoundError:
         return 0
+    except OSError:
+        # The file was stat-able but could not be opened (EACCES, EIO, a
+        # vanished mount). The caller already decided this pass is a deferral,
+        # so letting the re-open escape aborted the whole watcher pass and left
+        # no cursor or debt row -- every later pass then retried the identical
+        # failing read. Record the deferral against the observation we do have
+        # and preserve the tail evidence the cursor already carries.
+        tail_hash = None
     prefix_hash = cursor_prefix_hash(cursor.tail_hash)
     claude_frontier = decode_claude_semantic_frontier(cursor.tail_hash)
     if claude_frontier is not None:
@@ -92,6 +107,8 @@ def record_deferred_append_cursor(
         tail_hash=(
             (semantic_authority or cursor.tail_hash)
             if semantic_authority is not None
+            else cursor.tail_hash
+            if tail_hash is None
             else (
                 encode_cursor_hash_authority(prefix_hash, tail_hash, ctime_ns=stat.st_ctime_ns)
                 if prefix_hash is not None
