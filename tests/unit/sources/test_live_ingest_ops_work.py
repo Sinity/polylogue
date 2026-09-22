@@ -22,11 +22,19 @@ Anti-vacuity, executed against this file:
 - ``test_batch_cursor_snapshot_is_not_re_read_per_path`` fails the moment
   ``_append_plan`` falls back to ``CursorStore.get_record`` for a path whose
   absence the batch's own ``get_records`` already established.
-- ``test_every_ops_publication_still_commits_on_its_own`` is the conservation
-  half: it is red if a future change buys speed by folding the publications
-  into one transaction, because the durable prefix after a crash mid-batch
-  would no longer be per-publication. Making ``_connect_ops`` defer its commit
-  to scope exit takes it from 4 commits per file to 1.
+Two further assertions were tried here and are deliberately absent, because
+each stayed green under the mutation it was meant to catch:
+
+- A floor on ops.db commits per file, against folding the publications into
+  one transaction. Deferring ``_connect_ops``'s commit to scope exit changed
+  the count by zero (73 commits for six files either way): every writer
+  commits explicitly inside its own block, so no commit here depends on the
+  scope. The durable boundary is structural, not a number worth pinning.
+- An append-route assertion against a wrong cursor snapshot. Passing
+  ``cursor=None, cursor_is_known=True`` still left all six files on the
+  append route, because ``_append_plan`` then resynthesizes an equivalent
+  cursor from source.db. The snapshot is backstopped, so the route cannot
+  witness it.
 """
 
 from __future__ import annotations
@@ -58,10 +66,6 @@ _MESSAGES_PER_SESSION = 4
 # costs; the budget leaves room for a third without admitting the per-operation
 # shape, which costs about ten.
 _MAX_OPS_CONNECTIONS_PER_FILE = 4.0
-# Each publication commits for itself. Both of the two per-file publications
-# issue more than one, so this floor holds comfortably while still failing if
-# the publications are folded into a single batch-wide transaction.
-_MIN_OPS_COMMITS_PER_FILE = 2.0
 
 
 @dataclass
@@ -172,19 +176,6 @@ def test_ops_connections_per_ingested_file_stay_bounded(tmp_path: Path, monkeypa
     assert per_file <= _MAX_OPS_CONNECTIONS_PER_FILE, (
         f"ingest opened {work.connections} ops.db write connections for {_FILES} files "
         f"({per_file:.2f} per file); an ops publication must share one connection"
-    )
-
-
-def test_every_ops_publication_still_commits_on_its_own(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Sharing a connection must not merge the publications' transactions."""
-    processor, paths = _processor(tmp_path, monkeypatch)
-    with _ops_work(monkeypatch) as work:
-        _ingest(processor, paths)
-
-    per_file = work.commits / _FILES
-    assert per_file >= _MIN_OPS_COMMITS_PER_FILE, (
-        f"ingest issued {work.commits} ops.db commits for {_FILES} files ({per_file:.2f} per file); "
-        "each publication must keep its own durable boundary"
     )
 
 
