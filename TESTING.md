@@ -142,9 +142,14 @@ Every run gets a directory under `.cache/verify/runs/<run-id>/` whose
 `run.json` is the receipt: whether the run executed, its exit code, its
 diagnosis, and the decoded pytest outcomes per step. Each pytest step keeps
 progress, selection, summary, merged worker events, and its statistics under
-`steps/<step-id>/`. `devtools test` prints the path of the receipt it just
-wrote as its last line, with the verdict; read that path and nothing else. A
-receipt that is absent is a run that did not happen.
+`steps/<step-id>/`. `devtools test` and `devtools verify` each print the path
+of the receipt they just wrote as their last line, with the verdict; read that
+path and nothing else. A receipt that is absent is a run that did not happen.
+The verdict is in the stream because the exit status is not: a pipeline exits
+with its last command's status, so `devtools verify | tail` reports tail's `0`
+whatever the gates found, and the per-gate `ok` lines above it do not close
+that gap — a run whose third gate failed still ends its gate output with a
+later gate's `ok`.
 
 The latest run in the checkout is mirrored to `.cache/verify/current-run.json`
 and its decoded outcomes to `.cache/verify/current-pytest-statistics.json`.

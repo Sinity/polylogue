@@ -1545,3 +1545,77 @@ def test_a_focused_run_does_not_inherit_the_broad_archive_prewarm() -> None:
     broad = dict(ambient)
     verify._normalize_managed_pytest_environment(broad)
     assert broad["POLYLOGUE_BROAD_PREWARM"] == "1"
+
+
+def _verify_payload(exit_code: int, diagnosis: str | None) -> dict[str, Any]:
+    """A terminal verification payload, shaped as ``VerifyRun.finish`` writes one."""
+    return {
+        "run_id": "verify-quick-20260922",
+        "artifact_dir": ".cache/verify/runs/verify-quick-20260922",
+        "exit_code": exit_code,
+        "diagnosis": diagnosis,
+        "status": "passed" if exit_code == 0 else "failed",
+    }
+
+
+def test_a_failing_run_states_its_verdict_after_the_last_gate(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A truncating reader sees the run's verdict, not the last gate's ``ok``.
+
+    ``devtools verify | tail`` exits with tail's status, and the per-gate lines
+    do not close that gap: a run whose third gate failed still ends its output
+    with a later gate's ``ok``. Three separate reports of "devtools exits 0
+    while failing" were this. The verdict has to be the last line.
+
+    Anti-vacuity: drop the ``_write_verdict_line`` call from ``_emit`` and the
+    last line here is the simulated ``... ok`` gate line, for a run that exited
+    1. Emit the verdict only when ``exit_code`` is zero and this goes red;
+    emitting it unconditionally as ``PASSED`` fails the verdict assertion,
+    while emitting it only on failure fails the passing case below.
+    """
+    # The gate line a real run writes just before its terminal emit.
+    sys.stderr.write("  gate population-coverage ... ok (1.3s)\n")
+
+    verify._emit(_verify_payload(1, "gate_failed"), use_json=False, operation=None)
+
+    final = capsys.readouterr().err.strip().splitlines()[-1]
+    assert final == (
+        "verify: FAILED exit=1 diagnosis=gate_failed receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+    )
+
+
+def test_a_passing_run_states_its_verdict_too(capsys: pytest.CaptureFixture[str]) -> None:
+    """Both directions are stated, so silence never means success.
+
+    A verdict written only for failures makes "this run passed" and "this
+    runner said nothing" the same output, which is the ambiguity the line
+    exists to remove. A green verification carries no diagnosis -- the payload
+    field is ``None``, which is an absence, not a determination that failed --
+    so the clause is omitted rather than reported as ``unknown``.
+
+    Anti-vacuity: guard the write with ``if exit_code:`` and this goes red
+    while the failing case above stays green. Restore ``payload.get(
+    "diagnosis") or "unknown"`` and the ``unknown`` assertion goes red while
+    the failing case, which has a real diagnosis, still passes.
+    """
+    verify._emit(_verify_payload(0, None), use_json=False, operation=None)
+
+    final = capsys.readouterr().err.strip().splitlines()[-1]
+    assert final == "verify: PASSED exit=0 receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+    assert "unknown" not in final
+
+
+def test_a_json_verdict_line_stays_off_the_machine_contract(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--json`` stdout stays exactly one document; the verdict is stderr.
+
+    Anti-vacuity: write the verdict to ``sys.stdout`` and ``json.loads`` below
+    raises on the trailing prose.
+    """
+    verify._emit(_verify_payload(1, "gate_failed"), use_json=True, operation=None)
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["exit_code"] == 1
+    assert captured.err.strip().splitlines()[-1].startswith("verify: FAILED exit=1")
