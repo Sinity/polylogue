@@ -123,6 +123,7 @@ def _handler_key() -> tuple[str, ...]:
 #: every artifact of that element reports the same ones. Held per artifact the
 #: memo would retain hundreds of megabytes, so the strings and the tuples are
 #: pooled before a coverage result is kept.
+#:
 #: The string pool is left unbounded deliberately, and its size is declared
 #: rather than assumed: it held 19,560 entries / 4.35 MiB after one catalog
 #: build and *the same* 19,560 / 4.35 MiB after six, because its key space is
@@ -172,11 +173,18 @@ def _pooled_coverage(coverage: ConstructCoverage) -> ConstructCoverage:
 #: walk already claimed -- so they sum rather than double-count the pooled
 #: keyword strings the coverage results share.)
 #:
-#: Every limit is set well above one build's live working set, which is the
-#: quantity that decides whether a build evicts its own entries mid-run: no
-#: bound here can make a single build recompute anything it just produced.
-#: What they stop is the second, sixth and hundredth distinct corpus a long
-#: session accumulates and never reads again.
+#: Every limit holds AT LEAST TWO full builds. That is the quantity that
+#: matters, and it is measured rather than assumed: replaying two real builds'
+#: recorded key sequences through an LRU shows these memos almost never hit
+#: WITHIN a build (coverage 1,310 accesses over 1,306 distinct keys,
+#: validations 2,642 over 2,642, witnesses 72 over 72). Their whole value is
+#: that the NEXT test asking for the same build answers from the memo, so a
+#: limit below one build's key set would turn every repeat into a full
+#: recomputation, and one at two builds leaves that hit rate untouched. The
+#: keyword tuple pool is the exception that does reuse within a build --
+#: 5,224 accesses over 1,607 distinct tuples -- and 2,048 covers two builds of
+#: those. What the bounds stop is the second, sixth and hundredth distinct
+#: corpus a long session accumulates and never reads again.
 
 #: Generated witness payloads dominate this module's retention, and the budget
 #: is in BYTES rather than entries because an entry is a list of wire payloads
