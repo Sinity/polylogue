@@ -8613,7 +8613,8 @@ def _repair_stale_prefix_branch_points_db(
     params: list[object] = list(scoped)
     rows = conn.execute(
         f"""
-        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id
+        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id,
+               l.branch_point_content_address
         FROM session_links l
         WHERE {dangling_prefix_branch_point_sql()}
           {scope_clause}
@@ -8651,7 +8652,7 @@ def _repair_stale_prefix_branch_points_db(
         )
         repaired += 1
     local_composed_cache: dict[str, list[tuple[str, str]]] = composed_cache if composed_cache is not None else {}
-    for src_session_id, parent_session_id, branch_point_message_id in rows:
+    for src_session_id, parent_session_id, branch_point_message_id, witness in rows:
         parent_id = str(parent_session_id)
         stale_branch_point = str(branch_point_message_id)
         suffix = _suffix_after_session_id(stale_branch_point, parent_id)
@@ -8667,6 +8668,18 @@ def _repair_stale_prefix_branch_points_db(
         if replacement is None:
             continue
         if replacement == stale_branch_point:
+            continue
+        # The replacement must still be the message the child branched at.
+        # ``_replacement_for_stale_prefix_branch_point`` will fall back to the
+        # greatest ordinal *predecessor*, which is a different message with
+        # different content -- and the reader checks the stored witness, so it
+        # rejects that edge and serves the child's bare tail anyway. Rewriting
+        # the id regardless only removed the edge from the missing-id census
+        # and from this write's stranded set, so the archive read short while
+        # both the census and the retryable debt reported it clean (PR #5376).
+        # A witness-disagreeing reanchor is therefore refused: the edge stays
+        # dangling, is counted, and its child is named stranded.
+        if witness is not None and _message_content_address_for_id(conn, replacement) != bytes(witness):
             continue
         conn.execute(
             """
