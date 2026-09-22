@@ -391,6 +391,49 @@ _OBLIGATION_STATES = {
 }
 
 
+#: How many acknowledgements of one still-blocking obligation this pass will
+#: walk past before refusing. The chain only grows when an operator resolves a
+#: blocker whose evidence is still blocking, so a long chain is itself the
+#: signal that acknowledgement is being used in place of a discharge.
+_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN = 64
+
+
+def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id: str) -> str:
+    """Return the id this pass must publish its obligation under.
+
+    ``resolve_raw_authority_blocker`` tombstones a frontier blocker on the
+    operator's acknowledgement alone: it discharges nothing, and for a frontier
+    witness it does not even rebuild the plan from current evidence. ``pass_id``
+    is a content address over the inspected inventory, so a later pass over
+    *unchanged* blocking evidence derives the identical pass, plan and blocker
+    ids -- and the publishing ``INSERT ... ON CONFLICT DO NOTHING`` then found
+    the tombstoned row and wrote nothing. The obligation stayed closed while the
+    same missing, quarantined or corrupt evidence still existed, so
+    ``raw_authority_blocker_count`` read zero and readiness called the archive
+    clean (PR #5350).
+
+    Chaining past each acknowledgement mints a fresh *unresolved* obligation
+    while leaving the acknowledgement row -- the operator's durable resolution
+    receipt -- intact. The successor id is derived from the row it supersedes,
+    so it is as deterministic as the original: repeated passes over unchanged
+    evidence converge on the same successor rather than minting one per pass.
+    """
+
+    blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id])}"
+    for _ in range(_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN):
+        row = conn.execute(
+            "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?",
+            (blocker_id,),
+        ).fetchone()
+        if row is None or row[0] is None:
+            return blocker_id
+        blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id, blocker_id])}"
+    raise RuntimeError(
+        f"raw authority frontier obligation for plan {plan_id} has been acknowledged "
+        f"{_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN} times without being discharged"
+    )
+
+
 def _reconcile_frontier_obligations(
     config: Config,
     pass_id: str,
@@ -409,7 +452,7 @@ def _reconcile_frontier_obligations(
     published: dict[str, str] = {}
     with closing(sqlite3.connect(root / "source.db")) as conn, conn:
         for item in blocking:
-            blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, item.plan_id])}"
+            blocker_id = _open_frontier_blocker_id(conn, pass_id=pass_id, plan_id=item.plan_id)
             published[item.plan_id] = blocker_id
             observed = {
                 "schema": "polylogue.raw-authority-frontier-obligation.v1",
