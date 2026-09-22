@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator import commit as commit_module
-from polylogue.schemas.operator.commit import commit_provider_schema
+from polylogue.schemas.operator.commit import SchemaCommitPrivacyError, commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
 from polylogue.schemas.operator.receipt import (
     SCHEMA_INFERENCE_HANDOFF_FILENAME,
@@ -218,6 +218,59 @@ class TestCommitProviderSchemaWritesRealFiles:
         actual = load_schema_inference_receipt(output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME)
         expected = build_schema_inference_receipt(SchemaRegistry(storage_root=output_dir), provider=_PROVIDER)
         assert actual.packages == expected.packages
+
+    def test_private_retained_value_is_refused_before_the_write(self, tmp_path: Path) -> None:
+        """A retained UUID must stop the write, not be silently stripped by it.
+
+        Anti-vacuity: drop the ``_refuse_private_retained_values`` call from
+        ``_commit_into`` and this test goes red -- the commit succeeds, because
+        ``replace_provider_packages`` strips ``x-polylogue-values`` as it
+        writes and the committed bytes then look clean to every post-hoc audit.
+        """
+
+        output_dir = tmp_path / "providers"
+        leaked = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+        schema = {
+            "type": "object",
+            # x-polylogue-values is where the generator retains a closed
+            # vocabulary; raw enum values are not published (see #5357).
+            "properties": {"conversation_id": {"type": "string", "x-polylogue-values": [leaked]}},
+        }
+        request = replace(_request(output_dir), source_inputs=(SchemaSourceInput(_PROVIDER, tmp_path / "src"),))
+        bundle = _bundle(version="v1", schema=schema, sample_count=5)
+
+        with patch.object(commit_module, "build_provider_bundle_from_sources", return_value=bundle):
+            with pytest.raises(SchemaCommitPrivacyError) as refusal:
+                commit_provider_schema(request)
+
+        assert refusal.value.provider == _PROVIDER
+        assert refusal.value.violations
+        # The redacted digest is reported; the raw identifier never is.
+        assert leaked not in str(refusal.value)
+        # Nothing was written, so nothing downstream was told this bundle exists.
+        assert not (output_dir / _PROVIDER / "catalog.json").exists()
+        assert not (output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME).exists()
+
+    def test_a_clean_bundle_is_not_refused_by_the_privacy_review(self, tmp_path: Path) -> None:
+        """The refusal must discriminate: the same route accepts a clean bundle.
+
+        Anti-vacuity: a check that refused every bundle would satisfy the leak
+        test above; this one goes red if the predicate rejects safe vocabulary.
+        """
+
+        output_dir = tmp_path / "providers"
+        schema = {
+            "type": "object",
+            "properties": {"role": {"type": "string", "x-polylogue-values": ["user", "assistant"]}},
+        }
+        request = replace(_request(output_dir), source_inputs=(SchemaSourceInput(_PROVIDER, tmp_path / "src"),))
+        bundle = _bundle(version="v1", schema=schema, sample_count=5)
+
+        with patch.object(commit_module, "build_provider_bundle_from_sources", return_value=bundle):
+            commit_result = commit_provider_schema(request)
+
+        assert commit_result.success
+        assert (output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME).exists()
 
     def test_new_provider_writes_catalog_and_element_files(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"

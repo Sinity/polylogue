@@ -35,8 +35,10 @@ import tempfile
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument
+from polylogue.core.outcomes import OutcomeStatus
 from polylogue.core.schema_subjects import inference_exclusion_reason
-from polylogue.schemas.generation.models import GenerationResult
+from polylogue.schemas.audit.checks import check_privacy_guards
+from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.workflow import (
     build_provider_bundle_from_sources,
     generate_all_schemas,
@@ -55,6 +57,45 @@ from polylogue.schemas.package_publication import provider_tree_lock
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
+
+
+class SchemaCommitPrivacyError(Exception):
+    """Raised when a generated bundle still carries private retained values.
+
+    This runs *before* ``persist_generated_provider_bundle``, and it has to:
+    ``SchemaRegistry.replace_provider_packages`` strips ``x-polylogue-values``
+    as it writes, so every audit of the committed tree -- including
+    ``devtools gate schema-privacy`` -- inspects bytes from which the leaking
+    annotation has already been removed. A retained-value leak is observable
+    only on the in-memory bundle, so a post-hoc gate can never refuse one.
+
+    The check deliberately lives on this operator route rather than inside
+    ``persist_generated_provider_bundle``: importing the privacy predicate
+    into ``polylogue.schemas.generation.workflow`` adds it to the derived
+    schema-identity closure, which would make every edit to the predicate move
+    the archive identity and force a reconvergence.
+    """
+
+    def __init__(self, provider: str, violations: tuple[str, ...]) -> None:
+        self.provider = provider
+        self.violations = violations
+        super().__init__(
+            f"{provider}: generated schema bundle retains private values before staging\n" + "\n".join(violations)
+        )
+
+
+def _refuse_private_retained_values(provider: str, bundle: _ProviderBundle) -> None:
+    # Read the attribute directly rather than through getattr: a renamed field
+    # must break the build, not silently leave this check inspecting nothing.
+    package_schemas = bundle.package_schemas
+    violations: list[str] = []
+    for version, element_schemas in sorted(package_schemas.items()):
+        for element_kind, schema in sorted(element_schemas.items()):
+            check = check_privacy_guards(schema)
+            if check.status is OutcomeStatus.ERROR:
+                violations.extend(f"{provider}/{version}/{element_kind}: {detail}" for detail in check.details)
+    if violations:
+        raise SchemaCommitPrivacyError(provider, tuple(violations))
 
 
 def _element_schemas_by_kind(
@@ -134,6 +175,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             if request.source_inputs:
                 if source_bundle is None:
                     raise AssertionError("source schema generation did not produce a bundle")
+                _refuse_private_retained_values(provider_token, source_bundle)
                 persist_generated_provider_bundle(output_dir, provider_token, source_bundle)
             registry_after = SchemaRegistry(storage_root=output_dir)
             catalog_after = registry_after.load_package_catalog(provider_token)
@@ -233,4 +275,10 @@ def commit_provider_schema(request: SchemaCommitRequest) -> SchemaCommitResult:
         )
 
 
-__all__ = ["SchemaCommitRequest", "SchemaCommitResult", "SchemaVersionCommitReport", "commit_provider_schema"]
+__all__ = [
+    "SchemaCommitPrivacyError",
+    "SchemaCommitRequest",
+    "SchemaCommitResult",
+    "SchemaVersionCommitReport",
+    "commit_provider_schema",
+]
