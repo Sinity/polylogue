@@ -365,6 +365,8 @@ def build_cycle_outlook(
         projected_total[basis_key] = projected
 
     primary_basis_key = _basis_key(plan.quota_basis) if plan.quota_basis is not None else None
+    # Coverage asks "how much of this cycle did we observe at all", so any
+    # observed basis answers it and the fallback below is legitimate.
     primary_map: Mapping[date, float]
     if primary_basis_key is not None and primary_basis_key in grouped:
         primary_map = grouped[primary_basis_key]
@@ -377,9 +379,18 @@ def build_cycle_outlook(
     if plan.quota_basis is not None:
         basis_used = cycle_to_date.get(_basis_key(plan.quota_basis), 0.0)
         basis_projected = projected_total.get(_basis_key(plan.quota_basis), 0.0)
+        # Quota pressure is denominated in the plan's OWN basis, so it must
+        # never receive the coverage fallback: ``_quota_pressure`` walks this
+        # map day by day and reports the first day whose running total crosses
+        # ``plan.quota``.  Feeding it an unrelated basis (quota in credits,
+        # only usd rows observed) left ``used``/``projected`` at 0 for credits
+        # while still deriving a ``breach_day`` from dollars measured against a
+        # credit quota -- a breach signal with no evidence behind it.  An
+        # absent basis is an empty map: no observation, so no breach day, and
+        # the zero used/projected already say the quota basis was unobserved.
         pressure = _quota_pressure(
             plan,
-            primary_map,
+            grouped.get(primary_basis_key or "", {}),
             basis_used,
             basis_projected,
             window,

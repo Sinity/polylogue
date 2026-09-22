@@ -244,3 +244,41 @@ def test_outlook_is_frozen() -> None:
     assert isinstance(outlook, CycleOutlook)
     with pytest.raises(Exception, match=r".*"):
         outlook.plan_name = "mutated"
+
+
+def test_unobserved_quota_basis_reports_no_breach_from_another_basis() -> None:
+    """A breach day must come from the quota's own basis, never a fallback.
+
+    ``build_cycle_outlook`` keeps a coverage fallback (`next(iter(grouped))`)
+    for the "how much of this cycle did we observe" ratio, which any basis can
+    answer.  It used to hand that same map to ``_quota_pressure``, which walks
+    it day by day and reports the first day whose running total reaches
+    ``plan.quota``.  With the quota in credits and only usd rows observed,
+    ``used``/``projected`` stayed 0 for credits while ``breach_day`` was still
+    derived by measuring dollars against a credit quota -- a breach claim with
+    no evidence behind it.
+
+    Anti-vacuity: restoring ``primary_map`` as ``_quota_pressure``'s daily map
+    makes 40 usd/day cross the 30 000-*credit* quota on the very first day, so
+    ``breach_day is None`` goes red.  ``test_quota_crossing_threshold_mid_cycle``
+    and ``test_quota_projected_breach_without_actual_overage`` above pin the
+    opposite direction, so blanket-suppressing every breach day fails there.
+    """
+    plan = _plan(quota=30_000.0, basis=QuotaBasis.credits)
+    now = datetime(2026, 5, 11, 0, 0, tzinfo=UTC)
+    # Only usd rows exist. Each day's amount alone exceeds nothing in dollars,
+    # but read as credits the running total crosses 30_000 immediately.
+    usage = _full_coverage(date(2026, 5, 1), days=10, per_day=40_000.0, basis=QuotaBasis.usd)
+
+    outlook = build_cycle_outlook(plan, usage, now=now)
+
+    assert outlook is not None
+    assert set(outlook.cycle_to_date.keys()) == {"usd"}
+    pressure = outlook.quota_pressure
+    assert isinstance(pressure, QuotaPressure)
+    assert pressure.basis is QuotaBasis.credits
+    assert pressure.used == pytest.approx(0.0)
+    assert pressure.projected == pytest.approx(0.0)
+    assert pressure.breach_day is None
+    # Coverage still answers from the observed basis: the cycle WAS observed.
+    assert outlook.coverage_ratio > 0.0
