@@ -1,6 +1,6 @@
 {
   "provider": "codex",
-  "generated_at": "2026-09-21T15:27:50.111964+00:00",
+  "generated_at": "2026-09-22T06:05:14.590572+00:00",
   "latest_version": "v5",
   "default_version": "v5",
   "recommended_version": "v5",
@@ -1182,7 +1182,7 @@
       "anchor_kind": "session_record_stream",
       "default_element_kind": "session_record_stream",
       "first_seen": "2026-09-21T15:27:50.110777+00:00",
-      "last_seen": "2026-09-21T15:27:50.110777+00:00",
+      "last_seen": "2026-09-22T06:05:14.589452+00:00",
       "bundle_scope_count": 8092,
       "sample_count": 10642932,
       "anchor_profile_family_id": "d01f946fd135782d08a1f61444d0ba2e3b32655ea565fcffef24069a277c8cb3",
@@ -1196,7 +1196,7 @@
           "artifact_count": 8092,
           "supported": true,
           "first_seen": "2026-09-21T15:27:50.110777+00:00",
-          "last_seen": "2026-09-21T15:27:50.110777+00:00",
+          "last_seen": "2026-09-22T06:05:14.589452+00:00",
           "bundle_scope_count": 8092,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -1764,17 +1764,17 @@
       },
       "structure_fingerprint": "c1262f3659e657952425c837cf9bec53074bad4cdd5690dfc09cff4b009a7ef5",
       "statistics_fingerprint": "94ca41796d433a22ac78ffb9b1731a1c8421e02e14a7f2801627efcfd4694fe6",
-      "implementation_fingerprint": "a4705c9202e4a2afd4c23105d1da1e1ed6c8388d5c8f5544afebb2df14d37d63"
+      "implementation_fingerprint": "52b25438f9a0027600d94b72424f981e9c01140a248f393f9dbcc93ecbd7365e"
     },
-    "source_cache_phase_hits": {
+    "source_cache_phase_hits": {},
+    "source_cache_phase_misses": {
       "statistics": 8094,
       "structure": 8094
     },
-    "source_cache_phase_misses": {},
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 16188,
-    "source_cache_misses": 0,
+    "source_cache_hits": 0,
+    "source_cache_misses": 16188,
     "source_terminal_outcomes": {
       "included": 8322,
       "unsupported": 16
@@ -1791,13 +1791,13 @@
       "no_schema_units": 16
     },
     "source_phase_timings_ms": {
-      "collect": 643277.593,
-      "fold": 354385.652,
-      "hash": 97929.003,
-      "inventory": 217.02,
-      "preliminary": 2963.073,
-      "revision_selection": 1047.468,
-      "statistics": 186836.389
+      "collect": 9942411.766,
+      "fold": 400222.055,
+      "hash": 83236.859,
+      "inventory": 226.219,
+      "preliminary": 2271640.16,
+      "revision_selection": 2004.717,
+      "statistics": 7185179.446
     },
     "producer_version_counts": {
       "0.105.0": 63,
@@ -1869,7 +1869,7 @@
     "producer_version_missing_sources": 53,
     "producer_version_conflicting_sources": 10,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "f484b89798f7fe55332d38f61d923f3c5b522d534a1a630057c2e3bfcb839366",
+    "source_input_manifest_digest": "b926d6ceb4031787344cffc1328844ee9995dd3e06b7e7d17a2e74abe843763d",
     "source_candidate_count": 8110,
     "source_included_candidate_count": 8094,
     "source_included_native_source_revision_count": 8322

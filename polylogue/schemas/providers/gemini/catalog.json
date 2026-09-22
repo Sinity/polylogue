@@ -1,6 +1,6 @@
 {
   "provider": "gemini",
-  "generated_at": "2026-09-21T14:47:59.083480+00:00",
+  "generated_at": "2026-09-22T03:02:02.821243+00:00",
   "latest_version": "v3",
   "default_version": "v3",
   "recommended_version": "v3",
@@ -156,7 +156,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-08T09:00:35.640671+00:00",
-      "last_seen": "2026-09-21T14:47:59.083384+00:00",
+      "last_seen": "2026-09-22T03:02:02.821137+00:00",
       "bundle_scope_count": 12,
       "sample_count": 12,
       "anchor_profile_family_id": "42934922ee9bfd50d3e52d41a83daf580cc4dc2b3ba515982500a84167da49fe",
@@ -170,7 +170,7 @@
           "artifact_count": 12,
           "supported": true,
           "first_seen": "2026-09-08T09:00:35.640671+00:00",
-          "last_seen": "2026-09-21T14:47:59.083384+00:00",
+          "last_seen": "2026-09-22T03:02:02.821137+00:00",
           "bundle_scope_count": 12,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -250,7 +250,7 @@
       },
       "structure_fingerprint": "c1262f3659e657952425c837cf9bec53074bad4cdd5690dfc09cff4b009a7ef5",
       "statistics_fingerprint": "94ca41796d433a22ac78ffb9b1731a1c8421e02e14a7f2801627efcfd4694fe6",
-      "implementation_fingerprint": "a4705c9202e4a2afd4c23105d1da1e1ed6c8388d5c8f5544afebb2df14d37d63"
+      "implementation_fingerprint": "52b25438f9a0027600d94b72424f981e9c01140a248f393f9dbcc93ecbd7365e"
     },
     "source_cache_phase_hits": {
       "statistics": 2,
@@ -272,19 +272,19 @@
     },
     "source_terminal_reasons": {},
     "source_phase_timings_ms": {
-      "collect": 200.027,
-      "fold": 99.305,
-      "hash": 55.913,
-      "inventory": 0.16,
-      "preliminary": 7.375,
-      "revision_selection": 0.071,
-      "statistics": 36.443
+      "collect": 218.466,
+      "fold": 106.039,
+      "hash": 7.772,
+      "inventory": 0.161,
+      "preliminary": 68.231,
+      "revision_selection": 0.073,
+      "statistics": 35.388
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 2,
     "producer_version_conflicting_sources": 0,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "fc3a47d2dcab625abcc8aa7f947e77548e024727964f77ed96f321760cd6cdd6",
+    "source_input_manifest_digest": "666504342e97832bbaabc388ac378d168b6658eaca40b4ea79a0f98b020824c1",
     "source_candidate_count": 2,
     "source_included_candidate_count": 2,
     "source_included_native_source_revision_count": 12

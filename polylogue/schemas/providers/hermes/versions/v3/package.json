@@ -4,7 +4,7 @@
   "anchor_kind": "session_document",
   "default_element_kind": "session_document",
   "first_seen": "2026-09-08T09:01:02.756636+00:00",
-  "last_seen": "2026-09-21T14:49:37.409031+00:00",
+  "last_seen": "2026-09-22T03:03:36.203836+00:00",
   "bundle_scope_count": 159,
   "sample_count": 161,
   "anchor_profile_family_id": "f3428d40859c52e141d1ca642fd98b72e8f1583af2f4338399128d250c7ca4d6",
@@ -18,7 +18,7 @@
       "artifact_count": 2,
       "supported": true,
       "first_seen": "2026-09-08T09:01:02.756636+00:00",
-      "last_seen": "2026-09-21T14:49:37.409031+00:00",
+      "last_seen": "2026-09-22T03:03:36.203836+00:00",
       "bundle_scope_count": 2,
       "bundle_scope_identities": [],
       "exact_structure_ids": [
@@ -39,7 +39,7 @@
       "artifact_count": 159,
       "supported": true,
       "first_seen": "2026-09-08T09:01:02.756636+00:00",
-      "last_seen": "2026-09-21T14:49:37.409031+00:00",
+      "last_seen": "2026-09-22T03:03:36.203836+00:00",
       "bundle_scope_count": 159,
       "bundle_scope_identities": [],
       "exact_structure_ids": [
