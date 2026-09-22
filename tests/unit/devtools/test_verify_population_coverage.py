@@ -272,6 +272,64 @@ def test_stale_missing_unknown_drive_payload_is_not_covered_by_session_path(tmp_
     assert stale.status == UNCOVERED
 
 
+def test_retained_bytes_need_more_than_a_path(tmp_path: Path) -> None:
+    """A row whose bytes are still here is not covered by a declared path.
+
+    ``_reinspect_unknown_row`` returns nothing for two unrelated reasons: the
+    retained blob is gone, or the blob is right there and the row's nullable
+    ``detected_provider`` names no parser to read it with. Only the first says
+    anything about the archive. Conflating them marked this row COVERED with a
+    witness that read "retained blob unavailable" about bytes the archive still
+    holds, so the gate passed without ever inspecting them.
+
+    The row below is the reviewer's case at HEAD: a Claude Code
+    ``unknown/decode_failed`` artifact at ``projects/<p>/<name>.jsonl``, which
+    the declared ``coordinator_session_stream`` rule matches
+    (``parse_policy='session'``), with a retained blob and no detected
+    provider.
+
+    Anti-vacuity: collapse the two reasons back to a bare ``None`` and this
+    row is COVERED again. ``test_stale_missing_drive_export_uses_only_its_narrow_path_declaration``
+    pins the opposite direction -- a genuinely absent blob must still be
+    covered by its declared path -- so refusing every stale row does not pass
+    either.
+    """
+    source_db = _seed_inventory(tmp_path)
+    payload = b'{"not":"a recognizable claude code stream"}'
+    blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    conn = sqlite3.connect(source_db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms,
+                                     detected_provider)
+            VALUES ('raw-retained-cc', 'claude-code-session', NULL,
+                    '/home/u/.claude/projects/p/session.jsonl', ?, ?, 100, NULL)
+            """,
+            (bytes.fromhex(blob_hash), blob_size),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts(artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                                      classification_reason, parse_as_session, first_observed_at_ms,
+                                      last_observed_at_ms)
+            VALUES ('art-retained-cc', 'raw-retained-cc', 'claude-code-session',
+                    '/home/u/.claude/projects/p/session.jsonl', 'unknown', 'decode_failed',
+                    'decode failure: JSONDecodeError', 0, 100, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # The declaration this row's path matches is a session rule, so nothing but
+    # an absent blob could have made the path itself positive evidence.
+    assert BlobStore(tmp_path / "blob").exists(blob_hash)
+    stale = _by_key(inventory_constructs(source_db), "artifact-kind")["claude-code-session/unknown/decode_failed"]
+    assert stale.status == UNCOVERED
+    assert "retained blob unavailable" not in stale.witness
+
+
 def test_gate_reports_static_only_without_an_archive_and_writes_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
