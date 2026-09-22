@@ -1304,6 +1304,7 @@ def write_parsed_session_to_archive(
     # per session; nullcontext leaves BEGIN/COMMIT to the caller.
     transaction = conn if manage_transaction else nullcontext()
     invalidated_identity_children: set[str] = set()
+    stranded_prefix_children: set[str] = set()
     try:
         with transaction:
             conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
@@ -1723,7 +1724,7 @@ def write_parsed_session_to_archive(
                 graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
             if source_conn is not None:
                 graph_kwargs["source_conn"] = source_conn
-            _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
+            stranded_prefix_children = _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
             add_timing("index.graph_resolve", t0)
             t0 = time.perf_counter()
             if not bulk_build:
@@ -1753,6 +1754,14 @@ def write_parsed_session_to_archive(
     # loss is named as ordinary retryable convergence debt (ops tier) rather
     # than left silent until someone orders a full rebuild (polylogue-e0xan).
     _record_identity_invalidation_debt(conn, invalidated_identity_children)
+    # polylogue-gy2yu: this write's replacement transcript dropped a message a
+    # resolved child had pinned as its branch point, and no counterpart exists
+    # in the replacement to re-resolve it onto. The child's inherited prefix is
+    # only recoverable from durable source evidence, so the loss is named as
+    # retryable convergence debt on the same stage the identity-contradiction
+    # sibling uses -- not fixed inline by re-extracting an unbounded prefix, and
+    # not left to be inferred at read time.
+    _record_stranded_branch_point_debt(conn, stranded_prefix_children)
     if write_outcome is not None:
         write_outcome.append(
             ArchiveWriteOutcome(
@@ -5777,7 +5786,16 @@ def _resolve_session_graph(
     bulk_build: bool = False,
     invalidated_session_ids: set[str] | None = None,
     source_conn: sqlite3.Connection | None = None,
-) -> None:
+) -> set[str]:
+    """Resolve this session's lineage edges and return the children it stranded.
+
+    The returned set is the children whose prefix-sharing branch point named a
+    message row this write deleted and that the in-write repair could not
+    re-resolve against the replacement transcript. The caller records them as
+    retryable convergence debt once the index transaction has committed
+    (polylogue-gy2yu).
+    """
+
     def record_substage(name: str, started_at: float) -> None:
         if add_timing is not None:
             add_timing(f"index.graph_resolve.{name}", started_at)
@@ -5827,14 +5845,23 @@ def _resolve_session_graph(
     ).fetchall()
     record_substage("inbound_lookup", t0)
     t0 = time.perf_counter()
+    # polylogue-gy2yu: a replaced parent that dropped a branch-point message has
+    # no outbound link, no *unresolved* inbound edge and a current root
+    # projection, so without this the write takes the fast path and the child it
+    # just stranded is never repaired nor named. The lookup is an indexed range
+    # probe over ``idx_session_links_branch_point``, not a ``session_links`` scan.
+    anchored_stranded_ids = branch_points_anchored_in_session(conn, session_id)
+    record_substage("anchored_branch_points", t0)
+    t0 = time.perf_counter()
     if (
         not has_outbound_link
         and not inbound_rows
         and not invalidated_session_ids
+        and not anchored_stranded_ids
         and _root_projection_current(conn, session_id)
     ):
         record_substage("root_current_check", t0)
-        return
+        return set()
     record_substage("root_current_check", t0)
     composed_cache: dict[str, list[tuple[str, str]]] = {}
     t0 = time.perf_counter()
@@ -5925,6 +5952,7 @@ def _resolve_session_graph(
         session_id,
         *resolved_child_ids,
         *reextract_invalidated_ids,
+        *anchored_stranded_ids,
         *(invalidated_session_ids or set()),
     }
     t0 = time.perf_counter()
@@ -5935,6 +5963,17 @@ def _resolve_session_graph(
     for impacted_session_id in impacted_session_ids:
         _refresh_session_projection(conn, impacted_session_id, seen=projection_seen)
     record_substage("projection_refresh", t0)
+    # polylogue-gy2yu: whatever the repair could not re-resolve is a real loss --
+    # the branch-point message has no counterpart anywhere in the replacement
+    # transcript, so no edge rewrite can recover the child's inherited prefix.
+    # The edge keeps its composing status on purpose: that is what keeps the
+    # read reporting ``dangling_branch_point`` and keeps the archive census
+    # counting it. Quarantining would drop the edge out of composition and the
+    # child would read as a COMPLETE bare tail.
+    t0 = time.perf_counter()
+    stranded_session_ids = branch_points_anchored_in_session(conn, session_id) & anchored_stranded_ids
+    record_substage("stranded_branch_points", t0)
+    return stranded_session_ids
 
 
 def _refill_inbound_dispatch_block_ids(
@@ -8408,6 +8447,47 @@ def dangling_prefix_branch_point_sql(alias: str = "l") -> str:
     """
 
 
+#: Upper exclusive bound of the ``<session_id>:`` message-id namespace. Every
+#: ``messages.message_id`` is ``session_id || ':n:' || native_id`` or
+#: ``session_id || ':c:' || content_identity || '.' || occurrence``, so the
+#: half-open BINARY range ``[sid || ':', sid || ';')`` -- ``';'`` is the byte
+#: after ``':'`` -- selects exactly the ids a session owns. The range form (not
+#: ``LIKE``/``GLOB``/``substr``) is what lets SQLite drive
+#: ``idx_session_links_branch_point`` instead of scanning ``session_links``.
+_MESSAGE_ID_NAMESPACE_UPPER_BOUND = ";"
+
+
+def branch_points_anchored_in_session(conn: sqlite3.Connection, session_id: str) -> set[str]:
+    """Sessions whose prefix-sharing branch point names a *missing* row of *session_id*.
+
+    polylogue-gy2yu. A full replace deletes every message of ``session_id``
+    before reinserting the new transcript, so any branch point naming a row the
+    new transcript dropped is now dangling and its child composes to its own
+    divergent tail. Identity resolution only ever revisits *unresolved* edges,
+    so an already-resolved child is in none of ``_resolve_session_graph``'s
+    impacted sets and the in-write repair skips it entirely.
+
+    The anchor, not the edge's parent, is the right key: a child that branched
+    inside its parent's *inherited* prefix carries a branch point owned by an
+    ancestor, so replacing a grandparent strands a grandchild whose
+    ``resolved_dst_session_id`` never names the replaced session.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT l.src_session_id
+        FROM session_links l
+        WHERE l.branch_point_message_id >= :low
+          AND l.branch_point_message_id < :high
+          AND {dangling_prefix_branch_point_sql()}
+        """,
+        {
+            "low": f"{session_id}:",
+            "high": f"{session_id}{_MESSAGE_ID_NAMESPACE_UPPER_BOUND}",
+        },
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
 def count_dangling_prefix_branch_points(conn: sqlite3.Connection) -> tuple[int, int]:
     """Count archive-wide dangling prefix-sharing branch points.
 
@@ -9218,6 +9298,30 @@ def _main_database_path(conn: sqlite3.Connection) -> Path | None:
     return None
 
 
+#: Convergence-debt stage naming a child whose prefix-sharing branch point was
+#: deleted by a parent (or ancestor) re-parse that dropped the anchored message
+#: and offered no counterpart to re-resolve onto. It shares
+#: ``IDENTITY_INVALIDATION_DEBT_STAGE``'s stage name because the remedy is the
+#: same one -- re-derive the child's inherited prefix from source evidence --
+#: and a second stage name would split one backlog across two rows the daemon
+#: drains independently.
+_STRANDED_BRANCH_POINT_DEBT_ERROR = (
+    "lineage branch point stranded by a parent re-parse that dropped the anchored message; "
+    "the child's recomposed prefix must be re-derived from source evidence"
+)
+
+
+def _record_stranded_branch_point_debt(conn: sqlite3.Connection, session_ids: set[str]) -> None:
+    """Record retryable convergence debt for children stranded by this write.
+
+    polylogue-gy2yu. Same ops-tier route and the same stage as
+    :func:`_record_identity_invalidation_debt`; only the recorded error differs,
+    so ``convergence_debt.last_error`` still names which of the two losses
+    produced the row.
+    """
+    _record_lineage_prefix_debt(conn, session_ids, error=_STRANDED_BRANCH_POINT_DEBT_ERROR)
+
+
 def _record_identity_invalidation_debt(conn: sqlite3.Connection, session_ids: set[str]) -> None:
     """Record retryable convergence debt for lineage-invalidated children.
 
@@ -9228,6 +9332,11 @@ def _record_identity_invalidation_debt(conn: sqlite3.Connection, session_ids: se
     ops tier beside it (in-memory index, bare fixture) records nothing rather
     than bootstrapping a disposable tier from the write path.
     """
+    _record_lineage_prefix_debt(conn, session_ids, error=_IDENTITY_INVALIDATION_DEBT_ERROR)
+
+
+def _record_lineage_prefix_debt(conn: sqlite3.Connection, session_ids: set[str], *, error: str) -> None:
+    """Write one ``lineage_prefix_recompose`` debt row per lost-prefix child."""
     if not session_ids:
         return
     index_path = _main_database_path(conn)
@@ -9244,7 +9353,7 @@ def _record_identity_invalidation_debt(conn: sqlite3.Connection, session_ids: se
             stage=IDENTITY_INVALIDATION_DEBT_STAGE,
             subject_type="session_id",
             subject_id=session_id,
-            error=_IDENTITY_INVALIDATION_DEBT_ERROR,
+            error=error,
         )
 
 

@@ -936,6 +936,18 @@ WHERE resolved_dst_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_session_links_dst_native
 ON session_links(dst_origin, dst_native_id);
 
+-- polylogue-gy2yu: a full replace must find every edge anchored in the session
+-- it is about to delete, keyed by the ANCHOR rather than by the edge's parent,
+-- because a child that branched inside its parent's inherited prefix pins an
+-- ancestor-owned message id. Without this index that lookup is a full
+-- ``session_links`` scan on every single session write, which a full-corpus
+-- replay pays once per session (measured 0.617 ms -> 14.5 s over 23,496
+-- sessions at 9,497 edges, growing as sessions x edges; the indexed range probe
+-- is 0.0053 ms -> 0.12 s).
+CREATE INDEX IF NOT EXISTS idx_session_links_branch_point
+ON session_links(branch_point_message_id)
+WHERE branch_point_message_id IS NOT NULL;
+
 -- Resolver writes can change terminal ``delegations`` without replacing a
 -- transcript row, so they belong to the query-unit relation frame.
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_links_insert
