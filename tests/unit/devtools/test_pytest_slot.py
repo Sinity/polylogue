@@ -771,13 +771,25 @@ def test_a_queued_run_publishes_its_result_document(tmp_path: Path, capsys: pyte
 
 
 def test_a_failed_queued_run_keeps_sizing_telemetry_sidecar(tmp_path: Path) -> None:
-    """Launch sizing is durable even when the child prevents a final success receipt."""
+    """Launch sizing is durable even when the child prevents a final success receipt.
+
+    The child sleeps briefly before exiting. ``ProcessGroupMemorySampler`` takes
+    its first sample as soon as its thread is scheduled, with no initial wait,
+    but ``subprocess.Popen`` returns (and the child starts running) strictly
+    before the sampler is constructed and started -- a child that exits
+    immediately can be gone from ``/proc`` before any thread gets scheduled to
+    read it. Measured live under host contention (20 concurrent managed pytest
+    jobs, agentctl job 362, 2026-09-22): a bare ``raise SystemExit(1)`` child
+    completed the whole run in 0.03s and left ``observed_samples: 0`` /
+    ``peak.pss_kib: 0`` -- this exact assertion failed for exactly that reason.
+    The sleep removes the race without weakening what is asserted.
+    """
     log_path = tmp_path / "slot.log"
     launch_path = tmp_path / "launch.json"
     launch_path.write_text(
         json.dumps(
             {
-                "argv": [sys.executable, "-c", "raise SystemExit(1)", "-n", "8"],
+                "argv": [sys.executable, "-c", "import time; time.sleep(0.3); raise SystemExit(1)", "-n", "8"],
                 "working_directory": str(tmp_path),
                 "environment": {"PATH": os.environ["PATH"]},
                 "log_path": str(log_path),
