@@ -93,3 +93,96 @@ def test_evaluation_cancellation_is_recorded() -> None:
     verdict = evaluate_evidence("finding:f", nodes, edges, cancelled=lambda: True)
     assert verdict.status == "unresolved"
     assert any(w.code == "evaluation_cancelled" for w in verdict.witnesses)
+
+
+def test_a_quarantined_leaf_blocks_partial_support() -> None:
+    """A quarantined descendant is unresolved, never partially supported.
+
+    Anti-vacuity: without `quarantined` in `_UNRESOLVED_REF_STATES` the witness
+    it records matches no ladder branch, the valid sibling leaf populates
+    `supported_paths`, and the verdict falls through to `partially_supported`
+    whose `supported` property is true -- so quarantined evidence authorizes
+    context injection and a public claim.
+    """
+    nodes, edges = _graph()
+    nodes["quarantined:q"] = EvidenceGraphNode(
+        "quarantined:q", "raw", authority="raw", ref_state="quarantined", frame_hash="frame", definition_hash="def"
+    )
+    edges.append(EvidenceGraphEdge("finding:f", "quarantined:q"))
+
+    verdict = evaluate_evidence("finding:f", nodes, edges, frame_hash="frame", definition_hash="def")
+
+    assert verdict.status == "unresolved"
+    assert verdict.supported is False
+    assert any(w.code == "quarantined" for w in verdict.witnesses)
+
+
+def test_every_ref_state_names_the_verdict_it_forces() -> None:
+    """The ref-state partition is total, so no member can fall through."""
+    from typing import get_args
+
+    from polylogue.core.evidence_integrity import (
+        _PRIVATE_REF_STATES,
+        _STALE_REF_STATES,
+        _UNRESOLVED_REF_STATES,
+        EvidenceRefState,
+    )
+
+    named = {"ok"} | _PRIVATE_REF_STATES | _UNRESOLVED_REF_STATES | _STALE_REF_STATES
+    assert named == set(get_args(EvidenceRefState))
+
+
+def test_unknown_authority_never_grounds_a_claim() -> None:
+    """An adapter that omits `authority` cannot launder a claim into support.
+
+    Anti-vacuity: without the `unknown_authority` witness the authority set is
+    `{"unknown"}`, which fails the `<= {"agent", "assertion"}` closed-loop test,
+    so the leaf produces a fully `supported` verdict.
+    """
+    nodes, edges = _graph(authority="unknown")
+
+    verdict = evaluate_evidence("finding:f", nodes, edges, frame_hash="frame", definition_hash="def")
+
+    assert verdict.status == "unresolved"
+    assert verdict.supported is False
+    assert any(w.code == "unknown_authority" for w in verdict.witnesses)
+
+
+def test_declared_authority_still_supports_a_claim() -> None:
+    """The opposite direction: a named grounding authority is not refused."""
+    for authority in ("raw", "human", "tool", "git", "pr"):
+        nodes, edges = _graph(authority=authority)  # type: ignore[arg-type]
+        verdict = evaluate_evidence("finding:f", nodes, edges, frame_hash="frame", definition_hash="def")
+        assert verdict.status == "supported", authority
+
+
+@pytest.mark.parametrize("review_state", ["pending", "rejected", "needs_changes"])
+def test_unapproved_review_state_is_refused(review_state: str) -> None:
+    """Only an approved node grounds a claim; every other value fails closed.
+
+    Anti-vacuity: checking only the two privacy spellings records no witness
+    for `pending`/`rejected`, the leaf joins `supported_paths`, and the verdict
+    is fully `supported`.
+    """
+    nodes, edges = _graph()
+    nodes["raw:r"] = EvidenceGraphNode(
+        "raw:r", "raw", authority="raw", review_state=review_state, frame_hash="frame", definition_hash="def"
+    )
+
+    verdict = evaluate_evidence("finding:f", nodes, edges, frame_hash="frame", definition_hash="def")
+
+    assert verdict.status == "not_supported"
+    assert verdict.supported is False
+    assert any(w.code == "review_unapproved" for w in verdict.witnesses)
+
+
+def test_private_review_state_is_still_held_private() -> None:
+    """The opposite direction: privacy keeps its own, higher-precedence verdict."""
+    for review_state in ("private", "held_private"):
+        nodes, edges = _graph()
+        nodes["raw:r"] = EvidenceGraphNode(
+            "raw:r", "raw", authority="raw", review_state=review_state, frame_hash="frame", definition_hash="def"
+        )
+        verdict = evaluate_evidence("finding:f", nodes, edges, frame_hash="frame", definition_hash="def")
+        assert verdict.status == "held_private"
+        assert not any(w.code == "review_unapproved" for w in verdict.witnesses)

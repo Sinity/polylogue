@@ -293,7 +293,9 @@ def test_mutation_and_read_address_the_same_resolved_file_set(tmp_path: Path) ->
         def __init__(self, socket_path: Path, **_kwargs: object) -> None:
             sockets.append(Path(socket_path))
 
-        def operation_to_completion(self, operation: str, payload: dict[str, object], *, archive_root: str) -> dict:
+        def operation_to_completion(
+            self, operation: str, payload: dict[str, object], *, archive_root: str
+        ) -> dict[str, object]:
             declared_roots.append(archive_root)
             return {"result": {"status": "ok"}, "authority": {"mode": "daemon"}}
 
@@ -328,7 +330,9 @@ def test_configured_root_without_a_pin_still_addresses_itself(tmp_path: Path) ->
         def __init__(self, socket_path: Path, **_kwargs: object) -> None:
             pass
 
-        def operation_to_completion(self, operation: str, payload: dict[str, object], *, archive_root: str) -> dict:
+        def operation_to_completion(
+            self, operation: str, payload: dict[str, object], *, archive_root: str
+        ) -> dict[str, object]:
             declared_roots.append(archive_root)
             return {"result": {"status": "ok"}, "authority": {"mode": "daemon"}}
 
