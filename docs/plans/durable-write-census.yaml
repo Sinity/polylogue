@@ -991,21 +991,21 @@ writes:
     kind: "upsert_do_update"
     tier: "user"
     classification: lifecycle_transition
-    reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). register_query_watch's clear is additionally guarded WHERE watch = 1"
+    reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). the watch-clearing UPDATE lives in clear_query_watch and is additionally guarded WHERE watch = 1"
   - file: "polylogue/storage/sqlite/query_objects.py"
     function: "put_watched_query_baseline"
     table: "watched_query_baselines"
     kind: "upsert_do_update"
     tier: "user"
     classification: lifecycle_transition
-    reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). register_query_watch's clear is additionally guarded WHERE watch = 1"
+    reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). the watch-clearing UPDATE lives in clear_query_watch and is additionally guarded WHERE watch = 1"
   - file: "polylogue/storage/sqlite/query_watch.py"
-    function: "register_query_watch"
+    function: "clear_query_watch"
     table: "query_names"
     kind: "update"
     tier: "user"
     classification: lifecycle_transition
-    reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). register_query_watch's clear is additionally guarded WHERE watch = 1"
+    reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). the watch-clearing UPDATE lives in clear_query_watch and is additionally guarded WHERE watch = 1"
 caller_supplied_sql:
   - file: "polylogue/api/archive.py"
     function: "_archive_aggregate_facet_families.scoped_rows"

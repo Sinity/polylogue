@@ -921,6 +921,57 @@ def _per_partition_rank_sql(partition_expression: str, order_by: str) -> str:
     return f"ROW_NUMBER() OVER (PARTITION BY {partition_expression} ORDER BY {order_by}) AS unit_rank"
 
 
+def _bounded_partition_message_ids(
+    conn: sqlite3.Connection,
+    *,
+    session_ids: Sequence[str],
+    unit_predicates: Sequence[str],
+    unit_params: Sequence[object],
+    order_direction: Literal["ASC", "DESC"],
+    per_partition_limit: int,
+    limit: int,
+    offset: int,
+) -> tuple[str, ...]:
+    """Return the page's message ids, bounding each session before ranking it.
+
+    A ``ROW_NUMBER() OVER (PARTITION BY session_id ...)`` computes a rank for
+    *every* matching row of every selected session and can only discard the
+    ones above the allowance afterwards, so a session holding a million
+    messages sorts a million rows to hand back its 201-row allowance -- the
+    declared row ceiling stops bounding the database work it costs
+    (polylogue-6s0sw). ``idx_messages_session_position`` already covers
+    ``(session_id, position, variant_index)``, which is exactly this read's
+    order, so each session's allowance is an indexed read that stops at the
+    cap instead of a window over its whole history.
+
+    The bound stays per session and equal, so the fairness property the window
+    was introduced for is unchanged: each session contributes at most
+    ``per_partition_limit`` rows, chosen in its own transcript order, and the
+    page order/offset is then applied across the merged candidates. Selecting
+    only the ordering key here keeps the expensive projection (repo rollup,
+    block text) on the page's rows rather than on every session's allowance.
+    """
+
+    if per_partition_limit <= 0 or limit <= 0:
+        return ()
+    predicate_sql = "".join(f" AND {predicate}" for predicate in unit_predicates)
+    statement = f"""
+        SELECT m.message_id, m.position, m.variant_index
+        FROM messages m INDEXED BY idx_messages_session_position
+        WHERE m.session_id = ?{predicate_sql}
+        ORDER BY m.position {order_direction}, m.variant_index {order_direction}, m.message_id {order_direction}
+        LIMIT ?
+    """
+    candidates: list[tuple[int, int, str]] = []
+    for session_id in session_ids:
+        candidates.extend(
+            (int(row["position"]), int(row["variant_index"]), str(row["message_id"]))
+            for row in conn.execute(statement, [session_id, *unit_params, per_partition_limit])
+        )
+    candidates.sort(reverse=order_direction == "DESC")
+    return tuple(message_id for _, _, message_id in candidates[offset : offset + limit])
+
+
 def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["ASC", "DESC"]:
     """Return a closed SQL direction token for terminal row ordering."""
 
@@ -2953,35 +3004,46 @@ def query_session_messages(
     normalized_offset = max(int(offset), 0)
     order_direction = _query_unit_order_direction(sort_direction)
     placeholders = ", ".join("?" for _ in normalized_session_ids)
-    predicates = [f"m.session_id IN ({placeholders})"]
-    filter_params: list[object] = [*normalized_session_ids]
+    unit_predicates: list[str] = []
+    unit_params: list[object] = []
     normalized_roles = tuple(dict.fromkeys(str(role) for role in roles if str(role)))
     if normalized_roles:
         role_placeholders = ", ".join("?" for _ in normalized_roles)
-        predicates.append(f"m.role IN ({role_placeholders})")
-        filter_params.extend(normalized_roles)
+        unit_predicates.append(f"m.role IN ({role_placeholders})")
+        unit_params.extend(normalized_roles)
     if message_type is not None:
-        predicates.append("m.message_type = ?")
-        filter_params.append(str(message_type))
+        unit_predicates.append("m.message_type = ?")
+        unit_params.append(str(message_type))
     normalized_origins = tuple(dict.fromkeys(str(origin) for origin in material_origins if str(origin)))
     if normalized_origins:
         origin_placeholders = ", ".join("?" for _ in normalized_origins)
-        predicates.append(f"m.material_origin IN ({origin_placeholders})")
-        filter_params.extend(normalized_origins)
+        unit_predicates.append(f"m.material_origin IN ({origin_placeholders})")
+        unit_params.extend(normalized_origins)
+    predicates = [f"m.session_id IN ({placeholders})", *unit_predicates]
+    filter_params: list[object] = [*normalized_session_ids, *unit_params]
     order_by = f"m.position {order_direction}, m.variant_index {order_direction}, m.message_id {order_direction}"
     filter_clause = " AND ".join(predicates)
-    rank_params: list[object] = []
     if per_session_limit is None:
         source_sql = "messages m INDEXED BY idx_messages_session_position"
         row_clause = filter_clause
+        query_params: list[object] = [*filter_params, normalized_limit, normalized_offset]
     else:
-        source_sql = f"""(
-            SELECT m.*, {_per_partition_rank_sql("m.session_id", order_by)}
-            FROM messages m INDEXED BY idx_messages_session_position
-            WHERE {filter_clause}
-        ) m"""
-        row_clause = "m.unit_rank <= ?"
-        rank_params = [max(int(per_session_limit), 0)]
+        page_ids = _bounded_partition_message_ids(
+            self._conn,
+            session_ids=normalized_session_ids,
+            unit_predicates=unit_predicates,
+            unit_params=unit_params,
+            order_direction=order_direction,
+            per_partition_limit=max(int(per_session_limit), 0),
+            limit=normalized_limit,
+            offset=normalized_offset,
+        )
+        if not page_ids:
+            return []
+        id_placeholders = ", ".join("?" for _ in page_ids)
+        source_sql = "messages m"
+        row_clause = f"m.message_id IN ({id_placeholders})"
+        query_params = [*page_ids, len(page_ids), 0]
     rows = self._conn.execute(
         f"""
         SELECT
@@ -3023,7 +3085,7 @@ def query_session_messages(
         ORDER BY {order_by}
         LIMIT ? OFFSET ?
         """,
-        [*filter_params, *rank_params, normalized_limit, normalized_offset],
+        query_params,
     ).fetchall()
     message_ids = tuple(str(row["message_id"]) for row in rows)
     blocks_by_message = _fetch_blocks_for_messages(self._conn, message_ids)

@@ -26,6 +26,7 @@ from polylogue.storage.archive_identity import (
     GENERATIONS_DIRNAME,
     LIFECYCLE_LOCK_FILENAME,
     ArchiveLocation,
+    is_index_generation_member,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import DEFAULT_ARCHIVE_PAGE_SIZE, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -221,14 +222,7 @@ def _is_generation_member(path: Path) -> bool:
     follow ``index.db``'s own promotion symlink into the generation it targets,
     so the canonical pointer would classify itself as poisoned.
     """
-    parts = path.absolute().parts
-    try:
-        depth = parts.index(GENERATIONS_DIRNAME)
-    except ValueError:
-        return False
-    # A direct child is `.index-generations/<name>` (one part after the root);
-    # anything deeper is inside a generation.
-    return len(parts) - depth > 2
+    return is_index_generation_member(path)
 
 
 def canonical_active_index_path(location: ArchiveLocation) -> Path:

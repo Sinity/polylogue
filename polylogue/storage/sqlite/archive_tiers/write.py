@@ -80,6 +80,7 @@ from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
+from polylogue.storage.archive_identity import archive_root_for_index_path
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MEASURES, refresh_session_summary
@@ -8612,7 +8613,8 @@ def _repair_stale_prefix_branch_points_db(
     params: list[object] = list(scoped)
     rows = conn.execute(
         f"""
-        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id
+        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id,
+               l.branch_point_content_address
         FROM session_links l
         WHERE {dangling_prefix_branch_point_sql()}
           {scope_clause}
@@ -8650,7 +8652,7 @@ def _repair_stale_prefix_branch_points_db(
         )
         repaired += 1
     local_composed_cache: dict[str, list[tuple[str, str]]] = composed_cache if composed_cache is not None else {}
-    for src_session_id, parent_session_id, branch_point_message_id in rows:
+    for src_session_id, parent_session_id, branch_point_message_id, witness in rows:
         parent_id = str(parent_session_id)
         stale_branch_point = str(branch_point_message_id)
         suffix = _suffix_after_session_id(stale_branch_point, parent_id)
@@ -8666,6 +8668,18 @@ def _repair_stale_prefix_branch_points_db(
         if replacement is None:
             continue
         if replacement == stale_branch_point:
+            continue
+        # The replacement must still be the message the child branched at.
+        # ``_replacement_for_stale_prefix_branch_point`` will fall back to the
+        # greatest ordinal *predecessor*, which is a different message with
+        # different content -- and the reader checks the stored witness, so it
+        # rejects that edge and serves the child's bare tail anyway. Rewriting
+        # the id regardless only removed the edge from the missing-id census
+        # and from this write's stranded set, so the archive read short while
+        # both the census and the retryable debt reported it clean (PR #5376).
+        # A witness-disagreeing reanchor is therefore refused: the edge stays
+        # dangling, is counted, and its child is named stranded.
+        if witness is not None and _message_content_address_for_id(conn, replacement) != bytes(witness):
             continue
         conn.execute(
             """
@@ -9410,13 +9424,22 @@ def _record_identity_invalidation_debt(conn: sqlite3.Connection, session_ids: se
 
 
 def _record_lineage_prefix_debt(conn: sqlite3.Connection, session_ids: set[str], *, error: str) -> None:
-    """Write one ``lineage_prefix_recompose`` debt row per lost-prefix child."""
+    """Write one ``lineage_prefix_recompose`` debt row per lost-prefix child.
+
+    ``ops.db`` is resolved from the archive root, not from the active index's
+    own directory. SQLite reports the physical file behind ``main``, so on any
+    archive with a promoted index generation ``PRAGMA database_list`` answers
+    ``<root>/.index-generations/<gen>/index.db`` -- and ``ops.db`` named beside
+    *that* does not exist, so an ordinary daemon archive whose parent
+    replacement genuinely stranded a child dropped the retryable debt without
+    a word (PR #5376).
+    """
     if not session_ids:
         return
     index_path = _main_database_path(conn)
     if index_path is None:
         return
-    ops_db_path = index_path.with_name("ops.db")
+    ops_db_path = archive_root_for_index_path(index_path) / "ops.db"
     if not ops_db_path.exists():
         return
     from polylogue.sources.live.cursor import CursorStore

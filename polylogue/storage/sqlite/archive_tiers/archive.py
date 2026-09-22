@@ -339,7 +339,11 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
-from polylogue.storage.sqlite.query_watch import register_query_watch, validate_watch_definition
+from polylogue.storage.sqlite.query_watch import (
+    clear_query_watch,
+    register_query_watch,
+    validate_watch_definition,
+)
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
@@ -1432,7 +1436,16 @@ class ArchiveStore:
                 # The persistent owner reuses this compatible handle. Its
                 # factory intentionally excludes journal_mode: bootstrap made
                 # that shared database-mode decision before source.db existed.
-                conn = open_source_tier_write_connection(self.source_db_path, archive_root=self.archive_root)
+                # ``_write_lease_archive_root``, not ``archive_root``: for an
+                # inactive candidate the latter is the generation directory
+                # while the durable writer's lease was acquired for the
+                # declared archive root, so ``require_write_lease`` compared two
+                # different roots and refused the open. These durable members
+                # belong to the real archive either way -- the candidate only
+                # carries read-through symlinks to them.
+                conn = open_source_tier_write_connection(
+                    self.source_db_path, archive_root=self._write_lease_archive_root
+                )
             if self._read_only or self._inactive_candidate_durable_read_only:
                 conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
@@ -5188,10 +5201,18 @@ class ArchiveStore:
             assertion = read_assertion_envelope(user_conn, assertion_id)
             name_assertion = _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, normalized_name)
             exists = (assertion is not None and assertion.status != "deleted") or name_assertion is not None
+            # ``query_names`` is keyed by name, so a rename registers the new
+            # name without retiring the old one and the view is left watched
+            # twice -- under a name it no longer has, carrying the definition
+            # this save replaced. Retire the prior binding in this same
+            # transaction (PR #5375).
+            previous_name = str(assertion.key) if assertion is not None and assertion.key else None
             with user_conn:
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
                     mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 envelope = upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
+                if previous_name is not None and previous_name != normalized_name:
+                    clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
                 register_query_watch(
                     user_conn,
                     name=normalized_name,
@@ -5239,13 +5260,29 @@ class ArchiveStore:
         ]
 
     def delete_view(self, view_id: str) -> bool:
-        """Delete one saved view from archive user.db."""
+        """Delete one saved view from archive user.db, watch binding included.
+
+        Tombstoning the assertion alone left the independent ``query_names``
+        row at ``watch = 1``, so ``list_watched_queries`` kept returning a
+        deleted view's definition and later convergence ticks kept evaluating
+        it and persisting result sets and findings for it (PR #5377). The
+        binding is retired in the same transaction as the tombstone.
+        """
         if not self.user_db_path.exists():
             return False
         user_conn = self._open_user_write_connection()
         try:
+            assertion_id = assertion_id_for_saved_view(view_id)
+            assertion = read_assertion_envelope(user_conn, assertion_id)
+            watched_name = str(assertion.key) if assertion is not None and assertion.key else None
+            # One instant for both writes: the tombstone and the watch it
+            # retires are the same lifecycle event.
+            deleted_at_ms = int(datetime.now(UTC).timestamp() * 1000)
             with user_conn:
-                return mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
+                deleted = mark_assertion_status(user_conn, assertion_id, "deleted", now_ms=deleted_at_ms)
+                if watched_name is not None:
+                    clear_query_watch(user_conn, name=watched_name, now_ms=deleted_at_ms)
+            return deleted
         finally:
             user_conn.close()
 
@@ -5596,7 +5633,13 @@ class ArchiveStore:
         cost that was never implicated by the incident.
         """
         self._require_writable("delete index.db sessions")
-        require_write_lease(f"ArchiveStore.delete_sessions(index={self.index_db_path})", archive_root=self.archive_root)
+        # Same binding as every other durable-writer check on this store: the
+        # lease belongs to the declared archive root, not to the candidate
+        # generation directory ``archive_root`` names.
+        require_write_lease(
+            f"ArchiveStore.delete_sessions(index={self.index_db_path})",
+            archive_root=self._write_lease_archive_root,
+        )
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
             return 0

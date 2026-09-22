@@ -205,7 +205,15 @@ def assert_archive_format_lineage(
         # it, a lineage whose durable target has moved would admit any file
         # carrying the right integer, which is the historical-version-1
         # confusion this marker exists to prevent.
-        if version == versions[tier.value] and fingerprints[tier.value] != _tier_schema_fingerprint(path):
+        # At or *below* the recorded birth version, not only at it. A durable
+        # tier only ever moves up, so a file below its birth version is either
+        # this lineage's own one numbered slot behind -- which still carries
+        # the recorded schema and is owed the migration route -- or a
+        # transplanted older-lineage file. Testing equality alone skipped the
+        # fingerprint on the version mismatch, so once a tier is born above
+        # the floor (the source tier is, at slot 002) a historical version-1
+        # file cleared the floor and was accepted as lineage evidence.
+        if version <= versions[tier.value] and fingerprints[tier.value] != _tier_schema_fingerprint(path):
             raise RuntimeError(
                 f"{path.name} has a historical version-{version} schema and is not part of {ARCHIVE_FORMAT_LINEAGE}"
             )

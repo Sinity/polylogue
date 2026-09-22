@@ -81,6 +81,46 @@ def resolve_active_index_path(archive_root: Path) -> Path:
     return location.active_index_path
 
 
+def is_index_generation_member(path: Path) -> bool:
+    """True when ``path`` lives *inside* a generation rather than beside one.
+
+    ``…/.index-generations/gen-X/index.db`` is a generation member;
+    ``…/.index-generations/index.db`` is a file that merely sits in a
+    directory carrying that name, and an archive root may legitimately be
+    named anything. Absolute, never resolved: resolving would follow the
+    canonical ``index.db`` promotion symlink into the generation it targets,
+    so the canonical pointer would classify itself as a member.
+    """
+
+    parts = path.absolute().parts
+    try:
+        depth = parts.index(GENERATIONS_DIRNAME)
+    except ValueError:
+        return False
+    # A direct child is `.index-generations/<name>` (one part after the root);
+    # anything deeper is inside a generation.
+    return len(parts) - depth > 2
+
+
+def archive_root_for_index_path(index_path: Path) -> Path:
+    """Return the durable-tier archive root housing a resolved index path.
+
+    SQLite reports the *physical* file behind ``main``, and a promoted index
+    is reached through a generation directory -- so ``PRAGMA database_list``
+    on an ordinary archive answers ``<root>/.index-generations/<gen>/index.db``
+    even when the connection was opened on ``<root>/index.db``. A sibling tier
+    derived from that path by name (``ops.db``, ``source.db``) lands in the
+    generation directory, where no such file exists; the caller then finds
+    nothing and silently does nothing. The durable and disposable tiers stay
+    at the configured root, so unwind the generation directory to name it.
+    """
+
+    absolute = index_path.absolute()
+    if not is_index_generation_member(absolute):
+        return absolute.parent
+    return Path(*absolute.parts[: absolute.parts.index(GENERATIONS_DIRNAME)])
+
+
 def archive_file_set_root(*, archive_root: Path, db_path: Path) -> Path:
     """Return the file-set root housing the durable tiers alongside ``db_path``.
 

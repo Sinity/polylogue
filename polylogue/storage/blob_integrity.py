@@ -566,7 +566,21 @@ def _source_schema_capabilities(conn: sqlite3.Connection) -> SourceBlobCapabilit
         # A typed blob_refs table is a valid conservative carrier for an old
         # source, even when a later referent relation is absent. It is added to
         # fallback only when canonical authority is not selected below.
-        current_authority = user_version == stamped_source_version or current_capabilities
+        # The stamp alone cannot confer authority. ``user_version`` was
+        # renumbered from one by the archive format floor, so a historical
+        # source database can carry the integer this runtime stamps today
+        # while holding only the legacy direct-carrier shape -- and this
+        # projection has no format marker to separate the two lineages
+        # (polylogue, PR #5369). Trusting the integer sent such a file to the
+        # canonical query, which is blocked for it, so its existing blob
+        # references became unavailable to integrity and recovery tooling.
+        # ``blob_refs`` is the typed ledger only this lineage writes, so the
+        # stamp earns authority alongside it -- or where the catalog offers no
+        # historical carrier at all to contradict it, since then there is no
+        # legacy classification to preserve.
+        current_authority = current_capabilities or (
+            user_version == stamped_source_version and (current_blob_refs or not legacy_carriers)
+        )
         if not current_authority and current_blob_refs:
             legacy_carriers.append("blob_refs")
         if current_authority:
@@ -2439,7 +2453,17 @@ class AttachmentCoverageReport:
     coverage (polylogue-o0uw5):
 
     ``acquired_with_bytes_count``
-        Corroborated: the store holds an object for the recorded hash.
+        Corroborated: the store holds an object that still re-hashes to the
+        recorded hash. Presence alone is not corroboration -- ``exists()``
+        answers "a file sits at that path", while ``acquired`` is the
+        positive claim that these exact bytes were fetched and stored, which
+        is why the re-bind probe (``_surviving_blob_ref``) decides survival
+        by re-hashing too.
+    ``acquired_corrupt_count``
+        Contradicted in place: an object sits at the recorded hash's path but
+        its content hashes to something else. Counting it as corroborated
+        certified the one state the re-bind probe rejects, so an archive
+        holding decayed attachment bytes reported full coverage.
     ``acquired_missing_blob_count``
         Contradicted: the row names a hash the store does not hold. This is
         the 2026-09-14 pre-wipe census shape (1240 of 1446 acquired hashes
@@ -2477,10 +2501,21 @@ class AttachmentCoverageReport:
     #: (ref_count 0, never swept). Unreferenced by construction, so never
     #: coverage debt -- and not reachable either, so they are their own term.
     acquired_unowned_count: int = 0
+    #: Acquired rows whose stored object no longer hashes to the recorded
+    #: ``blob_hash``. Its own bucket rather than part of
+    #: ``acquired_missing_blob_count``: the object is present, so "re-fetch
+    #: the missing bytes" is the wrong remedy and the decay is evidence in
+    #: its own right.
+    acquired_corrupt_count: int = 0
+    acquired_corrupt_sample: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
-        return self.acquired_missing_blob_count == 0 and self.acquired_unverifiable_count == 0
+        return (
+            self.acquired_missing_blob_count == 0
+            and self.acquired_unverifiable_count == 0
+            and self.acquired_corrupt_count == 0
+        )
 
     @property
     def acquired_reachable_count(self) -> int:
@@ -2505,6 +2540,8 @@ class AttachmentCoverageReport:
             "acquired_unowned_count": self.acquired_unowned_count,
             "acquired_missing_blob_count": self.acquired_missing_blob_count,
             "acquired_missing_blob_sample": list(self.acquired_missing_blob_sample),
+            "acquired_corrupt_count": self.acquired_corrupt_count,
+            "acquired_corrupt_sample": list(self.acquired_corrupt_sample),
             "acquired_unverifiable_count": self.acquired_unverifiable_count,
             "acquired_unverifiable_sample": list(self.acquired_unverifiable_sample),
             "unavailable_count": self.unavailable_count,
@@ -2562,6 +2599,8 @@ def scan_attachment_coverage(
     missing_count = 0
     unverifiable_sample: list[str] = []
     unverifiable_count = 0
+    corrupt_sample: list[str] = []
+    corrupt_count = 0
     with_bytes_count = 0
     for row in acquired_rows:
         blob_hash = row["blob_hash"]
@@ -2575,8 +2614,19 @@ def scan_attachment_coverage(
                 unverifiable_sample.append(str(row["attachment_id"]))
             continue
         hash_hex = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
-        if blob_store.exists(hash_hex):
+        # Re-hash rather than probe for the path. ``exists()`` answers "a file
+        # sits there", and an object overwritten with bytes the recorded hash
+        # no longer names passed that probe, incremented the corroborated
+        # bucket, and left both debt counters at zero -- so this check
+        # certified the exact contradicted-object state the attachment re-bind
+        # probe rejects (polylogue-o0uw5, PR #5378).
+        if blob_store.verify(hash_hex):
             with_bytes_count += 1
+            continue
+        if blob_store.exists(hash_hex):
+            corrupt_count += 1
+            if len(corrupt_sample) < sample_size:
+                corrupt_sample.append(str(row["attachment_id"]))
             continue
         missing_count += 1
         if len(missing_sample) < sample_size:
@@ -2592,6 +2642,8 @@ def scan_attachment_coverage(
         acquired_missing_blob_sample=tuple(missing_sample),
         acquired_unverifiable_count=unverifiable_count,
         acquired_unverifiable_sample=tuple(unverifiable_sample),
+        acquired_corrupt_count=corrupt_count,
+        acquired_corrupt_sample=tuple(corrupt_sample),
         unavailable_count=status_counts.get("unavailable", 0),
         unfetched_count=status_counts.get("unfetched", 0),
         acquired_unreachable_count=len(unreachable_rows),

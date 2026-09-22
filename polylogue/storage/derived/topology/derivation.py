@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict, deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -108,6 +108,17 @@ def _exclude(edge: TopologyEdge, reason: str) -> TopologyEdge:
 
 
 def _cycle_indexes(edges: Sequence[TopologyEdge]) -> set[int]:
+    """Mark every edge on a path that reaches a back edge.
+
+    The traversal carries its own stack rather than recursing. The writer admits
+    a lineage chain up to ``_CYCLE_WALK_BUDGET`` (1024) steps deep, and a
+    recursive depth-first walk raises ``RecursionError`` before that -- which
+    this classifier runs over every link in the archive, so one deep but
+    perfectly acyclic lineage made unrelated topology reads fail outright.
+    Frame-for-frame the same walk: a node enters ``visiting`` on push and moves
+    to ``visited`` on pop, a child already in ``visiting`` is a back edge that
+    marks the whole current ancestry, and roots are still taken in sorted order.
+    """
     children: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for index, edge in enumerate(edges):
         if edge.composable and edge.parent_id is not None:
@@ -116,20 +127,27 @@ def _cycle_indexes(edges: Sequence[TopologyEdge]) -> set[int]:
     visited: set[str] = set()
     cycles: set[int] = set()
 
-    def visit(node: str, ancestry: list[int]) -> None:
-        visiting.add(node)
-        for index, child in children.get(node, ()):
-            if child in visiting:
-                cycles.update(ancestry)
-                cycles.add(index)
-            elif child not in visited:
-                visit(child, [*ancestry, index])
-        visiting.remove(node)
-        visited.add(node)
-
-    for node in sorted(children):
-        if node not in visited:
-            visit(node, [])
+    for root in sorted(children):
+        if root in visited:
+            continue
+        visiting.add(root)
+        stack: list[tuple[str, list[int], Iterator[tuple[int, str]]]] = [(root, [], iter(children.get(root, ())))]
+        while stack:
+            node, ancestry, pending = stack[-1]
+            descended = False
+            for index, child in pending:
+                if child in visiting:
+                    cycles.update(ancestry)
+                    cycles.add(index)
+                elif child not in visited:
+                    visiting.add(child)
+                    stack.append((child, [*ancestry, index], iter(children.get(child, ()))))
+                    descended = True
+                    break
+            if not descended:
+                stack.pop()
+                visiting.discard(node)
+                visited.add(node)
     return cycles
 
 

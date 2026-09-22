@@ -86,12 +86,14 @@ def assert_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
 
     derived_tier = DerivedTier(tier)
     expected = derived_schema_identity(derived_tier)
-    try:
-        found = read_schema_identity(conn, derived_tier)
-    except Exception as exc:
-        if not isinstance(exc, sqlite3.Error):
-            raise
-        found = None
+    # A read that failed established nothing. ``read_schema_identity`` already
+    # reports an absent ledger as ``None`` -- the unstamped case this check is
+    # meant to refuse -- so anything still raising here is a lock, an I/O
+    # error, or a damaged page. Substituting ``found = None`` for it reported a
+    # measurement that was never taken and told the operator to rebuild a sound
+    # index over a transient fault; let the failure stay a failure so the
+    # caller can classify it as retryable.
+    found = read_schema_identity(conn, derived_tier)
     if found != expected:
         raise SchemaSkew(tier, expected, found)
 
@@ -133,11 +135,15 @@ async def assert_derived_schema_identity_async(conn: aiosqlite.Connection, tier:
 
     derived_tier = DerivedTier(tier)
     expected = derived_schema_identity(derived_tier)
+    # See :func:`assert_derived_schema_identity`: an absent ledger is the
+    # unstamped case and reads as ``None`` here, so a raising query is a
+    # failure of this read rather than evidence about the schema on disk.
     try:
         cursor = await conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (tier,))
         row = await cursor.fetchone()
-    except Exception as exc:
-        if not isinstance(exc, sqlite3.Error):
+    except sqlite3.OperationalError:
+        cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'")
+        if await cursor.fetchone() is not None:
             raise
         row = None
     found = None if row is None else str(row[0])

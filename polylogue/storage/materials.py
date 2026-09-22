@@ -245,6 +245,35 @@ def _acquire_response(url: str, timeout: float) -> tuple[Any, str]:
     raise MaterialDestinationRefusedError(f"redirect chain exceeded {_MAX_REDIRECT_HOPS} hops from {url}")
 
 
+def _declared_content_length(response: object) -> int | None:
+    """Return a response's declared body length, or ``None`` if it declared none.
+
+    Only a well-formed non-negative ``Content-Length`` is a completion
+    statement. A missing, repeated-and-inconsistent, or unparseable header
+    states nothing, and this returns ``None`` rather than substituting a guess.
+    """
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    get_all = getattr(headers, "get_all", None)
+    values = get_all("Content-Length") if callable(get_all) else None
+    if values is None:
+        raw = headers.get("Content-Length") if hasattr(headers, "get") else None
+        values = [] if raw is None else [raw]
+    declared: set[int] = set()
+    for value in values:
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        if parsed < 0:
+            return None
+        declared.add(parsed)
+    if len(declared) != 1:
+        return None
+    return declared.pop()
+
+
 def admit_material(
     conn: sqlite3.Connection,
     *,
@@ -426,6 +455,35 @@ def acquire_material(
                         privacy_classification=privacy_classification,
                     )
             diagnostic = "" if final_uri == source_uri else f"redirected to {final_uri}"
+            # ``HTTPResponse.read`` returns the available prefix and then b""
+            # when a server that advertised a length closes early -- no
+            # exception. Treating that EOF as completion persisted the truncated
+            # prefix as ``acquired``: authoritative retained evidence for bytes
+            # the server never sent. The declared length is the only completion
+            # statement available here, so a short body is the ``partial`` state
+            # this function already has, not a silently shortened success. An
+            # absent or unparseable ``Content-Length`` declares nothing and is
+            # left alone rather than guessed at.
+            declared_length = _declared_content_length(response)
+            if declared_length is not None and total < declared_length:
+                short_diagnostic = f"response declared {declared_length} bytes but the connection closed after {total}"
+                if diagnostic:
+                    short_diagnostic += f"; {diagnostic}"
+                return admit_material(
+                    conn,
+                    blob_store=blob_store,
+                    source_uri=source_uri,
+                    referrer_ref=referrer_ref,
+                    observed_at_ms=observed_at_ms,
+                    payload=b"".join(chunks),
+                    media_type=media_type or response_media_type,
+                    media_charset=media_charset or response_charset,
+                    filename=filename,
+                    state="partial",
+                    diagnostic=short_diagnostic,
+                    retryable=True,
+                    privacy_classification=privacy_classification,
+                )
             return admit_material(
                 conn,
                 blob_store=blob_store,
