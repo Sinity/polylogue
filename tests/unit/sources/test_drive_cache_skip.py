@@ -19,12 +19,15 @@ admits exactly the documents the byte reader hands back.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.config import Source
+from polylogue.core.json import JSONValue, is_json_value
 from polylogue.sources import drive as drive_module
 from polylogue.sources.drive import (
     _cache_document_is_readable,
@@ -32,7 +35,9 @@ from polylogue.sources.drive import (
     drive_cache_file_path,
     iter_drive_raw_data,
 )
+from polylogue.sources.drive.source import DriveSourceAPI
 from polylogue.sources.drive.types import DriveFile
+from polylogue.sources.parsers.base import RawSessionData
 from polylogue.storage.blob_store import BlobStore
 
 _MTIME = "2026-01-01T00:00:00Z"
@@ -55,8 +60,18 @@ class _StubDriveClient:
         self.downloaded.append(file_id)
         return self.payloads[file_id]
 
+    def download_json_payload(self, file_id: str, *, name: str) -> JSONValue:
+        del name
+        payload = json.loads(self.download_bytes(file_id))
+        assert is_json_value(payload)
+        return payload
 
-def _run(tmp_path: Path, cache_bytes: bytes) -> tuple[_StubDriveClient, list[Path], list[object]]:
+    def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
+        dest.write_bytes(self.download_bytes(file_id))
+        return next(entry for entry in self.files if entry.file_id == file_id)
+
+
+def _run(tmp_path: Path, cache_bytes: bytes) -> tuple[_StubDriveClient, list[Path], list[RawSessionData]]:
     cache_dir = tmp_path / "drive-cache"
     cache_dir.mkdir()
     source = Source(name="gemini", folder="AI Studio", path=cache_dir)
@@ -69,7 +84,7 @@ def _run(tmp_path: Path, cache_bytes: bytes) -> tuple[_StubDriveClient, list[Pat
     items = list(
         iter_drive_raw_data(
             source=source,
-            client=client,
+            client=cast(DriveSourceAPI, client),
             known_mtimes={str(cache_path): _MTIME},
             blob_store=BlobStore(tmp_path / "blob"),
         )

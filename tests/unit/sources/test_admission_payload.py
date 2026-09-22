@@ -24,18 +24,20 @@ import inspect
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONValue
 from polylogue.sources.parsers import base_support
 from polylogue.sources.parsers.base_models import AdmissionDisposition, AdmissionUnit
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 
 
-def _payload(*, unknown: bool) -> dict[str, object]:
-    chunks: list[dict[str, object]] = [
-        {"role": "user", "text": "what is the boundary for?"},
-        {"role": "model", "text": "conservation"},
-    ]
+def _payload(*, unknown: bool) -> dict[str, JSONValue]:
+    model_chunk: dict[str, JSONValue] = {"role": "model", "text": "conservation"}
     if unknown:
-        chunks[1] = {**chunks[1], "type": "future_reasoning_trace"}
+        model_chunk["type"] = "future_reasoning_trace"
+    chunks: list[JSONValue] = [
+        {"role": "user", "text": "what is the boundary for?"},
+        model_chunk,
+    ]
     return {"chunkedPrompt": {"chunks": chunks}}
 
 

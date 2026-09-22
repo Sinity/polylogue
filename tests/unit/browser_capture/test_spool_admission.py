@@ -23,7 +23,11 @@ import copy
 from pathlib import Path
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
-from polylogue.browser_capture.receiver import CaptureConvergence, write_capture_envelope
+from polylogue.browser_capture.receiver import (
+    BrowserCaptureWriteResult,
+    CaptureConvergence,
+    write_capture_envelope,
+)
 
 _ADAPTER = "chatgpt-dom-v1"
 
@@ -76,7 +80,7 @@ def _payload(
     return payload
 
 
-def _write(payload: dict[str, object], root: Path) -> object:
+def _write(payload: dict[str, object], root: Path) -> BrowserCaptureWriteResult:
     return write_capture_envelope(BrowserCaptureEnvelope.model_validate(copy.deepcopy(payload)), spool_path=root)
 
 
@@ -137,7 +141,7 @@ def test_superseded_ack_names_the_retained_turns(tmp_path: Path) -> None:
     result = _write(rejected, tmp_path)
 
     assert result.convergence is CaptureConvergence.SUPERSEDED
-    assert [identity.message_ref.rsplit(":", 1)[-1] for identity in result.accepted_identities] == ["t1", "t2"]
+    assert [str(identity.message_ref).rsplit(":", 1)[-1] for identity in result.accepted_identities] == ["t1", "t2"]
 
 
 def test_stale_smaller_snapshot_is_refused(tmp_path: Path) -> None:
