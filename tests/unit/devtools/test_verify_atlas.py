@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from devtools.gate import GATES_BY_NAME
-from devtools.verify_atlas import Finding, declared_gate_names, inspect
+from devtools.verify_atlas import Finding, audit, declared_gate_names, inspect
 
 
 def _write_atlas(root: Path, *, citation: str) -> None:
@@ -132,3 +132,104 @@ def test_declared_gate_names_parses_a_list(tmp_path: Path) -> None:
     assert declared_gate_names(f"`{known}`, `atlas`") == (known, "atlas")
     assert declared_gate_names("none") == ()
     assert declared_gate_names("layering") is None
+
+
+#: ``anchored_owner`` is declared at line 10 and its body runs to line 16, far
+#: enough from lines 1-3 that the slack window cannot reach it.  The padding is
+#: load-bearing, so ``_SOURCE_LAYOUT`` proves it instead of trusting this note.
+_SOURCE = """\
+def unrelated_helper() -> int:
+    value = 0
+    return value
+
+
+
+
+
+
+def anchored_owner() -> str:
+    first = "a"
+    second = "b"
+    third = "c"
+    fourth = "d"
+    fifth = "e"
+    return first + second + third + fourth + fifth
+"""
+_SOURCE_LAYOUT = _SOURCE.splitlines()
+assert _SOURCE_LAYOUT[9].startswith("def anchored_owner"), "the owner must sit on line 10"
+assert len(_SOURCE_LAYOUT) == 16, "the owner's body must end on line 16"
+assert not any("anchored_owner" in line for line in _SOURCE_LAYOUT[10:]), "the body must not repeat the name"
+
+
+def _write_claim_page(root: Path, *, prose: str) -> None:
+    page = root / "docs" / "atlas"
+    page.mkdir(parents=True, exist_ok=True)
+    (root / "source.py").write_text(_SOURCE, encoding="utf-8")
+    (page / "example.md").write_text(f"# Example\n\n## Evidence\n\n{prose}\n", encoding="utf-8")
+
+
+def test_reports_an_anchor_missing_the_symbol_prose_names(tmp_path: Path) -> None:
+    # Anti-vacuity: delete the ``misaimed-anchor`` branch from ``audit`` and
+    # this goes red. ``source.py:1-3`` is inside the file and inside its line
+    # count, so both older refusals pass it -- that is exactly the anchor the
+    # gate certified without checking (polylogue-72cbt).
+    _write_claim_page(tmp_path, prose="`anchored_owner` joins the parts (`source.py:1-3`).")
+    findings = inspect(tmp_path)
+    assert [finding.kind for finding in findings] == ["misaimed-anchor"]
+    assert "anchored_owner" in findings[0].detail
+
+
+def test_accepts_an_anchor_containing_the_symbol_prose_names(tmp_path: Path) -> None:
+    # Anti-vacuity: refuse every citation carrying a symbol claim and this goes
+    # red. A blanket refusal would "catch" every misaimed anchor and be useless.
+    _write_claim_page(tmp_path, prose="`anchored_owner` joins the parts (`source.py:10-11`).")
+    assert inspect(tmp_path) == []
+
+
+def test_accepts_a_range_inside_the_definition_prose_names(tmp_path: Path) -> None:
+    # Anti-vacuity: drop the definition-span fallback in ``_symbol_is_anchored``
+    # and this goes red -- ``source.py:15-16`` is the tail of ``anchored_owner``
+    # and never repeats the name, which is the ordinary shape of a citation
+    # into a method body.
+    _write_claim_page(tmp_path, prose="`anchored_owner` joins the parts (`source.py:15-16`).")
+    assert inspect(tmp_path) == []
+
+
+def test_does_not_refuse_a_citation_that_names_no_symbol(tmp_path: Path) -> None:
+    # Anti-vacuity: treat a claimless citation as misaimed and this goes red.
+    # Most atlas prose names no backticked identifier; refusing those would
+    # make the gate unusable rather than more honest.
+    _write_claim_page(tmp_path, prose="The helper returns early (`source.py:1-3`).")
+    assert inspect(tmp_path) == []
+
+
+def test_coverage_counts_an_unexamined_citation(tmp_path: Path) -> None:
+    # Anti-vacuity: fold the unchecked bundles into ``checked`` (or drop the
+    # counters) and this goes red. Reporting success over citations the check
+    # never examined is the defect this check exists to remove, so the gate has
+    # to state its own coverage.
+    _write_claim_page(
+        tmp_path,
+        prose=(
+            "`anchored_owner` joins the parts (`source.py:10-11`).\n\n"
+            "The helper returns early (`source.py:1-3`).\n\n"
+            "`absent_symbol` is declared elsewhere (`source.py:1-3`).\n"
+        ),
+    )
+    coverage = audit(tmp_path).coverage
+    assert coverage.citations == 3
+    assert coverage.checked == 1
+    assert coverage.misaimed == 0
+    assert coverage.no_symbol_claim == 1
+    assert coverage.claim_absent_from_target == 1
+    assert coverage.unchecked == 2
+    assert "1 carry a checkable symbol claim" in coverage.summary()
+    assert "1 name no backticked symbol" in coverage.summary()
+
+
+def test_accepts_a_bundle_anchored_in_one_of_its_ranges(tmp_path: Path) -> None:
+    # Anti-vacuity: require the symbol in *every* cited range and this goes red.
+    # A run of citations is one evidence bundle for one sentence, and its
+    # clauses are routinely anchored separately.
+    _write_claim_page(tmp_path, prose="`anchored_owner` joins the parts (`source.py:1-3`; `source.py:10-11`).")
+    assert inspect(tmp_path) == []
