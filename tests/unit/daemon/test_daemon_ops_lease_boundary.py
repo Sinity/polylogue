@@ -17,8 +17,9 @@ Production dependencies exercised here, all through their real entry points:
   daemon's batch event is an ops-tier publication and takes the writer through
   the same ``_run_sync`` admission as every other one.
 * ``polylogue.daemon.cli._drain_convergence_debt_once`` -- the maintenance
-  drain reads the ledger and writes it back under ``admit_stage_write``; it
-  must not bootstrap the ops tier outside a lease on the way in.
+  drain's write sections are admitted one at a time through
+  ``admit_stage_write``, and constructing its ``CursorStore`` (ops bootstrap,
+  retired-stage migration, interrupted-attempt rewind) is one of them.
 * ``ArchiveStore.open_cold_build_generation`` -> ``_ensure_source_conn``
   (``storage/sqlite/archive_tiers/archive.py``) -- the generation's
   ``source.db`` is a read-through symlink to the declared archive's durable
@@ -139,20 +140,32 @@ async def test_batch_event_is_published_through_the_daemon_writer(tmp_path: Path
     assert "watcher.live_ingest.ops.batch_event" in admitted_actors
 
 
-def test_convergence_debt_drain_reads_the_ledger_without_a_lease(tmp_path: Path) -> None:
-    """The maintenance drain reads debt with the boundary armed.
+def test_convergence_debt_drain_runs_under_its_stage_admission(tmp_path: Path) -> None:
+    """The maintenance drain works with the boundary armed.
 
-    Revert ``CursorStore(db, initialize=False)`` in
-    ``_drain_convergence_debt_once`` and constructing the store bootstraps the
-    ops tier through an unleased ``sqlite3.connect``, so every debt pass dies
-    with ``UnleasedWriteError`` before it reads a single row.
+    The drain's own writes are admitted one section at a time, exactly as the
+    daemon binds them, and nothing on the pass may open a write-mode
+    connection outside one. Revert the ``admit_stage_write`` wrapper around
+    the ``CursorStore`` construction in ``_drain_convergence_debt_once`` and
+    the store's bootstrap, stage migration and interrupted-attempt rewind run
+    inline, so every debt pass dies with ``UnleasedWriteError`` before it
+    reads a single row.
     """
+    from polylogue.core.stage_admission import stage_write_admission
     from polylogue.daemon.cli import _drain_convergence_debt_once
 
     root = _bootstrapped_root(tmp_path)
+    admitted: list[str] = []
 
-    with arm_write_lease_enforcement():
+    def admission(actor: str, work: Any) -> Any:
+        admitted.append(actor)
+        with write_lease(actor, archive_root=root):
+            return work()
+
+    with arm_write_lease_enforcement(), stage_write_admission(admission):
         assert _drain_convergence_debt_once(root / "index.db") == 0
+
+    assert "maintenance.convergence_debt.initialize" in admitted
 
 
 def test_cold_build_generation_binds_source_writes_to_the_declared_root(
