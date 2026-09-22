@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -443,3 +444,45 @@ def test_watch_baseline_and_receipt_ids_reject_cross_query_or_conflicting_state(
             "INSERT INTO watched_query_baselines (query_hash, result_set_id, updated_at_ms) VALUES (?, ?, ?)",
             (first.query_hash, second_result.result_set_id, 4),
         )
+
+
+def _watched_names(root: Path) -> list[str]:
+    with sqlite3.connect(root / "user.db") as conn:
+        return sorted(str(name) for (name,) in conn.execute("SELECT name FROM query_names WHERE watch = 1"))
+
+
+def test_saved_view_lifecycle_retires_its_watch_binding(tmp_path: Path) -> None:
+    """A renamed or deleted watched view must not keep evaluating.
+
+    ``query_names.watch`` is durable state independent of the saved-view
+    assertion. ``save_view`` registered only the new name on a rename and
+    ``delete_view`` only tombstoned the assertion, so the previous/deleted name
+    stayed at ``watch = 1`` and standing-query convergence kept evaluating a
+    definition the product no longer exposes.
+
+    Anti-vacuity: with the two retirement calls removed, the rename assertion
+    sees ``['new', 'old']`` and the delete assertion sees ``['new', 'old']``
+    with ``list_watched_queries`` still returning one object -- executed
+    against the pre-change file, not asserted. The create assertion pins the
+    other direction: a blanket retirement would leave nothing watched at all.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    definition = json.dumps({"query": "sessions where origin:codex-session"})
+
+    store = ArchiveStore(tmp_path)
+    try:
+        store.save_view("view-1", "old", definition, watch=True)
+        assert _watched_names(tmp_path) == ["old"]
+
+        store.save_view("view-1", "new", definition, watch=True)
+        assert _watched_names(tmp_path) == ["new"]
+
+        store.delete_view("view-1")
+        assert _watched_names(tmp_path) == []
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            assert list_watched_queries(conn) == ()
+    finally:
+        store.close()

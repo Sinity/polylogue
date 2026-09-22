@@ -5188,10 +5188,24 @@ class ArchiveStore:
             assertion = read_assertion_envelope(user_conn, assertion_id)
             name_assertion = _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, normalized_name)
             exists = (assertion is not None and assertion.status != "deleted") or name_assertion is not None
+            previous_name = str(assertion.key or "") if assertion is not None else ""
             with user_conn:
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
                     mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 envelope = upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
+                # A rename moves the assertion key but leaves the previous
+                # name's ``query_names`` row at ``watch = 1``: standing-query
+                # convergence then keeps evaluating a definition this view no
+                # longer denotes, alongside the new one. Retire the old binding
+                # in the same transaction that establishes the new one.
+                if previous_name and previous_name != normalized_name:
+                    register_query_watch(
+                        user_conn,
+                        name=previous_name,
+                        query_params=query,
+                        watch=False,
+                        now_ms=envelope.updated_at_ms,
+                    )
                 register_query_watch(
                     user_conn,
                     name=normalized_name,
@@ -5239,13 +5253,32 @@ class ArchiveStore:
         ]
 
     def delete_view(self, view_id: str) -> bool:
-        """Delete one saved view from archive user.db."""
+        """Delete one saved view from archive user.db.
+
+        The watch binding is independent durable state: tombstoning the
+        assertion alone left the view's ``query_names`` row at ``watch = 1``, so
+        ``list_watched_queries()`` kept returning the deleted definition and
+        later convergence ticks kept evaluating it and persisting result sets.
+        Clear it in the same transaction as the tombstone.
+        """
         if not self.user_db_path.exists():
             return False
         user_conn = self._open_user_write_connection()
         try:
+            assertion_id = assertion_id_for_saved_view(view_id)
+            assertion = read_assertion_envelope(user_conn, assertion_id)
+            watched_name = str(assertion.key or "") if assertion is not None else ""
             with user_conn:
-                return mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
+                deleted = mark_assertion_status(user_conn, assertion_id, "deleted")
+                if deleted and watched_name:
+                    register_query_watch(
+                        user_conn,
+                        name=watched_name,
+                        query_params={},
+                        watch=False,
+                        now_ms=int(time.time() * 1000),
+                    )
+                return deleted
         finally:
             user_conn.close()
 
