@@ -122,6 +122,7 @@ class RetentionProbe:
     trajectory: list[dict[str, int]] = field(default_factory=list)
     trimmed_kib: int = 0
     trim_calls: int = 0
+    observed_anon_peak_kib: int = 0
 
     #: How often a trajectory point is recorded.  The curve's shape (linear,
     #: plateauing, stepped) is what separates a leak from bounded retention,
@@ -150,6 +151,7 @@ class RetentionProbe:
         self.post_collection = read_memory_kib()
         self.previous_anon_kib = self.post_collection["RssAnon"]
         self.previous_hwm_kib = self.post_collection["VmHWM"]
+        self.observed_anon_peak_kib = self.post_collection["RssAnon"]
 
     def pytest_runtest_logfinish(self, nodeid: str, location: tuple[str, int | None, str]) -> None:
         del location
@@ -162,6 +164,14 @@ class RetentionProbe:
         # is actually sized against: the plateau a worker settles at is the
         # sum of whatever individual tests pushed the mark up, not an average
         # per-test drift.  Attributing it per test names the ones to bound.
+        # The kernel's own watermark is not this probe's to trust: any test in
+        # the run may reset it (``/proc/self/clear_refs`` 5 --
+        # ``FinishedBuildResourceProbe.start`` does exactly that), after which
+        # ``VmHWM`` reports a mark set after the reset and two runs are no
+        # longer comparable. This maximum is taken from the probe's own
+        # per-test readings, so nothing but the process's actual occupancy
+        # moves it.
+        self.observed_anon_peak_kib = max(self.observed_anon_peak_kib, current["RssAnon"])
         raised = current["VmHWM"] - self.previous_hwm_kib
         if raised > 0:
             cost.hwm_raise_kib += raised
@@ -201,6 +211,7 @@ class RetentionProbe:
             "after_malloc_trim_kib": after_trim,
             "malloc_trim_available": trimmed,
             "gc_collected_objects": collected,
+            "observed_anon_peak_kib": self.observed_anon_peak_kib,
             "trim_every": self.trim_every,
             "trim_calls": self.trim_calls,
             "returned_by_periodic_trim_kib": self.trimmed_kib,
