@@ -10,8 +10,15 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionEnvelope, RawRevisionKind
-from polylogue.core.enums import Provider
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.core.enums import BlockType, Provider
+from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
+from polylogue.sources.parsers.base import (
+    ParsedAttachment,
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+)
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.ingest_governance import (
@@ -632,3 +639,147 @@ def test_unparseable_selector_member_is_a_typed_per_key_refusal(tmp_path: Path) 
             )
         assert "none for this logical key" in empty.value.reason
         assert "no longer parses uniquely" not in str(empty.value)
+
+
+def _adversarial_session(*, session_id: str = "prepared-membership") -> ParsedSession:
+    """One session covering every canonical-byte axis the digest must survive.
+
+    Numeric exponents and floats, NFC/NFD-distinguishable text, non-ASCII
+    object keys, nested tool_input mappings, a session event payload, an
+    attachment, and two byte-identical messages that can only be separated by
+    their content occurrence. A carrier derived from anything other than the
+    declared payload partition diverges on one of these.
+    """
+    repeated = ParsedMessage(provider_message_id="", role=Role.USER, text="repeat")
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=session_id,
+        title="café ： \U0001f9ea",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:05:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m0",
+                role=Role.USER,
+                text="café — naïve",
+                timestamp="2026-01-01T00:00:00Z",
+            ),
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                text=None,
+                timestamp="2026-01-01T00:01:00Z",
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="t1",
+                        tool_input={
+                            "exponent": 1e-7,
+                            "big": 1e22,
+                            "negative_zero": -0.0,
+                            "integral_float": 2.0,
+                            "ékey": {"nested": [1, 2.5, True, None, "ż"]},
+                        },
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="t1",
+                        text="ok",
+                        outcome_unknown_reason="not_reported",
+                    ),
+                ],
+            ),
+            repeated,
+            repeated.model_copy(),
+        ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="a1",
+                message_provider_id="m0",
+                name="für.txt",
+                mime_type="text/plain",
+                size_bytes=3,
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="turn_context",
+                timestamp="2026-01-01T00:00:30Z",
+                payload={"ü": {"depth": [{"x": 1e-7}]}},
+            )
+        ],
+    )
+
+
+def test_cohort_carries_byte_identical_session_digest(tmp_path: Path) -> None:
+    """The carried parse-side digest equals storage's own, byte for byte.
+
+    Archive idempotency is keyed on this digest: a carrier that is merely
+    "equivalent" re-writes every session on the next build. Anti-vacuity: skew
+    the carried value from the declared payload by a single contributing field
+    (or a single byte) and both the session-level and the prepared-row
+    assertions below go red -- executed, not asserted.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        (raw_id,) = _write_raws(archive, 1)
+        unbound = _adversarial_session()
+        parse = _parse_from({raw_id: unbound})
+        _publish_census(archive, raw_id, parse, at_ms=1)
+        prepared = prepare_ingest_cohort(
+            archive,
+            logical_source_key="codex-session:prepared-membership",
+            accepted_raw_ids=(raw_id,),
+            parser_fingerprint="prepared-test-parser",
+            parse_retained_raw=parse,
+            acquired_at_ms=2,
+        )
+
+    # The storage-side computation over the same input, run independently.
+    expected_hex = str(session_content_hash(unbound))
+    assert bound_session_content_hash(unbound) is None
+
+    carried = prepared.parsed_by_raw_id[raw_id]
+    assert bound_session_content_hash(carried) == expected_hex
+    assert prepared.projections_by_raw_id[raw_id].session_hash.hex() == expected_hex
+    rows = prepared.prepared_rows_by_raw_id[raw_id]
+    assert rows.session_content_hash == bytes.fromhex(expected_hex)
+    assert len(rows.content_identities) == len(unbound.messages)
+    # The two byte-identical messages must still separate by occurrence only.
+    digests = [digest for digest, _occurrence in rows.content_identities]
+    occurrences = [occurrence for _digest, occurrence in rows.content_identities]
+    assert digests[2] == digests[3]
+    assert occurrences[2:4] == [0, 1]
+
+
+def test_cohort_does_not_rehash_projected_session(tmp_path: Path) -> None:
+    """Preparation computes the session digest once and carries it.
+
+    Anti-vacuity: reintroduce any second ``session_content_hash`` derivation on
+    the preparation path (the ``prepare_session_rows`` recompute this change
+    removed) and the patched function raises, failing this test.
+    """
+    bootstrap_archive_root(tmp_path)
+
+    def _refuse(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("session content identity must be computed once, in the parse worker")
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        (raw_id,) = _write_raws(archive, 1)
+        parse = _parse_from({raw_id: _adversarial_session()})
+        _publish_census(archive, raw_id, parse, at_ms=1)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr("polylogue.pipeline.ids.session_content_hash", _refuse)
+            prepared = prepare_ingest_cohort(
+                archive,
+                logical_source_key="codex-session:prepared-membership",
+                accepted_raw_ids=(raw_id,),
+                parser_fingerprint="prepared-test-parser",
+                parse_retained_raw=parse,
+                acquired_at_ms=2,
+            )
+
+    assert prepared.prepared_rows_by_raw_id[raw_id].session_content_hash == bytes.fromhex(
+        str(session_content_hash(_adversarial_session()))
+    )
