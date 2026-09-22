@@ -23,6 +23,26 @@ from polylogue.archive.query.watch_definition import (
 from polylogue.storage.sqlite.query_objects import put_query, put_query_name
 
 
+def clear_query_watch(conn: sqlite3.Connection, *, name: str, now_ms: int) -> bool:
+    """Retire one name's watch binding, returning whether a watch was cleared.
+
+    ``query_names`` is keyed by name, not by saved view, so a view's watch
+    binding does not follow the view through a rename or a delete on its own.
+    A renamed view leaves the old name still watched beside the new one, and a
+    deleted view leaves its name watched with no view behind it; either way
+    ``list_watched_queries`` keeps handing the convergence stage a definition
+    the product no longer holds (PR #5375/#5377). Both lifecycle routes clear
+    the prior binding through here, inside the same transaction as the
+    assertion change.
+    """
+
+    cursor = conn.execute(
+        "UPDATE query_names SET watch = 0, updated_at_ms = ? WHERE name = ? AND watch = 1",
+        (now_ms, name),
+    )
+    return int(cursor.rowcount) > 0
+
+
 def register_query_watch(
     conn: sqlite3.Connection,
     *,
@@ -40,10 +60,7 @@ def register_query_watch(
     definition the name no longer denotes.
     """
     if not watch:
-        conn.execute(
-            "UPDATE query_names SET watch = 0, updated_at_ms = ? WHERE name = ? AND watch = 1",
-            (now_ms, name),
-        )
+        clear_query_watch(conn, name=name, now_ms=now_ms)
         return None
     ast = validate_watch_definition(query_params)
     query = put_query(
@@ -63,6 +80,7 @@ __all__ = [
     "WATCH_DEFINITION_LANE",
     "WATCH_DEFINITION_RANK_POLICY",
     "WatchDefinitionError",
+    "clear_query_watch",
     "compile_watch_definition",
     "register_query_watch",
     "validate_watch_definition",

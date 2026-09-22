@@ -339,7 +339,11 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
-from polylogue.storage.sqlite.query_watch import register_query_watch, validate_watch_definition
+from polylogue.storage.sqlite.query_watch import (
+    clear_query_watch,
+    register_query_watch,
+    validate_watch_definition,
+)
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
@@ -5188,10 +5192,18 @@ class ArchiveStore:
             assertion = read_assertion_envelope(user_conn, assertion_id)
             name_assertion = _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, normalized_name)
             exists = (assertion is not None and assertion.status != "deleted") or name_assertion is not None
+            # ``query_names`` is keyed by name, so a rename registers the new
+            # name without retiring the old one and the view is left watched
+            # twice -- under a name it no longer has, carrying the definition
+            # this save replaced. Retire the prior binding in this same
+            # transaction (PR #5375).
+            previous_name = str(assertion.key) if assertion is not None and assertion.key else None
             with user_conn:
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
                     mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 envelope = upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
+                if previous_name is not None and previous_name != normalized_name:
+                    clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
                 register_query_watch(
                     user_conn,
                     name=normalized_name,
@@ -5239,13 +5251,29 @@ class ArchiveStore:
         ]
 
     def delete_view(self, view_id: str) -> bool:
-        """Delete one saved view from archive user.db."""
+        """Delete one saved view from archive user.db, watch binding included.
+
+        Tombstoning the assertion alone left the independent ``query_names``
+        row at ``watch = 1``, so ``list_watched_queries`` kept returning a
+        deleted view's definition and later convergence ticks kept evaluating
+        it and persisting result sets and findings for it (PR #5377). The
+        binding is retired in the same transaction as the tombstone.
+        """
         if not self.user_db_path.exists():
             return False
         user_conn = self._open_user_write_connection()
         try:
+            assertion_id = assertion_id_for_saved_view(view_id)
+            assertion = read_assertion_envelope(user_conn, assertion_id)
+            watched_name = str(assertion.key) if assertion is not None and assertion.key else None
+            # One instant for both writes: the tombstone and the watch it
+            # retires are the same lifecycle event.
+            deleted_at_ms = int(datetime.now(UTC).timestamp() * 1000)
             with user_conn:
-                return mark_assertion_status(user_conn, assertion_id_for_saved_view(view_id), "deleted")
+                deleted = mark_assertion_status(user_conn, assertion_id, "deleted", now_ms=deleted_at_ms)
+                if watched_name is not None:
+                    clear_query_watch(user_conn, name=watched_name, now_ms=deleted_at_ms)
+            return deleted
         finally:
             user_conn.close()
 
