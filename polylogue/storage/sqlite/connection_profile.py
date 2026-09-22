@@ -1008,6 +1008,7 @@ def open_connection(
     validate_schema: bool = True,
     profile: SQLiteConnectionProfile = WRITE_CONNECTION_PROFILE,
     archive_root: str | Path | None = None,
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
@@ -1018,11 +1019,20 @@ def open_connection(
 
     For the thread-local cached archive connection used by the async runtime,
     use ``connection_context`` from ``connection.py`` instead.
+
+    ``check_same_thread=False`` is for a handle that outlives the thread that
+    opened it -- the cold build's ``ops.db`` checkpoint holder is opened on one
+    write-coordinator thread, re-asserted on the next pass' thread and closed
+    on whichever thread settles the generation. It is not a concurrency
+    licence: ``sqlite3`` here is serialized (``threadsafety == 3``), so the
+    handle is thread-safe, but the *writes* it serves are still ordered by the
+    single-writer lease. A caller that has no such ordering must leave this
+    ``True`` and get the thread check.
     """
     if profile.role != "write":
         raise ValueError("open_connection requires a write profile")
     require_write_lease(f"open_connection({path})", archive_root=archive_root)
-    conn = sqlite3.connect(str(path), timeout=timeout)
+    conn = sqlite3.connect(str(path), timeout=timeout, check_same_thread=check_same_thread)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
