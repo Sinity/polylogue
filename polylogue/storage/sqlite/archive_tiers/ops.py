@@ -7,6 +7,7 @@ from typing import get_args
 from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin, TelemetrySurface
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
+from polylogue.storage.sqlite.archive_tiers.index_convergence import BenignDDLEntry
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 
 OPS_SCHEMA_VERSION = 1
@@ -432,18 +433,88 @@ ON context_injection_ledger(build_ref, observed_at_ms);
 # CREATE TABLE schema_identity; ddl-lifecycle-waiver: derived schema_identity is existing bootstrap metadata; declaring it in canonical DDL changes fresh-bootstrap completeness, not the ops data shape.
 OPS_DDL += DERIVED_SCHEMA_META_DDL
 
-OPS_BENIGN_DDL_CONVERGENCE_PLAN: tuple[str, ...] = (
-    "CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC)",
+OPS_BENIGN_DDL_CONVERGENCE_PLAN: tuple[BenignDDLEntry, ...] = (
+    BenignDDLEntry(
+        name="create_idx_daemon_events_kind_id",
+        sql="CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC)",
+        reason="Lifecycle query index; converges without an emitter-local schema write.",
+    ),
+    BenignDDLEntry(
+        name="create_idx_daemon_events_lifecycle",
+        sql="CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, operation_id, id DESC)",
+        reason="Lifecycle query index; converges without an emitter-local schema write.",
+    ),
+    # Retirements. Removing a table from ``OPS_DDL`` only stops *fresh*
+    # bootstraps from creating it: ``CREATE TABLE IF NOT EXISTS`` never drops,
+    # the ops tier has no migration chain, and nothing else sweeps it. Every
+    # object below was deleted from canonical DDL by a named commit and is
+    # still present, with its indexes, in an ops.db bootstrapped before that
+    # commit (measured read-only against a live archive, 2026-09-22). Dropping
+    # the table drops its indexes with it, which is why no index entry is
+    # listed separately -- ``DROP INDEX`` is not an allowed benign shape.
+    BenignDDLEntry(
+        name="drop_slo_samples",
+        sql="DROP TABLE IF EXISTS slo_samples",
+        reason=(
+            "Retired from OPS_DDL by #5373. Zero references remain anywhere in "
+            "the checkout -- no writer, no reader, no test. A live ops.db "
+            "bootstrapped before that commit still carries the table and "
+            "idx_slo_samples_label_time."
+        ),
+    ),
+    BenignDDLEntry(
+        name="drop_query_runs",
+        sql="DROP TABLE IF EXISTS query_runs",
+        reason=(
+            "Retired from OPS_DDL by #3694, whose subject was 'drop write-only "
+            "query_runs table' -- it dropped the declaration, not the table. No "
+            "SQL anywhere selects from, inserts into or updates query_runs; the "
+            "surviving name matches are the unrelated retained_query_runs "
+            "(user tier) and a sql_query_method string label. A pre-#3694 "
+            "ops.db still carries the table plus idx_query_runs_started and "
+            "idx_query_runs_query_started."
+        ),
+    ),
+    BenignDDLEntry(
+        name="drop_otlp_spans",
+        sql="DROP TABLE IF EXISTS otlp_spans",
+        reason=(
+            "Retired from OPS_DDL by #3665 ('remove dead OTLP receiver path'). "
+            "The ops-tier copy has no reader: the one production reader of an "
+            "otlp_spans table is security/excision.py, which resolves it on the "
+            "source.db connection (where RETIRED_SOURCE_SCHEMA_OBJECTS keeps it "
+            "declared for migrated historical tiers). A pre-#3665 ops.db still "
+            "carries the table and idx_ops_otlp_spans_trace."
+        ),
+    ),
+    BenignDDLEntry(
+        name="drop_otlp_telemetry",
+        sql="DROP TABLE IF EXISTS otlp_telemetry",
+        reason=(
+            "Retired from OPS_DDL by #3665 alongside otlp_spans. Zero "
+            "references remain anywhere in the checkout. A pre-#3665 ops.db "
+            "still carries the table and idx_ops_otlp_telemetry_received."
+        ),
+    ),
 )
 """Idempotent same-version OPS fast-forward statements.
 
 The ops tier is disposable and intentionally has no migration chain. Bootstrap
 applies this plan to existing generations after canonical DDL reapplication,
 so the lifecycle query indexes converge without an emitter-local schema write.
+
+This is also the ops tier's only retirement route. ``index.db`` has one
+(``INDEX_BENIGN_DDL_REGISTRY``) and the durable ``source`` tier has a numbered
+migration chain plus ``RETIRED_SOURCE_SCHEMA_OBJECTS``; until this plan gained
+``DROP TABLE`` entries, ops had neither, so an ops table removed from
+``OPS_DDL`` survived in every already-bootstrapped archive forever. Each entry
+must hold the same three properties ``INDEX_BENIGN_DDL_REGISTRY`` declares --
+idempotent, data-non-transforming, bidirectionally safe at the same version --
+and ``devtools gate schema-manifest`` checks the first two on every entry here.
 """
 
 __all__ = [
+    "BenignDDLEntry",
     "OPS_BENIGN_DDL_CONVERGENCE_PLAN",
     "OPS_DDL",
     "OPS_SCHEMA_VERSION",

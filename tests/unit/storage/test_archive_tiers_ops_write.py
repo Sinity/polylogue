@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 
 from polylogue.core.enums import OperationStatus, Origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
+from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN, OPS_DDL
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ROUTE_OBSERVATION_ROW_CAP,
     ArchiveCursorLagSample,
@@ -161,7 +162,81 @@ def test_existing_ops_db_applies_daemon_event_index_convergence_plan(tmp_path: P
         indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
 
     assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle"} <= indexes
-    assert len(OPS_BENIGN_DDL_CONVERGENCE_PLAN) == 2
+    assert {entry.name for entry in OPS_BENIGN_DDL_CONVERGENCE_PLAN} >= {
+        "create_idx_daemon_events_kind_id",
+        "create_idx_daemon_events_lifecycle",
+    }
+
+
+#: Objects an earlier release declared in ``OPS_DDL`` and a named commit later
+#: removed from it. ``CREATE TABLE IF NOT EXISTS`` never drops, and the
+#: disposable ops tier has no migration chain, so before the convergence plan
+#: gained ``DROP TABLE`` entries these survived in every already-bootstrapped
+#: ops.db forever. This fixture reproduces that shape.
+_RETIRED_OPS_TABLES: dict[str, str] = {
+    "slo_samples": "idx_slo_samples_label_time",
+    "query_runs": "idx_query_runs_started",
+    "otlp_spans": "idx_ops_otlp_spans_trace",
+    "otlp_telemetry": "idx_ops_otlp_telemetry_received",
+}
+
+
+def test_ops_convergence_drops_retired_tables(tmp_path: Path) -> None:
+    """A reopened pre-retirement ops.db loses exactly the undeclared tables.
+
+    Anti-vacuity: deleting the four ``drop_*`` entries from
+    ``OPS_BENIGN_DDL_CONVERGENCE_PLAN`` leaves every retired table and index
+    in place and fails the first assertion. The retained half is the opposite
+    pin: ``polylogue_ops_schema_state`` is live bootstrap-internal state that
+    canonical ``OPS_DDL`` also does not declare, so a structural "drop every
+    table OPS_DDL omits" sweep passes the first assertion and fails this one.
+    """
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+
+    with sqlite3.connect(ops_db) as conn:
+        for table, index in _RETIRED_OPS_TABLES.items():
+            conn.executescript(
+                f"""
+                CREATE TABLE {table} (row_id TEXT PRIMARY KEY, observed_at_ms INTEGER NOT NULL) STRICT;
+                CREATE INDEX {index} ON {table}(observed_at_ms);
+                INSERT INTO {table}(row_id, observed_at_ms) VALUES ('kept-by-a-stale-schema', 1);
+                """
+            )
+        seeded = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert set(_RETIRED_OPS_TABLES) <= seeded, "fixture did not reproduce a pre-retirement ops.db"
+
+    with sqlite3.connect(ops_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        objects = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+
+    assert not objects & set(_RETIRED_OPS_TABLES), "canonical DDL no longer declares these tables"
+    assert not objects & set(_RETIRED_OPS_TABLES.values()), "a dropped table takes its indexes with it"
+    assert "polylogue_ops_schema_state" in objects, "live bootstrap-internal state is not a retirement target"
+    assert {"ingest_cursor", "ingest_attempts", "daemon_lifecycle", "daemon_events"} <= objects
+
+
+def test_ops_retirement_entries_are_not_declared() -> None:
+    """No plan entry may drop a table canonical ``OPS_DDL`` still declares.
+
+    Anti-vacuity: adding ``DROP TABLE IF EXISTS context_injection_ledger`` --
+    a table ``OPS_DDL`` still declares -- fails the final assertion here.
+    ``devtools gate schema-manifest`` checks each entry's SQL shape but cannot
+    know which names are still live, so shape validity alone never catches it.
+    (Some declared names fail harder and earlier: retiring ``ingest_cursor``
+    breaks ``_ensure_ops_runtime_columns`` while the canonical schema
+    inventory is being built, so that variant never reaches this assertion.)
+    """
+    declared = set(re.findall(r"CREATE TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+(\w+)\s*\(", OPS_DDL))
+    assert "ingest_cursor" in declared, "the guard is vacuous if OPS_DDL parsing found nothing"
+
+    dropped = {
+        match.group(1)
+        for match in (re.match(r"DROP TABLE IF EXISTS (\w+)$", entry.sql) for entry in OPS_BENIGN_DDL_CONVERGENCE_PLAN)
+        if match is not None
+    }
+    assert dropped, "the guard is vacuous while the plan retires nothing"
+    assert not dropped & declared
 
 
 def test_ops_upsert_ingest_cursor_updates_single_row(tmp_path: Path) -> None:

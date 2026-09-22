@@ -583,8 +583,8 @@ def _apply_ops_benign_ddl_convergence(conn: sqlite3.Connection) -> None:
     """Apply the declared idempotent OPS same-version fast-forward plan."""
     from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
 
-    for statement in OPS_BENIGN_DDL_CONVERGENCE_PLAN:
-        conn.execute(statement)
+    for entry in OPS_BENIGN_DDL_CONVERGENCE_PLAN:
+        conn.execute(entry.sql)
 
 
 def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:

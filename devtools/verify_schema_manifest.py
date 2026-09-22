@@ -103,7 +103,7 @@ def invalid_benign_ddl_entries(entries: Iterable[tuple[str, str]]) -> list[str]:
 def _benign_ddl_violations() -> list[str]:
     """Validate every registered same-version benign-DDL statement."""
     entries: list[tuple[str, str]] = [(entry.name, entry.sql) for entry in INDEX_BENIGN_DDL_REGISTRY]
-    entries.extend((f"ops[{index}]", sql) for index, sql in enumerate(OPS_BENIGN_DDL_CONVERGENCE_PLAN))
+    entries.extend((f"ops:{entry.name}", entry.sql) for entry in OPS_BENIGN_DDL_CONVERGENCE_PLAN)
     return invalid_benign_ddl_entries(entries)
 
 
