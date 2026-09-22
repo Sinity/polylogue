@@ -566,7 +566,17 @@ def _source_schema_capabilities(conn: sqlite3.Connection) -> SourceBlobCapabilit
         # A typed blob_refs table is a valid conservative carrier for an old
         # source, even when a later referent relation is absent. It is added to
         # fallback only when canonical authority is not selected below.
-        current_authority = user_version == stamped_source_version or current_capabilities
+        # The stamp alone cannot confer authority. ``user_version`` was
+        # renumbered from one by the archive format floor, so a historical
+        # source database can carry the integer this runtime stamps today
+        # while holding only the legacy direct-carrier shape -- and this
+        # projection has no format marker to separate the two lineages
+        # (polylogue, PR #5369). Trusting the integer sent such a file to the
+        # canonical query, which is blocked for it, so its existing blob
+        # references became unavailable to integrity and recovery tooling.
+        # ``blob_refs`` is the typed ledger only this lineage writes, so the
+        # stamp earns authority only alongside it.
+        current_authority = current_capabilities or (user_version == stamped_source_version and current_blob_refs)
         if not current_authority and current_blob_refs:
             legacy_carriers.append("blob_refs")
         if current_authority:
