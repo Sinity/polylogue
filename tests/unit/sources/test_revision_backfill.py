@@ -2575,6 +2575,61 @@ def _census_facts(root: Path, raw_id: str) -> tuple[str | None, str, tuple[str, 
     return logical_key, str(authority), keys
 
 
+def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """polylogue-asp4b (sibling append): two valid extensions, no chosen head.
+
+    One rollout path holds a shared capture and two captures that each extend
+    it differently -- the same file re-scanned after a fork, or two machines
+    appending to one synced path. Both are valid extensions of the baseline and
+    NEITHER is a byte prefix of the other, so byte comparison alone cannot say
+    which is the file's current state.
+
+    Wrong outcome prevented: the census picks the largest capture as the
+    cohort's head and binds the other fork to its learned identity on
+    containment with the baseline alone. Anti-vacuity: deleting the whole-
+    cohort verdict guard in ``classify_untyped_full_revision_groups``
+    (``any(decision.authority is not RawRevisionAuthority.BYTE_PROVEN ...)``)
+    makes this red -- the group is returned, a head is chosen, and the losing
+    fork is never parsed.
+    """
+    bootstrap_archive_root(tmp_path)
+    shared = _CHAIN_META + _chain_turn(0)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = {
+            name: archive.write_raw_payload(
+                provider=Provider.CODEX, payload=payload, source_path="chain.jsonl", acquired_at_ms=index + 1
+            )
+            for index, (name, payload) in enumerate(
+                (
+                    ("shared", shared),
+                    ("fork_a", shared + _chain_turn(1)),
+                    ("fork_b", shared + _chain_turn(2)),
+                )
+            )
+        }
+        assert archive.classify_untyped_full_revision_groups(sorted(raw_ids.values())) == {}
+
+    original = revision_backfill._parse_retained_raw
+    parsed: list[str] = []
+
+    def counted(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        return original(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+
+    backfill_historical_revision_evidence(tmp_path, max_payload_bytes=None)
+
+    # Every member is opened: nothing inherits an identity byte proof cannot
+    # establish for it.
+    assert set(raw_ids.values()) <= set(parsed)
+    # The shared capture is the only member byte proof can place; a fork with a
+    # sibling is quarantined rather than crowned.
+    assert _census_facts(tmp_path, raw_ids["shared"])[1] == "byte_proven"
+    assert _census_facts(tmp_path, raw_ids["fork_a"])[1] == "quarantined"
+    assert _census_facts(tmp_path, raw_ids["fork_b"])[1] == "quarantined"
+
+
 def test_chain_member_identity_refuted_by_its_own_parse(tmp_path: Path) -> None:
     """polylogue-irtix (C): containment must not bind a member the parser refutes.
 
