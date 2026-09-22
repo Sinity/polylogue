@@ -354,3 +354,84 @@ def test_projection_classifies_text_blocks_tools_attachments_and_system_noise() 
     assert [message.id for message in prose_without_noise] == ["mixed-text", "blocks"]
     assert "Lead" in (prose_without_noise[0].text or "")
     assert "custom prose" in (prose_without_noise[1].text or "")
+
+
+def test_reasoning_projection_suppresses_the_writer_fallback_text_block() -> None:
+    """A persisted typed-thinking row must project like its pre-write self.
+
+    A text-only ``message_type=thinking`` message reaches storage with no
+    blocks, and ``archive_tiers/write.py::_message_blocks`` -- called here so
+    the fixture is the production shape and not a guess -- materializes
+    ``message.text`` as a plain ``text`` block.  Every hydrated read therefore
+    has ``blocks`` non-empty, which used to route the fallback block through
+    the ordinary prose classifier: ``include_reasoning=False`` kept the private
+    reasoning after the write and dropped it before, so the projection
+    disagreed with itself across the writer boundary.
+
+    Anti-vacuity: reverting ``_segments_for_message``'s
+    ``message_is_typed_thinking`` hand-off makes ``after_write`` project as
+    PROSE, so ``without_reasoning`` keeps the text and the first assertion is
+    red.  The reasoning-only assertions pin the opposite direction, so a
+    blanket "drop every typed-thinking message" would fail too.
+    """
+    from polylogue.sources.parsers.base_models import ParsedMessage
+    from polylogue.storage.sqlite.archive_tiers.write import _message_blocks
+
+    text = "private chain of thought"
+    parsed = ParsedMessage(
+        provider_message_id="typed-thinking",
+        role=Role.ASSISTANT,
+        text=text,
+        message_type=MessageType.THINKING,
+    )
+    stored_blocks = [block.model_dump(mode="json") for block in _message_blocks(parsed)]
+    assert [block["type"] for block in stored_blocks] == ["text"], stored_blocks
+
+    after_write = make_msg(
+        id="after-write",
+        role=Role.ASSISTANT,
+        text=text,
+        message_type=MessageType.THINKING,
+        blocks=stored_blocks,
+    )
+    before_write = make_msg(
+        id="before-write",
+        role=Role.ASSISTANT,
+        text=text,
+        message_type=MessageType.THINKING,
+    )
+
+    hide = ContentProjectionSpec(include_reasoning=False)
+    show = ContentProjectionSpec.from_params({"include_content_kinds": [ContentKind.REASONING]})
+
+    assert project_message_content([after_write], hide) == []
+    assert project_message_content([before_write], hide) == []
+    assert [message.text for message in project_message_content([after_write], show)] == [text]
+    assert [message.text for message in project_message_content([before_write], show)] == [text]
+
+
+def test_typed_thinking_keeps_structural_blocks_classified_as_themselves() -> None:
+    """Only the text carrier is reclassified, not the whole message.
+
+    Anti-vacuity: widening the ``message_is_typed_thinking`` branch to every
+    block type makes the tool call project as REASONING, so the tool-call
+    assertion goes red.
+    """
+    message = make_msg(
+        id="thinking-with-tool",
+        role=Role.ASSISTANT,
+        text="reasoning body",
+        message_type=MessageType.THINKING,
+        blocks=[
+            {"type": "text", "text": "reasoning body"},
+            {"type": "tool_use", "name": "Bash", "tool_id": "t1", "tool_input": {"command": "ls"}},
+        ],
+    )
+
+    tools_only = ContentProjectionSpec.from_params({"include_content_kinds": [ContentKind.TOOL_CALL]})
+    reasoning_only = ContentProjectionSpec.from_params({"include_content_kinds": [ContentKind.REASONING]})
+
+    kept_tools = project_message_content([message], tools_only)
+    assert [block["type"] for block in kept_tools[0].blocks] == ["tool_use"]
+    kept_reasoning = project_message_content([message], reasoning_only)
+    assert [block["type"] for block in kept_reasoning[0].blocks] == ["text"]
