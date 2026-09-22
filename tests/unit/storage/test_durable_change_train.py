@@ -341,8 +341,11 @@ def _install_synthetic_migration(
     *,
     sql: str = _ADDITIVE_SQL,
     canonical_base: str = _BASE_ITEMS_DDL,
-) -> None:
+) -> str:
     """Install one synthetic slot-002 migration *with* its checked-in sidecar.
+
+    Returns the canonical DDL it declared for the tier, so a caller that needs
+    a parity proof over the same shape does not restate the composition.
 
     ``002`` sits above ``ARCHIVE_FORMAT_FLOOR_VERSION``, and production
     discovery (``validate_durable_migration_sidecars``) refuses any post-floor
@@ -388,7 +391,8 @@ def _install_synthetic_migration(
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
     ddl = dict(ARCHIVE_DDL_BY_TIER)
-    ddl[tier] = f"{canonical_base}\n{sql}"
+    canonical = f"{canonical_base}\n{sql}"
+    ddl[tier] = canonical
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(
@@ -398,6 +402,7 @@ def _install_synthetic_migration(
         "polylogue.storage.sqlite.durable_change_train._migration_package",
         lambda observed_tier: f"{package_name}.{observed_tier.value}",
     )
+    return canonical
 
 
 def _reserve_and_authorize(
@@ -454,13 +459,12 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
     initialize_active_archive_root(tmp_path)
     db_path = tmp_path / "source.db"
-    _install_synthetic_migration(
+    canonical_ddl = _install_synthetic_migration(
         tmp_path,
         monkeypatch,
         ArchiveTier.SOURCE,
         canonical_base=ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE],
     )
-    canonical_ddl = migration_runner.ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE]
     train = _admitted(
         ArchiveTier.SOURCE,
         rider=_source_hook_event_production_rider(),
