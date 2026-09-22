@@ -73,15 +73,27 @@ __all__ = ["shared_wire_generation", "shared_wire_support_receipt"]
 #: own strong reference, so an id is never reused underneath it, and the bound
 #: keeps the retained schemas to the handful one build has live at once.
 #:
-#: MEASURED 2026-09-22: those sixteen schemas are 163.8 MiB and 1.67M objects,
-#: which makes this bounded memo the single largest retainer in this module --
-#: larger than all six growing memos below put together after six builds. The
-#: bound is doing its job (the number is flat from one build to six); it is the
-#: per-entry cost that is large. Narrowing it trades resident memory against
-#: re-digesting a multi-megabyte schema per call and is not attempted here
-#: without measuring that cost.
+#: MEASURED 2026-09-22 at 6fa844051, because the previous bound of 16 was a
+#: guess at "a handful" and cost 162.6 MiB to be wrong. One full-catalog build
+#: calls ``_stable_digest`` 2,120 times over 73 distinct objects. Replaying
+#: that access sequence through an LRU of each size:
+#:
+#:   limit  digest misses   retained by this memo
+#:       2            144   0.9 MiB
+#:       4             73   1.3 MiB
+#:       8             73   34.0 MiB
+#:      16             73   163.8 MiB  (1.67M objects)
+#:      32             73   475.0 MiB
+#:
+#: 4 is where the miss count reaches its floor: every size from 4 upward costs
+#: the same 73 digests, so 16 bought nothing and retained 162.5 MiB for it. 2
+#: is not enough -- it doubles the digests. Measured end to end, the live
+#: reachable heap after one build is 282.4 MiB over 2,188,458 objects at
+#: limit 16 and 119.8 MiB over 534,043 at limit 4, reproduced twice, while
+#: ``_content_digest`` calls move 3,874 -> 3,887 (+13, ~12 ms at 0.9 ms each).
+#: Nothing else holds those schemas: the whole difference is freed.
 _IDENTITY_DIGESTS: dict[int, tuple[object, str]] = {}
-_IDENTITY_DIGEST_LIMIT = 16
+_IDENTITY_DIGEST_LIMIT = 4
 
 
 def _content_digest(value: object) -> str:
