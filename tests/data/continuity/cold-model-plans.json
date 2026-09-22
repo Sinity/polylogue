@@ -1,0 +1,204 @@
+{
+  "family": "recorded",
+  "model": "author-recorded-v1",
+  "plans": {
+    "cost": {
+      "citation_fields": [
+        "evidence_refs"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "include": [
+              "provider_usage"
+            ],
+            "ref": "{fixture:corpus.origin}",
+            "scope": "archive"
+          },
+          "tool": "status"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    },
+    "decision": {
+      "citation_fields": [
+        "assertion_id",
+        "evidence_refs"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "assertions where kind:decision AND text:{fixture:corpus.decision.marker}",
+            "limit": 2
+          },
+          "tool": "query"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    },
+    "forensic-debug": {
+      "citation_fields": [
+        "first_tool_use_block_id",
+        "message_id",
+        "tool_use_block_id"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "actions where path:{fixture:corpus.forensic_debug.path} AND is_error:true",
+            "limit": 2
+          },
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "files where path:{fixture:corpus.forensic_debug.path}",
+            "limit": 2
+          },
+          "tool": "query"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    },
+    "parallel-claude-incident": {
+      "citation_fields": [
+        "message_id"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "messages where text:parallel-child AND text:\"workflow_run:{fixture:corpus.parallel_claude_incident.run_ref}\"",
+            "limit": 17
+          },
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "messages where text:parallel-child AND NOT text:\"workflow_run:{fixture:corpus.parallel_claude_incident.run_ref}\"",
+            "limit": 19
+          },
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "runs where native_parent_session_id:\"{fixture:corpus.parallel_claude_incident.coordinator_session_id}\" AND role:subagent",
+            "limit": 19
+          },
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "messages where text:\"workflow-invocation:{fixture:corpus.parallel_claude_incident.run_ref}\"",
+            "limit": 2
+          },
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "messages where text:\"final-structured-result:{fixture:corpus.parallel_claude_incident.run_ref}\"",
+            "limit": 2
+          },
+          "tool": "query"
+        },
+        {
+          "arguments": {
+            "expression": "messages where text:\"incident-curriculum:{fixture:corpus.parallel_claude_incident.run_ref}\"",
+            "limit": 3
+          },
+          "tool": "query"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    },
+    "postmortem": {
+      "citation_fields": [
+        "message_id",
+        "tool_use_block_id"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "actions where output:{fixture:corpus.postmortem.marker} AND is_error:true",
+            "limit": 2
+          },
+          "tool": "query"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    },
+    "prior-art": {
+      "citation_fields": [
+        "message_id"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "messages where text:{fixture:corpus.prior_art.marker}",
+            "limit": 2
+          },
+          "tool": "query"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    },
+    "resume": {
+      "citation_fields": [
+        "message_id"
+      ],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "messages where text:{fixture:corpus.resume.marker}",
+            "limit": 2
+          },
+          "tool": "query"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    },
+    "self-inspection": {
+      "citation_fields": [],
+      "steps": [
+        {
+          "arguments": {
+            "expression": "assertions where kind:decision AND status:active",
+            "subject": "query"
+          },
+          "tool": "explain"
+        },
+        {
+          "arguments": {
+            "limit": 1,
+            "subject": "capability"
+          },
+          "tool": "explain"
+        }
+      ],
+      "stop_conditions": [
+        "all declared facts match"
+      ],
+      "uncertainty": "medium"
+    }
+  }
+}

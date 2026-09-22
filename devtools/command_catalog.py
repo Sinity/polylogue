@@ -560,6 +560,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools archive continuity-evidence --output .cache/continuity-evidence.json",
         ),
     ),
+    CommandSpec(
+        "archive continuity-cold-model",
+        "archive",
+        "Grade cold, wire-only model plan formulation against the continuity registry.",
+        "devtools.continuity_cold_model",
+        json_flag=True,
+        use_when=(
+            "To ask whether a cold client could have formulated each continuity scenario's plan from "
+            "sparse operator wording plus wire-captured discovery alone. Discovery pages the real "
+            "explain tool to exhaustion over MCP stdio with no in-process registry fallback; the "
+            "production replay stays the execution oracle and is graded on separate axes. The default "
+            "scripted backend replays a recorded plan artifact and makes no network call."
+        ),
+        examples=(
+            "devtools archive continuity-cold-model --plans tests/data/continuity/cold-model-plans.json",
+            "devtools archive continuity-cold-model --plans plans.json --attempts 3 --required-passes 2",
+        ),
+    ),
 )
 
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
