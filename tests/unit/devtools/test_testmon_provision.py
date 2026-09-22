@@ -432,3 +432,61 @@ def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path, monkeyp
     assert focused.returncode == 0, focused.stdout + focused.stderr
     assert _recorded_tests(corpus_graph) == 20
     assert not (tmp_path / "scratch-testmondata").exists()
+
+
+def _write_test_files(root: Path, relatives: list[str]) -> None:
+    for relative in relatives:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("def test_one():\n    assert True\n", encoding="utf-8")
+
+
+def test_declared_test_files_match_the_collection_rules(tmp_path: Path) -> None:
+    """The file set is derived the way the closed-world collection derives it.
+
+    Anti-vacuity: glob ``*.py`` instead of the declared ``python_files``
+    patterns and ``helpers.py`` appears; drop the benchmarks exclusion and the
+    ignored path appears. Either way the comparison would report files pytest
+    never looks at as unrecorded, and refuse verification over them.
+    """
+    _write_test_files(
+        tmp_path,
+        [
+            "tests/unit/test_alpha.py",
+            "tests/unit/beta_test.py",
+            "tests/fuzz/fuzz_gamma.py",
+            "tests/unit/helpers.py",
+            "tests/benchmarks/test_ignored.py",
+        ],
+    )
+
+    assert testmon_provision.declared_test_files(tmp_path) == frozenset(
+        {"tests/unit/test_alpha.py", "tests/unit/beta_test.py", "tests/fuzz/fuzz_gamma.py"}
+    )
+
+
+def test_a_file_the_graph_never_recorded_is_reported(tmp_path: Path) -> None:
+    """Testmon runs an unrecorded test as unknown, so it is not in any bound.
+
+    The graph below records one of the two declared files. The unrecorded one
+    is exactly the part of a selecting run the graph's own count cannot see.
+
+    Anti-vacuity: compare recorded *tests* instead of recorded files and the
+    file with no execution rows is silently absent from both sides, so this
+    returns nothing and the caller's count stays short. Return ``()`` instead
+    of ``None`` for an absent datafile and the last assertion goes red --
+    "unreadable" and "none missing" must not be the same answer.
+    """
+    _write_test_files(tmp_path, ["tests/unit/test_recorded.py", "tests/unit/test_new.py"])
+    assert testmon_provision.unrecorded_test_files(tmp_path) is None
+
+    path = _seed_with_testmon(tmp_path)
+    connection = sqlite3.connect(path)
+    with contextlib.closing(connection):
+        connection.execute(
+            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (1, ?, 0.1, 0, 0)",
+            ("tests/unit/test_recorded.py::test_one",),
+        )
+        connection.commit()
+
+    assert testmon_provision.unrecorded_test_files(tmp_path) == ("tests/unit/test_new.py",)

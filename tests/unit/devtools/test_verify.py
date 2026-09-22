@@ -28,7 +28,8 @@ from devtools import (
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument
 from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
-from devtools.verification_admission import AFFECTED_MAX_SELECTED_TESTS
+from devtools.testmon_provision import testmon_datafile as _testmon_datafile
+from devtools.verification_admission import AFFECTED_MAX_SELECTED_TESTS, AFFECTED_MAX_UNRECORDED_FILES
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
@@ -502,6 +503,120 @@ def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], ex
     assert verify._selection_for_changes(changed) == expected
 
 
+class _StubTestmonData:
+    """Just enough of ``TestmonData`` for the estimator to reach its arithmetic."""
+
+    system_packages_change = False
+
+    def __init__(self, selected: tuple[str, ...]) -> None:
+        self.unstable_test_names = list(selected)
+        self.failing_tests: list[str] = []
+        self.all_tests = {name: {"duration": 0.5} for name in selected}
+
+    @classmethod
+    def factory(cls, selected: tuple[str, ...]) -> Any:
+        return lambda **_kwargs: cls(selected)
+
+    def determine_stable(self) -> None:
+        return None
+
+
+def _stub_affected_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    selected: tuple[str, ...],
+    unrecorded_files: tuple[str, ...],
+    unrecorded_tests: int | None,
+) -> None:
+    """Point the estimator at a stub graph with a known selection and unknown set."""
+    import testmon.db
+    import testmon.testmon_core
+
+    datafile = _testmon_datafile(tmp_path)
+    datafile.parent.mkdir(parents=True, exist_ok=True)
+    sqlite3.connect(datafile).close()
+    monkeypatch.setattr(verify, "snapshot_testmon_graph", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(testmon.db, "DB", lambda *_a, **_k: SimpleNamespace(con=SimpleNamespace(close=lambda: None)))
+    monkeypatch.setattr(
+        testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected), raising=False
+    )
+    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
+    monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
+
+
+def test_the_estimate_counts_tests_the_graph_never_recorded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The plan's size is what launches, not what the graph happens to know.
+
+    Testmon deselects only recorded tests, so every test in a file the graph
+    has no execution for runs as unknown. A freshly initialized or interrupted
+    graph therefore reported a tiny bounded plan and launched the corpus --
+    exactly the required-check timeout the admission cap exists to refuse.
+    Measured on this checkout at 2026-09-22: 10 of 1,353 declared test files
+    had no recorded execution, worth 68 tests, none of which appeared in the
+    admitted count.
+
+    Anti-vacuity: return ``len(selected)`` instead of ``len(selected) +
+    unrecorded_tests`` and the first case's count drops to 2 while the run
+    still executes 70; the second case then reports 2 and is admitted, so both
+    assertions below go red.
+    """
+    graph = SimpleNamespace(status=TestmonGraphStatus.USABLE, full_rerun_cause=None)
+    _stub_affected_graph(
+        monkeypatch,
+        tmp_path,
+        selected=("tests/unit/a.py::test_one", "tests/unit/a.py::test_two"),
+        unrecorded_files=("tests/unit/new.py",),
+        unrecorded_tests=68,
+    )
+
+    count, seconds, error, unrecorded = verify._estimate_affected_selection(tmp_path, graph)
+
+    assert (count, unrecorded, error) == (70, 68, None)
+    assert seconds == 1.0
+
+    _stub_affected_graph(
+        monkeypatch,
+        tmp_path,
+        selected=("tests/unit/a.py::test_one", "tests/unit/a.py::test_two"),
+        unrecorded_files=("tests/unit/new.py",),
+        unrecorded_tests=AFFECTED_MAX_SELECTED_TESTS + 1,
+    )
+    decision = verify._affected_admission(root=tmp_path, graph=graph)
+    assert decision.status == "refused"
+    assert decision.unrecorded_tests == AFFECTED_MAX_SELECTED_TESTS + 1
+
+
+@pytest.mark.parametrize(
+    ("unrecorded_files", "unrecorded_tests", "expected"),
+    [
+        (None, 0, "recorded test files could not be read"),
+        (tuple(f"tests/unit/test_{index}.py" for index in range(AFFECTED_MAX_UNRECORDED_FILES + 1)), 0, "more than"),
+        (("tests/unit/new.py",), None, "could not be collected"),
+    ],
+)
+def test_an_unpriceable_unknown_set_refuses(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    unrecorded_files: tuple[str, ...] | None,
+    unrecorded_tests: int | None,
+    expected: str,
+) -> None:
+    """Each way of failing to price the unknown set is its own typed refusal.
+
+    Anti-vacuity: fold any of these into ``0`` and the estimator reports a
+    bounded plan it did not measure -- a silent truncation of the answer,
+    which is the one thing this admission is not allowed to do.
+    """
+    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
+    monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
+
+    counted, reason = verify._unrecorded_selection_term(tmp_path)
+
+    assert counted is None
+    assert reason is not None and expected in reason
+
+
 def test_a_markdown_test_fixture_still_selects_tests() -> None:
     """Markdown under ``tests/`` is fixture content, not documentation.
 
@@ -641,7 +756,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(
         verify,
         "_estimate_affected_selection",
-        lambda _root, _graph: (selected_count, 1.0, None),
+        lambda _root, _graph: (selected_count, 1.0, None, 0),
     )
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
