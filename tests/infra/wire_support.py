@@ -92,6 +92,17 @@ __all__ = ["shared_wire_generation", "shared_wire_support_receipt"]
 #: limit 16 and 119.8 MiB over 534,043 at limit 4, reproduced twice, while
 #: ``_content_digest`` calls move 3,874 -> 3,887 (+13, ~12 ms at 0.9 ms each).
 #: Nothing else holds those schemas: the whole difference is freed.
+#:
+#: Confirmed end to end through the managed harness on one selection
+#: (``devtools test tests/unit/core``, 2,839 tests, one worker, the same nine
+#: inherited failures either side). This memo alone falls 175.32 -> 23.77 MiB,
+#: the worker's live reachable heap 684.3 -> 475.2 MiB over 2.1M fewer
+#: objects, and its resident memory at session end 1001.2 -> 849.7 MiB.
+#: What did NOT move is the per-test PEAK -- 1145.7 -> 1291.0 MiB, a transient
+#: single sample on a contended host (the 50-test sampled maximum moved only
+#: 1015 -> 1058 MiB, and mean sampled resident fell 686.2 -> 663.2). Peak is
+#: what ``devtools/worker_memory.py`` sizes width from, so this reduces
+#: retention without yet being evidence for a wider corpus run.
 _IDENTITY_DIGESTS: dict[int, tuple[object, str]] = {}
 _IDENTITY_DIGEST_LIMIT = 4
 
