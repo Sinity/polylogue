@@ -382,8 +382,9 @@ def _classify_frontier(
 
 
 #: States that publish a durable ``raw_authority_blockers`` obligation. A
-#: later pass that disproves the state tombstones its own row; nothing else
-#: clears one automatically.
+#: later pass that disproves the state tombstones its own row, and a pass that
+#: still observes the state reopens a row some other route tombstoned: only
+#: discharged evidence keeps an obligation closed.
 _OBLIGATION_STATES = {
     RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE,
     RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
@@ -397,6 +398,11 @@ def _reconcile_frontier_obligations(
     items: tuple[RawAuthorityFrontierItem, ...],
 ) -> dict[str, str]:
     """Publish current obligations and close only those a later pass disproved.
+
+    Reopening is the other half of that sentence. ``resolve_raw_authority_blocker``
+    can tombstone a frontier obligation as an operator acknowledgement, but the
+    acknowledgement is not the discharge -- the evidence is. A pass that still
+    observes the blocking state therefore reopens the row it reconstructs.
 
     Returns the durable blocker id published for each still-blocking plan, so
     the caller can bind every blocking item to the row that now carries its
@@ -437,6 +443,40 @@ def _reconcile_frontier_obligations(
                     _canonical_json(_plan(item).to_dict()),
                     _canonical_json(observed),
                     now,
+                ),
+            )
+            # A tombstoned row whose evidence still reproduces is not a
+            # discharged obligation. ``pass_id`` is a content address over the
+            # inventory, so an unchanged blocking frontier reconstructs the
+            # identical ``blocker_id`` and the INSERT above is a no-op: an
+            # acknowledgement therefore used to hide the obligation forever,
+            # holding ``raw_authority_blocker_count`` at zero while the same
+            # missing, quarantined, or corrupt evidence still existed and
+            # readiness reported the archive clean. Reopen it. The partial
+            # unique index admits one open row per ``plan_input_digest``, so a
+            # reopen defers to an open sibling rather than colliding with it.
+            conn.execute(
+                """
+                UPDATE raw_authority_blockers
+                SET resolved_at_ms = NULL,
+                    resolution = NULL,
+                    observed_pass_id = ?,
+                    reason = ?,
+                    observed_json = ?
+                WHERE blocker_id = ?
+                  AND resolved_at_ms IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM raw_authority_blockers AS open_row
+                      WHERE open_row.plan_input_digest = ?
+                        AND open_row.resolved_at_ms IS NULL
+                  )
+                """,
+                (
+                    pass_id,
+                    item.reason,
+                    _canonical_json(observed),
+                    blocker_id,
+                    _plan(item).input_digest,
                 ),
             )
         open_rows = conn.execute(

@@ -175,3 +175,74 @@ def test_frontier_obligation_states_are_the_only_blocker_writers_left(tmp_path: 
         }
     assert origins <= {"frontier_obligation"}
     assert {state.value for state in RawAuthorityFrontierState} >= {"missing_bytes_reacquire", "corrupt"}
+
+
+def _seed_blocking_frontier_head(root: Path) -> None:
+    """Record an accepted head whose raw authority is absent from source.db.
+
+    ``_classify_frontier`` reads that as ``missing_bytes_reacquire`` -- one of
+    the three obligation states -- so the next pass publishes a durable blocker.
+    """
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES ('logical:absent', 'codex-session:absent', 'raw:absent', 'rev-1',
+                      ?, 'byte', 0, 0, NULL, 1000)
+            """,
+            (b"\x11" * 32,),
+        )
+        conn.commit()
+
+
+def _open_blocker_ids(root: Path) -> list[str]:
+    with sqlite3.connect(root / "source.db") as conn:
+        return [
+            str(blocker_id)
+            for (blocker_id,) in conn.execute(
+                "SELECT blocker_id FROM raw_authority_blockers WHERE resolved_at_ms IS NULL ORDER BY blocker_id"
+            ).fetchall()
+        ]
+
+
+def test_acknowledging_an_undischarged_obligation_does_not_survive_the_next_pass(tmp_path: Path) -> None:
+    """Resolution acknowledges evidence; only changed evidence discharges it.
+
+    ``pass_id`` is a content address over the frontier inventory, so a pass over
+    unchanged blocking evidence reconstructs the identical ``blocker_id``. With
+    an insert-only reconciliation the tombstone survived that collision
+    forever: ``raw_authority_blocker_count`` stayed zero and readiness reported
+    a clean archive while the same missing bytes were still missing.
+
+    Anti-vacuity: removing the reopening UPDATE in
+    ``_reconcile_frontier_obligations`` leaves the second pass with no open
+    blocker and fails the reopen assertion. The disproof half below pins the
+    other direction, so a blanket "always reopen" cannot pass either.
+    """
+    bootstrap_archive_root(tmp_path)
+    _seed_blocking_frontier_head(tmp_path)
+
+    inspect_raw_authority_frontier(_config(tmp_path))
+    published = _open_blocker_ids(tmp_path)
+    assert len(published) == 1
+    blocker_id = published[0]
+
+    resolve_raw_authority_blocker(tmp_path, blocker_id, resolution="acknowledged without reacquiring the bytes")
+    assert _open_blocker_ids(tmp_path) == []
+    assert raw_materialization_ready(raw_materialization_readiness_snapshot(tmp_path)) is False
+
+    # The evidence has not changed, so the obligation is not discharged.
+    inspect_raw_authority_frontier(_config(tmp_path))
+    assert _open_blocker_ids(tmp_path) == [blocker_id]
+
+    # Opposite direction: evidence that no longer blocks stays closed.
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DELETE FROM raw_revision_heads WHERE logical_source_key = 'logical:absent'")
+        conn.commit()
+    inspect_raw_authority_frontier(_config(tmp_path))
+    assert _open_blocker_ids(tmp_path) == []
+    inspect_raw_authority_frontier(_config(tmp_path))
+    assert _open_blocker_ids(tmp_path) == []
