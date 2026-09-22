@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from typing import Any, cast
 
 import pytest
 
@@ -17,6 +19,7 @@ from polylogue.core.analysis_contracts import (
     IncompatibleRelationError,
     RelationManifest,
     ResultEnvelope,
+    TypedReceiptEnvelope,
     UnsupportedProtocolError,
     claim_class_for,
     claims_view,
@@ -200,5 +203,157 @@ def test_two_loop_pilots_share_scheduler_and_state_protocol() -> None:
     require_shared_loop_contract(first, second)
 
     forked = replace(second, scheduler_ref=_ref("run", "scheduler:v2"))
+    with pytest.raises(AnalysisContractError, match="scheduler/state contract"):
+        require_shared_loop_contract(first, forked)
+
+
+def test_canonical_payload_cannot_be_mutated_after_identity() -> None:
+    """A content-addressed identity must not change under the reader's feet.
+
+    ``_canonical`` returned ordinary dicts and lists, so a consumer that saved
+    ``definition.ref_text`` could mutate ``definition.content`` and have the
+    same object produce a different ref -- and receipts persisted before the
+    mutation disagreed with every later serialization. The same applied to
+    ``EvaluationWorld.resolved_bounds`` and its ``world_id``.
+
+    Anti-vacuity: making ``_canonical`` return plain ``dict``/``list`` again
+    turns every ``pytest.raises`` here green-to-red, and the ref/world_id
+    equalities below then fail because the mutation lands.
+    """
+    definition = DefinitionIdentity(
+        kind="metric",
+        protocol_version="metric.v1",
+        content={"construct": "cost", "tags": ["a", "b"], "bounds": {"since": "2026-01-01"}},
+    )
+    before = definition.ref_text
+    with pytest.raises(TypeError, match="immutable"):
+        definition.content["construct"] = "latency"  # type: ignore[index]
+    with pytest.raises(TypeError, match="immutable"):
+        definition.content["bounds"]["since"] = "1999-01-01"  # type: ignore[index]
+    with pytest.raises(TypeError, match="immutable"):
+        cast(dict[str, object], definition.content).setdefault("extra", 1)
+    with pytest.raises(AttributeError):
+        cast(list[object], definition.content["tags"]).append("c")
+    assert definition.ref_text == before
+
+    world = _world()
+    world_before = world.world_id
+    with pytest.raises(TypeError, match="immutable"):
+        world.resolved_bounds["since"] = "1999-01-01"  # type: ignore[index]
+    assert world.world_id == world_before
+    # Still an ordinary JSON payload for every reader and hasher.
+    assert isinstance(definition.content, dict)
+    assert json.loads(json.dumps(definition.canonical_payload))["content"]["tags"] == ["a", "b"]
+
+
+def test_result_value_requires_a_known_state() -> None:
+    """A value behind a non-``known`` state is two answers to one question.
+
+    Anti-vacuity: dropping the ``value is not None`` guard makes the three
+    ``pytest.raises`` cases construct successfully, and dropping the
+    vocabulary check admits ``value_state="maybe"``. The ``known`` and
+    valueless cases below pin that the rule is not a blanket refusal.
+    """
+    relation = _relation()
+
+    def envelope(state: str, value: object | None = None) -> ResultEnvelope:
+        return ResultEnvelope(
+            result_ref=relation.relation_ref,
+            definition_ref=relation.definition_ref,
+            evaluation_world=relation.evaluation_world,
+            relation=relation,
+            value_state=cast(Any, state),
+            value=value,
+        )
+
+    for state in ("unknown", "unavailable", "redacted"):
+        with pytest.raises(AnalysisContractError, match="cannot carry a value"):
+            envelope(state, 42)
+        assert envelope(state).value is None
+    with pytest.raises(AnalysisContractError, match="unsupported result value state"):
+        envelope("maybe")
+    assert envelope("known", 42).value == 42
+
+
+def test_receipt_privacy_inherits_the_embedded_definition() -> None:
+    """A durable receipt cannot declassify the definition it serializes.
+
+    ``TypedReceiptEnvelope.to_dict`` emits ``definition.to_dict()`` verbatim,
+    so a ``secret`` unpromoted ad-hoc definition inside a ``private``/``audit``
+    receipt persisted its content to the audit tier with no retention or
+    excision metadata. Classification follows the content carried.
+
+    Anti-vacuity: reading ``self.privacy_class`` instead of
+    ``effective_privacy_class`` makes the first construction succeed. The
+    promoted case below pins that a properly retained secret definition is
+    still allowed, so the rule is not a blanket ban.
+    """
+    secret = DefinitionIdentity(
+        kind="metric",
+        protocol_version="metric.v1",
+        content={"construct": "secret-cost"},
+        privacy_class="secret",
+    )
+    with pytest.raises(AnalysisContractError, match="promotion or citation"):
+        TypedReceiptEnvelope(
+            object_ref=_ref("analysis-run", "run:v1"),
+            definition=secret,
+            evaluation_world=_world(),
+            durability="audit",
+            privacy_class="private",
+        )
+
+    retained = DefinitionIdentity(
+        kind="metric",
+        protocol_version="metric.v1",
+        content={"construct": "secret-cost"},
+        privacy_class="secret",
+        durability="audit",
+        promoted=True,
+        retention_policy={"keep": "90d"},
+        excision_link="excision:1",
+    )
+    receipt = TypedReceiptEnvelope(
+        object_ref=_ref("analysis-run", "run:v1"),
+        definition=retained,
+        evaluation_world=_world(),
+        durability="audit",
+        privacy_class="private",
+        promoted=True,
+        retention_policy={"keep": "90d"},
+        excision_link="excision:1",
+    )
+    assert receipt.effective_privacy_class == "secret"
+    # An ephemeral receipt is not durable persistence, so it stays allowed.
+    assert (
+        TypedReceiptEnvelope(
+            object_ref=_ref("analysis-run", "run:v2"),
+            definition=secret,
+            evaluation_world=_world(),
+            durability="ephemeral",
+        ).effective_privacy_class
+        == "secret"
+    )
+
+
+def test_shared_loop_contract_compares_the_whole_state_ref() -> None:
+    """Two pilots forking their state object do not share a loop contract.
+
+    ``compatible_with`` compared only ``state_ref.kind``, so
+    ``workspace:curriculum-state`` and ``workspace:recovery-state`` -- the
+    exact per-loop fork this function exists to reject -- were accepted.
+
+    Anti-vacuity: restoring the ``.kind`` comparison makes the
+    ``pytest.raises`` fail; the shared-state pair below keeps it from becoming
+    a refusal of every second pilot.
+    """
+    scheduler = _ref("run", "scheduler:v1")
+    shared = _ref("workspace", "loop-state")
+    first = ImprovementLoopContract(_ref("improvement-loop", "a"), "loop.v1", scheduler, shared, "curriculum")
+    second = ImprovementLoopContract(_ref("improvement-loop", "b"), "loop.v1", scheduler, shared, "recovery")
+    require_shared_loop_contract(first, second)
+
+    forked = replace(second, state_ref=_ref("workspace", "recovery-state"))
+    assert forked.state_ref.kind == first.state_ref.kind
     with pytest.raises(AnalysisContractError, match="scheduler/state contract"):
         require_shared_loop_contract(first, forked)

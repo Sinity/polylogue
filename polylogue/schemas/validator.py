@@ -95,7 +95,39 @@ def _schema_allows_type(schema: object, type_name: str) -> bool:
     return False
 
 
-def _schema_branch_for_value(schema: object, value: object) -> object:
+def _resolve_local_ref(schema: object, root: Mapping[str, object] | None) -> object:
+    """Follow a local ``$ref`` chain so the walk sees the declared node.
+
+    A ``{"$ref": "#/$defs/Provenance"}`` fragment is a Mapping with no
+    ``properties`` and a permissive default ``additionalProperties``, so the
+    drift walk treated every legitimately declared nested field as
+    ``Unexpected`` and ingest recorded spurious ``new_field`` observations for
+    ordinary browser-capture, Codex and ``allOf``-wrapped payloads. An external
+    or unresolvable ref yields ``None``: refusing to observe a node whose
+    declarations are not in hand is correct, reporting all of it as drift is
+    not.
+    """
+    seen: set[str] = set()
+    while isinstance(schema, Mapping) and isinstance(schema.get("$ref"), str):
+        pointer = str(schema["$ref"])
+        if root is None or not pointer.startswith("#") or pointer in seen:
+            return None
+        seen.add(pointer)
+        target: object = root
+        for part in pointer.lstrip("#/").split("/"):
+            if not part:
+                continue
+            part = part.replace("~1", "/").replace("~0", "~")
+            if isinstance(target, Mapping) and part in target:
+                target = target[part]
+            else:
+                return None
+        schema = target
+    return schema
+
+
+def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, object] | None = None) -> object:
+    schema = _resolve_local_ref(schema, root)
     if not isinstance(schema, Mapping):
         return None
     all_of = schema.get("allOf")
@@ -109,7 +141,7 @@ def _schema_branch_for_value(schema: object, value: object) -> object:
         if base:
             branches.append(base)
         for branch in all_of:
-            selected = _schema_branch_for_value(branch, value)
+            selected = _schema_branch_for_value(branch, value, root)
             if isinstance(selected, Mapping):
                 branches.append(selected)
         if branches:
@@ -123,18 +155,23 @@ def _schema_branch_for_value(schema: object, value: object) -> object:
         # broad JSON type, otherwise a drift walk can attribute a field to an
         # unrelated sibling branch.
         for branch in union_branches:
-            if isinstance(branch, Mapping) and _schema_accepts_value(branch, value):
-                return branch
+            resolved = _resolve_local_ref(branch, root)
+            if isinstance(resolved, Mapping) and _schema_accepts_value(resolved, value):
+                return resolved
         for branch in union_branches:
-            if isinstance(value, Mapping) and _schema_allows_type(branch, "object"):
-                return branch
-            if isinstance(value, list) and _schema_allows_type(branch, "array"):
-                return branch
-            if value is None and _schema_allows_type(branch, "null"):
-                return branch
+            resolved = _resolve_local_ref(branch, root)
+            if not isinstance(resolved, Mapping):
+                continue
+            if isinstance(value, Mapping) and _schema_allows_type(resolved, "object"):
+                return resolved
+            if isinstance(value, list) and _schema_allows_type(resolved, "array"):
+                return resolved
+            if value is None and _schema_allows_type(resolved, "null"):
+                return resolved
         for branch in union_branches:
-            if isinstance(branch, Mapping):
-                return branch
+            resolved = _resolve_local_ref(branch, root)
+            if isinstance(resolved, Mapping):
+                return resolved
     return schema
 
 
@@ -154,12 +191,12 @@ def _schema_accepts_value(schema: Mapping[str, object], value: object) -> bool:
         return False
 
 
-def _schema_for_property(schema: object, key: str, value: object) -> object:
+def _schema_for_property(schema: object, key: str, value: object, root: Mapping[str, object] | None = None) -> object:
     if not isinstance(schema, Mapping):
         return None
     properties = schema.get("properties")
     if isinstance(properties, Mapping) and key in properties:
-        return _schema_branch_for_value(properties[key], value)
+        return _schema_branch_for_value(properties[key], value, root)
     pattern_properties = schema.get("patternProperties")
     if isinstance(pattern_properties, Mapping):
         matches: list[Mapping[str, object]] = []
@@ -170,14 +207,14 @@ def _schema_for_property(schema: object, key: str, value: object) -> object:
                 except Exception:
                     pattern_match = None
                 if pattern_match:
-                    selected = _schema_branch_for_value(pattern_schema, value)
+                    selected = _schema_branch_for_value(pattern_schema, value, root)
                     if isinstance(selected, Mapping):
                         matches.append(selected)
         if matches:
             return _merge_pattern_observation_schemas(matches)
     additional_properties = schema.get("additionalProperties")
     if isinstance(additional_properties, Mapping):
-        return _schema_branch_for_value(additional_properties, value)
+        return _schema_branch_for_value(additional_properties, value, root)
     return None
 
 
@@ -248,7 +285,8 @@ def _has_matching_pattern_property(schema: Mapping[str, object], key: str) -> bo
     return False
 
 
-def _schema_for_items(schema: object, value: object) -> object:
+def _schema_for_items(schema: object, value: object, root: Mapping[str, object] | None = None) -> object:
+    schema = _resolve_local_ref(schema, root)
     if not isinstance(schema, Mapping):
         return None
     del value
@@ -344,6 +382,7 @@ def detect_drift(
     data: ValidationSample,
     schema: Mapping[str, object],
     path: str,
+    root: Mapping[str, object] | None = None,
 ) -> list[str]:
     """Detect newly observed named fields without changing schema acceptance.
 
@@ -354,7 +393,10 @@ def detect_drift(
     reported one-by-one.
     """
     warnings: list[str] = []
-    selected_schema = _schema_branch_for_value(schema, data)
+    # The outermost call owns the document the local ``$ref`` pointers resolve
+    # against; every nested call carries it forward.
+    root = root if root is not None else schema
+    selected_schema = _schema_branch_for_value(schema, data, root)
     if not isinstance(selected_schema, Mapping):
         return warnings
     schema = selected_schema
@@ -366,9 +408,9 @@ def detect_drift(
         current_path = f"{path}.{key}" if path else key
 
         if key not in schema_props:
-            property_schema = _schema_for_property(schema, key, value)
+            property_schema = _schema_for_property(schema, key, value, root)
             if _has_matching_pattern_property(schema, key):
-                warnings.extend(_detect_nested_drift(value, property_schema, current_path))
+                warnings.extend(_detect_nested_drift(value, property_schema, current_path, root))
                 continue
             if has_additional is False:
                 warnings.append(f"Unexpected field: {current_path}")
@@ -377,31 +419,39 @@ def detect_drift(
                     warnings.append(f"Unexpected field: {current_path}")
             else:
                 additional_schema = _schema_mapping(has_additional)
-                if dynamic_container:
-                    continue
-                if not looks_dynamic_key(key):
+                if not dynamic_container and not looks_dynamic_key(key):
                     warnings.append(f"Unexpected field: {current_path}")
-                warnings.extend(_detect_nested_drift(value, additional_schema, current_path))
+                # The KEY of a dynamic map is not a named field, but its VALUE
+                # is: ``additionalProperties`` declares the structured node, so
+                # a new provider field inside it is real drift. Skipping the
+                # whole entry meant a field that ingest can silently discard --
+                # ``mapping..new_provider_field`` in a ChatGPT export -- was
+                # never observed at all.
+                warnings.extend(_detect_nested_drift(value, additional_schema, current_path, root))
             continue
 
-        warnings.extend(_detect_nested_drift(value, schema_props.get(key), current_path))
+        warnings.extend(_detect_nested_drift(value, schema_props.get(key), current_path, root))
 
     return warnings
 
 
-def _detect_nested_drift(value: object, schema: object, path: str) -> list[str]:
+def _detect_nested_drift(
+    value: object, schema: object, path: str, root: Mapping[str, object] | None = None
+) -> list[str]:
     """Walk an object or array using the schema branch selected by ``value``."""
-    selected_schema = _schema_branch_for_value(schema, value)
+    selected_schema = _schema_branch_for_value(schema, value, root)
     if not isinstance(selected_schema, Mapping):
         return []
     nested_value = _sample_payload(value)
     if nested_value is not None:
-        return detect_drift(nested_value, selected_schema, path)
+        return detect_drift(nested_value, selected_schema, path, root)
     if not isinstance(value, list):
         return []
     warnings: list[str] = []
     for index, item in enumerate(value):
-        warnings.extend(_detect_nested_drift(item, _schema_for_items(selected_schema, item), f"{path}[{index}]"))
+        warnings.extend(
+            _detect_nested_drift(item, _schema_for_items(selected_schema, item, root), f"{path}[{index}]", root)
+        )
     return warnings
 
 

@@ -10,6 +10,8 @@ from polylogue.archive.semantic.subscription_pricing import get_credit_rate
 #: Anthropic list prices per million tokens: input, output, cache read,
 #: 5-minute cache write.
 _LIST_PRICES = {
+    "claude-opus-5": (5.0, 25.0, 0.5, 6.25),
+    "claude-sonnet-5": (2.0, 10.0, 0.2, 2.5),
     "claude-opus-4-8": (5.0, 25.0, 0.5, 6.25),
     "claude-sonnet-4-6": (3.0, 15.0, 0.3, 3.75),
     "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
@@ -50,6 +52,24 @@ def test_subscription_credits_track_the_dollar_price(model: str) -> None:
     assert rate.output_credits == rate.input_credits * 5, "output credits must retain the 5x rate"
     assert rate.cache_read_credits == 0, "subscription cache reads are free"
     assert rate.cache_write_credits == rate.input_credits
+
+
+def test_every_credited_model_has_an_api_price() -> None:
+    """A subscription rate without a catalog price has no API-equivalent figure.
+
+    ``MODEL_CREDIT_RATES`` declares that a model is billed and at what credit
+    rate. With no row in the sole vendored catalog, ``estimate_cost`` returns
+    0.0 and ``compute_session_cost`` downgrades the breakdown to ``unknown``,
+    so every session on that model reports an unknown API-equivalent total --
+    which is what happened to the current Claude 5 family.
+
+    Anti-vacuity: deleting ``claude-opus-5`` from the catalog names it here,
+    and the per-model assertions above pin the rate, so restoring the row with
+    a wrong price does not make this green.
+    """
+    from polylogue.archive.semantic.subscription_pricing import MODEL_CREDIT_RATES
+
+    assert sorted(model for model in MODEL_CREDIT_RATES if PRICING.get(model) is None) == []
 
 
 def test_declared_credit_rates_are_not_reported_as_a_gap() -> None:

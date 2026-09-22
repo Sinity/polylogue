@@ -288,3 +288,119 @@ def test_unmaterialized_parent_raw_with_parse_refusal_is_conserved(tmp_path: Pat
     assert report.raw_disposition_counts == {"parse_failure": 1}
     assert report.raw_dispositions[0].raw_id == refused_raw_id
     assert report.blocking_count == 1
+
+
+def test_contradicted_ref_is_not_blocking(tmp_path: Path) -> None:
+    """A hook-overruled parent edge is an adjudication, not unresolved debt.
+
+    Acquired Codex ``thread_spawn_edges`` name one parent while the transcript
+    infers another; ``write_parsed_session_to_archive`` keeps both rows and
+    marks the inferred loser ``authority-contradicted`` with a null
+    resolution. That null is the recorded verdict -- the parent question was
+    answered by the winning edge, which this census counts under its own
+    identity -- so the census must not report the loser as an unresolved
+    reference and turn every ordinary hook/transcript conflict into an ERROR.
+
+    Anti-vacuity: the winning hook edge in the same report still resolves and
+    is still counted, and
+    ``test_materialized_parent_with_unresolved_reference_is_blocking`` pins
+    that a genuinely unresolved (cycle-quarantined) reference stays blocking.
+    Reverting the ``excluded_count`` split makes this test red on
+    ``blocking_count``.
+    """
+    from tests.infra.thread_state import seed_spawn_edges
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        _acquire_and_index(archive, tmp_path, _parsed("hook-parent"), order=0)
+        _acquire_and_index(archive, tmp_path, _parsed("parser-parent"), order=1)
+        archive.commit()
+
+    graph = sqlite3.connect(root / "index.db")
+    try:
+        seed_spawn_edges(graph, [("hook-parent", "conflicted-child", "spawned")])
+    finally:
+        graph.close()
+
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        _acquire_and_index(
+            archive,
+            tmp_path,
+            _parsed("conflicted-child", parent="parser-parent"),
+            order=2,
+        )
+        archive.commit()
+
+    statuses = sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)
+    try:
+        rows = dict(
+            statuses.execute(
+                "SELECT dst_native_id, COALESCE(status, '') FROM session_links "
+                "WHERE src_session_id = 'codex-session:conflicted-child'"
+            ).fetchall()
+        )
+    finally:
+        statuses.close()
+    assert rows.get("parser-parent") == "authority-contradicted", rows
+    assert rows.get("hook-parent") == "", rows
+
+    report = _audit(root)
+    by_parent = {entry.native_id: entry for entry in report.references}
+    assert by_parent["parser-parent"].excluded_reference_count == 1
+    assert by_parent["parser-parent"].disposition == "materialized"
+    assert by_parent["hook-parent"].excluded_reference_count == 0
+    assert by_parent["hook-parent"].resolved_reference_count == 1
+    assert report.excluded_reference_total == 1
+    assert report.unresolved_reference_total == 0
+    assert report.blocking_count == 0
+
+    check = _accounting_check(root)
+    assert check.status is OutcomeStatus.OK, check.summary
+
+
+def test_indexed_parent_without_raw_warns(tmp_path: Path) -> None:
+    """A parent present only in the rebuildable index is not simply materialized.
+
+    ``index.db`` is rebuildable; ``source.db`` is the durable authority. A
+    parent whose ``raw_sessions`` row is gone cannot be reconstructed, so
+    calling it ``materialized`` -- and counting it in
+    ``source_available_total`` -- let historical derived-only damage satisfy a
+    fresh-archive gate. Like ``source_unavailable``, this state is injected
+    past the producer because it IS the durable damage the census exists to
+    report; the removal below is the loss event.
+
+    Anti-vacuity: the same archive with the raw row intact reports
+    ``materialized`` with ``source_available_total == 1`` and status OK, which
+    the second half asserts, so the new disposition cannot be a blanket
+    downgrade of every materialized parent.
+    """
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        _acquire_and_index(archive, tmp_path, _parsed("kept-parent"), order=0)
+        _acquire_and_index(archive, tmp_path, _parsed("kept-child", parent="kept-parent"), order=1)
+        archive.commit()
+
+    intact = _audit(root)
+    assert intact.materialized_parent_total == 1
+    assert intact.source_available_total == 1
+    assert intact.materialized_without_source_total == 0
+    assert _accounting_check(root).status is OutcomeStatus.OK
+
+    conn = sqlite3.connect(root / "source.db")
+    try:
+        conn.execute("DELETE FROM raw_sessions WHERE native_id = 'kept-parent'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = _audit(root)
+    assert report.materialized_parent_total == 0
+    assert report.materialized_without_source_total == 1
+    assert report.source_available_total == 0
+    assert report.references[0].disposition == "materialized_without_source"
+    assert report.blocking_count == 0
+    assert report.warning_count == 1
+
+    check = _accounting_check(root)
+    assert check.status is OutcomeStatus.WARNING, check.summary
+    assert check.evidence["materialized_without_source_total"] == 1

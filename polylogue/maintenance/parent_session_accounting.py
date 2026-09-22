@@ -19,6 +19,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.enums import TopologyEdgeStatus
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.sqlite_introspection import table_exists
 
@@ -26,6 +27,9 @@ PARENT_ORIGINS: tuple[str, ...] = ("claude-code-session", "codex-session")
 
 _MATERIALIZED = "materialized"
 _MATERIALIZED_UNRESOLVED = "materialized_unresolved"
+#: Indexed, but no retained raw carries the identity. Materialization does not
+#: prove the durable evidence that produced it still exists.
+_MATERIALIZED_WITHOUT_SOURCE = "materialized_without_source"
 _AVAILABLE_UNMATERIALIZED = "source_available_unmaterialized"
 _UNAVAILABLE = "source_unavailable"
 _NOT_ACQUIRED = "not_acquired"
@@ -45,10 +49,19 @@ class ParentReferenceEvidence:
     resolved_reference_count: int
     disposition: str
     reason: str
+    #: Edges naming this parent that acquired hook evidence overruled
+    #: (``authority-contradicted``). The adjudication answered the parent
+    #: question through the winning edge, so the loser's null resolution is a
+    #: recorded refusal rather than unresolved debt.
+    excluded_reference_count: int = 0
 
     @property
     def source_available(self) -> bool:
         return bool(self.source_raw_ids) and self.disposition != _UNAVAILABLE
+
+    @property
+    def composable_reference_count(self) -> int:
+        return max(0, self.reference_count - self.excluded_reference_count)
 
     def to_json(self) -> JSONDocument:
         return json_document(
@@ -61,6 +74,7 @@ class ParentReferenceEvidence:
                 "source_paths": list(self.source_paths),
                 "indexed_session_ids": list(self.indexed_session_ids),
                 "resolved_reference_count": self.resolved_reference_count,
+                "excluded_reference_count": self.excluded_reference_count,
                 "disposition": self.disposition,
                 "reason": self.reason,
             }
@@ -108,6 +122,8 @@ class ParentSessionAccountingReport:
     materialized_parent_total: int
     unresolved_reference_total: int
     available_unmaterialized_total: int
+    materialized_without_source_total: int
+    excluded_reference_total: int
     raw_total: int
     frontier_total: int
     frontier_bytes: int
@@ -129,7 +145,11 @@ class ParentSessionAccountingReport:
 
     @property
     def warning_count(self) -> int:
-        return self.source_unavailable_total + self.not_acquired_total
+        # ``materialized_without_source`` warns rather than blocks: the parent
+        # IS present in the index, so no read is broken today, but the durable
+        # evidence that would rebuild it is gone and the report must say so
+        # instead of folding it into ``materialized``.
+        return self.source_unavailable_total + self.not_acquired_total + self.materialized_without_source_total
 
     def to_json(self) -> JSONDocument:
         return json_document(
@@ -145,6 +165,8 @@ class ParentSessionAccountingReport:
                 "materialized_parent_total": self.materialized_parent_total,
                 "unresolved_reference_total": self.unresolved_reference_total,
                 "available_unmaterialized_total": self.available_unmaterialized_total,
+                "materialized_without_source_total": self.materialized_without_source_total,
+                "excluded_reference_total": self.excluded_reference_total,
                 "raw_total": self.raw_total,
                 "frontier_total": self.frontier_total,
                 "frontier_bytes": self.frontier_bytes,
@@ -169,6 +191,8 @@ class ParentSessionAccountingReport:
             f"unresolved-references={self.unresolved_reference_total:,}",
             f"source-available={self.source_available_total:,}",
             f"available-unmaterialized={self.available_unmaterialized_total:,}",
+            f"materialized-without-source={self.materialized_without_source_total:,}",
+            f"excluded-references={self.excluded_reference_total:,}",
             f"raw={self.raw_total:,}, raw-unexplained={self.raw_unexplained_total:,}",
         ]
         if self.untyped_denominator:
@@ -242,6 +266,8 @@ def audit_parent_session_accounting(
             materialized_parent_total=0,
             unresolved_reference_total=0,
             available_unmaterialized_total=0,
+            materialized_without_source_total=0,
+            excluded_reference_total=0,
             raw_total=0,
             frontier_total=0,
             frontier_bytes=0,
@@ -267,6 +293,8 @@ def audit_parent_session_accounting(
             materialized_parent_total=0,
             unresolved_reference_total=0,
             available_unmaterialized_total=0,
+            materialized_without_source_total=0,
+            excluded_reference_total=0,
             raw_total=0,
             frontier_total=0,
             frontier_bytes=0,
@@ -282,16 +310,33 @@ def audit_parent_session_accounting(
     index.row_factory = sqlite3.Row
     source.row_factory = sqlite3.Row
     placeholders = ",".join("?" for _ in origins)
+    # ``excluded_count`` is the ADJUDICATED subset, not every
+    # composition-excluded edge. ``AUTHORITY_CONTRADICTED`` (polylogue-foee)
+    # means acquired hook evidence named a different parent for this child, so
+    # the inferred edge lost while both evidence sources stayed retained: the
+    # parent question WAS answered, by the winning edge, which the census
+    # counts under its own identity. Its null ``resolved_dst_session_id`` is
+    # the recorded refusal, not unresolved debt, and counting it as unresolved
+    # made ``parent-session-accounting`` return ERROR for every ordinary Codex
+    # hook/transcript conflict.
+    #
+    # ``QUARANTINED`` deliberately stays blocking. That status records a cycle
+    # break -- "the defect is in the SHAPE of the graph" per
+    # ``TopologyEdgeStatus`` -- which is a real structural problem this census
+    # exists to surface, and
+    # ``test_materialized_parent_with_unresolved_reference_is_blocking`` pins
+    # it through the writer's own cycle guard.
     links = index.execute(
         f"""
         SELECT dst_origin, dst_native_id, COUNT(*) AS reference_count,
-               SUM(resolved_dst_session_id IS NOT NULL) AS resolved_count
+               SUM(resolved_dst_session_id IS NOT NULL) AS resolved_count,
+               SUM(COALESCE(TRIM(status), '') = ?) AS excluded_count
         FROM session_links
         WHERE dst_origin IN ({placeholders})
         GROUP BY dst_origin, dst_native_id
         ORDER BY dst_origin, dst_native_id
         """,
-        origins,
+        (TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value, *origins),
     ).fetchall()
 
     refs: list[ParentReferenceEvidence] = []
@@ -335,10 +380,22 @@ def audit_parent_session_accounting(
         session_ids = tuple(str(row[0]) for row in sessions)
         resolved_count = int(link["resolved_count"] or 0)
         reference_count = int(link["reference_count"])
-        if session_ids and resolved_count == reference_count:
+        excluded_count = int(link["excluded_count"] or 0)
+        composable_count = max(0, reference_count - excluded_count)
+        if session_ids and resolved_count >= composable_count and not source_present:
+            # Materialization and durable source survival are independent
+            # axes. An indexed parent with no retained raw cannot be
+            # reconstructed from durable evidence, so it must not read as a
+            # clean ``materialized`` row -- that is how historical
+            # derived-only damage satisfied a fresh-archive gate.
+            disposition, reason = (
+                _MATERIALIZED_WITHOUT_SOURCE,
+                "index.db.sessions carries this identity but no retained raw does",
+            )
+        elif session_ids and resolved_count >= composable_count:
             disposition, reason = _MATERIALIZED, "exact origin/native identity is present in index.db.sessions"
         elif session_ids:
-            unresolved = reference_count - resolved_count
+            unresolved = composable_count - resolved_count
             disposition, reason = (
                 _MATERIALIZED_UNRESOLVED,
                 f"candidate session exists but {unresolved} parent reference(s) remain unresolved",
@@ -362,6 +419,7 @@ def audit_parent_session_accounting(
                 source_paths=source_paths,
                 indexed_session_ids=session_ids,
                 resolved_reference_count=resolved_count,
+                excluded_reference_count=excluded_count,
                 disposition=disposition,
                 reason=reason,
             )
@@ -424,19 +482,23 @@ def audit_parent_session_accounting(
         reference_total=sum(int(row["reference_count"]) for row in links),
         unique_parent_total=len(refs),
         resolved_reference_total=sum(entry.resolved_reference_count for entry in refs),
-        source_available_total=sum(
-            entry.disposition in {_AVAILABLE_UNMATERIALIZED, _MATERIALIZED, _MATERIALIZED_UNRESOLVED} for entry in refs
-        ),
+        # The evidence row already declares the rule (``source_available``):
+        # a retained raw must exist and must not be typed unavailable. Listing
+        # dispositions here instead counted a ``materialized`` parent with NO
+        # retained raw as source-available.
+        source_available_total=sum(entry.source_available for entry in refs),
         source_unavailable_total=sum(entry.disposition == _UNAVAILABLE for entry in refs),
         not_acquired_total=sum(entry.disposition == _NOT_ACQUIRED for entry in refs),
         materialized_parent_total=sum(entry.disposition == _MATERIALIZED for entry in refs),
         unresolved_reference_total=sum(
-            max(0, entry.reference_count - entry.resolved_reference_count)
+            max(0, entry.composable_reference_count - entry.resolved_reference_count)
             if entry.disposition == _MATERIALIZED_UNRESOLVED
             else 0
             for entry in refs
         ),
         available_unmaterialized_total=sum(entry.disposition == _AVAILABLE_UNMATERIALIZED for entry in refs),
+        materialized_without_source_total=sum(entry.disposition == _MATERIALIZED_WITHOUT_SOURCE for entry in refs),
+        excluded_reference_total=sum(entry.excluded_reference_count for entry in refs),
         raw_total=len(raw_rows),
         frontier_total=len(raw_rows),
         frontier_bytes=sum(int(row["blob_size"] or 0) for row in raw_rows),

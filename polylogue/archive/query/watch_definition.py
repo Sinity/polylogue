@@ -71,6 +71,15 @@ def compile_watch_definition(expression: str) -> dict[str, JsonValue]:
             "evaluator cannot re-evaluate it; write the watch as an explicit selection, "
             "e.g. 'sessions where origin:codex-session AND repo:polylogue'"
         )
+    unexecutable = _unexecutable_predicate_kind(predicate)
+    if unexecutable is not None:
+        raise WatchDefinitionError(
+            f"{text!r} compiles to a {unexecutable} predicate, which the canonical-plan evaluator "
+            "cannot execute: ``ArchiveCanonicalPlanEvaluator.evaluate`` places the restored "
+            "predicate straight into ``SessionQueryPlan.boolean_predicate`` and the SQL lowering "
+            "has no branch for it. Registering it would fail the whole standing-query convergence "
+            "stage on every tick, taking unrelated watches down with it"
+        )
     payload = predicate.to_payload()
     try:
         round_tripped = predicate_from_payload(payload)
@@ -84,6 +93,38 @@ def compile_watch_definition(expression: str) -> dict[str, JsonValue]:
             "evaluate a different predicate than the one named"
         )
     return dict(payload)  # type: ignore[arg-type]
+
+
+def _unexecutable_predicate_kind(predicate: object) -> str | None:
+    """Name the first predicate in the tree the SQL lowering cannot execute.
+
+    Serializability is not executability. ``QuerySemanticPredicate`` round
+    trips through the durable definition grammar, so the round-trip check
+    below admitted it -- but the watch evaluator lowers the restored predicate
+    through ``_boolean_predicate_clause``, whose final line is
+    ``raise TypeError(f"unsupported Boolean query predicate: ...")``. Semantic
+    retrieval is a separate lane the canonical plan does not carry, so this is
+    a permanent refusal at registration, not a deferred one at evaluation:
+    evaluation happens inside a convergence stage that no single watch may
+    fail.
+    """
+    from polylogue.archive.query.predicate import (
+        QueryBoolPredicate,
+        QueryExistsPredicate,
+        QueryNotPredicate,
+        QuerySemanticPredicate,
+    )
+
+    stack: list[object] = [predicate]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, QuerySemanticPredicate):
+            return "semantic"
+        if isinstance(node, (QueryNotPredicate, QueryExistsPredicate)):
+            stack.append(node.child)
+        elif isinstance(node, QueryBoolPredicate):
+            stack.extend(node.children)
+    return None
 
 
 def validate_watch_definition(query_params: Mapping[str, object]) -> dict[str, JsonValue]:

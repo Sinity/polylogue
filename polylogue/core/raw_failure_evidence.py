@@ -204,10 +204,24 @@ def terminal_carrier_overwrite_predicate() -> str:
     classification; only another failure-evidence write may change a
     carrier's kind. Written against the ``raw_artifacts``/``excluded``
     aliases an ``ON CONFLICT`` clause exposes.
+
+    Scoped to the SAME raw. The observation id is stable by source/path/index,
+    so when a path with a terminal carrier is replaced by different bytes, the
+    NEW raw's ordinary classification conflicts with the OLD raw's carrier.
+    Comparing kinds alone suppressed that update even though the timestamp and
+    rowid ordering above had already accepted the newer raw, leaving the newest
+    coordinate with no artifact receipt of its own -- which the raw-frontier
+    check reports as ``source_raws_without_accepted_head`` and which blocks
+    catch-up. A terminal refusal is a statement about the bytes it refused, not
+    a permanent claim on the coordinate.
     """
     terminal = ", ".join(f"'{kind}'" for kind in sorted(RAW_FAILURE_TERMINAL_EVIDENCE_KINDS))
     evidence = ", ".join(f"'{kind}'" for kind in sorted(RAW_FAILURE_EVIDENCE_KINDS))
-    return f"(raw_artifacts.artifact_kind IN ({terminal}) AND excluded.artifact_kind NOT IN ({evidence}))"
+    return (
+        "(raw_artifacts.raw_id = excluded.raw_id"
+        f" AND raw_artifacts.artifact_kind IN ({terminal})"
+        f" AND excluded.artifact_kind NOT IN ({evidence}))"
+    )
 
 
 __all__ = [

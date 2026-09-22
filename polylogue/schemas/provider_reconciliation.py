@@ -452,12 +452,18 @@ def _reconcile_subject(
         f"route read {included} of {counts.candidates_inventoried} inventoried candidate(s) "
         f"over {counts.live_members} admitted member(s) and produced {sample_count} sample(s)"
     )
-    if changed:
+    # Conservation is checked FIRST, for every outcome. It was only consulted
+    # on the zero-diff branch, so a pass that inventoried half the declared
+    # corpus and reported one changed version became `generated` with no
+    # blocker and exited successfully -- the incomplete denominator is exactly
+    # what conservation exists to catch, and a changed version does not excuse
+    # it.
+    if not counts.conserves:
+        final_outcome = "failed"
+        reason = f"the pass did not consume the declared denominator: {counts.conservation_detail}"
+    elif changed:
         final_outcome = "generated"
         reason = f"{len(changed)} package version(s) new or changed; {route}"
-    elif not counts.conserves:
-        final_outcome = "failed"
-        reason = f"zero-diff is not acceptable without a reconciled denominator: {counts.conservation_detail}"
     else:
         final_outcome = "zero_diff"
         reason = f"every committed version is structurally unchanged; {route}"
