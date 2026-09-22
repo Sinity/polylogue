@@ -1920,6 +1920,33 @@ def _skip_js_regex_literal(source: str, position: int) -> int | None:
     return None
 
 
+#: Where a JS scan must stop and do per-position work (polylogue-s8x8s).
+#:
+#: The scanners below used to advance one character at a time, asking
+#: ``_skip_js_string_or_comment`` at every position in the source. Everything
+#: between two interesting characters -- whitespace, operators, digits,
+#: ordinary punctuation -- was a Python loop iteration that could only ever
+#: decline. Jumping to the next stop with ``re.Pattern.search`` does that
+#: skipping in C.
+#:
+#: Each pattern must be a SUPERSET of its scanner's interesting set:
+#: over-matching costs one extra no-op iteration, under-matching silently
+#: skips a token. ``_skip_js_string_or_comment`` returns a position only for
+#: ``/``, ``"``, ``'`` and a backtick, so every pattern carries those four.
+_JS_CALL_SCAN_STOP = re.compile(r"""[/"'`()]""")
+_JS_ARGUMENT_SCAN_STOP = re.compile(r"""[/"'`()\[\]{},]""")
+#: ``[^\W\d]`` is a superset of ``str.isalpha()``: an alphabetic character is
+#: alphanumeric, so it is in ``\w``, and none is in ``\d``. It also covers the
+#: ``_`` of ``_is_js_identifier_start``; ``$`` is the remaining case.
+_JS_IDENTIFIER_SCAN_STOP = re.compile(r"""[/"'`$]|[^\W\d]""")
+
+
+def _next_js_scan_stop(pattern: re.Pattern[str], source: str, position: int) -> int:
+    """First index at or after ``position`` where ``pattern``'s scanner must look."""
+    match = pattern.search(source, position)
+    return len(source) if match is None else match.start()
+
+
 def _skip_js_string_or_comment(
     source: str,
     position: int,
@@ -1955,15 +1982,22 @@ def _skip_js_string_or_comment(
         return None
     quote = source[position]
     position += 1
-    while position < len(source):
-        char = source[position]
-        position += 1
-        if char == "\\":
-            position += 1
-            continue
-        if char == quote:
-            return position
-    return len(source)
+    # ``str.find`` runs the scan in C. The Python loop it replaces cost one
+    # iteration per character of the literal; this one costs an iteration per
+    # *escape*, and a literal with no escapes -- the overwhelmingly common
+    # case -- resolves in two finds. Same acceptance: an unterminated literal
+    # still consumes the rest of the input, and a trailing backslash still
+    # swallows the byte after it and then the end of input.
+    length = len(source)
+    while position < length:
+        closing = source.find(quote, position)
+        escape = source.find("\\", position)
+        if closing == -1:
+            return length
+        if escape == -1 or escape > closing:
+            return closing + 1
+        position = escape + 2
+    return length
 
 
 def _skip_js_space_and_comments(source: str, position: int) -> int:
@@ -2039,7 +2073,7 @@ def _balanced_js_call_argument(
             depth -= 1
             if depth == 0:
                 return source[argument_start:position], position + 1, True
-        position += 1
+        position = _next_js_scan_stop(_JS_CALL_SCAN_STOP, source, position + 1)
     return source[argument_start:], len(source), False
 
 
@@ -2060,7 +2094,7 @@ def _first_js_argument(arguments: str, *, refusals: _JsScanRefusals | None = Non
             depths[opener] = max(depths[opener] - 1, 0)
         elif char == "," and all(depth == 0 for depth in depths.values()):
             return arguments[:position]
-        position += 1
+        position = _next_js_scan_stop(_JS_ARGUMENT_SCAN_STOP, arguments, position + 1)
     return arguments
 
 
@@ -2109,7 +2143,7 @@ def _scan_code_mode_child_calls(
             position = skipped
             continue
         if not _is_js_identifier_start(source[position]):
-            position += 1
+            position = _next_js_scan_stop(_JS_IDENTIFIER_SCAN_STOP, source, position + 1)
             continue
         parsed_chain = _parse_js_member_chain(source, position)
         if parsed_chain is None:

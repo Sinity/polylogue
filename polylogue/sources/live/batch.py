@@ -341,6 +341,30 @@ def _is_tool_result_sidecar_path(path: Path, *, provider: Provider) -> bool:
     return classification is not None and classification.kind is ArtifactKind.TOOL_RESULT_SIDECAR
 
 
+#: How many source paths one pinned source-tier evidence query may name.
+#: SQLite's default host-parameter limit is 999; this stays well inside it
+#: while still collapsing a whole cold-build page into a couple of reads.
+_SOURCE_EVIDENCE_QUERY_CHUNK = 500
+
+
+def _retained_raw_fingerprint(raw_id: object, blob_hash: object, *, archive_root: Path) -> str | None:
+    """A ``raw_sessions`` row's fingerprint, or ``None`` when its bytes are gone.
+
+    Shared by the single-path and pinned-page reads so both interpret a row
+    identically: a raw id is evidence only while the blob it names is still
+    on disk.
+    """
+    if isinstance(blob_hash, bytes):
+        blob_hash_hex = blob_hash.hex()
+    elif isinstance(blob_hash, str):
+        blob_hash_hex = blob_hash.lower()
+    else:
+        return None
+    if not _archive_blob_exists(archive_root, blob_hash_hex):
+        return None
+    return raw_id if isinstance(raw_id, str) and raw_id else None
+
+
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 LiveBatchSyncRunner = Callable[..., Awaitable[Any]]
 P = ParamSpec("P")
@@ -683,6 +707,11 @@ class LiveBatchProcessor:
         self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
         self._last_append_cursor_proof_bytes = 0
+        # Set for the duration of one pass's cursor-commit loop by
+        # ``_pinned_source_tier_evidence``; ``None`` everywhere else, which is
+        # what keeps every caller outside that loop on its own read.
+        self._pinned_raw_fingerprints: dict[str, str | None] | None = None
+        self._pinned_history_sidecars: dict[str, bool] | None = None
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
         # One-shot channels out of ``_resynthesize_cursor_from_source``, which
         # cannot widen its own return type without rewriting every one of its
@@ -1347,30 +1376,34 @@ class LiveBatchProcessor:
                         len(full_result.succeeded),
                     )
                 debt_by_source_path = debt_by_path(convergence_debt)
-                for path in full_result.succeeded:
-                    succeeded_paths.add(path)
-                    cursor_fingerprint_read_bytes += await self._run_ops_write(
-                        "cursor_full",
-                        self._record_full_cursor,
-                        path,
-                        raw_fingerprint=full_result.raw_fingerprints.get(path),
-                        raw_byte_size=full_result.raw_byte_sizes.get(path),
-                        frontier_byte_size=full_result.raw_frontier_sizes.get(path),
-                        source_name=full_result.raw_source_names.get(path),
-                        source_revision=full_result.raw_source_revisions.get(path),
-                        source_fingerprint=full_result.raw_source_fingerprints.get(path),
-                        captured_content_hash=full_result.captured_content_hashes.get(path),
-                        captured_file_observation=full_result.captured_file_observations.get(path),
-                    )
-                    if self._last_cursor_write_stale:
-                        stale_cursor_write_count += 1
-                    if convergence_ran and not _source_tier_acquisition_required():
-                        await self._run_ops_write(
-                            "convergence_outcome",
-                            self._record_convergence_outcome,
+                # polylogue-s8x8s AC3: resolve the page's source-tier evidence
+                # once instead of opening two read-only connections per path
+                # inside the loop below.
+                with self._pinned_source_tier_evidence(full_result.succeeded):
+                    for path in full_result.succeeded:
+                        succeeded_paths.add(path)
+                        cursor_fingerprint_read_bytes += await self._run_ops_write(
+                            "cursor_full",
+                            self._record_full_cursor,
                             path,
-                            debt_by_source_path.get(path, ()),
+                            raw_fingerprint=full_result.raw_fingerprints.get(path),
+                            raw_byte_size=full_result.raw_byte_sizes.get(path),
+                            frontier_byte_size=full_result.raw_frontier_sizes.get(path),
+                            source_name=full_result.raw_source_names.get(path),
+                            source_revision=full_result.raw_source_revisions.get(path),
+                            source_fingerprint=full_result.raw_source_fingerprints.get(path),
+                            captured_content_hash=full_result.captured_content_hashes.get(path),
+                            captured_file_observation=full_result.captured_file_observations.get(path),
                         )
+                        if self._last_cursor_write_stale:
+                            stale_cursor_write_count += 1
+                        if convergence_ran and not _source_tier_acquisition_required():
+                            await self._run_ops_write(
+                                "convergence_outcome",
+                                self._record_convergence_outcome,
+                                path,
+                                debt_by_source_path.get(path, ()),
+                            )
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += await self._run_ops_write(
@@ -2201,7 +2234,114 @@ class LiveBatchProcessor:
                 [ConvergenceDebt(path=path, stage="convergence", error=str(exc)) for path in unique_paths],
             )
 
+    @contextmanager
+    def _pinned_source_tier_evidence(self, paths: Sequence[Path]) -> Iterator[None]:
+        """Answer one pass's source-tier evidence questions with one connection.
+
+        ``_source_tier_evidence_retained`` asks the same two questions of
+        ``source.db`` for every ``tool-results/`` sidecar the pass committed,
+        and each answer opened its own read-only connection: two file opens,
+        two schema loads and two single-row queries *per path*
+        (polylogue-s8x8s AC3). They are pass-scoped facts about rows this
+        same pass already committed, so one connection and one query per
+        question serves the whole page.
+
+        Best-effort by construction. Any read failure leaves the pin unset
+        and every path falls back to its own read, which keeps
+        ``_history_sidecar_retained``'s propagating-failure contract exactly
+        where it was: a source tier that cannot be read must requeue the
+        pass, not resolve to "no evidence".
+        """
+        sidecars = [
+            path
+            for path in dict.fromkeys(paths)
+            if _is_tool_result_sidecar_path(path, provider=Provider.from_string(self._source_name_for(path)))
+        ]
+        source_db = self._archive_source_db_path()
+        if not sidecars or not source_db.exists():
+            yield
+            return
+        try:
+            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+                latest = self._pinned_latest_raw_fingerprints(conn, sidecars, archive_root=source_db.parent)
+                retained = self._pinned_history_sidecar_rows(conn, sidecars)
+        except sqlite3.Error:
+            yield
+            return
+        self._pinned_raw_fingerprints = latest
+        self._pinned_history_sidecars = retained
+        try:
+            yield
+        finally:
+            self._pinned_raw_fingerprints = None
+            self._pinned_history_sidecars = None
+
+    def _pinned_latest_raw_fingerprints(
+        self,
+        conn: sqlite3.Connection,
+        paths: Sequence[Path],
+        *,
+        archive_root: Path,
+    ) -> dict[str, str | None]:
+        """``_latest_archive_tiers_raw_fingerprint`` for many paths, one query per chunk.
+
+        ``ROW_NUMBER`` reproduces the per-path ``ORDER BY acquired_at_ms
+        DESC, raw_id DESC LIMIT 1`` the single-path query uses, tie-break
+        included, so the pinned answer is the answer that route gives.
+        """
+        resolved: dict[str, str | None] = {}
+        keys = [str(path) for path in paths]
+        for start in range(0, len(keys), _SOURCE_EVIDENCE_QUERY_CHUNK):
+            chunk = keys[start : start + _SOURCE_EVIDENCE_QUERY_CHUNK]
+            placeholders = ", ".join("?" * len(chunk))
+            rows = conn.execute(
+                f"""
+                SELECT source_path, raw_id, blob_hash FROM (
+                    SELECT
+                        source_path,
+                        raw_id,
+                        blob_hash,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY source_path
+                            ORDER BY acquired_at_ms DESC, raw_id DESC
+                        ) AS revision_rank
+                    FROM raw_sessions
+                    WHERE source_path IN ({placeholders})
+                      AND COALESCE(source_index, 0) >= 0
+                )
+                WHERE revision_rank = 1
+                """,
+                chunk,
+            ).fetchall()
+            for source_path, raw_id, blob_hash in rows:
+                resolved[str(source_path)] = _retained_raw_fingerprint(raw_id, blob_hash, archive_root=archive_root)
+        for key in keys:
+            resolved.setdefault(key, None)
+        return resolved
+
+    def _pinned_history_sidecar_rows(self, conn: sqlite3.Connection, paths: Sequence[Path]) -> dict[str, bool]:
+        """``_history_sidecar_retained`` for many paths, one query per chunk."""
+        keys = [str(path) for path in paths]
+        declared = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'history_sidecars'"
+        ).fetchone()
+        if declared is None:
+            return dict.fromkeys(keys, False)
+        present: set[str] = set()
+        for start in range(0, len(keys), _SOURCE_EVIDENCE_QUERY_CHUNK):
+            chunk = keys[start : start + _SOURCE_EVIDENCE_QUERY_CHUNK]
+            placeholders = ", ".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT DISTINCT source_path FROM history_sidecars WHERE source_path IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            present.update(str(row[0]) for row in rows)
+        return {key: key in present for key in keys}
+
     def _latest_raw_fingerprint(self, path: Path) -> str | None:
+        pinned = self._pinned_raw_fingerprints
+        if pinned is not None and str(path) in pinned:
+            return pinned[str(path)]
         return self._latest_archive_tiers_raw_fingerprint(path)
 
     def _source_tier_evidence_retained(self, path: Path, *, raw_fingerprint: str | None) -> bool:
@@ -2229,6 +2369,9 @@ class LiveBatchProcessor:
         propagates so the pass can requeue rather than resolving to "no
         evidence" and refusing a cursor the archive may well support.
         """
+        pinned = self._pinned_history_sidecars
+        if pinned is not None and str(path) in pinned:
+            return pinned[str(path)]
         conn = sqlite3.connect(f"file:{self._archive_source_db_path()}?mode=ro", uri=True)
         try:
             declared = conn.execute(
@@ -2271,16 +2414,7 @@ class LiveBatchProcessor:
             return None
         if row is None:
             return None
-        raw_id, blob_hash = row
-        if isinstance(blob_hash, bytes):
-            blob_hash_hex = blob_hash.hex()
-        elif isinstance(blob_hash, str):
-            blob_hash_hex = blob_hash.lower()
-        else:
-            return None
-        if not _archive_blob_exists(source_db.parent, blob_hash_hex):
-            return None
-        return raw_id if isinstance(raw_id, str) and raw_id else None
+        return _retained_raw_fingerprint(row[0], row[1], archive_root=source_db.parent)
 
     def _current_parser_fingerprint(self) -> str:
         if callable(self._parser_fingerprint):
