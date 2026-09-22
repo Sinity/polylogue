@@ -46,8 +46,8 @@ def evaluate_pytest_evidence(
     exitstatus recorded ``pytest_passed`` on evidence that was never published.
     """
     summary_published = isinstance(summary, Mapping)
+    summary_values: Mapping[str, Any] = summary if isinstance(summary, Mapping) else {}
     selection = selection if isinstance(selection, Mapping) else {}
-    summary = summary if summary_published else {}
     event_rows = tuple(events)
     selected_count = _int(selection.get("selected_count"))
     report_tests = _tests(report)
@@ -79,7 +79,7 @@ def evaluate_pytest_evidence(
         diagnosis = "pytest_failed"
     elif not summary_published:
         diagnosis = "pytest_summary_missing"
-    elif summary.get("exitstatus") != exit_code:
+    elif summary_values.get("exitstatus") != exit_code:
         diagnosis = "pytest_summary_inconsistent"
     elif collection_only:
         diagnosis = "pytest_collection_only"

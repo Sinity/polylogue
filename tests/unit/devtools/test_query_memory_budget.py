@@ -96,9 +96,9 @@ def test_receipt_components_match_the_tree_peak(monkeypatch: pytest.MonkeyPatch)
         def poll(self) -> int | None:
             return next(self._polls)
 
-    monkeypatch.setattr(budget.subprocess, "Popen", lambda _command: _Proc())
+    monkeypatch.setattr("devtools.query_memory_budget.subprocess.Popen", lambda _command: _Proc())
     monkeypatch.setattr(budget, "_read_process_tree_components_kb", lambda _pid: next(samples))
-    monkeypatch.setattr(budget.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr("devtools.query_memory_budget.time.sleep", lambda _seconds: None)
 
     result = run_memory_budget(["unused"], max_rss_mb=512)
 
