@@ -217,6 +217,68 @@ def _file_batch(path: Path, count: int) -> int:
     return zlib.crc32(path.as_posix().encode()) % count
 
 
+#: Where a run records every node ID it had to shorten.
+#:
+#: The shortening below runs after pytest has already matched the command
+#: line against the ORIGINAL ids, so a shortened id is not collectible: both
+#: ``devtools verify``'s failure rerun, which feeds reported ids straight back
+#: to pytest, and a human reproducing one failure got ``ERROR: not found``
+#: and no run at all. The digest is a pure function of the original id, so
+#: concurrent writers of this file agree by construction.
+LONG_NODEID_MAP_PATH = _TESTS_REPO_ROOT / ".cache" / "pytest-long-nodeids.json"
+#: A shortened id always ends in this marker plus the digest.
+_SHORTENED_NODEID_MARKER = "[param-"
+
+
+def _load_long_nodeid_map() -> dict[str, str]:
+    try:
+        payload = json.loads(LONG_NODEID_MAP_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(key): str(value) for key, value in payload.items()} if isinstance(payload, dict) else {}
+
+
+def _record_long_nodeids(shortened: dict[str, str]) -> None:
+    """Merge this collection's shortened ids into the shared map."""
+    if not shortened:
+        return
+    merged = _load_long_nodeid_map()
+    if not set(shortened).difference(merged):
+        return
+    merged.update(shortened)
+    try:
+        LONG_NODEID_MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        scratch = LONG_NODEID_MAP_PATH.with_suffix(f".{os.getpid()}.tmp")
+        scratch.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(scratch, LONG_NODEID_MAP_PATH)
+    except OSError:
+        # A read-only or missing cache directory must not fail the run; the
+        # only cost is that the next rerun cannot name a shortened id.
+        return
+
+
+def _restore_long_nodeid_arguments(args: list[str]) -> list[str]:
+    """Translate shortened node IDs in a selection back to collectible ones."""
+    if not any(_SHORTENED_NODEID_MARKER in arg for arg in args):
+        return args
+    mapping = _load_long_nodeid_map()
+    if not mapping:
+        return args
+    return [mapping.get(arg, arg) for arg in args]
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_collection(session: pytest.Session) -> Iterator[None]:
+    """Accept a shortened node ID as a selection, before args are matched.
+
+    pytest resolves the command line inside ``Session.perform_collect``, which
+    the default implementation of this hook calls, so this wrapper is the last
+    point at which a reported id can still become a collectible one.
+    """
+    session.config.args[:] = _restore_long_nodeid_arguments(list(session.config.args))
+    yield
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Apply suite-wide file-batch selection and timeout contracts.
 
@@ -244,6 +306,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         items[:] = selected
         config.hook.pytest_deselected(items=deselected)
 
+    shortened: dict[str, str] = {}
     for item in items:
         marker = item.get_closest_marker("timeout")
         issue = None if marker is None else timeout_marker_error(marker)
@@ -253,9 +316,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         # Keep xdist's controller map and every worker's node metadata bounded
         # when a parameter's repr is a complete JSON/export payload.
         if len(item.nodeid) > 100:
-            stem, _, _ = item.nodeid.partition("[")
-            digest = hashlib.blake2b(item.nodeid.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
-            item._nodeid = f"{stem}[param-{digest}]"
+            original = item.nodeid
+            stem, _, _ = original.partition("[")
+            digest = hashlib.blake2b(original.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
+            item._nodeid = f"{stem}{_SHORTENED_NODEID_MARKER}{digest}]"
+            shortened[item._nodeid] = original
+    _record_long_nodeids(shortened)
 
 
 # ---------------------------------------------------------------------------
