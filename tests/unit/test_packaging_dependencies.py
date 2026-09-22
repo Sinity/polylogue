@@ -163,3 +163,51 @@ def test_losing_msgspec_would_change_the_identity_rather_than_degrade() -> None:
     assert stdlib_bytes == b'{"x":1e-05}'
     assert stdlib_bytes != msgspec_bytes
     assert digest(_WITNESS, IDENTITY) != hashlib.sha256(stdlib_bytes).hexdigest()
+
+
+def test_release_smoke_matrices_can_install_the_wheel_they_smoke() -> None:
+    """Every release job that installs a wheel must run on a Python it accepts.
+
+    ``pip install <wheel>`` refuses outright when the interpreter is below the
+    wheel's ``Requires-Python``; an older matrix leg is therefore a guaranteed
+    red job, not extra coverage. The two jobs installing the main ``polylogue``
+    wheel inherit ``pyproject.toml``'s floor; ``installed-smoke-hooks``
+    installs the ``polylogue-hooks`` wheel and legitimately keeps that
+    package's own, lower floor.
+
+    Anti-vacuity: restore ``["3.11", "3.12", "3.13", "3.14"]`` on either main
+    job and the assertion names the offending leg. The hooks-job assertion pins
+    the opposite direction, so narrowing every matrix to the strictest floor
+    (which would drop real coverage of the zero-dependency wrapper) fails too.
+    """
+    import yaml
+
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+
+    def _floor(pyproject_relative: str) -> tuple[int, ...]:
+        payload = tomllib.loads((REPO_ROOT / pyproject_relative).read_text(encoding="utf-8"))
+        spec = str(payload["project"]["requires-python"])
+        match = re.fullmatch(r">=\s*(\d+)\.(\d+)", spec.strip())
+        assert match is not None, f"{pyproject_relative} floor is not a simple >=X.Y bound: {spec!r}"
+        return (int(match.group(1)), int(match.group(2)))
+
+    def _matrix(job_name: str) -> list[tuple[int, ...]]:
+        raw = jobs[job_name]["strategy"]["matrix"]["python-version"]
+        return [tuple(int(part) for part in str(value).split(".")) for value in raw]
+
+    main_floor = _floor("pyproject.toml")
+    for job_name in ("installed-smoke", "installed-smoke-mcp"):
+        below = [".".join(str(part) for part in version) for version in _matrix(job_name) if version < main_floor]
+        assert not below, (
+            f"{job_name} installs the polylogue wheel on {below}, which is below its "
+            f"requires-python floor {'.'.join(str(part) for part in main_floor)}"
+        )
+
+    hooks_floor = _floor("packaging/polylogue-hooks/pyproject.toml")
+    assert hooks_floor < main_floor, "this test only says something while the two floors differ"
+    hooks_versions = _matrix("installed-smoke-hooks")
+    assert min(hooks_versions) == hooks_floor, (
+        "installed-smoke-hooks must keep exercising the polylogue-hooks wheel's own floor"
+    )
+    assert not [version for version in hooks_versions if version < hooks_floor]
