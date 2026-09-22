@@ -114,6 +114,17 @@ tier. Pin on
 the tiers the restore has to read, and record which tier is left unopenable and
 what that costs.
 
+**This rule searches history, and history has a discontinuity.** The durable
+tier version chain was reset to a floor: `ARCHIVE_FORMAT_FLOOR_VERSION = 1`, and
+the durable tier modules deliberately declare no `*_SCHEMA_VERSION` of their
+own. `ARCHIVE_VERSION_BY_TIER` now reads `SOURCE_TIER_VERSION` and
+`USER_TIER_VERSION` — both currently `2` — and maps audit to the floor. An
+archive carrying pre-reset numbers therefore has **no post-reset commit that
+matches it**, and the rule above resolves only into pre-reset history. Read the
+numbers out of the archive first and check which side of the reset they are on
+before searching; a search that returns nothing is the expected answer for a
+pre-reset archive, not a missing commit.
+
 Build the candidate in its own checkout and confirm the executable names it:
 
 ```bash
@@ -151,7 +162,28 @@ and compare the two, rather than assuming the read was clean.
 
 The rollback packet for the 2026-09-12 fresh-restart campaign is a public pointer to private operator-held artifacts. It contains no archive bytes, transcripts, assertions, or blob payloads in Git. The executable pin is first-parent commit `c8ba64157ea1a8eeed175c9a80229aedfa818820` (2026-08-10, `fix(replay): block readiness on incomplete parser census (#3903)`). Keep that checkout available with the aside archive root, all six tier files, and the referenced `blob/` directory.
 
+Three facts about that pin, each rechecked 2026-09-22:
+
+* **The pin is an ancestor of `master` and nothing points at it.** `git cat-file -t` resolves it and `git merge-base --is-ancestor <pin> origin/master` succeeds, but `git tag --points-at <pin>` is empty. The pin lives only in this prose and in reachability from `master`; it survives a prune because `master` contains it, not because anything names it. A named ref would make it independently discoverable.
+* **The audit tier is outside the four-tier match.** The pin's window is source 30, user 10, index 67, embeddings 4, ops 1. Audit is not in that list: the pin declares audit version 1 while a live archive at that window carries `user_version = 2`. A rollback checkout at this pin therefore faces audit-tier skew, and what it costs must be reported rather than assumed away.
+* **Reproducing the pin from a live pre-reset archive no longer works**, for the floor-reset reason recorded above. Take the pin as recorded here; do not expect to re-derive it.
+
 Before a wipe, the operator must recheck the private packet and record its exact archive-root path, commit, executable version, and a size/mtime/ctime/sha256 manifest outside Git. The packet is ready only when all six files are present: `source.db`, `index.db`, `embeddings.db`, `user.db`, `audit.db`, and `ops.db`, together with the referenced blobs. The independently exported user assertions file is additional evidence, not a replacement for `user.db`.
+
+### Assembling a packet is not the only route
+
+The 2026-09-20 operator simplification: for the fresh restart the operation is
+**stop the daemon, move the archive root aside, start the daemon, let it
+converge**. Everything in the root moves together, inbox symlinks included, and
+nothing durable is written to obtain the rollback — so it cannot fail halfway,
+and no packet has to be assembled or copied first. The packet procedure above
+remains the route for a rollback that must live somewhere other than the
+original path.
+
+Two mechanical notes for whoever runs the move:
+
+* The daemon must be stopped first. `.archive-ownership.lock` and live `-shm`/`-wal` files are present while it runs.
+* Symlinks inside the root use absolute self-referential targets (`index.db` into `.index-generations/gen-*/`, and the tier links inside that generation pointing back at the root). After a move they still name the original path, which is the path the daemon recreates. Relativize them, or point `POLYLOGUE_ARCHIVE_ROOT` at the aside path when reading it. This only matters if someone actually reads the aside copy.
 
 Use the pinned checkout and the production read route for the proof. A raw SQLite open or a file listing alone does not establish rollback readiness:
 
