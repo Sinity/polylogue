@@ -223,21 +223,6 @@ def iter_drive_raw_data(
     if not source.folder:
         return
 
-    # The Drive branch of ``prepare_source_records`` selects this iterator
-    # directly, so ``iter_source_raw_data``'s foreign-root refusal never runs
-    # for it. Without this check a configured drive cache that lives inside a
-    # DIFFERENT Polylogue archive is read as a capture location and its bytes
-    # are written into the destination blob store.
-    if source.path is not None:
-        from polylogue.sources.source_root_admission import refuse_non_capture_source_root
-
-        destination_store = blob_store
-        if destination_store is None:
-            from polylogue.paths import blob_store_root
-
-            destination_store = BlobStore(blob_store_root())
-        refuse_non_capture_source_root(Path(source.path), destination=destination_store.root.parent)
-
     drive_client = _resolved_drive_client(ui=ui, client=client, drive_config=drive_config)
     folder_id = drive_client.resolve_folder_id(source.folder)
     tracker = _cursor_tracker(cursor_state)

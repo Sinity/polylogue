@@ -10,6 +10,8 @@ import os
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import Origin
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.origin_specs import _source_signature, origin_specs
@@ -183,18 +185,20 @@ def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) 
         assert skip_count == suffix_count, module.__name__
 
 
-def test_drive_acquisition_refuses_a_foreign_archive_cache(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_drive_acquisition_refuses_a_foreign_archive_cache(tmp_path: Path) -> None:
     """The Drive branch bypasses ``iter_source_raw_data``'s root refusal.
 
-    Anti-vacuity: remove the guard from ``iter_drive_raw_data`` and the
-    foreign archive's drive cache is accepted as a capture location, so its
-    bytes are copied into the destination blob store.
+    Anti-vacuity: drop the guard from ``iter_raw_record_stream`` and the Drive
+    branch accepts a foreign archive's drive cache as a capture location, so
+    its bytes are copied into the destination blob store.
     """
-    import pytest
-
     from polylogue.config import Source
-    from polylogue.sources.drive import iter_drive_raw_data
-    from polylogue.sources.source_root_admission import SourceRootRefusedError
+    from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
+    from polylogue.sources.source_root_admission import (
+        SourceRootRefusedError,
+        refuse_non_capture_source_root,
+    )
     from polylogue.storage.blob_store import BlobStore
 
     foreign_archive = tmp_path / "foreign-archive"
@@ -205,14 +209,14 @@ def test_drive_acquisition_refuses_a_foreign_archive_cache(tmp_path: Path) -> No
     (destination / "source.db").write_bytes(b"")
 
     source = Source(name="aistudio", folder="AI Studio", path=foreign_archive / "drive-cache" / "gemini")
+    assert source.is_drive
+    stream = iter_raw_record_stream(source, blob_store=BlobStore(destination / "blob"))
     with pytest.raises(SourceRootRefusedError):
-        list(iter_drive_raw_data(source=source, blob_store=BlobStore(destination / "blob")))
+        await anext(stream)
 
     # The opposite direction: a blanket refusal must not pass. The
     # destination's own drive cache is the live capture route and stays
-    # admissible under the same guard, without reaching the Drive client.
-    from polylogue.sources.source_root_admission import refuse_non_capture_source_root
-
+    # admissible under the same guard.
     own_cache = destination / "drive-cache" / "gemini"
     own_cache.mkdir(parents=True)
     refuse_non_capture_source_root(own_cache, destination=destination)
