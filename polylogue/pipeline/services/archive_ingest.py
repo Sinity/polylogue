@@ -427,9 +427,14 @@ async def parse_sources_archive(
                 for path, file_mtime in walk.paths_to_process:
                     if (
                         Provider.from_string(source.name) is Provider.ANTIGRAVITY
+                        and path.suffix.lower() == ".pb"
                         and antigravity.classify_source_path(path).role
                         is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
                     ):
+                        # The language-server prepass emits ``.pb``
+                        # conversations only; a schema-verified trajectory
+                        # ``.db`` shares the role name and must still reach
+                        # ``parse_one_source_path``.
                         continue
                     submissions.append(_ParseSubmission(source, path, file_mtime, walk.sidecar_data))
             total_paths = len(submissions)

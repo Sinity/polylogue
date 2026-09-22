@@ -501,8 +501,14 @@ def iter_source_sessions_with_raw(
     for path, file_mtime in walk.paths_to_process:
         if (
             Provider.from_string(source.name) is Provider.ANTIGRAVITY
+            and path.suffix.lower() == ".pb"
             and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
         ):
+            # Only the language-server prepass owns ``.pb`` conversations.
+            # ``classify_source_path`` gives a schema-verified trajectory
+            # ``.db`` the same compatibility role name, and skipping it here
+            # produced no raw record and no session on the configured-source
+            # route at all.
             continue
         try:
             yield from parse_one_source_path(

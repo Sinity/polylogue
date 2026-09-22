@@ -441,3 +441,41 @@ async def test_trajectory_sqlite_wal_reaches_the_daemon_owned_public_read_route(
     finally:
         writer.close()
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_inbox_staged_trajectory_is_admitted_without_a_provider_label(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Schema detection, not the watch source name, admits a trajectory store.
+
+    Files staged by ``polylogue import`` are watched under the source name
+    ``inbox``, so the fallback provider is UNKNOWN. Anti-vacuity: require
+    ``Provider.ANTIGRAVITY`` in advance and this schema-verified database is
+    excluded instead of parsed -- the later generic path does not recognize
+    SQLite bytes as Antigravity either, so it yields no session at all.
+    """
+    root = workspace_env["data_root"] / "inbox"
+    root.mkdir(parents=True)
+    source_path = root / "staged-trajectory.db"
+    writer = _write_trajectory_store(source_path)
+    archive = Polylogue(
+        archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "inbox-cursor.db"
+    )
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="inbox", root=root, suffixes=(".sqlite", ".db")),),
+        cursor=CursorStore(workspace_env["data_root"] / "inbox-cursor.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        metrics = await processor.ingest_files([source_path], emit_event=False)
+        assert metrics.failed_file_count == 0
+        assert metrics.excluded_file_count == 0
+        assert metrics.ingested_session_count == 1
+
+        session = await archive.get_session("antigravity-session:trajectory-e2e")
+        assert session is not None
+    finally:
+        writer.close()
+        await archive.close()

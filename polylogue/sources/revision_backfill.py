@@ -3339,7 +3339,12 @@ _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
         Provider.CLAUDE_CODE,
         Provider.CODEX,
         Provider.GEMINI,
-        Provider.GEMINI_CLI,
+        # Provider.GEMINI_CLI is deliberately absent: ``parse_gemini_cli``
+        # takes ``source_path`` and resolves its ``tool-outputs/`` sidecar
+        # scope from it, so two byte-identical transcripts under different
+        # paths do NOT decode identically. Fanning one representative's
+        # ParsedSession out to both rows gave the second row the first path's
+        # recovered tool output, or none at all, depending on grouping order.
         Provider.GROK,
         Provider.DRIVE,
     }

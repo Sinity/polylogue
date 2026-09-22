@@ -469,16 +469,29 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
         return JsonlBoundary(complete_end, _jsonl_record_count(payload[:complete_end]), complete_end != len(payload))
 
     candidate_start, candidate = tail
+    unterminated_tail = final_newline < 0 or candidate_start == final_newline + 1
     try:
         json.loads(candidate)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return JsonlBoundary(candidate_start, _jsonl_record_count(payload[:candidate_start]), True, True)
+        # An unterminated final line is an append in progress, not a malformed
+        # record: the producer has not written its delimiter yet. Reporting it
+        # as ``malformed_record`` suppressed ``complete_prefix_size`` in
+        # ``batch.py``, which then classified an ordinary mid-write snapshot as
+        # ``TERMINAL_CORRUPT_INPUT`` and withheld the already-complete records
+        # before it. Only a newline-terminated line that does not decode is a
+        # completed record the producer got wrong.
+        return JsonlBoundary(
+            candidate_start,
+            _jsonl_record_count(payload[:candidate_start]),
+            True,
+            not unterminated_tail,
+        )
 
     # The tail candidate itself is unterminated only when it follows the final
     # physical newline (or when the payload has none).  A valid such candidate
     # completes the whole payload; otherwise preserve the original cursor
     # boundary before an unfinished whitespace-only tail.
-    if final_newline < 0 or candidate_start == final_newline + 1:
+    if unterminated_tail:
         return JsonlBoundary(len(payload), _jsonl_record_count(payload), False)
     return JsonlBoundary(complete_end, _jsonl_record_count(payload[:complete_end]), complete_end != len(payload))
 

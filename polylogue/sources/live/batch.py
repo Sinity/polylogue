@@ -806,10 +806,19 @@ class LiveBatchProcessor:
                 )
                 return None
             selected = [Path(path) for path in paths]
+            # Resolve BOTH sides. A violation recorded through a symlinked
+            # watch root is stored under that spelling; a restart configured
+            # with the real path then selected the physically identical file
+            # and matched nothing, so the per-path gate admitted a source it
+            # already knows is blocked.
+            blocked_spellings = set(blocked.source_paths)
+            for blocked_path in blocked.source_paths:
+                try:
+                    blocked_spellings.add(str(Path(blocked_path).resolve()))
+                except OSError:
+                    continue
             refused = frozenset(
-                path
-                for path in selected
-                if str(path) in blocked.source_paths or str(path.resolve()) in blocked.source_paths
+                path for path in selected if str(path) in blocked_spellings or str(path.resolve()) in blocked_spellings
             )
             if len(refused) < len(selected):
                 self._refused_paths = refused
@@ -2058,7 +2067,13 @@ class LiveBatchProcessor:
             mtime_ns=mtime_ns or None,
             failure_count=existing.failure_count if existing is not None else 0,
             next_retry_at=existing.next_retry_at if existing is not None else None,
-            excluded=bool(existing.excluded) if existing is not None else False,
+            # Every caller reaches here because the source changed under an
+            # admitted handoff and must be fully re-ingested. Carrying the old
+            # ``excluded`` flag forward alongside the NEW filesystem
+            # observation made the watcher's exclusion branch see an unchanged
+            # identity and skip the path forever: the current bytes were never
+            # acquired and nothing recorded retryable backlog for them.
+            excluded=False,
             allow_backward=True,
         )
         if not updated:
@@ -2634,7 +2649,15 @@ class LiveBatchProcessor:
                 and codex_member.disposition != "out-of-scope"
             )
             antigravity_trajectory = (
-                fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path)
+                # Files staged by ``polylogue import`` are watched under the
+                # source name ``inbox``, so ``fallback_provider`` is UNKNOWN.
+                # Requiring the label in advance rejected a schema-verified
+                # trajectory store and left it excluded rather than parsed --
+                # the later generic path does not recognize SQLite bytes as
+                # Antigravity either. The schema probe itself is suffix-gated,
+                # so it costs nothing for the rest of an inbox scan.
+                fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN}
+                and antigravity.looks_like_trajectory_db_path(path)
             )
             if antigravity_trajectory:
                 # Antigravity trajectory stores are mutable SQLite sources.
@@ -2700,15 +2723,20 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    snapshot = snapshot_sqlite_to_blob(
-                        path,
-                        blob_store,
-                        heartbeat=_blob_copy_heartbeat(
-                            heartbeat,
-                            path=path,
-                            source_payload_read_bytes=source_payload_read_bytes,
-                        ),
-                    )
+                    # The adapter is what makes a malformed/locked database a
+                    # per-file failure; without it ``sqlite3.DatabaseError``
+                    # escapes ``ingest_files`` and aborts the remaining batch
+                    # after durable writes have already landed.
+                    with sqlite_snapshot_failure_as_oserror():
+                        snapshot = snapshot_sqlite_to_blob(
+                            path,
+                            blob_store,
+                            heartbeat=_blob_copy_heartbeat(
+                                heartbeat,
+                                path=path,
+                                source_payload_read_bytes=source_payload_read_bytes,
+                            ),
+                        )
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path
@@ -5166,10 +5194,25 @@ class LiveBatchProcessor:
             # byte; the full-head branch has proved nothing, so a rewrite
             # preserving `head.blob_size` would be adopted as authority.
             # Require the live prefix to reproduce the retained blob digest.
+            # Both proofs read the live file through independent opens. Bind
+            # them to ONE observation: between them a same-length rewrite let
+            # the retained prefix verify while the frontier was composed over
+            # a different body, and the returned cursor then made
+            # ``_append_plan`` trust those unread bytes.
+            try:
+                frontier_before = path.stat()
+            except OSError:
+                return None
             if not append_head and not reconstructed_head and file_prefix_sha256(path, byte_offset) != blob_hash_hex:
                 return None
             composed_tail_hash = claude_semantic_frontier_for_prefix(path, byte_offset)
             if composed_tail_hash is None:
+                return None
+            try:
+                frontier_after = path.stat()
+            except OSError:
+                return None
+            if _file_observation(frontier_before) != _file_observation(frontier_after):
                 return None
             tail_hash = composed_tail_hash
         return CursorRecord(

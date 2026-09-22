@@ -115,8 +115,38 @@ def test_jsonl_complete_prefix_validates_only_the_tail_candidate(monkeypatch: py
 
     boundary = jsonl_complete_prefix(payload)
 
-    assert boundary == JsonlBoundary(len(payload) - len(b'{"partial":'), 10_000, True, True)
+    # The unterminated tail is an append in progress, not a malformed record:
+    # ``incomplete_tail`` is what makes it retryable, ``malformed_record`` is
+    # reserved for a newline-terminated line the producer got wrong.
+    assert boundary == JsonlBoundary(len(payload) - len(b'{"partial":'), 10_000, True, False)
     assert calls == 1
+
+
+def test_unfinished_jsonl_tail_keeps_its_complete_prefix_retryable() -> None:
+    """An ordinary mid-write snapshot must not be reported as a bad record.
+
+    Anti-vacuity: report ``malformed_record=True`` here and ``batch.py``
+    suppresses ``complete_prefix_size``, which turns an unchanged capture into
+    ``TERMINAL_CORRUPT_INPUT`` and withholds ``{"ok":1}`` entirely.
+    """
+    payload = b'{"ok":1}\n{"partial":'
+
+    boundary = jsonl_complete_prefix(payload)
+
+    assert boundary.prefix_size == len(b'{"ok":1}\n')
+    assert boundary.record_count == 1
+    assert boundary.incomplete_tail is True
+    assert boundary.malformed_record is False
+
+
+def test_terminated_malformed_jsonl_record_stays_malformed() -> None:
+    """The opposite direction: a blanket ``False`` must not pass either."""
+    payload = b'{"ok":1}\n{"broken":}\n'
+
+    boundary = jsonl_complete_prefix(payload)
+
+    assert boundary.prefix_size == len(b'{"ok":1}\n')
+    assert boundary.malformed_record is True
 
 
 def test_jsonl_complete_prefix_keeps_malformed_record_before_terminal_blank_lines() -> None:
@@ -8953,3 +8983,57 @@ def test_raw_retention_refusal_is_recorded_not_only_logged(tmp_path: Path, monke
     debt = _retention_debt(processor._cursor)
     assert [(item.subject_id, item.status) for item in debt] == [(str(path), "failed")]
     assert "index has no raw authority" in (debt[0].last_error or "")
+
+
+def test_deferred_cursor_records_when_the_tail_cannot_be_reopened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable tail is a recorded deferral, never an escaping OSError.
+
+    ``_defer_incomplete_jsonl_append`` catches its own probe failure and then
+    calls this helper, which reopened the same file. Anti-vacuity: let the
+    ``OSError`` propagate and this raises instead of writing a cursor row, so
+    the watcher pass aborts and every later pass retries the identical read.
+    """
+    from polylogue.sources.live import deferred_cursor as deferred_cursor_module
+
+    path = tmp_path / "session.jsonl"
+    payload = b'{"a":1}\n'
+    path.write_bytes(payload)
+    store = CursorStore(tmp_path / "cursors.db")
+    stat = path.stat()
+    store.set(
+        path,
+        len(payload),
+        byte_offset=len(payload),
+        last_complete_newline=len(payload),
+        parser_fingerprint="test-parser",
+        content_fingerprint="base",
+        tail_hash=_cursor_hash_authority(payload),
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    before = store.get_record(path)
+    assert before is not None
+
+    def unreadable(*_args: Any, **_kwargs: Any) -> tuple[str, int]:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(deferred_cursor_module, "tail_hash_from_path", unreadable)
+
+    deferred_cursor_module.record_deferred_append_cursor(
+        store,
+        path,
+        cursor=before,
+        parser_fingerprint="test-parser",
+        source_name="chatgpt",
+        deferred_end_offset=before.deferred_end_offset,
+    )
+
+    after = store.get_record(path)
+    assert after is not None
+    # The prior tail evidence is preserved rather than replaced by a digest
+    # nothing could read.
+    assert after.tail_hash == before.tail_hash
+    assert after.byte_offset == before.byte_offset

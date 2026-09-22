@@ -163,6 +163,23 @@ async def iter_raw_record_stream(
     execution: IngestExecution | None = None,
 ) -> AsyncIterator[RawSessionRecord]:
     """Yield prepared RawSessionRecord values for a source."""
+    # Ahead of the Drive/local branch: ``iter_source_raw_data`` carries this
+    # refusal, but the Drive branch never calls it, so a configured drive
+    # cache that lives inside a DIFFERENT Polylogue archive was accepted as a
+    # capture location and its bytes copied into the destination blob store.
+    # The refusal belongs where the route is chosen, so both branches get it.
+    if source.path is not None:
+        from pathlib import Path as _Path
+
+        from polylogue.sources.source_root_admission import refuse_non_capture_source_root
+
+        destination_root: Path | None = None
+        if blob_store is not None:
+            destination_root = blob_store.root.parent
+        elif blob_root is not None:
+            destination_root = _Path(blob_root).parent
+        refuse_non_capture_source_root(_Path(source.path), destination=destination_root)
+
     raw_stream: AsyncIterator[RawSessionData]
     if source.is_drive:
         raw_stream = iter_drive_raw_stream(
