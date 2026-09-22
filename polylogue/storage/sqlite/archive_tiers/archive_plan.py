@@ -183,6 +183,19 @@ def assert_archive_format_lineage(archive_root: Path) -> None:
             raise RuntimeError(f"archive format marker names a missing durable tier: {path}")
         if version < ARCHIVE_FORMAT_FLOOR_VERSION:
             raise RuntimeError(f"{path.name} predates the {ARCHIVE_FORMAT_LINEAGE} floor")
+        # A tier standing *below* its own recorded birth version is never this
+        # archive's own file: durable tiers only move forward, by numbered
+        # migration. Without this the fingerprint check below silently switches
+        # itself off for exactly that case -- ``version == versions[...]`` is
+        # false -- so a historical file transplanted into an archive born above
+        # the floor was admitted by the assertion whose whole purpose is to
+        # refuse it, and ``backup_attestation``/``execute_durable_change_train``
+        # then trusted that lineage before any later version guard fired.
+        if version < versions[tier.value]:
+            raise RuntimeError(
+                f"{path.name} stands at version {version}, below the version {versions[tier.value]} this archive "
+                f"recorded at birth; it is not part of {ARCHIVE_FORMAT_LINEAGE}"
+            )
         # The recorded fingerprint describes this tier at its birth version, so
         # it is evidence exactly while the file still sits there. Binding the
         # check to the birth version rather than to the floor keeps that

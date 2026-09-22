@@ -211,3 +211,41 @@ def test_a_transplanted_tier_at_the_birth_version_is_still_refused_above_the_flo
 
     with pytest.raises(RuntimeError, match="is not part of polylogue.archive-format.v1"):
         archive_plan.assert_archive_format_lineage(tmp_path)
+
+
+def test_a_tier_below_its_recorded_birth_version_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A durable file standing below the marker's birth version is a transplant.
+
+    Durable tiers only move forward, by numbered migration, so a live
+    ``user_version`` under the version this archive recorded at birth cannot be
+    this archive's own file. The birth-version fingerprint check cannot see it:
+    its ``version == versions[tier]`` guard is false precisely here, which is
+    how a historical file kept passing the assertion that exists to refuse it.
+
+    Anti-vacuity: deleting the ``version < versions[tier.value]`` branch makes
+    this archive admit the transplanted lower-version source tier. The
+    ``assert_archive_format_lineage`` call before the swap pins the other
+    direction -- a refusal that fired unconditionally would fail there.
+    """
+    advanced = dict(ARCHIVE_VERSION_BY_TIER)
+    advanced[ArchiveTier.SOURCE] = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1
+    monkeypatch.setattr(tier_bootstrap, "ARCHIVE_VERSION_BY_TIER", advanced)
+    monkeypatch.setattr(archive_plan, "ARCHIVE_VERSION_BY_TIER", advanced)
+
+    initialize_active_archive_root(tmp_path)
+    archive_plan.assert_archive_format_lineage(tmp_path)
+
+    marker = json.loads((tmp_path / ".polylogue-format.json").read_text(encoding="utf-8"))
+    birth_version = int(marker["tier_versions"]["source"])
+    assert birth_version == advanced[ArchiveTier.SOURCE]
+    transplanted_version = birth_version - 1
+    assert transplanted_version >= ARCHIVE_FORMAT_FLOOR_VERSION
+
+    source_path = tmp_path / "source.db"
+    source_path.unlink()
+    with sqlite3.connect(source_path) as historical:
+        historical.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY) STRICT")
+        historical.execute(f"PRAGMA user_version = {transplanted_version}")
+
+    with pytest.raises(RuntimeError, match="below the version"):
+        archive_plan.assert_archive_format_lineage(tmp_path)
