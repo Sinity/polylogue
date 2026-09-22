@@ -27,6 +27,18 @@ current ``messages`` table. Every other outcome -- no raw reproduces the
 identity at all, or a raw reproduces it but the owning message no longer
 exists in the current index -- is reported as ``ineligible`` with an exact
 reason, through a read-only plan/execute split.
+
+Routing status (polylogue-8xvlf, measured at 6490c82f3): no CLI verb, MCP
+tool, daemon operation or devtools command reaches either entry point --
+``tests/unit/storage/test_attachment_relink.py`` is the only caller in the
+tree. It is kept rather than retired anyway, because two shipped surfaces
+name it as the instrument an operator is supposed to reach for:
+``docs/maintenance.md``'s ``source-conservation`` row and the explanation
+string ``polylogue/maintenance/source_conservation.py`` emits both say
+``plan_orphaned_attachment_relink`` is what types a ref-less
+``attachments`` row on an archive not written throughout by the current
+sweep. Deleting the implementation would leave that guidance pointing at
+nothing; the honest gap is the missing route, not the module.
 """
 
 from __future__ import annotations
