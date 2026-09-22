@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
+from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -767,3 +768,109 @@ def test_parser_census_writers_persist_a_row_without_a_timestamp(tmp_path: Path)
     assert str(blocked["status"]) == "failed"
     assert "exceeds envelope" in str(blocked["detail"])
     verify.close()
+
+
+def test_newer_raw_replaces_a_terminal_carrier(tmp_path: Path) -> None:
+    """A replaced source file gets its own artifact receipt, not the old refusal.
+
+    ``artifact_observation_id`` is stable by (source, path, index) and carries
+    no raw identity, so when a path holding a terminal carrier is replaced by
+    different bytes, the new raw's ordinary classification lands on the SAME
+    ``artifact_id``. The terminal guard compared kinds only, so it suppressed
+    that update even though the newer raw had already won the timestamp/rowid
+    ordering -- leaving the newest coordinate with no receipt of its own, which
+    the raw-frontier check reports as ``source_raws_without_accepted_head``.
+
+    Anti-vacuity: the second half re-observes the SAME raw with an ordinary
+    classification and the terminal carrier must survive, so the guard cannot
+    become "any ordinary observation wins".
+    """
+    conn = _connect(tmp_path / "source.db")
+    observation_id = artifact_observation_id(
+        source_name=Origin.CODEX_SESSION.value, source_path="/tmp/replaced.jsonl", source_index=0
+    )
+    old_raw = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/tmp/replaced.jsonl",
+        source_index=0,
+        payload=b"corrupt bytes",
+        acquired_at_ms=1,
+    )
+    upsert_raw_artifact(
+        conn,
+        old_raw,
+        ArchiveSourceArtifact(
+            artifact_id=observation_id,
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/replaced.jsonl",
+            source_index=0,
+            artifact_kind="terminal_corrupt_input",
+            classification_reason="corrupt",
+            support_status=ArtifactSupportStatus.DECODE_FAILED,
+        ),
+    )
+
+    new_raw = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/tmp/replaced.jsonl",
+        source_index=0,
+        payload=b"a valid replacement export",
+        acquired_at_ms=2,
+    )
+    assert new_raw != old_raw
+    upsert_raw_artifact(
+        conn,
+        new_raw,
+        ArchiveSourceArtifact(
+            artifact_id=observation_id,
+            origin=Origin.CODEX_SESSION,
+            source_path="/tmp/replaced.jsonl",
+            source_index=0,
+            artifact_kind="session_export",
+            classification_reason="session_export",
+            support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+        ),
+    )
+    row = conn.execute(
+        "SELECT raw_id, artifact_kind FROM raw_artifacts WHERE artifact_id = ?", (observation_id,)
+    ).fetchone()
+    assert row is not None
+    assert (row["raw_id"], row["artifact_kind"]) == (new_raw, "session_export")
+
+    # The same raw re-observing its own coordinate must NOT take back its own
+    # terminal refusal.
+    same_raw_id = artifact_observation_id(
+        source_name=Origin.CODEX_SESSION.value, source_path="/tmp/kept.jsonl", source_index=0
+    )
+    kept_raw = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/tmp/kept.jsonl",
+        source_index=0,
+        payload=b"kept corrupt bytes",
+        acquired_at_ms=3,
+    )
+    for kind, status, reason in (
+        ("terminal_corrupt_input", ArtifactSupportStatus.DECODE_FAILED, "corrupt"),
+        ("session_export", ArtifactSupportStatus.SUPPORTED_PARSEABLE, "session_export"),
+    ):
+        upsert_raw_artifact(
+            conn,
+            kept_raw,
+            ArchiveSourceArtifact(
+                artifact_id=same_raw_id,
+                origin=Origin.CODEX_SESSION,
+                source_path="/tmp/kept.jsonl",
+                source_index=0,
+                artifact_kind=kind,
+                classification_reason=reason,
+                support_status=status,
+            ),
+        )
+    kept = conn.execute(
+        "SELECT raw_id, artifact_kind FROM raw_artifacts WHERE artifact_id = ?", (same_raw_id,)
+    ).fetchone()
+    assert kept is not None
+    assert (kept["raw_id"], kept["artifact_kind"]) == (kept_raw, "terminal_corrupt_input")
