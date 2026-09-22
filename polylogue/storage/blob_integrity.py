@@ -2432,12 +2432,36 @@ class AttachmentCoverageReport:
     least one ``attachment_refs`` row -- without one it cannot be returned
     by any session/message read path (``get_attachments``, MCP get/read,
     CLI ``read --view``).
+
+    ``acquired_count`` is the status tally -- the claim the rows make. The
+    three terms below partition it by what the blob store can say about that
+    claim, so no single figure in this report can be read as measured
+    coverage (polylogue-o0uw5):
+
+    ``acquired_with_bytes_count``
+        Corroborated: the store holds an object for the recorded hash.
+    ``acquired_missing_blob_count``
+        Contradicted: the row names a hash the store does not hold. This is
+        the 2026-09-14 pre-wipe census shape (1240 of 1446 acquired hashes
+        with no bytes behind them).
+    ``acquired_unverifiable_count``
+        Unverifiable: ``acquired`` with no ``blob_hash`` at all, so there is
+        nothing to check it against. This bucket used to be skipped outright,
+        which counted an unchecked claim as a verified one and left ``ok``
+        true; it is debt now, exactly as the contradicted bucket is. No
+        current writer produces the shape (``write.py``'s
+        ``_acquire_attachment_blob`` returns ``unfetched`` whenever it has no
+        hash) but the column is nullable, and the whole point of this report
+        is that stored state is not taken on trust.
     """
 
     total_attachments: int
     acquired_count: int
+    acquired_with_bytes_count: int
     acquired_missing_blob_count: int
     acquired_missing_blob_sample: tuple[str, ...]
+    acquired_unverifiable_count: int
+    acquired_unverifiable_sample: tuple[str, ...]
     unavailable_count: int
     unfetched_count: int
     # polylogue-w06b: `acquisition_status='acquired'` alone overstates real
@@ -2456,10 +2480,17 @@ class AttachmentCoverageReport:
 
     @property
     def ok(self) -> bool:
-        return self.acquired_missing_blob_count == 0
+        return self.acquired_missing_blob_count == 0 and self.acquired_unverifiable_count == 0
 
     @property
     def acquired_reachable_count(self) -> int:
+        """Acquired rows a session/message read path can return.
+
+        This is the reference axis, not the bytes axis: a contradicted or
+        unverifiable row with a live ``attachment_refs`` row is still counted
+        here. Read it together with ``acquired_with_bytes_count``, never on
+        its own as coverage.
+        """
         return self.acquired_count - self.acquired_unreachable_count - self.acquired_unowned_count
 
     def to_dict(self) -> dict[str, object]:
@@ -2467,12 +2498,15 @@ class AttachmentCoverageReport:
             "ok": self.ok,
             "total_attachments": self.total_attachments,
             "acquired_count": self.acquired_count,
+            "acquired_with_bytes_count": self.acquired_with_bytes_count,
             "acquired_reachable_count": self.acquired_reachable_count,
             "acquired_unreachable_count": self.acquired_unreachable_count,
             "acquired_unreachable_sample": list(self.acquired_unreachable_sample),
             "acquired_unowned_count": self.acquired_unowned_count,
             "acquired_missing_blob_count": self.acquired_missing_blob_count,
             "acquired_missing_blob_sample": list(self.acquired_missing_blob_sample),
+            "acquired_unverifiable_count": self.acquired_unverifiable_count,
+            "acquired_unverifiable_sample": list(self.acquired_unverifiable_sample),
             "unavailable_count": self.unavailable_count,
             "unfetched_count": self.unfetched_count,
         }
@@ -2526,12 +2560,23 @@ def scan_attachment_coverage(
 
     missing_sample: list[str] = []
     missing_count = 0
+    unverifiable_sample: list[str] = []
+    unverifiable_count = 0
+    with_bytes_count = 0
     for row in acquired_rows:
         blob_hash = row["blob_hash"]
         if blob_hash is None:
+            # polylogue-o0uw5: an `acquired` claim with no blob identity has
+            # no evidence to reconcile against. Skipping it counted it as
+            # covered; it is its own state, not a corroborated one and not a
+            # contradicted one.
+            unverifiable_count += 1
+            if len(unverifiable_sample) < sample_size:
+                unverifiable_sample.append(str(row["attachment_id"]))
             continue
         hash_hex = blob_hash.hex() if isinstance(blob_hash, bytes) else str(blob_hash)
         if blob_store.exists(hash_hex):
+            with_bytes_count += 1
             continue
         missing_count += 1
         if len(missing_sample) < sample_size:
@@ -2542,8 +2587,11 @@ def scan_attachment_coverage(
     return AttachmentCoverageReport(
         total_attachments=sum(status_counts.values()),
         acquired_count=status_counts.get("acquired", 0),
+        acquired_with_bytes_count=with_bytes_count,
         acquired_missing_blob_count=missing_count,
         acquired_missing_blob_sample=tuple(missing_sample),
+        acquired_unverifiable_count=unverifiable_count,
+        acquired_unverifiable_sample=tuple(unverifiable_sample),
         unavailable_count=status_counts.get("unavailable", 0),
         unfetched_count=status_counts.get("unfetched", 0),
         acquired_unreachable_count=len(unreachable_rows),

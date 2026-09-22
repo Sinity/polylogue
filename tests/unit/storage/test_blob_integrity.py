@@ -519,6 +519,135 @@ def test_scan_attachment_coverage_flags_acquired_row_with_no_attachment_ref(tmp_
     assert report.ok is True
 
 
+def test_acquired_coverage_partitioned_by_stored_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-o0uw5: ``acquired`` is a claim; the store decides it.
+
+    The 2026-09-14 pre-wipe census found 1240 of 1446 ``acquired`` attachment
+    hashes with no bytes behind them, and this report answered "1446
+    acquired". Three rows that all claim ``acquired`` must land in three
+    different terms: corroborated, contradicted (a hash the store does not
+    hold), and unverifiable (``acquired`` with no hash to check at all).
+
+    Anti-vacuity: the unverifiable row is the one the scanner used to skip
+    outright. Restore ``if blob_hash is None: continue`` and this test goes
+    red on ``acquired_unverifiable_count`` and on ``ok`` -- an unchecked claim
+    counted as a verified one. Dropping the ``with_bytes`` tally, or folding
+    contradicted rows back into it, fails the first assertion. The
+    corroborated row is asserted to stay ``acquired`` with its bytes, so
+    "call every acquired row unverifiable" also fails.
+    """
+
+    index_db = tmp_path / "index.db"
+    store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
+    payloads = {
+        "att-corroborated": b"bytes that stay in the store",
+        "att-contradicted": b"bytes the store will lose",
+        "att-unverifiable": b"bytes whose identity is erased",
+    }
+    attachments = [
+        ParsedAttachment(
+            provider_attachment_id=name,
+            message_provider_id="m0",
+            name=f"{name}.txt",
+            mime_type="text/plain",
+            inline_bytes=payload,
+        )
+        for name, payload in payloads.items()
+    ]
+    session = ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id="coverage-partition",
+        title="coverage-partition",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m0",
+                role=Role.USER,
+                text="three files",
+                position=0,
+                variant_index=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="three files")],
+            )
+        ],
+        attachments=attachments,
+    )
+    preacquired: dict[int, tuple[bytes | None, int, str]] = {}
+    hashes: dict[str, str] = {}
+    for attachment in session.attachments:
+        assert attachment.inline_bytes is not None
+        blob_hash, size = store.write_from_bytes(attachment.inline_bytes)
+        preacquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
+        hashes[attachment.provider_attachment_id] = blob_hash
+
+    conn = sqlite3.connect(index_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=preacquired)
+    ids = {
+        str(row["display_name"]): str(row["attachment_id"])
+        for row in conn.execute("SELECT attachment_id, display_name FROM attachments")
+    }
+    # The census shape: the row keeps its hash, the store loses the bytes.
+    store.blob_path(hashes["att-contradicted"]).unlink()
+    # The unverifiable shape: an acquisition claim with no identity to check.
+    conn.execute("UPDATE attachments SET blob_hash = NULL WHERE attachment_id = ?", (ids["att-unverifiable.txt"],))
+    store.blob_path(hashes["att-unverifiable"]).unlink()
+    conn.commit()
+    assert [row[0] for row in conn.execute("SELECT DISTINCT acquisition_status FROM attachments")] == ["acquired"]
+    conn.close()
+
+    report = scan_attachment_coverage(index_db, store=store, sample_size=5)
+
+    assert report.acquired_count == 3
+    assert report.acquired_with_bytes_count == 1
+    assert report.acquired_missing_blob_count == 1
+    assert report.acquired_missing_blob_sample == (ids["att-contradicted.txt"],)
+    assert report.acquired_unverifiable_count == 1
+    assert report.acquired_unverifiable_sample == (ids["att-unverifiable.txt"],)
+    assert report.ok is False
+    # Criterion 3: the row whose bytes are present is untouched by any of this.
+    assert store.verify(hashes["att-corroborated"]) is True
+    payload = report.to_dict()
+    assert payload["acquired_with_bytes_count"] == 1
+    assert payload["acquired_unverifiable_count"] == 1
+
+
+def test_unverifiable_acquired_row_alone_is_not_ok(tmp_path: Path) -> None:
+    """A lone ``acquired`` row with no blob hash cannot certify coverage.
+
+    Anti-vacuity: before this, the scanner skipped hashless acquired rows, so
+    this archive reported ``acquired_count=1``, ``acquired_missing_blob_count=0``
+    and ``ok is True`` -- a fully green coverage answer for an archive that
+    checked nothing. Restore the skip and the last three assertions go red.
+    """
+
+    index_db = tmp_path / "index.db"
+    store = BlobStore(tmp_path / "blob")
+    conn = sqlite3.connect(index_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
+        ) VALUES ('att-no-identity', 'ghost.txt', 'text/plain', 0, NULL, 'acquired', 0)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    report = scan_attachment_coverage(index_db, store=store, sample_size=5)
+
+    assert report.acquired_count == 1
+    assert report.acquired_with_bytes_count == 0
+    assert report.acquired_missing_blob_count == 0
+    assert report.acquired_unverifiable_count == 1
+    assert report.acquired_unverifiable_sample == ("att-no-identity",)
+    assert report.ok is False
+
+
 def test_classify_blob_reference_debt_groups_recovery_evidence(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     store = BlobStore(tmp_path / "blob")

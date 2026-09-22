@@ -153,6 +153,7 @@ def _acquisition_coordinate(row: sqlite3.Row) -> str:
 def _surviving_blob_ref(
     source_conn: sqlite3.Connection,
     *,
+    attachment_id: str,
     raw_id: str,
     source_path: str,
     blob_store: ArchiveBlobPublisher,
@@ -170,6 +171,17 @@ def _surviving_blob_ref(
     keeps the coordinate per attachment rather than per raw session, so the
     refusal is reserved for genuinely indistinguishable evidence instead of
     firing on every raw that carries more than one attachment.
+
+    Survival is decided by re-hashing the object, not by ``exists``
+    (polylogue-o0uw5).  ``exists`` answers "a file sits at that path", while
+    the re-bind it gates writes ``acquisition_status = 'acquired'`` -- a
+    positive claim that these exact bytes were fetched and stored.  A path
+    that survived with content the recorded hash no longer names is not a
+    survivor: it falls through to the provider, which either republishes real
+    bytes or terminates the row ``unavailable``.  The fresh-acquisition path
+    in :func:`converge_drive_attachments` hashes the payload it actually read,
+    so this keeps both routes to ``acquired`` backed by the same evidence
+    instead of leaving the cheaper one trusted.
     """
     rows = source_conn.execute(
         """
@@ -185,7 +197,20 @@ def _surviving_blob_ref(
     size_bytes = int(rows[0][1])
     if is_blob_hash_excised(source_conn, blob_hash):
         return None
-    if not blob_store.exists(blob_hash.hex()):
+    if not blob_store.verify(blob_hash.hex()):
+        if blob_store.exists(blob_hash.hex()):
+            # Durable-ledger evidence contradicted by the object it names.
+            # Silently re-downloading would repair the row and erase the only
+            # signal that a published blob decayed.
+            emit(
+                "operations.attachment_convergence.survivor_contradicted",
+                level=WARNING,
+                outcome="degraded",
+                attachment_id=attachment_id,
+                raw_id=raw_id,
+                blob_hash=blob_hash.hex(),
+                reason="stored object does not hash to the recorded blob ref",
+            )
         return None
     return blob_hash, size_bytes
 
@@ -235,9 +260,10 @@ def converge_drive_attachments(
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     acquired_refs: list[ArchiveSourceBlobRef] = []
     acquired_rows: list[tuple[str, bytes, int]] = []
-    #: Rows bound to a blob that survived in the store; no provider
-    #: request and no new source blob ref, but the same durable index
-    #: outcome as a fresh acquisition.
+    #: Rows bound to a blob whose stored object still re-hashes to the
+    #: recorded identity; no provider request and no new source blob ref, but
+    #: the same durable index outcome -- and the same content evidence -- as a
+    #: fresh acquisition.
     rebound_rows: list[tuple[str, bytes, int]] = []
     terminal_ids: list[str] = []
     excised_ids: list[str] = []
@@ -259,6 +285,7 @@ def converge_drive_attachments(
             source_path = _acquisition_coordinate(row)
             surviving = _surviving_blob_ref(
                 source_conn,
+                attachment_id=attachment_id,
                 raw_id=raw_id,
                 source_path=source_path,
                 blob_store=publisher,
