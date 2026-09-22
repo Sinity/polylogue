@@ -562,6 +562,32 @@ def refine_raw_origin(conn: sqlite3.Connection, *, raw_id: str, origin: Origin |
     )
 
 
+def _assert_additional_blob_refs_admissible(
+    conn: sqlite3.Connection,
+    additional_blob_refs: tuple[ArchiveSourceBlobRef, ...],
+    *,
+    policy_snapshot: ExcisionPolicySnapshot | None,
+) -> None:
+    """Gate every sibling attachment/sidecar reference on the excision ledger.
+
+    Session excision deliberately records every sibling attachment and sidecar
+    hash, not just the session payload's. Checking only the primary hash left
+    ``additional_blob_refs`` as the one unguarded way back in: a parsed-session
+    ingest carrying an excised attachment inserted its ``blob_refs`` row and
+    consumed its publication receipt, making bytes the operator durably excised
+    live again under a new raw record. ``write_source_blob_refs`` already
+    refuses per reference and names the hash; this is the same gate for the
+    references the raw-session writers take inline.
+
+    Runs before the writers' transaction so a refusal leaves no side effect.
+    """
+    for ref in additional_blob_refs:
+        ref_source_path = ref.source_path or f"blob_ref:{ref.ref_type}"
+        _assert_excision_policy(ref.blob_hash, source_path=ref_source_path, policy_snapshot=policy_snapshot)
+        if is_blob_hash_excised(conn, ref.blob_hash):
+            raise ContentExcisedError(blob_hash=ref.blob_hash, source_path=ref_source_path)
+
+
 def write_source_blob_refs(
     conn: sqlite3.Connection,
     raw_id: str,
@@ -571,7 +597,9 @@ def write_source_blob_refs(
 
     Gated on the durable excision ledger like every other writer in this
     module (``write_source_raw_session``,
-    ``write_source_raw_session_blob_ref``). This was the one blob-reference
+    ``write_source_raw_session_blob_ref`` -- including the sibling references
+    they take through ``additional_blob_refs``). This was the one
+    blob-reference
     writer that was not: the Drive attachment convergence stage re-downloads
     an ``unfetched`` reference, hashes it back to the exact excised hash, and
     used this function to recreate a live ``blob_refs`` row for content the
@@ -647,6 +675,7 @@ def write_source_raw_session(
     _assert_excision_policy(blob_hash, source_path=source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, blob_hash):
         raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
+    _assert_additional_blob_refs_admissible(conn, additional_blob_refs, policy_snapshot=policy_snapshot)
     blob_size = len(payload)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
@@ -1015,6 +1044,7 @@ def write_source_raw_session_blob_ref(
     _assert_excision_policy(blob_hash, source_path=source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, blob_hash):
         raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
+    _assert_additional_blob_refs_admissible(conn, additional_blob_refs, policy_snapshot=policy_snapshot)
     resolved_raw_id = raw_id or deterministic_raw_session_id(
         origin,
         source_path,

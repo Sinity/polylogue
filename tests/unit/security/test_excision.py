@@ -459,6 +459,105 @@ class TestApplySessionExcision:
         finally:
             source_conn.close()
 
+    def test_additional_blob_refs_cannot_resurrect_an_excised_sibling(self, tmp_path: Path) -> None:
+        """A sibling attachment/sidecar reference is gated like the payload is.
+
+        Session excision records every sibling attachment and sidecar hash, not
+        just the payload's. Both raw-session writers checked only the primary
+        hash, so a later ingest whose own payload is admissible could still
+        carry the excised hash in ``additional_blob_refs`` -- inserting its
+        ``blob_refs`` row and consuming its publication receipt, making the
+        excised bytes reachable again under a new raw record.
+
+        Anti-vacuity: removing either
+        ``_assert_additional_blob_refs_admissible`` call makes the refusal
+        assertion fail and leaves the ``blob_refs`` row behind. The final
+        admissible-sibling write pins the other direction, so a blanket refusal
+        of ``additional_blob_refs`` cannot pass.
+        """
+        from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
+
+        excised_payload = b'{"native_id": "sibling-secret", "secret": "sk-ant-abc123"}'
+        session_id = _seed_session(tmp_path, native_id="sibling-secret", payload=excised_payload)
+        apply_session_excision(tmp_path, session_id, reason="secret leak", actor="user:local")
+
+        excised_hash = deterministic_blob_hash(excised_payload)
+        fresh_payload = b'{"native_id": "sibling-carrier"}'
+        innocent_hash = deterministic_blob_hash(b"an unrelated attachment")
+
+        source_conn = sqlite3.connect(tmp_path / "source.db")
+        source_conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            assert is_blob_hash_excised(source_conn, excised_hash) is True
+            assert is_blob_hash_excised(source_conn, innocent_hash) is False
+            before = source_conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0]
+
+            forbidden = ArchiveSourceBlobRef(
+                blob_hash=excised_hash,
+                raw_id="",
+                ref_type="attachment",
+                source_path="/fake/sibling-secret.attachment",
+                size_bytes=len(excised_payload),
+                acquired_at_ms=9_999,
+            )
+            with pytest.raises(ContentExcisedError):
+                write_source_raw_session(
+                    source_conn,
+                    origin="codex-session",
+                    source_path="/fake/sibling-carrier.jsonl",
+                    source_index=0,
+                    payload=fresh_payload,
+                    acquired_at_ms=9_999,
+                    native_id="sibling-carrier",
+                    additional_blob_refs=(forbidden,),
+                )
+            with pytest.raises(ContentExcisedError):
+                write_source_raw_session_blob_ref(
+                    source_conn,
+                    origin="codex-session",
+                    source_path="/fake/sibling-carrier-streamed.jsonl",
+                    source_index=0,
+                    blob_hash=deterministic_blob_hash(b'{"native_id": "sibling-carrier-streamed"}'),
+                    blob_size=41,
+                    acquired_at_ms=9_999,
+                    native_id="sibling-carrier-streamed",
+                    additional_blob_refs=(forbidden,),
+                )
+            assert source_conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == before
+            assert (
+                source_conn.execute("SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (excised_hash,)).fetchone()[0]
+                == 0
+            )
+
+            # Opposite direction: an admissible sibling still writes.
+            admissible = ArchiveSourceBlobRef(
+                blob_hash=innocent_hash,
+                raw_id="",
+                ref_type="attachment",
+                source_path="/fake/sibling-carrier.attachment",
+                size_bytes=23,
+                acquired_at_ms=9_999,
+            )
+            write_source_raw_session(
+                source_conn,
+                origin="codex-session",
+                source_path="/fake/sibling-carrier.jsonl",
+                source_index=0,
+                payload=fresh_payload,
+                acquired_at_ms=9_999,
+                native_id="sibling-carrier",
+                additional_blob_refs=(admissible,),
+            )
+            source_conn.commit()
+            assert (
+                source_conn.execute("SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (innocent_hash,)).fetchone()[
+                    0
+                ]
+                == 1
+            )
+        finally:
+            source_conn.close()
+
 
 class TestLineageSafety:
     """Coverage for the polylogue-27m fix-round lineage-collateral guard."""
