@@ -179,6 +179,17 @@ def prune_daemon_events(
     The single enforcement point for the ledger bound. Called on every emit so
     a resuming subscriber's cursor and the retained range are trimmed by the
     same writer, inside the emit transaction.
+
+    Both bounds delete an ``id`` *prefix*, never an interior row.
+    :func:`_cursor_refusal_reason` infers a subscriber's completeness from
+    ``MIN(id)`` alone, so an interior deletion is invisible to it: a cursor
+    below the hole still passes the minimum-id check and the next page is
+    delivered as ``OK`` with the deleted row silently missing. ``ts_ms`` is not
+    monotonic in ``id`` -- ``observed_at_ms`` is caller-supplied and the wall
+    clock can step backwards -- so age retention keeps the first row the
+    horizon retains and everything after it, rather than every row whose
+    timestamp happens to be old. That over-retains an out-of-order old row
+    sitting behind a young one; ``max_rows`` still bounds the ledger's size.
     """
     resolved = daemon_event_retention() if retention is None else retention
     if not resolved.is_bounded:
@@ -186,7 +197,12 @@ def prune_daemon_events(
     removed = 0
     if resolved.max_age_ms is not None:
         horizon = (current_epoch_ms() if now_ms is None else now_ms) - resolved.max_age_ms
-        removed += conn.execute("DELETE FROM daemon_events WHERE ts_ms < ?", (horizon,)).rowcount
+        boundary_row = conn.execute("SELECT MIN(id) FROM daemon_events WHERE ts_ms >= ?", (horizon,)).fetchone()
+        boundary = None if boundary_row is None else boundary_row[0]
+        if boundary is None:
+            removed += conn.execute("DELETE FROM daemon_events").rowcount
+        else:
+            removed += conn.execute("DELETE FROM daemon_events WHERE id < ?", (int(boundary),)).rowcount
     if resolved.max_rows is not None:
         row_count = int(conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone()[0])
         excess = row_count - resolved.max_rows
@@ -463,6 +479,15 @@ def query_events_since(
     A cursor below the retained minimum is refused with
     :attr:`EventCursorStatus.AGED_OUT` and a resync envelope rather than the
     silently short page ``WHERE id > ?`` would otherwise produce.
+
+    The retained-range check and the page read observe **one** snapshot. In
+    autocommit each statement takes its own, so a writer pruning between them
+    lets a cursor pass the minimum-id check and then read a page whose rows
+    were deleted in the gap -- delivered as a short ``OK`` page, which is
+    exactly the silent event loss the refusal exists to prevent. ``BEGIN`` is
+    deferred, so the snapshot is taken by the first read below and released by
+    the ``ROLLBACK`` in ``finally``; the connection is ``query_only``, so this
+    read transaction can never become a write.
     """
     conn = _open_events_reader()
     if conn is None:
@@ -471,6 +496,7 @@ def query_events_since(
         # documented empty-ledger result rather than a fabricated refusal.
         return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
     try:
+        conn.execute("BEGIN")
         retained_min, latest = _retained_range(conn)
         refusal = _cursor_refusal_reason(last_id, retained_min, latest)
         if refusal is not None:
@@ -528,6 +554,7 @@ def query_events_since(
             latest_id=latest,
         )
     finally:
+        conn.rollback()
         conn.close()
 
 
