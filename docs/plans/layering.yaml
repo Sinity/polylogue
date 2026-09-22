@@ -252,6 +252,39 @@ rules:
 
   - target: polylogue/mcp
     description: >-
+      Mutation authority, third surface (polylogue-gjwto / polylogue-r29bv).
+      Decision D1 extended this rule from ``polylogue/cli`` to
+      ``polylogue/api`` because a CLI write routed through the facade
+      satisfied the CLI rule's letter while still writing in-process. The
+      writes then finished moving: at eab6e8507 every one of the twenty
+      surviving ``_execute_facade_mutation`` call sites in
+      ``polylogue/api/archive.py`` is reached from ``polylogue/mcp`` and none
+      from ``polylogue/cli``, so the entire remaining in-process writer
+      population now sits behind the one surface this rule did not cover. The
+      ``polylogue/mcp`` rule below is about substrate imports and never
+      matched an executor driver.
+
+      An import rule can only ever see a *direct* import, which is one
+      spelling of the write; the facade-routed spelling is invisible to it by
+      construction. That half is censused by
+      ``tests/unit/api/test_facade_mutation_census.py``, which pins the
+      twenty caller methods and their surface reach. This rule covers the
+      direct half: ``polylogue/mcp/server_cutover.py`` imports
+      ``polylogue.annotations.importer``, which drives ``OperationExecutor``
+      against ``user.db`` in the MCP process. That import is the MCP twin of
+      the CLI writer #5310 recorded, and it was uncensused by any rule until
+      this entry existed.
+    disallow:
+      from:
+        - polylogue/operations/mutation_transaction
+        - polylogue/operations/mutation_actuators
+        - polylogue/operations/delete_authorization
+        - polylogue/operations/session_mutations
+        - polylogue/annotations/importer
+      baseline: docs/plans/layering-cli-mutation-authority-baseline.json
+
+  - target: polylogue/mcp
+    description: >-
       MCP surface adapter — should route through insights/operations/api
       rather than substrate internals (polylogue-2ciy). 9 pre-existing
       direct substrate imports are baselined (ratchet: new ones fail);
