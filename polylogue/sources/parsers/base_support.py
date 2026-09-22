@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import inspect
 from collections.abc import Callable, Iterator, Sequence
 from functools import wraps
 from typing import Any, Literal, TypeVar
@@ -148,6 +149,31 @@ def _observe_wire_types(payload: Iterator[Any], observed: list[str | None]) -> I
         yield item
 
 
+def _payload_parameter(parser: Callable[..., ParsedSession]) -> tuple[int, str]:
+    """Locate the wire-payload parameter of one decorated session parser.
+
+    ``drive.parse_chunked_prompt`` takes ``(provider, payload, fallback_id)``,
+    so binding ``args[0]`` classified the provider token instead of the
+    document: no unknown record in the real payload was ever observed and the
+    synthesized ledger recorded one parsed outer record regardless of how many
+    chunks arrived. Resolve the parameter by name so a parser's own signature
+    decides which argument the conservation boundary reads, and fall back to
+    the first positional for parsers that name it something else
+    (``chatgpt_codex_sidecar.parse_codex_task`` takes ``task``).
+    """
+    parameters = [
+        parameter
+        for parameter in inspect.signature(parser).parameters.values()
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    ]
+    if not parameters:
+        raise TypeError(f"{parser.__qualname__} has no payload parameter to admit")
+    names = [parameter.name for parameter in parameters]
+    name = "payload" if "payload" in names else names[0]
+    return names.index(name), name
+
+
 def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser]:
     """Put a common conservation boundary around every session parser.
 
@@ -158,19 +184,21 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
     """
 
     def decorate(parser: _SessionParser) -> _SessionParser:
+        payload_index, payload_name = _payload_parameter(parser)
+
         @wraps(parser)
         def wrapped(*args: Any, **kwargs: Any) -> ParsedSession:
-            payload = args[0] if args else kwargs.get("payload")
+            payload = args[payload_index] if len(args) > payload_index else kwargs.get(payload_name)
             observed: list[str | None] = []
             if isinstance(payload, Iterator):
                 # A one-pass payload can only be classified while the parser
                 # pulls it; re-reading it afterwards would see an exhausted
                 # iterator and undercount every record.
                 instrumented = _observe_wire_types(payload, observed)
-                if args:
-                    args = (instrumented, *args[1:])
+                if len(args) > payload_index:
+                    args = (*args[:payload_index], instrumented, *args[payload_index + 1 :])
                 else:
-                    kwargs = {**kwargs, "payload": instrumented}
+                    kwargs = {**kwargs, payload_name: instrumented}
                 session = parser(*args, **kwargs)
             else:
                 raw_items = (
