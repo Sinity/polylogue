@@ -127,11 +127,12 @@ def _write_message_stream(
     *,
     prose_only: bool,
 ) -> None:
-    # Keep the age bound load-bearing during large exports: a cursor can yield
-    # rows long after it was opened, so check the frame between rows as well as
-    # at connection acquisition.
-    conn = frame.connection
-    cursor = conn.execute(
+    # A transcript export steps this cursor for its whole lifetime, which pins
+    # every WAL frame written since it started. ``frame.stream`` is the route
+    # that keeps the declared maximum snapshot age load-bearing between rows and
+    # releases the cursor before the typed expiry reaches the caller, so an
+    # over-long export ends the WAL pin instead of reporting it and continuing.
+    rows = frame.stream(
         f"""
         SELECT m.message_id,
                m.role,
@@ -157,8 +158,7 @@ def _write_message_stream(
     current_role = "message"
     current_ts: object = None
     blocks: list[RenderableBlock] = []
-    for row in cursor:
-        frame.check()
+    for row in rows:
         message_id = str(row["message_id"])
         if current_id is not None and message_id != current_id:
             _write_one_message(fh, role=current_role, timestamp=current_ts, blocks=blocks, prose_only=prose_only)

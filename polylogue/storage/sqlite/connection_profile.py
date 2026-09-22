@@ -21,7 +21,8 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Iterator, Mapping
+import weakref
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -299,11 +300,25 @@ COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
 )
 
-# A live-generation reader pins the WAL frames it opened against for as long as
-# it lives, so an unbounded reader is what turns a recurring PASSIVE checkpoint
-# into a no-op and the WAL into unbounded growth. Every live read profile
-# declares the age past which its frame must be rebound (see ``read_frame.py``);
-# a sealed generation cannot change under a reader and declares none.
+# What a live-generation reader pins is its *open read transaction*, not its
+# connection. Two measurements on a synthetic WAL archive with
+# ``wal_autocheckpoint=0`` (what the armed recurring owner leaves every daemon
+# writer) and a 512-byte row payload:
+#
+#   40k rows written, then one PASSIVE. No reader and an idle ``mode=ro``
+#   connection both checkpointed 6079 of 6079 frames; a reader holding one
+#   lazily stepped cursor checkpointed 0 of 6079.
+#
+#   Eight bursts of 5k rows with one PASSIVE after each. Behind the idle
+#   connection the WAL plateaued (2,962,312 -> 2,978,792 bytes); behind the
+#   stepped cursor it grew monotonically every burst, 2,962,312 -> 23,776,552
+#   bytes -- 8.0x, the full concurrent write volume, for the transaction's
+#   whole lifetime.
+#
+# So the bound that matters is on how long a read transaction may stay open, and
+# ``ReadFrame.stream`` below is the route that applies it per row. Every live
+# read profile declares that maximum age; a sealed generation cannot change
+# under a reader and declares none.
 INTERACTIVE_READ_SNAPSHOT_AGE_S = 30.0
 BACKGROUND_READ_SNAPSHOT_AGE_S = 300.0
 
@@ -1314,12 +1329,19 @@ def open_isolated_write_connection(
 # Read frames: a bounded, rebindable read connection over one generation
 # ---------------------------------------------------------------------------
 #
-# A ``mode=ro`` connection is not by itself a bounded read. It pins the WAL
-# frames it first read against for as long as it lives, which is what turns a
-# recurring PASSIVE checkpoint into a no-op and lets the WAL grow without
-# limit. A read frame gives a live-generation reader the two things that bound
-# it: an age past which it must rebind, and a generation identity that says
-# whether what it rebound to is still the thing it was reading.
+# A ``mode=ro`` connection is not by itself a bounded read, and it is also not
+# by itself a cost: an idle one holds no read mark and a recurring PASSIVE
+# checkpoint recycles the log straight past it. What turns PASSIVE into a no-op
+# and lets the WAL grow without limit is an *open read transaction* -- in
+# practice a cursor that is still being stepped. ``sqlite3.Connection`` cannot
+# report that (``in_transaction`` stays False for a SELECT in autocommit while
+# the cursor pins frames), so the frame has to own the stepping to bound it.
+#
+# A read frame therefore gives a live-generation reader three things: an age
+# past which it must rebind, a generation identity that says whether what it
+# rebound to is still the thing it was reading, and ``stream`` -- the one route
+# that steps a cursor while re-checking that age between rows and releases the
+# cursor before raising, so an expiry ends the WAL pin instead of reporting it.
 
 
 class ReadFrameExpiredError(RuntimeError):
@@ -1379,6 +1401,60 @@ class ReadContinuation:
     epoch: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class ReadFrameStatus:
+    """One live read frame, as the recurring checkpoint owner sees it."""
+
+    path: Path
+    timeout_class: str
+    age_s: float
+    max_snapshot_age_s: float | None
+    #: Whether a cursor opened through :meth:`ReadFrame.stream` is in flight.
+    #: This is the only state that provably pins WAL frames, and the only
+    #: reason a frame belongs in a blocked checkpoint's evidence.
+    streaming: bool
+    reason: str | None = None
+
+    @property
+    def overdue(self) -> bool:
+        return self.max_snapshot_age_s is not None and self.age_s > self.max_snapshot_age_s
+
+    def describe(self) -> str:
+        declared = "none" if self.max_snapshot_age_s is None else f"{self.max_snapshot_age_s:.0f}s"
+        suffix = f" ({self.reason})" if self.reason else ""
+        return f"{self.path.name}:{self.timeout_class} age={self.age_s:.1f}s max={declared}{suffix}"
+
+
+# The process-local read-snapshot registry. ``connection_profile`` owns both
+# halves of the coupled decision, so the recurring checkpoint owner can name the
+# frames that pinned it instead of only naming a PID from a ``/proc`` walk that
+# cannot distinguish an idle handle from an open read transaction.
+_LIVE_READ_FRAMES: weakref.WeakSet[ReadFrame] = weakref.WeakSet()
+_LIVE_READ_FRAMES_LOCK = threading.Lock()
+
+
+def live_read_frames() -> tuple[ReadFrameStatus, ...]:
+    """Every read frame still open in this process, oldest first."""
+    with _LIVE_READ_FRAMES_LOCK:
+        frames = tuple(_LIVE_READ_FRAMES)
+    statuses = [frame.status() for frame in frames]
+    return tuple(sorted(statuses, key=lambda status: status.age_s, reverse=True))
+
+
+def pinning_read_frames(path: Path | str | None = None) -> tuple[ReadFrameStatus, ...]:
+    """Live frames holding an open read transaction, optionally over one file.
+
+    ``path`` is compared by resolved filesystem identity so a generation reached
+    through a symlinked ``index.db`` matches the tier a checkpoint names.
+    """
+    target = Path(path).resolve(strict=False) if path is not None else None
+    return tuple(
+        status
+        for status in live_read_frames()
+        if status.streaming and (target is None or status.path.resolve(strict=False) == target)
+    )
+
+
 def _generation_token(path: Path) -> GenerationToken:
     stat = path.stat()
     return GenerationToken(device=stat.st_dev, inode=stat.st_ino)
@@ -1398,6 +1474,7 @@ class ReadFrame:
     """
 
     __slots__ = (
+        "__weakref__",
         "_cancelled",
         "_conn",
         "_data_version",
@@ -1406,7 +1483,10 @@ class ReadFrame:
         "_opened_at",
         "_path",
         "_profile",
+        "_reason",
+        "_streaming",
         "_tier",
+        "_timeout_class",
     )
 
     def __init__(
@@ -1415,18 +1495,35 @@ class ReadFrame:
         *,
         profile: SQLiteConnectionProfile,
         tier: ArchiveTier | None = None,
+        timeout_class: str = "unnamed",
+        reason: str | None = None,
     ) -> None:
         if profile.role != "read" or not profile.query_only:
             raise ValueError("a read frame requires a query-only read profile")
+        if profile.generation_identity == "live" and profile.max_snapshot_age_s is None:
+            # A live generation changes under the reader, so a frame over one
+            # with no declared maximum is precisely the unbounded WAL pin this
+            # class exists to prevent. Refusing here is what stops a caller
+            # from obtaining one by handing in a profile with the bound removed.
+            raise ValueError(
+                f"a live-generation read frame over {path} must declare max_snapshot_age_s; "
+                "use read_frame(..., max_snapshot_age_s=..., reason=...) to extend the bound, "
+                "or a sealed-generation profile if the file genuinely cannot change"
+            )
         self._path = Path(path)
         self._profile = profile
         self._tier = tier
+        self._timeout_class = timeout_class
+        self._reason = reason
         self._cancelled = False
         self._epoch = 0
+        self._streaming = 0
         self._conn = self._open()
         self._opened_at = time.monotonic()
         self._generation = _generation_token(self._path)
         self._data_version = _data_version(self._conn)
+        with _LIVE_READ_FRAMES_LOCK:
+            _LIVE_READ_FRAMES.add(self)
 
     def _open(self) -> sqlite3.Connection:
         conn = open_readonly_connection(
@@ -1473,15 +1570,69 @@ class ReadFrame:
         max_age = self._profile.max_snapshot_age_s
         return max_age is not None and self.age_s > max_age
 
+    @property
+    def streaming(self) -> bool:
+        """Whether a :meth:`stream` cursor is in flight, i.e. pinning WAL frames."""
+        return self._streaming > 0
+
+    def status(self) -> ReadFrameStatus:
+        return ReadFrameStatus(
+            path=self._path,
+            timeout_class=self._timeout_class,
+            age_s=self.age_s,
+            max_snapshot_age_s=self._profile.max_snapshot_age_s,
+            streaming=self.streaming,
+            reason=self._reason,
+        )
+
     def check(self) -> None:
         """Raise if this frame may no longer be read from."""
         if self._cancelled:
             raise ReadFrameCancelledError(f"read frame over {self._path} was cancelled")
         if self.expired:
+            declared = f"{self._profile.max_snapshot_age_s:.1f}s"
+            extension = f" (extended for {self._reason})" if self._reason else ""
             raise ReadFrameExpiredError(
                 f"read frame over {self._path} reached {self.age_s:.1f}s against a declared "
-                f"{self._profile.max_snapshot_age_s:.1f}s maximum; rebind it or finish the read"
+                f"{declared} maximum for timeout class {self._timeout_class}{extension}; "
+                "rebind it or finish the read"
             )
+
+    # -- bounded streaming ----------------------------------------------------
+
+    def stream(
+        self,
+        sql: str,
+        parameters: Sequence[object] = (),
+    ) -> Generator[sqlite3.Row, None, None]:
+        """Step one cursor under this frame's declared maximum snapshot age.
+
+        This is the only supported way to hold a SQLite read transaction open
+        across other work. A cursor that is stepped lazily pins every WAL frame
+        written since it started, which is what makes the recurring PASSIVE
+        checkpoint reclaim nothing; a caller that pulls rows through here gets
+        the declared bound applied between rows rather than only at the moment
+        it first asked for the connection.
+
+        On expiry the cursor is closed before :class:`ReadFrameExpiredError`
+        reaches the caller, so the refusal *ends* the pin rather than merely
+        reporting it. That ordering is the point: a typed error that left the
+        cursor open would name the problem and keep causing it.
+
+        Deliberately a generator rather than a plain iterator: a caller that
+        abandons the read part-way calls ``close()`` to end the pin at a point
+        it chooses, instead of leaving it to garbage collection.
+        """
+        self.check()
+        cursor = self._conn.execute(sql, tuple(parameters))
+        self._streaming += 1
+        try:
+            for row in cursor:
+                self.check()
+                yield row
+        finally:
+            self._streaming -= 1
+            cursor.close()
 
     def revalidate(self) -> bool:
         """Whether this frame still sees exactly what it was opened on.
@@ -1505,6 +1656,15 @@ class ReadFrame:
         """
         if self._profile.generation_identity == "sealed":
             raise ValueError(f"a sealed-generation read frame over {self._path} has nothing to rebind to")
+        if self.streaming:
+            # Rebinding closes the connection the in-flight cursor is stepping.
+            # Refusing is the loud half of the bound: a stream that outlived its
+            # age must end with a typed expiry, not be silently re-opened
+            # underneath and resumed against different rows.
+            raise ReadFrameExpiredError(
+                f"read frame over {self._path} cannot rebind while a stream is in flight; "
+                "finish or abandon the stream first"
+            )
         self._conn.close()
         self._cancelled = False
         self._epoch += 1
@@ -1553,6 +1713,8 @@ class ReadFrame:
     # -- lifecycle ------------------------------------------------------------
 
     def close(self) -> None:
+        with _LIVE_READ_FRAMES_LOCK:
+            _LIVE_READ_FRAMES.discard(self)
         self._conn.close()
 
     def __enter__(self) -> Self:
@@ -1572,11 +1734,31 @@ def read_frame(
     *,
     timeout_class: str = "interactive-read",
     tier: ArchiveTier | None = None,
+    max_snapshot_age_s: float | None = None,
+    reason: str | None = None,
 ) -> ReadFrame:
-    """Open a read frame under one of the declared read timeout classes."""
+    """Open a read frame under one of the declared read timeout classes.
+
+    A caller whose work legitimately outlives its class default extends the
+    bound explicitly with ``max_snapshot_age_s`` and says why in ``reason``;
+    the reason travels into the expiry error and into
+    :func:`live_read_frames`, so a long snapshot is a declared decision rather
+    than an anonymous one. There is deliberately no way to spell "no bound":
+    that is what a sealed generation is for.
+    """
     if timeout_class not in READ_PROFILES:
         raise ValueError(f"unknown SQLite timeout class: {timeout_class}")
-    return ReadFrame(path, profile=READ_PROFILES[timeout_class], tier=tier)
+    profile = READ_PROFILES[timeout_class]
+    if max_snapshot_age_s is None:
+        if reason is not None:
+            raise ValueError("a read-frame reason describes an extended bound; pass max_snapshot_age_s with it")
+    else:
+        if not reason:
+            raise ValueError(f"extending the {timeout_class} snapshot bound to {max_snapshot_age_s}s requires a reason")
+        if max_snapshot_age_s <= 0:
+            raise ValueError("an extended read-frame snapshot bound must be a positive number of seconds")
+        profile = replace(profile, max_snapshot_age_s=float(max_snapshot_age_s))
+    return ReadFrame(path, profile=profile, tier=tier, timeout_class=timeout_class, reason=reason)
 
 
 @contextmanager
@@ -1646,7 +1828,10 @@ __all__ = [
     "ReadFrame",
     "ReadFrameCancelledError",
     "ReadFrameExpiredError",
+    "ReadFrameStatus",
     "StaleContinuationError",
+    "live_read_frames",
+    "pinning_read_frames",
     "read_frame",
     "connection_context",
     "descriptor_alias_path",

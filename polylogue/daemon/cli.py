@@ -618,7 +618,7 @@ async def _wal_checkpoint_once() -> None:
         if not observation.ran and observation.error is None:
             continue
         failed = observation.error is not None
-        blockers = ",".join(observation.blocking_processes[:5])
+        blockers = ",".join((*observation.blocking_read_frames[:5], *observation.blocking_processes[:5]))
         emit(
             "daemon.wal_checkpoint.observed",
             level=WARNING if failed else INFO,

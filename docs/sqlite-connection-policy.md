@@ -80,7 +80,12 @@ default: a one-shot CLI or API writer has no recurring owner to defer to.
 
 A busy result retains the WAL and reports blockers; it never loops, retries or
 escalates to outlast a live reader. Blocker collection walks `/proc`, so it is
-opt-in and off for any interactive route.
+opt-in and off for any interactive route. `blocking_read_frames` is the cheap
+half of the same evidence and is always on: it names the read frames *in this
+process* that held an open read transaction over the tier, with their declared
+maximum age. In the daemon the `/proc` walk usually answers "polylogued", which
+is not actionable; the frame list says which snapshot, how old, and against
+what bound.
 
 Checkpoint hold is budgeted separately from publication:
 `CHECKPOINT_HOLD_BUDGET_S` (20 s) against `maintenance.wal_checkpoint` in
@@ -88,13 +93,63 @@ Checkpoint hold is budgeted separately from publication:
 
 ## Read frames
 
+### What a snapshot actually costs
+
+Two measurements on a synthetic WAL archive with `wal_autocheckpoint=0` (what
+the armed recurring owner leaves every daemon writer) and a 512-byte row
+payload.
+
+40k rows written, then one PASSIVE:
+
+| Reader shape | PASSIVE result |
+| --- | --- |
+| none | checkpointed 6079 of 6079 frames |
+| idle `mode=ro` connection | checkpointed 6079 of 6079 frames |
+| one lazily stepped cursor | checkpointed **0** of 6079 frames |
+
+Eight bursts of 5k rows with one PASSIVE after each:
+
+| Reader shape | WAL bytes, first burst → eighth |
+| --- | --- |
+| idle `mode=ro` connection | 2,962,312 → 2,978,792 (plateau) |
+| one lazily stepped cursor | 2,962,312 → 23,776,552 (8.0x, monotonic) |
+
+So an idle read-only connection is not a cost, and connection lifetime is not
+the thing to bound. What pins WAL frames is an **open read transaction** — in
+practice a cursor still being stepped — and while one is held the recurring
+PASSIVE owner reclaims nothing and the WAL grows by the full concurrent write
+volume. `sqlite3.Connection.in_transaction` cannot see this (it stays `False`
+for a SELECT in autocommit while the cursor holds frames), so the frame has to
+own the stepping in order to bound it.
+
+### The bound
+
 `ReadFrame` binds a read connection to a generation identity — the file's
 `(st_dev, st_ino)`, which is what a generation-pointer swap moves and what stays
 comparable between two connections — for the age its profile declares. Past that
 age `frame.connection` raises `ReadFrameExpiredError` rather than serving a
 reader that pins WAL frames indefinitely. `rebind()` reopens against the current
 generation and starts a new incarnation; a sealed frame refuses, having nothing
-to rebind to.
+to rebind to, and refuses too while a stream is in flight rather than closing
+the connection under an in-flight cursor.
+
+`ReadFrame.stream()` is the only supported way to hold a cursor open across
+other work. It re-checks the declared age between rows, and on expiry closes the
+cursor *before* `ReadFrameExpiredError` reaches the caller — so the typed
+refusal ends the WAL pin instead of naming it and continuing to cause it.
+
+A live-generation profile with `max_snapshot_age_s=None` is refused at
+construction: that shape is exactly the unbounded snapshot the class exists to
+prevent, and a sealed generation is the only thing that may be unbounded. A
+caller whose work legitimately outlives its class default extends the bound
+explicitly — `read_frame(..., max_snapshot_age_s=..., reason=...)`, where the
+reason is required, travels into the expiry message and into the registry. There
+is deliberately no spelling for "no bound".
+
+`live_read_frames()` and `pinning_read_frames(path)` are the process-local
+snapshot registry. Every open frame is in it; `pinning_read_frames` narrows to
+the ones holding a `stream` cursor, which is the only state that provably pins.
+The recurring checkpoint owner reads it to name what blocked it.
 
 Content freshness inside one generation is a separate question, answered only by
 the open connection: `PRAGMA data_version` is explicitly not meaningful across

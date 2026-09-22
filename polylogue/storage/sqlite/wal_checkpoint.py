@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.connection_profile import (
     WAL_WARN_BYTES,
     CheckpointEscalation,
     open_daemon_connection,
+    pinning_read_frames,
 )
 
 ARCHIVE_TIER_WAL_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
@@ -44,6 +45,12 @@ class WalCheckpointObservation:
     elapsed_s: float = 0.0
     error: str | None = None
     blocking_processes: tuple[str, ...] = ()
+    #: Read frames in *this* process that held an open read transaction over
+    #: the tier while the checkpoint ran. A ``/proc`` walk can only say which
+    #: PID has the file open, which in the daemon is usually the daemon itself;
+    #: this names the snapshot, its declared maximum age and how far past it it
+    #: is, which is the part an operator can act on.
+    blocking_read_frames: tuple[str, ...] = ()
 
     @property
     def ran(self) -> bool:
@@ -127,6 +134,10 @@ def checkpoint_wal(
     mode = "none"
     busy = log = checkpointed = 0
     error: str | None = None
+    # Sampled before the attempt: a frame that finishes streaming while the
+    # checkpoint runs is still what held the log during it, and this read is
+    # in-process bookkeeping rather than a scan, so it costs nothing to keep on.
+    pinning_frames = tuple(status.describe() for status in pinning_read_frames(db))
     try:
         conn = open_daemon_connection(db, timeout=timeout_s, archive_root=archive_root)
         try:
@@ -158,6 +169,7 @@ def checkpoint_wal(
         elapsed_s=round(time.perf_counter() - started, 6),
         error=error,
         blocking_processes=blocking_processes,
+        blocking_read_frames=pinning_frames,
     )
 
 
