@@ -1105,7 +1105,15 @@ class LiveBatchProcessor:
                 full_paths.append(path)
                 continue
             cursor = cursor_records.get(path)
-            append_plan = self.plan_append(path, cursor=cursor) if self._can_ingest_appends_directly() else None
+            # ``cursor_records`` is this batch's own single read of every
+            # offered path, so a path missing from it has no cursor row --
+            # asking ``ingest_cursor`` again per path is one more ops.db
+            # connection for an answer the batch already holds.
+            append_plan = (
+                self.plan_append(path, cursor=cursor, cursor_is_known=True)
+                if self._can_ingest_appends_directly()
+                else None
+            )
             # Drain unconditionally: an entry left behind would be read by a
             # later pass as though it described that pass's observation.
             # Planning may have rebuilt a cursor from durable evidence, and
@@ -1613,8 +1621,35 @@ class LiveBatchProcessor:
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> T:
-        """Admit one ops-tier publication without holding a whole intake page."""
-        return await self._run_sync(f"watcher.live_ingest.ops.{operation}", function, *args, **kwargs)
+        """Admit one ops-tier publication without holding a whole intake page.
+
+        One publication is one unit of ops-tier bookkeeping, but it is rarely
+        one statement: a full-cursor commit reads the record, upserts it and
+        resets its failure counters, and a convergence outcome clears stale
+        debt for the source path and every session it touched before
+        recording the new rows. Each of those used to open, commit and close
+        its own ``ops.db`` connection -- ~19 connection close/open pairs and
+        ~10 commits per ingested file, measured as 60% of a warm chunk's wall
+        clock, almost all of it in ``sqlite3.Connection.close`` (which
+        checkpoints the WAL) rather than in the statements themselves.
+
+        The publication therefore runs inside ONE ``ops_write_scope``. The
+        scope shares a connection; it does not merge transactions. Every
+        ``_connect_ops`` block inside still commits on success and rolls back
+        on failure in the same order, so the durable state after a crash at
+        any point is exactly what it was before -- only the connection churn
+        between those commits is gone.
+
+        The scope is entered inside ``_run_sync``'s worker function because it
+        is thread-local: entering it on the event loop thread would not reach
+        the thread that actually performs the write.
+        """
+
+        def publish(*scoped_args: P.args, **scoped_kwargs: P.kwargs) -> T:
+            with self._cursor.ops_write_scope():
+                return function(*scoped_args, **scoped_kwargs)
+
+        return await self._run_sync(f"watcher.live_ingest.ops.{operation}", publish, *args, **kwargs)
 
     async def _record_attempt_progress_admitted(self, attempt_id: str, **kwargs: Any) -> None:
         await self._run_ops_write("attempt_progress", self._record_attempt_progress, attempt_id, **kwargs)
@@ -5213,6 +5248,7 @@ class LiveBatchProcessor:
         path: Path,
         *,
         cursor: CursorRecord | None = None,
+        cursor_is_known: bool = False,
         source_index: int = -1,
     ) -> _AppendPlan | _DeferredAppend | None:
         """Plan one append through the live route's cursor and byte proofs.
@@ -5221,14 +5257,20 @@ class LiveBatchProcessor:
         does not own historical ordering. Callers that have independently
         proven an ordering coordinate may provide it here; all validation and
         identity resolution remain in the same production planner.
+
+        ``cursor_is_known`` distinguishes "this caller did not look" from
+        "this caller looked and there is no cursor row". A batch that already
+        read every path's record in one query knows the second, and re-asking
+        per path only repeats a read the batch has already paid for.
         """
-        return self._append_plan(path, cursor=cursor, source_index=source_index)
+        return self._append_plan(path, cursor=cursor, cursor_is_known=cursor_is_known, source_index=source_index)
 
     def _append_plan(
         self,
         path: Path,
         *,
         cursor: CursorRecord | None = None,
+        cursor_is_known: bool = False,
         source_index: int = -1,
     ) -> _AppendPlan | _DeferredAppend | None:
         # Append planning is safe only for newline-delimited record streams.
@@ -5255,7 +5297,8 @@ class LiveBatchProcessor:
             # which already handles multi-session grouping correctly.
             return None
         parser_fingerprint = self._current_parser_fingerprint()
-        cursor = cursor or self._cursor.get_record(path)
+        if cursor is None and not cursor_is_known:
+            cursor = self._cursor.get_record(path)
         pending_promotion: Callable[[], bool] | None = None
         if cursor is None:
             # polylogue-aex0: the disposable ops.db cursor is gone (reset,
@@ -5718,22 +5761,31 @@ class LiveBatchProcessor:
         error: str | None,
         deferred: bool,
     ) -> None:
-        """Retain unfinished retention work as ordinary retryable debt."""
-        for path in paths:
-            if path in residual:
-                self._cursor.record_convergence_debt(
-                    stage=RAW_RETENTION_STAGE,
-                    subject_type="source_path",
-                    subject_id=str(path),
-                    error=error,
-                    deferred=deferred,
-                )
-            else:
-                self._cursor.clear_convergence_debt(
-                    stage=RAW_RETENTION_STAGE,
-                    subject_type="source_path",
-                    subject_id=str(path),
-                )
+        """Retain unfinished retention work as ordinary retryable debt.
+
+        One ``ops.db`` connection covers the whole pass: this loop runs once
+        per compaction pass over every path the pass scoped, and opening,
+        checkpointing and closing a connection per path made the bookkeeping
+        cost more than the compaction it records. Each path still commits its
+        own row, in the same order, so an interrupted pass leaves exactly the
+        prefix it left before.
+        """
+        with self._cursor.ops_write_scope():
+            for path in paths:
+                if path in residual:
+                    self._cursor.record_convergence_debt(
+                        stage=RAW_RETENTION_STAGE,
+                        subject_type="source_path",
+                        subject_id=str(path),
+                        error=error,
+                        deferred=deferred,
+                    )
+                else:
+                    self._cursor.clear_convergence_debt(
+                        stage=RAW_RETENTION_STAGE,
+                        subject_type="source_path",
+                        subject_id=str(path),
+                    )
 
     def _compact_superseded_raw_snapshots(self, paths: list[Path]) -> None:
         if not paths or _source_tier_acquisition_required():
