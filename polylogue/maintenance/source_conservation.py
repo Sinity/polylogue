@@ -772,8 +772,22 @@ def audit_source_conservation(
         # digest.  The frontier remains authoritative even if its mutable path
         # has since been replaced or removed.
         raw_rows = conn.execute("SELECT raw_id, source_path, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall()
+        # Index the acquired rows by their canonical source path ONCE. The
+        # member loop below used to rescan every raw for every member, which
+        # is O(members x raws): 100k configured files against 100k archived
+        # raws is ~10^10 Python-level comparisons before any answer exists.
+        # Ownership is decided by (path, digest), so the path is the key.
+        raw_rows_by_path: dict[str, list[tuple[str, str]]] = {}
+        for raw_id, source_path, blob_hash in raw_rows:
+            raw_digest = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash or "")
+            raw_rows_by_path.setdefault(str(source_path), []).append((str(raw_id), raw_digest.lower()))
         declarations = {declaration.source_id: declaration for declaration in frontier.declarations}
         raw_bound: set[str] = set()
+        # Every canonical path the configured frontier names. A raw sitting at
+        # one of these paths is an acquisition OF a configured source; only its
+        # revision may be historical. Frontier-orphan means "outside the
+        # configured frontier", so such a raw is not one.
+        configured_paths: set[str] = set()
         for member in frontier.members:
             declaration = declarations[member.source_id]
             root = Path(declaration.root)
@@ -792,23 +806,25 @@ def audit_source_conservation(
                 expected_paths = {f"{root}!{archive_member}"}
             else:
                 expected_paths = {str(root / member.coordinate) if root.is_dir() else str(root)}
+            configured_paths |= expected_paths
+            # A declared mutable-SQLite member is observed at its LOGICAL
+            # granularity: ``observe_source_members`` sets its
+            # ``content_sha256`` to ``sqlite_member_revision(path)``, the
+            # digest of the canonical logical export, and acquisition retains
+            # exactly those export bytes, so ``raw_sessions.blob_hash`` is the
+            # same value. Comparing the digest is therefore the logical
+            # revision comparison for a mutable member as much as for an
+            # ordinary one. The former path-only disjunct made
+            # ``digest_matches`` unconditionally true for every archived raw at
+            # a mutable member's path, so conservation reported success for a
+            # database whose CURRENT logical revision had never been archived.
             digest = member.content_sha256.lower()
             owners = []
-            for raw_id, source_path, blob_hash in raw_rows:
-                raw_digest = (
-                    bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash or "")
-                )
-                # SQLite members carry a logical revision rather than the
-                # mutable page-image digest.  Their acquired row is still
-                # bound by the canonical source path; ordinary members must
-                # match the captured bytes exactly.  Never let a logical
-                # member make an unrelated path or extra raw an owner.
-                digest_matches = raw_digest.lower() == digest or (
-                    member.logical_sha256 is not None and str(source_path) in {str(root)}
-                )
-                if str(source_path) in expected_paths and digest_matches:
-                    owners.append((raw_id, source_path, blob_hash))
-                    raw_bound.add(str(raw_id))
+            for path in sorted(expected_paths):
+                for raw_id, raw_digest in raw_rows_by_path.get(path, ()):
+                    if raw_digest == digest:
+                        owners.append((raw_id, path))
+                        raw_bound.add(raw_id)
             label = f"{member.source_id}:{member.coordinate}"
             if not owners:
                 frontier_counts[_TERM_FRONTIER_UNACQUIRED] = frontier_counts.get(_TERM_FRONTIER_UNACQUIRED, 0) + 1
@@ -822,36 +838,60 @@ def audit_source_conservation(
         # A raw whose source coordinate is not represented by any configured
         # member is an unowned acquisition, even when aggregate row counts
         # happen to match the frontier denominator.
-        for raw_id, _source_path, _blob_hash in raw_rows:
-            if str(raw_id) in raw_bound:
+        #
+        # A raw at a configured path whose digest is not the member's CURRENT
+        # one is an ordinary historical revision of a configured source -- the
+        # source changed after it was acquired. Its identity is inside the
+        # frontier, so it is not a frontier orphan; the forward classifier
+        # already types it (``revision_superseded`` and friends). Counting it
+        # here made every archive with ordinary revision history fail
+        # ``verify-archive`` on a blocking term.
+        for raw_id, source_path, _blob_hash in raw_rows:
+            if str(raw_id) in raw_bound or str(source_path) in configured_paths:
                 continue
             frontier_counts[_TERM_FRONTIER_ORPHAN] = frontier_counts.get(_TERM_FRONTIER_ORPHAN, 0) + 1
             frontier_samples.setdefault(_TERM_FRONTIER_ORPHAN, []).append(str(raw_id))
         # Membership content is an independent semantic witness.  A row that
         # keeps its identity but changes its normalized content must not pass
         # merely because the raw was acquired and a session row exists.
+        #
+        # One raw can own several logical sessions (a grouped JSONL or ZIP
+        # member emits one membership row per session it carries). Joining
+        # membership to session on ``raw_id`` alone pairs every membership with
+        # every sibling session, and the off-diagonal pairs disagree by
+        # construction, so a correct multi-session acquisition reported
+        # ``content_mismatch``. The witness is per MEMBERSHIP: its normalized
+        # content must be the content of one of the sessions that raw
+        # materialized. A permutation among the siblings of a single raw is not
+        # distinguished -- that is not a source-conservation failure mode,
+        # while the false positive was a blocking one.
         if table_exists(conn, "raw_session_memberships"):
+            mismatch_predicate = """
+                EXISTS (SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = m.raw_id)
+                AND NOT EXISTS (
+                    SELECT 1 FROM idx_tier.sessions s
+                    WHERE s.raw_id = m.raw_id
+                      AND s.content_hash IS NOT NULL
+                      AND m.normalized_content_hash IS NOT NULL
+                      AND s.content_hash = m.normalized_content_hash
+                )
+            """
             mismatches = conn.execute(
-                """
+                f"""
                 SELECT m.raw_id
                 FROM raw_session_memberships m
-                JOIN idx_tier.sessions s ON s.raw_id = m.raw_id
-                WHERE m.normalized_content_hash IS NULL
-                   OR s.content_hash IS NULL
-                   OR m.normalized_content_hash != s.content_hash
+                WHERE {mismatch_predicate}
+                ORDER BY m.raw_id, m.logical_source_key
                 LIMIT ?
                 """,
                 (sample_limit,),
             ).fetchall()
             mismatch_count = int(
                 conn.execute(
-                    """
+                    f"""
                     SELECT COUNT(*)
                     FROM raw_session_memberships m
-                    JOIN idx_tier.sessions s ON s.raw_id = m.raw_id
-                    WHERE m.normalized_content_hash IS NULL
-                       OR s.content_hash IS NULL
-                       OR m.normalized_content_hash != s.content_hash
+                    WHERE {mismatch_predicate}
                     """
                 ).fetchone()[0]
             )

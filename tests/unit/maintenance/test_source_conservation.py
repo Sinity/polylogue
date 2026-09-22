@@ -34,6 +34,7 @@ from polylogue.maintenance.source_manifest_continuity import (
     build_source_frontier,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -115,14 +116,21 @@ def _insert_artifact(
     )
 
 
-def _insert_session(conn: sqlite3.Connection, *, origin: str, native_id: str, raw_id: str | None) -> str:
+def _insert_session(
+    conn: sqlite3.Connection,
+    *,
+    origin: str,
+    native_id: str,
+    raw_id: str | None,
+    content_hash: bytes = b"s" * 32,
+) -> str:
     conn.execute(
         """
         INSERT INTO sessions(
             native_id, origin, raw_id, parser_fingerprint, lowering_fingerprint, content_hash, message_count
         ) VALUES (?, ?, ?, ?, ?, ?, 1)
         """,
-        (native_id, origin, raw_id, parser_fingerprint_for_origin(origin), lowering_fingerprint(), b"s" * 32),
+        (native_id, origin, raw_id, parser_fingerprint_for_origin(origin), lowering_fingerprint(), content_hash),
     )
     session_id = f"{origin}:{native_id}"
     conn.execute(
@@ -678,7 +686,12 @@ def test_candidate_route_conserves_against_the_candidate_index(tmp_path: Path) -
 
 
 def _insert_membership(
-    conn: sqlite3.Connection, *, raw_id: str, logical_source_key: str, authority: str = "quarantined"
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    logical_source_key: str,
+    authority: str = "quarantined",
+    normalized_content_hash: bytes = b"n" * 32,
 ) -> None:
     conn.execute(
         """
@@ -687,7 +700,14 @@ def _insert_membership(
             normalized_content_hash, message_count, revision_authority
         ) VALUES (?, ?, ?, ?, ?, 1, ?)
         """,
-        (raw_id, logical_source_key, logical_source_key.partition(":")[2], raw_id, b"n" * 32, authority),
+        (
+            raw_id,
+            logical_source_key,
+            logical_source_key.partition(":")[2],
+            raw_id,
+            normalized_content_hash,
+            authority,
+        ),
     )
 
 
@@ -866,3 +886,215 @@ def test_raw_sharing_a_logical_source_with_a_materialized_raw_is_superseded(tmp_
     split = _run(tmp_path)
     assert _count(split, "revision_superseded") == 0
     assert _count(split, "quarantined_cohort_unmaterialized") == 1
+
+
+def _configured_frontier(root: Path) -> SourceFrontier:
+    return build_source_frontier([SourceDeclaration("configured", SourceRole.DIRECTORY, root / "sources", True)])
+
+
+def test_historical_revision_is_not_an_orphan(tmp_path: Path) -> None:
+    """An earlier acquisition of a still-configured source is not unowned.
+
+    A configured file ingested at hash A, changed, and ingested again at hash
+    B leaves two raws at one canonical path. Only B owns the current frontier
+    member, but A's *source identity* is squarely inside the configured
+    frontier -- it is a revision of a configured source, which the forward
+    classifier already types. ``frontier_orphan`` means "outside the
+    configured frontier" and is blocking, so counting A there failed
+    ``verify-archive`` for ordinary revision history.
+
+    Anti-vacuity: dropping ``configured_paths`` from the orphan guard, or
+    pointing the second raw at an unconfigured path, makes A (or the new raw)
+    a blocking orphan again -- the guard cannot be a blanket pass, which the
+    second half of this test pins directly.
+    """
+    session_source, _sidecar = _seed(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    session_source.write_bytes(b"session payload v2")
+    revised_hash = store.write_from_bytes(b"session payload v2")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-session-v2",
+            origin="claude-code-session",
+            native_id="session",
+            source_path=session_source,
+            blob_hash=revised_hash,
+            parsed=False,
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _run_with_frontier(tmp_path, _configured_frontier(tmp_path))
+    assert _count(check, "frontier_orphan") == 0, check.evidence["terms"]
+    assert _count(check, "frontier_unacquired") == 0
+    assert check.status is OutcomeStatus.OK, check.summary
+
+    # The opposite direction: a raw at a path the frontier never names is
+    # still a blocking orphan.
+    outside = tmp_path / "outside" / "stray.jsonl"
+    outside.parent.mkdir(parents=True, exist_ok=True)
+    outside.write_bytes(b"stray")
+    stray_hash = store.write_from_bytes(b"stray")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-stray",
+            origin="claude-code-session",
+            native_id=None,
+            source_path=outside,
+            blob_hash=stray_hash,
+            parsed=False,
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    stray_check = _run_with_frontier(tmp_path, _configured_frontier(tmp_path))
+    assert _count(stray_check, "frontier_orphan") == 1
+    assert stray_check.status is OutcomeStatus.ERROR
+
+
+def test_multi_session_raw_is_not_a_mismatch(tmp_path: Path) -> None:
+    """A grouped raw that emits two sessions conserves both memberships.
+
+    Joining ``raw_session_memberships`` to ``sessions`` on ``raw_id`` alone
+    pairs each membership with every sibling session of that raw, and the
+    off-diagonal pairs disagree by construction, so a correct two-session
+    acquisition reported a blocking ``content_mismatch``.
+
+    Anti-vacuity: the second half changes one membership's normalized content
+    to a hash no session of that raw carries, and it must still be reported --
+    the fix cannot be a blanket pass for every multi-session raw.
+    """
+    _seed(tmp_path)
+    grouped = _write_source(tmp_path, "group.jsonl", b"grouped payload")
+    grouped_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"grouped payload")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-group",
+            origin="codex-session",
+            native_id=None,
+            source_path=grouped,
+            blob_hash=grouped_hash,
+            parsed=True,
+        )
+        _insert_membership(
+            source_conn,
+            raw_id="raw-group",
+            logical_source_key="codex:g1",
+            authority="byte_proven",
+            normalized_content_hash=b"a" * 32,
+        )
+        _insert_membership(
+            source_conn,
+            raw_id="raw-group",
+            logical_source_key="codex:g2",
+            authority="byte_proven",
+            normalized_content_hash=b"b" * 32,
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _insert_session(index_conn, origin="codex-session", native_id="g1", raw_id="raw-group", content_hash=b"a" * 32)
+        _insert_session(index_conn, origin="codex-session", native_id="g2", raw_id="raw-group", content_hash=b"b" * 32)
+        index_conn.commit()
+    finally:
+        index_conn.close()
+
+    check = _run_with_frontier(tmp_path, _configured_frontier(tmp_path))
+    assert _count(check, "content_mismatch") == 0, check.evidence["terms"]
+    assert check.status is OutcomeStatus.OK, check.summary
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            "UPDATE raw_session_memberships SET normalized_content_hash = ? "
+            "WHERE raw_id = 'raw-group' AND logical_source_key = 'codex:g2'",
+            (b"z" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    drifted = _run_with_frontier(tmp_path, _configured_frontier(tmp_path))
+    assert _count(drifted, "content_mismatch") == 1
+    assert drifted.status is OutcomeStatus.ERROR
+
+
+def test_stale_sqlite_revision_is_not_conserved(tmp_path: Path) -> None:
+    """A mutable database whose current logical revision was never archived fails.
+
+    ``observe_source_members`` records a ``MUTABLE_SQLITE`` member's
+    ``content_sha256`` as the digest of its canonical logical export, and
+    acquisition retains exactly those export bytes, so the archived
+    ``blob_hash`` is that same logical-revision witness. Binding the member to
+    any raw at its path instead made conservation report success for a
+    database that had changed since its last acquisition.
+
+    Anti-vacuity: archiving the CURRENT export digest makes the same member
+    conserved, so the check is not a blanket refusal of mutable members.
+    """
+    _seed(tmp_path)
+    database = tmp_path / "db" / "state.sqlite"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    live = sqlite3.connect(database)
+    try:
+        live.execute("CREATE TABLE threads(id TEXT PRIMARY KEY, title TEXT)")
+        live.execute("INSERT INTO threads VALUES ('t1', 'first')")
+        live.commit()
+    finally:
+        live.close()
+    acquired_revision = sqlite_member_revision(database)
+
+    live = sqlite3.connect(database)
+    try:
+        live.execute("UPDATE threads SET title = 'second' WHERE id = 't1'")
+        live.commit()
+    finally:
+        live.close()
+    assert sqlite_member_revision(database) != acquired_revision
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-db",
+            origin="codex-session",
+            native_id=None,
+            source_path=database,
+            blob_hash=acquired_revision,
+            parsed=False,
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    declarations = [
+        SourceDeclaration("configured", SourceRole.DIRECTORY, tmp_path / "sources", True),
+        SourceDeclaration("live-db", SourceRole.MUTABLE_SQLITE, database, True),
+    ]
+    stale = _run_with_frontier(tmp_path, build_source_frontier(declarations))
+    assert _count(stale, "frontier_unacquired") == 1, stale.evidence["terms"]
+    assert stale.status is OutcomeStatus.ERROR
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            "UPDATE raw_sessions SET blob_hash = ? WHERE raw_id = 'raw-db'",
+            (bytes.fromhex(sqlite_member_revision(database)),),
+        )
+        source_conn.execute(
+            "UPDATE blob_refs SET blob_hash = ? WHERE ref_id = 'raw-db'",
+            (bytes.fromhex(sqlite_member_revision(database)),),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    current = _run_with_frontier(tmp_path, build_source_frontier(declarations))
+    assert _count(current, "frontier_unacquired") == 0, current.evidence["terms"]
