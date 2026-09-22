@@ -278,6 +278,71 @@ def inspect_session_profiles(
     }
 
 
+def bound_session_profile_partitions(
+    conn: sqlite3.Connection,
+    session_ids: Sequence[str],
+    *,
+    materializer_version: int,
+) -> Mapping[str, str]:
+    """Classify partitions from the stored binding alone, reading no input row.
+
+    :func:`inspect_session_profiles` establishes "the binding disagrees" by
+    re-digesting the session's whole message, attachment, event and usage
+    projection, which is correct and is why the kernel uses it on the page it
+    is about to derive.  Doing that for every session in the archive is what
+    made archive-wide readiness cost seconds on a real archive
+    (polylogue-crwl6), and readiness has a cheaper source for the same fact:
+    the index tier clears ``session_profiles.input_content_hash`` from a
+    trigger on every write to a relation the binding digests
+    (``session_profile_binding_*`` in ``archive_tiers/index.py``).  So for a
+    row that still carries a binding, the digest recomputed now is the digest
+    stored -- the database has already ruled out every way it could differ.
+
+    Absence is unchanged and is the whole safety margin: a partition with no
+    binding, a superseded materializer, or a missing sibling row is classified
+    exactly as the recomputing route classifies it, through the same
+    :func:`_classify_partition`.  This route can only ever agree with that one
+    or refuse to certify; it has no way to invent a valid verdict.
+    """
+    unique = tuple(dict.fromkeys(session_ids))
+    if not unique:
+        return {}
+    stored = _stored_partitions(conn, unique)
+    return {
+        session_id: _classify_partition(
+            stored[session_id],
+            stored[session_id].input_binding,
+            materializer_version=materializer_version,
+        )
+        for session_id in unique
+    }
+
+
+async def bound_session_profile_partitions_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+    *,
+    materializer_version: int,
+) -> Mapping[str, str]:
+    """:func:`bound_session_profile_partitions` over an async connection."""
+    unique = tuple(dict.fromkeys(session_ids))
+    if not unique:
+        return {}
+    sql = _STORED_PARTITION_SQL.format(placeholders=",".join("?" * len(unique)))
+    stored: dict[str, _StoredPartition] = {}
+    async with conn.execute(sql, unique) as cursor:
+        async for row in cursor:
+            stored[str(row[0])] = _partition_row(row)
+    return {
+        session_id: _classify_partition(
+            stored.get(session_id, _ABSENT_PARTITION),
+            stored.get(session_id, _ABSENT_PARTITION).input_binding,
+            materializer_version=materializer_version,
+        )
+        for session_id in unique
+    }
+
+
 async def inspect_session_profiles_async(
     conn: aiosqlite.Connection,
     session_ids: Sequence[str],

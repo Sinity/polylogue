@@ -16,6 +16,7 @@ fixed and changes only a value the output depends on.
 from __future__ import annotations
 
 import itertools
+import re
 import sqlite3
 from collections.abc import Sequence
 from contextlib import closing
@@ -26,6 +27,7 @@ import pytest
 
 from polylogue.storage.derived.session.derivation import (
     archive_session_partition_statuses,
+    bound_session_profile_partitions,
     inspect_session_profiles,
     publish_session_profile,
 )
@@ -1124,3 +1126,89 @@ def test_deleting_every_scheduling_hint_reconstructs_the_same_pending_set(archiv
     with closing(_read_connection(index_db)) as conn:
         profiled = sorted(str(row[0]) for row in conn.execute("SELECT session_id FROM session_profiles"))
     assert profiled == sorted((converged, mutated))
+
+
+# ── The binding is what makes the cheap readiness route honest ────────────────
+
+
+def _all_session_ids(index_db: Path) -> list[str]:
+    with closing(_read_connection(index_db)) as conn:
+        return [str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")]
+
+
+def _both_routes(index_db: Path, session_ids: Sequence[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """Classify the same partitions by recomputation and by stored binding."""
+    with closing(_read_connection(index_db)) as conn:
+        recomputed = dict(inspect_session_profiles(conn, session_ids, materializer_version=_MATERIALIZER_VERSION))
+        bound = dict(bound_session_profile_partitions(conn, session_ids, materializer_version=_MATERIALIZER_VERSION))
+    return recomputed, bound
+
+
+def test_bound_route_agrees_with_recompute(archive_root: Path) -> None:
+    """Reading the binding must decide exactly what re-digesting the inputs decides.
+
+    The cheap route is only allowed to skip the recomputation because the index
+    tier retires the binding on every write to a relation the digest covers.
+    Anti-vacuity: drop ``session_profile_binding_messages_au`` and the mutated
+    session keeps its binding, so the bound route says ``valid`` where
+    recomputation says ``stale`` and this disagreement fails.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _seed(index_db, "bound-agree", messages=[("user", "one two"), ("assistant", "three")])
+    _converge_to_fixpoint(index_db)
+    ids = _all_session_ids(index_db)
+
+    converged_recomputed, converged_bound = _both_routes(index_db, ids)
+    assert converged_recomputed == {session_id: "valid"}
+    assert converged_bound == converged_recomputed
+
+    _mutate_role(index_db, session_id)
+    drifted_recomputed, drifted_bound = _both_routes(index_db, ids)
+    assert drifted_recomputed == {session_id: "stale"}
+    assert drifted_bound == drifted_recomputed
+
+
+def test_bound_route_reads_no_message_rows(archive_root: Path) -> None:
+    """Archive-wide profile readiness must not touch the message population.
+
+    Anti-vacuity: route this back through ``inspect_session_profiles`` and the
+    trace carries the binding projection over ``messages``, so this fails. A
+    timing assertion could not separate those on a two-message fixture.
+    """
+    index_db = _index_db(archive_root)
+    _seed(index_db, "bound-trace", messages=[("user", "one two"), ("assistant", "three")])
+    _converge_to_fixpoint(index_db)
+    ids = _all_session_ids(index_db)
+
+    executed: list[str] = []
+    with closing(_read_connection(index_db)) as conn:
+        conn.set_trace_callback(lambda sql: executed.append(" ".join(sql.lower().split())))
+        statuses = dict(bound_session_profile_partitions(conn, ids, materializer_version=_MATERIALIZER_VERSION))
+        conn.set_trace_callback(None)
+
+    assert statuses == dict.fromkeys(ids, "valid")
+    assert executed, "the classification executed no SQL at all"
+    assert [sql for sql in executed if re.search(r"\bmessages\b(?!_)", sql)] == []
+
+
+def test_a_session_row_change_retires_binding(archive_root: Path) -> None:
+    """A session-row value the profile caches is an input like any other.
+
+    ``title`` is in the declared session-row projection and is not a message,
+    not a counter and not a timestamp. Anti-vacuity: drop
+    ``session_profile_binding_sessions_au`` and the binding survives a change
+    the profile's own output depends on, so the partition stays ``valid``.
+    """
+    index_db = _index_db(archive_root)
+    session_id = _seed(index_db, "bound-session-row", messages=[("user", "one two")])
+    _converge_to_fixpoint(index_db)
+    ids = _all_session_ids(index_db)
+    assert _both_routes(index_db, ids)[1] == {session_id: "valid"}
+
+    with write_lease("test.title"), closing(_write_connection(index_db)) as conn:
+        conn.execute("UPDATE sessions SET title = 'renamed' WHERE session_id = ?", (session_id,))
+        conn.commit()
+
+    recomputed, bound = _both_routes(index_db, ids)
+    assert bound == {session_id: "stale"}
+    assert recomputed == bound

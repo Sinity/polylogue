@@ -15,8 +15,8 @@ import aiosqlite
 from polylogue.storage.derived.session.aggregates import _PROFILE_BUCKET_DAY_SQL
 from polylogue.storage.derived.session.derivation import (
     SESSION_PARTITION_INSPECT_CHUNK,
-    inspect_session_profiles,
-    inspect_session_profiles_async,
+    bound_session_profile_partitions,
+    bound_session_profile_partitions_async,
 )
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -742,7 +742,7 @@ def _inspect_sync(conn: sqlite3.Connection) -> _Inspection:
     for start in range(0, len(session_ids), SESSION_PARTITION_INSPECT_CHUNK):
         chunk = session_ids[start : start + SESSION_PARTITION_INSPECT_CHUNK]
         statuses.update(
-            inspect_session_profiles(conn, chunk, materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION)
+            bound_session_profile_partitions(conn, chunk, materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION)
         )
     return _inspection(statuses)
 
@@ -833,7 +833,9 @@ async def _inspect_async(conn: aiosqlite.Connection) -> _Inspection:
     for start in range(0, len(session_ids), SESSION_PARTITION_INSPECT_CHUNK):
         chunk = session_ids[start : start + SESSION_PARTITION_INSPECT_CHUNK]
         statuses.update(
-            await inspect_session_profiles_async(conn, chunk, materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION)
+            await bound_session_profile_partitions_async(
+                conn, chunk, materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION
+            )
         )
     return _inspection(statuses)
 
