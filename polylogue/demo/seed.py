@@ -39,7 +39,11 @@ from polylogue.storage.embeddings.identity import (
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    ARCHIVE_TIER_SPECS,
+    initialize_archive_database,
+    invalidate_active_archive_bootstrap,
+)
 from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite, upsert_message_embeddings
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1618,6 +1622,16 @@ async def seed_demo_archive(
     polylogue-dl6af).
     """
 
+    # polylogue-neeq4 follow-up: demo seeding is the one route that re-opens
+    # an archive root whose tier schema versions may have moved since this
+    # process last validated them -- self-healing stale tiers is its job, and
+    # a reseed in the same process is an ordinary operator sequence. The
+    # bootstrap memo keys on file identity and marker presence, which an
+    # in-place ``PRAGMA user_version`` change does not move, so without this
+    # the second seed skips revalidation and the staleness surfaces later as
+    # a SchemaSkewError from the identity comparison instead of the
+    # actionable "move it aside and rebuild" refusal this path owns.
+    invalidate_active_archive_bootstrap(archive_root)
     _guard_demo_seed_target(archive_root, explicit_root=explicit_root, force=force)
     _record_demo_ownership_if_undetermined(archive_root)
 
