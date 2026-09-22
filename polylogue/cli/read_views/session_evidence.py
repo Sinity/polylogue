@@ -115,22 +115,10 @@ def run_read_hooks(env: AppEnv, request: RootModeRequest, invocation: ReadViewIn
     run_session_evidence_view(env, request, invocation, kind="hooks")
 
 
-def run_read_file_edits(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Render captured Edit/Write/MultiEdit tool-call evidence from ``session.read``."""
-
-    run_session_evidence_view(env, request, invocation, kind="file-edits")
-
-
 def run_read_agent_policies(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Render sandbox/approval/network policy facts from ``session.read``."""
 
     run_session_evidence_view(env, request, invocation, kind="agent-policies")
-
-
-def run_read_web_content(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Render typed web-export constructs from ``session.read``."""
-
-    run_session_evidence_view(env, request, invocation, kind="web-content")
 
 
 def _deliver_evidence_document(
@@ -287,4 +275,61 @@ def build_events_options(values: ReadViewOptionValues) -> ReadViewEventsOptions:
         limit=cast("int | None", values.get("limit")),
         offset=cast(int, values.get("offset") or 0),
         continuation=cast("str | None", values.get("continuation")),
+    )
+
+
+def run_read_file_edits(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Render one page of captured Edit/Write/MultiEdit evidence from ``session.read``.
+
+    Paged rather than answered whole: a file edit carries ``original_file``,
+    the pre-edit contents of whatever the tool call touched, so one row can
+    exceed the operation-result bound. Answered whole, such a session was
+    materialized and then refused with "retry with a smaller limit" -- which a
+    whole kind cannot accept, so the view had no reachable answer at all. The
+    bound is reported alongside the rows, exactly as ``events`` reports it.
+    """
+
+    window, session_id, served_by = _read_evidence_window(request, invocation, kind="file-edits")
+    _echo_served_by(request, served_by)
+    _deliver_evidence_document(
+        env,
+        invocation,
+        {
+            "session_id": session_id,
+            "total": window["total"],
+            "returned": window["returned"],
+            "limit": window["limit"],
+            "offset": window["offset"],
+            "next_offset": window["next_offset"],
+            "continuation": window["continuation"],
+            "complete": window["complete"],
+            "file_edits": window["rows"],
+        },
+    )
+
+
+def run_read_web_content(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+    """Render one page of typed web-export constructs from ``session.read``.
+
+    Paged for the same reason as ``file-edits``: a construct carries ``text``,
+    a fetched page or search-result body, so enough web evidence made the whole
+    relation undeliverable with no retry that could succeed.
+    """
+
+    window, session_id, served_by = _read_evidence_window(request, invocation, kind="web-content")
+    _echo_served_by(request, served_by)
+    _deliver_evidence_document(
+        env,
+        invocation,
+        {
+            "session_id": session_id,
+            "total": window["total"],
+            "returned": window["returned"],
+            "limit": window["limit"],
+            "offset": window["offset"],
+            "next_offset": window["next_offset"],
+            "continuation": window["continuation"],
+            "complete": window["complete"],
+            "web_content_constructs": window["rows"],
+        },
     )

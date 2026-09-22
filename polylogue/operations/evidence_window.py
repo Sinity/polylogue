@@ -79,8 +79,28 @@ RAW_ARTIFACTS_WINDOW = EvidenceWindowFamily(
     stable_order="acquired_at_ms desc,raw_id",
 )
 
+#: ``file_edits`` -- captured Edit/Write/MultiEdit tool-call evidence.  Ordered
+#: by the repository's own ``message_id, tool_use_block_id``.  Windowed because
+#: one row carries ``original_file``, the pre-edit contents of the touched
+#: file, so a single edit can exceed the operation-result bound.
+FILE_EDITS_WINDOW = EvidenceWindowFamily(
+    kind="file-edits",
+    projection="session-file-edits-v1",
+    stable_order="message_id,tool_use_block_id",
+)
+
+#: ``web_content_constructs`` -- typed web-export constructs.  Ordered by the
+#: repository's own ``message_id, block_id, position``.  Windowed because one
+#: row carries ``text``, a fetched page or search-result body.
+WEB_CONTENT_WINDOW = EvidenceWindowFamily(
+    kind="web-content",
+    projection="session-web-content-v1",
+    stable_order="message_id,block_id,position",
+)
+
 EVIDENCE_WINDOW_FAMILIES: dict[str, EvidenceWindowFamily] = {
-    family.kind: family for family in (SESSION_EVENTS_WINDOW, RAW_ARTIFACTS_WINDOW)
+    family.kind: family
+    for family in (SESSION_EVENTS_WINDOW, RAW_ARTIFACTS_WINDOW, FILE_EDITS_WINDOW, WEB_CONTENT_WINDOW)
 }
 
 
@@ -187,8 +207,10 @@ def read_evidence_window(
 
 __all__ = [
     "EVIDENCE_WINDOW_FAMILIES",
+    "FILE_EDITS_WINDOW",
     "RAW_ARTIFACTS_WINDOW",
     "SESSION_EVENTS_WINDOW",
+    "WEB_CONTENT_WINDOW",
     "EvidenceReader",
     "EvidenceWindowFamily",
     "frame_evidence_window",

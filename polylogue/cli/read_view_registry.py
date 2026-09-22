@@ -69,10 +69,13 @@ CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
 NEIGHBOR_READ_VIEW_OPTION_NAMES = frozenset({"limit", "window_hours"})
 CORRELATION_READ_VIEW_OPTION_NAMES = frozenset({"confidence_threshold", "github_api", "repo_path", "since_hours"})
 CHRONICLE_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
-#: The events view pages a relation whose bound is now *reported*, so it takes
-#: the continuation that resumes the page it minted.  ``limit``/``offset`` are
-#: the shared global coordinates.
-EVENTS_READ_VIEW_OPTION_NAMES = frozenset({"limit", "continuation"})
+#: A windowed-evidence view pages a relation whose bound is *reported*, so it
+#: takes the continuation that resumes the page it minted.  ``limit``/``offset``
+#: are the shared global coordinates.  ``events``, ``file-edits`` and
+#: ``web-content`` share this set because they share the contract, not because
+#: one of them owns it.
+EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES = frozenset({"limit", "continuation"})
+EVENTS_READ_VIEW_OPTION_NAMES = EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES
 EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"at_position"})
 LINEAGE_READ_VIEW_OPTION_NAMES = frozenset({"node_offset", "node_limit", "edge_offset", "edge_limit"})
 # Topology pages by node window plus an edge bound. These reuse the Click
@@ -208,6 +211,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "file-edits": ReadViewHandlerMetadata(
         "file-edits",
         "required",
+        EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES,
         execution_kind="session-read-projection",
         operations=("session.read",),
     ),
@@ -220,6 +224,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "web-content": ReadViewHandlerMetadata(
         "web-content",
         "required",
+        EVIDENCE_WINDOW_READ_VIEW_OPTION_NAMES,
         execution_kind="session-read-projection",
         operations=("session.read",),
     ),

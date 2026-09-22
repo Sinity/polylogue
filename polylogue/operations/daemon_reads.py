@@ -17,10 +17,10 @@ from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, lower_cli_query_params
 from polylogue.operations.session_evidence import (
     read_agent_policies_evidence,
-    read_file_edits_evidence,
+    read_file_edits_page,
     read_raw_artifacts_page,
     read_session_events_page,
-    read_web_content_constructs_evidence,
+    read_web_content_constructs_page,
 )
 
 if TYPE_CHECKING:
@@ -1392,9 +1392,7 @@ def _hook_event_summary_evidence(archive: ArchiveStore, session_id: str) -> Mapp
 #: measures closure ``out`` (polylogue-r3cuz).
 _SESSION_EVIDENCE_READERS: dict[str, Callable[[ArchiveStore, str], Mapping[str, object] | None]] = {
     "hooks": _hook_event_summary_evidence,
-    "file-edits": lambda archive, session_id: read_file_edits_evidence(archive, session_id),
     "agent-policies": lambda archive, session_id: read_agent_policies_evidence(archive, session_id),
-    "web-content": lambda archive, session_id: read_web_content_constructs_evidence(archive, session_id),
 }
 
 
@@ -1466,6 +1464,12 @@ _WINDOWED_EVIDENCE_READERS: dict[str, Callable[[ArchiveStore, str, int, int], tu
         archive, session_id, limit=limit, offset=offset
     ),
     "raw": lambda archive, session_id, limit, offset: read_raw_artifacts_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "file-edits": lambda archive, session_id, limit, offset: read_file_edits_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "web-content": lambda archive, session_id, limit, offset: read_web_content_constructs_page(
         archive, session_id, limit=limit, offset=offset
     ),
 }
@@ -1550,6 +1554,14 @@ def _require_deliverable_window(result: Mapping[str, object], *, limit: int) -> 
 
     Silently truncating would make ``complete``/``next_offset`` lie about what
     the caller received.
+
+    The refusal names a way out only where one exists.  "Retry with a smaller
+    limit" is actionable for a window of many rows and a lie for a window of
+    one: a single ``file-edits`` row carrying an 8 MiB ``original_file``, or one
+    oversized ``web-content`` body, cannot be made smaller by paging, and a
+    kind answered whole rejects window coordinates outright.  Saying so is the
+    honest refusal; inventing a retry the caller cannot perform is the shape
+    that made these relations silently unreadable.
     """
 
     import json
@@ -1557,11 +1569,23 @@ def _require_deliverable_window(result: Mapping[str, object], *, limit: int) -> 
     from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
 
     size = len(json.dumps(result, separators=(",", ":"), default=str).encode())
-    if size > MAX_OPERATION_RESULT_BYTES:
+    if size <= MAX_OPERATION_RESULT_BYTES:
+        return
+    from polylogue.operations.read_contracts import _WHOLE_EVIDENCE_KINDS
+
+    kind = str(result.get("kind") or "transcript")
+    over = f"is {size} bytes, above the {MAX_OPERATION_RESULT_BYTES}-byte operation result bound"
+    if kind in _WHOLE_EVIDENCE_KINDS:
         raise ValueError(
-            f"session.read window of {limit} messages is {size} bytes, above the "
-            f"{MAX_OPERATION_RESULT_BYTES}-byte operation result bound; retry with a smaller limit"
+            f"session.read {kind} evidence {over}. This kind is answered whole and takes no window "
+            "coordinates, so there is no smaller request; the relation needs a bounded transport"
         )
+    if limit <= 1:
+        raise ValueError(
+            f"session.read {kind} window of one row {over}. A single row is already the smallest "
+            "window, so no retry can deliver it; the row itself is larger than one operation result"
+        )
+    raise ValueError(f"session.read {kind} window of {limit} rows {over}; retry with a smaller limit")
 
 
 def _session_reference_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:

@@ -145,9 +145,9 @@ READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
 #: serve several declared views.
 SESSION_LIST_READ_VIEW_EXECUTION: dict[str, ReadViewExecution] = {
     "events": ReadViewExecution(run_read_events, build_events_options),
-    "file-edits": ReadViewExecution(run_read_file_edits),
+    "file-edits": ReadViewExecution(run_read_file_edits, build_events_options),
     "agent-policies": ReadViewExecution(run_read_agent_policies),
-    "web-content": ReadViewExecution(run_read_web_content),
+    "web-content": ReadViewExecution(run_read_web_content, build_events_options),
 }
 
 
