@@ -76,6 +76,7 @@ from tests.infra.durable_schema_reset import reset_source_fixture_to_version
 _CURRENT_VERSION = 1
 _TARGET_VERSION = 2
 _EMPTY_LIVENESS_DIGEST = hashlib.sha256(b"[]").hexdigest()
+_BASE_ITEMS_DDL = "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
 _ADDITIVE_SQL = """-- migration-safety: additive-no-backup
 CREATE TABLE durable_items (
     item_id TEXT PRIMARY KEY,
@@ -220,6 +221,31 @@ def _parity(tier: ArchiveTier, *, include_durable_items: bool = True) -> Durable
             )
 
 
+@contextmanager
+def _ddl_target(ddl: str) -> Iterator[sqlite3.Connection]:
+    """Build one in-memory tier at ``_TARGET_VERSION`` from an explicit DDL script."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(ddl)
+        conn.execute(f"PRAGMA user_version = {_TARGET_VERSION}")
+        conn.commit()
+        yield conn
+    finally:
+        conn.close()
+
+
+def _parity_for_ddl(tier: ArchiveTier, ddl: str) -> DurableFreshDDLParityProof:
+    """Parity proof for a fixture whose canonical shape is not the toy tier."""
+    with _ddl_target(ddl) as migrated, _ddl_target(ddl) as fresh:
+        return prove_durable_fresh_ddl_parity(
+            tier,
+            _TARGET_VERSION,
+            migrated_connection=migrated,
+            fresh_connection=fresh,
+            evidence_ref=f"proof:fresh-ddl:{tier.value}",
+        )
+
+
 def _declared(
     tier: ArchiveTier,
     *,
@@ -251,6 +277,7 @@ def _admitted(
     owner_ref: str = "owner:train",
     backup_plan_ref: str | None = None,
     active_trains: tuple[DurableChangeTrain, ...] = (),
+    parity: DurableFreshDDLParityProof | None = None,
 ) -> DurableChangeTrain:
     migration = claim or _claim(tier)
     return admit_durable_change_train(
@@ -262,7 +289,7 @@ def _admitted(
             backup_plan_ref=backup_plan_ref,
         ),
         observed_current_version=_CURRENT_VERSION,
-        fresh_ddl_parity=_parity(tier),
+        fresh_ddl_parity=parity if parity is not None else _parity(tier),
         admission_evidence_ref=f"proof:admit:{tier.value}",
         active_trains=active_trains,
         migration_claims=(migration,),
@@ -270,6 +297,10 @@ def _admitted(
         admitted_at_ms=2,
     )
 
+
+#: The synthetic fixtures below own slot ``002`` -- the first slot any durable
+#: tier of this lineage may own, because ``ARCHIVE_FORMAT_FLOOR_VERSION`` is 1.
+_SYNTHETIC_SIDECAR_NAME = f"{_TARGET_VERSION:03d}.train.json"
 
 _SOURCE_ADOPTION_FLOOR = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
 # The first slot a source train may own. Synthetic future-migration fixtures
@@ -308,7 +339,17 @@ def _install_synthetic_migration(
     tier: ArchiveTier,
     *,
     sql: str = _ADDITIVE_SQL,
+    canonical_base: str = _BASE_ITEMS_DDL,
 ) -> None:
+    """Install one synthetic slot-002 migration *with* its checked-in sidecar.
+
+    ``002`` sits above ``ARCHIVE_FORMAT_FLOOR_VERSION``, and production
+    discovery (``validate_durable_migration_sidecars``) refuses any post-floor
+    SQL slot that has no frozen ``NNN.train.json`` beside it. A fixture that
+    shipped the SQL alone therefore never reached the behaviour under test; it
+    tripped the sidecar requirement first. Writing the sidecar here reproduces
+    what the repository itself must carry for slot 002.
+    """
     package_name = f"fixture_migrations_{tier.value}_{tmp_path.name.replace('-', '_')}"
     package_root = tmp_path / package_name
     tier_package = package_root / tier.value
@@ -316,10 +357,39 @@ def _install_synthetic_migration(
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     (tier_package / "__init__.py").write_text("", encoding="utf-8")
     (tier_package / "002_durable_items.sql").write_text(sql, encoding="utf-8")
+    declared = declare_durable_change_train(
+        train_id=f"train:{tier.value}:v{_TARGET_VERSION}",
+        tier=tier,
+        current_version=_CURRENT_VERSION,
+        target_version=_TARGET_VERSION,
+        slot=_TARGET_VERSION,
+        owner_ref=f"owner:migration:{tier.value}:002",
+        migration=_claim(tier, sql),
+        riders=(_rider(),),
+        declared_at_ms=1,
+    )
+    (tier_package / _SYNTHETIC_SIDECAR_NAME).write_text(
+        json.dumps(migration_runner.durable_change_train_to_payload(declared)), encoding="utf-8"
+    )
     monkeypatch.syspath_prepend(str(tmp_path))
     versions = dict(ARCHIVE_VERSION_BY_TIER)
     versions[tier] = _TARGET_VERSION
     monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    # Once a slot carries a sidecar, the runner additionally proves the
+    # migrated tier against ``ARCHIVE_DDL_BY_TIER[tier]`` before it commits.
+    # The synthetic tier's canonical shape is the current database plus what
+    # this slot adds, so declare exactly that; leaving the real source/user
+    # DDL in place would compare a two-table fixture against the whole
+    # shipped schema and fail on every object the fixture never had. A test
+    # whose behaviour needs the real tier -- a production runtime-consumer
+    # probe, say -- passes that tier's shipped DDL as ``canonical_base`` and
+    # bootstraps the archive through the production route instead.
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[tier] = f"{canonical_base}\n{sql}"
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(
         migration_runner, "_migration_package", lambda observed_tier: f"{package_name}.{observed_tier.value}"
     )
@@ -365,17 +435,43 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Release needs the shipped hook-event writer to actually write.
+
+    The rider names ``source_write.py:write_source_hook_event`` as a runtime
+    consumer, and the probe adapter calls it for real. That needs the source
+    tier's own shipped schema -- ``raw_hook_events`` in particular -- so this
+    fixture bootstraps a real archive at the adoption floor and layers the
+    synthetic slot on top of the canonical DDL rather than on the two-table
+    toy the other lifecycle tests use.
+
+    Anti-vacuity: drop ``source-hook-event-writer`` from the rider's runtime
+    consumers and ``released.proof.runtime_consumers`` no longer carries it,
+    so the ``next(...)`` below raises ``StopIteration``.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
+    initialize_active_archive_root(tmp_path)
     db_path = tmp_path / "source.db"
-    _create_current_database(db_path)
-    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
-    train = _admitted(ArchiveTier.SOURCE, rider=_source_hook_event_production_rider())
+    _install_synthetic_migration(
+        tmp_path,
+        monkeypatch,
+        ArchiveTier.SOURCE,
+        canonical_base=ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE],
+    )
+    canonical_ddl = migration_runner.ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE]
+    train = _admitted(
+        ArchiveTier.SOURCE,
+        rider=_source_hook_event_production_rider(),
+        parity=_parity_for_ddl(ArchiveTier.SOURCE, canonical_ddl),
+    )
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
         train = apply_durable_change_train(conn, train)
 
     train = record_durable_writer_release(train, evidence_ref="proof:source-hook-event-writer-release")
     with sqlite3.connect(db_path) as restarted:
-        actual_parity = _parity(ArchiveTier.SOURCE)
+        actual_parity = _parity_for_ddl(ArchiveTier.SOURCE, canonical_ddl)
         runtime_results = _runtime_consumer_results(train, tmp_path)
         restart = capture_durable_restart_convergence(
             restarted,
@@ -699,7 +795,20 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
 def test_maintenance_route_replays_historical_sidecars_before_current_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A later shipped slot must not reject an earlier persisted train."""
+    """A later shipped slot must not reject an earlier persisted train.
+
+    The archive is bootstrapped at the adoption floor through the production
+    route, so it carries its own format marker and bootstrap receipt, and the
+    runtime target is only then raised to slot 3. A hand-authored source.db
+    cannot stand in: ``execute_durable_change_train`` admits an archive by its
+    ``.polylogue-format.json`` lineage marker first, which a bare fixture file
+    does not have.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
+    initialize_active_archive_root(tmp_path)
+
     package_root = tmp_path / "fixture_migrations_sequential"
     source_package = package_root / "source"
     source_package.mkdir(parents=True)
@@ -766,26 +875,16 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         "polylogue.storage.sqlite.durable_change_train._migration_package",
         lambda _tier: "fixture_migrations_sequential.source",
     )
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.durable_change_train.DURABLE_MIGRATION_ADOPTION_FLOORS",
-        {ArchiveTier.SOURCE: 1, ArchiveTier.USER: 1},
-    )
-    versions = dict(ARCHIVE_VERSION_BY_TIER)
-    versions[ArchiveTier.SOURCE] = 3
-    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    _pin_source_runtime_version(monkeypatch, 3)
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
-    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
     ddl = dict(ARCHIVE_DDL_BY_TIER)
-    ddl[ArchiveTier.SOURCE] = (
-        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
-        "CREATE TABLE durable_items (id INTEGER PRIMARY KEY) STRICT;"
-        "CREATE TABLE later_items (id INTEGER PRIMARY KEY) STRICT;"
+    ddl[ArchiveTier.SOURCE] = "\n".join(
+        (ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE], *(statement for _slot, _table, statement in migrations))
     )
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
-    _create_current_database(db_path)
     released: list[bool] = []
 
     first = execute_durable_change_train(
@@ -833,10 +932,8 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         )
     manifest_v3.write_bytes(manifest_v3_bytes)
     evidence_captures = 0
-    schema_inventories = 0
-    canonical_inventories = 0
+    source_canonical_targets: list[int] = []
     real_capture = migration_runner.capture_durable_database_evidence
-    real_schema_inventory = migration_runner.capture_durable_schema_inventory
     real_canonical_inventory = durable_change_train_module._canonical_schema_inventory
 
     def count_evidence_captures(
@@ -846,20 +943,12 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
         evidence_captures += 1
         return real_capture(connection, tier)
 
-    def count_schema_inventories(
-        connection: sqlite3.Connection,
-    ) -> migration_runner.DurableSchemaInventory:
-        nonlocal schema_inventories
-        schema_inventories += 1
-        return real_schema_inventory(connection)
-
     def count_canonical_inventories(tier: ArchiveTier, target_version: int) -> migration_runner.DurableSchemaInventory:
-        nonlocal canonical_inventories
-        canonical_inventories += 1
+        if tier is ArchiveTier.SOURCE:
+            source_canonical_targets.append(target_version)
         return real_canonical_inventory(tier, target_version)
 
     monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", count_evidence_captures)
-    monkeypatch.setattr(migration_runner, "capture_durable_schema_inventory", count_schema_inventories)
     monkeypatch.setattr(durable_change_train_module, "_canonical_schema_inventory", count_canonical_inventories)
     third = execute_durable_change_train(
         tmp_path,
@@ -872,12 +961,18 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     assert third.forward_version_receipt is not None
     assert third.forward_version_receipt.historical_target_version == 2
     assert third.forward_version_receipt.observed_live_version == 3
+    # The no-op pass reuses what it derived once: one live evidence capture
+    # for the source tier, and one canonical inventory, for the live target it
+    # observed. Re-deriving either per persisted manifest -- there are two,
+    # v2 and v3 -- would show up here immediately.
+    #
+    # Only the source tier is counted. The other durable tiers contribute
+    # their own corroboration inventories through
+    # ``_fresh_durable_bootstrap_tier_is_own``, which is a different mechanism
+    # with a different (currently repeated) call pattern; pinning a global
+    # total here would make this assertion about that instead.
     assert evidence_captures == 1
-    # Three inventories: one nested inside the single evidence capture, one
-    # live inventory read during startup reconciliation, and one canonical
-    # inventory built from the fresh DDL. The no-op receipt reuses all of them.
-    assert schema_inventories == 3
-    assert canonical_inventories == 1
+    assert source_canonical_targets == [3]
 
     historical_train = load_durable_change_train_manifest(historical_manifest)
     with sqlite3.connect(db_path) as conn:
@@ -924,6 +1019,12 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
 
     unrelated_root = tmp_path / "unrelated-archive"
     unrelated_root.mkdir()
+    # The bootstrapped tier runs in WAL mode, so the committed slot-3 state
+    # can still be sitting in ``source.db-wal``. Copying the main file alone
+    # would hand the unrelated root a v2 image and make the refusal below a
+    # fixture artifact instead of the identity check under test.
+    with closing(sqlite3.connect(db_path)) as live:
+        live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     shutil.copy2(db_path, unrelated_root / "source.db")
     unrelated_manifest = durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 2)
     unrelated_manifest.parent.mkdir(parents=True)
@@ -931,11 +1032,16 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     shutil.copy2(manifest_v3, durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 3))
     with sqlite3.connect(unrelated_root / "source.db") as conn:
         assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        # Without the live slot in the copy the refusal below would fire for
+        # a version mismatch and prove nothing about archive identity.
+        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
     with pytest.raises(DurableChangeTrainError, match="immutable archive identity differs"):
         reconcile_durable_change_train_startup(unrelated_root)
 
+    # Remove the object the newest slot introduced: the live tier still says
+    # v3 but no longer has the canonical v3 shape.
     with sqlite3.connect(db_path) as conn:
-        conn.execute("DROP TABLE base_items")
+        conn.execute(f"DROP TABLE {migrations[-1][1]}")
         conn.commit()
         tampered = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
         with pytest.raises(DurableChangeTrainError, match="canonical live version"):
@@ -1027,27 +1133,33 @@ def test_startup_recovers_later_train_before_released_chain_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The first two slots this lineage can own. The pre-reset version of this
+    # test named 27 and 28, which the adoption floor of 1 turns into a
+    # twenty-five-slot gap with no released train evidence -- the chain check
+    # then refuses before the ordering under test is ever observed.
+    first_slot = _NEXT_SOURCE_SLOT
+    later_slot = _NEXT_SOURCE_SLOT + 1
     manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
     manifest_root.mkdir(parents=True)
-    first_path = manifest_root / "source-027.json"
-    later_path = manifest_root / "source-028.json"
+    first_path = manifest_root / f"source-{first_slot:03d}.json"
+    later_path = manifest_root / f"source-{later_slot:03d}.json"
     first_path.touch()
     later_path.touch()
     released = cast(
         DurableChangeTrain,
-        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=27),
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=first_slot),
     )
     later_released = cast(
         DurableChangeTrain,
-        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=28),
+        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=later_slot),
     )
     backup_authorized = cast(
         DurableChangeTrain,
         SimpleNamespace(
             state=DurableChangeTrainState.BACKUP_AUTHORIZED,
             tier=ArchiveTier.SOURCE,
-            target_version=28,
-            train_id="train:source:v28",
+            target_version=later_slot,
+            train_id=f"train:source:v{later_slot}",
             revision=0,
         ),
     )
@@ -1067,11 +1179,11 @@ def test_startup_recovers_later_train_before_released_chain_validation(
         return train
 
     def fake_recover(*_args: object, **_kwargs: object) -> DurableChangeTrain:
-        events.append(("recover", 28))
+        events.append(("recover", later_slot))
         return later_released
 
     def fake_capture(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(user_version=28)
+        return SimpleNamespace(user_version=later_slot)
 
     monkeypatch.setattr(durable_change_train_module, "_open_existing_tier", fake_open_tier)
     monkeypatch.setattr(durable_change_train_module, "load_durable_change_train_manifest", fake_load)
@@ -1097,7 +1209,7 @@ def test_startup_recovers_later_train_before_released_chain_validation(
 
     durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
 
-    assert events == [("recover", 28), ("verify", 27), ("verify", 28)]
+    assert events == [("recover", later_slot), ("verify", first_slot), ("verify", later_slot)]
 
 
 def test_startup_checks_chain_when_only_current_train_remains(
@@ -1729,10 +1841,30 @@ def test_adopted_audit_restore_rejects_untrusted_or_stale_backup(
     assert audit_path.read_bytes() == b"corrupted audit image"
 
 
-def test_adopted_audit_restore_rejects_an_authenticated_legacy_audit_schema(
+def test_adopted_audit_restore_rejects_version_skew(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Restore admission rejects a staged audit image that predates the continuity schema it needs."""
+    """Restore admission rejects a staged audit image at the wrong durable version.
+
+    The admission at ``restore_adopted_audit_tier`` requires the staged image
+    to stand at the audit tier's *current* durable version, not merely at the
+    version its own receipt claims. An image one slot away is refused before
+    it is copied into the owned root, and the live adopted tier is untouched.
+
+    The pre-reset version of this test skewed the staged image by dropping
+    ``audit_continuity_head`` and stamping ``user_version = 1``; with the
+    audit floor now at 1 that stamp is the *current* version, so the fixture
+    no longer produced any skew and the admission under test was reached with
+    nothing to reject. The version leg is expressed against
+    ``ARCHIVE_VERSION_BY_TIER`` here rather than a literal, so it cannot go
+    stale the same way again.
+
+    Anti-vacuity: drop ``backup_version != ARCHIVE_VERSION_BY_TIER[AUDIT]``
+    from the admission in ``restore_adopted_audit_tier`` and the skewed image
+    is admitted -- the call no longer raises. The receipt below carries the
+    staged image's real digest and size, so the copy guard cannot stand in
+    for the admission and produce a green test for the wrong reason.
+    """
 
     from polylogue.operations import durable_change_train as operations_durable_change_train
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -1742,10 +1874,10 @@ def test_adopted_audit_restore_rejects_an_authenticated_legacy_audit_schema(
     audit_path = archive_root / "audit.db"
     audit_path.unlink()
     pre_adoption = backup_archive(
-        output_dir=archive_root.parent / "legacy-schema-pre", profile="full_evidence", verify=True
+        output_dir=archive_root.parent / "version-skew-pre", profile="full_evidence", verify=True
     )
     assert pre_adoption.ok and pre_adoption.output_path is not None, pre_adoption.error
-    with acquire_durable_archive_ownership(archive_root, owner_id="test:legacy-schema-adopt") as owner:
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:version-skew-adopt") as owner:
         adopt_missing_audit_tier(
             audit_path,
             backup_manifest=Path(pre_adoption.output_path) / "manifest.json",
@@ -1753,16 +1885,28 @@ def test_adopted_audit_restore_rejects_an_authenticated_legacy_audit_schema(
             stopped_daemon_check=lambda: "proof:test-daemon-stopped",
         )
     verified = backup_archive(
-        output_dir=archive_root.parent / "legacy-schema-post", profile="full_evidence", verify=True
+        output_dir=archive_root.parent / "version-skew-post", profile="full_evidence", verify=True
     )
     assert verified.ok and verified.output_path is not None, verified.error
     backup_root = Path(verified.output_path)
+    skewed_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] + 1
     with sqlite3.connect(backup_root / "audit.db") as staged:
-        staged.execute("DROP TABLE audit_continuity_head")
-        staged.execute("PRAGMA user_version = 1")
-    receipt = archive_root.parent / "legacy-schema-receipt.json"
+        staged.execute(f"PRAGMA user_version = {skewed_version}")
+    staged_bytes = (backup_root / "audit.db").read_bytes()
+    receipt = archive_root.parent / "version-skew-receipt.json"
     receipt.write_text(
-        json.dumps({"tier_artifacts": [{"tier": "audit", "sha256": "0" * 64, "size_bytes": 1, "user_version": 1}]}),
+        json.dumps(
+            {
+                "tier_artifacts": [
+                    {
+                        "tier": "audit",
+                        "sha256": hashlib.sha256(staged_bytes).hexdigest(),
+                        "size_bytes": len(staged_bytes),
+                        "user_version": skewed_version,
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -1771,7 +1915,7 @@ def test_adopted_audit_restore_rejects_an_authenticated_legacy_audit_schema(
         lambda *_args, **_kwargs: (backup_root / "manifest.json", receipt),
     )
 
-    with acquire_durable_archive_ownership(archive_root, owner_id="test:legacy-schema-restore") as owner:
+    with acquire_durable_archive_ownership(archive_root, owner_id="test:version-skew-restore") as owner:
         with pytest.raises(MigrationError, match="does not belong"):
             restore_adopted_audit_tier(
                 audit_path,
@@ -2015,11 +2159,26 @@ def test_audit_adoption_rejects_a_stale_audit_file_clone(workspace_env: dict[str
         reconcile_durable_change_train_startup(archive_root)
 
 
-def test_adopted_audit_startup_runs_one_receipt_integrity_check(
-    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Bootstrap delegates adopted-tier validation to startup reconciliation once."""
+def test_adopted_audit_receipt_is_checked_once(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Startup reconciliation validates the adoption receipt exactly once.
+
+    The immutable adoption receipt is the authority that binds an adopted
+    audit tier to the backup it came from, and re-reading it per tier or per
+    manifest would make its cost scale with the archive. One check per
+    reconciliation pass is the contract.
+
+    The check is driven through ``reconcile_durable_change_trains_on_startup``
+    rather than ``initialize_active_archive_root``: #5275 made archive
+    bootstrap skip startup reconciliation for a format-marked archive, so
+    bootstrap now performs zero receipt checks and the reconciler -- the route
+    the daemon runs -- owns this one.
+
+    Anti-vacuity: move the ``validate_audit_adoption_receipt`` call inside the
+    per-manifest loop of ``_reconcile_durable_change_train_startup_locked``
+    and the count goes above one; delete it and the count goes to zero.
+    """
     from polylogue.operations import durable_change_train as operations_durable_change_train
+    from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     archive_root = workspace_env["archive_root"]
@@ -2046,7 +2205,7 @@ def test_adopted_audit_startup_runs_one_receipt_integrity_check(
         return real_validate(root, require_initial_image=require_initial_image)
 
     monkeypatch.setattr(operations_durable_change_train, "validate_audit_adoption_receipt", count_validate)
-    initialize_active_archive_root(archive_root)
+    reconcile_durable_change_trains_on_startup(archive_root)
 
     assert calls == 1
 
@@ -2160,10 +2319,25 @@ def test_audit_adoption_retry_reports_recovered_audit_schema_version(
     assert recovered_version == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
 
 
-def test_audit_adoption_bootstrap_rejects_stale_replacement_before_recording_continuity(
+def test_audit_adoption_rejects_a_stale_replacement(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Startup does not bless a replaced audit image in the post-link crash window."""
+    """Startup does not bless a replaced audit image in the post-link crash window.
+
+    Adoption links the audit tier and then publishes ``audit-continuity.json``.
+    A crash between the two leaves a receipt whose audit image is already
+    live; swapping that image for an older copy in the gap must be refused,
+    the stale bytes left exactly as found, and no continuity record written.
+
+    Driven through ``reconcile_durable_change_trains_on_startup``: the refusal
+    is raised by ``validate_audit_adoption_receipt``, which #5275 removed from
+    the bootstrap path for a format-marked archive.
+
+    Anti-vacuity: drop the live-image comparison from
+    ``validate_audit_adoption_receipt`` and the stale clone is accepted --
+    the call returns and ``audit-continuity.json`` appears.
+    """
+    from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     archive_root = workspace_env["archive_root"]
@@ -2231,16 +2405,28 @@ def test_audit_adoption_bootstrap_rejects_stale_replacement_before_recording_con
     stale_image = audit_path.read_bytes()
 
     with pytest.raises(MigrationError, match="audit tier changed before recording adoption continuity"):
-        initialize_active_archive_root(archive_root)
+        reconcile_durable_change_trains_on_startup(archive_root)
 
     assert audit_path.read_bytes() == stale_image
     assert not (marker_root / "audit-continuity.json").exists()
 
 
-def test_audit_adoption_retries_seeded_machine_head_before_continuity_publication(
-    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A continuity-receipt crash resumes the already-seeded adoption head."""
+def test_audit_adoption_resumes_a_seeded_head(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    """A continuity-receipt crash resumes the already-seeded adoption head.
+
+    The machine head is seeded into both source and audit before the
+    continuity receipt is published. A crash in that window must not re-seed
+    or refuse; the next reconciliation pass finishes the publication it left.
+
+    Driven through ``reconcile_durable_change_trains_on_startup``, which is
+    where ``validate_audit_adoption_receipt`` now runs for a format-marked
+    archive (#5275).
+
+    Anti-vacuity: make ``validate_audit_adoption_receipt`` return without
+    publishing when a seeded head already exists and
+    ``audit-continuity.json`` never appears.
+    """
+    from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     archive_root = workspace_env["archive_root"]
@@ -2276,7 +2462,7 @@ def test_audit_adoption_retries_seeded_machine_head_before_continuity_publicatio
     with sqlite3.connect(archive_root / "source.db") as source, sqlite3.connect(audit_path) as audit:
         assert source.execute("SELECT committed_generation FROM audit_continuity_control").fetchone() == (1,)
         assert audit.execute("SELECT generation FROM audit_continuity_head").fetchone() == (1,)
-    initialize_active_archive_root(archive_root)
+    reconcile_durable_change_trains_on_startup(archive_root)
     assert (archive_root / ".maintenance-state" / "durable-change-trains" / "audit-continuity.json").is_file()
 
 
@@ -2541,7 +2727,28 @@ def test_pre_marker_current_archive_is_adopted_once(tmp_path: Path) -> None:
     assert marker.is_file()
 
 
-def test_pre_marker_adoption_refuses_missing_train_directory(tmp_path: Path) -> None:
+def test_missing_train_directory_denies_the_floor(tmp_path: Path) -> None:
+    """Losing the train state denies the chain floor on the reconciliation route.
+
+    The bootstrap marker is what raises a tier's durable chain floor to its
+    bootstrap version. Delete the whole durable-train directory and nothing is
+    left to raise it, so forward admission has to demand released train
+    evidence for every slot from the adoption floor up to the live version.
+
+    The refusal is asserted on ``reconcile_durable_change_train_startup`` --
+    the route the daemon runs at startup (``polylogue/daemon/cli.py``) -- and
+    not on ``initialize_active_archive_root``, because #5275 made archive
+    bootstrap skip startup reconciliation for an archive that carries a valid
+    ``.polylogue-format.json``. Opening is therefore the correct observable
+    for bootstrap here; the chain-floor question is the reconciler's.
+
+    Anti-vacuity: make ``_fresh_durable_bootstrap_versions`` fall back to
+    ``ARCHIVE_VERSION_BY_TIER`` when the manifest root is missing and the
+    floor is granted with no marker at all, so the refusal below disappears.
+    ``test_pre_marker_current_archive_is_adopted_once`` pins the opposite
+    direction: an archive that still has its train directory is re-adopted
+    rather than refused.
+    """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
@@ -2549,18 +2756,35 @@ def test_pre_marker_adoption_refuses_missing_train_directory(tmp_path: Path) -> 
     (marker_root / ".bootstrap").unlink()
     marker_root.rmdir()
 
+    initialize_active_archive_root(tmp_path)
+    assert not marker_root.exists()
+
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
-        initialize_active_archive_root(tmp_path)
+        reconcile_durable_change_train_startup(tmp_path)
 
 
-def test_pre_marker_adoption_requires_all_durable_tiers(tmp_path: Path) -> None:
+def test_missing_durable_tier_is_never_recreated(tmp_path: Path) -> None:
+    """A lineage member that lost a durable tier is refused, not re-bootstrapped.
+
+    ``user.db`` is durable, irreplaceable state. An archive whose format
+    marker names it must never have it silently recreated empty by the next
+    open -- the refusal names the missing file and leaves the root alone.
+
+    The refusal now comes from the archive format marker
+    (``assert_archive_format_lineage``) rather than from durable-train
+    admission, which is strictly earlier: it fires before any tier is opened.
+
+    Anti-vacuity: drop the per-tier existence check from
+    ``assert_archive_format_lineage`` and bootstrap recreates ``user.db`` as
+    an empty canonical tier, so both the raise and the final assertion go red.
+    """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
     (tmp_path / ".maintenance-state" / "durable-change-trains" / ".bootstrap").unlink()
     (tmp_path / "user.db").unlink()
 
-    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+    with pytest.raises(RuntimeError, match="marker names a missing durable tier"):
         initialize_active_archive_root(tmp_path)
     assert not (tmp_path / "user.db").exists()
 
@@ -2645,7 +2869,29 @@ def test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe(tm
         reconcile_durable_change_train_startup(recipient)
 
 
-def test_fresh_bootstrap_marker_grants_nothing_for_a_version_skewed_tier(tmp_path: Path) -> None:
+#: The tier the skew tests below bend, and the tier they leave alone. A marker
+#: only ever grants a tier something *above* its adoption floor, so the skew
+#: branch is only observable on a tier whose target sits above that floor --
+#: with the floor at 1, ``audit`` (target 1) is granted nothing either way and
+#: would make the assertion pass for the wrong reason.
+_SKEWABLE_TIER = ArchiveTier.SOURCE
+_CORROBORATING_TIER = ArchiveTier.USER
+
+
+def _skew_live_tier(archive_root: Path, tier: ArchiveTier) -> int:
+    """Move one live tier off its declared version and return the new value."""
+    declared = ARCHIVE_VERSION_BY_TIER[tier]
+    assert declared > DURABLE_MIGRATION_ADOPTION_FLOORS[tier], (
+        f"{tier.value} is at its adoption floor, so a marker grants it nothing and this fixture proves nothing"
+    )
+    skewed = declared - 1
+    with closing(sqlite3.connect(archive_root / f"{tier.value}.db")) as connection:
+        connection.execute(f"PRAGMA user_version = {skewed}")
+        connection.commit()
+    return skewed
+
+
+def test_fresh_bootstrap_marker_grants_nothing_for_skew(tmp_path: Path) -> None:
     """A tier standing at a different version must park, not fail startup.
 
     A live tier whose own ``user_version`` disagrees with the marker is
@@ -2655,24 +2901,24 @@ def test_fresh_bootstrap_marker_grants_nothing_for_a_version_skewed_tier(tmp_pat
 
     Anti-vacuity: removing the ``_fresh_durable_bootstrap_tier_version_skew``
     branch from ``_assert_fresh_durable_bootstrap_is_own`` makes this raise
-    ``not this archive's own audit bootstrap evidence`` instead of returning.
-    Verified by reverting the branch, not by asserting it.
+    ``not this archive's own source bootstrap evidence`` instead of returning.
+    Verified by reverting the branch, not by asserting it. The second
+    assertion pins the opposite direction: a guard that simply granted nothing
+    would drop the corroborating tier too.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
-    with closing(sqlite3.connect(tmp_path / "audit.db")) as connection:
-        connection.execute("PRAGMA user_version = 1")
-        connection.commit()
+    _skew_live_tier(tmp_path, _SKEWABLE_TIER)
 
     manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
     granted = durable_change_train_module._fresh_durable_bootstrap_versions(tmp_path, manifest_root)
 
-    assert ArchiveTier.AUDIT not in granted
-    assert granted[ArchiveTier.SOURCE] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    assert _SKEWABLE_TIER not in granted
+    assert granted[_CORROBORATING_TIER] == ARCHIVE_VERSION_BY_TIER[_CORROBORATING_TIER]
 
 
-def test_legacy_sealed_marker_also_grants_nothing_for_a_version_skewed_tier(tmp_path: Path) -> None:
+def test_legacy_sealed_marker_grants_nothing_for_skew(tmp_path: Path) -> None:
     """The legacy seal proves ownership, not that a skewed tier is current.
 
     Markers written by earlier revisions carry a path-and-inode
@@ -2682,8 +2928,9 @@ def test_legacy_sealed_marker_also_grants_nothing_for_a_version_skewed_tier(tmp_
     marker carrying no seal.
 
     Anti-vacuity: restoring the unconditional ``return set()`` in the legacy
-    branch makes this fail with the audit tier present in the granted
-    versions. Verified by reverting, not by asserting.
+    branch makes this fail with the skewed tier present in the granted
+    versions. Verified by reverting, not by asserting. The second assertion
+    pins the opposite direction, where the seal stops granting anything at all.
     """
     from polylogue.storage.archive_identity import ArchiveIdentity
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -2700,14 +2947,12 @@ def test_legacy_sealed_marker_also_grants_nothing_for_a_version_skewed_tier(tmp_
     payload["marker_digest"] = durable_change_train_module._bootstrap_marker_digest(payload)
     marker.write_text(json.dumps(payload), encoding="utf-8")
 
-    with closing(sqlite3.connect(tmp_path / "audit.db")) as connection:
-        connection.execute("PRAGMA user_version = 1")
-        connection.commit()
+    _skew_live_tier(tmp_path, _SKEWABLE_TIER)
 
     granted = durable_change_train_module._fresh_durable_bootstrap_versions(tmp_path, manifest_root)
 
-    assert ArchiveTier.AUDIT not in granted
-    assert granted[ArchiveTier.SOURCE] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    assert _SKEWABLE_TIER not in granted
+    assert granted[_CORROBORATING_TIER] == ARCHIVE_VERSION_BY_TIER[_CORROBORATING_TIER]
 
 
 def test_fresh_bootstrap_marker_is_retired_once_it_grants_nothing(tmp_path: Path) -> None:
@@ -2867,21 +3112,87 @@ def test_missing_future_sidecar_is_rejected_at_the_migration_runner_choke_point(
         validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
 
 
-def test_migration_transaction_control_cannot_escape_rollback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+_TRANSACTION_ESCAPE_SQL = "CREATE TABLE transaction_escape (id INTEGER PRIMARY KEY);\nCOMMIT;\n"
+
+
+def test_migration_sql_cannot_escape_the_transaction(tmp_path: Path) -> None:
+    """A migration statement may not end the runner's own transaction.
+
+    The runner wraps every numbered slot in one ``BEGIN IMMEDIATE`` so a
+    mid-file failure rolls the durable tier back to its current version. A
+    ``COMMIT`` inside the SQL would end that transaction early and make the
+    preceding statements unrecoverable, so the executor refuses transaction
+    control at the statement it reads.
+
+    This drives ``_execute_migration_sql`` -- the executor production calls
+    from inside its lock -- rather than ``migrate_archive_tier``, because an
+    ``additive-no-backup`` file carrying ``COMMIT`` is now refused earlier
+    still, at discovery (``test_additive_claim_refusal_precedes_writes``
+    below). The transaction-control refusal remains the live guard for a
+    backup-requiring slot, which carries no additive marker and so reaches
+    the executor.
+
+    Anti-vacuity: delete the ``_SQL_TRANSACTION_CONTROL_RE`` refusal in
+    ``_execute_migration_sql`` and the ``COMMIT`` runs, the ``pytest.raises``
+    reports DID NOT RAISE, and the rollback below no longer removes
+    ``transaction_escape`` because it was already committed.
+    """
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
-    _install_synthetic_migration(
-        tmp_path,
-        monkeypatch,
-        ArchiveTier.SOURCE,
-        sql="-- migration-safety: additive-no-backup\nCREATE TABLE transaction_escape (id INTEGER PRIMARY KEY);\nCOMMIT;\n",
-    )
 
     with sqlite3.connect(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         with pytest.raises(MigrationError, match="must not control the existing transaction"):
+            migration_runner._execute_migration_sql(conn, _TRANSACTION_ESCAPE_SQL)
+        conn.rollback()
+        assert conn.execute("PRAGMA user_version").fetchone() == (_CURRENT_VERSION,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='transaction_escape'").fetchone() is None
+
+
+def test_additive_claim_refusal_precedes_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A false ``additive-no-backup`` claim is refused before the tier is touched.
+
+    Slot discovery proves the marker against the file's own statements, and
+    ``COMMIT`` is not an additive statement. The refusal has to land before
+    the migration lock, or the durable tier would already have been written
+    by the time the contradiction is noticed.
+
+    Anti-vacuity: drop the ``_assert_additive_migration_sql`` call from
+    ``_requires_migration_backup`` and this file is accepted as backup-waived,
+    so the observable error changes from the additive refusal to the
+    transaction-control one -- and the bytes assertion is what proves the
+    refusal preceded any write rather than following a partial apply.
+    """
+    package_name = "fixture_migrations_false_additive"
+    tier_package = tmp_path / package_name / ArchiveTier.SOURCE.value
+    tier_package.mkdir(parents=True)
+    (tmp_path / package_name / "__init__.py").write_text("", encoding="utf-8")
+    (tier_package / "__init__.py").write_text("", encoding="utf-8")
+    (tier_package / "002_durable_items.sql").write_text(
+        f"-- migration-safety: additive-no-backup\n{_TRANSACTION_ESCAPE_SQL}", encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = _TARGET_VERSION
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    monkeypatch.setattr(
+        migration_runner, "_migration_package", lambda observed_tier: f"{package_name}.{observed_tier.value}"
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda observed_tier: f"{package_name}.{observed_tier.value}",
+    )
+
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    before = db_path.read_bytes()
+
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(MigrationError, match="not additive-only"):
             migration_runner.migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
         assert conn.execute("PRAGMA user_version").fetchone() == (_CURRENT_VERSION,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='transaction_escape'").fetchone() is None
+    assert db_path.read_bytes() == before
 
 
 def test_canonical_inventory_preserves_trigger_literal_whitespace() -> None:
@@ -2918,9 +3229,7 @@ def test_canonical_inventory_preserves_trigger_literal_whitespace() -> None:
     assert spaced != changed_literal
 
 
-def test_historical_source_inventory_removes_only_future_schema_objects() -> None:
-    """Historical parity keeps objects at the target and removes later additions."""
-    target = _NEXT_SOURCE_SLOT
+def _source_inventory_refs_at(target: int) -> set[str]:
     connection = sqlite3.connect(":memory:")
     try:
         connection.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE])
@@ -2928,12 +3237,36 @@ def test_historical_source_inventory_removes_only_future_schema_objects() -> Non
         inventory = migration_runner.capture_durable_schema_inventory(connection)
     finally:
         connection.close()
+    return {item.object_ref for item in inventory.objects}
 
-    refs = {item.object_ref for item in inventory.objects}
-    assert "table:source_items" in refs
-    assert "table:material_observations" in refs
-    assert "table:source_attachments" not in refs
-    assert "table:raw_legacy_append_resynthesis_receipts" not in refs
+
+def test_source_inventory_projects_away_future_objects() -> None:
+    """Historical parity keeps objects at the target and removes later additions.
+
+    The shipped bootstrap DDL is always the newest shape, so proving parity
+    for an archive paused *below* the current target means projecting the
+    canonical schema back to that slot. The objects that must disappear are
+    exactly the ones later slots' riders declare -- here the source tier's one
+    numbered slot (002) and its ``excision_policy_projections`` carrier.
+
+    Anti-vacuity: drop the ``future_refs`` removal loop in
+    ``_prepare_fresh_connection_for_target`` and the projection keeps
+    ``table:excision_policy_projections``, so the floor assertion goes red
+    while the target assertion stays green. The ``at_target`` case pins the
+    opposite direction: a projection that dropped the object unconditionally
+    -- or at the tier's own target -- would be red there.
+    """
+    floor = _SOURCE_ADOPTION_FLOOR
+    at_target = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    assert at_target > floor, "the source tier owns no numbered slot, so nothing can be projected away"
+
+    projected = _source_inventory_refs_at(floor)
+    current = _source_inventory_refs_at(at_target)
+
+    assert "table:source_items" in projected
+    assert "table:material_observations" in projected
+    assert "table:excision_policy_projections" not in projected
+    assert "table:excision_policy_projections" in current
 
 
 def test_admission_rejects_stale_current_and_target_versions() -> None:
@@ -2958,65 +3291,81 @@ def test_admission_rejects_stale_current_and_target_versions() -> None:
         )
 
 
-def test_source_008_009_collision_names_both_owners_and_blocks_admission() -> None:
-    source_migrations = Path(__file__).parents[3] / "polylogue" / "storage" / "sqlite" / "migrations" / "source"
-    source_008 = source_migrations / "008_raw_session_capture_mode.sql"
-    source_009 = source_migrations / "009_expand_origin_vocabulary.sql"
+def test_slot_collision_names_both_owners_and_blocks(tmp_path: Path) -> None:
+    """Two files claiming one slot are named as a collision and refused admission.
+
+    Contention is on ``(tier, target version, slot)``, so a late rider that
+    renumbers itself onto an already-owned slot has to be reported with *both*
+    owners -- the operator's fix is rebase/renumber, which needs to know what
+    it is colliding with.
+
+    The slot is built from synthetic SQL rather than shipped migration files.
+    The pre-reset version of this test read ``008_raw_session_capture_mode.sql``
+    and ``009_expand_origin_vocabulary.sql`` off disk; the lineage reset
+    deleted both, and the property under test never depended on their content.
+
+    Anti-vacuity: make ``find_durable_migration_collisions`` return ``()`` and
+    the report goes ``ok: True`` while ``admit_durable_change_train`` accepts
+    both claims, so every assertion below goes red.
+    """
+    slot = _NEXT_SOURCE_SLOT
+    first_name = f"{slot:03d}_first_items.sql"
+    late_name = f"{slot:03d}_late_items.sql"
     first = durable_migration_claim_for_sql(
         ArchiveTier.SOURCE,
-        source_008.name,
-        source_008.read_text(encoding="utf-8"),
-        owner_ref="owner:source-008",
+        first_name,
+        "-- migration-safety: additive-no-backup\nCREATE TABLE first_items (id INTEGER PRIMARY KEY) STRICT;\n",
+        owner_ref="owner:source-first",
     )
     late_rider = durable_migration_claim_for_sql(
         ArchiveTier.SOURCE,
-        "008_expand_origin_vocabulary.sql",
-        source_009.read_text(encoding="utf-8"),
-        owner_ref="owner:source-009-late-rider",
+        late_name,
+        "-- migration-safety: additive-no-backup\nCREATE TABLE late_items (id INTEGER PRIMARY KEY) STRICT;\n",
+        owner_ref="owner:source-late-rider",
     )
     report = durable_migration_collision_report((first, late_rider))
     assert report["ok"] is False
     serialized = json.dumps(report)
-    assert source_008.name in serialized
-    assert "008_expand_origin_vocabulary.sql" in serialized
-    assert "owner:source-008" in serialized
-    assert "owner:source-009-late-rider" in serialized
+    assert first_name in serialized
+    assert late_name in serialized
+    assert "owner:source-first" in serialized
+    assert "owner:source-late-rider" in serialized
 
     train = declare_durable_change_train(
-        train_id="source-v8",
+        train_id=f"train:source:v{slot}",
         tier=ArchiveTier.SOURCE,
-        current_version=7,
-        target_version=8,
-        slot=8,
+        current_version=slot - 1,
+        target_version=slot,
+        slot=slot,
         owner_ref="owner:source-train",
         migration=first,
         riders=(_rider(),),
     )
     parity = DurableFreshDDLParityProof(
         tier=ArchiveTier.SOURCE,
-        target_version=8,
-        migrated_version=8,
-        fresh_version=8,
+        target_version=slot,
+        migrated_version=slot,
+        fresh_version=slot,
         migrated_inventory_sha256="a" * 64,
         parity_inventory_sha256="a" * 64,
         fresh_inventory_sha256="a" * 64,
         missing_objects=(),
         unexpected_objects=(),
         changed_objects=(),
-        evidence_ref="proof:v8-fresh",
+        evidence_ref=f"proof:v{slot}-fresh",
         matches=True,
     )
     with pytest.raises(DurableChangeTrainError, match="collision.*rebase/renumber") as exc_info:
         admit_durable_change_train(
             train,
-            observed_current_version=7,
+            observed_current_version=slot - 1,
             fresh_ddl_parity=parity,
-            admission_evidence_ref="proof:v8-admit",
+            admission_evidence_ref=f"proof:v{slot}-admit",
             migration_claims=(first, late_rider),
-            canonical_target_version=8,
+            canonical_target_version=slot,
         )
-    assert source_008.name in str(exc_info.value)
-    assert "008_expand_origin_vocabulary.sql" in str(exc_info.value)
+    assert first_name in str(exc_info.value)
+    assert late_name in str(exc_info.value)
 
 
 def test_duplicate_train_ownership_and_late_rider_are_rejected() -> None:
@@ -3254,9 +3603,26 @@ def test_interrupted_commit_recovers_at_applied_without_reapplying(
     assert recovered.reservation is not None and recovered.reservation.active is False
 
 
-def test_bootstrap_reconciles_and_persists_interrupted_train_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_startup_reconciles_interrupted_train_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An interrupted mid-apply train is finished and persisted at startup.
+
+    The train is BACKUP_AUTHORIZED with a durable file that already carries
+    the committed slot: the crash landed between the SQL commit and the
+    manifest transition. Startup reconciliation has to recognise that, record
+    ``recovered_after_interrupt``, and release -- not re-apply.
+
+    The refusal is driven through ``reconcile_durable_change_trains_on_startup``
+    rather than ``initialize_active_archive_root``. #5275 made archive
+    bootstrap skip startup reconciliation whenever a valid
+    ``.polylogue-format.json`` is present, and the daemon
+    (``polylogue/daemon/cli.py``) calls the reconciler itself; a hand-authored
+    fixture archive carries no format marker and would be refused for that
+    alone, which is not the behaviour under test.
+
+    Anti-vacuity: make ``reconcile_interrupted_durable_change_train`` return
+    the train unchanged and the state stays BACKUP_AUTHORIZED with no apply
+    evidence, so every assertion below goes red.
+    """
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, bootstrap
 
     versions = dict(ARCHIVE_VERSION_BY_TIER)
@@ -3284,9 +3650,9 @@ def test_bootstrap_reconciles_and_persists_interrupted_train_evidence(
     manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
     write_durable_change_train_manifest(manifest, train, expected_revision=-1)
 
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
 
-    initialize_active_archive_root(tmp_path)
+    assert reconcile_durable_change_trains_on_startup(tmp_path) == (manifest,)
     recovered = load_durable_change_train_manifest(manifest)
     assert recovered.state is DurableChangeTrainState.RELEASED
     assert recovered.apply_evidence is not None
@@ -3358,7 +3724,24 @@ def test_startup_proves_durable_continuity_before_initialization_or_release(
     tier: ArchiveTier,
     replacement: str,
 ) -> None:
-    """A lost or replaced durable file cannot be bootstrapped over an APPLIED train."""
+    """A lost or replaced durable file cannot be released over an APPLIED train.
+
+    An APPLIED train holds an active writer reservation and pre/post evidence
+    for one exact file. If that file is lost, edited, or swapped for another
+    inode, reconciliation must refuse and leave the manifest APPLIED with its
+    reservation held -- never initialize a replacement tier over it, and never
+    release the train as if the migration it describes were still proven.
+
+    The refusal is driven through ``reconcile_durable_change_trains_on_startup``
+    rather than ``initialize_active_archive_root``. #5275 made archive
+    bootstrap skip startup reconciliation for any archive carrying a valid
+    ``.polylogue-format.json``, so the reconciler -- the route the daemon runs
+    at startup -- is where this continuity proof now lives.
+
+    Anti-vacuity: drop the live-tier evidence comparison from
+    ``_verify_released_train_live_tier``/the APPLIED reconciliation branch and
+    every parameter goes green with the manifest advanced past APPLIED.
+    """
     from polylogue.storage.sqlite.archive_tiers import bootstrap
 
     db_path = tmp_path / f"{tier.value}.db"
@@ -3383,8 +3766,10 @@ def test_startup_proves_durable_continuity_before_initialization_or_release(
         replacement_path.write_bytes(db_path.read_bytes())
         os.replace(replacement_path, db_path)
 
+    from polylogue.operations.durable_change_train import reconcile_durable_change_trains_on_startup
+
     with pytest.raises(DurableChangeTrainError, match="refusing startup initialization/release"):
-        bootstrap.initialize_active_archive_root(tmp_path)
+        reconcile_durable_change_trains_on_startup(tmp_path)
 
     recovered = load_durable_change_train_manifest(manifest)
     assert recovered.state is DurableChangeTrainState.APPLIED
