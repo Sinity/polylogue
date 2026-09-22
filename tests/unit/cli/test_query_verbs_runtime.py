@@ -1724,3 +1724,51 @@ def test_terminal_idf_helper_bounds_rows(capsys: pytest.CaptureFixture[str]) -> 
     assert "tag-11: 19.000" in output
     assert "tag-12: 18.000" not in output
     assert "… 1 more value omitted from terminal view; use --format json for full IDF." in output
+
+
+def test_multi_session_resolution_separates_a_query_miss_from_no_seed() -> None:
+    """A seed query that ran and missed is not the same as no seed at all.
+
+    ``_emit_context_image`` routes an empty list to ``context_image_payload``,
+    which re-selects under its own looser context-image filters. Returning
+    ``[]`` for a zero-match selection therefore turned
+    ``polylogue find <miss> then read --view context-image`` into a context
+    image built from unrelated sessions and handed to a resume/handoff as
+    though it answered the query. The singleton counterpart
+    ``_resolve_query_action_session_id`` already raises on this state through
+    ``check_cardinality``; the multi-session route now does the same.
+
+    Anti-vacuity: delete the ``check_cardinality`` call and the first case
+    returns ``[]`` instead of raising, so ``pytest.raises`` goes red. The
+    second and third cases pin the opposite direction -- a blanket raise would
+    break both the ordinary match and the genuine no-seed path that
+    ``test_read_verb_context_image_invokes_pack_view`` depends on.
+    """
+    from polylogue.cli.verb_cardinality import EmptyCardinalityError
+
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    request = query_verbs._parent_request(child)
+    env = cast(AppEnv, child.obj)
+
+    # 1. The selection query ran and matched nothing: a refusal, not a seed.
+    with patch("polylogue.cli.session_rows.query_session_ids", return_value=[]):
+        with pytest.raises(EmptyCardinalityError):
+            query_verbs._resolve_query_action_session_ids(env, request, limit=5)
+
+    # 2. Ordinary multi-match still resolves; several matches are normal here.
+    with patch(
+        "polylogue.cli.session_rows.query_session_ids",
+        return_value=["codex-session:a", "codex-session:b"],
+    ):
+        assert query_verbs._resolve_query_action_session_ids(env, request, limit=5) == [
+            "codex-session:a",
+            "codex-session:b",
+        ]
+
+    # 3. No seed at all: no query terms, so no selection query ever ran and the
+    #    context-image filter route stays reachable.
+    _, bare_child = _context_pair()
+    bare_child.obj.config = SimpleNamespace()
+    bare_request = query_verbs._parent_request(bare_child)
+    assert query_verbs._resolve_query_action_session_ids(cast(AppEnv, bare_child.obj), bare_request, limit=5) == []

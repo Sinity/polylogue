@@ -2734,9 +2734,19 @@ def _resolve_query_action_session_ids(
     Honors the find selection (query terms, filters, ``--id``, ``--latest``)
     rather than discarding it. This is the multi-session counterpart to
     :func:`_resolve_query_action_session_id`.
+
+    An empty return means *no seed was supplied*, never *the seed matched
+    nothing*: a selection query that actually ran and missed raises
+    :class:`EmptyCardinalityError`, exactly as the singleton counterpart
+    already does. The two states are not interchangeable to the caller --
+    ``_emit_context_image`` routes an empty list to ``context_image_payload``,
+    which re-selects under its own looser context-image filters, so a query
+    miss used to come back as a context image built from unrelated sessions
+    and be handed to a resume/handoff as if it answered the query.
     """
     if request.query_terms:
         from polylogue.cli.session_rows import query_session_ids
+        from polylogue.cli.verb_cardinality import check_cardinality
 
         explicit = request.params.get("conv_id")
         if isinstance(explicit, str) and explicit:
@@ -2745,8 +2755,19 @@ def _resolve_query_action_session_ids(
         if _spec_is_exact_session_ref(spec):
             return [cast("str", spec.session_id)]
         if not spec.latest and not spec.has_filters():
+            # Query terms that narrow nothing are not a selection at all; the
+            # caller may still use the raw text as a relevance hint.
             return []
-        return query_session_ids(env.config, request, limit=1 if first_only else limit)
+        session_ids = query_session_ids(env.config, request, limit=1 if first_only else limit)
+        # ``allow_all=True``: this is the multi-session route, so several
+        # matches are the normal case. Zero always raises regardless.
+        check_cardinality(
+            len(session_ids),
+            allow_all=True,
+            first_only=first_only,
+            operation="read the matched sessions",
+        )
+        return session_ids
 
     single = _resolve_target_session_id(request)
     return [single] if single else []
