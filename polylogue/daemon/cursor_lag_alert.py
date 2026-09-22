@@ -181,6 +181,24 @@ def evaluate_cursor_lag(
     now_ts = now if now is not None else time.time()
     iso_now = datetime.fromtimestamp(now_ts, tz=UTC).isoformat()
 
+    if not summary.available:
+        # An unreadable ledger has no families, so the ordinary path below
+        # would (a) report no breach at all and (b) fire a *resolution* alert
+        # for every family that was breaching at the last successful read --
+        # "cursor lag cleared", asserted from a read that never happened. The
+        # dedup state is deliberately left untouched so the real resolution
+        # still fires once the ledger becomes readable again.
+        return [
+            HealthAlert(
+                check_name="cursor_lag",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.WARNING,
+                message=(f"cursor lag not measured: {summary.unavailable_reason or 'cursor ledger unavailable'}"),
+                checked_at=iso_now,
+                consecutive_failures=0,
+            )
+        ]
+
     family_state: dict[str, CursorLagFamilySnapshot] = {}
     for entry in summary.family_summaries:
         family_state[entry.family] = CursorLagFamilySnapshot(

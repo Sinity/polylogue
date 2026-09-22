@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.core.json import JSONValue
 from polylogue.daemon import status as status_module
 from polylogue.daemon.health import DaemonHealth, HealthTier
 from polylogue.daemon.status import build_daemon_status
@@ -634,3 +635,70 @@ def test_every_status_component_read_declares_its_unmeasured_substitute() -> Non
     # The four the bead named plus every other site measured at this head.
     assert {"db_size", "archive_storage", "fts_readiness", "insight_freshness"} <= seen
     assert seen >= set(exemptions)
+
+
+def test_stale_cursor_lag_reports_an_unreadable_ledger_not_a_quiet_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stale cursor-lag evidence cannot report "no lag".
+
+    ``_v(..., unmeasured=...)`` already stopped the previous reading being
+    served as current, but its substitute was a bare ``CursorLagSummary()``,
+    which renders exactly like a caught-up archive. The substitute now carries
+    the availability pair, so the stale build is distinguishable.
+
+    Anti-vacuity: restore ``_UNMEASURED_CURSOR_LAG = CursorLagSummary()`` and
+    the stale build's ``available`` is True with the same zeros a measured
+    quiet archive publishes.
+    """
+    from polylogue.daemon.cursor_lag_status import CursorLagFamilySummary
+
+    measured = status_module.CursorLagSummary(
+        tracked_file_count=4,
+        stuck_file_count=2,
+        max_lag_s=900.0,
+        family_summaries=[
+            CursorLagFamilySummary(
+                family="claude-code-session", tracked_file_count=4, stuck_file_count=2, max_lag_s=900.0
+            )
+        ],
+    )
+    fresh, stale = _stale_last_good_status(
+        monkeypatch,
+        tmp_path,
+        component="cursor_lag",
+        good_collector=lambda *_a, **_k: measured,
+        attribute="cursor_lag_summary_info",
+    )
+
+    assert fresh.cursor_lag.available is True
+    assert fresh.cursor_lag.stuck_file_count == 2
+    assert stale.cursor_lag.available is False
+    assert stale.cursor_lag.unavailable_reason is not None
+    assert stale.cursor_lag.stuck_file_count == 0
+
+
+def test_plaintext_status_names_an_unmeasured_cursor_ledger() -> None:
+    """The ops-status text block must not stay silent for an unreadable ledger.
+
+    It only printed when a count was positive, so an unavailable projection
+    rendered identically to a quiet archive: no line at all.
+
+    Anti-vacuity: delete the ``available is False`` branch in
+    ``format_daemon_status_lines`` and the unmeasured payload produces no
+    cursor-lag line, matching the measured-quiet payload exactly.
+    """
+    unreadable: dict[str, JSONValue] = {
+        "available": False,
+        "unavailable_reason": "cursor ledger unreadable: DatabaseError: malformed",
+        "stuck_file_count": 0,
+        "degraded_file_count": 0,
+    }
+    quiet: dict[str, JSONValue] = {"available": True, "stuck_file_count": 0, "degraded_file_count": 0}
+
+    unreadable_lines = status_module.format_daemon_status_lines({"cursor_lag": unreadable})
+    quiet_lines = status_module.format_daemon_status_lines({"cursor_lag": quiet})
+
+    assert any("Cursor lag: UNMEASURED" in line for line in unreadable_lines)
+    assert any("cursor ledger unreadable" in line for line in unreadable_lines)
+    assert not any("Cursor lag" in line for line in quiet_lines)

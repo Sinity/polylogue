@@ -229,6 +229,13 @@ def evaluate_cursor_lag_anomaly(
     """
     if not thresholds.enabled:
         return []
+    if not summary.available:
+        # No families were observed, so every family with a pending non-ok
+        # emission would receive a resolution alert derived from a read that
+        # failed. The static ladder already reports the unreadable ledger
+        # once; this layer withholds rather than restating or clearing it, and
+        # leaves the dedup state so the real resolution still fires later.
+        return []
 
     now_ts = now if now is not None else time.time()
     iso_now = datetime.fromtimestamp(now_ts, tz=UTC).isoformat()

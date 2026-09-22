@@ -91,8 +91,27 @@ class CursorLagItem(BaseModel):
 
 
 class CursorLagSummary(BaseModel):
-    """Aggregated cursor-lag projection."""
+    """Aggregated cursor-lag projection.
 
+    ``available`` is False when the cursor ledger could not be read at all.
+    Every count below is then a model default, not an observation: publishing
+    them bare renders "0 stuck, 0 degraded, worst lag 0s" — a clean ingest
+    state certified from a read that failed. Logging the failure loudly (which
+    this projection already did) does not help any status surface, because the
+    surface receives the fabricated zeros and nothing else. This is the same
+    availability pair :class:`polylogue.daemon.status.LiveCursorSummary`
+    carries, for the same reason (polylogue-20d.17, AC3/AC9).
+
+    The marker is narrow on purpose. An absent database or an absent
+    ``live_cursor``/``ingest_cursor`` table is a *measured* empty ledger: the
+    probe ran and established that nothing is tracked. Only a read that raised
+    is unavailable.
+    """
+
+    #: False when the ledger read failed. The counts below are then defaults.
+    available: bool = True
+    #: Why the read could not be completed. Set exactly when ``available`` is False.
+    unavailable_reason: str | None = None
     tracked_file_count: int = 0
     stuck_file_count: int = 0
     degraded_file_count: int = 0
@@ -115,35 +134,55 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: P
     """Return per-family cursor-lag rollups read from ``live_cursor``."""
     resolved_now = now or datetime.now(UTC)
     resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
-    ops_summary = _archive_cursor_lag_summary_info(resolved_ops_db, now=resolved_now)
+    ops_summary, ops_error = _archive_cursor_lag_summary_info(resolved_ops_db, now=resolved_now)
     if ops_summary is not None:
         return _decorate_with_baselines(ops_summary, dbf, now=resolved_now, ops_db=resolved_ops_db)
     if not dbf.exists():
+        # The index fallback cannot substitute for a ledger that raised. When
+        # the fallback has nothing of its own to measure either, nothing
+        # observed this archive's cursors, and reporting an empty ledger would
+        # attribute the ops failure's silence to a clean archive.
+        if ops_error is not None:
+            return _unavailable(ops_error)
         return CursorLagSummary()
+    # A bare CursorLagSummary() reports zero families/stuck files, which reads
+    # identically to "archive genuinely has no cursor lag" (polylogue-cpf.4).
+    # The reader fails closed by raising; the projection is what every status
+    # and health surface consumes, so it has to carry the failure too.
     try:
-        # A status projection reads whatever the tier holds; schema skew is
-        # reported by the readiness probe, not raised from here.
+        rows = _read_live_cursor_rows(dbf)
+    except _CursorLedgerReadError as exc:
+        return _unavailable(exc.reason)
+    if rows is None:
+        # No ``live_cursor`` relation: a measured empty ledger, unless the ops
+        # read this fell back from had already failed.
+        return _unavailable(ops_error) if ops_error is not None else CursorLagSummary()
+
+    summary = _project_rows(rows, now=resolved_now)
+    return _decorate_with_baselines(summary, dbf, now=resolved_now, ops_db=resolved_ops_db)
+
+
+class _CursorLedgerReadError(Exception):
+    """A cursor ledger read failed. Carries the operator-facing reason.
+
+    The readers below fail closed by raising rather than returning a fabricated
+    projection, which is what keeps them off the ``sqlite_degradation`` census:
+    the decision about what an unreadable ledger looks like belongs to the one
+    caller that publishes it, not to each read site.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _read_live_cursor_rows(dbf: Path) -> list[sqlite3.Row | tuple[object, ...]] | None:
+    """Return the index tier's cursor rows, or ``None`` when it has no relation."""
+    # A status projection reads whatever the tier holds; schema skew is
+    # reported by the readiness probe, not raised from here.
+    try:
         conn = open_readonly_connection(dbf, validate_schema=False)
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_cursor'"
-            ).fetchone()
-            if has_table is None:
-                return CursorLagSummary()
-            rows = conn.execute(
-                """
-                SELECT source_path, byte_size, byte_offset, failure_count,
-                       excluded, updated_at
-                FROM live_cursor
-                """
-            ).fetchall()
-        finally:
-            conn.close()
     except sqlite3.Error as exc:
-        # A bare CursorLagSummary() reports zero families/stuck files, which
-        # reads identically to "archive genuinely has no cursor lag" — log
-        # loudly so a transient query failure isn't mistaken for a clean
-        # ingest state (polylogue-cpf.4).
         emit(
             "daemon.cursor_lag.summary_query_failed",
             level=WARNING,
@@ -153,39 +192,40 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: P
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return CursorLagSummary()
+        raise _CursorLedgerReadError(f"cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
+    try:
+        has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_cursor'").fetchone()
+        if has_table is None:
+            return None
+        return cast(
+            "list[sqlite3.Row | tuple[object, ...]]",
+            conn.execute(
+                """
+                SELECT source_path, byte_size, byte_offset, failure_count,
+                       excluded, updated_at
+                FROM live_cursor
+                """
+            ).fetchall(),
+        )
+    except sqlite3.Error as exc:
+        emit(
+            "daemon.cursor_lag.summary_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="summary_unreadable",
+            path=dbf,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        raise _CursorLedgerReadError(f"cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
+    finally:
+        conn.close()
 
-    summary = _project_rows(rows, now=resolved_now)
-    return _decorate_with_baselines(summary, dbf, now=resolved_now, ops_db=resolved_ops_db)
 
-
-def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLagSummary | None:
-    if not ops_db.exists():
-        return None
+def _read_ingest_cursor_rows(ops_db: Path) -> list[sqlite3.Row | tuple[object, ...]]:
+    """Return the ops tier's cursor rows. An empty list means nothing tracked."""
     try:
         conn = open_readonly_connection(ops_db)
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
-            ).fetchone()
-            if has_table is None:
-                return None
-            rows = conn.execute(
-                """
-                SELECT
-                    source_path,
-                    COALESCE(stat_size, byte_offset, 0) AS byte_size,
-                    COALESCE(byte_offset, 0) AS byte_offset,
-                    failure_count,
-                    excluded,
-                    updated_at_ms
-                FROM ingest_cursor
-                """
-            ).fetchall()
-            if not rows:
-                return None
-        finally:
-            conn.close()
     except sqlite3.Error as exc:
         emit(
             "daemon.cursor_lag.ops_query_failed",
@@ -196,7 +236,63 @@ def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLa
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return None
+        raise _CursorLedgerReadError(f"ops cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
+    try:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
+        ).fetchone()
+        if has_table is None:
+            return []
+        return cast(
+            "list[sqlite3.Row | tuple[object, ...]]",
+            conn.execute(
+                """
+                SELECT
+                    source_path,
+                    COALESCE(stat_size, byte_offset, 0) AS byte_size,
+                    COALESCE(byte_offset, 0) AS byte_offset,
+                    failure_count,
+                    excluded,
+                    updated_at_ms
+                FROM ingest_cursor
+                """
+            ).fetchall(),
+        )
+    except sqlite3.Error as exc:
+        emit(
+            "daemon.cursor_lag.ops_query_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="ops_archive_unreadable",
+            path=ops_db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        raise _CursorLedgerReadError(f"ops cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
+    finally:
+        conn.close()
+
+
+def _unavailable(reason: str) -> CursorLagSummary:
+    """Return the explicit not-measured cursor-lag projection."""
+    return CursorLagSummary(available=False, unavailable_reason=reason)
+
+
+def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> tuple[CursorLagSummary | None, str | None]:
+    """Project the ops tier's cursor ledger.
+
+    Returns ``(summary, error_reason)``. ``(None, None)`` means "no ops
+    evidence, try the index tier"; ``(None, reason)`` means the ops read
+    raised, which the caller must not confuse with an absent ledger.
+    """
+    if not ops_db.exists():
+        return None, None
+    try:
+        rows = _read_ingest_cursor_rows(ops_db)
+    except _CursorLedgerReadError as exc:
+        return None, exc.reason
+    if not rows:
+        return None, None
 
     projected_rows: list[sqlite3.Row | tuple[object, ...]] = [
         (
@@ -211,7 +307,7 @@ def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLa
         )
         for row in rows
     ]
-    return _project_rows(projected_rows, now=now)
+    return _project_rows(projected_rows, now=now), None
 
 
 def _decorate_with_baselines(
