@@ -291,7 +291,7 @@ def test_a_fully_qualified_call_is_reported(tmp_path: Path) -> None:
     assert undeclared[0]["entrypoints"] == ["pkg.rebuild.rebuild_index"]
 
 
-def test_a_later_local_import_does_not_erase_an_earlier_route(tmp_path: Path) -> None:
+def test_a_local_import_does_not_erase_another_route(tmp_path: Path) -> None:
     """Two functions, one name, two different imports.
 
     ``harmless`` locally imports an unrelated ``rebuild_index``. When every

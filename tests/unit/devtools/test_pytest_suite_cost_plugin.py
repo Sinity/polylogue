@@ -315,3 +315,71 @@ def test_rss_trajectory_is_off_unless_asked_for(tmp_path: Path) -> None:
     assert "peak_rss_kib" not in payload
     assert "rss_growth_kib" not in payload
     assert "tier_init" in payload
+
+
+def test_the_heap_census_separates_retention(tmp_path: Path) -> None:
+    """The census names what a worker still reaches, not what it has not freed.
+
+    A worker's ~4 GiB plateau is known to be bounded retention, and the RSS
+    trajectory cannot say what holds it: resident pages look identical whether
+    something reachable owns them or the collector simply has not run. The
+    census forces a full collection first and records resident pages on both
+    sides of it, so the two cases separate.
+
+    The fixture below makes them separate observably: one retained list of
+    ``_Held`` instances that nothing may collect, against a discarded
+    reference cycle of the same type that only a full collection reclaims.
+
+    Anti-vacuity: drop the ``gc.collect()`` from ``_heap_census`` and the
+    discarded cycle is still live at census time, so the retained count below
+    is at least twice what it should be and the first assertion goes red. Stop
+    recording ``rss_after_gc_kib`` and the last assertion goes red, which is
+    the reading that says which of the two cases a real run is in.
+    """
+    import gc
+
+    class _Held:
+        def __init__(self) -> None:
+            self.peer: object | None = None
+
+    def discard_cycles() -> None:
+        """Build and drop 10,000 objects only a full collection reclaims.
+
+        In its own scope so the last iteration's locals cannot keep two of
+        them alive past the census.
+        """
+        for _ in range(5_000):
+            left, right = _Held(), _Held()
+            left.peer, right.peer = right, left
+
+    retained = [_Held() for _ in range(5_000)]
+    discard_cycles()
+    gc.disable()
+    try:
+        recorder = suite_cost.SuiteCostRecorder(tmp_path / "receipts", "gw0", None, sample_heap=True)
+        recorder.note_test("tests/unit/heap/test_probe.py::t")
+        recorder.sample_memory()
+    finally:
+        gc.enable()
+
+    point = recorder.payload()["rss_trajectory"][-1]
+    name = f"{_Held.__module__}.{_Held.__qualname__}"
+    # Exactly the retained list survives the collection; the 10,000 objects in
+    # discarded cycles do not.
+    assert point["heap_top"][name] == len(retained)
+    assert point["gc_collected"] >= 10_000
+    assert point["heap_objects"] > len(retained)
+    # Both sides of the collection are on the record, which is what lets a
+    # real run say whether its plateau was released by collecting.
+    assert point["rss_kib"] > 0 and point["rss_after_gc_kib"] > 0
+
+
+def test_the_heap_census_is_off_unless_asked_for(tmp_path: Path) -> None:
+    """An unasked run records no heap keys, so absent is never read as measured."""
+    recorder = suite_cost.SuiteCostRecorder(tmp_path / "receipts", "gw0", None, sample_rss=True)
+    recorder.note_test("tests/unit/heap/test_probe.py::t")
+    recorder.sample_memory()
+
+    point = recorder.payload()["rss_trajectory"][-1]
+    assert "heap_top" not in point
+    assert "rss_after_gc_kib" not in point

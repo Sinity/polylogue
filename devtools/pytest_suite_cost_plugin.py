@@ -20,9 +20,11 @@ Inert unless ``POLYLOGUE_SUITE_COST_DIR`` names a directory.
 from __future__ import annotations
 
 import contextlib
+import gc
 import json
 import os
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Final
@@ -66,6 +68,26 @@ _SAMPLE_EVERY: Final = 250
 #: was never asked cannot read as a measured flat trajectory.
 SUITE_COST_RSS_ENV: Final = "POLYLOGUE_SUITE_COST_RSS"
 
+#: Opt-in for the heap-retention census, which answers the question the RSS
+#: trajectory cannot: a worker's ~4 GiB plateau is known to be *bounded*
+#: retention rather than an unbounded leak, and nothing has named what holds
+#: it. At each trajectory point this forces a full collection and records
+#: resident pages on both sides of it, plus a census of live objects by type.
+#:
+#: The pair of readings is the decisive one. If resident pages fall across the
+#: collection the plateau is uncollected cycles and the remedy is a collection
+#: policy; if they do not, something reachable holds it and
+#: ``heap_top`` names the type. Neither reading alone distinguishes those.
+#:
+#: Costly by construction -- a full ``gc.collect()`` and one pass over
+#: ``gc.get_objects()`` -- so it is a separate opt-in from the O(1)
+#: trajectory above and never runs on an ordinary managed run.
+SUITE_COST_HEAP_ENV: Final = "POLYLOGUE_SUITE_COST_HEAP"
+
+#: Types kept per census point. The tail of a type histogram is thousands of
+#: singletons; the retention question is answered by the head.
+_HEAP_TYPE_LIMIT: Final = 30
+
 #: Resident pages and the process page size, for converting ``statm`` to KiB.
 _STATM_PATH: Final = Path("/proc/self/statm")
 _PAGE_KIB: Final = os.sysconf("SC_PAGE_SIZE") // 1024
@@ -74,6 +96,25 @@ _PAGE_KIB: Final = os.sysconf("SC_PAGE_SIZE") // 1024
 #: points, so this bounds a pathological run rather than a realistic one: the
 #: list must not itself become the growth it is measuring.
 _RSS_SAMPLE_LIMIT: Final = 512
+
+
+def _heap_census(*, limit: int = _HEAP_TYPE_LIMIT) -> dict[str, Any]:
+    """Live objects by type after a forced full collection.
+
+    ``gc.collect()`` first, so what is counted is what something still
+    reaches. Counting before it would report garbage the allocator has not
+    yet handed back as retention, which is the confusion this census exists
+    to settle.
+    """
+    collected = gc.collect()
+    objects = gc.get_objects()
+    counts: Counter[str] = Counter()
+    for item in objects:
+        kind = type(item)
+        counts[f"{kind.__module__}.{kind.__qualname__}"] += 1
+    total = len(objects)
+    del objects
+    return {"collected": collected, "objects": total, "top": dict(counts.most_common(limit))}
 
 
 def _read_rss_kib() -> int | None:
@@ -150,10 +191,15 @@ class SuiteCostRecorder:
         role: str = "worker",
         sample_scratch: bool = False,
         sample_rss: bool = False,
+        sample_heap: bool = False,
     ) -> None:
         self._directory = directory
         self._sample_scratch = sample_scratch
-        self._sample_rss = sample_rss
+        # The heap census is taken at the trajectory's sample points and its
+        # readings are recorded on them, so asking for it asks for the
+        # trajectory too rather than silently producing nothing.
+        self._sample_rss = sample_rss or sample_heap
+        self._sample_heap = sample_heap
         self._worker_id = worker_id
         self._role = role
         self._basetemp_source = basetemp
@@ -206,7 +252,17 @@ class SuiteCostRecorder:
         if len(self._rss_trajectory) >= _RSS_SAMPLE_LIMIT:
             self._rss_truncated = True
             return
-        self._rss_trajectory.append({"tests": self._tests, "rss_kib": rss, "nodeid": self._last_nodeid})
+        point: dict[str, Any] = {"tests": self._tests, "rss_kib": rss, "nodeid": self._last_nodeid}
+        if self._sample_heap:
+            census = _heap_census()
+            # Read AFTER the census: the difference against ``rss_kib`` above
+            # is what a full collection released, which is the term that says
+            # whether the plateau is retention or uncollected garbage.
+            point["rss_after_gc_kib"] = _read_rss_kib()
+            point["gc_collected"] = census["collected"]
+            point["heap_objects"] = census["objects"]
+            point["heap_top"] = census["top"]
+        self._rss_trajectory.append(point)
 
     def sample_storage(self) -> None:
         """Record the scratch-tree peak; a no-op unless the walk was asked for."""
@@ -288,6 +344,7 @@ def pytest_configure(config: pytest.Config) -> None:
         role=role,
         sample_scratch=os.environ.get(SUITE_COST_SCRATCH_ENV, "").strip() not in ("", "0", "false", "no"),
         sample_rss=os.environ.get(SUITE_COST_RSS_ENV, "").strip() not in ("", "0", "false", "no"),
+        sample_heap=os.environ.get(SUITE_COST_HEAP_ENV, "").strip() not in ("", "0", "false", "no"),
     )
 
 
