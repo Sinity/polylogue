@@ -26,7 +26,6 @@ from .base import (
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
-    fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
     parser_admission,
@@ -230,10 +229,15 @@ def parse_gemini_cli(
                 models_used.add(parsed.model_name)
             if usage_event := _gemini_message_usage_event(item, parsed):
                 session_events.append(usage_event)
-    # bd polylogue-ksgg: Gemini CLI sessions carry no parent-message evidence
-    # (0% parented, 0 variant_index>0 rows) -- a linear turn sequence. Chain
-    # each message to the previous one on the active path.
-    messages = fill_linear_parent_chain(messages)
+    # bd polylogue-ksgg AC10: Gemini CLI carries no parent-message field --
+    # this parser reads none, and ``origin_specs._gemini_cli_spec`` declares
+    # ``message_parent`` structurally-absent. The sequence being linear is a
+    # property of the READ model, recoverable from ``position``; writing it
+    # into ``parent_message_provider_id`` would assert a provider edge that
+    # nothing expressed. The campaign already measured that substitution on
+    # Codex and Hermes: dropping position-derived parents left session-level
+    # topology bit-identical while every one of 98,892 message parent edges
+    # went to zero. So no gap-fill here.
     messages = _mark_active_leaf(messages)
     if metadata_event := _gemini_cli_session_metadata_event(payload, message_count=len(messages)):
         session_events.append(metadata_event)

@@ -1056,6 +1056,7 @@ def write_parsed_session_to_archive(
     session: ParsedSession,
     *,
     content_hash: str | None = None,
+    pending_input_content_hash: str | None = None,
     raw_id: str | None = None,
     fallback_timestamp: str | None = None,
     merge_append: bool = False,
@@ -1099,6 +1100,18 @@ def write_parsed_session_to_archive(
     ``content_hash``. Any other case silently falls back to preparing rows
     inline -- identical to ``prepared=None`` -- so passing a stale/irrelevant
     ``prepared`` is always safe, never incorrect.
+
+    ``pending_input_content_hash`` (polylogue-3hfl7, default ``None``) names
+    the digest of the rows THIS CALL publishes, for the callers where that is
+    not the digest stored on ``sessions.content_hash``. Exactly one caller
+    needs the distinction: an append passes the DELTA in ``session`` while
+    ``content_hash`` must remain the MERGED session's digest, because that is
+    the value a later re-ingest compares its own full-session hash against to
+    decide the content is unchanged. Admitting a ``prepared`` carrier against
+    the merged digest would admit rows covering a different message count and
+    then refuse inside ``_validated_prepared_content_identities`` -- a hard
+    failure, not a slow path. Default ``None`` means "the two coincide" and
+    leaves every non-append caller exactly as before.
 
     By default the whole write runs in its own transaction (``with conn:``)
     committed on success. A bulk caller that wants many sessions in one
@@ -1227,12 +1240,21 @@ def write_parsed_session_to_archive(
         if content_hash is not None
         else (bytes.fromhex(bound_hash) if bound_hash is not None else _hash_bytes("session", origin.value, native_id))
     )
+    # polylogue-3hfl7: ``input_content_hash`` is the digest STORED on
+    # ``sessions.content_hash`` -- for an append that is the merged session,
+    # not the delta in ``session``. ``pending_content_hash`` is the digest of
+    # the rows this call actually publishes, and it is the only one a
+    # ``prepared`` carrier may be admitted against. They coincide for every
+    # caller that does not pass ``pending_input_content_hash``.
+    pending_content_hash = (
+        bytes.fromhex(pending_input_content_hash) if pending_input_content_hash is not None else input_content_hash
+    )
     if prepared_write is not None:
         if (
             prepared_write.session_id != session_id
-            or prepared_write.input_content_hash != input_content_hash
+            or prepared_write.input_content_hash != pending_content_hash
             or prepared_write.merge_append != merge_append
-            or prepared_write.rows.session_content_hash != input_content_hash
+            or prepared_write.rows.session_content_hash != pending_content_hash
         ):
             raise PreparedSessionWriteRefusedError("prepared replay write is stale or has a different pending input")
         context = prepared_write.context
@@ -1256,6 +1278,10 @@ def write_parsed_session_to_archive(
     branch_point_content_address = context.branch_point_content_address
     lineage_inheritance = context.lineage_inheritance
     inherited_source_message_ids = dict(context.inherited_source_message_ids)
+    # The value published to ``sessions.content_hash``. A later re-ingest
+    # compares its own FULL-session digest against this row, so an append
+    # must store the merged digest even though it writes only the delta
+    # (polylogue-3hfl7) -- carrier admission uses ``pending_content_hash``.
     session_content_hash = input_content_hash
     # polylogue-623q: only reuse rows prepared off this thread when NONE of
     # the conditions that would make them wrong hold -- see ``prepared``'s
@@ -1272,16 +1298,26 @@ def write_parsed_session_to_archive(
         prepared is not None
         and not merge_append
         and lineage_inheritance != "prefix-sharing"
-        and prepared.session_content_hash == session_content_hash
+        and prepared.session_content_hash == pending_content_hash
     ):
         prepared_rows_to_use = prepared
         prepared_identity_carrier = prepared
-    elif prepared is not None and merge_append and prepared.session_content_hash == session_content_hash:
-        # Append-frontier validation happens inside the write transaction. Use
-        # the carrier provisionally so a valid append avoids hashing; if the
-        # pinned frontier is stale, the branch below replaces it with a fresh
-        # identity tuple before any rows are published.
-        prepared_identity_carrier = prepared
+    elif prepared is not None and merge_append:
+        if prepared.session_content_hash == pending_content_hash:
+            # Append-frontier validation happens inside the write transaction.
+            # Use the carrier provisionally so a valid append avoids hashing;
+            # if the pinned frontier is stale, the branch below replaces it
+            # with a fresh identity tuple before any rows are published.
+            prepared_identity_carrier = prepared
+        elif prepared.session_content_hash == input_content_hash:
+            # polylogue-3hfl7: the carrier describes the MERGED session while
+            # this call publishes the delta. Covering a different row set, it
+            # would reach ``_validated_prepared_content_identities`` and refuse
+            # there on a length mismatch -- a confusing failure whose cause is
+            # two digests that were never compared. Refuse here, naming it.
+            raise PreparedSessionWriteRefusedError(
+                "prepared rows describe the merged session, not the append delta this write publishes"
+            )
     if prepared_identity_carrier is not None:
         content_identities = _validated_prepared_content_identities(prepared_identity_carrier, messages)
     else:
@@ -1464,7 +1500,7 @@ def write_parsed_session_to_archive(
                     prepared_rows_to_use = prepared_write.rows
                 elif (
                     isinstance(prepared, PreparedSessionRows)
-                    and prepared.session_content_hash == session_content_hash
+                    and prepared.session_content_hash == pending_content_hash
                     and prepared.position_offset == position_offset
                     and prepared.content_occurrence_offsets == stored_content_occurrences
                 ):
