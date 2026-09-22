@@ -95,18 +95,18 @@ def test_user_tier_initialization_is_idempotent(tmp_path: Path) -> None:
 def test_durable_user_tier_carries_every_assertion_status_forward(tmp_path: Path) -> None:
     """Re-opening a populated ``user.db`` preserves every row and its status.
 
-    ``user.db`` is durable and irreplaceable, and the assertion table is never
-    rebuilt: the fresh floor re-runs ``CREATE TABLE IF NOT EXISTS`` over the
-    operator's existing database. This pins the carry-forward the table
-    depends on (polylogue-lbk1): no status is coerced, no row is dropped, and
-    the indexes, epoch triggers and readers still work afterwards.
+    ``user.db`` is durable and irreplaceable. Re-opening it re-runs ``CREATE
+    TABLE IF NOT EXISTS`` over the operator's existing database, which touches
+    nothing; a version bump instead reaches it through a numbered migration
+    (user slot 002 rebuilt this table for ``status NOT NULL``). Either way the
+    obligation is the same and is what this pins (polylogue-lbk1 AC2/AC4): no
+    status is coerced, no row is dropped, and the indexes, epoch triggers and
+    readers still work afterwards.
 
-    Anti-vacuity: replace the declaration with a table-rebuild migration that
-    does not copy every row forward -- the shape this bead originally
-    proposed -- and the recovered status map loses rows; coerce an unwritten
-    or terminal status to ``active`` on the way back in and the map changes
-    value. Seeding every ``AssertionStatus`` member keeps the comparison from
-    passing on a subset.
+    Anti-vacuity: a copy-forward that does not carry every row loses entries
+    from the recovered status map; coercing an unwritten or terminal status to
+    ``active`` on the way back in changes its values. Seeding every
+    ``AssertionStatus`` member keeps the comparison from passing on a subset.
     """
     db_path = tmp_path / "user.db"
     statuses = tuple(AssertionStatus)
@@ -549,22 +549,46 @@ def test_assertion_defaults_are_explicit_private_no_inject(tmp_path: Path) -> No
 
 
 def test_legacy_null_lifecycle_assertions_read_as_active_private_no_inject(tmp_path: Path) -> None:
+    """Readers still resolve every nullable lifecycle column to its default.
+
+    ``status`` left this set at user slot 002 (polylogue-lbk1): it is NOT NULL
+    in canonical DDL, so a row that omits it takes the declared ``'active'``
+    default at insert time instead of being resolved on the way back out, and
+    an explicit NULL is refused by the schema rather than read as active. The
+    other four columns are still nullable and still carry their defaults on
+    read, which is what the rest of this test pins.
+    """
     conn = connect_user_tier(tmp_path / "user.db")
     try:
+        with pytest.raises(sqlite3.IntegrityError, match="NOT NULL constraint failed: assertions.status"):
+            conn.execute(
+                """
+                INSERT INTO assertions (
+                    assertion_id, target_ref, kind, status, created_at_ms, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "legacy-null-status",
+                    "session:s-legacy",
+                    AssertionKind.DECISION.value,
+                    None,
+                    1_700_000_000_000,
+                    1_700_000_000_000,
+                ),
+            )
         conn.execute(
             """
             INSERT INTO assertions (
                 assertion_id, target_ref, kind, body_text,
-                author_ref, author_kind, status, visibility, context_policy_json,
+                author_ref, author_kind, visibility, context_policy_json,
                 created_at_ms, updated_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "legacy-null",
                 "session:s-legacy",
                 AssertionKind.DECISION.value,
                 "legacy row before lifecycle defaults",
-                None,
                 None,
                 None,
                 None,

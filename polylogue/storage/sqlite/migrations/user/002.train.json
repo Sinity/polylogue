@@ -1,0 +1,123 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "backup-plan:user:v2:assertion-status-not-null",
+  "current_version": 1,
+  "declared_at_ms": 1790000000000,
+  "drop_constraints": [
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "table:assertions"
+    },
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "index:idx_assertions_target_kind"
+    },
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "index:idx_assertions_kind_status_updated"
+    },
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "index:idx_assertions_target_kind_status_visibility"
+    },
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "index:idx_assertions_scope_kind_status"
+    },
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "trigger:query_unit_frame_assertions_insert"
+    },
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "trigger:query_unit_frame_assertions_update"
+    },
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-lbk1:ac2-copy-forward",
+      "copy_forward_proof_ref": "proof:assertion-status-not-null:rebuild-preserves-every-row",
+      "object_ref": "trigger:query_unit_frame_assertions_delete"
+    }
+  ],
+  "failure": null,
+  "fresh_ddl_parity": null,
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "manifest_sha256": "d53c652f79368d63b10cfa285cd01a55f1284187f76a58471093b3d7e1393a69",
+  "migration": {
+    "owner_ref": "polylogue/storage/sqlite/migrations/user/002_assertions_status_not_null.sql",
+    "path": "002_assertions_status_not_null.sql",
+    "requires_backup": true,
+    "slot": 2,
+    "sql_sha256": "7de7e7cb8d35e80faea07ed13b07c2ee2e89978a8cf28b9e654aa860e10a21e5",
+    "target_version": 2,
+    "tier": "user"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "polylogue-lbk1",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:assertion-status-not-null:upsert-resolves-absent-status",
+        "proof:assertion-status-not-null:mark-needs-no-null-coalesce"
+      ],
+      "owner_ref": "polylogue-lbk1",
+      "rider_id": "assertion-status-not-null",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:assertion-status-not-null:upsert-resolves-absent-status",
+          "consumer_id": "assertion-upsert-writer",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/user_write.py:upsert_assertion",
+          "roles": [
+            "writer"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:assertion-status-not-null:mark-needs-no-null-coalesce",
+          "consumer_id": "assertion-status-marker",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/user_write.py:mark_assertion_status",
+          "roles": [
+            "writer",
+            "reader"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:assertions",
+        "column:assertions.status"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "slot": 2,
+  "source_continuity_evidence": null,
+  "state": "declared",
+  "target_version": 2,
+  "tier": "user",
+  "train_id": "train:user:v2"
+}
