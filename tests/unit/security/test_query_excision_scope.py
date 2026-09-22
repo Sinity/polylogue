@@ -8,7 +8,15 @@ from polylogue.security.query_excision import apply_query_excision, plan_query_e
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.holdout_cohorts import mark_holdout, record_holdout_access
-from polylogue.storage.sqlite.query_objects import get_query, get_result_set, put_query, put_query_name, put_result_set
+from polylogue.storage.sqlite.query_objects import (
+    QueryObject,
+    ResultSetManifest,
+    get_query,
+    get_result_set,
+    put_query,
+    put_query_name,
+    put_result_set,
+)
 
 
 def _conn() -> sqlite3.Connection:
@@ -18,7 +26,9 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
-def _query_with_relation(conn: sqlite3.Connection, *, result_set_id: str = "relation-only"):
+def _query_with_relation(
+    conn: sqlite3.Connection, *, result_set_id: str = "relation-only"
+) -> tuple[QueryObject, ResultSetManifest]:
     query = put_query(
         conn,
         {"field": "origin", "value": "codex"},
