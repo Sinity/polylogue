@@ -117,6 +117,13 @@ rules:
 """
     (plans_dir / "layering.yaml").write_text(rules_yaml, encoding="utf-8")
 
+    # ``gate layering`` also runs the declaration censuses (#5377, #5380). This
+    # fixture's package executes no DML, so an empty declaration is the truthful
+    # one -- without it every ratchet test here fails on an unrelated missing
+    # declaration instead of on the import property it is about.
+    (plans_dir / "durable-write-census.yaml").write_text("package: polylogue\nwrites: []\n", encoding="utf-8")
+    (plans_dir / "derived-sweep-census.yaml").write_text("package: polylogue\nsites: []\n", encoding="utf-8")
+
 
 def test_layering_ratchet_exempts_baselined_violation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _write_ratchet_fixture(
@@ -667,3 +674,133 @@ def test_the_audit_sync_command_is_the_one_that_actually_provisions_the_group() 
     assert "--group audit" in command
     assert "--extra audit" not in command
     assert "--extra dev" in command
+
+
+# ---------------------------------------------------------------------------
+# Declaration-census violations must be printable (polylogue-1or21).
+#
+# ``_format_violation`` fell through to ``violation['file']`` / ``['import']``
+# for any rule family without a branch. The ``durable_write_*`` family from
+# #5377 had none and reports rows keyed on a census key that may carry no file
+# at all, so rendering one raised ``KeyError`` and took down the whole
+# plaintext report -- an armed census that structurally could not report a
+# finding.
+# ---------------------------------------------------------------------------
+
+_DURABLE_REWRITE_MODULE = """\
+def rewrite(conn):
+    conn.execute("UPDATE raw_sessions SET parse_error = NULL")
+"""
+
+
+def _write_durable_census_fixture(tmp_path: Path, declaration: str | None) -> None:
+    """Seed the ratchet fixture plus one real durable rewrite and a declaration."""
+    _write_ratchet_fixture(tmp_path, baseline_entries=[])
+    storage = tmp_path / "polylogue" / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "rewriter.py").write_text(_DURABLE_REWRITE_MODULE, encoding="utf-8")
+    census = tmp_path / "docs" / "plans" / "durable-write-census.yaml"
+    if declaration is None:
+        census.unlink(missing_ok=True)
+    else:
+        census.write_text(declaration, encoding="utf-8")
+
+
+def test_layering_prints_a_durable_write_finding_beside_the_import_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The forbidden-classification finding reaches the reader.
+
+    Anti-vacuity: with the pre-fix ``_format_violation`` this raises
+    ``KeyError: 'import'`` before printing anything, so both the census line
+    and the unrelated import line are lost. The import assertion also refutes
+    a fix that renders every violation through one generic dump.
+    """
+    _write_durable_census_fixture(
+        tmp_path,
+        "package: polylogue\n"
+        "writes:\n"
+        '  - file: "polylogue/storage/rewriter.py"\n'
+        '    function: "rewrite"\n'
+        '    table: "raw_sessions"\n'
+        '    kind: "update"\n'
+        '    tier: "source"\n'
+        "    classification: masking_backfill\n"
+        '    reason: "a synthetic mutant"\n',
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    assert verify_layering.main([]) == 1
+    out = capsys.readouterr().out
+
+    census_lines = [line for line in out.splitlines() if "durable_write_masks_a_producer" in line]
+    assert len(census_lines) == 1, out
+    assert "polylogue/storage/rewriter.py:2" in census_lines[0]
+    assert "fix the producer instead" in census_lines[0]
+    assert "<no renderer for rule family>" not in out
+    # The unrelated import finding still renders in its own form.
+    assert "imports polylogue.storage (disallow)" in out
+
+
+def test_layering_prints_a_census_violation_that_carries_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing declaration names the path it could not read.
+
+    This is the exact shape nine gate tests hit at #5380's head: the rule
+    carries only ``rule`` and ``key``. Anti-vacuity: the pre-fix fall-through
+    raises ``KeyError: 'file'`` on it.
+    """
+    _write_durable_census_fixture(tmp_path, None)
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    assert verify_layering.main([]) == 1
+    out = capsys.readouterr().out
+    assert "docs/plans/durable-write-census.yaml: durable_write_census_declaration_missing" in out
+    assert "<no renderer for rule family>" not in out
+
+
+def test_a_rule_family_with_no_renderer_fails_loudly_instead_of_silently() -> None:
+    """The fall-through is total, and says so when it fires.
+
+    A future violation family nobody wrote a branch for must still reach the
+    report, and must not read as if it were understood. Anti-vacuity: the
+    pre-fix fall-through raises ``KeyError``; a fall-through that quietly
+    rendered the payload as an ordinary finding would fail the marker
+    assertion, and one that dropped the evidence would fail the field
+    assertion.
+    """
+    rendered = verify_layering._format_violation(
+        {"rule": "some_future_family_violation", "key": "k", "evidence_ref": "e"}
+    )
+    assert "<no renderer for rule family>" in rendered
+    assert "some_future_family_violation" in rendered
+    assert "_format_violation" in rendered, "the line must say where to add the branch"
+    assert "evidence_ref='e'" in rendered, "the finding's own evidence must survive"
+
+
+@pytest.mark.parametrize(
+    "violation",
+    [
+        {"rule": "durable_write_undeclared", "key": "k", "file": "a.py", "line": 3, "tier": "source", "detail": "d"},
+        {"rule": "durable_write_census_stale", "key": "k", "file": "a.py", "detail": "d"},
+        {"rule": "durable_write_tier_drift", "key": "k", "file": "a.py", "declared": "user", "observed": "source"},
+        {"rule": "durable_write_census_row_malformed", "key": "writes[0]"},
+        {"rule": "caller_supplied_sql_undeclared", "key": "k", "file": "a.py", "line": 1, "detail": "d"},
+        {"rule": "caller_supplied_sql_census_stale", "key": "k", "detail": "d"},
+        {"rule": "derived_sweep_undeclared", "key": "k", "file": "b.py", "line": 2, "detail": "d"},
+        {"rule": "derived_sweep_census_declaration_missing", "key": "p"},
+        {"rule": "controlled_read_site_undeclared", "key": "k", "file": "c.py", "line": 4},
+        {"rule": "rebuild_route_undeclared", "key": "k", "file": "d.py"},
+    ],
+)
+def test_every_census_rule_shape_renders_without_a_keyerror(violation: dict[str, Any]) -> None:
+    """One branch covers every census family, including the fileless shapes.
+
+    Anti-vacuity: each of these raises ``KeyError`` on the pre-fix renderer,
+    and none of them may land on the unrendered marker -- that would mean the
+    family lost its branch.
+    """
+    rendered = verify_layering._format_violation(violation)
+    assert str(violation["rule"]) in rendered
+    assert "<no renderer for rule family>" not in rendered
