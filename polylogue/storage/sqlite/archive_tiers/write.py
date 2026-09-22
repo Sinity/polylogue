@@ -2000,11 +2000,17 @@ def _count_session_messages(
     return int(row[0])
 
 
-def _branch_point_coordinates(conn: sqlite3.Connection, branch_point_message_id: str) -> tuple[str, int, int] | None:
-    """Return ``(session_id, position, variant_index)`` for a branch-point message."""
+def _message_coordinates(conn: sqlite3.Connection, message_id: str) -> tuple[str, int, int] | None:
+    """Return ``(session_id, position, variant_index)`` for one stored message.
+
+    The owning session is part of the answer because a composed transcript
+    holds rows from several sessions: both the branch-point cut and the
+    composed-index locate have to know which segment a message belongs to
+    before they can place it.
+    """
     row = conn.execute(
         "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?",
-        (branch_point_message_id,),
+        (message_id,),
     ).fetchone()
     if row is None:
         return None
@@ -2025,7 +2031,7 @@ def _segments_through_branch_point(
     the same session in the list more than once, and only the earliest
     occurrence is the one a row scan would reach.
     """
-    located = _branch_point_coordinates(conn, branch_point_message_id)
+    located = _message_coordinates(conn, branch_point_message_id)
     if located is None:
         return None
     owner_session_id, position, variant_index = located
@@ -2566,6 +2572,74 @@ def read_archive_session_page(
         orphan_attachments=_read_orphan_attachments(conn, session_id),
         total_message_count=plan.total_message_count,
     )
+
+
+def _count_session_messages_before(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    position: int,
+    variant_index: int,
+) -> int:
+    """Count a session's own rows that precede ``(position, variant_index)``."""
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM messages
+        WHERE session_id = ?
+          AND (position, variant_index) < (?, ?)
+        """,
+        (session_id, position, variant_index),
+    ).fetchone()
+    return int(row[0])
+
+
+def locate_composed_message(conn: sqlite3.Connection, session_id: str, message_id: str) -> int | None:
+    """Return a message's index in a session's COMPOSED transcript, or ``None``.
+
+    ``None`` means this session's composed transcript does not contain that
+    message -- it is a refusal for the caller to name, never index zero.
+
+    Bounded exactly the way ``read_archive_session_page`` is (polylogue-2go3o):
+    the composition is planned first, so the ancestral prefix of a
+    prefix-sharing child resolves into segment lengths without reading a row,
+    the owning segment is found by coordinate, and the rank inside it is one
+    indexed COUNT. Numbering a message by composing the transcript -- the only
+    way to answer this before the plan existed -- costs the whole ancestral
+    chain for a deep child, which is the cost a deep link was supposed to
+    remove.
+
+    The index is the ``(position, variant_index)`` composition order every
+    read here windows with, so a located index and the page holding it can
+    never disagree.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN DEFERRED")
+        try:
+            return locate_composed_message(conn, session_id, message_id)
+        finally:
+            conn.execute("ROLLBACK")
+    conn.row_factory = sqlite3.Row
+    located = _message_coordinates(conn, message_id)
+    if located is None:
+        return None
+    owner_session_id, position, variant_index = located
+    plan = _composed_transcript_plan(conn, session_id)
+    preceding = 0
+    for segment in plan.segments:
+        if segment.session_id == owner_session_id and not (
+            segment.upto_position is not None
+            and segment.upto_variant_index is not None
+            and (position, variant_index) > (segment.upto_position, segment.upto_variant_index)
+        ):
+            return preceding + _count_session_messages_before(
+                conn,
+                owner_session_id,
+                position=position,
+                variant_index=variant_index,
+            )
+        preceding += segment.message_count
+    return None
 
 
 def read_session_agent_policies(conn: sqlite3.Connection, session_id: str) -> list[ArchiveAgentPolicy]:

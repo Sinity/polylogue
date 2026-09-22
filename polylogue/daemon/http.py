@@ -89,7 +89,6 @@ from polylogue.operations.authority import authority_for_config, authority_for_r
 from polylogue.operations.message_locator import (
     MessageNotInSessionError,
     locate_message_in_archive,
-    locate_message_in_order,
     window_offset_for_index,
 )
 from polylogue.operations.origin_filters import unknown_origin_filter_tokens
@@ -3966,21 +3965,33 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int | None = None,
         offset: int = 0,
     ) -> object:
-        conv = await poly.get_session(conv_id)
-        if conv is None:
+        """Read one session payload, bounded to a declared message window.
+
+        ``limit=None`` is the whole transcript, for callers that need it
+        whole (the JSON session detail route). A declared window composes
+        only ``[offset, offset + limit)`` at the storage layer
+        (``Polylogue.get_session_page``) rather than composing the transcript
+        and slicing it, which is the same bound the archive-backed twin
+        ``_do_archive_get_session`` already holds (polylogue-2go3o). The
+        attachment flattening and semantic card placement below are
+        projections OF the served rows, so they stay bounded with it.
+
+        ``message_count``/``total`` report the TRUE composed length and
+        ``word_count`` the session's stored total either way: the window
+        never becomes the reported session size.
+        """
+        page = await poly.get_session_page(conv_id, limit=limit, offset=offset)
+        if page is None:
             return None
+        conv = page.session
         flags = _build_flags_from_session(conv)
         session_id = str(conv.id)
         target_ref = TargetRefPayload.session(session_id)
-        composed = conv.messages.to_list()
-        total_message_count = len(composed)
-        # ``limit=None`` is the whole transcript, for callers that need it
-        # whole (the JSON session detail route). A declared window serves only
-        # ``[offset, offset + limit)`` -- including the attachment flattening
-        # and semantic card placement below, which are projections OF the
-        # served rows and would otherwise still cost (and leak) the full
-        # session.
-        window_messages = composed[offset : offset + limit] if limit is not None else composed[offset:]
+        total_message_count = page.total_message_count
+        # ``limit=None`` composed every message, so an offset alongside it is
+        # still the caller's declared start -- applied here because the
+        # storage page read serves a sized window, not an open-ended tail.
+        window_messages = conv.messages.to_list()[offset:] if limit is None else conv.messages.to_list()
         # Flatten attachments across all messages so the inspector
         # tab and the session envelope share one source of truth
         # (#1199). Per-message attachments stay embedded in each
@@ -4010,7 +4021,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "created_at": conv.created_at.isoformat() if conv.created_at else None,
             "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
             "message_count": total_message_count,
-            "word_count": conv.word_count,
+            "word_count": page.word_count,
             "messages": [
                 {
                     "id": str(msg.id),
@@ -5371,51 +5382,55 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         around: str | None = None,
     ) -> object:
         started_at = monotonic()
-        anchor_session = None
-        if around:
-            # polylogue-i5vqc: a deep link names a message, so resolve it to
-            # the offset of the window that holds it instead of letting the
-            # caller walk pages looking for it. The composed session is read
-            # once here and reused for the projection below, so the locate
-            # costs no extra composition on this route.
-            anchor_session = await poly.get_session(conv_id)
-            if anchor_session is None:
-                raise MessageNotInSessionError(str(conv_id), around)
-            location = locate_message_in_order(
-                str(conv_id),
-                around,
-                (message.id for message in anchor_session.messages),
-            )
-            offset = window_offset_for_index(location.index, limit)
+        session_id = str(conv_id)
+        # polylogue-2go3o: this projection needs the session ROW -- origin
+        # plus topology -- so it reads a summary. Reaching those fields
+        # through ``get_session`` composed the whole transcript to serve one
+        # window, and composed it twice when the window was deep-linked.
+        summary = await poly.get_session_summary(conv_id)
+        if around and summary is None:
+            raise MessageNotInSessionError(session_id, around)
+        # polylogue-i5vqc: a deep link names a message, so the shared read
+        # route resolves it to the offset of the window that holds it instead
+        # of letting the caller walk pages looking for it. The locate is
+        # answered from indexed counts at the storage layer, so it costs no
+        # composition at all.
         # polylogue-ijbwq: window arithmetic, snapshot binding and the
-        # continuation token come from the one shared execution route; this
+        # continuation token come from that same shared execution route; this
         # handler owns only the web-reader projection below.
-        window = await poly.read_transcript_window(conv_id, limit=limit, offset=offset, continuation=continuation)
+        window = await poly.read_transcript_window(
+            conv_id,
+            limit=limit,
+            offset=0 if around else offset,
+            continuation=continuation,
+            around=around,
+        )
         messages, total = window.rows, window.total
         completeness = SimpleNamespace(
             complete=window.lineage_complete,
             truncation_reason=window.lineage_truncation_reason,
         )
-        session_id = str(conv_id)
-        session = anchor_session if anchor_session is not None else await poly.get_session(conv_id)
-        source_messages = session.messages.to_list() if session is not None else messages
         # polylogue-ppkj: lineage_descriptor_from_session hard-codes
-        # lineage_complete=None (the DB-backed Session domain model carries
-        # no such field). Overlay the real read-time signal from
-        # get_messages_paginated so this JSON response -- and the semantic
-        # card placement built from it -- can flag a truncated composed
-        # transcript instead of serving a partial one with no indication.
-        lineage = lineage_descriptor_from_session(session) if session is not None else None
+        # lineage_complete=None (the DB-backed session row carries no such
+        # field). Overlay the real read-time signal from the window read so
+        # this JSON response -- and the semantic card placement built from it
+        # -- can flag a truncated composed transcript instead of serving a
+        # partial one with no indication.
+        lineage = lineage_descriptor_from_session(summary) if summary is not None else None
         if lineage is not None:
             lineage = dataclasses_replace(
                 lineage,
                 lineage_complete=completeness.complete,
                 lineage_truncation_reason=completeness.truncation_reason,
             )
+        # Placed over the served window, exactly as the archive-backed twin
+        # ``_do_archive_get_messages`` and the CLI's paginated messages view
+        # already place theirs: a projection of the page cannot be built from
+        # the whole transcript without costing the whole transcript.
         placement = semantic_card_placement_for_messages(
-            source_messages,
+            messages,
             session_id=session_id,
-            provider_family=session.origin if session is not None else None,
+            provider_family=summary.origin if summary is not None else None,
             lineage=lineage,
         )
         return {

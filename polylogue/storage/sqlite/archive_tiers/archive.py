@@ -319,6 +319,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionShardRows,
     PreparedSessionWrite,
     bind_session_shard,
+    locate_composed_message,
     read_archive_session_envelope,
     read_archive_session_page,
     refresh_and_sweep_attachment_rows,
@@ -2607,6 +2608,16 @@ class ArchiveStore:
         the true composed transcript length.
         """
         return read_archive_session_page(self._conn, session_id, limit=limit, offset=offset)
+
+    def locate_composed_message(self, session_id: str, message_id: str) -> int | None:
+        """Return a message's index in a session's composed transcript.
+
+        ``None`` means the composed transcript does not contain it. See
+        ``locate_composed_message`` for the bounding contract: a
+        prefix-sharing lineage child is answered from the composition plan
+        plus one indexed count, never by composing the ancestral chain.
+        """
+        return locate_composed_message(self._conn, session_id, message_id)
 
     def has_prefix_lineage(self, session_id: str) -> bool:
         """Return whether a session's logical transcript inherits a prefix."""

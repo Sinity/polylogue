@@ -9,7 +9,7 @@ import sqlite3
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
@@ -309,6 +309,28 @@ _NOISY_REPO_LABELS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class SessionTranscriptPage:
+    """A session header plus a declared ``[offset, offset + limit)`` window.
+
+    ``session.messages`` holds only the window, so the session's true totals
+    are carried here instead of being recomputed from the rows served:
+    ``Session.word_count`` and ``len(session.messages)`` count what was read,
+    which under a declared window is the window, not the session. A caller
+    that reports either as a session length turns a bounded read into a wrong
+    answer, so the bound and the truth travel together (polylogue-2go3o).
+
+    ``limit is None`` is the whole transcript -- a declared request for every
+    row, not a cap that happened not to bite.
+    """
+
+    session: Session
+    total_message_count: int
+    word_count: int
+    limit: int | None
+    offset: int
+
+
 class SessionNotFoundError(PolylogueError):
     """Raised when a requested session does not exist in the archive."""
 
@@ -344,6 +366,49 @@ class MutationTargetVanishedError(PolylogueError):
     """
 
     http_status_code = 409
+
+
+def _read_session_transcript_page(
+    archive: ArchiveStore,
+    session_id: str,
+    *,
+    limit: int | None,
+    offset: int,
+    content_projection: ContentProjectionSpec | None,
+) -> SessionTranscriptPage | None:
+    """Read one session header plus the requested transcript window.
+
+    One reader for both the whole-transcript and the bounded shape, so the
+    two cannot drift about hydration, display labels or content projection --
+    they differ only in which storage read composes the rows.
+    """
+
+    try:
+        resolved_id = archive.resolve_session_id(session_id)
+    except KeyError:
+        return None
+    summary = archive.read_summary(resolved_id)
+    envelope = (
+        archive.read_session_page(resolved_id, limit=limit, offset=offset)
+        if limit is not None
+        else archive.read_session(resolved_id)
+    )
+    session = archive_envelope_to_session(
+        envelope,
+        display_label=summary.display_label,
+        display_label_source=summary.display_label_source,
+    )
+    if content_projection is not None and content_projection.filters_content():
+        session = session.with_content_projection(content_projection)
+    return SessionTranscriptPage(
+        session=session,
+        total_message_count=(
+            envelope.total_message_count if envelope.total_message_count is not None else len(session.messages)
+        ),
+        word_count=summary.word_count,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def _archive_query_date_ms(field: str, value: str | None) -> int | None:
@@ -2909,26 +2974,67 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         content_projection: ContentProjectionSpec | None = None,
     ) -> Session | None:
-        def read(archive: ArchiveStore) -> Session | None:
-            try:
-                resolved_id = archive.resolve_session_id(session_id)
-            except KeyError:
-                return None
-            summary = archive.read_summary(resolved_id)
-            session = archive_envelope_to_session(
-                archive.read_session(resolved_id),
-                display_label=summary.display_label,
-                display_label_source=summary.display_label_source,
-            )
-            if content_projection is None or not content_projection.filters_content():
-                return session
-            return session.with_content_projection(content_projection)
+        """Read one session with its WHOLE composed transcript.
 
-        return await run_archive_read(
+        A caller that renders a window wants :meth:`get_session_page`: this
+        method composes every message before returning, so its cost is the
+        session's length by construction.
+        """
+
+        page = await run_archive_read(
             _active_archive_root(self.config),
             operation="archive.session.get",
             arguments={"session_id": session_id, "content_projection": content_projection},
-            work=read,
+            work=lambda archive: _read_session_transcript_page(
+                archive,
+                session_id,
+                limit=None,
+                offset=0,
+                content_projection=content_projection,
+            ),
+            projection="session",
+            stable_order="session,message,block",
+        )
+        return None if page is None else page.session
+
+    async def get_session_page(
+        self,
+        session_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        content_projection: ContentProjectionSpec | None = None,
+    ) -> SessionTranscriptPage | None:
+        """Read one session bounded to ``[offset, offset + limit)`` messages.
+
+        The window is composed at the storage layer
+        (``ArchiveStore.read_session_page``), so a page of a long session --
+        or of a deep prefix-sharing lineage child -- costs the page, not the
+        transcript (polylogue-2go3o). ``limit=None`` is the declared whole
+        transcript, the one shape that legitimately composes everything.
+
+        The returned page carries the session's true totals; see
+        :class:`SessionTranscriptPage` for why they cannot be recomputed from
+        the rows it serves.
+        """
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session.page",
+            arguments={
+                "session_id": session_id,
+                "limit": limit,
+                "offset": offset,
+                "content_projection": content_projection,
+            },
+            work=lambda archive: _read_session_transcript_page(
+                archive,
+                session_id,
+                limit=limit,
+                offset=offset,
+                content_projection=content_projection,
+            ),
+            page_size=limit,
             projection="session",
             stable_order="session,message,block",
         )

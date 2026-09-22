@@ -73,11 +73,15 @@ _DEEP_INDEX = 1700
 
 _PAGE = 30
 
+#: A tenth of the long session, so a read whose cost tracks the session shows
+#: it as a difference rather than as one unexplained number.
+_SHORT_MESSAGE_COUNT = 200
+
 #: Three sessions, because the stack payload's cost is per referenced session.
 _STACK_NATIVE_IDS = ("stack-a", "stack-b", "stack-c")
 
 
-def _seed_session(archive_root: Path, native_id: str) -> str:
+def _seed_session(archive_root: Path, native_id: str, *, count: int = _MESSAGE_COUNT) -> str:
     with ArchiveStore(archive_root) as archive:
         return write_index_session(
             archive,
@@ -95,7 +99,7 @@ def _seed_session(archive_root: Path, native_id: str) -> str:
                         timestamp="2026-01-01T00:00:00+00:00",
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"{native_id} body {position}")],
                     )
-                    for position in range(_MESSAGE_COUNT)
+                    for position in range(count)
                 ],
             ),
         )
@@ -108,6 +112,17 @@ def seeded_archive(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     archive_root = tmp_path_factory.mktemp("bounded-read-payloads") / "archive"
     session_ids = [_seed_session(archive_root, native_id) for native_id in _STACK_NATIVE_IDS]
     return {"archive_root": archive_root, "session_ids": session_ids}
+
+
+@pytest.fixture(scope="module")
+def short_archive(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
+    """A much shorter session, so "bounded" can be measured against growth."""
+
+    archive_root = tmp_path_factory.mktemp("bounded-read-short") / "archive"
+    return {
+        "archive_root": archive_root,
+        "session_id": _seed_session(archive_root, "short", count=_SHORT_MESSAGE_COUNT),
+    }
 
 
 @pytest.fixture
@@ -363,6 +378,139 @@ async def test_database_backed_session_payload_serializes_only_the_window(
     assert payload["total"] == _MESSAGE_COUNT
     assert payload["message_count"] == _MESSAGE_COUNT
     assert str(payload["messages"][0]["id"]).endswith(":m-100")
+
+
+def _composed_row_counter(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record how many transcript rows each archive composition materialized.
+
+    Rows composed -- not rows returned -- is the measurement these routes
+    need: a payload can serve a 25-message window off a 2,000-message
+    composition and look identical to one that composed 25. That is exactly
+    the difference polylogue-2go3o is about, and a contents-only assertion
+    cannot see it.
+    """
+
+    composed: list[int] = []
+
+    def _instrument(name: str) -> None:
+        original = getattr(ArchiveStore, name)
+
+        def _wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
+            envelope = original(self, *args, **kwargs)
+            composed.append(len(envelope.messages))
+            return envelope
+
+        monkeypatch.setattr(ArchiveStore, name, _wrapped)
+
+    _instrument("read_session")
+    _instrument("read_session_page")
+    return composed
+
+
+async def _db_backed(
+    archive_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    call: str,
+    *args: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Run one database-backed reader handler against ``archive_root``.
+
+    These handlers read no handler state, so they are exercised directly
+    rather than through a second HTTP server -- and directly is the only way
+    to reach them while an archive root the reader routes accept exists.
+    """
+
+    from polylogue import Polylogue
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    poly = Polylogue(archive_root=archive_root)
+    try:
+        handler = getattr(DaemonAPIHandler, call)
+        payload = await handler(cast("Any", None), poly, *args, **kwargs)
+    finally:
+        await poly.close()
+    assert isinstance(payload, dict)
+    return cast("dict[str, Any]", payload)
+
+
+async def test_db_backed_session_composes_only_the_window(
+    seeded_archive: dict[str, Any],
+    short_archive: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The composition behind a windowed session payload is the window itself.
+
+    Anti-vacuity: restore ``poly.get_session()`` plus a Python slice and the
+    long session composes 2,000 rows to serve 25 -- the payload assertions
+    below stay green under that, which is why the composed-row counts are the
+    assertion.
+    """
+
+    composed = _composed_row_counter(monkeypatch)
+    long_payload = await _db_backed(
+        seeded_archive["archive_root"],
+        monkeypatch,
+        "_do_get_session",
+        seeded_archive["session_ids"][0],
+        limit=25,
+        offset=100,
+    )
+    long_rows = sum(composed)
+    composed.clear()
+    short_payload = await _db_backed(
+        short_archive["archive_root"],
+        monkeypatch,
+        "_do_get_session",
+        short_archive["session_id"],
+        limit=25,
+        offset=100,
+    )
+    short_rows = sum(composed)
+
+    assert long_rows == short_rows == 25, "the composition tracks the window, not the session"
+    assert len(long_payload["messages"]) == len(short_payload["messages"]) == 25
+    assert str(long_payload["messages"][0]["id"]).endswith(":m-100")
+    # The window never becomes the reported session size.
+    assert long_payload["total"] == long_payload["message_count"] == _MESSAGE_COUNT
+    assert short_payload["total"] == short_payload["message_count"] == _SHORT_MESSAGE_COUNT
+    assert long_payload["word_count"] > short_payload["word_count"] > 0
+
+
+async def test_db_backed_window_composes_no_transcript(
+    seeded_archive: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The database-backed message window composes no transcript at all.
+
+    Its rows come from the paginated read and its header from the session
+    row, so nothing on this route has to compose a transcript -- including
+    the deep link, whose locate is answered from indexed counts.
+
+    Anti-vacuity: restore either ``poly.get_session()`` call (the header read
+    or the deep-link anchor) and the counter reports 2,000 composed rows for
+    a 30-message window.
+    """
+
+    session_id = seeded_archive["session_ids"][0]
+    target = _deep_message_id(session_id, seeded_archive["archive_root"])
+    composed = _composed_row_counter(monkeypatch)
+
+    paged = await _db_backed(seeded_archive["archive_root"], monkeypatch, "_do_get_messages", session_id, _PAGE, 0)
+    paged_rows = sum(composed)
+    composed.clear()
+    deep = await _db_backed(
+        seeded_archive["archive_root"], monkeypatch, "_do_get_messages", session_id, _PAGE, 0, None, target
+    )
+    deep_rows = sum(composed)
+
+    assert paged_rows == deep_rows == 0
+    assert len(paged["messages"]) == len(deep["messages"]) == _PAGE
+    assert paged["total"] == deep["total"] == _MESSAGE_COUNT
+    assert deep["offset"] == _DEEP_INDEX - (_DEEP_INDEX % _PAGE)
+    assert target in _message_ids(deep), "a resolvable reference must land inside the window it named"
+    assert _message_ids(paged) == [f"{session_id}:n:m-{position}" for position in range(_PAGE)]
 
 
 def test_workspace_builders_thread_the_window_to_every_referenced_session() -> None:

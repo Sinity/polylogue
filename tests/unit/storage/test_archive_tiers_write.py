@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAgentPolicy,
     ArchiveSessionTag,
     ArchiveWriteOutcome,
+    locate_composed_message,
     read_archive_session_envelope,
     read_archive_session_page,
     read_session_agent_policies,
@@ -4476,6 +4477,96 @@ def test_read_archive_session_page_window_equals_full_composition_slice_for_a_li
             assert page.lineage_complete is full.lineage_complete
             assert page.lineage_branch_point_message_id == full.lineage_branch_point_message_id
             assert page.orphan_attachments == full.orphan_attachments
+
+
+def _locate_sql_work(conn: sqlite3.Connection, session_id: str, message_id: str) -> tuple[int, int | None]:
+    """Return ``(statements, located index)`` for one composed-message locate."""
+    statements = 0
+
+    def _trace(_statement: str) -> None:
+        nonlocal statements
+        statements += 1
+
+    conn.set_trace_callback(_trace)
+    try:
+        index = locate_composed_message(conn, session_id, message_id)
+    finally:
+        conn.set_trace_callback(None)
+    return statements, index
+
+
+def test_locate_bounds_sql_work_for_a_lineage_child(tmp_path: Path) -> None:
+    """Numbering one message costs the chain depth, never the composed length.
+
+    A prefix-sharing child stores only its divergent tail, so the composed
+    index of a message needs the ancestral prefix resolved. Resolving it by
+    composing every ancestor's transcript and scanning the result (the
+    contract before polylogue-2go3o) makes a deep link cost the whole chain --
+    the very cost the locate exists to remove.
+
+    Anti-vacuity is the shape of the growth, not a wall clock: restore the
+    composed-then-scanned branch and the statement count stops being
+    independent of the per-link message count, because the full read issues
+    one blocks query per composed message.
+    """
+
+    def _chain(name: str, *, links: int, per_link: int) -> tuple[sqlite3.Connection, str, int]:
+        conn = _connect(tmp_path / f"{name}.db")
+        session_id, composed_total = _lineage_chain(conn, name, links=links, per_link=per_link)
+        return conn, session_id, composed_total
+
+    conn_small, shallow_small, shallow_small_total = _chain("locate-shallow-small", links=4, per_link=40)
+    conn_large, shallow_large, shallow_large_total = _chain("locate-shallow-large", links=4, per_link=400)
+    conn_deep, deep_large, deep_large_total = _chain("locate-deep-large", links=16, per_link=400)
+    assert (shallow_small_total, shallow_large_total, deep_large_total) == (160, 1600, 6400)
+
+    def _target(conn: sqlite3.Connection, session_id: str, index: int) -> str:
+        page = read_archive_session_page(conn, session_id, limit=1, offset=index)
+        return str(page.messages[0].message_id)
+
+    # A target in the INHERITED prefix, which is the shape only a composition
+    # could number before this change.
+    small_statements, small_index = _locate_sql_work(conn_small, shallow_small, _target(conn_small, shallow_small, 30))
+    large_statements, large_index = _locate_sql_work(conn_large, shallow_large, _target(conn_large, shallow_large, 300))
+    deep_statements, deep_index = _locate_sql_work(conn_deep, deep_large, _target(conn_deep, deep_large, 6000))
+
+    assert (small_index, large_index, deep_index) == (30, 300, 6000)
+    # A ten-fold larger composed transcript at the same chain depth costs
+    # exactly the same statements: the locate reads the plan, not the rows.
+    assert large_statements == small_statements
+    # Deepening the chain adds a bounded per-ancestor plan cost.
+    assert deep_statements <= 8 * 16
+    assert deep_statements < deep_large_total
+
+
+def test_locate_matches_composed_order_for_a_fork_chain(tmp_path: Path) -> None:
+    """Every composed row's located index is the index the page read gives it.
+
+    Uses a chain that forks from the MIDDLE of each parent, so inherited
+    segments are genuinely cut: a locate that ignored the branch point would
+    still be right on a chain that replays its whole parent. A parent row
+    past the cut is not part of this child's transcript and is refused rather
+    than numbered against a segment that excludes it.
+    """
+    conn = _connect(tmp_path / "index.db")
+    child_id, composed_total = _forking_chain(conn, "locate", own_counts=[8, 5, 6, 4, 5], cuts=[5, 9, 11, 13])
+    full = read_archive_session_envelope(conn, child_id)
+    assert len(full.messages) == composed_total
+    assert len({message.source_session_id for message in full.messages}) == 5
+
+    for index, message in enumerate(full.messages):
+        assert locate_composed_message(conn, child_id, str(message.message_id)) == index
+
+    composed_ids = {str(message.message_id) for message in full.messages}
+    excluded = [
+        str(row[0])
+        for row in conn.execute("SELECT message_id FROM messages").fetchall()
+        if str(row[0]) not in composed_ids
+    ]
+    assert excluded, "the fixture needs ancestor rows past the branch point for this refusal to be reachable"
+    for message_id in excluded:
+        assert locate_composed_message(conn, child_id, message_id) is None
+    assert locate_composed_message(conn, child_id, "absent") is None
 
 
 def test_reads_report_the_stored_message_identity_source(tmp_path: Path) -> None:
