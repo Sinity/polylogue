@@ -307,6 +307,21 @@ the session-row and message projections declared in
 partition's sibling row counts, so a half-replaced partition and a partition
 whose input values moved are both non-valid.
 
+The session counters on the `sessions` row are a second bound domain. Their
+binding is a `session_summary_bindings` row recording the counter projection
+that was published and the recipe it was published under; readiness compares
+that value against the stored columns and never reduces `messages`. Sessions
+carrying no current binding are counted and named separately from measured
+drift, because they are the partitions inspection did not compare.
+
+Both domains' bindings are retired by the index tier itself, from triggers on
+the relations each digest covers (`session_summary_binding_*` and
+`session_profile_binding_*` in `storage/sqlite/archive_tiers/index.py`, whose
+`UPDATE OF` column lists are generated from those projections). That is what
+makes a surviving binding evidence rather than a writer's claim, and it is why
+archive-wide readiness may read a binding where the kernel still recomputes
+one.
+
 Threads, tag rollups and provider/day rollups are SQL views over that relation.
 They have no output of their own to inspect and no partition to publish: they
 are current exactly when the partitions feeding them are, which is how status
@@ -314,9 +329,13 @@ counts them. A freshness column on a view — `session_tag_rollups.materialized_
 is the literal `'query-time'` — can only ever compare equal to itself.
 
 Freshness is decided in exactly one place,
-`storage/derived/session/derivation.py`. The archive-wide route and the
-per-batch route call the same inspection over different key sets, and the
-async route shares its SQL and classification with the sync one. Identity —
+`storage/derived/session/derivation.py`: every route reaches the same
+`_classify_partition`. They differ only in where the current binding comes
+from. The per-batch route recomputes it from the inputs, because it is about
+to publish. The archive-wide readiness route reads the stored binding, which
+the triggers above have already proved unchanged; it can therefore agree with
+the recomputing route or refuse to certify, never invent a valid verdict. The
+async routes share SQL and classification with their sync counterparts. Identity —
 a sort key, an updated-at, a row count — narrows nothing and certifies nothing:
 what a scope query may still answer is whether a partition was ever built, and
 `SESSION_PROFILE_UNBUILT_CANDIDATES_SQL` answers only that.
