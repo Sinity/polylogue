@@ -88,7 +88,7 @@ async def test_projection_table_drives_cli_and_mcp_name_vocabulary(
     one of these production dispatch inputs.
     """
     from polylogue.cli.read_view_handlers import session_list_read_view_handlers
-    from polylogue.cli.read_views.events import run_read_events
+    from polylogue.cli.read_views.session_evidence import run_read_events
 
     fixture = SessionListProjection(
         "projection-fixture",
