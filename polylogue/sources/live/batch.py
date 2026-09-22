@@ -2256,11 +2256,16 @@ class LiveBatchProcessor:
         same pass already committed, so one connection and one query per
         question serves the whole page.
 
-        Best-effort by construction. Any read failure leaves the pin unset
-        and every path falls back to its own read, which keeps
-        ``_history_sidecar_retained``'s propagating-failure contract exactly
-        where it was: a source tier that cannot be read must requeue the
-        pass, not resolve to "no evidence".
+        The read has no failure policy of its own, deliberately. An absent
+        table is answered from ``sqlite_schema`` exactly as
+        ``_history_sidecar_retained`` already answers it, and a genuine
+        SQLite error propagates -- which is what the un-pinned route does
+        too: ``_latest_archive_tiers_raw_fingerprint`` resolves a broken read
+        to ``None``, and ``_source_tier_evidence_retained`` then asks
+        ``_history_sidecar_retained``, whose connection is unguarded and
+        whose docstring says so. A source tier that cannot be read must
+        requeue the pass rather than resolve to "no evidence", and adding a
+        second, softer policy here would only duplicate that decision.
         """
         sidecars = [
             path
@@ -2271,15 +2276,11 @@ class LiveBatchProcessor:
         if not sidecars or not source_db.exists():
             yield
             return
-        try:
-            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
-                latest = self._pinned_latest_raw_fingerprints(conn, sidecars, archive_root=source_db.parent)
-                retained = self._pinned_history_sidecar_rows(conn, sidecars)
-        except sqlite3.Error:
-            yield
-            return
-        self._pinned_raw_fingerprints = latest
-        self._pinned_history_sidecars = retained
+        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+            self._pinned_raw_fingerprints = self._pinned_latest_raw_fingerprints(
+                conn, sidecars, archive_root=source_db.parent
+            )
+            self._pinned_history_sidecars = self._pinned_history_sidecar_rows(conn, sidecars)
         try:
             yield
         finally:
@@ -2301,6 +2302,13 @@ class LiveBatchProcessor:
         """
         resolved: dict[str, str | None] = {}
         keys = [str(path) for path in paths]
+        # An archive whose source tier has no ``raw_sessions`` yet answers
+        # "no evidence" for every path, which is what the single-path read
+        # resolves to as well. Probing the catalog states that as a fact
+        # rather than as a swallowed error.
+        declared = conn.execute("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'raw_sessions'").fetchone()
+        if declared is None:
+            return dict.fromkeys(keys, None)
         for start in range(0, len(keys), _SOURCE_EVIDENCE_QUERY_CHUNK):
             chunk = keys[start : start + _SOURCE_EVIDENCE_QUERY_CHUNK]
             placeholders = ", ".join("?" * len(chunk))

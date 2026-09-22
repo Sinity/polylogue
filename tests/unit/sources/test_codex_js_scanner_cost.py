@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from types import FrameType
+from typing import Any
 
 import polylogue.sources.parsers.codex as codex
 
@@ -37,9 +39,9 @@ def _scanner_line_events(run: Callable[[], object]) -> int:
     """Interpreted line events executed inside the scan family while ``run`` ran."""
     count = 0
 
-    def tracer(frame: object, event: str, arg: object) -> object:
+    def tracer(frame: FrameType, event: str, arg: Any) -> Any:
         nonlocal count
-        if frame.f_code.co_name not in _SCANNERS:  # type: ignore[attr-defined]
+        if frame.f_code.co_name not in _SCANNERS:
             return None
         if event == "line":
             count += 1

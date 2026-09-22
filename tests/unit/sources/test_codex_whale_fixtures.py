@@ -8,7 +8,7 @@ from typing import Any
 
 from pytest import MonkeyPatch
 
-from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionUnit
+from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionUnit, ParsedSession
 from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS, multi_million_codex_stream
 
 
@@ -163,7 +163,7 @@ def _budget_stream(record_count: int) -> Iterator[dict[str, object]]:
     yield {"type": "future_whale_record"}
 
 
-def _parse_budget_stream(record_count: int) -> tuple[list[object], int]:
+def _parse_budget_stream(record_count: int) -> tuple[list[ParsedSession], int]:
     """Parse ``record_count`` state records and return the sessions and traced peak."""
     import tracemalloc
 

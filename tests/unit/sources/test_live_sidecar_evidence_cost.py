@@ -221,11 +221,17 @@ async def test_unpinned_callers_still_read_source_db_themselves(
 
 
 @pytest.mark.asyncio
-async def test_unreadable_source_tier_leaves_the_page_unpinned(
+async def test_unreadable_source_tier_refuses_rather_than_answering(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A read failure must not resolve to "no evidence"; it falls back."""
+    """A read failure must never resolve to "no evidence".
+
+    The un-pinned route raises too: ``_latest_archive_tiers_raw_fingerprint``
+    resolves a broken read to ``None`` and ``_source_tier_evidence_retained``
+    then asks ``_history_sidecar_retained``, whose connection is unguarded.
+    The pin keeps that boundary rather than adding a softer one beside it.
+    """
     root = workspace_env["data_root"] / "projects"
     root.mkdir(parents=True)
     owner, sidecars = _build_tree(root, sidecar_count=2)
@@ -237,9 +243,39 @@ async def test_unreadable_source_tier_leaves_the_page_unpinned(
             raise sqlite3.OperationalError("source tier unavailable")
 
         monkeypatch.setattr(sqlite3, "connect", refuse)
-        with processor._pinned_source_tier_evidence(sidecars):
-            assert processor._pinned_raw_fingerprints is None
-            assert processor._pinned_history_sidecars is None
+        with pytest.raises(sqlite3.OperationalError, match="source tier unavailable"):
+            with processor._pinned_source_tier_evidence(sidecars):
+                pass  # pragma: no cover - the pin raises before the body runs
+        monkeypatch.undo()
+
+        # Same refusal, same input, through the per-path route.
+        monkeypatch.setattr(sqlite3, "connect", refuse)
+        with pytest.raises(sqlite3.OperationalError, match="source tier unavailable"):
+            processor._source_tier_evidence_retained(sidecars[0], raw_fingerprint="carried-raw-id")
     finally:
         monkeypatch.undo()
+        await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_a_source_tier_without_raw_sessions_pins_no_evidence(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """An absent table is a fact read from the catalog, not a swallowed error."""
+    root = workspace_env["data_root"] / "projects"
+    root.mkdir(parents=True)
+    _owner, sidecars = _build_tree(root, sidecar_count=2)
+    archive, _cursor, processor = _make_processor(workspace_env, root)
+    try:
+        empty_root = tmp_path / "empty-archive"
+        empty_root.mkdir()
+        sqlite3.connect(empty_root / "source.db").close()
+        processor._archive_source_db_path = lambda: empty_root / "source.db"  # type: ignore[method-assign]
+
+        with processor._pinned_source_tier_evidence(sidecars):
+            pinned = processor._pinned_raw_fingerprints
+            assert pinned == {str(path): None for path in sidecars}
+            assert processor._pinned_history_sidecars == {str(path): False for path in sidecars}
+    finally:
         await archive.close()
