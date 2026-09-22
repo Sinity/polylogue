@@ -517,7 +517,7 @@ def test_combined_classes_cannot_take_the_interactive_queue() -> None:
             for admission_class in ("control", "incremental-background", "bulk-candidate"):
                 with contextlib.suppress(DaemonBackpressureError):
                     for _index in range(adapter.capacity_units):
-                        adapter.submit(blocker, admission_class=admission_class)  # type: ignore[arg-type]
+                        adapter.submit(blocker, admission_class=admission_class)
 
             admitted = 0
             with contextlib.suppress(DaemonBackpressureError):

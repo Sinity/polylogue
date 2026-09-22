@@ -1865,14 +1865,10 @@ def render_compare_page(
         f'    <link rel="stylesheet" href="/assets/{html.escape(name, quote=True)}">' for name in entry.stylesheets
     )
     data = payload or {}
-    left_label = _compare_side_label(
-        data.get("left") if isinstance(data.get("left"), Mapping) else None,
-        "left",
-    )
-    right_label = _compare_side_label(
-        data.get("right") if isinstance(data.get("right"), Mapping) else None,
-        "right",
-    )
+    left_side = data.get("left")
+    right_side = data.get("right")
+    left_label = _compare_side_label(left_side if isinstance(left_side, Mapping) else None, "left")
+    right_label = _compare_side_label(right_side if isinstance(right_side, Mapping) else None, "right")
     degraded = data.get("degraded_sides")
     degraded_names = [str(name) for name in degraded] if isinstance(degraded, list) else []
 

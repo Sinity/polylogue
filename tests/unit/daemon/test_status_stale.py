@@ -76,7 +76,7 @@ def test_second_tick_keeps_the_raw_frontier_reading(tmp_path: Path, monkeypatch:
     ``test_stale_with_changed_fingerprint_unmeasured``.
     """
     db = tmp_path / "index.db"
-    reading = RawMaterializationReadiness(available=True, broken_head_count=3)
+    reading = RawMaterializationReadiness(available=True, raw_artifact_count=3)
     clock = [1000.0]
     monkeypatch.setattr(status_protocol, "monotonic", lambda: clock[0])
     monkeypatch.setattr(status_module, "_daemon_status_fingerprint", lambda _db: "frame-1")
