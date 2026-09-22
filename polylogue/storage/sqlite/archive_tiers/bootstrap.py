@@ -95,6 +95,18 @@ ARCHIVE_TIER_SPECS: dict[ArchiveTier, ArchiveTierSpec] = {
 # protocol.
 _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK = threading.RLock()
 
+#: Per-root generation token of the archive this process last validated, keyed
+#: by absolute configured root. ``initialize_active_archive_root`` runs on
+#: every index-tier sync write open and once per ingest batch, and its body
+#: opens and validates all six tiers -- a fixed ~0.14 s that a cold build
+#: repeats per chunk for no new information (polylogue-q53j4 AC1). Guarded by
+#: ``_ACTIVE_ARCHIVE_BOOTSTRAP_LOCK``; see ``_archive_generation_token`` for
+#: what counts as a different generation and why this is not a once-flag.
+_ACTIVE_ARCHIVE_BOOTSTRAP_GENERATIONS: dict[str, tuple[object, ...]] = {}
+
+#: Count of validations actually executed. Diagnostic; read by tests.
+_ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS = 0
+
 
 def archive_tier_spec(tier: ArchiveTier) -> ArchiveTierSpec:
     """Return the database-file spec for one durability tier."""
@@ -992,8 +1004,106 @@ def _initialize_active_archive_root(root: Path) -> None:
             pending_bootstrap_path.unlink(missing_ok=True)
 
 
+def _archive_generation_token(root: Path) -> tuple[object, ...]:
+    """Identify the archive *generation* ``_initialize_active_archive_root`` validated.
+
+    Every component is a file identity or a marker's presence, never a
+    content mtime or size: the daemon writes into its own tiers constantly,
+    so a token that moved on an ordinary write would identify a new
+    generation on every batch and memoize nothing.
+
+    What a difference here means, and why each term is present:
+
+    * ``os.getpid`` -- a forked child inherits the parent's memo dict but not
+      its open descriptors or its lease. It revalidates.
+    * the root directory's ``(st_dev, st_ino)`` and each tier file's -- a
+      replaced, relinked, restored-from-backup or newly created tier is a
+      different file, so it is a different generation.
+    * the active index pointer and its target identity -- an index
+      *promotion* swaps which generation the archive reads and writes, while
+      leaving the configured ``index.db`` pathname alone.
+    * the durable-train manifest directory's entries with their sizes and
+      mtimes -- a durable migration both adds manifest files and appends to
+      them, and that is exactly the "schema change" case that must never be
+      skipped. This directory is untouched in steady state.
+    * the format / bootstrap / pending-bootstrap / audit-adoption markers --
+      each one selects a different branch of the bootstrap body.
+
+    A *code* schema change cannot move within a process (the derived identity
+    is an import-time constant), and the tier-file identities above catch an
+    archive swapped underneath a running process. Anything this token cannot
+    see belongs to another writer, which the single-writer contract excludes.
+    """
+    from polylogue.operations.durable_change_train import audit_adoption_receipt_path
+    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
+
+    def file_identity(path: Path) -> tuple[object, ...]:
+        try:
+            info = path.stat()
+        except OSError:
+            return (None, None)
+        return (info.st_dev, info.st_ino)
+
+    location = ArchiveLocation.resolve(root)
+    manifest_root = root / ".maintenance-state" / "durable-change-trains"
+    manifest_entries: tuple[tuple[str, int, int], ...]
+    try:
+        with os.scandir(manifest_root) as entries:
+            manifest_entries = tuple(
+                sorted(
+                    (entry.name, entry.stat().st_size, entry.stat().st_mtime_ns) for entry in entries if entry.is_file()
+                )
+            )
+    except OSError:
+        manifest_entries = ()
+
+    return (
+        os.getpid(),
+        file_identity(root),
+        tuple((tier.name, tier.stable_id) for tier in location.configured_tiers),
+        location.active_index.stable_id,
+        str(location.active_index.resolved_path),
+        None if location.active_pointer is None else str(location.active_pointer),
+        None if location.shadow_index is None else location.shadow_index.stable_id,
+        archive_format_marker_path(root).is_file(),
+        (manifest_root / ".bootstrap").is_file(),
+        (manifest_root / ".bootstrap.pending").is_file(),
+        audit_adoption_receipt_path(root).is_file(),
+        manifest_entries,
+    )
+
+
+def invalidate_active_archive_bootstrap(root: Path | None = None) -> None:
+    """Force the next bootstrap of ``root`` (or of every root) to revalidate.
+
+    The generation token already notices a replaced tier, a promotion and a
+    durable-train change. This is the explicit escape hatch for a caller that
+    knows it has invalidated bootstrap state by some route the token cannot
+    observe, and the hook tests use to prove the memo is a memo rather than a
+    once-flag.
+    """
+    with _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK:
+        if root is None:
+            _ACTIVE_ARCHIVE_BOOTSTRAP_GENERATIONS.clear()
+        else:
+            _ACTIVE_ARCHIVE_BOOTSTRAP_GENERATIONS.pop(str(root.absolute()), None)
+
+
+def active_archive_bootstrap_validation_count() -> int:
+    """How many times the six-tier validation body has actually run in this process.
+
+    Diagnostic only -- nothing branches on it. A fresh-build cost assertion
+    reads it to prove the per-batch bootstrap is paid once per generation
+    rather than once per open (polylogue-q53j4 AC1).
+    """
+    return _ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS
+
+
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every active archive tier under one local bootstrap owner."""
+
+    global _ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS
 
     from polylogue.storage.archive_tuple_location import ArchiveTupleError, is_archive_tuple_candidate_path
     from polylogue.storage.sqlite.write_lease import require_write_lease
@@ -1007,10 +1117,25 @@ def initialize_active_archive_root(root: Path) -> None:
     # daemon-owned operation when process-wide lease enforcement is armed;
     # inactive tuple destinations and scratch files use the lower-level
     # initializer directly and remain intentionally independent of this gate.
+    # The authority check is never memoized: it decides whether *this* caller
+    # may bootstrap, which is a fact about the caller, not about the archive.
     require_write_lease("active archive bootstrap", archive_root=root)
 
     with _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK:
+        memo_key = str(root.absolute())
+        observed = _archive_generation_token(root)
+        if _ACTIVE_ARCHIVE_BOOTSTRAP_GENERATIONS.get(memo_key) == observed:
+            return
+        # Drop the stale record *before* the body runs: a failed validation
+        # must leave the next call revalidating, not inherit a token from a
+        # generation this process never finished bootstrapping.
+        _ACTIVE_ARCHIVE_BOOTSTRAP_GENERATIONS.pop(memo_key, None)
+        _ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS += 1
         _initialize_active_archive_root(root)
+        # Recompute rather than storing ``observed``: bootstrap creates the
+        # tiers and publishes the markers, so the generation it just
+        # established is the one after the body, not the one before it.
+        _ACTIVE_ARCHIVE_BOOTSTRAP_GENERATIONS[memo_key] = _archive_generation_token(root)
 
 
 def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
@@ -1095,8 +1220,10 @@ __all__ = [
     "DurabilityClass",
     "ArchiveTierSpec",
     "converge_same_version_tier",
+    "active_archive_bootstrap_validation_count",
     "initialize_active_archive_root",
     "initialize_archive_database",
+    "invalidate_active_archive_bootstrap",
     "initialize_archive_tier",
     "open_initialized_tier_connection",
     "reconcile_durable_change_trains_on_startup",
