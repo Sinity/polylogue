@@ -114,6 +114,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools archive continuity-cold-model` | Grade cold, wire-only model plan formulation against the continuity registry. |
 | `devtools archive continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools archive lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools archive tool-outcome-census` | Classify every archived tool result by origin, construct, outcome and unknown reason. |
