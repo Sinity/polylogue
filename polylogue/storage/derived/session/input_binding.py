@@ -151,7 +151,6 @@ SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS: tuple[str, ...] = (
 
 # ``sync_session_events_batch`` maps precisely these event values into the
 # profile runtime, and the compaction count is a function of ``event_type``.
-# ``summary`` is intentionally absent: the hydrator does not read it.
 SESSION_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "source_message_id",
     "source_message_provider_id",
@@ -211,7 +210,6 @@ SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS: Mapping[str, str] = {
 SESSION_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "event_id": "generated from session_id and position, both already bound",
     "session_id": "the partition key: the projection selects on it and orders by it",
-    "summary": "not read by sync_session_events_batch",
 }
 
 SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {

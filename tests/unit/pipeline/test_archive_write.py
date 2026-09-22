@@ -259,7 +259,8 @@ async def test_persists_compaction_session_event_summary(async_backend: SQLiteBa
     async with async_backend.connection() as conn:
         row = await (
             await conn.execute(
-                "SELECT event_type, summary, source_message_id FROM session_events WHERE session_id = ?",
+                "SELECT event_type, json_extract(payload_json, '$.summary') AS summary, "
+                "source_message_id FROM session_events WHERE session_id = ?",
                 (session_id,),
             )
         ).fetchone()

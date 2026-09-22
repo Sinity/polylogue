@@ -2025,7 +2025,8 @@ def test_real_append_fold_proof_mutations_roll_back(
                 "SELECT block_id, message_id, block_type, text, search_text, content_hash FROM blocks ORDER BY block_id"
             ).fetchall(),
             "session_events": archive._conn.execute(
-                "SELECT event_id, source_message_id, event_type, summary, payload_json FROM session_events ORDER BY event_id"
+                "SELECT event_id, source_message_id, event_type, json_extract(payload_json, '$.summary'), "
+                "payload_json FROM session_events ORDER BY event_id"
             ).fetchall(),
             "attachments": archive._conn.execute(
                 "SELECT attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status FROM attachments ORDER BY attachment_id"

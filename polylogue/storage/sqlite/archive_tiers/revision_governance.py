@@ -203,7 +203,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedRows,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
-    _event_summary,
     _json_dumps,
     _next_session_event_position,
     _repair_stale_session_observations,
@@ -2944,12 +2943,11 @@ def _reconcile_chain_summary_events(
         store._conn.execute(
             """
             UPDATE session_events
-               SET payload_json = ?, summary = ?, occurred_at_ms = ?, position = ?
+               SET payload_json = ?, occurred_at_ms = ?, position = ?
              WHERE session_id = ? AND event_type = ? AND position = ?
             """,
             (
                 _json_dumps(composed.payload),
-                _event_summary(composed) or "",
                 to_epoch_ms(composed.timestamp, numeric_unit="seconds"),
                 _next_session_event_position(store._conn, session_id),
                 session_id,

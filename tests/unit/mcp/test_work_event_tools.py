@@ -49,7 +49,8 @@ def test_agent_work_event_uses_append_ingest_and_is_idempotent(tmp_path: Path) -
                 summary="invalid",
             )
         rows = archive._conn.execute(
-            "SELECT event_type, summary, payload_json FROM session_events WHERE session_id = ?",
+            "SELECT event_type, json_extract(payload_json, '$.summary'), payload_json "
+            "FROM session_events WHERE session_id = ?",
             (session_id,),
         ).fetchall()
         assert [(row[0], row[1]) for row in rows] == [("tool_run", "searched the source tree")]

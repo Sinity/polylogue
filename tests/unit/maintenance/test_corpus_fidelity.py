@@ -490,8 +490,9 @@ def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
         conn.execute(
             """
             INSERT INTO session_events(
-                session_id, source_message_provider_id, position, event_type, summary
-            ) VALUES (?, 'fixture-missing-message', ?, 'message_revision', 'event represented a historical message')
+                session_id, source_message_provider_id, position, event_type, payload_json
+            ) VALUES (?, 'fixture-missing-message', ?, 'message_revision',
+                      '{"summary": "event represented a historical message"}')
             """,
             (session_id, next_position),
         )
@@ -556,8 +557,8 @@ def test_revision_gate_rejects_unattributed_event_as_message_replacement(
         )
         conn.execute(
             """
-            INSERT INTO session_events(session_id, position, event_type, summary)
-            VALUES (?, ?, 'fixture-arbitrary', 'unrelated timeline event')
+            INSERT INTO session_events(session_id, position, event_type, payload_json)
+            VALUES (?, ?, 'fixture-arbitrary', '{"summary": "unrelated timeline event"}')
             """,
             (session_id, next_position),
         )
