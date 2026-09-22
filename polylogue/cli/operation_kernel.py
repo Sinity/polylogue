@@ -450,12 +450,20 @@ def configured_mutation_operation(config: Any, operation: str, payload: dict[str
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.archive_root import operation_archive_root
     from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
 
     if operation not in MUTATION_OPERATION_NAMES:
         raise OperationKernelError(f"operation is not a declared mutation: {operation}")
+    # The file set is resolved exactly as ``configured_read_operation``
+    # resolves it. A ``--db`` pin at a non-active generation names the file set
+    # the operator chose; selection and confirmation already ran against that
+    # resolved root, so addressing the mutation at ``config.archive_root``
+    # instead sent a confirmed delete to whichever daemon happened to serve the
+    # configured root -- a different archive.
+    root = operation_archive_root(config)
     client = DaemonClient(
-        daemon_socket_path(config.archive_root),
+        daemon_socket_path(root),
         auth_token=lambda: resolve_api_auth_token(
             getattr(config, "api_auth_token", None),
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
@@ -465,7 +473,7 @@ def configured_mutation_operation(config: Any, operation: str, payload: dict[str
         lambda request: client.operation_to_completion(
             request.operation,
             dict(request.payload),
-            archive_root=str(config.archive_root),
+            archive_root=str(root),
         )
     ).execute(OperationRequest(operation, payload))
     if not isinstance(result.value, Mapping):
@@ -495,6 +503,7 @@ def configured_accepted_operation(config: Any, operation: str, payload: dict[str
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.archive_root import operation_archive_root
     from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
 
     if operation not in MUTATION_OPERATION_NAMES:
@@ -502,8 +511,11 @@ def configured_accepted_operation(config: Any, operation: str, payload: dict[str
     spec = daemon_operation_spec(operation)
     if spec is None or not spec.accepted_reference:
         raise OperationKernelError(f"operation does not declare a durable acceptance reference: {operation}")
+    # Same resolution as the read and mutation routes: a scheduled write must
+    # be admitted by the daemon that owns the pinned file set.
+    root = operation_archive_root(config)
     client = DaemonClient(
-        daemon_socket_path(config.archive_root),
+        daemon_socket_path(root),
         timeout_s=spec.deadline_s,
         auth_token=lambda: resolve_api_auth_token(
             getattr(config, "api_auth_token", None),
@@ -514,7 +526,7 @@ def configured_accepted_operation(config: Any, operation: str, payload: dict[str
         lambda request: client.operation(
             request.operation,
             dict(request.payload),
-            archive_root=str(config.archive_root),
+            archive_root=str(root),
         )
     ).execute(OperationRequest(operation, payload))
     if result.envelope is None:

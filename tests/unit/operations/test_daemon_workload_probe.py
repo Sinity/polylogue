@@ -1372,3 +1372,86 @@ def test_cli_compare_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[st
     # No deltas when comparing a snapshot against itself.
     assert diff["attempt_counts"]["total"]["delta"] == 0
     assert diff["boundary_table_counts"]["sessions"]["delta"] == 0
+
+
+def test_an_unmeasured_table_count_is_never_subtracted() -> None:
+    """A sentinel count is not a cardinality, so it cannot enter a delta.
+
+    `-1` means the relation is absent and `-2` (`UNKNOWN_TABLE_COUNT`) means
+    the count could not be taken. `_coerce_int_map` accepts both as ordinary
+    integers, so the delta paths reported fabricated arithmetic such as
+    `100 -> -2 (Δ -102)`.
+
+    Anti-vacuity: restoring the plain `after - before` comprehension makes the
+    two unmeasured entries below report `-102` and `101`.
+    """
+    before = {"sessions": 100, "blocks": workload_probe.UNKNOWN_TABLE_COUNT, "messages": 5}
+    after = {"sessions": workload_probe.UNKNOWN_TABLE_COUNT, "blocks": -1, "messages": 9}
+
+    delta = workload_probe._table_count_delta(before, after)
+
+    assert delta["sessions"] == {"before": 100, "after": None, "delta": None, "measured": False}
+    assert delta["blocks"] == {"before": None, "after": None, "delta": None, "measured": False}
+    assert delta["messages"] == {"before": 5, "after": 9, "delta": 4, "measured": True}
+
+
+def test_measured_table_counts_still_diff_arithmetically() -> None:
+    """The opposite direction: real counts are not refused."""
+    delta = workload_probe._table_count_delta({"sessions": 3}, {"sessions": 11})
+    assert delta["sessions"]["delta"] == 8
+    assert delta["sessions"]["measured"] is True
+
+
+def test_an_unavailable_debt_ledger_is_not_zero_debt() -> None:
+    """An unreadable ops ledger must not project as a clean zero delta.
+
+    `_convergence_debt` reports `available: false` with zero counts when
+    `ops.db` is unreadable, missing or malformed. `_automatic_convergence_backlog`
+    and `compare` never inspected the flag, so they published "no retry debt"
+    and "0 -> 0 (Δ +0)" for a ledger nobody could read.
+
+    Anti-vacuity: restoring the unconditional `int(... or 0)` reads makes the
+    backlog report `retry_debt_unresolved == 0` and the compare entries report
+    a measured zero delta.
+    """
+    unavailable = {"available": False, "error": "unreadable", "failed_count": 0, "deferred_count": 0}
+    archive_tiers = {"derived_readiness": {"checked": True, "counts": {"missing_profile_row_count": 0}}}
+
+    backlog = workload_probe._automatic_convergence_backlog(archive_tiers, unavailable)
+
+    assert backlog["retry_debt_available"] is False
+    assert backlog["counts"]["retry_debt_unresolved"] is None
+
+    diff = workload_probe.compare(
+        {"report_version": workload_probe.REPORT_VERSION, "ok": True, "convergence_debt": unavailable},
+        {
+            "report_version": workload_probe.REPORT_VERSION,
+            "ok": True,
+            "convergence_debt": {"available": True, "failed_count": 3, "deferred_count": 1, "unresolved_count": 4},
+        },
+    )
+    debt = diff["convergence_debt"]
+    assert debt["available_before"] is False
+    assert debt["unresolved_count"] == {"before": None, "after": 4, "delta": None, "measured": False}
+
+
+def test_two_available_debt_ledgers_still_diff() -> None:
+    """The opposite direction: available ledgers keep their arithmetic."""
+    diff = workload_probe.compare(
+        {
+            "report_version": workload_probe.REPORT_VERSION,
+            "ok": True,
+            "convergence_debt": {"available": True, "failed_count": 1, "deferred_count": 0, "unresolved_count": 1},
+        },
+        {
+            "report_version": workload_probe.REPORT_VERSION,
+            "ok": True,
+            "convergence_debt": {"available": True, "failed_count": 3, "deferred_count": 1, "unresolved_count": 4},
+        },
+    )
+    assert diff["convergence_debt"]["unresolved_count"] == {
+        "before": 1,
+        "after": 4,
+        "delta": 3,
+        "measured": True,
+    }

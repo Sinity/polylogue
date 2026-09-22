@@ -1474,6 +1474,30 @@ def read_verb(
             destination=destination,
             out_path=out_path,
             projection_spec=projection_spec,
+            # A query-set read reuses each view's registered handler, so the
+            # view-specific Click values must reach it. Building options from
+            # the projection alone dropped `--full`, `--continuation` and
+            # `--around` for every `read --all` invocation.
+            option_values=_read_view_option_values(
+                limit=limit,
+                offset=offset,
+                at_position=at_position,
+                full=full,
+                related_limit=related_limit,
+                max_sessions=max_sessions,
+                no_redact=no_redact,
+                window_hours=window_hours,
+                repo_path=repo_path,
+                since_hours=since_hours,
+                confidence_threshold=confidence_threshold,
+                github_api=github_api,
+                node_offset=node_offset,
+                node_limit=node_limit,
+                edge_offset=edge_offset,
+                edge_limit=edge_limit,
+                continuation=continuation,
+                around=around,
+            ),
         )
         return
 
@@ -2380,8 +2404,26 @@ def _named_analyze_request(ctx: click.Context, **updates: object) -> RootModeReq
     return request_type.from_context(_query_root_context(ctx)).with_param_updates(**updates)  # type: ignore[no-any-return,attr-defined]
 
 
+def _root_request_output_format(request: RootModeRequest) -> str | None:
+    """Return the output format the root query retained, if it named one."""
+    value = request.params.get("output_format")
+    return value if isinstance(value, str) and value else None
+
+
 def _invoke_analyze_projection(ctx: click.Context, **kwargs: object) -> None:
-    """Run the shared legacy renderer for a structurally named projection."""
+    """Run the shared legacy renderer for a structurally named projection.
+
+    ``analyze_verb.callback`` is Click's ``@pass_context`` wrapper, which
+    injects ``get_current_context()`` as the first positional argument.
+    Calling it as ``callback(parent, **kwargs)`` therefore passed ``parent``
+    as the *second* positional -- ``count_only`` -- and every one of
+    ``analyze cost-outlook`` / ``postmortem`` / ``portfolio`` died with
+    ``TypeError: analyze_verb() got multiple values for argument
+    'count_only'`` before rendering anything.  ``Context.invoke`` pushes
+    ``parent`` onto the context stack for the duration of the call, so the
+    wrapper injects the context this projection means and the keywords stay
+    keywords.
+    """
     parent = ctx.parent
     if parent is None:
         raise click.UsageError("Analyze projections must run under the analyze command.")
@@ -2389,7 +2431,7 @@ def _invoke_analyze_projection(ctx: click.Context, **kwargs: object) -> None:
     parent.invoked_subcommand = None
     try:
         callback = cast(Callable[..., object], analyze_verb.callback)
-        callback(parent, **kwargs)
+        parent.invoke(callback, **kwargs)
     finally:
         parent.invoked_subcommand = selected
 
@@ -2445,7 +2487,16 @@ def analyze_facets_command(
     response = run_coroutine_sync(
         env.polylogue.facets(request.query_spec(), include_idf=not no_idf, include_deferred=include_deferred)
     )
-    emit_facets_response(response, output_format=normalize_output_dialect(output_format) or "text")
+    # The root query owns the output contract: ``polylogue --format json find
+    # ... then analyze facets`` must emit the same JSON the equivalent
+    # ``analyze --facets`` mode emits (query_verbs.py's
+    # ``effective_output_format``).  Defaulting to ``text`` here ignored the
+    # format retained in the ``RootModeRequest`` and broke callers branching
+    # on the root contract.
+    emit_facets_response(
+        response,
+        output_format=normalize_output_dialect(output_format) or _root_request_output_format(request) or "text",
+    )
 
 
 @analyze_verb.command("cost-outlook")

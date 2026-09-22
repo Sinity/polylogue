@@ -8,10 +8,22 @@ from os.path import basename
 from typing import Any
 
 from polylogue.archive.query.search_hits import bound_display_title, bound_search_snippet
+from polylogue.core.enums import TERMINAL_STATE_VALUES
 
 TITLE_BUDGET = 96
 SNIPPET_BUDGET = 320
-OUTCOME_VALUES = frozenset({"completed", "failed", "abandoned", "unknown"})
+#: The canonical closed vocabulary a session's structural terminal state is
+#: decided in (``archive/session/runtime.py::_terminal_state``).  This row
+#: projection used to admit its own private set --
+#: ``{completed, failed, abandoned, unknown}`` -- which is disjoint from the
+#: canonical one except for ``unknown``, so every informative outcome
+#: (``tool_left``, ``error_left``, ``question_left``, ``refused``,
+#: ``truncated``) was rewritten to ``unknown`` across CLI list/search/select
+#: rows and in the published ``terminal_state`` of every session-list row
+#: (``operations.daemon_reads._session_list_row``).  Membership is still
+#: checked, so a value outside the vocabulary remains ``unknown`` rather than
+#: being echoed through.
+OUTCOME_VALUES = TERMINAL_STATE_VALUES
 
 
 def _value(item: object, name: str, default: Any = None) -> Any:

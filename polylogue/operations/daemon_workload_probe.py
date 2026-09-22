@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,8 +44,16 @@ _TIER_UNAVAILABLE_ERRORS = (sqlite3.Error, SchemaSkewError)
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 22
+REPORT_VERSION = 23
 UNKNOWN_TABLE_COUNT = -2
+
+#: The two table-count sentinels, neither of which is a cardinality: ``-1``
+#: means the relation does not exist, ``-2`` means the count could not be
+#: taken. ``_coerce_int_map`` accepted both as ordinary integers, so every
+#: delta path subtracted them and reported fabricated arithmetic such as
+#: ``100 -> -2 (Δ -102)`` -- in exactly the convergence experiments exact
+#: snapshots are collected for.
+_UNMEASURED_TABLE_COUNTS: frozenset[int] = frozenset({-1, UNKNOWN_TABLE_COUNT})
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
 
@@ -1242,17 +1251,27 @@ def _automatic_convergence_backlog(archive_tiers: dict[str, Any], convergence_de
             "checked": False,
             "state": "unknown",
             "reason": derived.get("reason") or "derived_readiness_unchecked",
+            "retry_debt_available": bool(convergence_debt.get("available", True)),
             "counts": {},
         }
     counts = derived.get("counts") or {}
     missing_profiles = int(counts.get("missing_profile_row_count") or 0)
     total_missing = missing_profiles
-    retry_debt = int(convergence_debt.get("unresolved_count") or convergence_debt.get("failed_count") or 0)
+    # An unreadable, missing or malformed ops ledger reports ``available:
+    # false`` with zero counts. Folding that zero in here published an unknown
+    # authoritative ledger as "no retry debt" -- false healthy evidence.
+    retry_debt_available = bool(convergence_debt.get("available", True))
+    retry_debt: int | None = (
+        int(convergence_debt.get("unresolved_count") or convergence_debt.get("failed_count") or 0)
+        if retry_debt_available
+        else None
+    )
     state = "ready" if total_missing == 0 else "catching_up"
     return {
         "checked": True,
         "state": state,
         "reason": None,
+        "retry_debt_available": retry_debt_available,
         "counts": {
             "missing_profile_rows": missing_profiles,
             "automatic_backlog_total": total_missing,
@@ -2496,14 +2515,7 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
 
     before_tables = _coerce_int_map(before.get("boundary_table_counts") or {})
     after_tables = _coerce_int_map(after.get("boundary_table_counts") or {})
-    table_delta = {
-        key: {
-            "before": before_tables.get(key, 0),
-            "after": after_tables.get(key, 0),
-            "delta": after_tables.get(key, 0) - before_tables.get(key, 0),
-        }
-        for key in sorted(set(before_tables) | set(after_tables))
-    }
+    table_delta = _table_count_delta(before_tables, after_tables)
 
     before_routes = _coerce_int_map(before.get("storage_route_counts") or {})
     after_routes = _coerce_int_map(after.get("storage_route_counts") or {})
@@ -2537,23 +2549,36 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
 
     before_debt = before.get("convergence_debt") or {}
     after_debt = after.get("convergence_debt") or {}
+
+    def _debt_side(snapshot: Mapping[str, Any], *keys: str) -> int | None:
+        """Read one debt figure, or ``None`` when its ledger was unavailable."""
+        if not bool(snapshot.get("available", True)):
+            return None
+        for key in keys:
+            value = snapshot.get(key)
+            if value is not None:
+                return int(value)
+        return 0
+
+    def _debt_entry(*keys: str) -> dict[str, Any]:
+        before_value = _debt_side(before_debt, *keys)
+        after_value = _debt_side(after_debt, *keys)
+        measured = before_value is not None and after_value is not None
+        return {
+            "before": before_value,
+            "after": after_value,
+            "delta": (after_value - before_value) if after_value is not None and before_value is not None else None,
+            "measured": measured,
+        }
+
+    # An unavailable ledger is not zero debt. Diffing its sentinel zeros
+    # reported a clean ``0 -> 0 (Δ +0)`` for an ops.db nobody could read.
     debt_delta = {
-        "failed_count": {
-            "before": int(before_debt.get("failed_count") or 0),
-            "after": int(after_debt.get("failed_count") or 0),
-            "delta": int(after_debt.get("failed_count") or 0) - int(before_debt.get("failed_count") or 0),
-        },
-        "deferred_count": {
-            "before": int(before_debt.get("deferred_count") or 0),
-            "after": int(after_debt.get("deferred_count") or 0),
-            "delta": int(after_debt.get("deferred_count") or 0) - int(before_debt.get("deferred_count") or 0),
-        },
-        "unresolved_count": {
-            "before": int(before_debt.get("unresolved_count") or before_debt.get("failed_count") or 0),
-            "after": int(after_debt.get("unresolved_count") or after_debt.get("failed_count") or 0),
-            "delta": int(after_debt.get("unresolved_count") or after_debt.get("failed_count") or 0)
-            - int(before_debt.get("unresolved_count") or before_debt.get("failed_count") or 0),
-        },
+        "available_before": bool(before_debt.get("available", True)),
+        "available_after": bool(after_debt.get("available", True)),
+        "failed_count": _debt_entry("failed_count"),
+        "deferred_count": _debt_entry("deferred_count"),
+        "unresolved_count": _debt_entry("unresolved_count", "failed_count"),
     }
 
     before_backlog = _coerce_int_map((before.get("automatic_convergence_backlog") or {}).get("counts") or {})
@@ -2605,6 +2630,47 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _measured_count(value: object) -> int | None:
+    """Return ``value`` as a measured count, or ``None`` when it is a sentinel."""
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return None if value in _UNMEASURED_TABLE_COUNTS else value
+
+
+def _table_count_delta(before: Mapping[str, Any], after: Mapping[str, Any]) -> dict[str, Any]:
+    """Diff two table-count maps without subtracting an unmeasured sentinel.
+
+    An unmeasured side is reported as ``None`` and the delta is refused rather
+    than fabricated; ``measured`` states which it is so a consumer cannot read
+    a missing delta as zero.
+    """
+
+    entries: dict[str, Any] = {}
+    for key in sorted(set(before) | set(after)):
+        before_count = _measured_count(before.get(key, 0))
+        after_count = _measured_count(after.get(key, 0))
+        measured = before_count is not None and after_count is not None
+        entries[key] = {
+            "before": before_count,
+            "after": after_count,
+            "delta": (after_count - before_count) if after_count is not None and before_count is not None else None,
+            "measured": measured,
+        }
+    return entries
+
+
+def _render_count_delta(key: str, entry: Mapping[str, Any]) -> str:
+    """Render one count delta, naming an unmeasured side instead of printing 0."""
+
+    def _side(value: object) -> str:
+        return "unmeasured" if value is None else str(value)
+
+    delta = entry.get("delta")
+    suffix = f"(Δ {delta:+d})" if isinstance(delta, int) else "(Δ unmeasured)"
+    return f"  {key}: {_side(entry.get('before'))} -> {_side(entry.get('after'))} {suffix}"
+
+
 def _coerce_int_map(source: dict[str, Any]) -> dict[str, int]:
     """Pull out ``int``-valued entries from a mixed-shape dict.
 
@@ -2635,14 +2701,7 @@ def _archive_tier_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[s
         after_tier = after_tiers.get(tier) or {}
         before_counts = _coerce_int_map(before_tier.get("table_counts") or {})
         after_counts = _coerce_int_map(after_tier.get("table_counts") or {})
-        table_deltas = {
-            table: {
-                "before": before_counts.get(table, 0),
-                "after": after_counts.get(table, 0),
-                "delta": after_counts.get(table, 0) - before_counts.get(table, 0),
-            }
-            for table in sorted(set(before_counts) | set(after_counts))
-        }
+        table_deltas = _table_count_delta(before_counts, after_counts)
         tiers[tier] = {
             "exists_before": bool(before_tier.get("exists")),
             "exists_after": bool(after_tier.get("exists")),
@@ -2832,7 +2891,7 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
     lines.append("")
     lines.append("Boundary table counts:")
     for key, entry in diff["boundary_table_counts"].items():
-        lines.append(f"  {key}: {entry['before']} -> {entry['after']} (Δ {entry['delta']:+d})")
+        lines.append(_render_count_delta(key, entry))
     archive_tiers = diff.get("archive_tiers") or {}
     lines.append("")
     lines.append(
@@ -2912,26 +2971,15 @@ def _format_compare_human(diff: dict[str, Any]) -> str:
         )
         lines.append(
             "  missing profile rows: "
-            f"{profiles.get('before', 0)} -> {profiles.get('after', 0)} (Δ {profiles.get('delta', 0):+d}); "
-            f"retry debt {retry.get('before', 0)} -> {retry.get('after', 0)} (Δ {retry.get('delta', 0):+d})"
+            f"{profiles.get('before', 0)} -> {profiles.get('after', 0)} (Δ {profiles.get('delta', 0):+d});"
+            + _render_count_delta("retry debt", retry).lstrip()
         )
     debt = diff["convergence_debt"]
     lines.append("")
-    failed_debt = debt["failed_count"]
-    deferred_debt = debt["deferred_count"]
-    unresolved_debt = debt["unresolved_count"]
-    lines.append(
-        "Convergence debt failed_count: "
-        f"{failed_debt['before']} -> {failed_debt['after']} (Δ {failed_debt['delta']:+d})"
-    )
-    lines.append(
-        "Convergence debt deferred_count: "
-        f"{deferred_debt['before']} -> {deferred_debt['after']} (Δ {deferred_debt['delta']:+d})"
-    )
-    lines.append(
-        "Convergence debt unresolved_count: "
-        f"{unresolved_debt['before']} -> {unresolved_debt['after']} (Δ {unresolved_debt['delta']:+d})"
-    )
+    if not (debt.get("available_before", True) and debt.get("available_after", True)):
+        lines.append("Convergence debt: ops ledger unavailable on at least one side; deltas are unmeasured")
+    for field in ("failed_count", "deferred_count", "unresolved_count"):
+        lines.append(_render_count_delta(f"Convergence debt {field}:", debt[field]).lstrip())
     timings = diff["convergence_stage_timings"]
     lines.append("")
     lines.append(

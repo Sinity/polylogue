@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
 
 from polylogue.cli.operation_kernel import (
@@ -252,3 +256,89 @@ def test_an_empty_transport_request_id_is_not_reported_as_recovery_authority() -
         )
     assert raised.value.request_id is None
     assert "(request" not in str(raised.value)
+
+
+def test_mutation_and_read_address_the_same_resolved_file_set(tmp_path: Path) -> None:
+    """A `--db` split-root pin decides where a declared mutation is sent.
+
+    `configured_read_operation` resolves the file set through
+    `operation_archive_root`, so selection and confirmation run against the
+    pinned root. Addressing the mutation at `config.archive_root` instead
+    delivered a confirmed `delete` to whichever daemon served the *configured*
+    root -- a different archive.
+
+    Anti-vacuity: restoring `daemon_socket_path(config.archive_root)` makes the
+    recorded socket root the configured root while the read route still
+    resolves the pinned one, so both assertions below fail.
+    """
+    from polylogue.cli import operation_kernel
+    from polylogue.operations.archive_root import operation_archive_root
+
+    configured = tmp_path / "configured"
+    pinned = tmp_path / "pinned"
+    configured.mkdir()
+    pinned.mkdir()
+    config = SimpleNamespace(
+        archive_root=configured,
+        db_path=pinned / "index.db",
+        api_auth_token=None,
+        api_allow_no_auth=True,
+    )
+    assert operation_archive_root(config) == pinned
+
+    sockets: list[Path] = []
+    declared_roots: list[str] = []
+
+    class _Client:
+        def __init__(self, socket_path: Path, **_kwargs: object) -> None:
+            sockets.append(Path(socket_path))
+
+        def operation_to_completion(
+            self, operation: str, payload: dict[str, object], *, archive_root: str
+        ) -> dict[str, object]:
+            declared_roots.append(archive_root)
+            return {"result": {"status": "ok"}, "authority": {"mode": "daemon"}}
+
+    with patch("polylogue.daemon_client.DaemonClient", _Client):
+        operation_kernel.configured_mutation_operation(
+            config, "mutation.session.delete.preview", {"session_ids": ["a"]}
+        )
+
+    from polylogue.daemon.socket_path import daemon_socket_path
+
+    assert declared_roots == [str(pinned)]
+    assert sockets == [Path(daemon_socket_path(pinned))]
+    assert sockets != [Path(daemon_socket_path(configured))]
+
+
+def test_configured_root_without_a_pin_still_addresses_itself(tmp_path: Path) -> None:
+    """The opposite direction: no split-root pin keeps the configured root."""
+    from polylogue.cli import operation_kernel
+
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    config = SimpleNamespace(
+        archive_root=configured,
+        db_path=configured / "index.db",
+        api_auth_token=None,
+        api_allow_no_auth=True,
+    )
+
+    declared_roots: list[str] = []
+
+    class _Client:
+        def __init__(self, socket_path: Path, **_kwargs: object) -> None:
+            pass
+
+        def operation_to_completion(
+            self, operation: str, payload: dict[str, object], *, archive_root: str
+        ) -> dict[str, object]:
+            declared_roots.append(archive_root)
+            return {"result": {"status": "ok"}, "authority": {"mode": "daemon"}}
+
+    with patch("polylogue.daemon_client.DaemonClient", _Client):
+        operation_kernel.configured_mutation_operation(
+            config, "mutation.session.delete.preview", {"session_ids": ["a"]}
+        )
+
+    assert declared_roots == [str(configured)]

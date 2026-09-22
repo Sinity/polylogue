@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Literal, Protocol, get_args
 
 from polylogue.core.enums import PolylogueStrEnum
 
@@ -29,6 +29,32 @@ class EvidenceIntegrityStatus(PolylogueStrEnum):
 
 EvidenceRefState = Literal["ok", "stale", "missing", "ambiguous", "private", "quarantined"]
 EvidenceAuthority = Literal["human", "tool", "raw", "git", "pr", "agent", "assertion", "unknown"]
+
+#: The review state that makes a node usable as grounding evidence. Anything
+#: else -- ``pending``, ``rejected``, an adapter's own spelling -- is refused,
+#: because an unapproved node must not authorize context injection or a public
+#: claim merely by not being one of the two privacy spellings.
+APPROVED_REVIEW_STATE = "approved"
+
+#: An authority that establishes nothing independent. A node carrying it (the
+#: dataclass default, which an adapter that omits the optional field inherits)
+#: cannot ground a claim, so it is refused rather than admitted alongside raw,
+#: human or tool evidence.
+UNGROUNDED_AUTHORITY: EvidenceAuthority = "unknown"
+
+#: Every non-``ok`` ref state names the verdict it forces. Declared as a
+#: partition over ``EvidenceRefState`` and asserted total at import, so a new
+#: member cannot silently fall through the status ladder into
+#: ``PARTIALLY_SUPPORTED`` -- which is exactly what ``quarantined`` did:
+#: one quarantined leaf beside one valid leaf produced a witness no branch
+#: read, and the verdict's ``supported`` property stayed true.
+_PRIVATE_REF_STATES: frozenset[str] = frozenset({"private"})
+_UNRESOLVED_REF_STATES: frozenset[str] = frozenset({"missing", "ambiguous", "quarantined"})
+_STALE_REF_STATES: frozenset[str] = frozenset({"stale"})
+
+assert {"ok"} | _PRIVATE_REF_STATES | _UNRESOLVED_REF_STATES | _STALE_REF_STATES == set(get_args(EvidenceRefState)), (
+    "every EvidenceRefState must name the verdict it forces"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +204,8 @@ def evaluate_evidence(
             add(node.ref_state, (*path, ref), f"ref_state={node.ref_state}")
         if not node.public or node.review_state in {"private", "held_private"}:
             add("held_private", (*path, ref), "node is private or held from publication")
+        elif node.review_state != APPROVED_REVIEW_STATE:
+            add("review_unapproved", (*path, ref), f"review_state={node.review_state}")
         if not node.compatible:
             add("grounding_incompatible", (*path, ref), "node cannot ground this claim")
         if definition_hash and node.definition_hash and node.definition_hash != definition_hash:
@@ -190,6 +218,8 @@ def evaluate_evidence(
         # whether an assertion-only ancestry can launder itself into support.
         if ref != root_ref:
             authorities.add(node.authority)
+            if node.authority == UNGROUNDED_AUTHORITY:
+                add("unknown_authority", (*path, ref), "node declares no grounding authority")
         visiting.add(ref)
         outgoing = adjacency.get(ref, ())
         if not outgoing and ref != root_ref and node.compatible and node.ref_state == "ok":
@@ -207,19 +237,19 @@ def evaluate_evidence(
         add("evaluation_cancelled", (root_ref,), "caller cancelled bounded evaluation")
 
     codes = {item.code for item in witnesses}
-    if "held_private" in codes or "private" in codes:
+    if "held_private" in codes or codes & _PRIVATE_REF_STATES:
         status = EvidenceIntegrityStatus.HELD_PRIVATE
     elif "cycle" in codes:
         status = EvidenceIntegrityStatus.CYCLE
     elif "evaluation_cancelled" in codes or "evaluation_budget_exhausted" in codes:
         status = EvidenceIntegrityStatus.UNRESOLVED
-    elif "grounding_incompatible" in codes:
+    elif "grounding_incompatible" in codes or "review_unapproved" in codes:
         status = EvidenceIntegrityStatus.NOT_SUPPORTED
     elif "closed_loop" in codes or authorities <= {"agent", "assertion"}:
         status = EvidenceIntegrityStatus.CLOSED_LOOP
-    elif "missing_ref" in codes or "missing" in codes or "ambiguous" in codes:
+    elif "missing_ref" in codes or "unknown_authority" in codes or codes & _UNRESOLVED_REF_STATES:
         status = EvidenceIntegrityStatus.UNRESOLVED
-    elif "stale" in codes or "definition_drift" in codes or "content_drift" in codes:
+    elif codes & _STALE_REF_STATES or "definition_drift" in codes or "content_drift" in codes:
         status = EvidenceIntegrityStatus.STALE
     elif "frame_drift" in codes or root is None or not root.frame_hash:
         status = EvidenceIntegrityStatus.FRAME_INCOMPLETE

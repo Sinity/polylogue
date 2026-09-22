@@ -2625,6 +2625,15 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
             adjudicator = kwargs.get("adjudicator")
             if not isinstance(adjudicator, str) or not adjudicator:
                 adjudicator = "user:mcp"
+            # Same reconciliation the CLI recovery route performs: the crash
+            # being recovered can have left a prepared audit continuity
+            # command, and adjudication is itself an audit mutation, so
+            # without this it refuses with "another audit continuity mutation
+            # is already pending" instead of recovering the operation.
+            try:
+                audit.reconcile_continuity()
+            except Exception as exc:
+                return hooks.error_json(f"audit continuity reconciliation failed: {exc}", code="unavailable")
             try:
                 audit.adjudicate_recovery(
                     operation_id, target_outcomes=outcomes, reason=reason, adjudicator=adjudicator
