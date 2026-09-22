@@ -1947,7 +1947,15 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
             except Exception:
                 continue
             native = envelope.raw_provider_payload
-            if isinstance(native, dict) and isinstance(native.get("mapping"), dict):
+            # The census must lower exactly what the parser materializes. A
+            # `chatgpt-native-compact-v1` bridge projection carries a
+            # `mapping` the extension synthesized, and
+            # `browser_capture.parse` deliberately ignores it in favour of
+            # `session.turns`; censusing that untrusted mapping reported its
+            # never-materialized message ids as conservation drops, and an
+            # empty compact mapping reported a session with zero content
+            # units. Ask the parser's own predicate instead of re-deriving it.
+            if envelope.session.provider is Provider.CHATGPT and browser_capture.has_chatgpt_native_payload(native):
                 conversation_id = optional_string(native.get("id")) or optional_string(native.get("uuid"))
                 conversation_id = (
                     conversation_id

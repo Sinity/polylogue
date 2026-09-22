@@ -371,7 +371,8 @@ def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
 
 
-def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> None:
+def _compact_capture_payload(*, mapping: dict[str, object] | None = None) -> dict[str, object]:
+    """A `chatgpt-native-compact-v1` capture whose mapping the parser ignores."""
     payload = _capture_payload()
     session_payload = payload["session"]
     assert isinstance(session_payload, dict)
@@ -388,8 +389,15 @@ def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> Non
                     "content": {"parts": ["must not override envelope turns"]},
                 },
             }
-        },
+        }
+        if mapping is None
+        else mapping,
     }
+    return payload
+
+
+def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> None:
+    payload = _compact_capture_payload()
 
     parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
 
@@ -398,6 +406,64 @@ def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> Non
     assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in parsed.ingest_flags
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in parsed.ingest_flags
     assert DOM_FALLBACK_INGEST_FLAG not in parsed.ingest_flags
+
+
+def test_compact_capture_census_lowers_envelope_turns() -> None:
+    """The census must lower exactly the message ids the parser materializes.
+
+    `lower_chatgpt_documents` tested `raw_provider_payload["mapping"]` alone, so
+    a compact bridge projection was censused against a mapping
+    `browser_capture.parse` deliberately ignores: every one of its synthesized
+    node ids was reported as a conservation drop while the turns the archive
+    actually holds went uncounted.
+
+    Anti-vacuity: restore the bare
+    `isinstance(native.get("mapping"), dict)` test in
+    `polylogue/sources/dispatch.py` and the lowered document keys become
+    `{"untrusted-native-shape"}` instead of the parsed `{"u1", "a1"}`.
+    """
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    payload = _compact_capture_payload()
+    [document] = lower_chatgpt_documents(payload, "fallback")
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")[0]
+
+    assert set(document.mapping) == {message.provider_message_id for message in parsed.messages}
+    assert "untrusted-native-shape" not in document.mapping
+
+
+def test_compact_capture_census_survives_empty_mapping() -> None:
+    """An empty compact mapping is not a zero-content-unit session."""
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    payload = _compact_capture_payload(mapping={})
+    [document] = lower_chatgpt_documents(payload, "fallback")
+
+    assert set(document.mapping) == {"u1", "a1"}
+
+
+def test_native_capture_census_still_uses_the_mapping() -> None:
+    """A trusted (non-compact) native payload keeps its provider mapping."""
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    payload = _capture_payload()
+    payload["raw_provider_payload"] = {
+        "id": "native-conv",
+        "mapping": {
+            "native-node": {
+                "id": "native-node",
+                "message": {
+                    "id": "native-node",
+                    "author": {"role": "assistant"},
+                    "content": {"parts": ["native text"]},
+                },
+            }
+        },
+    }
+    [document] = lower_chatgpt_documents(payload, "fallback")
+
+    assert document.document_id == "native-conv"
+    assert set(document.mapping) == {"native-node"}
 
 
 def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() -> None:

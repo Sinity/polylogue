@@ -163,7 +163,16 @@ def looks_like(payload: object) -> bool:
     return looks_like_browser_capture(payload)
 
 
-def _has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
+def has_chatgpt_native_payload(payload: object) -> TypeGuard[Mapping[str, object]]:
+    """Whether a capture's raw provider payload is a trusted ChatGPT mapping.
+
+    The bridge's compact projection carries a ``mapping`` key the extension
+    synthesized rather than one ChatGPT asserted, so parsing materializes
+    ``envelope.session.turns`` for it instead. Anything reading the same
+    envelope -- the conservation census in ``sources/dispatch.py`` included --
+    must apply this predicate rather than testing ``mapping`` alone, or it
+    censuses message ids production deliberately never materializes.
+    """
     return (
         isinstance(payload, dict)
         and payload.get("polylogue_bridge_projection") != "chatgpt-native-compact-v1"
@@ -774,7 +783,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         legacy_browser_capture_native_id(provider, envelope.session.provider_session_id) or fallback_id
     )
     raw_provider_payload = envelope.raw_provider_payload
-    if envelope.session.provider is Provider.CHATGPT and _has_chatgpt_native_payload(raw_provider_payload):
+    if envelope.session.provider is Provider.CHATGPT and has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
         return _merge_envelope_session_events(
@@ -899,6 +908,7 @@ __all__ = [
     "DOM_FALLBACK_INGEST_FLAG",
     "NATIVE_BROWSER_CAPTURE_INGEST_FLAG",
     "TEMPORARY_CHAT_INGEST_FLAG",
+    "has_chatgpt_native_payload",
     "looks_like",
     "parse",
 ]
