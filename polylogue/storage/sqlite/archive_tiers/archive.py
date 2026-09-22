@@ -6763,6 +6763,7 @@ class ArchiveStore:
         roles: Sequence[str] = (),
         message_type: str | None = None,
         material_origins: Sequence[str] = (),
+        per_session_limit: int | None = None,
     ) -> list[ArchiveMessageQueryRow]:
         return _archive_query_reads.query_session_messages(
             self,
@@ -6773,6 +6774,7 @@ class ArchiveStore:
             roles=roles,
             message_type=message_type,
             material_origins=material_origins,
+            per_session_limit=per_session_limit,
         )
 
     def count_session_messages(
@@ -6900,9 +6902,15 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
+        per_session_limit: int | None = None,
     ) -> list[ArchiveActionQueryRow]:
         return _archive_query_reads.query_session_actions(
-            self, session_ids, limit=limit, offset=offset, sort_direction=sort_direction
+            self,
+            session_ids,
+            limit=limit,
+            offset=offset,
+            sort_direction=sort_direction,
+            per_session_limit=per_session_limit,
         )
 
     def query_session_action_occurrences(
@@ -6998,9 +7006,15 @@ class ArchiveStore:
         limit: int = 50,
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
+        per_session_limit: int | None = None,
     ) -> list[ArchiveFileQueryRow]:
         return _archive_query_reads.query_session_files(
-            self, session_ids, limit=limit, offset=offset, sort_direction=sort_direction
+            self,
+            session_ids,
+            limit=limit,
+            offset=offset,
+            sort_direction=sort_direction,
+            per_session_limit=per_session_limit,
         )
 
     def _query_file_counts(
@@ -7054,6 +7068,7 @@ class ArchiveStore:
         session_filters: Mapping[str, object] | None = None,
         sort: Literal["time"] | None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
+        per_target_limit: int | None = None,
     ) -> list[ArchiveAssertionQueryRow]:
         return _archive_query_reads.query_assertions(
             self,
@@ -7063,6 +7078,7 @@ class ArchiveStore:
             session_filters=session_filters,
             sort=sort,
             sort_direction=sort_direction,
+            per_target_limit=per_target_limit,
         )
 
     def query_runs(

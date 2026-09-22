@@ -31,20 +31,59 @@ if TYPE_CHECKING:
     from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-#: Declared ceiling on rows fetched per page across all selected sessions, so a
+#: Declared ceiling on the rows one session contributes to a projection, so a
 #: pathological session with thousands of assertions cannot blow up one page.
 #: The ceiling is real work protection and stays; what changed is that hitting
-#: it is now *reported*. It used to cut the projection in silence: a session
-#: with 250 messages answered ``with messages`` with exactly 200 rows, no flag
-#: anywhere in the result and a clean ``ok`` outcome -- a complete-looking
-#: projection over a truncated row set.
+#: it is now *reported* (it used to cut the projection in silence) and that it
+#: is the bound of each session rather than of the page.
 _MAX_ROWS_PER_SESSION = 200
+
+#: Declared ceiling on rows fetched per page across all selected sessions.
+#: It is shared out EQUALLY: every selected session gets the same allowance,
+#: so what a session receives no longer depends on how many sessions share
+#: the page or where its rows sort within it (polylogue-fvsjn).
 _MAX_ROWS_PER_PAGE = 5000
+
 _MAX_ATTACHED_TEXT_CHARS = 2000
 
 #: Named gap a bounded projection carries so the envelope degrades instead of
 #: reporting a cut row set as the session's complete one.
 ATTACHED_UNIT_TRUNCATED_GAP = "attached_unit_truncated"
+
+
+class AttachedUnitPageTooWideError(ValueError):
+    """The page holds more sessions than the page ceiling can give a row each.
+
+    A refusal rather than a smaller number, under the 2026-09-21 ruling: an
+    allowance of zero is not a bound on the answer, it is the absence of one,
+    and quietly serving nothing for every session would be the silent
+    truncation this module exists to stop reporting as a complete answer.
+    """
+
+    code = "attached_unit_page_exceeds_row_budget"
+
+    def __init__(self, session_count: int) -> None:
+        super().__init__(
+            f"{session_count} sessions on one page leave no rows per session "
+            f"within the declared page ceiling of {_MAX_ROWS_PER_PAGE}"
+        )
+        self.session_count = session_count
+
+
+def _per_session_allowance(session_count: int) -> int:
+    """Return the row allowance EVERY selected session gets on this page.
+
+    Equal by construction. The page ceiling used to be spent in the page's
+    own row order, so a long session could take the allowance a short one
+    never received -- and under a tail-first (``last:N``) read a short
+    session received zero rows while every other session was truncated. Both
+    declared ceilings still hold; only their distribution changed.
+    """
+
+    allowance = min(_MAX_ROWS_PER_SESSION, _MAX_ROWS_PER_PAGE // session_count)
+    if allowance < 1:
+        raise AttachedUnitPageTooWideError(session_count)
+    return allowance
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,8 +185,15 @@ def _fetch_unit_rows(
     predicate: QueryPredicate,
     *,
     limit: int,
+    per_session_limit: int,
     sort_direction: Literal["asc", "desc"] = "asc",
 ) -> Sequence[Any]:
+    """Fetch a predicate-scoped unit, bounded per owning target.
+
+    The assertion unit scopes by ``target_ref`` rather than a session column,
+    so its partition is named differently; it is the same bound.
+    """
+
     method_name = descriptor.sql_query_method
     if method_name is None:
         raise ValueError(f"query unit {descriptor.unit!r} is not wired to a SQL executor")
@@ -161,6 +207,7 @@ def _fetch_unit_rows(
             session_filters=None,
             sort="time",
             sort_direction=sort_direction,
+            per_target_limit=per_session_limit,
         ),
     )
 
@@ -171,6 +218,7 @@ def _fetch_session_unit_rows(
     session_ids: Sequence[str],
     *,
     limit: int,
+    per_session_limit: int,
     sort_direction: Literal["asc", "desc"] = "asc",
 ) -> Sequence[Any] | None:
     method_name = {
@@ -188,6 +236,7 @@ def _fetch_session_unit_rows(
             limit=limit,
             offset=0,
             sort_direction=sort_direction,
+            per_session_limit=per_session_limit,
         ),
     )
 
@@ -232,15 +281,25 @@ def fetch_attached_units(
     row payload model. Sessions with no rows for a unit are omitted from that
     unit's bucket.
 
-    ``gaps`` names every unit whose fetch reached ``fetch_limit``. One row past
-    the ceiling is requested and discarded, so reaching it is observed rather
-    than inferred from a row count that could legitimately equal the bound. The
-    gap is suppressed only when every selected session is *provably* complete
-    for that unit -- a ``first:N``/``last:N`` window whose ``N`` every session's
-    bucket already satisfies, which the matching fetch direction guarantees is
-    the correct N. Otherwise the ceiling may have cut a session's rows, and the
-    caller must degrade rather than present the bucket as that session's whole
-    row set.
+    Every selected session is bounded separately and equally, at
+    ``_per_session_allowance`` rows (polylogue-fvsjn). The bound therefore
+    belongs to the session rather than to the page: what a session receives
+    no longer depends on how many sessions share the page or where its rows
+    sort within it, and no session can be starved to zero rows while another
+    is truncated. A page holding more sessions than the page ceiling can give
+    one row each is refused by name rather than served an allowance of zero.
+
+    ``gaps`` names every unit for which at least one session actually reached
+    its bound. One row past each session's allowance is requested and
+    discarded, so the cut is observed per session rather than inferred from a
+    page-level row count that could legitimately equal the bound. The gap
+    carries the per-session bound, so the number it names is the number that
+    applied to each session. It is suppressed only when every *truncated*
+    session is provably complete for the requested ``first:N``/``last:N``
+    window -- the matching fetch direction guarantees that N is the correct
+    end. Otherwise the bound may have cut a session's rows, and the caller
+    must degrade rather than present the bucket as that session's whole row
+    set.
 
     ``unit_windows`` (polylogue-fnm.2) carries an optional per-unit
     :class:`~polylogue.archive.query.expression.WithUnitWindow`: bracket
@@ -251,10 +310,9 @@ def fetch_attached_units(
     narrow what is attached, they do not push a predicate down to the SQL
     fetch itself. A ``last:N`` window fetches that unit in descending time
     order instead of the default ascending order (then restores ascending
-    order before trimming), so the per-session/per-page row cap
-    (``_MAX_ROWS_PER_SESSION``) captures the session's tail instead of
-    silently capturing only its head -- without this, `last:N` on a session
-    with more than the cap's worth of rows would trim the wrong end.
+    order before trimming), so each session's allowance captures its tail
+    instead of silently capturing only its head -- without this, `last:N` on
+    a session with more than its allowance would trim the wrong end.
     Predicate + ``last:N`` together on a session whose *matching* rows are
     still sparser than the fetch cap can still under-fetch; that now lands in
     ``gaps`` like every other bounded fetch here rather than passing as a
@@ -268,8 +326,14 @@ def fetch_attached_units(
     predicate = _session_scope_predicate(session_ids)
     if predicate is None:
         return AttachedUnitRows(result)
-    fetch_limit = min(len(session_ids) * _MAX_ROWS_PER_SESSION, _MAX_ROWS_PER_PAGE)
-    selected = set(session_ids)
+    selected = list(dict.fromkeys(session_ids))
+    per_session_limit = _per_session_allowance(len(selected))
+    # One row beyond each session's allowance makes "the bound cut THIS
+    # session" observable. Without the probe row a session returning exactly
+    # its allowance is indistinguishable from one holding exactly that many.
+    probe_limit = per_session_limit + 1
+    fetch_limit = len(selected) * probe_limit
+    selected_ids = set(selected)
     for unit in units:
         descriptor = query_unit_descriptor(unit)
         if descriptor is None:
@@ -282,26 +346,42 @@ def fetch_attached_units(
         window = None if unit_windows is None else unit_windows.get(descriptor.unit)
         wants_tail = window is not None and window.window is not None and window.window[0] == "last"
         fetch_direction: Literal["asc", "desc"] = "desc" if wants_tail else "asc"
-        # One row beyond the ceiling makes "the ceiling bound this fetch"
-        # observable. Without the probe row a fetch returning exactly
-        # ``fetch_limit`` rows is indistinguishable from a population that
-        # happens to hold exactly that many.
-        probe_limit = fetch_limit + 1
-        rows = _fetch_session_unit_rows(
-            archive, descriptor, session_ids, limit=probe_limit, sort_direction=fetch_direction
+        fetched = _fetch_session_unit_rows(
+            archive,
+            descriptor,
+            selected,
+            limit=fetch_limit,
+            per_session_limit=probe_limit,
+            sort_direction=fetch_direction,
         )
-        if rows is None:
-            rows = _fetch_unit_rows(archive, descriptor, predicate, limit=probe_limit, sort_direction=fetch_direction)
-        ceiling_reached = len(rows) > fetch_limit
-        # Trim in fetch order, then restore ascending order: the probe row is
-        # the last row the fetch produced in whichever direction it ran.
-        rows = list(rows[:fetch_limit])
-        if fetch_direction == "desc":
-            rows = list(reversed(rows))
+        if fetched is None:
+            fetched = _fetch_unit_rows(
+                archive,
+                descriptor,
+                predicate,
+                limit=fetch_limit,
+                per_session_limit=probe_limit,
+                sort_direction=fetch_direction,
+            )
+        # Bucket in fetch order so the probe row is the LAST row of the
+        # session it belongs to, in whichever direction the fetch ran.
+        fetched_rows: dict[str, list[Any]] = {}
+        for row in fetched:
+            session_id = _row_session_id(row)
+            if session_id is None or session_id not in selected_ids:
+                continue
+            fetched_rows.setdefault(session_id, []).append(row)
+        truncated_sessions = {
+            session_id for session_id, session_rows in fetched_rows.items() if len(session_rows) > per_session_limit
+        }
+        rows: list[Any] = []
+        for session_id in selected:
+            session_rows = fetched_rows.get(session_id, ())[:per_session_limit]
+            rows.extend(reversed(session_rows) if fetch_direction == "desc" else session_rows)
         buckets: dict[str, list[JSONDocument]] = {}
         for row in rows:
             session_id = _row_session_id(row)
-            if session_id is None or session_id not in selected:
+            if session_id is None:
                 continue
             payload = cast(Any, payload_model).from_row(row)
             payload_document = model_json_document(payload, exclude_none=not bool(selected_fields))
@@ -320,12 +400,12 @@ def fetch_attached_units(
         result[descriptor.unit] = {
             session_id: tuple(_apply_window_trim(rows, window)) for session_id, rows in buckets.items()
         }
-        if ceiling_reached:
+        if truncated_sessions:
             window_count = window.window[1] if window is not None and window.window is not None else None
             provably_complete = window_count is not None and all(
-                len(buckets.get(session_id, ())) >= window_count for session_id in selected
+                len(buckets.get(session_id, ())) >= window_count for session_id in truncated_sessions
             )
-            gap = f"{ATTACHED_UNIT_TRUNCATED_GAP}:{descriptor.unit}:{fetch_limit}"
+            gap = f"{ATTACHED_UNIT_TRUNCATED_GAP}:{descriptor.unit}:{per_session_limit}"
             if not provably_complete and gap not in gaps:
                 gaps.append(gap)
     return AttachedUnitRows(result, tuple(gaps))

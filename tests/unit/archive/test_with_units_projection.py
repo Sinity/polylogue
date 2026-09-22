@@ -552,3 +552,114 @@ class TestAttachedRowCeilingIsReported:
             "m-0249",
         ]
         assert attached.gaps == ()
+
+
+class TestPageBudgetIsSharedEqually:
+    """Every selected session gets the same allowance on one page.
+
+    The page ceiling used to be spent in the page's own row order, so a long
+    session could take the allowance a short one never received. A *tail-first*
+    read is where that bit hardest: under ``last:N`` the descending fetch spent
+    the whole budget on the newest rows, which all belonged to the long
+    sessions, and a short session answered ``with messages`` with **zero**
+    rows. Nothing in the result distinguished "this session has no messages"
+    from "this session's allowance was eaten" (polylogue-fvsjn).
+
+    Uniform sessions cannot show this: a flat page limit spread over equal-size
+    sessions already lands on roughly equal counts. The defect needs the skew
+    below -- one short session whose rows sort behind a crowd of long ones.
+    """
+
+    @staticmethod
+    def _seed_skewed(tmp_path: Path) -> tuple[str, list[str]]:
+        """One short session, then enough long ones to overrun the page budget."""
+        from tests.infra.storage_records import SessionBuilder
+
+        ids: list[str] = []
+        for name, count in [("short-000", 5)] + [(f"long-{i:03d}", 400) for i in range(13)]:
+            builder = SessionBuilder(tmp_path / "index.db", name).provider("claude-code").title(name)
+            for index in range(count):
+                builder = builder.add_message(
+                    f"m-{index:04d}",
+                    role="user" if index % 2 == 0 else "assistant",
+                    text=f"body {index}",
+                )
+            builder.save()
+            ids.append(f"claude-code-session:ext-{name}")
+        return ids[0], ids
+
+    def test_a_tail_window_does_not_starve_the_short_session(self, tmp_path: Path) -> None:
+        """The short session gets its full ``last:5``, like every other session.
+
+        Anti-vacuity (executed, not asserted): make ``_per_session_allowance``
+        ignore ``session_count`` and cap the fetch at ``_MAX_ROWS_PER_PAGE``
+        -- the pre-fvsjn shared budget -- and this short session comes back
+        with 0 rows while all 13 long sessions hold 5. Measured red before
+        this test was written.
+        """
+        short_id, session_ids = self._seed_skewed(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(
+                archive,
+                session_ids,
+                ["message"],
+                unit_windows={"message": WithUnitWindow(predicates=(), window=("last", 5))},
+            )
+        counts = {sid: len(attached.rows["message"].get(sid, ())) for sid in session_ids}
+        assert counts[short_id] == 5, f"short session starved: {counts[short_id]} rows"
+        assert set(counts.values()) == {5}, f"unequal windows: {sorted(set(counts.values()))}"
+        assert attached.gaps == ()
+
+    def test_every_session_on_a_wide_page_gets_the_same_allowance(self, tmp_path: Path) -> None:
+        """A page wide enough to truncate still truncates every session equally.
+
+        Anti-vacuity: the allowance is ``_MAX_ROWS_PER_PAGE // session_count``
+        once that is below ``_MAX_ROWS_PER_SESSION``; return the per-session
+        cap unconditionally and the counts stop depending on how many sessions
+        share the page, which is the order-dependence this pins against.
+        """
+        _short_id, session_ids = self._seed_skewed(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(archive, session_ids, ["message"])
+        counts = {sid: len(attached.rows["message"].get(sid, ())) for sid in session_ids}
+        long_counts = {n for sid, n in counts.items() if sid != _short_id}
+        assert len(long_counts) == 1, f"unequal allowances: {sorted(long_counts)}"
+        allowance = next(iter(long_counts))
+        assert counts[_short_id] == 5, "a session below the allowance keeps all its rows"
+        assert attached.gaps == (f"attached_unit_truncated:message:{allowance}",)
+
+
+class TestPageWiderThanTheBudgetIsRefused:
+    """An allowance of zero is refused, not served as an empty answer.
+
+    Under the 2026-09-21 ruling a computed answer is bounded by a typed
+    refusal or not at all. A page holding more sessions than the ceiling can
+    give a row each has no allowance to distribute, and returning nothing for
+    every session would be exactly the silent truncation this module exists
+    to stop reporting as complete.
+    """
+
+    def test_a_page_with_no_row_per_session_raises(self) -> None:
+        """Anti-vacuity: return ``max(1, ...)`` instead of raising and the call
+        succeeds while serving one row per session for a page that asked for
+        thousands -- a bound presented as an answer."""
+        from polylogue.archive.query.attached_units import (
+            _MAX_ROWS_PER_PAGE,
+            AttachedUnitPageTooWideError,
+            _per_session_allowance,
+        )
+
+        with pytest.raises(AttachedUnitPageTooWideError) as refusal:
+            _per_session_allowance(_MAX_ROWS_PER_PAGE + 1)
+        assert refusal.value.session_count == _MAX_ROWS_PER_PAGE + 1
+        assert refusal.value.code == "attached_unit_page_exceeds_row_budget"
+
+    def test_the_widest_servable_page_is_not_refused(self) -> None:
+        """Pins the opposite direction so "refuse everything" fails.
+
+        Anti-vacuity: raise on ``allowance <= 1`` instead of ``< 1`` and the
+        widest page that can still serve a row each is wrongly refused.
+        """
+        from polylogue.archive.query.attached_units import _MAX_ROWS_PER_PAGE, _per_session_allowance
+
+        assert _per_session_allowance(_MAX_ROWS_PER_PAGE) == 1
