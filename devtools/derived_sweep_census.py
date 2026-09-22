@@ -106,12 +106,15 @@ What this census cannot see, stated plainly
 The declaration's floor is honest on purpose
 --------------------------------------------
 
-Most entries are pinned ``unclassified``. That token means the census **saw**
-the site, not that the site is legitimate. The enforced property today is that a
-new derived-tier corrective sweep, or a new read-path substitution, cannot
-appear undeclared -- not that the existing ones have been adjudicated. Replacing
-``unclassified`` with a real classification is the adjudication pass, and the
-gate's success line is not a clean bill of health until it is done.
+``unclassified`` means the census **saw** the site, not that the site is
+legitimate. It is where a newly-observed sweep or substitution arrives: the
+enforced property is that a new one cannot appear undeclared.
+
+An empty floor is not a standing invariant and the gate does not enforce one: a
+new site lands at the floor and stays there until someone reads the call site.
+When a site fits no permitted member, it stays ``unclassified`` with a reason
+saying so -- that is a finding about the route, not pending work. Stretching a
+member to cover it would destroy the only signal this census produces.
 
 Regenerate the declaration with :func:`render_declaration`.
 """
@@ -732,8 +735,9 @@ _DECLARATION_HEADER = """\
 #
 # `unclassified` means the census SAW the site, not that the site is legitimate.
 # It is the ratchet's floor: a NEW archive-wide derived sweep, or a NEW read-path
-# substitution, cannot appear undeclared. Replacing it with a real classification
-# is the adjudication pass, and until then this file is not a proof of absence.
+# substitution, cannot appear undeclared, and a new one arrives at that floor.
+# Every entry below has been adjudicated; a reason that says no permitted member
+# fits is a finding, not pending work.
 package: polylogue
 sites:
 """

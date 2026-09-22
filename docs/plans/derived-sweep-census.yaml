@@ -13,85 +13,85 @@ sites:
     subject: "archive"
     kind: "read_path_substitution"
     scope: "read_only_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: presentation_projection
+    reason: "the compact envelope is built with model_copy over a payload this same call composed in memory -- it reads no stored field and touches no database. The substituted members are the caps the compact form declares (changed_paths[:8], peers[:4], resource_episodes[:4]), and the session-tree branch carries its own trim into nodes_complete/edges_complete/truncated_*_count rather than handing back a partial tree that claims to be whole"
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "beads"
     kind: "read_path_substitution"
     scope: "read_only_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: presentation_projection
+    reason: "the compact envelope is built with model_copy over a payload this same call composed in memory -- it reads no stored field and touches no database. The substituted members are the caps the compact form declares (changed_paths[:8], peers[:4], resource_episodes[:4]), and the session-tree branch carries its own trim into nodes_complete/edges_complete/truncated_*_count rather than handing back a partial tree that claims to be whole"
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "changed_paths"
     kind: "read_path_substitution"
     scope: "read_only_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: presentation_projection
+    reason: "the compact envelope is built with model_copy over a payload this same call composed in memory -- it reads no stored field and touches no database. The substituted members are the caps the compact form declares (changed_paths[:8], peers[:4], resource_episodes[:4]), and the session-tree branch carries its own trim into nodes_complete/edges_complete/truncated_*_count rather than handing back a partial tree that claims to be whole"
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "repo"
     kind: "read_path_substitution"
     scope: "read_only_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: presentation_projection
+    reason: "the compact envelope is built with model_copy over a payload this same call composed in memory -- it reads no stored field and touches no database. The substituted members are the caps the compact form declares (changed_paths[:8], peers[:4], resource_episodes[:4]), and the session-tree branch carries its own trim into nodes_complete/edges_complete/truncated_*_count rather than handing back a partial tree that claims to be whole"
   - file: "polylogue/coordination/envelope.py"
     function: "_compact_coordination_payload"
     subject: "resource_episodes"
     kind: "read_path_substitution"
     scope: "read_only_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: presentation_projection
+    reason: "the compact envelope is built with model_copy over a payload this same call composed in memory -- it reads no stored field and touches no database. The substituted members are the caps the compact form declares (changed_paths[:8], peers[:4], resource_episodes[:4]), and the session-tree branch carries its own trim into nodes_complete/edges_complete/truncated_*_count rather than handing back a partial tree that claims to be whole"
   - file: "polylogue/daemon/status.py"
     function: "build_daemon_status"
     subject: "overall_status"
     kind: "read_path_substitution"
     scope: "read_only_module"
     classification: presentation_projection
-    reason: "composes the reported health verdict from component observations this call just read; overall_status is not a stored producer output"
+    reason: "verified at this head: overall_status is composed here from the component snapshot states this call just read, and the only substitution is fail-closed -- a collected HealthSeverity.OK is ESCALATED to WARNING/ERROR when its own snapshot is unavailable/timed_out/degraded/refreshing, with a named status_component_observation alert appended. It can never report clean for a collector that did not complete, and it is not a read of a stored producer output"
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_preacquire_sidecar_blobs"
     subject: "payload"
     kind: "read_path_substitution"
     scope: "writing_module"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: producer_scoped_transaction
+    reason: "the ingest producer composing the event payload it is about to write: _preacquire_sidecar_blobs publishes the matched sidecar bytes through the archive blob store and copies the resulting blob_hash back onto the session event via model_copy, before write_parsed_session_to_archive stores it. Nothing stored is read back and substituted; blocks.text is explicitly not touched"
   - file: "polylogue/storage/derived/session/rebuild.py"
     function: "_delete_orphan_session_insights_async"
     subject: "session_latency_profiles"
     kind: "unbound_rewrite"
     scope: "state_predicate"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: declared_retention
+    reason: "DELETE FROM <per-session insight table> WHERE session_id NOT IN (SELECT session_id FROM sessions): the referential rule the index tier's own ON DELETE CASCADE declares, applied explicitly because bulk ingest and maintenance paths mutate sessions with foreign_keys disabled. It drops only rows whose owning session no longer exists and rewrites nothing that is retained"
   - file: "polylogue/storage/derived/session/rebuild.py"
     function: "_delete_orphan_session_insights_async"
     subject: "session_profiles"
     kind: "unbound_rewrite"
     scope: "state_predicate"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: declared_retention
+    reason: "DELETE FROM <per-session insight table> WHERE session_id NOT IN (SELECT session_id FROM sessions): the referential rule the index tier's own ON DELETE CASCADE declares, applied explicitly because bulk ingest and maintenance paths mutate sessions with foreign_keys disabled. It drops only rows whose owning session no longer exists and rewrites nothing that is retained"
   - file: "polylogue/storage/derived/session/rebuild.py"
     function: "_delete_orphan_session_insights_sync"
     subject: "session_latency_profiles"
     kind: "unbound_rewrite"
     scope: "state_predicate"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: declared_retention
+    reason: "DELETE FROM <per-session insight table> WHERE session_id NOT IN (SELECT session_id FROM sessions): the referential rule the index tier's own ON DELETE CASCADE declares, applied explicitly because bulk ingest and maintenance paths mutate sessions with foreign_keys disabled. It drops only rows whose owning session no longer exists and rewrites nothing that is retained"
   - file: "polylogue/storage/derived/session/rebuild.py"
     function: "_delete_orphan_session_insights_sync"
     subject: "session_profiles"
     kind: "unbound_rewrite"
     scope: "state_predicate"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: declared_retention
+    reason: "DELETE FROM <per-session insight table> WHERE session_id NOT IN (SELECT session_id FROM sessions): the referential rule the index tier's own ON DELETE CASCADE declares, applied explicitly because bulk ingest and maintenance paths mutate sessions with foreign_keys disabled. It drops only rows whose owning session no longer exists and rewrites nothing that is retained"
   - file: "polylogue/storage/embeddings/materialization.py"
     function: "_mark_all_archive_sessions_needs_reindex"
     subject: "embedding_derivation_state"
     kind: "unbound_rewrite"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: operator_mutation
+    reason: "reached only from the explicit CLI route at cli/commands/embed.py:664 through mark_all_archive_sessions_needs_reindex, which takes the archive write lease and holds the embeddings generation writer lock, asserting the binding afterwards. No recurring daemon pass calls it. It marks the whole embeddings tier pending for re-derivation; it corrects no derived value"
   - file: "polylogue/storage/fts/derivation.py"
     function: "FtsDerivationAdapter._publish_orphans"
     subject: "messages_fts"
@@ -111,15 +111,15 @@ sites:
     subject: "action_pairs"
     kind: "unbound_rewrite"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: whole_relation_derivation
+    reason: "bulk-generation repopulate: the relation is emptied and re-derived in full from canonical index rows in the same call -- action_pairs from the archive-wide action-pair statement, delegation_facts from delegation_facts_source, messages_fts from blocks WHERE search_text != ''. A producer defect reappears on the next pass instead of being corrected away, and no row survives the delete to be patched"
   - file: "polylogue/storage/sqlite/archive_tiers/archive.py"
     function: "ArchiveStore.delete_sessions"
     subject: "derived_refresh_guard"
     kind: "unbound_rewrite"
     scope: "state_predicate"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: producer_scoped_transaction
+    reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in delete_sessions, from a finally block). The subject is the one row this call created, not archive state"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "_prepared_message_context"
     subject: "branch_type"
@@ -132,57 +132,57 @@ sites:
     subject: "claimant_clause"
     kind: "omissible_scope"
     scope: "omissible"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: producer_scoped_transaction
+    reason: "runs inside _write_session_identity_claims, invalidating exactly the session_links rows whose dst identity this write just contested. On the branch that omits the claimant clause the selection is still bound by the caller-supplied dst_origin and the dst_native_id set the current session is claiming, so the omissible fragment narrows an already-bound subject rather than opening it to archive state"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "rebuild_archive_messages_fts"
     subject: "messages_fts"
     kind: "state_selected_subject"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: whole_relation_derivation
+    reason: "bulk-generation repopulate: the relation is emptied and re-derived in full from canonical index rows in the same call -- action_pairs from the archive-wide action-pair statement, delegation_facts from delegation_facts_source, messages_fts from blocks WHERE search_text != ''. A producer defect reappears on the next pass instead of being corrected away, and no row survives the delete to be patched"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "rebuild_archive_messages_fts"
     subject: "messages_fts"
     kind: "unbound_rewrite"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: whole_relation_derivation
+    reason: "bulk-generation repopulate: the relation is emptied and re-derived in full from canonical index rows in the same call -- action_pairs from the archive-wide action-pair statement, delegation_facts from delegation_facts_source, messages_fts from blocks WHERE search_text != ''. A producer defect reappears on the next pass instead of being corrected away, and no row survives the delete to be patched"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "write_parsed_session_to_archive"
     subject: "derived_refresh_guard"
     kind: "unbound_rewrite"
     scope: "state_predicate"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: producer_scoped_transaction
+    reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in delete_sessions, from a finally block). The subject is the one row this call created, not archive state"
   - file: "polylogue/storage/sqlite/archive_tiers/write.py"
     function: "write_parsed_session_to_archive"
     subject: "sessions"
     kind: "state_selected_subject"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: producer_scoped_transaction
+    reason: "the unbound read the census paired with this function's writes is `SELECT 1 FROM sessions LIMIT 1` at write.py:1356 -- the fresh_build emptiness precondition, which raises AssertionError('fresh_build requires an empty archive generation') and selects no rewrite subject at all. Every row this function writes is the session it was handed. The census over-reports here by construction, as its module docstring states"
   - file: "polylogue/storage/sqlite/delegation_facts.py"
     function: "rebuild_all_delegation_facts_sync"
     subject: "delegation_facts"
     kind: "unbound_rewrite"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: whole_relation_derivation
+    reason: "bulk-generation repopulate: the relation is emptied and re-derived in full from canonical index rows in the same call -- action_pairs from the archive-wide action-pair statement, delegation_facts from delegation_facts_source, messages_fts from blocks WHERE search_text != ''. A producer defect reappears on the next pass instead of being corrected away, and no row survives the delete to be patched"
   - file: "polylogue/storage/sqlite/delegation_facts.py"
     function: "rebuild_all_delegation_facts_sync"
     subject: "delegation_refresh_scope"
     kind: "unbound_rewrite"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: producer_scoped_transaction
+    reason: "delegation_refresh_scope is a scratch allow-list this same function populates and clears: both writers insert the scope rows, run delegation_facts_insert_sql against them, and delete exactly those rows in a finally block. The subject set is precisely what this call inserted"
   - file: "polylogue/storage/sqlite/delegation_facts.py"
     function: "refresh_delegation_facts"
     subject: "delegation_refresh_scope"
     kind: "unbound_rewrite"
     scope: "no_where"
-    classification: unclassified
-    reason: "pinned by the initial census; adjudication is follow-up work"
+    classification: producer_scoped_transaction
+    reason: "delegation_refresh_scope is a scratch allow-list this same function populates and clears: both writers insert the scope rows, run delegation_facts_insert_sql against them, and delete exactly those rows in a finally block. The subject set is precisely what this call inserted"
   - file: "polylogue/storage/sqlite/queries/attachment_mutations.py"
     function: "prune_attachments"
     subject: "attachments"
