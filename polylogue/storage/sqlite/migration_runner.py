@@ -126,7 +126,7 @@ def durable_migration_claim_for_sql(
         path=str(migration_path),
         owner_ref=owner_ref or str(migration_path),
         sql_sha256=hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-        requires_backup=_requires_migration_backup(sql),
+        requires_backup=_requires_migration_backup(migration_path, sql),
     )
 
 
@@ -184,15 +184,67 @@ def _migration_package(tier: ArchiveTier) -> str:
     return f"polylogue.storage.sqlite.migrations.{tier.value}"
 
 
-def _requires_migration_backup(sql: str) -> bool:
+#: Statement shapes an ``additive-no-backup`` migration may contain. Each
+#: creates a schema object and cannot destroy, rewrite or move a stored row, so
+#: a durable tier that applies one has nothing to recover. ``CREATE TRIGGER`` is
+#: deliberately absent: it destroys nothing when applied, but it arms future
+#: writes against existing rows, which is not what "additive" claims.
+_ADDITIVE_STATEMENT_RE = re.compile(
+    r"^CREATE\s+(?:TABLE|VIEW|(?:UNIQUE\s+)?INDEX)\b",
+    re.IGNORECASE,
+)
+#: ``CREATE TABLE … AS SELECT`` writes rows at apply time, so it is a create
+#: statement that is not additive-only.
+_CREATE_TABLE_AS_RE = re.compile(r"^CREATE\s+TABLE\b.*\bAS\b\s*(?:WITH|SELECT|VALUES)\b", re.IGNORECASE | re.DOTALL)
+
+
+def _iter_migration_statements(sql: str) -> Iterable[str]:
+    """Yield each complete statement with leading comments and blanks removed."""
+    statement = ""
+    for line in sql.splitlines(keepends=True):
+        statement += line
+        if sqlite3.complete_statement(statement) and statement.strip():
+            yield re.sub(r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*", "", statement).strip()
+            statement = ""
+        elif sqlite3.complete_statement(statement):
+            statement = ""
+    trailing = re.sub(r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*", "", statement).strip()
+    if trailing:
+        yield trailing
+
+
+def _assert_additive_migration_sql(path: Path, sql: str) -> None:
+    """Refuse an ``additive-no-backup`` claim the migration's own SQL contradicts.
+
+    The marker waives the verified-backup requirement on an irreplaceable
+    durable tier, and it was a self-declaration nothing checked: any statement
+    could sit under a header claiming the file only adds schema objects. The
+    classification is the one the runner already acts on, so prove it here,
+    once, at the discovery choke point every caller passes through.
+    """
+    for statement in _iter_migration_statements(sql):
+        if _ADDITIVE_STATEMENT_RE.match(statement) is None or _CREATE_TABLE_AS_RE.match(statement) is not None:
+            leading = " ".join(statement.split()[:4])
+            raise MigrationError(
+                f"{path.name} claims {_ADDITIVE_NO_BACKUP_MARKER!r} but contains a "
+                f"statement that is not additive-only: {leading}"
+            )
+
+
+def _requires_migration_backup(path: Path, sql: str) -> bool:
     """A migration opts out of the backup requirement only via a header directive.
 
     Substring matching would waive the backup requirement if the marker text
     ever appeared in a comment, SQL string literal, or later in the file --
-    require it to be the file's first non-blank line instead.
+    require it to be the file's first non-blank line instead. The claim is then
+    checked against the statements the file actually carries, so the waiver is
+    proven rather than asserted.
     """
     first_nonblank = next((line.strip() for line in sql.splitlines() if line.strip()), "")
-    return first_nonblank != _ADDITIVE_NO_BACKUP_MARKER
+    if first_nonblank != _ADDITIVE_NO_BACKUP_MARKER:
+        return True
+    _assert_additive_migration_sql(path, sql)
+    return False
 
 
 def migration_sort_key(name: str) -> tuple[int, str]:
