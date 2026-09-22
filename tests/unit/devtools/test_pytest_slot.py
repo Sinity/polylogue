@@ -423,13 +423,31 @@ def test_the_slot_runner_runs_a_selection_through_devtools_test(monkeypatch: pyt
     assert pytest_slot.main([]) == 2
 
 
+#: How long the backgrounded descendant sleeps before it touches its marker.
+#: The reap happens within milliseconds of the SIGTERM, so a check taken
+#: before this instant cannot distinguish a reaped descendant from one that is
+#: merely still sleeping -- which is exactly how this test used to pass under
+#: its own named mutation.
+_DESCENDANT_MARKER_DELAY_S = 2.0
+
+
 @pytest.mark.uses_real_clock("exercises a real signal deadline and process-group reap")
 def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path) -> None:
     """An external deadline retains progress even when pytest cannot finalize reports.
 
     Anti-vacuity: removing the signal handler loses the sibling receipt; omitting
-    ``start_new_session`` leaves the sleeping descendant alive after the runner
-    exits.
+    ``start_new_session`` from the ``Popen`` in ``devtools.pytest_slot`` leaves
+    the sleeping descendant in the runner's own process group, where
+    ``killpg`` never reaches it, and the marker below appears. Both were
+    executed against this file: the second one is red here.
+
+    The wait is derived from the descendant's own marker delay rather than
+    left at a fixed 0.1 s. Measured, the 0.1 s form is red under that mutation
+    too -- but only because the runner's SIGTERM escalation happens to take
+    longer than the descendant's 2 s sleep, so ``process.wait()`` returns after
+    the marker already exists. That is a property of the reap's escalation
+    budget, not of this test; shorten the escalation and the fixed margin
+    silently stops proving anything.
     """
     log_path = tmp_path / "pytest-slot-1.log"
     launch_path = tmp_path / "launch.json"
@@ -437,7 +455,7 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
     started = tmp_path / "started"
     survivor = tmp_path / "survivor"
     events_path.write_text(json.dumps({"event": "test_report", "outcome": "passed"}) + "\n", encoding="utf-8")
-    child = f"touch {started}; (sleep 2; touch {survivor}) & sleep 30"
+    child = f"touch {started}; (sleep {_DESCENDANT_MARKER_DELAY_S:g}; touch {survivor}) & sleep 30"
     launch_path.write_text(
         json.dumps(
             {
@@ -457,6 +475,7 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
         deadline = time.monotonic() + 5
         while not started.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
+        signalled_at = time.monotonic()
         process.send_signal(signal.SIGTERM)
         assert process.wait(timeout=5) == 128 + signal.SIGTERM
     finally:
@@ -468,7 +487,12 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
     assert receipt["diagnosis"] == "pytest_deadline"
     assert receipt["elapsed_s"] >= 0
     assert receipt["progress"]["terminal_count"] == 1
-    time.sleep(0.1)
+    # The descendant began its sleep at or before the signal, so waiting past
+    # that sleep from the signal instant is a strict upper bound on when a
+    # surviving descendant would have written its marker.
+    marker_due = signalled_at + _DESCENDANT_MARKER_DELAY_S + 0.5
+    while time.monotonic() < marker_due:
+        time.sleep(0.05)
     assert not survivor.exists()
 
 

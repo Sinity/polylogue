@@ -760,19 +760,24 @@ def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monke
     assert current_mib + _peak_mib(workers) <= PYTEST_SLICE_HIGH_MIB
 
 
-#: The 2026-09-21 complete-corpus run, as its own sampler recorded it.
+#: A complete-corpus run's own sampler output, in the sampler's shape.
 #:
-#: Receipt ``.cache/verify/runs/20260921T010003Z-all-2490183-814ed21d``: width
-#: 2, 23,526 collected, 9,783 s, no pressure kill. Reproduced here in the
-#: sampler's own shape so the profile constants are checked against a real
-#: observation rather than against themselves. Rounded to whole KiB from the
-#: receipt; the comparisons below are MiB-scale and do not turn on the digits.
+#: The 2026-09-21 width-2 run: 23,526 collected, 9,783 s, no pressure kill,
+#: two xdist workers and one controller. The memory figures are that run's,
+#: rounded to whole KiB, so the profile constants are checked against a real
+#: observation rather than against themselves; the comparisons below are
+#: MiB-scale and do not turn on the digits.
+#:
+#: The process IDs are SYNTHETIC. Nothing reads them -- ``corroborate_profile``
+#: ranks by ``peak_private_kib`` and reports the winner's id -- and a tracked
+#: fixture is public, so the local run's pids and its ``.cache/verify/runs``
+#: directory name are not copied here.
 _OBSERVED_CORPUS_RUN: Mapping[str, object] = {
     "peak": {"rss_kib": 9943256, "pss_kib": 9852903, "private_kib": 9840040, "swap_kib": 0},
     "processes": [
-        {"pid": 2504863, "command": "python", "peak_rss_kib": 4852908, "peak_private_kib": 4837220},
-        {"pid": 2504843, "command": "python", "peak_rss_kib": 4608688, "peak_private_kib": 4588408},
-        {"pid": 2497861, "command": "python", "peak_rss_kib": 890344, "peak_private_kib": 872068},
+        {"pid": 1001, "command": "python", "peak_rss_kib": 4852908, "peak_private_kib": 4837220},
+        {"pid": 1002, "command": "python", "peak_rss_kib": 4608688, "peak_private_kib": 4588408},
+        {"pid": 1003, "command": "python", "peak_rss_kib": 890344, "peak_private_kib": 872068},
     ],
 }
 _OBSERVED_SIZING: Mapping[str, object] = {"workers": 2, "available_mib": 11478}

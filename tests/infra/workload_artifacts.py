@@ -208,15 +208,30 @@ class ArtifactResourceMeasurement:
         return cls(total_bytes=0, file_count=0, build_seconds=0.0, row_counts={})
 
 
+#: Where a recorded peak RSS came from. Declared here rather than inferred at
+#: read time, so a receipt that could not reset the kernel watermark says so
+#: instead of quietly reporting a neighbouring workload's high-water mark.
+_PEAK_RSS_SOURCES = ("interval", "process_lifetime")
+
+
 @dataclass(frozen=True)
 class FinishedBuildResourceMeasurement:
     """Physical evidence from one completed build interval.
 
-    The counters retain their collection boundary. ``ru_maxrss`` is this
-    process's high-water mark, and ``RUSAGE_CHILDREN`` is cumulative, so
-    neither is presented as an invented per-worker allocation. A caller that
-    starts isolated production arms can compare the values directly; callers
-    sharing a process retain the evidence but must not claim it is exclusive.
+    The counters retain their collection boundary. ``RUSAGE_CHILDREN`` is
+    cumulative, so it is not presented as an invented per-worker allocation. A
+    caller that starts isolated production arms can compare the values
+    directly; callers sharing a process retain the evidence but must not claim
+    it is exclusive.
+
+    ``peak_rss_source`` names where the peak came from, because the two
+    sources do not answer the same question. ``interval`` means the kernel's
+    RSS high-water mark was reset at :meth:`FinishedBuildResourceProbe.start`
+    and this is the interval's own peak. ``process_lifetime`` means the reset
+    was unavailable and ``ru_maxrss`` is reported unchanged: a mark set by
+    anything the process did earlier -- for this measurement, the module-scoped
+    210 MB sealed-input template built before any arm runs -- is then included,
+    and the value is a ceiling on the arm rather than a reading of it.
     """
 
     elapsed_seconds: float
@@ -226,6 +241,7 @@ class FinishedBuildResourceMeasurement:
     read_io_bytes: int
     write_io_bytes: int
     storage_bytes: int
+    peak_rss_source: str = "process_lifetime"
 
     def __post_init__(self) -> None:
         if (
@@ -241,6 +257,8 @@ class FinishedBuildResourceMeasurement:
             < 0
         ):
             raise ValueError("finished-build resource measurement cannot be negative")
+        if self.peak_rss_source not in _PEAK_RSS_SOURCES:
+            raise ValueError(f"unsupported finished-build peak RSS source: {self.peak_rss_source}")
 
     def to_payload(self) -> dict[str, object]:
         return asdict(self)
@@ -261,6 +279,7 @@ class FinishedBuildResourceProbe:
     child_cpu_seconds: float
     read_io_bytes: int
     write_io_bytes: int
+    peak_rss_reset: bool = False
     _finished: bool = False
 
     @classmethod
@@ -273,6 +292,13 @@ class FinishedBuildResourceProbe:
             child_cpu_seconds=child_usage.ru_utime + child_usage.ru_stime,
             read_io_bytes=_process_io_bytes("read_bytes"),
             write_io_bytes=_process_io_bytes("write_bytes"),
+            # Every other counter here is a delta the probe can subtract.
+            # ``ru_maxrss`` is not: it is a maximum, so an earlier peak in the
+            # same process survives every subtraction and a later, smaller arm
+            # inherits it. The sealed-input template is built once per module
+            # and is 210 MB of raw payload, so without this reset the arm that
+            # follows it reports the template's mark as its own.
+            peak_rss_reset=_reset_peak_rss(),
         )
 
     def finish(self, storage_root: Path) -> FinishedBuildResourceMeasurement:
@@ -281,11 +307,14 @@ class FinishedBuildResourceProbe:
             raise RuntimeError("finished-build resource probe has already been closed")
         self_usage = resource.getrusage(resource.RUSAGE_SELF)
         child_usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        interval_peak_kib = _peak_rss_kib() if self.peak_rss_reset else None
         measurement = FinishedBuildResourceMeasurement(
             elapsed_seconds=max(time.monotonic() - self.started, 0.0),
             self_cpu_seconds=max((self_usage.ru_utime + self_usage.ru_stime) - self.self_cpu_seconds, 0.0),
             child_cpu_seconds=max((child_usage.ru_utime + child_usage.ru_stime) - self.child_cpu_seconds, 0.0),
-            peak_rss_self_bytes=max(self_usage.ru_maxrss, 0) * 1024,
+            peak_rss_self_bytes=(interval_peak_kib if interval_peak_kib is not None else max(self_usage.ru_maxrss, 0))
+            * 1024,
+            peak_rss_source="interval" if interval_peak_kib is not None else "process_lifetime",
             read_io_bytes=max(_process_io_bytes("read_bytes") - self.read_io_bytes, 0),
             write_io_bytes=max(_process_io_bytes("write_bytes") - self.write_io_bytes, 0),
             # An owned inactive generation links durable source tiers rather
@@ -1462,6 +1491,37 @@ def _measure_rows(root: Path) -> dict[str, int]:
     finally:
         os.close(db_fd)
     return counts
+
+
+def _reset_peak_rss() -> bool:
+    """Reset this process's RSS high-water mark; False where unavailable.
+
+    ``5`` is the one ``clear_refs`` operation that touches nothing but
+    ``VmHWM`` (``CLEAR_REFS_MM_HIWATER_RSS``): it clears no referenced or
+    soft-dirty bits and unmaps nothing.  Linux-only and refusable by kernel
+    hardening, in which case the caller reports the lifetime mark and labels
+    it as such rather than presenting it as an interval reading.
+    """
+    try:
+        with open("/proc/self/clear_refs", "w", encoding="utf-8") as handle:
+            handle.write("5")
+    except OSError:
+        return False
+    return True
+
+
+def _peak_rss_kib() -> int | None:
+    """``VmHWM`` in KiB, or None where ``/proc/self/status`` is unreadable."""
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                field, _, rest = line.partition(":")
+                if field == "VmHWM":
+                    parts = rest.split()
+                    return max(int(parts[0]), 0) if parts else None
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def _process_io_bytes(field_name: str) -> int:

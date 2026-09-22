@@ -379,6 +379,12 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert complete["result"] == "pytest"
     assert complete["cache"] == "tree+environment"
     assert complete["timeout_seconds"] == 14400
+    # The 03:00 `job fire` passes no workspace at all, so the schedule is what
+    # makes "candidate" reach an integrated tree. A change that deletes the
+    # schedule publishes green while silently disabling the only scheduled
+    # full-corpus verification, so pin it here beside the checkout it depends on.
+    # Anti-vacuity: delete the schedule from the descriptor and this goes red.
+    assert complete["schedule"] == "*-*-* 03:00"
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
 

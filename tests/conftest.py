@@ -58,9 +58,28 @@ if TYPE_CHECKING:
 _SESSION_ARCHIVE_ROOT: Path | None = None
 
 
+#: Opt-in destination for the anonymous-memory retention probe
+#: (``tests/infra/retention_probe.py``).  Unset, nothing is imported and no
+#: hook runs; the probe is a diagnostic for the worker-memory ceiling that
+#: sizes ``devtools.worker_memory.CORPUS_MAX_WORKERS``, not a standing cost.
+RETENTION_PROBE_ENV = "POLYLOGUE_TEST_RETENTION_PROBE"
+#: Treatment arm for the same probe: ``malloc_trim(0)`` every N tests. Two
+#: runs over one selection, one with this set, measure how much of a worker's
+#: ceiling is memory the process had already freed.
+RETENTION_TRIM_ENV = "POLYLOGUE_TEST_RETENTION_TRIM"
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Refuse a test run that imports the product from another checkout, or bypasses the harness in a lane."""
-    del config
+    destination = os.environ.get(RETENTION_PROBE_ENV, "").strip()
+    if destination:
+        from tests.infra.retention_probe import RetentionProbe
+
+        probe = RetentionProbe(
+            report_path=Path(destination),
+            trim_every=int(os.environ.get(RETENTION_TRIM_ENV, "0") or "0"),
+        )
+        config.pluginmanager.register(probe, "polylogue-retention-probe")
     if _CHECKOUT_GUARD_ERROR is not None:
         raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
     bare = refuse_bare_pytest(os.environ)
@@ -206,6 +225,96 @@ def _file_batch(path: Path, count: int) -> int:
     return zlib.crc32(path.as_posix().encode()) % count
 
 
+#: Where a run records the shortened node IDs of the tests that FAILED in it.
+#:
+#: The shortening below runs after pytest has already matched the command line
+#: against the ORIGINAL ids, so a shortened id is not collectible: both
+#: ``devtools verify``'s failure rerun, which feeds reported ids straight back
+#: to pytest, and a human reproducing one failure through ``devtools test
+#: <id>``, got ``ERROR: not found`` and no run at all.
+#:
+#: Only FAILING ids are recorded. Mapping every shortened id instead measured
+#: a 4.3 MB file -- 16,371 of the 24,052 collected ids are over the limit --
+#: that every worker would read on every collection, to answer a question only
+#: a failing id ever asks. Recording failures bounds the file by the number of
+#: distinct long-id tests that have ever failed here, and it lives in the
+#: disposable ``.cache/`` tree.
+#:
+#: A session start does NOT clear it: the run that reads the map is the rerun
+#: of the run that wrote it, and clearing before collection would delete the
+#: entries the same invocation is about to translate.
+LONG_NODEID_MAP_PATH = _TESTS_REPO_ROOT / ".cache" / "pytest-long-nodeids.json"
+#: A shortened id always ends in this marker plus the digest.
+_SHORTENED_NODEID_MARKER = "[param-"
+#: Shortened id -> original, for the items this session collected. About
+#: 200 bytes per entry and 16,371 entries on the complete corpus (~4 MB), held
+#: so that a FAILING id can be written to the map without re-deriving it.
+_SHORTENED_NODEIDS: dict[str, str] = {}
+
+
+def _load_long_nodeid_map() -> dict[str, str]:
+    try:
+        payload = json.loads(LONG_NODEID_MAP_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(key): str(value) for key, value in payload.items()} if isinstance(payload, dict) else {}
+
+
+def _record_long_nodeids(shortened: dict[str, str]) -> None:
+    """Merge failing ids into this session's map.
+
+    Merged rather than replaced because xdist workers report into one file
+    concurrently, and the digest is a pure function of the original id, so two
+    writers never disagree about an entry.
+    """
+    if not shortened:
+        return
+    merged = _load_long_nodeid_map()
+    if not set(shortened).difference(merged):
+        return
+    merged.update(shortened)
+    try:
+        LONG_NODEID_MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
+        scratch = LONG_NODEID_MAP_PATH.with_suffix(f".{os.getpid()}.tmp")
+        scratch.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(scratch, LONG_NODEID_MAP_PATH)
+    except OSError:
+        # A read-only or missing cache directory must not fail the run; the
+        # only cost is that the next rerun cannot name a shortened id.
+        return
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Record a failing item's original id, which its report cannot carry."""
+    if not report.failed:
+        return
+    original = _SHORTENED_NODEIDS.get(report.nodeid)
+    if original is not None:
+        _record_long_nodeids({report.nodeid: original})
+
+
+def _restore_long_nodeid_arguments(args: list[str]) -> list[str]:
+    """Translate shortened node IDs in a selection back to collectible ones."""
+    if not any(_SHORTENED_NODEID_MARKER in arg for arg in args):
+        return args
+    mapping = _load_long_nodeid_map()
+    if not mapping:
+        return args
+    return [mapping.get(arg, arg) for arg in args]
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_collection(session: pytest.Session) -> Iterator[None]:
+    """Accept a shortened node ID as a selection, before args are matched.
+
+    pytest resolves the command line inside ``Session.perform_collect``, which
+    the default implementation of this hook calls, so this wrapper is the last
+    point at which a reported id can still become a collectible one.
+    """
+    session.config.args[:] = _restore_long_nodeid_arguments(list(session.config.args))
+    yield
+
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Apply suite-wide file-batch selection and timeout contracts.
 
@@ -242,9 +351,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         # Keep xdist's controller map and every worker's node metadata bounded
         # when a parameter's repr is a complete JSON/export payload.
         if len(item.nodeid) > 100:
-            stem, _, _ = item.nodeid.partition("[")
-            digest = hashlib.blake2b(item.nodeid.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
-            item._nodeid = f"{stem}[param-{digest}]"
+            original = item.nodeid
+            stem, _, _ = original.partition("[")
+            digest = hashlib.blake2b(original.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
+            item._nodeid = f"{stem}{_SHORTENED_NODEID_MARKER}{digest}]"
+            _SHORTENED_NODEIDS[item._nodeid] = original
 
 
 # ---------------------------------------------------------------------------
