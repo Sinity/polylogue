@@ -32,6 +32,12 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from tests.infra.durable_tier_fixtures import (
+    checkpoint_durable_tier,
+    rebind_archive_format_fingerprints,
+    refresh_archive_format_marker,
+    seed_durable_tier,
+)
 from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -459,9 +465,15 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
             (blob_hash_bytes, "raw-one", "raw_payload", "/tmp/raw.jsonl", len(payload), 1),
         )
-    with sqlite3.connect(user_db) as conn:
+    # ``user.db`` is one of the three tiers the archive format marker
+    # fingerprints, so adding a table to it invalidates the marker exactly the
+    # way a transplanted tier would. The fixture authors the tier on purpose,
+    # so it restates the evidence; ``embeddings.db`` is derived and carries no
+    # fingerprint.
+    with seed_durable_tier(user_db) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS backup_test_marks (mark_id TEXT PRIMARY KEY)")
         conn.execute("INSERT INTO backup_test_marks VALUES ('mark-one')")
+    refresh_archive_format_marker(archive_root)
     with sqlite3.connect(embeddings_db) as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS backup_test_embedding_status (session_id TEXT PRIMARY KEY)")
         conn.execute("INSERT INTO backup_test_embedding_status VALUES ('codex-session:one')")
@@ -508,6 +520,10 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert receipt["verdict"] == "success"
     assert receipt["manifest_sha256"] == hashlib.sha256((backup_root / "manifest.json").read_bytes()).hexdigest()
     artifact_inventory = {item["path"]: item for item in receipt["artifact_inventory"]}
+    # The backup carries this archive's own format marker and bootstrap
+    # receipt: they are lineage authority a restore needs, not rebuildable
+    # cache (#5275). Their absence from the expected set is what made this
+    # assertion describe a pre-marker archive.
     assert set(artifact_inventory) == {
         "blob",
         f"blob/{blob_hash[:2]}",
@@ -519,6 +535,10 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         "manifest.json",
         "source.db",
         "user.db",
+        ".polylogue-format.json",
+        ".maintenance-state",
+        ".maintenance-state/durable-change-trains",
+        ".maintenance-state/durable-change-trains/.bootstrap",
     }
     assert artifact_inventory["user.db"]["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
     assert "verification-receipt.json" not in artifact_inventory
@@ -752,8 +772,13 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     payload = dumps_bytes(records[2])
     blob_hash = hashlib.sha256(payload).digest()
     recorded_path = f"{source_path}:conversations.json"
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("DROP TABLE raw_container_coordinates")
+    # No ``raw_container_coordinates`` row for this raw id: the replay path
+    # reads the coordinate columns through a LEFT JOIN and must work from the
+    # recorded member suffix alone. The pre-reset version of this fixture
+    # dropped the whole table, which this lineage's source tier carries from
+    # birth -- that made the archive contradict its own format marker and the
+    # backup was refused before the replay under test ran.
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """
             INSERT INTO raw_sessions (
@@ -839,7 +864,7 @@ def test_backup_replays_historical_full_snapshot_prefix(
     source_path.write_bytes(historical + b'{"type":"message","payload":{"text":"later"}}\n')
     blob_hash = hashlib.sha256(historical).digest()
     raw_id = f"historical-{origin}-{revision_kind}"
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, source_path, source_index, blob_hash, blob_size,
@@ -872,7 +897,7 @@ def test_backup_retains_prefix_mismatch_when_grown_source_fallback_fails(
     expected = b'{"id":"expected"}\n'
     source_path.write_bytes(historical + b'{"id":"later"}\n')
     blob_hash = hashlib.sha256(expected).digest()
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, source_path, source_index, blob_hash, blob_size,
@@ -911,7 +936,7 @@ def test_backup_types_legacy_codex_append_without_window(
     source_path.write_bytes(b'{"type":"session_meta"}\n{"type":"event_msg"}\n')
     payload = b'{"type":"event_msg"}\n'
     blob_hash = hashlib.sha256(payload).digest()
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, source_path, source_index, blob_hash, blob_size,
@@ -950,7 +975,7 @@ def test_backup_replays_legacy_append_from_preceding_full_snapshot(
     capture_mode = "codex" if origin == "codex-session" else None
     prior_hash = hashlib.sha256(prefix).digest()
     append_hash = hashlib.sha256(expected).digest()
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
@@ -1047,7 +1072,7 @@ def test_backup_reanchors_dead_root_before_zip_member_replay(
         archive.writestr("conversation.json", member_payload)
     blob_hash = hashlib.sha256(member_payload).digest()
     stale_source_path = f"{tmp_path / 'old-clone' / 'inbox' / 'bundle.zip'}:conversation.json"
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, source_path, source_index, blob_hash, blob_size,
@@ -1188,17 +1213,36 @@ def test_full_evidence_backup_restores_index_only_attachment_blob(
     assert item["protection"] == ["committed"]
 
 
-def test_full_evidence_backup_preserves_index_attachment_for_historical_source_schema(
+def test_full_evidence_backup_keeps_index_only_attachment(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """A v21 source fallback must retain the readable index attachment owner.
+    """A non-authoritative source projection must retain the index attachment owner.
+
+    ``_source_schema_capabilities`` refuses to grant canonical authority to a
+    source tier that carries a stamp this runtime did not write *and* lacks a
+    current blob carrier -- a branch the format-floor reset deliberately kept
+    (``blob_integrity.py``, PR #5369). This fixture produces exactly that
+    file: ``raw_hook_events.blob_hash`` removed, and a stamp at the floor
+    rather than the source tier's current target.
+
+    The pre-reset version stamped ``21``, a version this lineage cannot hold;
+    ``_open_backup_readonly_connection`` now refuses it outright, so the
+    backup never ran. The stamp is expressed against
+    ``ARCHIVE_FORMAT_FLOOR_VERSION`` here, and the format marker is restated
+    because the fixture edits the tier's schema on purpose.
 
     Anti-vacuity: removing ``raw_hook_events.blob_hash`` makes the current
     source capability projection non-authoritative.  The attachment exists
     only in index.db, so a fallback that substitutes source carriers for the
     complete projection produces a verified-looking backup with missing bytes.
     """
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, ARCHIVE_VERSION_BY_TIER
+
+    assert ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] > ARCHIVE_FORMAT_FLOOR_VERSION, (
+        "the source tier is at the floor, so the stamp below is the one this runtime writes "
+        "and the projection stays authoritative"
+    )
     archive_root = workspace_env["archive_root"]
     payload = b"historical-source index-only attachment evidence"
     session = ParsedSession(
@@ -1217,13 +1261,14 @@ def test_full_evidence_backup_preserves_index_attachment_for_historical_source_s
         write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).hexdigest()
-    with sqlite3.connect(archive_root / "source.db") as source:
+    with seed_durable_tier(archive_root / "source.db") as source:
         source.execute("DROP INDEX idx_raw_hook_events_source_hash")
         source.execute("ALTER TABLE raw_hook_events DROP COLUMN blob_hash")
-        source.execute("PRAGMA user_version = 21")
+        source.execute(f"PRAGMA user_version = {ARCHIVE_FORMAT_FLOOR_VERSION}")
         assert source.execute(
             "SELECT COUNT(*) FROM blob_refs WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
         ).fetchone() == (0,)
+    refresh_archive_format_marker(archive_root)
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
@@ -1505,7 +1550,7 @@ def test_backup_missing_blob_warnings_are_bounded(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
     source_db = archive_root / "source.db"
-    with sqlite3.connect(source_db) as conn:
+    with seed_durable_tier(source_db) as conn:
         for idx, blob_hash in enumerate(hashes):
             conn.execute(
                 """INSERT INTO raw_sessions
@@ -1701,11 +1746,18 @@ def test_backup_verification_rejects_missing_source_references_and_reservations(
     ]
 
 
-def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
+def test_pre_generation_source_uses_declared_absence(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """A v30 source may excuse only an operator-declared missing blob.
+    """A source without generation tables may excuse only a declared missing blob.
+
+    The pre-reset fixture stamped ``30`` to describe "before source
+    generations"; this lineage has no such version and the backup evidence
+    reader refuses the stamp outright. The shape that still matters is the
+    catalog one -- no ``source_generations``/``source_items`` -- so the stamp
+    is left at the floor and the format marker restated after the deliberate
+    schema edit.
 
     Anti-vacuity: before writing the declaration, verification must reject the
     missing reference; after writing it, deleting the retained blob must still
@@ -1724,11 +1776,10 @@ def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
     reserved_hash = hashlib.sha256(reserved_payload).digest()
     BlobStore(archive_root / "blob").write_from_bytes(retained_payload)
     BlobStore(archive_root / "blob").write_from_bytes(reserved_payload)
-    with sqlite3.connect(source_db) as conn:
+    with seed_durable_tier(source_db) as conn:
         conn.execute("DROP VIEW IF EXISTS source_item_reconciliation")
         conn.execute("DROP TABLE IF EXISTS source_items")
         conn.execute("DROP TABLE IF EXISTS source_generations")
-        conn.execute("PRAGMA user_version = 30")
         for raw_id, blob_hash, payload in (
             ("retained-raw", retained_hash, retained_payload),
             ("absent-raw", absent_hash, absent_payload),
@@ -1752,6 +1803,8 @@ def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
                VALUES ('pre-generation-reservation', ?, ?, 'test-publisher', 1)""",
             (reserved_hash, len(reserved_payload)),
         )
+
+    refresh_archive_format_marker(archive_root)
 
     without_assertion = backup_archive(output_dir=tmp_path / "without-assertion", verify=True)
     assert without_assertion.ok is False
@@ -1788,9 +1841,18 @@ def test_pre_generation_source_uses_operator_declared_absence_without_vacuity(
         )
 
     generation_backup_root = Path(with_assertion.output_path or "")
-    with sqlite3.connect(generation_backup_root / "source.db") as conn:
+    with seed_durable_tier(generation_backup_root / "source.db") as conn:
         conn.execute("CREATE TABLE source_generations (marker INTEGER)")
         conn.execute("CREATE TABLE source_items (marker INTEGER)")
+    # The backup now carries this lineage's format marker, which fingerprints
+    # the source tier just edited. Restate it, or the restore refuses on
+    # lineage and never reaches the declared-absent scoping rule.
+    rebind_archive_format_fingerprints(generation_backup_root)
+    # Anything that opened the tier while restating it may have left a WAL
+    # beside it, and backup publication refuses an unbound SQLite sidecar
+    # before it reads any schema -- which would mask the refusal under test.
+    checkpoint_durable_tier(generation_backup_root / "source.db")
+    assert not list(generation_backup_root.glob("*.db-wal"))
     with pytest.raises(RuntimeError, match="only valid before source generations exist"):
         backup_mod._verify_archive_file_set_backup(generation_backup_root)
 
@@ -1872,7 +1934,7 @@ def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
     reserved_hash = hashlib.sha256(b"receipt only").digest()
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO blob_publication_reservations
             (publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms)
@@ -1907,14 +1969,30 @@ def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path
 
 
 def test_backup_refuses_source_schema_without_hook_evidence(tmp_path: Path) -> None:
+    """An authoritative source missing a declared blob carrier column is refused.
+
+    ``raw_hook_events.blob_hash`` is the carrier column ``BLOB_OWNERS``
+    declares for the hook-event owner, so a source tier that still carries the
+    stamp this runtime writes -- and is therefore taken as canonical authority
+    -- cannot be read past it. The pre-reset fixture dropped ``native_id``,
+    which no longer appears in ``BLOB_OWNERS``, so nothing refused.
+
+    Anti-vacuity: remove the ``raw_hook_events`` entry from ``BLOB_OWNERS`` (or
+    the ``_column_exists`` branch in ``_schema_blockers``) and the damaged
+    source is read as if it were complete. The companion test
+    ``test_full_evidence_backup_keeps_index_only_attachment`` removes the same
+    column under a *foreign* stamp and pins the opposite outcome -- fallback,
+    not refusal -- so a blanket refusal cannot pass either.
+    """
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("ALTER TABLE raw_hook_events DROP COLUMN native_id")
+    with seed_durable_tier(archive_root / "source.db") as conn:
+        conn.execute("DROP INDEX idx_raw_hook_events_source_hash")
+        conn.execute("ALTER TABLE raw_hook_events DROP COLUMN blob_hash")
     backup_root = tmp_path / "backup"
     backup_root.mkdir()
 
-    with pytest.raises(RuntimeError, match="raw_hook_events is missing columns: native_id"):
+    with pytest.raises(RuntimeError, match="raw_hook_events is missing columns: blob_hash"):
         backup_mod._copy_referenced_blobs(
             source_db=archive_root / "source.db",
             source_blob_root=archive_root / "blob",
@@ -2037,7 +2115,7 @@ def test_backup_proves_a_full_snapshot_append_row(
     source_path.write_bytes(baseline + tail)
     snapshot = baseline + tail
     blob_hash = hashlib.sha256(snapshot).digest()
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, source_path, source_index, blob_hash, blob_size,
@@ -2076,7 +2154,7 @@ def test_backup_still_proves_a_window_shaped_append_row(
     tail = b'{"id":"tail"}\n'
     source_path.write_bytes(baseline + tail)
     blob_hash = hashlib.sha256(tail).digest()
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, source_path, source_index, blob_hash, blob_size,
@@ -2100,32 +2178,47 @@ def test_backup_still_proves_a_window_shaped_append_row(
 
 
 @pytest.mark.parametrize("tier", [ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT])
-def test_backup_evidence_opens_any_durable_tier_below_the_expected_version(
+def test_backup_evidence_opens_stamped_durable_tier_versions(
     tmp_path: Path,
     tier: ArchiveTier,
 ) -> None:
     """A pre-migration backup is readable evidence for every durable tier.
 
+    The readable window is every stamped version of this lineage at or below
+    the tier's expected one; ``0`` (unstamped) and anything above it are
+    refused. The window is derived from ``ARCHIVE_VERSION_BY_TIER`` rather
+    than written out, because the format floor reset made ``expected - 1``
+    equal ``0`` for the audit tier -- which the loop below then required to be
+    both readable and refused, and which is why the audit case was red.
+
     Anti-vacuity: keying the allowance on ``source.db`` again makes the user
-    and audit cases raise SchemaSkew, and dropping the ordering guard below
-    makes the newer-version and unstamped cases stop raising.
+    case raise SchemaSkew at version 1, and dropping the ordering guard makes
+    the newer-version and unstamped cases stop raising. The module-level
+    assertion below keeps the readable-below leg from silently emptying out if
+    every durable tier ever returns to the floor.
     """
     from polylogue.core.errors import SchemaSkew
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, ARCHIVE_VERSION_BY_TIER
 
     expected = ARCHIVE_VERSION_BY_TIER[tier]
+    assert any(
+        ARCHIVE_VERSION_BY_TIER[durable] > ARCHIVE_FORMAT_FLOOR_VERSION
+        for durable in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
+    ), "no durable tier sits above the floor, so no case here reads a version below its expected one"
     path = tmp_path / f"{tier.value}.db"
     initialize_archive_database(path, tier)
 
-    for older in (expected - 1, 1):
+    for stamped in range(ARCHIVE_FORMAT_FLOOR_VERSION, expected + 1):
         with sqlite3.connect(path) as stamp:
-            stamp.execute(f"PRAGMA user_version = {older}")
+            stamp.execute(f"PRAGMA user_version = {stamped}")
+        checkpoint_durable_tier(path)
         with backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk") as conn:
-            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == older
+            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == stamped
 
     for refused in (expected + 1, 0):
         with sqlite3.connect(path) as stamp:
             stamp.execute(f"PRAGMA user_version = {refused}")
+        checkpoint_durable_tier(path)
         with pytest.raises(SchemaSkew):
             backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk")
 
