@@ -756,6 +756,48 @@ async def test_sqlite_acquisition_failure_is_a_failed_file_not_a_batch_abort(
 
 
 @pytest.mark.asyncio
+async def test_sqlite_acquisition_failure_does_not_fail_its_healthy_siblings(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One malformed database must not take its chunk down with it.
+
+    ``ingest_files`` catches an unclassified exception per progress group and
+    marks EVERY path in that chunk failed, so the Hermes branch must convert a
+    typed SQLite error into the per-file ``OSError`` the branch already
+    handles -- as the Codex and Antigravity branches do.
+
+    Anti-vacuity: drop ``sqlite_snapshot_failure_as_oserror`` from the Hermes
+    branch and this reports ``failed=2 succeeded=0``; the healthy
+    ``verification_evidence.db`` is marked failed and gets a failure cursor it
+    never earned. The single-file case cannot show this: there, chunk and file
+    are the same thing.
+    """
+    archive, processor, root, _cursor, _db = _processor(workspace_env, "hermes-sibling", "sibling-cursor.db")
+    broken = root / "state.db"
+    healthy = root / "verification_evidence.db"
+    try:
+        _write_state_db(broken, sessions=1)
+        _write_state_db(healthy, sessions=1)
+        real_snapshot = snapshot_sqlite_to_blob
+
+        def fail_only_state(path: Path, *args: Any, **kwargs: Any) -> Any:
+            if Path(path).name == "state.db":
+                raise sqlite3.DatabaseError("database disk image is malformed")
+            return real_snapshot(path, *args, **kwargs)
+
+        monkeypatch.setattr("polylogue.sources.live.batch.snapshot_sqlite_to_blob", fail_only_state)
+
+        result = await processor.ingest_files([broken, healthy], emit_event=False)
+
+        assert result.failed_file_count == 1
+        assert result.succeeded_file_count == 1
+        assert [Path(path).name for path in result.failed_paths] == ["state.db"]
+        assert [Path(path).name for path in result.succeeded_paths] == ["verification_evidence.db"]
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_one_changed_row_produces_exactly_one_new_raw_revision(
     workspace_env: dict[str, Path],
 ) -> None:
