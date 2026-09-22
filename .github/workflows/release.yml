@@ -181,7 +181,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # The polylogue wheel declares `requires-python = ">=3.14"`; pip refuses
+        # to install it on anything older, so an older leg here is a guaranteed
+        # failure, not coverage. Keep this matrix equal to pyproject's floor.
+        # `installed-smoke-hooks` below keeps 3.11+ because the polylogue-hooks
+        # wheel declares its own `>=3.11` floor.
+        python-version: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/download-artifact@v8
@@ -326,7 +331,10 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        # This leg installs the main polylogue wheel alongside the wrapper, so
+        # it inherits polylogue's `requires-python = ">=3.14"` floor even though
+        # polylogue-mcp's own metadata permits 3.11.
+        python-version: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/download-artifact@v8
