@@ -151,14 +151,29 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "agent_memory_document",
         "session_index",
         "prompt_history_log",
+        # polylogue-k3ahm (#5225): the per-process NDJSON carrier a hook
+        # producer appends one event per line to. Retained bytes only --
+        # ``parse_policy="raw-only"`` -- so it must never be probed as a
+        # session stream. It is listed here because this assertion is the
+        # registry's completeness gate: a production rule the expected set
+        # omits makes the gate red, which is how this omission surfaced.
+        "hook_event_carrier",
     }
     assert {rule.kind for rule in chatgpt.artifact_rules} == {"export_asset_index", "export_asset"}
     assert {rule.kind for rule in by_origin[Origin.CODEX_SESSION].artifact_rules} == {
         "agent_memory_document",
         "session_index",
         "prompt_history_log",
+        "hook_event_carrier",
     }
-    assert artifact_suffixes_for_provider(Provider.CLAUDE_CODE) == (".json", ".jsonl", ".ndjson")
+    # Membership, not order. The projection dedups with ``dict.fromkeys`` over
+    # ``artifact_rules`` declaration order, so adding or reordering a rule
+    # permutes the tuple -- and every consumer tests membership only
+    # (``any(name.endswith(suffix) for suffix in self.suffixes)`` in
+    # sources/live/watcher.py). Asserting the tuple made this line red the
+    # moment polylogue-k3ahm declared the carrier rule first, which is a
+    # declaration-order change, not a behaviour change.
+    assert set(artifact_suffixes_for_provider(Provider.CLAUDE_CODE)) == {".json", ".jsonl", ".ndjson"}
     tool_result_rule = next(rule for rule in claude.artifact_rules if rule.kind == "tool_result_sidecar")
     assert tool_result_rule.path_suffixes == (".json", ".txt", ".html", "")
     assert tool_result_rule.watch_suffixes == (".json",)
