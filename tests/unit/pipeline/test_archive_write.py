@@ -455,6 +455,103 @@ async def test_agent_policies_store_value_change_intervals_not_restatements(
     assert all(row["observed_at_ms"] is not None for row in rows)
 
 
+def test_agent_policy_interval_survives_a_merge_append(test_db: Path) -> None:
+    """A restatement in an APPENDED chunk is suppressed against stored state.
+
+    polylogue-cuxz.11: suppressing restatements inside one write is only half
+    the grain. A live Codex session is extended incrementally, and every
+    appended chunk re-opens ``_write_session_events`` with an empty in-memory
+    run, so without ``_last_agent_policy_values`` reading the highest-position
+    stored row first, each append would re-emit the session's current policy
+    and the change-log of non-changes would come straight back -- once per
+    append instead of once per turn. That is the shape the 402,869-row census
+    actually measured, because live sessions are appended to many times.
+
+    Both directions are pinned: append 2 restates the stored value and adds no
+    row, append 3 carries a genuinely different value and does add one, with
+    its ``position`` at the absolute offset where the change took effect.
+
+    Anti-vacuity: make ``_last_agent_policy_values`` return ``None`` (the
+    "start a fresh run per write" behaviour) and the first read-back sees two
+    identical-valued rows instead of one.
+    """
+    from tests.infra.live_ingest import write_session_sync
+
+    def chunk(label: str, *, approval: str, sandbox: str, network: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="conv-policy-append",
+            title="Agent policy across appends",
+            created_at="2024-01-01T00:00:00Z",
+            updated_at="2024-01-01T00:00:00Z",
+            messages=[
+                ParsedMessage(
+                    provider_message_id=f"msg-{label}",
+                    role=Role.USER,
+                    text=f"turn {label}",
+                    timestamp="2024-01-01T00:00:00Z",
+                )
+            ],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="agent_policy",
+                    timestamp="2024-01-01T00:00:00Z",
+                    payload={"approval": approval, "sandbox": sandbox, "network": network},
+                    source_message_provider_id=f"msg-{label}",
+                )
+            ],
+        )
+
+    def policy_rows() -> list[tuple[int, str | None, str | None, str | None]]:
+        conn = sqlite3.connect(str(test_db))
+        try:
+            return [
+                (int(row[0]), row[1], row[2], row[3])
+                for row in conn.execute(
+                    """
+                    SELECT position, approval_policy, sandbox_policy, network_policy
+                    FROM session_agent_policies
+                    ORDER BY position
+                    """
+                )
+            ]
+        finally:
+            conn.close()
+
+    def append(session: ParsedSession) -> None:
+        conn = sqlite3.connect(str(test_db))
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+            write_parsed_session_to_archive(
+                conn,
+                session,
+                content_hash=session_content_hash(session),
+                merge_append=True,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    write_session_sync(test_db, chunk("a", approval="on-request", sandbox="read-only", network="restricted"))
+    first = policy_rows()
+    assert [row[1:] for row in first] == [("on-request", "read-only", "restricted")]
+
+    # Append 2 restates the same policy: no new interval row.
+    append(chunk("b", approval="on-request", sandbox="read-only", network="restricted"))
+    assert policy_rows() == first
+
+    # Append 3 genuinely changes it: exactly one new interval row, opening at
+    # the appended chunk's own absolute event position.
+    append(chunk("c", approval="never", sandbox="workspace-write", network="enabled"))
+    after = policy_rows()
+    assert [row[1:] for row in after] == [
+        ("on-request", "read-only", "restricted"),
+        ("never", "workspace-write", "enabled"),
+    ]
+    assert after[1][0] > after[0][0]
+
+
 # ---------------------------------------------------------------------------
 # Message / block / attachment structure
 # ---------------------------------------------------------------------------
