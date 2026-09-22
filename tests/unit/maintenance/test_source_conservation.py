@@ -1098,3 +1098,84 @@ def test_stale_sqlite_revision_is_not_conserved(tmp_path: Path) -> None:
         source_conn.close()
     current = _run_with_frontier(tmp_path, build_source_frontier(declarations))
     assert _count(current, "frontier_unacquired") == 0, current.evidence["terms"]
+
+
+def test_archive_member_source_is_not_lost(tmp_path: Path) -> None:
+    """A raw acquired from an archive member whose container is present is conserved.
+
+    Anti-vacuity: revert ``_source_exists`` to a bare ``Path(source_path).exists()``
+    and the ``archive!member`` coordinate can never resolve, so the raw is typed
+    ``source_lost`` (blocking) even though the bytes are sitting in the archive on
+    disk. The blob ref is deleted on purpose so the ladder cannot fall back to the
+    non-blocking ``source_missing`` arm -- only the on-disk probe decides.
+    """
+    session_source, _ = _seed(tmp_path)
+    payload = session_source.read_bytes()
+    bundle = tmp_path / "export-bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("conversations.json", payload)
+    coordinate = f"{bundle}!conversations.json"
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        source_conn.execute("UPDATE raw_artifacts SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        source_conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    session_source.unlink()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert _count(check, "source_lost") == 0
+    assert _count(check, "source_missing") == 0
+    assert _count(check, "materialized") == 1
+
+
+def test_member_container_absent_is_lost(tmp_path: Path) -> None:
+    """The member probe must not pass a coordinate whose container is gone.
+
+    Anti-vacuity: resolve ``archive!member`` by merely stripping the member and
+    returning True, and this stays green while a genuinely unrecoverable raw is
+    reported conserved.
+    """
+    session_source, _ = _seed(tmp_path)
+    coordinate = f"{tmp_path / 'never-acquired.zip'}!conversations.json"
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        source_conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    session_source.unlink()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR, check.summary
+    assert _count(check, "source_lost") == 1
+
+
+def test_member_missing_from_container_is_lost(tmp_path: Path) -> None:
+    """A present container that does not hold the member does not conserve it.
+
+    Anti-vacuity: stop at container existence and this goes green, which is the
+    exact false-conservation the member probe exists to prevent.
+    """
+    session_source, _ = _seed(tmp_path)
+    bundle = tmp_path / "export-bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("something-else.json", b"{}")
+    coordinate = f"{bundle}!conversations.json"
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        source_conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    session_source.unlink()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR, check.summary
+    assert _count(check, "source_lost") == 1
