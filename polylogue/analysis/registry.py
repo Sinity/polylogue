@@ -796,8 +796,14 @@ register(
             InsightField("", _id_with_origin("session_id"), group=0),
             InsightField("status", _nested("estimate", "status"), group=0),
             InsightField("model", _nested("estimate", "normalized_model"), group=0),
-            InsightField("usd", _nested("estimate", "total_usd", "0"), group=1),
-            InsightField("confidence", _nested("estimate", "confidence", "0"), group=1),
+            # An unavailable estimate carries ``total_usd = None``. Defaulting
+            # to ``"0"`` here rendered ``usd=0`` on the plaintext surface while
+            # JSON and HTTP emitted ``null`` for the same row, preserving the
+            # exact false zero the nullable-cost contract exists to remove.
+            # ``-`` is this renderer's own unknown marker, and it reads beside
+            # the row's ``status=unavailable``.
+            InsightField("usd", _nested("estimate", "total_usd"), group=1),
+            InsightField("confidence", _nested("estimate", "confidence"), group=1),
         ),
     )
 )

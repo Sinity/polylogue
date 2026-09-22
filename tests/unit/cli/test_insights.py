@@ -318,6 +318,49 @@ def test_insights_costs_json(cli_workspace: CliWorkspace) -> None:
     assert "no_tokens" in json_array(unavailable_estimate["missing_reasons"])
 
 
+def _insight_detail_line(output: str, session_id: str) -> str:
+    """Return the indented group-1 detail line that follows a row's header."""
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if session_id in line and index + 1 < len(lines):
+            return lines[index + 1]
+    raise AssertionError(f"no insight row for {session_id} in:\n{output}")
+
+
+def test_insights_costs_plain_never_prints_zero_for_null(cli_workspace: CliWorkspace) -> None:
+    """An unavailable estimate must not render as `usd=0` on the plaintext surface.
+
+    The nullable-cost contract makes an unavailable estimate carry
+    `total_usd = None`; JSON and HTTP emit `null` for it. The registry's
+    plaintext field default was `"0"`, so the same row read as a measured zero
+    dollars -- the exact false zero the contract exists to remove.
+
+    Anti-vacuity: restoring `_nested("estimate", "total_usd", "0")` makes the
+    unavailable row print `usd=0`.
+    """
+    _seed_cost_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["analyze", "insights", "costs"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    detail = _insight_detail_line(result.output, NID_UNAVAILABLE_COST)
+    assert "usd=0" not in detail, detail
+    assert "usd=-" in detail, detail
+
+
+def test_insights_costs_plain_keeps_a_measured_amount(cli_workspace: CliWorkspace) -> None:
+    """The opposite direction: a real estimate still prints its amount."""
+    _seed_cost_products(cli_workspace)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["analyze", "insights", "costs"], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    detail = _insight_detail_line(result.output, NID_EXACT_COST)
+    assert "usd=1.25" in detail, detail
+
+
 def test_insights_cost_rollups_json(cli_workspace: CliWorkspace) -> None:
     _seed_cost_products(cli_workspace)
 
