@@ -80,6 +80,7 @@ from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
+from polylogue.storage.archive_identity import archive_root_for_index_path
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MEASURES, refresh_session_summary
@@ -9410,13 +9411,22 @@ def _record_identity_invalidation_debt(conn: sqlite3.Connection, session_ids: se
 
 
 def _record_lineage_prefix_debt(conn: sqlite3.Connection, session_ids: set[str], *, error: str) -> None:
-    """Write one ``lineage_prefix_recompose`` debt row per lost-prefix child."""
+    """Write one ``lineage_prefix_recompose`` debt row per lost-prefix child.
+
+    ``ops.db`` is resolved from the archive root, not from the active index's
+    own directory. SQLite reports the physical file behind ``main``, so on any
+    archive with a promoted index generation ``PRAGMA database_list`` answers
+    ``<root>/.index-generations/<gen>/index.db`` -- and ``ops.db`` named beside
+    *that* does not exist, so an ordinary daemon archive whose parent
+    replacement genuinely stranded a child dropped the retryable debt without
+    a word (PR #5376).
+    """
     if not session_ids:
         return
     index_path = _main_database_path(conn)
     if index_path is None:
         return
-    ops_db_path = index_path.with_name("ops.db")
+    ops_db_path = archive_root_for_index_path(index_path) / "ops.db"
     if not ops_db_path.exists():
         return
     from polylogue.sources.live.cursor import CursorStore
