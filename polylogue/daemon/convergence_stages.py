@@ -157,7 +157,37 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
         "gap_count": len(gaps),
         "gaps": list(gaps[:_CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT]),
     }
-    status = "gaps" if gaps else "clean"
+    _write_claude_workflow_stage_event(archive_root, status="gaps" if gaps else "clean", payload=payload)
+
+
+def _record_claude_workflow_failure_event(archive_root: Path, exc: BaseException) -> None:
+    """Invalidate the recorded receipt when rematerialization itself failed.
+
+    The receipt carries the stable id ``claude_workflow:current``, so a clean
+    row from an earlier pass stays the latest event until something replaces
+    it. Returning from the failure branch without writing therefore left
+    ``_claude_workflow_materialization_check`` reporting OK on the strength of
+    a receipt the current graph no longer matches -- the archive is failing to
+    converge and readiness says it is healthy. Record the attempt's typed
+    failure instead; the readiness check refuses a ``failed`` receipt rather
+    than reading a ``gap_count`` that this pass never computed.
+    """
+    _write_claude_workflow_stage_event(
+        archive_root,
+        status="failed",
+        payload={
+            "error_type": type(exc).__name__,
+            "error_detail": str(exc),
+            # No gap tuple exists: the materialization that would have produced
+            # one is the thing that failed. Declaring the absence keeps a reader
+            # from treating a missing key as "zero gaps".
+            "gap_count": None,
+        },
+    )
+
+
+def _write_claude_workflow_stage_event(archive_root: Path, *, status: str, payload: dict[str, object]) -> None:
+    """Replace the claude_workflow stage receipt with this pass's outcome."""
     try:
         from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
         from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
@@ -234,6 +264,11 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
 
                 summary = materialize_claude_workflow_archive(archive_root())
             except Exception as exc:
+                # Invalidate the receipt before returning: an earlier clean row
+                # is still the latest event otherwise, and readiness would keep
+                # reporting OK while convergence fails (see
+                # ``_record_claude_workflow_failure_event``).
+                _record_claude_workflow_failure_event(archive_root(), exc)
                 work.degraded(
                     "materialization_failed",
                     error_type=type(exc).__name__,

@@ -549,6 +549,16 @@ def _claude_workflow_materialization_check(archive_root: Path) -> ReadinessCheck
             VerifyStatus.SKIP,
             summary="No Claude Workflow materialization has run against this archive yet",
         )
+    if str(status.get("status") or "") == "failed":
+        # The last attempt raised, so no gap tuple was computed at all.  Reading
+        # ``gap_count`` here would coerce that absence to 0 and report OK on a
+        # graph the archive failed to rebuild.  A failed receipt is a failure.
+        detail = str(status.get("error_detail") or status.get("error_type") or "no detail recorded")
+        return ReadinessCheck(
+            "claude_workflow_materialization",
+            VerifyStatus.ERROR,
+            summary=f"Claude Workflow rematerialization failed and its graph is stale: {detail}",
+        )
     gap_count = _payload_int(status.get("gap_count"))
     raw_gaps = status.get("gaps")
     gaps = [str(gap) for gap in raw_gaps] if isinstance(raw_gaps, list) else []

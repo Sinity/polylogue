@@ -217,3 +217,90 @@ def test_claude_workflow_stage_event_replaces_its_snapshot_rather_than_appending
     assert status == "clean"
     assert '"run_count": 2' in payload_json or '"run_count":2' in payload_json
     assert "gap-a" not in payload_json
+
+
+def test_claude_workflow_failure_invalidates_the_clean_receipt(tmp_path: Path) -> None:
+    """A failed rematerialization must not leave an earlier clean row latest.
+
+    The receipt carries the stable id ``claude_workflow:current``, so a clean
+    row from an earlier pass stays the newest ``daemon_stage_events`` row until
+    something replaces it. ``execute``'s failure branch used to return without
+    writing anything, so ``readiness._claude_workflow_materialization_check``
+    kept reading that stale clean row and reporting OK while convergence was
+    failing and the graph was stale.
+
+    Anti-vacuity: delete the ``_record_claude_workflow_failure_event`` call
+    from ``execute``'s ``except`` branch and the stored status stays ``clean``
+    with the first pass's counts, so both status assertions go red. The
+    opposite direction is pinned too -- a blanket "always record failed" would
+    break ``..._replaces_its_snapshot_rather_than_appending`` above, which
+    requires the success path to record ``clean``.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    clean = SimpleNamespace(
+        run_count=7, call_count=7, attempt_count=7, linked_session_count=7, unresolved_call_count=0, gaps=()
+    )
+    stages._record_claude_workflow_stage_event(tmp_path, clean)
+
+    stage = stages.make_claude_workflow_stage(tmp_path / "index.db")
+    target = tmp_path / "projects" / "demo" / "session.jsonl"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}\n", encoding="utf-8")
+
+    def _boom(_root: Path) -> object:
+        raise RuntimeError("materializer exploded")
+
+    import polylogue.analysis.claude_workflow_materializer as materializer
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(materializer, "materialize_claude_workflow_archive", _boom)
+        assert stage.execute(target) is False
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = conn.execute(
+            "SELECT status, payload_json FROM daemon_stage_events WHERE stage = ?",
+            ("claude_workflow",),
+        ).fetchall()
+
+    assert len(rows) == 1, rows
+    status, payload_json = rows[0]
+    assert status == "failed"
+    assert "materializer exploded" in payload_json
+    # The stale clean counts must be gone, not merged into the failure row.
+    assert '"run_count"' not in payload_json
+
+
+def test_readiness_refuses_a_failed_claude_workflow_receipt(tmp_path: Path) -> None:
+    """Readiness must not read a gap count the failed pass never computed.
+
+    ``_claude_workflow_materialization_check`` reads ``gap_count`` through
+    ``_payload_int``, which coerces a missing/None value to 0 -- so a failure
+    receipt would have been reported as "No Claude Workflow materialization
+    gaps" (OK), the exact confident-healthy answer the receipt exists to
+    prevent. The check now refuses a ``failed`` status before reaching the gap
+    count.
+
+    Anti-vacuity: remove the ``status == "failed"`` branch from
+    ``readiness._claude_workflow_materialization_check`` and the check returns
+    ``OutcomeStatus.OK``, so the status assertion goes red. The clean-receipt
+    half of this test pins the other direction: a blanket refusal would report
+    ERROR for a healthy archive and fail the second assertion.
+    """
+    from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.readiness import _claude_workflow_materialization_check
+
+    initialize_active_archive_root(tmp_path)
+
+    clean = SimpleNamespace(
+        run_count=3, call_count=3, attempt_count=3, linked_session_count=3, unresolved_call_count=0, gaps=()
+    )
+    stages._record_claude_workflow_stage_event(tmp_path, clean)
+    healthy = _claude_workflow_materialization_check(tmp_path)
+    assert healthy.status is OutcomeStatus.OK, healthy.summary
+
+    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("materializer exploded"))
+    failed = _claude_workflow_materialization_check(tmp_path)
+
+    assert failed.status is OutcomeStatus.ERROR, failed.summary
+    assert "materializer exploded" in failed.summary
