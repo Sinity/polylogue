@@ -21,14 +21,14 @@ parsed sessions before the storage writer lowers them
    tool uses, tool results, and lineage hints.
 4. `write_parsed_session_to_archive` computes public origin and identities,
    writes the parsed tree, and resolves asserted parent links
-   (`polylogue/storage/sqlite/archive_tiers/write.py:966`).
+   (`polylogue/storage/sqlite/archive_tiers/write.py:1053-1069`).
 5. The daemon converger materializes FTS, embeddings, and insight read models.
 
 ## Detector tightness order
 
 Lower number runs first. Tightness must be unique among executable
 `OriginSpec`s, which is enforced at spec validation
-(`polylogue/sources/origin_specs.py:1286-1291`). Current executable order:
+(`polylogue/sources/origin_specs.py:1456-1466`). Current executable order:
 
 | Tightness | Origin |
 | --- | --- |
@@ -68,7 +68,7 @@ provider (`docs/provider-origin-identity.md:15-30`;
   `_authoritative_parent_claim` returns a hook-asserted parent, the write
   replaces the parser's `parent_session_provider_id` with it and promotes the
   session to `SessionKind.SUBAGENT`
-  (`polylogue/storage/sqlite/archive_tiers/write.py:736-757`).
+  (`polylogue/storage/sqlite/archive_tiers/write.py:791-812`).
 - Replaying identical normalized content is idempotent by content hash;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
@@ -77,9 +77,9 @@ provider (`docs/provider-origin-identity.md:15-30`;
   batch opens one read-only `source.db` handle for `raw_session_memberships`
   reads, while index publication and the later blob-publication receipt
   consumption each open their own archive-root-bound write connection
-  (`polylogue/pipeline/services/ingest_batch/_core.py:166-194`;
-  `polylogue/pipeline/services/ingest_batch/_core.py:2334-2349`;
-  `polylogue/pipeline/services/ingest_batch/_core.py:2425-2441`).
+  (`polylogue/pipeline/services/ingest_batch/_core.py:2373-2381`;
+  `polylogue/pipeline/services/ingest_batch/_core.py:175-199`;
+  `polylogue/pipeline/services/ingest_batch/_core.py:2639-2652`).
 
 ## Gotchas
 

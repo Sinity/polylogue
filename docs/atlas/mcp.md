@@ -67,7 +67,7 @@ confirmation gate are both derived: `declared_tool_names` is the sole authority
 for the tool surface (`polylogue/mcp/declarations/registry.py:377-388`) and the
 manual renders its list and spelled count from it, while the gate is declared
 once as a `ConfirmationGate` on the maintenance contract
-(`polylogue/agent_integration/spec.py:289-293`) and rendered from there
+(`polylogue/agent_integration/spec.py:353-357`) and rendered from there
 (`devtools/render_agent_manual.py:146-170`).
 
 `record_work_event` and `emit_decision` carry `target_visible=False`, so they
