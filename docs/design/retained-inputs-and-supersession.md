@@ -192,10 +192,26 @@ Retirement is never motivated by age, by a retention window, or by a wish to
 shrink a temporal-query surface. There is no retention policy in this design.
 
 **No retirement mechanism is authorized or required by this decision.** Rule 1
-is a constraint on any future retirement, not a request to build one. The
-measurement in §7 is what would justify building one, and it does not: with
-continuity intact, retained bytes already equal content bytes, so there is
-nothing for a retirement pass to reclaim in a correctly-converged archive.
+is a constraint on any future retirement, not a request to build one.
+
+What §7 measured is an **append-only log**: one synthetic Codex rollout over
+40 observations. For that material class the conclusion holds — with
+continuity intact, retained bytes equal content bytes, so a retirement pass
+has nothing to reclaim in a correctly-converged archive.
+
+It does **not** extend to a declared database member, and nothing here has
+measured one. A `MUTABLE_SQLITE` member has no delta representation: every
+observation retains a complete logical export
+(`sources/source_snapshot.py::_default_policy` selects
+`SnapshotMode.SQLITE_LOGICAL_EXPORT`, and `retained_content_revision` returns
+that export's own blob hash). Content addressing collapses only *identical*
+revisions, so a `state_5.sqlite` whose title column changes once per
+observation retains one full export per observation — roughly 40 copies of
+the unchanged rows for 40 perfectly continuous observations. That is exactly
+the logical-containment case §5's rule 1 defines, and the measurement that
+would decide whether to build for it — a representative mutable-database
+sequence including changed and removed rows — has not been run. Do not read
+the append-only result as ruling that path out.
 
 **Why this rule matters concretely.** The live archive is currently in the
 state this rule exists to prevent: of 33,757 distinct raw payload hashes,
@@ -272,6 +288,31 @@ Owners: **polylogue-2fr8s** (Codex table classification) and
 **polylogue-d5202** (schema observation for database and sidecar families).
 Both may rely on R1's "the export is complete for its declared scope" and on
 S6's rule that an incomplete observation never asserts absence.
+
+### D6 — Disappearance is not observed durably (no current owner)
+
+R6 requires a source root, file, or row that stops being observable to record
+an absence observation against its scope, but no durable route writes one.
+`LiveSourceWatcher._watch_changes` explicitly skips deletions
+(`sources/live/watcher.py:510`, `if change is Change.deleted: continue`), and
+catch-up scans enumerate what is present rather than what went away. The one
+existing absence statement, `source_missing` in
+`maintenance/source_conservation.py`, is recomputed from the live filesystem
+on every run — its own rule text is "acquired source file no longer exists on
+disk" — so it is an observation *of the current moment*, not a retained fact
+about revision R.
+
+The consequence for the decision: a latest-value projection has no durable
+evidence with which to mark an object absent-as-of-R, so it keeps presenting
+the prior value as current, and a later re-appearance cannot be distinguished
+from an unbroken presence. R6 is therefore stated but not implementable as
+written.
+
+No D1–D5 item covered this and no V1–V7 regression pins it; it is reported
+here as a residual so the requirement is not mistaken for a decided one.
+Owners to name at implementation time:
+`sources/live/watcher.py::LiveSourceWatcher._watch_changes` for the
+observation and whichever durable table is chosen to retain it.
 
 ### D5 — Receipt volume (named, not decided here)
 
@@ -351,6 +392,7 @@ convergence — not through a mocked join helper.
 | V5 | Full tool text, outcome and ownership reproduce with the original sidecar tree removed | Deleting the retained sidecar bytes, not the original path, is what turns it red | polylogue-cq1ql's named selectors |
 | V6 | An incomplete observation supersedes nothing | Treating a `missing` declared table as an empty table makes a retained object disappear | polylogue-2fr8s / polylogue-d5202 |
 | V7 | Widening continuity recovery does not weaken rewrite detection: a divergent or truncated observation still refuses continuity and starts a new baseline (S2, S3) | Accepting a non-prefix observation as a continuation makes it green | Extend `tests/unit/storage/test_raw_revision_authority.py` alongside whatever fixes D1 |
+| V8 | A watched source that disappears records a durable absence observation, and a latest-value projection reads it rather than the prior value (R6) | Restoring the watcher's `Change.deleted` skip, or recomputing absence from the live filesystem, leaves the projection presenting a stale current value | Owner unassigned; lands with D6 |
 
 ## 9. Anti-goals
 
