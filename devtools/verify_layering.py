@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from devtools import repo_root as _get_root
+from devtools.derived_sweep_census import collect_violations as collect_derived_sweep_violations
 from devtools.durable_write_census import collect_violations as collect_durable_write_violations
 from devtools.manifest_models import validate_layering_manifest
 from devtools.required_gate import (
@@ -1225,6 +1226,14 @@ def main(argv: list[str] | None = None) -> int:
     # ``UPDATE <table>`` structurally cannot see (``INSERT OR REPLACE``,
     # ``ON CONFLICT ... DO UPDATE``, and delete-then-reinsert).
     violations.extend(collect_durable_write_violations(repo_root=repo_root))
+    # polylogue-6kur AC4, gaps G2 and G3: the writer-module censuses above are
+    # file-grain and are about *who* executes DML. This one is about *where the
+    # rows come from* -- a derived-tier rewrite whose subject set is archive
+    # state rather than what a write touched, and a read that substitutes a
+    # value for a stored field it found absent. Neither is visible to a search
+    # over routine names, which is how the only two instances the campaign ever
+    # found were found.
+    violations.extend(collect_derived_sweep_violations(repo_root=repo_root))
     violations.extend(_top_level_package_docstring_violations(repo_root))
     sqlite_violations, sqlite_shrunk = _sqlite_degradation_findings(repo_root, manifest)
     violations.extend(sqlite_violations)
