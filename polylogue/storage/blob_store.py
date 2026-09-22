@@ -333,6 +333,14 @@ class BlobStore:
         # directory itself, so record that before mkdir makes it exist.
         shard_created = not dest.parent.is_dir()
         dest.parent.mkdir(parents=True, exist_ok=True)
+        # The parent fsync is the caller's, and it is not optional: this method
+        # is private, both of its callers persist every directory it reports
+        # before returning, and `test_publish_many_persists_each_shard_once_per_batch`
+        # plus `test_publish_many_persists_every_shard_it_touches` fail if either
+        # stops. The rule cannot see a durability boundary carried across a
+        # return value, which is exactly what batching one fsync per shard
+        # requires (polylogue-rk0it AC5).
+        # ast-grep-ignore: replace-without-parent-fsync
         os.replace(prepared.temporary_path, dest)
         return (prepared.hash_hex, prepared.size_bytes), dest.parent, shard_created
 
