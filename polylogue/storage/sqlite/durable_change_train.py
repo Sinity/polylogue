@@ -16,7 +16,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
-from typing import Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from polylogue.maintenance.receipt_fs import (
     MaintenanceReceiptPathError,
@@ -65,6 +65,9 @@ from polylogue.storage.sqlite.migration_runner import (
     validate_durable_change_train_manifest,
     write_durable_change_train_manifest,
 )
+
+if TYPE_CHECKING:
+    from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
 DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
     # Numbering was reset for the marker-identified archive lineage.  A
@@ -1197,6 +1200,14 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_source_generation_publish(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":read_excision_policy_projection"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_excision_policy_projection_read(
+                        cast(Callable[..., object], value), train.target_version
+                    )
                 elif reference.endswith(":record_source_attachments"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -1402,10 +1413,40 @@ def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
     return connection
 
 
+def _probe_excision_policy_snapshot(source_generation_id: str) -> ExcisionPolicySnapshot:
+    """Build one deterministic policy snapshot for a durable train probe."""
+    from polylogue.security.excision_policy import ExcisionPolicySnapshot
+
+    return ExcisionPolicySnapshot(
+        removed_hashes=(bytes(range(32)),),
+        assertion_refs=("assertion:durable-change-train-probe",),
+        user_generation=3,
+        audit_generation=4,
+        audit_head="a" * 64,
+        source_generation_id=source_generation_id,
+    )
+
+
+def _probe_excision_policy_projection_columns(probe: sqlite3.Connection) -> bool:
+    """Report whether the projected schema slot carries the policy binding."""
+    return (
+        probe.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'excision_policy_projections'"
+        ).fetchone()
+        is not None
+    )
+
+
 def _probe_source_generation_publish(publish: Callable[..., object], target_version: int) -> str:
     """Exercise manifest-coordinate publication against the train's projected source schema."""
     generation_id = "durable-change-train-source-generation"
     with _runtime_probe_source_connection(target_version) as probe:
+        # The policy binding is canonical source DDL from slot 002 onward, so
+        # the writer must land its row in a table it never creates. A slot
+        # below that projects the table away; probing the projected catalog
+        # keeps this generic probe honest for a historical target instead of
+        # asserting a shape that slot did not have.
+        projects_policy = _probe_excision_policy_projection_columns(probe)
         ids = publish(
             probe,
             source_generation_id=generation_id,
@@ -1413,6 +1454,7 @@ def _probe_source_generation_publish(publish: Callable[..., object], target_vers
             addressing_mode="path",
             coordinates=("probe/one.jsonl", "probe/two.jsonl"),
             observed_at_ms=1_780_000_000_000,
+            **({"policy_snapshot": _probe_excision_policy_snapshot(generation_id)} if projects_policy else {}),
         )
         generation_row = probe.execute(
             "SELECT item_count FROM source_generations WHERE source_generation_id = ?",
@@ -1422,9 +1464,47 @@ def _probe_source_generation_publish(publish: Callable[..., object], target_vers
             "SELECT COUNT(*) FROM source_items WHERE source_generation_id = ?",
             (generation_id,),
         ).fetchone()
+        policy_rows = (
+            probe.execute(
+                "SELECT COUNT(*) FROM excision_policy_projections WHERE source_generation_id = ?",
+                (generation_id,),
+            ).fetchone()
+            if projects_policy
+            else (0,)
+        )
     if not isinstance(ids, tuple) or len(ids) != 2 or generation_row != (2,) or item_count != (2,):
         raise DurableChangeTrainError("source generation probe did not publish every manifest coordinate")
+    if projects_policy and policy_rows != (1,):
+        raise DurableChangeTrainError("source generation probe did not record its excision policy projection")
     return f"published probe source generation with {len(ids)} pending items"
+
+
+def _probe_excision_policy_projection_read(read: Callable[..., object], target_version: int) -> str:
+    """Read back one policy binding the ordinary writer left in canonical DDL."""
+    from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
+
+    generation_id = "durable-change-train-excision-policy-generation"
+    snapshot = _probe_excision_policy_snapshot(generation_id)
+    with _runtime_probe_source_connection(target_version) as probe:
+        absent = read(probe, generation_id)
+        publish_source_generation(
+            probe,
+            source_generation_id=generation_id,
+            manifest_digest="4" * 64,
+            addressing_mode="path",
+            coordinates=("probe/policy.jsonl",),
+            observed_at_ms=1_780_000_000_000,
+            policy_snapshot=snapshot,
+        )
+        projection = read(probe, generation_id)
+    if absent is not None:
+        raise DurableChangeTrainError("excision policy probe read a binding before one was published")
+    if not isinstance(projection, dict):
+        raise DurableChangeTrainError("excision policy probe did not read back a published binding")
+    expected_digest = snapshot.digest
+    if projection.get("policy_digest") != expected_digest or projection.get("audit_head") != "a" * 64:
+        raise DurableChangeTrainError("excision policy probe read a binding that is not the one published")
+    return "read back one generation-local excision policy binding from canonical DDL"
 
 
 def _probe_source_attachment_record(record: Callable[..., object], target_version: int) -> str:

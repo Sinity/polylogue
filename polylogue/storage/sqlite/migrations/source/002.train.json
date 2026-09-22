@@ -1,0 +1,72 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": null,
+  "current_version": 1,
+  "declared_at_ms": 1790000000000,
+  "drop_constraints": [],
+  "failure": null,
+  "fresh_ddl_parity": null,
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "manifest_sha256": "3c2fddfbb730c2ac633f6816d75047dda2fd587a55c4a81a1ccc9114d185a12b",
+  "migration": {
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/002_excision_policy_projections.sql",
+    "path": "002_excision_policy_projections.sql",
+    "requires_backup": false,
+    "slot": 2,
+    "sql_sha256": "b6b6c0813ccc04ad3a85c4824bb53f9e561f7f01436d31e0013ee56617cddb28",
+    "target_version": 2,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "polylogue-j264r",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:excision-policy-projection:writer-lands-canonical-row",
+        "proof:excision-policy-projection:reader-needs-no-schema-probe"
+      ],
+      "owner_ref": "polylogue-j264r",
+      "rider_id": "excision-policy-projection",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:excision-policy-projection:writer-lands-canonical-row",
+          "consumer_id": "source-generation-policy-projection-writer",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/source_items.py:publish_source_generation",
+          "roles": [
+            "writer"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:excision-policy-projection:reader-needs-no-schema-probe",
+          "consumer_id": "excision-policy-projection-reader",
+          "production_ref": "polylogue/security/excision_policy.py:read_excision_policy_projection",
+          "roles": [
+            "reader"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:excision_policy_projections"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "slot": 2,
+  "source_continuity_evidence": null,
+  "state": "declared",
+  "target_version": 2,
+  "tier": "source",
+  "train_id": "train:source:v2"
+}

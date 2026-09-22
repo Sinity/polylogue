@@ -130,12 +130,12 @@ def build_excision_policy_snapshot(
 
 
 def read_excision_policy_projection(conn: sqlite3.Connection, source_generation_id: str) -> dict[str, object] | None:
-    """Read one replaceable generation-local policy binding."""
-    if (
-        conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='excision_policy_projections'").fetchone()
-        is None
-    ):
-        return None
+    """Read one replaceable generation-local policy binding.
+
+    No schema probe: the table is canonical source DDL, so a source tier this
+    runtime admits always has it. ``None`` means this generation recorded no
+    policy binding, never "this archive lacks the shape".
+    """
     row = conn.execute(
         """SELECT policy_digest, user_generation, audit_generation, audit_head,
                   assertion_refs_json, generated_at_ms
