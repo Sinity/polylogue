@@ -411,3 +411,40 @@ def test_an_unaccounted_terminal_outcome_breaks_conservation() -> None:
     assert matrix.subjects[0].outcome == "failed"
     assert matrix.subjects[0].counts is not None
     assert "do not account for" in matrix.subjects[0].counts.conservation_detail
+
+
+def test_a_generated_subject_also_needs_a_reconciled_denominator() -> None:
+    """An incomplete pass is a failure whether or not a version changed.
+
+    Conservation was consulted only on the zero-diff branch, so a run that
+    inventoried half the declared corpus and reported one changed version
+    became ``generated``, produced no blocker, and the matrix exited
+    successfully -- omitting half the frontier is exactly what the
+    conservation term exists to catch, and a changed version does not excuse
+    it.
+
+    Anti-vacuity: the two passes below differ only in whether the route
+    inventoried the admitted member set; both report a changed version. Check
+    conservation after the changed-version branch and the first assertion goes
+    red.
+    """
+
+    denominator = _denominator(_required("codex"))
+    frontier = _frontier("codex", members=4)
+
+    unconserved = _reconcile(
+        denominator,
+        frontier,
+        [_receipt("codex", candidates=2, included=2, samples=40, statuses=("changed",))],
+    )
+    assert unconserved.subjects[0].outcome == "failed"
+    assert "did not consume the declared denominator" in unconserved.subjects[0].reason
+    assert not unconserved.ok
+
+    conserved = _reconcile(
+        denominator,
+        frontier,
+        [_receipt("codex", candidates=4, included=4, samples=40, statuses=("changed",))],
+    )
+    assert conserved.subjects[0].outcome == "generated"
+    assert conserved.ok
