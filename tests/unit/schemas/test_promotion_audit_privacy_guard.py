@@ -628,3 +628,87 @@ def test_published_path_in_a_property_name_is_red(tmp_path: Path) -> None:
 
     failures = [check for check in report.checks if check.status.value == "error"]
     assert any(check.name == "published_paths" for check in failures)
+
+
+def _copied_bundle(tmp_path: Path) -> tuple[Path, str, str]:
+    bundle_root = tmp_path / "providers"
+    shutil.copytree(SCHEMA_DIR, bundle_root)
+    registry = SchemaRegistry(storage_root=bundle_root)
+    provider = registry.list_committed_providers()[0]
+    version = registry.list_committed_versions(provider)[0]
+    return bundle_root, provider, version
+
+
+def _patch_package(bundle_root: Path, provider: str, version: str, **fields: object) -> None:
+    path = bundle_root / provider / "versions" / version / "package.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.update(fields)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_audit_refuses_raw_scope_identity(tmp_path: Path) -> None:
+    """A manifest must publish opaque scope digests, never the local scope.
+
+    `bundle_scope_identity()` exists so a catalog keeps routing capability
+    without serializing a readable path or session identifier, but nothing
+    validated the field: a manual promotion writing the raw scope published it
+    in both catalog.json and package.json with every gate green.
+
+    Anti-vacuity: drop `_scope_identity_checks` and this reports no error,
+    while `test_committed_schema_bundle_privacy_guard_is_green` shows the
+    check adds nothing to the clean bundle.
+    """
+    bundle_root, provider, version = _copied_bundle(tmp_path)
+    _patch_package(bundle_root, provider, version, bundle_scope_identities=["/home/operator/exports/session-7.json"])
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert [check.summary for check in failures] == ["Bundle scope identity is not an opaque scope digest"]
+    assert "/home/operator/exports/session-7.json" not in report.format_text()
+
+
+def test_audit_accepts_opaque_scope_identity(tmp_path: Path) -> None:
+    """The opposite direction: a real digest must not be refused."""
+    bundle_root, provider, version = _copied_bundle(tmp_path)
+    identity = "scope:" + hashlib.sha256(b"local-scope").hexdigest()
+    _patch_package(bundle_root, provider, version, bundle_scope_identities=[identity])
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    assert report.all_passed, [check.format_line() for check in report.checks if check.status.value == "error"]
+
+
+def test_audit_reads_workload_profile(tmp_path: Path) -> None:
+    """A declared workload profile is a published artifact and is audited.
+
+    `SchemaRegistry.get_workload_profile()` serves it at runtime and it sits
+    beside the element schemas, but the bundle audit inventoried element files
+    only, so an address recorded under `tokens` published with both required
+    quick gates green.
+
+    Anti-vacuity: drop `_workload_profile_checks` and neither this nor
+    `test_audit_refuses_absent_profile` reports anything.
+    """
+    bundle_root, provider, version = _copied_bundle(tmp_path)
+    profile_path = bundle_root / provider / "versions" / version / "workload-profile.json.gz"
+    profile_path.write_bytes(gzip.compress(json.dumps({"tokens": ["field:alice@example.com"]}).encode("utf-8")))
+    _patch_package(bundle_root, provider, version, workload_profile_file="workload-profile.json.gz")
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert any(check.name == "published_paths" for check in failures)
+    assert any("email address" in detail for check in failures for detail in check.details)
+    assert "alice@example.com" not in report.format_text()
+
+
+def test_audit_refuses_absent_profile(tmp_path: Path) -> None:
+    """A manifest naming a profile it does not ship is not silently ignored."""
+    bundle_root, provider, version = _copied_bundle(tmp_path)
+    _patch_package(bundle_root, provider, version, workload_profile_file="workload-profile.json.gz")
+
+    report = audit_schema_bundle_privacy(registry=SchemaRegistry(storage_root=bundle_root))
+
+    failures = [check for check in report.checks if check.status.value == "error"]
+    assert [check.summary for check in failures] == ["Declared workload profile is missing"]

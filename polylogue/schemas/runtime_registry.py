@@ -532,6 +532,10 @@ class SchemaRegistry:
     def load_committed_schema_file(self, provider: str, version: str, schema_file: str) -> PublicSchemaDocument | None:
         return self._snapshot_json(self._committed_provider_dir(provider), f"versions/{version}/elements/{schema_file}")
 
+    def load_committed_version_document(self, provider: str, version: str, name: str) -> PublicSchemaDocument | None:
+        """Read a version-level committed artifact (e.g. a workload profile)."""
+        return self._snapshot_json(self._committed_provider_dir(provider), f"versions/{version}/{name}")
+
     def list_providers(self) -> list[str]:
         providers: set[str] = set()
         scanned_roots: set[Path] = set()
