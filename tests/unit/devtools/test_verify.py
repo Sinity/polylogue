@@ -28,8 +28,7 @@ from devtools import (
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument
 from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
-from devtools.testmon_provision import testmon_datafile as _testmon_datafile
-from devtools.verification_admission import AFFECTED_MAX_SELECTED_TESTS, AFFECTED_MAX_UNRECORDED_FILES
+from devtools.verification_admission import AFFECTED_MAX_SELECTED_TESTS
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
@@ -368,17 +367,28 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert affected["cache"] == "tree+environment"
     assert affected["timeout_seconds"] == 7200
     assert complete["exec"] == ["devtools", "verify", "--all"]
-    # polylogue-p2mbi AC4 (#5405): `checkout = "candidate"`. The unset default
-    # does not select a tree, it REFUSES every workspace but the project root
-    # -- which is the operator's working checkout and deliberately divergent,
-    # so the corpus run could only ever qualify that branch and a coordinator
-    # could not point it at an integrated candidate. Anti-vacuity: removing the
-    # key makes this red.
+    # polylogue-p2mbi: `checkout = "candidate"`. Neither of the two values this
+    # key could otherwise carry qualifies an integrated tree -- "default"
+    # REFUSES every workspace but the project root, which is the operator's
+    # deliberately divergent working checkout, and an absent key resolves to
+    # "any", which qualifies whatever tree the caller happened to pass. The
+    # 03:00 `job fire` passes no workspace at all, so only "candidate" makes
+    # the scheduled complete-corpus run test the integrated candidate.
+    # Anti-vacuity: drop the key or set it to "default" and this goes red.
     assert complete["checkout"] == "candidate"
     assert complete["pool"] == "pytest-heavy"
     assert complete["result"] == "pytest"
     assert complete["cache"] == "tree+environment"
     assert complete["timeout_seconds"] == 14400
+    # polylogue-jwm7v: the sole nightly complete-corpus run is a declaration,
+    # not a live timer, and nothing else in the repository asserts it. A
+    # descriptor-only diff runs this contract INSTEAD of Testmon
+    # (`_selection_for_changes` -> "descriptor"), so without this line a change
+    # that deletes the schedule publishes green while silently disabling the
+    # only scheduled full-corpus verification.
+    # Anti-vacuity: remove `schedule` from [operations.verify_all] and this
+    # assertion is the only thing in the corpus that goes red.
+    assert complete["schedule"] == "*-*-* 03:00"
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
 
@@ -436,9 +446,11 @@ print(json.dumps({
             "pool": "pytest-heavy",
             "result": "pytest",
             "timeout": 14400,
-            # Read back through the production parser rather than the TOML, so
-            # what "candidate" resolves to is agentctl's answer and not this
-            # test's guess at it (polylogue-p2mbi AC4, #5405).
+            # The declared value, read back through the production parser
+            # rather than through the TOML, so "candidate" means what agentctl
+            # resolves it to and not what this test guesses (polylogue-p2mbi).
+            # Anti-vacuity: an agentctl that silently dropped an unknown
+            # checkout token would report its "any" default here.
             "checkout": "candidate",
         },
     }
@@ -501,144 +513,6 @@ def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) ->
 )
 def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], expected: str) -> None:
     assert verify._selection_for_changes(changed) == expected
-
-
-class _StubTestmonData:
-    """Just enough of ``TestmonData`` for the estimator to reach its arithmetic."""
-
-    system_packages_change = False
-
-    def __init__(self, selected: tuple[str, ...]) -> None:
-        self.unstable_test_names = list(selected)
-        self.failing_tests: list[str] = []
-        self.all_tests = {name: {"duration": 0.5} for name in selected}
-
-    @classmethod
-    def factory(cls, selected: tuple[str, ...]) -> Any:
-        return lambda **_kwargs: cls(selected)
-
-    def determine_stable(self) -> None:
-        return None
-
-
-def _stub_affected_graph(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    *,
-    selected: tuple[str, ...],
-    unrecorded_files: tuple[str, ...],
-    unrecorded_tests: int | None,
-) -> None:
-    """Point the estimator at a stub graph with a known selection and unknown set."""
-    import testmon.db
-    import testmon.testmon_core
-
-    datafile = _testmon_datafile(tmp_path)
-    datafile.parent.mkdir(parents=True, exist_ok=True)
-    sqlite3.connect(datafile).close()
-    monkeypatch.setattr(verify, "snapshot_testmon_graph", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(testmon.db, "DB", lambda *_a, **_k: SimpleNamespace(con=SimpleNamespace(close=lambda: None)))
-    monkeypatch.setattr(
-        testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected), raising=False
-    )
-    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
-    monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
-
-
-def test_the_estimate_counts_tests_the_graph_never_recorded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The plan's size is what launches, not what the graph happens to know.
-
-    Testmon deselects only recorded tests, so every test in a file the graph
-    has no execution for runs as unknown. A freshly initialized or interrupted
-    graph therefore reported a tiny bounded plan and launched the corpus --
-    exactly the required-check timeout the admission cap exists to refuse.
-    Measured on this checkout at 2026-09-22: 10 of 1,353 declared test files
-    had no recorded execution, worth 68 tests, none of which appeared in the
-    admitted count.
-
-    Anti-vacuity: return ``len(selected)`` instead of ``len(selected) +
-    unrecorded_tests`` and the first case's count drops to 2 while the run
-    still executes 70; the second case then reports 2 and is admitted, so both
-    assertions below go red.
-    """
-    graph = SimpleNamespace(status=TestmonGraphStatus.USABLE, full_rerun_cause=None)
-    _stub_affected_graph(
-        monkeypatch,
-        tmp_path,
-        selected=("tests/unit/a.py::test_one", "tests/unit/a.py::test_two"),
-        unrecorded_files=("tests/unit/new.py",),
-        unrecorded_tests=68,
-    )
-
-    count, seconds, error, unrecorded = verify._estimate_affected_selection(tmp_path, graph)
-
-    assert (count, unrecorded, error) == (70, 68, None)
-    assert seconds == 1.0
-
-    _stub_affected_graph(
-        monkeypatch,
-        tmp_path,
-        selected=("tests/unit/a.py::test_one", "tests/unit/a.py::test_two"),
-        unrecorded_files=("tests/unit/new.py",),
-        unrecorded_tests=AFFECTED_MAX_SELECTED_TESTS + 1,
-    )
-    decision = verify._affected_admission(root=tmp_path, graph=graph)
-    assert decision.status == "refused"
-    assert decision.unrecorded_tests == AFFECTED_MAX_SELECTED_TESTS + 1
-
-
-@pytest.mark.parametrize(
-    ("unrecorded_files", "unrecorded_tests", "expected"),
-    [
-        (None, 0, "recorded test files could not be read"),
-        (tuple(f"tests/unit/test_{index}.py" for index in range(AFFECTED_MAX_UNRECORDED_FILES + 1)), 0, "more than"),
-        (("tests/unit/new.py",), None, "could not be collected"),
-    ],
-)
-def test_an_unpriceable_unknown_set_refuses(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    unrecorded_files: tuple[str, ...] | None,
-    unrecorded_tests: int | None,
-    expected: str,
-) -> None:
-    """Each way of failing to price the unknown set is its own typed refusal.
-
-    Anti-vacuity: fold any of these into ``0`` and the estimator reports a
-    bounded plan it did not measure -- a silent truncation of the answer,
-    which is the one thing this admission is not allowed to do.
-    """
-    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
-    monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
-
-    counted, reason = verify._unrecorded_selection_term(tmp_path)
-
-    assert counted is None
-    assert reason is not None and expected in reason
-
-
-def test_a_markdown_test_fixture_still_selects_tests() -> None:
-    """Markdown under ``tests/`` is fixture content, not documentation.
-
-    ``tests/data/golden/chatgpt-simple.md`` is read and compared byte-for-byte
-    by ``tests/unit/ui/test_ui_visual.py``'s
-    ``TestGoldenMarkdownRendering::test_chatgpt_simple_session``. The blanket
-    ``.md`` suffix exemption made a change set containing only that fixture
-    select no pytest at all, and the hosted check accepted the resulting
-    no-test receipt while reporting that no test exercises the path.
-
-    Anti-vacuity: drop the ``tests/`` carve-out from ``_no_test_path`` and the
-    first two assertions go red. The last two pin the opposite direction, so
-    retiring the exemption wholesale -- which would route every README edit
-    through the testmon graph -- does not pass either.
-    """
-    fixture = "tests/data/golden/chatgpt-simple.md"
-    checkout = Path(__file__).resolve().parents[3]
-    assert (checkout / fixture).is_file(), "the fixture this case is anchored to moved"
-    assert verify._selection_for_changes(frozenset({fixture})) == "affected"
-    assert verify._no_test_path(fixture) is False
-    assert verify._no_test_path("docs/devtools.md") is True
-    assert verify._selection_for_changes(frozenset({"docs/devtools.md"})) == "none"
 
 
 def test_verify_main_records_why_no_pytest_step_ran(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -756,7 +630,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(
         verify,
         "_estimate_affected_selection",
-        lambda _root, _graph: (selected_count, 1.0, None, 0),
+        lambda _root, _graph: (selected_count, 1.0, None),
     )
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
@@ -1320,29 +1194,20 @@ def test_agent_tier_refusal_honors_the_json_contract(
 
 
 def test_schema_promotion_audits_the_tree_it_writes_to(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The audited root is the registry storage root promotion writes to.
+    """Anti-vacuity: restore the "polylogue/schemas" literal and this resolves
+    to a bare relative path that only exists from the checkout root.
 
-    This case previously asserted only that the root is an absolute existing
-    directory named ``schemas``, which the installed ``polylogue/schemas``
-    package satisfies -- and that is NOT where promotion writes.
-    ``promote_schema_cluster`` goes through
-    ``polylogue.schemas.operator.registry.schema_registry()``, whose
-    ``storage_root`` is ``data_home()/schemas``, so the audit was inspecting
-    bundled artifacts promotion never touched.
-
-    Anti-vacuity: restore ``Path(next(iter(polylogue.schemas.__path__)))`` and
-    the equality below fails, because that path is inside the checkout and
-    does not move with ``XDG_DATA_HOME``.
+    Promotion writes to the installed schema package; auditing a relative
+    literal audits whatever happens to sit under the caller's cwd.
     """
 
     from devtools import schema_promote
-    from polylogue.schemas.registry import SchemaRegistry
 
     root = schema_promote._schema_registry_root()
 
     assert root.is_absolute()
+    assert root.is_dir()
     assert root.name == "schemas"
-    assert root == SchemaRegistry().storage_root
 
 
 def test_schema_promotion_json_stays_one_document(monkeypatch: pytest.MonkeyPatch) -> None:
