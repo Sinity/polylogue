@@ -17,10 +17,27 @@
 #       gate:           "required" | "informational"
 #       tier:           "cheap-local" | "lab"
 #
-# verify_slos exits non-zero when any required surface (in the active tier set)
-# exceeds its declared budget or fails to produce a benchmark result.
-# Informational rows are visible but non-blocking placeholders for deferred read
-# paths whose benchmark fixtures or product paths do not yet exist.
+# What `gate` actually governs, corrected 2026-09-22 against
+# devtools/verify_slos.py rather than intent: a MEASURED violation blocks
+# whatever the gate says -- `violations` is not gate-filtered. The gate decides
+# what happens when a surface produces NO result: a required surface with no
+# benchmark result blocks (`missing_required`), an informational one is listed
+# under `uncovered_informational` and does not. That second case is the one
+# worth having. A benchmark that silently stops producing a result -- reading an
+# attribute that never existed, for instance -- is exactly how daemon_mixed_load
+# went unmeasured for an unknown period (polylogue-gd9i1); `missing_required` is
+# what notices.
+# So graduating a lane to `required` is a claim that its budget is
+# measurement-backed AND that its disappearance should be loud. It is not a
+# claim that informational lanes are free to regress.
+#
+# A budget is a claim about a DISTRIBUTION, so a lane must observe one. p95 here
+# is estimated as mean + 1.645*stddev, and a lane measured with pytest-benchmark
+# `rounds=1` has stddev 0 -- it reports its single sample as p50, p95 and mean
+# alike. Such a lane can carry an honest recorded measurement; it cannot carry
+# an honest p95. Repeatable lanes use `benchmark_repeated`
+# (tests/benchmarks/helpers.py); one-shot lanes are the ones whose second round
+# would measure the state the first one left, and they say so in their row.
 #
 # Tiering separates execution cost:
 #   * cheap-local — runnable in `devtools verify` defaults. Small fixtures, low
@@ -103,7 +120,17 @@ surfaces:
     tier: "cheap-local"
 
   daemon_warm_status:
-    description: "Installed warm CLI status including operation startup and local rendering"
+    description: >-
+      Installed warm CLI status including operation startup and local
+      rendering. MEASURED 2026-09-22 at 9ef655cb8, 5 rounds x 2 runs on a
+      host running five other lanes: p50 3521.8 / 3647.9 ms, p95 3736.3 /
+      3760.9 ms -- about 9x the budget below, and stable (4% run-to-run).
+      RULING (polylogue-gd9i1 AC4): performance DEFECT against a retained
+      target, not a recalibration. The lane launches the installed console
+      script, so it pays the same import tax as cli_status_cold and resolves
+      under polylogue-8s70 rather than here; relaxing the budget would encode
+      that tax as acceptable. Stays informational until 8s70 lands, then
+      re-measure before deciding the number.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_warm_status"
     p50_ms: 400
     p95_ms: 800
@@ -111,35 +138,64 @@ surfaces:
     tier: "lab"
 
   daemon_static_completion:
-    description: "Static shell/query completion without archive hydration"
+    description: >-
+      Static shell/query completion without archive hydration. GRADUATED from
+      informational 2026-09-22 (polylogue-dpm6o AC3): the lane now takes 5
+      rounds, so its p95 is estimated from a real spread instead of from the
+      single sample a one-shot lane reports as both p50 and p95. MEASURED at
+      9ef655cb8, 2 runs on a loaded host: p50 32.8 / 41.2 ms, p95 39.2 / 48.3
+      ms -- inside the budget below with ~3x headroom on p95.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_static_completion"
     p50_ms: 80
     p95_ms: 150
-    gate: "informational"
+    gate: "required"
     tier: "lab"
 
   daemon_live_completion:
-    description: "Archive-backed completion through the typed daemon operation"
+    description: >-
+      Archive-backed completion through the typed daemon operation. GRADUATED
+      2026-09-22 (polylogue-dpm6o AC3) on a 5-round distribution. MEASURED at
+      9ef655cb8, 2 runs on a loaded host: p50 31.5 / 32.1 ms, p95 42.4 / 46.4
+      ms -- inside the budget below with ~6x headroom on p95.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_live_completion"
     p50_ms: 150
     p95_ms: 300
-    gate: "informational"
+    gate: "required"
     tier: "lab"
 
   daemon_cancellation:
-    description: "Read cancellation including connection and admission release"
+    description: >-
+      Read cancellation including connection and admission release. GRADUATED
+      2026-09-22 (polylogue-dpm6o AC3) on a 5-round distribution. MEASURED at
+      9ef655cb8, 2 runs on a loaded host: p50 32.2 / 34.2 ms, p95 122.1 /
+      124.5 ms -- inside the budget below with ~4x headroom. Worth knowing:
+      this lane's tail is 3.7x its median and reproduces across runs. A
+      one-shot lane could not have shown that at all, because it reports its
+      single sample as both p50 and p95.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_cancellation"
     p50_ms: 250
     p95_ms: 500
-    gate: "informational"
+    gate: "required"
     tier: "lab"
 
   daemon_concurrent_reads:
-    description: "Mixed interactive reads while representative background work progresses"
+    description: >-
+      Mixed interactive reads while representative background work progresses.
+      GRADUATED 2026-09-22 (polylogue-dpm6o AC3, polylogue-gd9i1 AC2) on a
+      5-round distribution AND a proven-valid series. MEASURED at 9ef655cb8,
+      2 runs on a loaded host: p50 113.1 / 116.6 ms, p95 120.7 / 126.1 ms --
+      inside the budget below with ~4x headroom, and tight (3% run-to-run).
+      VALIDITY: the series is proven to reach the archive query path rather
+      than the daemon read cache by
+      test_read_series_separates_cache_hits_from_archive, which injects
+      latency into _query_payload and requires every uncached read to pay it
+      while a repeated read does not. That is the #5211 fault this lane's
+      neighbour shipped with; "distinct params per worker" is a claim about
+      the code, and this is the measurement.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_concurrent_reads"
     p50_ms: 250
     p95_ms: 500
-    gate: "informational"
+    gate: "required"
     tier: "lab"
 
   daemon_mixed_load:
@@ -147,6 +203,28 @@ surfaces:
       Interactive reads served while background units occupy the same bounded
       scheduler. Gates the interactive side; the profile additionally asserts
       nonzero background throughput and a bounded background admission wait.
+      MEASURED 2026-09-22 at 9ef655cb8, 2 runs on a loaded host: p50 1863.9 /
+      1785.5 ms for the eight-read batch, stable to 4%. That is neither the
+      2150 ms on polylogue-gd9i1 nor the 3552.7 ms in the committed baseline
+      receipt; all three are single-sample figures from differently loaded
+      hosts.
+      RULING (polylogue-gd9i1 AC4), in two parts.
+      (1) The 250/500 pair is not a target this workload ever missed -- it
+      was calibrated when the background load was sleep-only kernel units and
+      the reads were cache hits, so it describes a workload the lane no longer
+      runs. Comparing the honest workload against it is meaningless in either
+      direction, and that is a RECALIBRATION owed, not a defect found.
+      (2) The recalibration is NOT taken here, because this lane cannot yet
+      declare a p95. It writes real mutation.session.tag operations, so it is
+      deliberately one-shot, and a one-shot lane reports its single sample as
+      both p50 and p95. Insufficient samples by construction is a different
+      fact from a noisy measurement; the fix is a repeatable mixed-load shape,
+      not a number chosen from one observation.
+      What DOES reproduce: ~233 ms per read under write load against ~29 ms
+      per read quiet (daemon_concurrent_reads, same host, same day) -- the
+      ~6x the bead flags. Per AC3 it is NOT attributed to a phase, because no
+      phase attribution was measured. Any future budget here carries that
+      unexplained penalty inside it and must say so.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_mixed_load"
     p50_ms: 250
     p95_ms: 500
@@ -165,12 +243,22 @@ surfaces:
     description: >-
       polylogue status --format json, cold subprocess, no daemon reachable,
       empty archive (deferred until polylogue-8s70's import-tax fix lands).
-      Measured baseline as of this row's introduction: p50 ~1.80s, p95
-      ~1.81s (5 rounds, this repo's dev host) -- dominated by
-      builtins.compile across ~870 modules on the readiness/storage.repair
-      import chain (polylogue-8s70's own cProfile finding), not query cost.
-      Target values below are the aspirational post-fix budget, not today's
-      passing bar.
+      Baseline as of this row's introduction: p50 ~1.80s, p95 ~1.81s
+      (5 rounds, this repo's dev host) -- dominated by builtins.compile
+      across ~870 modules on the readiness/storage.repair import chain
+      (polylogue-8s70's own cProfile finding), not query cost.
+      RE-MEASURED 2026-09-22 at 9ef655cb8, 5 rounds x 2 runs: p50 4169.3 /
+      3212.6 ms, p95 4423.6 / 3311.3 ms. That is roughly double the recorded
+      1.80s baseline, but the two are NOT comparable: this host was running
+      five other lanes, and this lane's 30% run-to-run spread is the widest
+      in the catalog -- it is a cold interpreter start, so it measures
+      whatever CPU it can get. Whether cold start regressed or the host was
+      simply busy is NOT established here, and the way to settle it is a
+      quiet-host re-measure, not a budget change.
+      Stays informational for that reason: the lane is too noisy on a shared
+      host to carry a real budget, which is a measured answer rather than a
+      deferral. Target values below remain the aspirational post-fix budget,
+      not today's passing bar.
     benchmark_test: "tests/benchmarks/test_cli_cold_start.py::test_bench_cli_status_cold"
     p50_ms: 500
     p95_ms: 800

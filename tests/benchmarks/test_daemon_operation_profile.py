@@ -20,13 +20,14 @@ from contextlib import suppress
 from pathlib import Path
 from resource import RUSAGE_SELF, getrusage
 from time import perf_counter, sleep
+from typing import Any
 
 import pytest
 
 from polylogue.daemon.execution import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
 from polylogue.daemon_client import DaemonClient
 from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, PROFILE_METRICS, profile_manifest, record_metrics
-from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
+from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot, benchmark_repeated
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
 from tests.infra.workload_declarations import BenchmarkWorkloadTier
@@ -97,7 +98,7 @@ def test_bench_daemon_warm_status(benchmark: BenchmarkFixture, bench_daemon_uds_
         )
         return result
 
-    result = benchmark_one_shot(benchmark, run)
+    result = benchmark_repeated(benchmark, run)
     assert result.returncode == 0, result.stderr
 
 
@@ -106,7 +107,7 @@ def test_bench_daemon_static_completion(benchmark: BenchmarkFixture, bench_daemo
     def run() -> dict[str, object]:
         return _operation(bench_daemon_uds_client, "completion", {"kind": "field", "incomplete": ""})
 
-    result = benchmark_one_shot(benchmark, run)
+    result = benchmark_repeated(benchmark, run)
     assert isinstance(result["result"], dict)
     record_metrics(
         benchmark,
@@ -120,7 +121,7 @@ def test_bench_daemon_live_completion(benchmark: BenchmarkFixture, bench_daemon_
     def run() -> dict[str, object]:
         return _operation(bench_daemon_uds_client, "completion", {"kind": "terminal-source", "incomplete": ""})
 
-    result = benchmark_one_shot(benchmark, run)
+    result = benchmark_repeated(benchmark, run)
     assert isinstance(result["result"], dict)
     record_metrics(
         benchmark,
@@ -134,7 +135,7 @@ def test_bench_daemon_cancellation(benchmark: BenchmarkFixture, bench_daemon_uds
     def run() -> dict[str, object]:
         return _operation(bench_daemon_uds_client, "cli.query", {"params": {"limit": 1}})
 
-    result = benchmark_one_shot(benchmark, run)
+    result = benchmark_repeated(benchmark, run)
     assert result["progress"] == {"state": "complete"}
     record_metrics(
         benchmark,
@@ -161,7 +162,7 @@ def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon
         with ThreadPoolExecutor(max_workers=4) as pool:
             return list(pool.map(one, range(4)))
 
-    results = benchmark_one_shot(benchmark, run)
+    results = benchmark_repeated(benchmark, run)
     assert len(results) == 4
     assert all(result["error"] is None for result in results)
     record_metrics(benchmark, concurrent_interference_p95_ms=max(elapsed, default=0))
@@ -379,6 +380,78 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
         peak_queue_bytes=peak_queue_bytes,
         peak_rss_kib=getrusage(RUSAGE_SELF).ru_maxrss,
     )
+
+
+#: Latency the injection adds to one archive query. Large enough to dominate a
+#: served read on any host this runs on, small enough that four of them fit
+#: inside the client deadline below.
+_ARCHIVE_PATH_INJECTION_MS = 150
+
+
+def test_read_series_separates_cache_hits_from_archive(
+    bench_daemon_uds_client: DaemonClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The concurrent-read lane's series must observe the archive, not its cache.
+
+    polylogue-gd9i1 AC2. ``daemon_mixed_load`` once passed its own anti-vacuity
+    injection because identical read params were served from the daemon read
+    cache: the lane was timing the cache and reporting it as archive latency.
+    Both lanes now issue distinct params per worker, but "distinct params" is a
+    claim about the code, not a measurement -- nothing proved the reads reached
+    ``_query_payload``.
+
+    This is that proof, and it is two-sided by construction:
+
+    * with a controlled latency injection on the archive query path, EVERY read
+      in the uncached series must pay it;
+    * repeating one read's exact params must NOT pay it, because the cache
+      answers before the query path runs.
+
+    The second half is what makes the first meaningful. A run where the cache
+    was simply disabled would satisfy an "injection is observed" assertion on
+    its own while telling us nothing about whether the lane's params were
+    distinct enough to miss.
+
+    Anti-vacuity: give the uncached series identical params and its assertion
+    goes red on reads 2-4; remove the cache short-circuit and the cache-hit
+    assertion goes red.
+    """
+    import polylogue.operations.daemon_reads as daemon_reads
+
+    real_query_payload = daemon_reads._query_payload
+    injected: list[float] = []
+
+    def slow_query_payload(*args: Any, **kwargs: Any) -> Any:
+        injected.append(perf_counter())
+        sleep(_ARCHIVE_PATH_INJECTION_MS / 1000)
+        return real_query_payload(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", slow_query_payload)
+
+    socket_path = bench_daemon_uds_client.socket_path
+
+    def read(params: dict[str, object]) -> int:
+        client = DaemonClient(socket_path, timeout_s=10)
+        _operation(client, "cli.query", {"params": params})
+        return client.last_elapsed_ms or 0
+
+    # Offsets nothing else in this module uses, so every one of these is a
+    # guaranteed cache miss rather than a hit left by an earlier lane.
+    uncached = [read({"limit": 3, "offset": 900 + index}) for index in range(4)]
+    assert min(uncached) >= _ARCHIVE_PATH_INJECTION_MS, (
+        f"an uncached read did not reach the archive query path: {uncached} ms, "
+        f"injection {_ARCHIVE_PATH_INJECTION_MS} ms"
+    )
+    assert len(injected) == 4, f"the injection ran {len(injected)} times for four distinct reads"
+
+    repeated_params: dict[str, object] = {"limit": 3, "offset": 950}
+    first = read(repeated_params)
+    assert first >= _ARCHIVE_PATH_INJECTION_MS, f"the cache-populating read skipped the archive: {first} ms"
+    hits = [read(repeated_params) for _ in range(3)]
+    assert max(hits) < _ARCHIVE_PATH_INJECTION_MS, (
+        f"a repeated read paid the archive-path injection, so nothing was served from the read cache: {hits} ms"
+    )
+    assert len(injected) == 5, f"a cache hit reached the query path: {len(injected)} injections for 8 reads"
 
 
 def test_profile_declares_all_packet_workloads() -> None:

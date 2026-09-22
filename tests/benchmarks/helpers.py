@@ -24,8 +24,43 @@ class BenchmarkFixture(Protocol):
 
 
 def benchmark_one_shot(benchmark: Any, operation: Callable[..., T], *args: object) -> T:
-    """Measure one mutating end-to-end operation against one fresh state."""
+    """Measure one mutating end-to-end operation against one fresh state.
+
+    One round is the right shape only when repeating the operation would not
+    measure the same thing -- a mutating lane whose second round runs against
+    the state the first one left. It is the wrong shape for a repeatable read:
+    with ``rounds=1`` pytest-benchmark reports ``stddev == 0``, and every p95
+    estimator downstream (``devtools/verify_slos.py`` estimates
+    ``mean + 1.645 * stddev``) then returns the single observed sample wearing
+    a p95's name. Repeatable lanes use :func:`benchmark_repeated`.
+    """
     return cast(T, benchmark.pedantic(operation, args=args, rounds=1, iterations=1))
+
+
+#: Rounds for a repeatable lane. Five is what ``test_bench_cli_status_cold``
+#: already takes, and it is the smallest count at which the catalog's
+#: ``mean + 1.645 * stddev`` estimate is computed from an actual spread rather
+#: than from a constant zero.
+REPEATED_BENCHMARK_ROUNDS = 5
+
+
+def benchmark_repeated(
+    benchmark: Any,
+    operation: Callable[..., T],
+    *args: object,
+    rounds: int = REPEATED_BENCHMARK_ROUNDS,
+) -> T:
+    """Measure a repeatable operation often enough to have a distribution.
+
+    A latency budget is a claim about a distribution. A lane that observes one
+    sample can report that sample honestly and can report nothing about a tail,
+    so any surface it feeds must either take more rounds or decline to declare
+    a p95. This is the "take more rounds" side; the returned value is the last
+    round's, matching :func:`benchmark_one_shot`'s contract.
+    """
+    if rounds < 2:
+        raise ValueError("a repeated benchmark needs at least two rounds to have a spread")
+    return cast(T, benchmark.pedantic(operation, args=args, rounds=rounds, iterations=1))
 
 
 @dataclass
