@@ -1,6 +1,14 @@
 # Interrupted retained source generations
 
-Status: **decided** (polylogue-xt5ga). This is a design record only. It authorizes no live-archive mutation, source or audit migration, replay, or blob deletion.
+Status: **policy superseded** (polylogue-fzbzk, 2026-09-22). Originally decided under polylogue-xt5ga. This is a design record only. It authorizes no live-archive mutation, source or audit migration, replay, or blob deletion.
+
+> **Read the correction first.** The evidence in this record stands: the
+> reproduction, the enumeration of durable references a stopped ingest leaves
+> behind, and the liveness-owner analysis are all still accurate in kind. Its
+> *chosen policy* is not. Policy A -- durable abandonment plus a release ledger
+> -- is superseded, and the bounded successor it specifies must not be built
+> from this page. See [Correction](#correction-2026-09-22-policy-a-is-superseded)
+> at the end.
 
 ## Question
 
@@ -72,3 +80,70 @@ The decision was verified with read-only source inspection and the in-memory syn
 * `tests/unit/operations/test_machine_receipts.py`: restart reads the original unknown ingest receipt plus the separate abandonment receipt and never returns a completed ingest or replays source bytes.
 
 No live archive, full corpus, schema migration, or cleanup operation was run for this decision.
+
+## Correction 2026-09-22: Policy A is superseded
+
+The decision above rejected deliberate retention (policy B) on the grounds that
+interrupted generations keep their bytes live forever and accumulate without a
+terminal bound. For an archival application that is not a defect. Preserving
+accepted original evidence is what the product is for, and unbounded growth of
+*retained accepted input* is the cost of that purpose, not a leak in it.
+
+The distinctions the challenge draws, and this correction accepts:
+
+| The observed fact | What it does not establish |
+| --- | --- |
+| the client stopped waiting | that publication stopped |
+| the attempt was interrupted | that the accepted input is disposable |
+| interpretation is unfinished | that the source must be released before local work is retried |
+| the operator requests deletion | anything about interruption recovery; that invokes a separate retention policy |
+
+So the immediate policy does not need `source_generation_dispositions` and
+`source_generation_release_members` merely to make stopped ingests collectible.
+What it needs is an explicit statement that **accepted originals remain
+retained**, and that the unfinished attempt stays visible as unfinished.
+
+### The retention default
+
+1. An interrupted accepted generation **stays retained**. Its
+   `source_generations`, `source_items`, `source_item_raw_members`,
+   `raw_sessions` and `blob_refs` rows are unchanged, its bytes stay live to the
+   blob-liveness descriptor, and no operation exists to release them on the
+   grounds of interruption.
+2. The original attempt **stays indeterminate**. `mark_unknown` and `fence`
+   already record that honestly, and truthfulness rule 4 above is retained
+   verbatim: nothing may turn `unknown` into `completed` or infer a successful
+   ingest from rebuildable index state.
+3. The generation is **inspectable, not silently indefinite**. A retained
+   unfinished generation should be readable through the existing operation and
+   source surfaces rather than discoverable only by SQL. That is a read-side
+   gap, not a new durable table.
+4. A later deliberate **retention limit or purge is not waived**. It may well
+   justify the abandonment/release machinery this record specified. It should be
+   judged against its own use case with its own measured accumulation evidence,
+   and not arrive inside the fresh start disguised as interruption recovery.
+
+### What that retires
+
+Superseded: the "Decision: explicit abandonment, then release through the
+existing GC owner" section's choice of policy A, the whole "Bounded successor"
+section, and the rejection of policy B in "Rejected policy and prohibited
+shortcuts". The *prohibited shortcuts* in that same section are retained --
+they describe what any future disposal route must not do, and nothing about
+this correction licenses direct SQL cleanup, silent row deletion, cleared
+`blob_hash` values, or an `ops.db` ledger.
+
+Retained and still accurate: the question, the reproduction, the enumeration of
+durable references, the liveness-owner analysis, and truthfulness rule 4. The
+focused verification plan is superseded along with the successor it tests.
+
+### Three head facts this record states wrongly
+
+Re-resolved at `9ef655cb8`; the record and its bead both predate these.
+
+* **`polylogue/storage/sqlite/migrations/source/048_abandon_retained_source_generation.sql` is the wrong slot number, twice over.** The directory is not empty -- it holds `002_excision_policy_projections.sql` and its frozen `002.train.json` -- so the numbered route *is* the live regime, and the next source slot is `003`, not `048`.
+* **`SOURCE_SCHEMA_VERSION` no longer exists.** The durable tier modules deliberately declare no `*_SCHEMA_VERSION` of their own. The source tier's durable target is `SOURCE_TIER_VERSION`, currently `2`, above `ARCHIVE_FORMAT_FLOOR_VERSION = 1`. Any statement of the form "applied to a version-47 archive" is unevaluable at this head.
+* **A note circulated on polylogue-fzbzk claiming `migrations/{source,user,audit}/` each contain only `__init__.py` is stale.** Only `audit/` does. `source/` and `user/` each carry one numbered train.
+
+None of these change the correction: the contracted scope needs no migration at
+all, which is also why the stale seam stopped mattering.
