@@ -685,3 +685,95 @@ def test_a_capped_evaluation_claims_no_membership_delta(tmp_path: Path) -> None:
     assert not any('"query-delta"' in kind for kind in kinds), "a capped view is not a membership"
     assert any("query-delta-unmeasured" in kind for kind in kinds), "the unanswered question is still recorded"
     assert after == before, "a non-exact tick never advances the baseline"
+
+
+def _install_legacy_capped_baseline(user_db: Path, query_hash: str, members: tuple[str, ...]) -> str:
+    """Write the baseline shape a pre-guard ``user.db`` can already contain.
+
+    Before the non-exact guard landed, every evaluation was persisted as the
+    watch baseline, so a durable ``watched_query_baselines`` row can point at a
+    result set whose ``exactness`` is ``capped``/``sampled``/``estimate``.
+    """
+    from polylogue.storage.sqlite.query_objects import put_result_set, put_watched_query_baseline
+
+    result_set_id = "watch-legacy-capped"
+    with sqlite3.connect(user_db) as conn:
+        put_result_set(
+            conn,
+            result_set_id=result_set_id,
+            query_hash=query_hash,
+            grain="session",
+            corpus_epoch="index:g1",
+            member_refs=members,
+            exactness="capped",
+            persistence_class="watch",
+            created_at_ms=3,
+        )
+        put_watched_query_baseline(
+            conn,
+            query_hash=query_hash,
+            result_set_id=result_set_id,
+            updated_at_ms=3,
+        )
+        conn.commit()
+    return result_set_id
+
+
+def test_legacy_capped_baseline_replaced_silently(tmp_path: Path) -> None:
+    """A non-exact stored baseline is unmeasured, not a prior observation.
+
+    Its merkle root is over a bounded view, so comparing an exact root against
+    it emits a definitive ``query-delta`` for a membership change nobody
+    observed -- the same false claim the guard prevents for new baselines.
+
+    Anti-vacuity: drop ``comparable_baseline`` and this asserts a
+    ``query-delta`` candidate against the legacy capped root. The fixture's
+    legacy members deliberately differ from the exact tick's, because an equal
+    root would be silent under both implementations.
+    """
+    index_db, query_hash = _seed_watch(tmp_path)
+    legacy_id = _install_legacy_capped_baseline(tmp_path / "user.db", query_hash, ("session:one",))
+    evaluator = _Evaluator(members=("session:one", "session:two"))
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(("session:changed",)) is True
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        kinds = [str(row[0]) for row in conn.execute("SELECT value_json FROM assertions WHERE kind = 'finding'")]
+        baseline = get_watched_query_baseline(conn, query_hash)
+    assert kinds == [], "an exact root compared against a capped one claims nothing"
+    assert baseline is not None
+    assert baseline.result_set_id != legacy_id, "the first exact evaluation replaces the legacy baseline"
+    assert baseline.exactness == "exact"
+
+
+def test_exact_delta_after_legacy_baseline_replaced(tmp_path: Path) -> None:
+    """Opposite direction: the replacement baseline still reports real drift."""
+    index_db, query_hash = _seed_watch(tmp_path)
+    _install_legacy_capped_baseline(tmp_path / "user.db", query_hash, ("session:one",))
+    evaluator = _Evaluator(members=("session:one", "session:two"))
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(("session:changed",)) is True
+    evaluator.members = ("session:one", "session:two", "session:three")
+    assert stage.execute_sessions(("session:changed",)) is True
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        kinds = [str(row[0]) for row in conn.execute("SELECT value_json FROM assertions WHERE kind = 'finding'")]
+    assert len(kinds) == 1
+    assert '"query-delta"' in kinds[0]
+
+
+def test_unmeasured_tick_ignores_legacy_baseline(tmp_path: Path) -> None:
+    """A capped tick against a capped baseline has no drift question to name."""
+    index_db, query_hash = _seed_watch(tmp_path)
+    _install_legacy_capped_baseline(tmp_path / "user.db", query_hash, ("session:one",))
+    evaluator = _Evaluator(members=("session:one", "session:two"), exactness="capped")
+    stage = make_standing_query_stage(index_db, evaluator=evaluator)
+    assert stage.execute_sessions is not None
+    assert stage.execute_sessions(("session:changed",)) is True
+
+    with sqlite3.connect(tmp_path / "user.db") as conn:
+        kinds = [str(row[0]) for row in conn.execute("SELECT value_json FROM assertions WHERE kind = 'finding'")]
+        assert conn.execute("SELECT COUNT(*) FROM query_evaluation_receipts").fetchone()[0] == 1
+    assert kinds == []

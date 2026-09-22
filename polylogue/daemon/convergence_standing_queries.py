@@ -251,10 +251,23 @@ def _materialize_watch_evaluation(
     *,
     now_ms: int,
 ) -> None:
+    """Advance one watch's baseline and report a measured membership delta.
+
+    A stored baseline whose own ``exactness`` is not ``exact`` is *unmeasured*,
+    not a prior observation. ``user.db`` files written before the guard in
+    :func:`_materialize_unmeasured_watch_evaluation` persisted every evaluation
+    as the baseline, so such a row can already exist; its merkle root is over a
+    capped/sampled/estimated view and therefore answers a different question
+    than an exact root. Comparing the two emits an unconditional "membership
+    changed" claim -- the same false positive the guard prevents for new
+    baselines (polylogue-uwm6y). The first exact evaluation therefore replaces
+    a non-exact baseline silently and claims no delta against it.
+    """
     if evaluation.exactness != "exact":
         _materialize_unmeasured_watch_evaluation(conn, query_hash, evaluation, now_ms=now_ms)
         return
     baseline = get_watched_query_baseline(conn, query_hash)
+    comparable_baseline = baseline if baseline is not None and baseline.exactness == "exact" else None
     root = membership_merkle_root(evaluation.member_refs)
     rank_hash = hash_payload(list(evaluation.member_refs))
     same_snapshot = baseline is not None and (
@@ -308,11 +321,11 @@ def _materialize_watch_evaluation(
         result_set_id=current.result_set_id,
         updated_at_ms=now_ms,
     )
-    if baseline is None or baseline.membership_merkle_root == root:
+    if comparable_baseline is None or comparable_baseline.membership_merkle_root == root:
         return
     query_reference = query_ref(query_hash).format()
     current_reference = result_set_ref(current.result_set_id).format()
-    baseline_reference = result_set_ref(baseline.result_set_id).format()
+    baseline_reference = result_set_ref(comparable_baseline.result_set_id).format()
     upsert_findings_as_assertions(
         conn,
         [
@@ -358,6 +371,11 @@ def _materialize_unmeasured_watch_evaluation(
     condition. With no baseline there is no question yet: the receipt is the
     whole record, and the next exact evaluation establishes the baseline it
     always would have.
+
+    A stored baseline whose own ``exactness`` is not ``exact`` -- only
+    reachable from a ``user.db`` written before this guard existed -- is the
+    same "no question yet" case: there was never a measured membership to
+    drift from, so it gets the receipt and nothing else.
     """
     put_evaluation_receipt(
         conn,
@@ -367,7 +385,7 @@ def _materialize_unmeasured_watch_evaluation(
         created_at_ms=now_ms,
     )
     baseline = get_watched_query_baseline(conn, query_hash)
-    if baseline is None:
+    if baseline is None or baseline.exactness != "exact":
         return
     query_reference = query_ref(query_hash).format()
     baseline_reference = result_set_ref(baseline.result_set_id).format()
