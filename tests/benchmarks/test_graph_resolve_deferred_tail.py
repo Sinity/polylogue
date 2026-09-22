@@ -126,8 +126,8 @@ def _build_deferred_tail_fixture(db_path: Path, *, n_children: int) -> tuple[sql
             child_blocks,
         )
         conn.executemany(
-            "INSERT INTO session_events (session_id, source_message_id, position, event_type, summary, payload_json) "
-            "VALUES (?, ?, ?, ?, ?, '{}')",
+            "INSERT INTO session_events (session_id, source_message_id, position, event_type, payload_json) "
+            "VALUES (?, ?, ?, ?, json_object('summary', ?))",
             child_events,
         )
         # Unresolved parent-link edge (inheritance IS NULL): the exact

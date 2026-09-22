@@ -218,8 +218,8 @@ DEMO_CONSTRUCTS: tuple[DemoConstruct, ...] = (
                     SELECT 1 FROM session_events
                     WHERE session_id = 'claude-code-session:demo-lineage-compaction-parent:agent-acompact-demo'
                       AND event_type = 'compaction'
-                      AND LOWER(summary) NOT LIKE '%fail%'
-                      AND LOWER(summary) NOT LIKE '%error%'
+                      AND LOWER(json_extract(payload_json, '$.summary')) NOT LIKE '%fail%'
+                      AND LOWER(json_extract(payload_json, '$.summary')) NOT LIKE '%error%'
                 )
             THEN 1 ELSE 0 END
         """,

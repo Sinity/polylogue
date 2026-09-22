@@ -1203,7 +1203,11 @@ SESSION_EVENTS_SPEC = _make_table_spec(
         _raw_column("source_message_provider_id", """source_message_provider_id TEXT"""),
         _raw_column("position", """position                   INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column("event_type", """event_type                 TEXT NOT NULL CHECK(length(trim(event_type)) > 0)"""),
-        _raw_column("summary", """summary                    TEXT NOT NULL"""),
+        # polylogue-kc8eq: no ``summary`` column. It was a write-time render of
+        # ``payload_json["summary"] or payload_json["text"]`` -- derivable from
+        # the retained payload in 7,403,923 of 7,403,923 live rows with zero
+        # exceptions, absent from SESSION_EVENT_PROJECTION_COLUMNS, and never
+        # selected by the read path. 178.9 MB of the index restating the payload.
         _raw_column(
             "payload_json",
             f"""payload_json               TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")})""",

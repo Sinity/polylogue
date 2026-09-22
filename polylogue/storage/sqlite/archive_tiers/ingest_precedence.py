@@ -338,19 +338,28 @@ def record_capture_gap_event(
         (session_id, session_id, session_id),
     ).fetchone()
     position = int(row[0] or 0) if row is not None else 0
-    summary = (
-        "Skipped lower-precedence DOM browser-capture fallback "
-        f"{incoming_raw_id!r}; existing raw {existing_raw_id!r} has "
-        f"{stored_message_count} message(s), incoming fallback has {incoming_message_count}."
-    )
+    # The gap's evidence is the four named values, carried as payload fields
+    # like every other event's evidence. ``summary`` renders them for a reader;
+    # it is a projection of the same payload, never the only copy.
+    payload = {
+        "incoming_raw_id": incoming_raw_id,
+        "existing_raw_id": existing_raw_id,
+        "stored_message_count": stored_message_count,
+        "incoming_message_count": incoming_message_count,
+        "summary": (
+            "Skipped lower-precedence DOM browser-capture fallback "
+            f"{incoming_raw_id!r}; existing raw {existing_raw_id!r} has "
+            f"{stored_message_count} message(s), incoming fallback has {incoming_message_count}."
+        ),
+    }
     conn.execute(
         """
         INSERT OR REPLACE INTO session_events (
             session_id, source_message_id, source_message_provider_id,
-            position, event_type, summary, occurred_at_ms
+            position, event_type, payload_json, occurred_at_ms
         ) VALUES (?, NULL, NULL, ?, 'capture_gap', ?, NULL)
         """,
-        (session_id, position, summary),
+        (session_id, position, json.dumps(payload, sort_keys=True, ensure_ascii=False)),
     )
 
 
@@ -389,7 +398,6 @@ def record_source_outage_events(
     ).fetchone()
     position = int(row[0] or 0) if row is not None else 0
     for event in outage_events:
-        summary = str(event.payload.get("summary") or "")
         occurred_at_ms: int | None = None
         if event.timestamp:
             parsed_timestamp = parse_timestamp(event.timestamp)
@@ -399,14 +407,13 @@ def record_source_outage_events(
             """
             INSERT OR REPLACE INTO session_events (
                 session_id, source_message_id, source_message_provider_id,
-                position, event_type, summary, payload_json, occurred_at_ms
-            ) VALUES (?, NULL, NULL, ?, ?, ?, ?, ?)
+                position, event_type, payload_json, occurred_at_ms
+            ) VALUES (?, NULL, NULL, ?, ?, ?, ?)
             """,
             (
                 session_id,
                 position,
                 event.event_type,
-                summary,
                 json.dumps(event.payload, sort_keys=True, ensure_ascii=False),
                 occurred_at_ms,
             ),

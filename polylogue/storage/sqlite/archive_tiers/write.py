@@ -6622,7 +6622,6 @@ def _write_session_events(
                     _sqlite_text(source_message_provider_id),
                     position,
                     _sqlite_text(event.event_type),
-                    _sqlite_text(_event_summary(event) or ""),
                     _json_dumps(event.payload),
                     to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                     event.boundary_start_position + position_offset
@@ -6691,9 +6690,9 @@ def _write_session_events(
             """
             INSERT OR REPLACE INTO session_events (
                 session_id, source_message_id, source_message_provider_id,
-                position, event_type, summary, payload_json, occurred_at_ms,
+                position, event_type, payload_json, occurred_at_ms,
                 boundary_start_position, boundary_end_position, boundary_message_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             session_event_rows,
         )
@@ -9918,11 +9917,6 @@ def _paste_boundary(message: ParsedMessage) -> str | None:
 
 def _word_count(text: str | None) -> int:
     return len(text.split()) if text else 0
-
-
-def _event_summary(event: ParsedSessionEvent) -> str | None:
-    summary = event.payload.get("summary") or event.payload.get("text")
-    return str(summary) if summary is not None else None
 
 
 def _payload_string(payload: Mapping[str, object], *keys: str) -> str | None:

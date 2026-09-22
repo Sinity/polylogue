@@ -103,7 +103,7 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
         links = conn.execute("SELECT link_type, inheritance FROM session_links ORDER BY src_session_id").fetchall()
         temporary_sessions = conn.execute("SELECT session_id FROM sessions WHERE session_kind = 'temporary'").fetchall()
         capture_gap_events = conn.execute(
-            "SELECT session_id, summary FROM session_events WHERE event_type = 'capture_gap'"
+            "SELECT session_id, json_extract(payload_json, '$.summary') FROM session_events WHERE event_type = 'capture_gap'"
         ).fetchall()
         chatgpt_raw_rows = conn.execute(
             """
@@ -125,7 +125,7 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
             (DEMO_CHATGPT_SESSION_ID,),
         ).fetchone()[0]
         compaction_events = conn.execute(
-            "SELECT session_id, summary FROM session_events WHERE event_type = 'compaction'"
+            "SELECT session_id, json_extract(payload_json, '$.summary') FROM session_events WHERE event_type = 'compaction'"
         ).fetchall()
         sidechain_sessions = conn.execute("SELECT session_id FROM sessions WHERE branch_type = 'sidechain'").fetchall()
         subagent_snapshots = conn.execute(

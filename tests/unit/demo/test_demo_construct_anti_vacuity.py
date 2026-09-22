@@ -130,7 +130,8 @@ async def test_compaction_omission_construct_goes_red_if_summary_names_the_failu
     with sqlite3.connect(archive_root / "index.db") as conn:
         updated = conn.execute(
             """
-            UPDATE session_events SET summary = 'Compacted context; noted the earlier failed attempt.'
+            UPDATE session_events SET payload_json = json_set(payload_json, '$.summary',
+                       'Compacted context; noted the earlier failed attempt.')
             WHERE session_id = ? AND event_type = 'compaction'
             """,
             (DEMO_CLAUDE_CODE_LINEAGE_COMPACTION_SESSION_ID,),
