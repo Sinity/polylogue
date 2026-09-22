@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +29,7 @@ from polylogue.archive.query.execution_control import (
     execute_archive_read_sync,
 )
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers.query_unit_frame import ALL_FRAME_RELATIONS
 
 logger = get_logger(__name__)
 
@@ -70,6 +71,12 @@ _TOKEN_VERSION = 2
 _LEGACY_TOKEN_VERSION = 1
 _CONTINUATION_TTL_SECONDS = 60 * 60
 
+# Frame-string grammar. ``v2`` carries one component per relation the page
+# read; ``v1`` (a single archive-wide counter) has no relation structure and
+# is compared whole, which after the relation-scoped rebuild always differs.
+_FRAME_VERSION = "v2"
+_FRAME_PREFIX = f"archive:{_FRAME_VERSION}:"
+
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -84,25 +91,61 @@ class QueryArchiveEpochUnreadableError(RuntimeError):
     code = "archive_read_unavailable"
 
 
-def archive_snapshot_epoch(archive: ArchiveStore) -> str:
+@dataclass(frozen=True, slots=True)
+class ArchiveFrame:
+    """One reader snapshot's tier versions plus a per-relation epoch vector."""
+
+    index_version: int
+    user_version: int
+    epochs: Mapping[str, int]
+
+    def render(self, relations: Iterable[str] | None = None) -> str:
+        """Render the frame, optionally narrowed to the relations read."""
+        selected = ALL_FRAME_RELATIONS if relations is None else tuple(sorted(set(relations)))
+        components = ",".join(f"{name}={self.epochs[name]}" for name in selected if name in self.epochs)
+        return f"{_FRAME_PREFIX}index:v{self.index_version}:user:v{self.user_version}:{components}"
+
+
+def _read_archive_frame(archive: ArchiveStore) -> ArchiveFrame:
+    """Read every tracked relation's epoch from the reader's own snapshot.
+
+    Both tiers advance durable, trigger-maintained counters, but the index
+    tier keeps one row per tracked relation while the user tier keeps a
+    singleton for its single tracked relation (``assertions``); reshaping a
+    durable tier for a one-row vector would buy nothing. Reading all of them
+    through ``archive._conn`` after ``begin_read_snapshot()`` binds the
+    continuation to the exact snapshots that will supply the result rows; it
+    never races a second ``index.db`` probe against the writer.
+    """
+    conn = archive._conn
+    index_version = int(conn.execute("PRAGMA main.user_version").fetchone()[0])
+    epochs = {
+        str(relation): int(epoch)
+        for relation, epoch in conn.execute("SELECT relation, epoch FROM query_unit_frame_state")
+    }
+    user_version = int(conn.execute("PRAGMA user_tier.user_version").fetchone()[0])
+    epochs["assertions"] = int(
+        conn.execute("SELECT epoch FROM user_tier.query_unit_frame_state WHERE singleton = 1").fetchone()[0]
+    )
+    missing = tuple(name for name in ALL_FRAME_RELATIONS if name not in epochs)
+    if missing:
+        raise sqlite3.OperationalError(
+            f"query_unit_frame_state is missing rows for tracked relations: {', '.join(missing)}"
+        )
+    return ArchiveFrame(index_version=index_version, user_version=user_version, epochs=epochs)
+
+
+def archive_snapshot_epoch(archive: ArchiveStore, *, relations: Iterable[str] | None = None) -> str:
     """Return the query-unit frame from the reader's active SQLite snapshot.
 
-    The index and user tiers each advance a durable, trigger-maintained epoch
-    only for relations that can change terminal query-unit rows or their
-    session/tag scope.  Reading both components through ``archive._conn``
-    after ``begin_read_snapshot()`` binds the continuation to the exact
-    snapshots that will supply the result rows; it never races a second
-    ``index.db`` probe against the writer.
+    ``relations`` narrows the frame to what the page actually read, so a
+    committed write to a relation the page never touched cannot invalidate
+    its continuation. Omitting it keeps the whole vector, which is the
+    conservative answer every non-query-unit read uses.
     """
     try:
-        conn = archive._conn
-        index_version = int(conn.execute("PRAGMA main.user_version").fetchone()[0])
-        index_epoch = int(conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton = 1").fetchone()[0])
-        user_version = int(conn.execute("PRAGMA user_tier.user_version").fetchone()[0])
-        user_epoch = int(
-            conn.execute("SELECT epoch FROM user_tier.query_unit_frame_state WHERE singleton = 1").fetchone()[0]
-        )
-    except (AttributeError, IndexError, sqlite3.Error, TypeError) as exc:
+        return _read_archive_frame(archive).render(relations)
+    except (AttributeError, IndexError, KeyError, sqlite3.Error, TypeError) as exc:
         if _is_missing_query_unit_frame_state(exc):
             # A derived tier reporting the current schema version yet missing
             # this table is schema drift, not a transient read glitch (a
@@ -125,15 +168,21 @@ def archive_snapshot_epoch(archive: ArchiveStore) -> str:
             ) from exc
         logger.warning("query transaction: could not read archive snapshot epoch", exc_info=True)
         raise QueryArchiveEpochUnreadableError("could not establish archive frame for query continuation") from exc
-    return f"archive:v1:index:v{index_version}:{index_epoch}:user:v{user_version}:{user_epoch}"
 
 
 def _is_missing_query_unit_frame_state(exc: Exception) -> bool:
-    """Whether ``exc`` is specifically sqlite reporting the epoch table absent."""
-    return (
-        isinstance(exc, sqlite3.OperationalError)
-        and "no such table" in str(exc)
-        and "query_unit_frame_state" in str(exc)
+    """Whether ``exc`` is sqlite reporting the epoch table absent or pre-vector.
+
+    A generation built before the relation-scoped frame carries the table
+    with a ``singleton`` column and no ``relation`` column, and a generation
+    built before the table existed at all carries neither. Both are derived
+    schema drift with the same recovery, so both route to the same refusal.
+    """
+    message = str(exc)
+    return isinstance(exc, sqlite3.OperationalError) and (
+        ("no such table" in message and "query_unit_frame_state" in message)
+        or "no such column: relation" in message
+        or "query_unit_frame_state is missing rows" in message
     )
 
 
@@ -274,15 +323,40 @@ def query_units_transaction_request(
     )
 
 
+def _issued_frame_relations(archive_epoch: str) -> tuple[str, ...] | None:
+    """Return the relations a v2 frame string declares, or ``None`` if not v2."""
+    if not archive_epoch.startswith(_FRAME_PREFIX):
+        return None
+    components = archive_epoch.rsplit(":", 1)[-1]
+    if not components:
+        return ()
+    relations: list[str] = []
+    for component in components.split(","):
+        name, separator, _ = component.partition("=")
+        if not separator:
+            return None
+        relations.append(name)
+    return tuple(relations)
+
+
 def validate_continuation_epoch(continuation_request: QueryTransactionRequest, *, archive: ArchiveStore) -> str:
-    """Validate one decoded continuation in the same snapshot as its rows."""
+    """Validate one decoded continuation in the same snapshot as its rows.
+
+    The comparison is scoped to the relations the issuing page declared it
+    read: a continuation is stale exactly when one of *those* relations (or
+    either tier's schema version) has moved. A write to any other relation --
+    the daemon's session-profile sweep being the case that made multi-page
+    reads unusable during convergence -- leaves the resume valid.
+    """
     if not continuation_request.archive_epoch:
         if continuation_request.continuation_version == _LEGACY_TOKEN_VERSION:
             return archive_snapshot_epoch(archive)
         raise ValueError("query continuation is missing required archive_epoch")
-    current = archive_snapshot_epoch(archive)
-    if continuation_request.archive_epoch != current:
-        raise QueryContinuationStaleError(issued_epoch=continuation_request.archive_epoch, current_epoch=current)
+    issued = continuation_request.archive_epoch
+    relations = _issued_frame_relations(issued)
+    current = archive_snapshot_epoch(archive, relations=relations)
+    if issued != current:
+        raise QueryContinuationStaleError(issued_epoch=issued, current_epoch=current)
     return current
 
 
@@ -595,6 +669,7 @@ def archive_read_context(
 
 
 __all__ = [
+    "ArchiveFrame",
     "QueryContinuation",
     "QueryArchiveEpochUnreadableError",
     "QueryContinuationExpiredError",

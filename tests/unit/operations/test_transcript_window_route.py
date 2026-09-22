@@ -103,7 +103,7 @@ def test_the_route_validates_the_epoch_on_every_resume(monkeypatch: pytest.Monke
 
     # The reader the route is handed reports a snapshot that moved since the
     # token was issued.
-    monkeypatch.setattr(transaction_module, "archive_snapshot_epoch", lambda archive: "archive:v1:current")
+    monkeypatch.setattr(transaction_module, "archive_snapshot_epoch", lambda archive, **_: "archive:v1:current")
 
     transaction = QueryTransactionRequest(
         operation="sessions.read",
@@ -127,7 +127,7 @@ def test_a_fresh_window_is_bound_to_the_snapshot_it_was_composed_against(
     from polylogue.archive.query.transaction import QueryTransactionRequest
     from polylogue.operations.transcript_window import bind_snapshot, window_result
 
-    monkeypatch.setattr(route, "archive_snapshot_epoch", lambda archive: "archive:v1:current")
+    monkeypatch.setattr(route, "archive_snapshot_epoch", lambda archive, **_: "archive:v1:current")
 
     transaction = QueryTransactionRequest(
         operation="sessions.read",

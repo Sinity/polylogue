@@ -55,6 +55,7 @@ def test_query_unit_envelope_fallback_matches_canonical_transaction_identity(tmp
     the two routes mint different result references.
     """
     from polylogue.archive.query.expression import parse_unit_source_expression
+    from polylogue.archive.query.frame_scope import query_unit_frame_relations
     from polylogue.archive.query.unit_results import QueryUnitRequest, query_unit_envelope
 
     source = parse_unit_source_expression("actions where tool:Workflow")
@@ -70,7 +71,12 @@ def test_query_unit_envelope_fallback_matches_canonical_transaction_identity(tmp
             )
             canonical = query_units_transaction_request(
                 expression="actions where tool:Workflow", session_filters={}, page_size=1
-            ).with_archive_epoch(archive_snapshot_epoch(archive))
+            ).with_archive_epoch(
+                # Identity includes the archive frame, and the frame is now
+                # scoped to the relations this request reads; the adapter
+                # route must derive it the same way or the refs diverge.
+                archive_snapshot_epoch(archive, relations=query_unit_frame_relations(source, {}))
+            )
         finally:
             archive.end_read_snapshot()
 

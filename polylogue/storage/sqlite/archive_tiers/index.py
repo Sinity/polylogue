@@ -10,6 +10,7 @@ from polylogue.storage.fts.sql import (
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
+from polylogue.storage.sqlite.archive_tiers.query_unit_frame import index_frame_bump_sql, index_frame_seed_sql
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
@@ -543,15 +544,18 @@ INDEX_SCHEMA_VERSION = 107
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
 
--- Continuation frames are deliberately tier-local: query-unit continuations
--- combine this counter with the user-tier counter, so a write in either
--- relation family invalidates an offset resume without inventing an archive-
--- wide generation for unrelated tiers.
+-- Continuation frames are deliberately tier-local AND relation-scoped: one
+-- row per tracked relation, each advanced only by its own triggers. A
+-- query-unit continuation carries the components for the relations its page
+-- actually read, so a write to a relation the page never touched cannot
+-- invalidate it. The vocabulary, the seed rows and every trigger body come
+-- from archive_tiers/query_unit_frame.py, so a relation cannot be tracked
+-- without a row or bumped through another relation's row.
 CREATE TABLE IF NOT EXISTS query_unit_frame_state (
     {TABLE_SPECS["query_unit_frame_state"].ddl_body}
 ) STRICT;
 
-INSERT OR IGNORE INTO query_unit_frame_state(singleton, epoch) VALUES (1, 0);
+{index_frame_seed_sql()}
 
 CREATE TABLE IF NOT EXISTS raw_revision_applications (
     {TABLE_SPECS["raw_revision_applications"].ddl_body}
@@ -952,15 +956,15 @@ WHERE branch_point_message_id IS NOT NULL;
 -- transcript row, so they belong to the query-unit relation frame.
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_links_insert
 AFTER INSERT ON session_links BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_links")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_links_update
 AFTER UPDATE ON session_links BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_links")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_links_delete
 AFTER DELETE ON session_links BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_links")}
 END;
 
 CREATE VIEW IF NOT EXISTS threads AS
@@ -1280,51 +1284,51 @@ CREATE TABLE IF NOT EXISTS session_tags (
 
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_insert
 AFTER INSERT ON sessions BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("sessions")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_update
 AFTER UPDATE ON sessions BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("sessions")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_delete
 AFTER DELETE ON sessions BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("sessions")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_messages_insert
 AFTER INSERT ON messages BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("messages")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_messages_update
 AFTER UPDATE ON messages BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("messages")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_messages_delete
 AFTER DELETE ON messages BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("messages")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_blocks_insert
 AFTER INSERT ON blocks BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("blocks")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_blocks_update
 AFTER UPDATE ON blocks BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("blocks")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_blocks_delete
 AFTER DELETE ON blocks BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("blocks")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_insert
 AFTER INSERT ON session_tags BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_tags")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_update
 AFTER UPDATE ON session_tags BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_tags")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_delete
 AFTER DELETE ON session_tags BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_tags")}
 END;
 
 CREATE TABLE IF NOT EXISTS session_latency_profiles (
@@ -1363,15 +1367,15 @@ ON session_profiles(canonical_session_date DESC);
 -- and tags; a materializer rewrite must invalidate an offset continuation.
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_profiles_insert
 AFTER INSERT ON session_profiles BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_profiles")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_profiles_update
 AFTER UPDATE ON session_profiles BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_profiles")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_profiles_delete
 AFTER DELETE ON session_profiles BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("session_profiles")}
 END;
 
 -- Delegations are derived from exact provider dispatch evidence. The parent
@@ -1478,15 +1482,15 @@ ON delegation_facts(requested_model, dispatch_turn_model, child_session_dominant
 
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_insert
 AFTER INSERT ON delegation_facts BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("delegation_facts")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_update
 AFTER UPDATE ON delegation_facts BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("delegation_facts")}
 END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_delete
 AFTER DELETE ON delegation_facts BEGIN
-    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+    {index_frame_bump_sql("delegation_facts")}
 END;
 
 CREATE VIEW IF NOT EXISTS delegation_facts_source AS

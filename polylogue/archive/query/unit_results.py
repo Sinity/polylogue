@@ -806,10 +806,18 @@ def query_unit_envelope(
         validate_continuation_epoch(canonical_request, archive=archive)
     else:
         # The frame must be captured before the first result statement so
-        # both values are served from this reader's one owned snapshot.
+        # every component is served from this reader's one owned snapshot.
+        # It is narrowed to the relations this lowered request can read, so
+        # an unrelated write cannot 409 the next page.
+        from polylogue.archive.query.frame_scope import query_unit_frame_relations
         from polylogue.archive.query.transaction import archive_snapshot_epoch
 
-        canonical_request = canonical_request.with_archive_epoch(archive_snapshot_epoch(archive))
+        canonical_request = canonical_request.with_archive_epoch(
+            archive_snapshot_epoch(
+                archive,
+                relations=query_unit_frame_relations(request.source, request.session_filters),
+            )
+        )
     envelope = query_unit_rows(
         archive,
         request.source,
