@@ -2525,6 +2525,167 @@ def _append_chain_archive(root: Path) -> tuple[str, str]:
     return baseline_raw_id, newest_raw_id
 
 
+_CHAIN_META = b'{"type":"session_meta","payload":{"id":"chain","timestamp":"2026-07-01T00:00:00Z"}}\n'
+
+
+def _chain_turn(index: int) -> bytes:
+    return (
+        b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
+        b'[{"type":"input_text","text":"turn-%d"}]}}\n' % index
+    )
+
+
+def _growing_chain_archive(root: Path, *, turns: int) -> list[str]:
+    """One rollout file re-captured while it grows, oldest capture first.
+
+    The first capture is the file as it exists between session start and the
+    first turn: a ``session_meta`` header and nothing else. That is a strict
+    byte prefix of every later capture and still parses to NO session -- the
+    parser refuses a session with no conversational evidence.
+    """
+    bootstrap_archive_root(root)
+    payload = _CHAIN_META
+    payloads = [payload]
+    for index in range(turns):
+        payload = payload + _chain_turn(index)
+        payloads.append(payload)
+    raw_ids: list[str] = []
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for acquired_at_ms, capture in enumerate(payloads, start=1):
+            raw_ids.append(
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=capture,
+                    source_path="chain.jsonl",
+                    acquired_at_ms=acquired_at_ms,
+                )
+            )
+    return raw_ids
+
+
+def _census_facts(root: Path, raw_id: str) -> tuple[str | None, str, tuple[str, ...] | None]:
+    with sqlite3.connect(root / "source.db") as conn:
+        logical_key, authority = conn.execute(
+            "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        receipt = conn.execute(
+            "SELECT logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    keys = parser_census_logical_keys(receipt[0]) if receipt is not None else None
+    return logical_key, str(authority), keys
+
+
+def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """polylogue-asp4b (sibling append): two valid extensions, no chosen head.
+
+    One rollout path holds a shared capture and two captures that each extend
+    it differently -- the same file re-scanned after a fork, or two machines
+    appending to one synced path. Both are valid extensions of the baseline and
+    NEITHER is a byte prefix of the other, so byte comparison alone cannot say
+    which is the file's current state.
+
+    Wrong outcome prevented: the census picks the largest capture as the
+    cohort's head and binds the other fork to its learned identity on
+    containment with the baseline alone. Anti-vacuity: deleting the whole-
+    cohort verdict guard in ``classify_untyped_full_revision_groups``
+    (``any(decision.authority is not RawRevisionAuthority.BYTE_PROVEN ...)``)
+    makes this red -- the group is returned, a head is chosen, and the losing
+    fork is never parsed.
+    """
+    bootstrap_archive_root(tmp_path)
+    shared = _CHAIN_META + _chain_turn(0)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = {
+            name: archive.write_raw_payload(
+                provider=Provider.CODEX, payload=payload, source_path="chain.jsonl", acquired_at_ms=index + 1
+            )
+            for index, (name, payload) in enumerate(
+                (
+                    ("shared", shared),
+                    ("fork_a", shared + _chain_turn(1)),
+                    ("fork_b", shared + _chain_turn(2)),
+                )
+            )
+        }
+        assert archive.classify_untyped_full_revision_groups(sorted(raw_ids.values())) == {}
+
+    original = revision_backfill._parse_retained_raw
+    parsed: list[str] = []
+
+    def counted(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        return original(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+
+    backfill_historical_revision_evidence(tmp_path, max_payload_bytes=None)
+
+    # Every member is opened: nothing inherits an identity byte proof cannot
+    # establish for it.
+    assert set(raw_ids.values()) <= set(parsed)
+    # The shared capture is the only member byte proof can place; a fork with a
+    # sibling is quarantined rather than crowned.
+    assert _census_facts(tmp_path, raw_ids["shared"])[1] == "byte_proven"
+    assert _census_facts(tmp_path, raw_ids["fork_a"])[1] == "quarantined"
+    assert _census_facts(tmp_path, raw_ids["fork_b"])[1] == "quarantined"
+
+
+def test_chain_member_identity_refuted_by_its_own_parse(tmp_path: Path) -> None:
+    """polylogue-irtix (C): containment must not bind a member the parser refutes.
+
+    Input: two captures of one Codex rollout at one ``source_path`` -- a
+    header-only capture taken before the first turn, and the finished file.
+    The header-only bytes are a strict byte prefix of the finished file, so the
+    byte-growth census proves the chain; parsing those bytes alone yields no
+    session at all.
+
+    Wrong outcome prevented: the header-only raw is recorded as a FULL revision
+    of ``codex-session:chain`` with a ``parser-observed`` census receipt naming
+    a membership its own parse denies. Anti-vacuity: dropping the smallest
+    member back into ``head_by_older`` (inheriting on containment alone) makes
+    this red -- the key becomes ``codex-session:chain`` and the receipt
+    ``("codex-session:chain",)``.
+    """
+    header_only, finished = _growing_chain_archive(tmp_path, turns=1)
+
+    backfill_historical_revision_evidence(tmp_path, max_payload_bytes=None)
+
+    assert _census_facts(tmp_path, finished) == ("codex-session:chain", "byte_proven", ("codex-session:chain",))
+    # The refuted member keeps the classification its OWN bytes support.
+    assert _census_facts(tmp_path, header_only) == (None, "quarantined", ())
+
+
+def test_chain_inherits_only_its_interior_members(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The identity spot-check costs parses per CHAIN, never per member.
+
+    Opposite direction of the test above: a blanket "parse every member"
+    refusal would also keep a refuted member unbound, so this pins the
+    optimization polylogue-nh44 bought. Five captures whose smallest member is
+    header-only: the census parses the smallest, ascends until one capture's own
+    parse lands on the head's key, and inherits for every member bracketed
+    between that capture and the head.
+    """
+    raw_ids = _growing_chain_archive(tmp_path, turns=4)
+    original = revision_backfill._parse_retained_raw
+    parsed: list[str] = []
+
+    def counted(archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        return original(archive, raw_id)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", counted)
+
+    backfill_historical_revision_evidence(tmp_path, max_payload_bytes=None)
+
+    # raw_ids[0] is the refuted header-only capture, raw_ids[1] the smallest
+    # capture whose own parse agrees, raw_ids[-1] the head. Nothing between
+    # them is opened.
+    assert set(parsed) == {raw_ids[0], raw_ids[1], raw_ids[-1]}
+    assert _census_facts(tmp_path, raw_ids[0])[0] is None
+    for inherited in raw_ids[2:-1]:
+        assert _census_facts(tmp_path, inherited) == ("codex-session:chain", "byte_proven", ("codex-session:chain",))
+
+
 def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Baseline (pre-fix) shape: an unbounded (envelope=None) backfill with no
     explicit spill-cache bound reparses the accepted revision during replay
@@ -2546,14 +2707,12 @@ def test_backfill_replay_reparses_when_spill_cache_absent(monkeypatch: pytest.Mo
     result = backfill_historical_revision_evidence(tmp_path, max_payload_bytes=None)
 
     assert result.replayed_logical_sources == 1
-    # polylogue-nh44: census now proves the baseline raw is a byte-prefix of
-    # the newest capture (same source_path) without parsing it at all, so
-    # only the newest raw is ever ONE parse during census; replay then
-    # reparses that same accepted revision again from blob because nothing
-    # was cached (a 2nd call, duplicating that one raw_id) instead of reusing
-    # census output.
-    assert len(parse_calls) == 2
-    assert len(set(parse_calls)) == 1
+    # polylogue-nh44 + polylogue-irtix (C): a two-member cohort has no interior,
+    # so both endpoints are parsed once during census; replay then reparses the
+    # accepted revision again from blob because nothing was cached (a 3rd call,
+    # duplicating the head) instead of reusing census output.
+    assert len(parse_calls) == 3
+    assert len(set(parse_calls)) == 2
 
 
 def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
@@ -2578,18 +2737,26 @@ def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
     result = backfill_historical_revision_evidence(tmp_path)
 
     assert result.scanned == len(raw_ids)
-    assert result.classified_full == len(raw_ids)
+    # polylogue-irtix (C): the cohort's smallest capture is the rollout's
+    # ``session_meta`` header alone, which parses to no session, so it is no
+    # longer counted as a classified full revision.
+    assert result.classified_full == len(raw_ids) - 1
     assert result.replayed_logical_sources == 1
     assert result.quarantined == 0
-    # Only the newest raw (the winner) is ever independently parsed; the 50
-    # older captures are bound to its learned identity by byte-prefix proof.
-    assert set(parse_calls) == {raw_ids[-1]}
+    # Three raws are ever independently parsed: the winner, the header-only
+    # capture whose own parse refutes the head's identity, and the smallest
+    # capture that agrees with it. The 48 captures bracketed between that
+    # capture and the winner are bound by byte-prefix proof.
+    assert set(parse_calls) == {raw_ids[0], raw_ids[1], raw_ids[-1]}
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[-1],)
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM raw_sessions WHERE revision_kind = 'full' AND logical_source_key IS NOT NULL"
-        ).fetchone()[0] == len(raw_ids)
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_sessions WHERE revision_kind = 'full' AND logical_source_key IS NOT NULL"
+            ).fetchone()[0]
+            == len(raw_ids) - 1
+        )
         assert conn.execute(
             "SELECT COUNT(*) FROM raw_authority_parser_census WHERE parser_fingerprint = ? AND status = 'complete'",
             (RAW_AUTHORITY_PARSER_FINGERPRINT,),
@@ -2623,12 +2790,12 @@ def test_backfill_replay_reuses_spill_cache_when_bound_explicitly(
     )
 
     assert result.replayed_logical_sources == 1
-    # polylogue-nh44: only the newest raw is ever parsed (the baseline is
-    # proven a byte-prefix and bound without parsing); replay hits the
-    # census-populated spill cache instead of reparsing it from blob a
-    # second time (contrast the 2-call baseline above).
-    assert len(parse_calls) == 1
-    assert len(set(parse_calls)) == 1
+    # polylogue-nh44 + polylogue-irtix (C): census parses each of the cohort's
+    # two endpoints once; replay hits the census-populated spill cache instead
+    # of reparsing the head from blob a second time (contrast the 3-call
+    # baseline above).
+    assert len(parse_calls) == 2
+    assert len(set(parse_calls)) == 2
 
 
 def test_parallel_census_matches_sequential_archive_state(tmp_path: Path) -> None:

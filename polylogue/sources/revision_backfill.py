@@ -1230,6 +1230,31 @@ def record_resource_blocked_revision_census(
             )
 
 
+def _chain_members_smallest_first(
+    archive: ArchiveStore, chain_older_by_head: Mapping[str, tuple[str, ...]]
+) -> dict[str, tuple[str, ...]]:
+    """Each proven chain's non-head members, smallest payload first.
+
+    ``classify_untyped_full_revision_groups`` proves byte CONTAINMENT: every
+    member's payload is a strict prefix of the head's. Containment is not
+    parsed identity, so the census parses the smallest member as well as the
+    head and inherits only for members bracketed between two independently
+    parsed, agreeing captures (polylogue-irtix sub-item C). Size order is what
+    makes that bracket meaningful, and it is what the walk in
+    ``_census_historical_revision_evidence`` ascends when the smallest member's
+    own parse refutes the head's identity.
+    """
+    candidates = sorted({raw_id for older_raw_ids in chain_older_by_head.values() for raw_id in older_raw_ids})
+    if not candidates:
+        return {}
+    sizes = archive.raw_payload_sizes(candidates)
+    return {
+        head_raw_id: tuple(sorted(older_raw_ids, key=lambda raw_id: (sizes.get(raw_id, 0), raw_id)))
+        for head_raw_id, older_raw_ids in chain_older_by_head.items()
+        if older_raw_ids
+    }
+
+
 def _census_historical_revision_evidence(
     archive: ArchiveStore,
     spill: _ParsedSessionSpill,
@@ -1511,10 +1536,21 @@ def _census_historical_revision_evidence(
                 # runs remain byte-identical.
                 parseable_raw_ids = [raw_id for raw_id, source_index in pending_rows if source_index >= 0]
                 chain_older_by_head = archive.classify_untyped_full_revision_groups(parseable_raw_ids)
+                # polylogue-irtix (C): the chain's SMALLEST member is parsed
+                # alongside its head instead of inheriting the head's learned
+                # identity on byte containment alone. It is the member the
+                # head's bytes prove least about -- a rollout captured between
+                # session start and its first turn is a byte prefix of the
+                # finished file and still parses to no session at all.
+                chain_members_by_head = _chain_members_smallest_first(archive, chain_older_by_head)
+                chain_probe_by_head = {
+                    head_raw_id: members[0] for head_raw_id, members in chain_members_by_head.items()
+                }
                 head_by_older = {
                     older_raw_id: head_raw_id
                     for head_raw_id, older_raw_ids in chain_older_by_head.items()
                     for older_raw_id in older_raw_ids
+                    if older_raw_id != chain_probe_by_head.get(head_raw_id)
                 }
                 dispatch_raw_ids = [raw_id for raw_id in parseable_raw_ids if raw_id not in head_by_older]
                 parsed_outcomes = _parse_retained_raws(
@@ -1526,13 +1562,17 @@ def _census_historical_revision_evidence(
                     apply_outcome(raw_id, source_index, parsed_outcomes)
                 if head_by_older:
                     source_index_by_raw_id = dict(pending_rows)
-                    head_to_key = {
-                        raw_id: key for key, raw_ids in state.provisional_full_raw_ids.items() for raw_id in raw_ids
-                    }
+
+                    def bound_logical_key(raw_id: str) -> str | None:
+                        for key, bound_raw_ids in state.provisional_full_raw_ids.items():
+                            if raw_id in bound_raw_ids:
+                                return key
+                        return None
+
                     unresolved = [
                         older_raw_id
                         for older_raw_id, head_raw_id in head_by_older.items()
-                        if head_raw_id not in head_to_key
+                        if bound_logical_key(head_raw_id) is None
                     ]
                     # The head's parse did not yield a clean single-session bind
                     # (e.g. a coincidental byte-prefix among multi-session
@@ -1545,12 +1585,39 @@ def _census_historical_revision_evidence(
                         if unresolved
                         else {}
                     )
-                    for older_raw_id, head_raw_id in head_by_older.items():
-                        resolved_key = head_to_key.get(head_raw_id)
-                        if resolved_key is not None:
-                            bind_byte_proven_older_member(older_raw_id, resolved_key)
-                        else:
-                            apply_outcome(older_raw_id, source_index_by_raw_id[older_raw_id], fallback_outcomes)
+                    for head_raw_id, members in chain_members_by_head.items():
+                        deferred = [raw_id for raw_id in members if head_by_older.get(raw_id) == head_raw_id]
+                        head_key = bound_logical_key(head_raw_id)
+                        if head_key is None:
+                            for older_raw_id in deferred:
+                                apply_outcome(older_raw_id, source_index_by_raw_id[older_raw_id], fallback_outcomes)
+                            continue
+                        # Ascend the chain until one member's OWN parse lands on
+                        # the head's key. Everything above that member is
+                        # bracketed by two agreeing parsed captures and may
+                        # inherit; everything below it was refuted and is
+                        # classified by its own parse instead. A chain whose
+                        # smallest member already agrees costs one extra parse,
+                        # not one per member.
+                        agreed = bound_logical_key(chain_probe_by_head[head_raw_id]) == head_key
+                        index = 0
+                        while not agreed and index < len(deferred):
+                            older_raw_id = deferred[index]
+                            apply_outcome(
+                                older_raw_id,
+                                source_index_by_raw_id[older_raw_id],
+                                _parse_retained_raws(
+                                    archive,
+                                    [older_raw_id],
+                                    ingest_workers=ingest_workers,
+                                    prefetch_cache=prefetch_cache,
+                                ),
+                            )
+                            index += 1
+                            agreed = bound_logical_key(older_raw_id) == head_key
+                        if agreed:
+                            for older_raw_id in deferred[index:]:
+                                bind_byte_proven_older_member(older_raw_id, head_key)
                 if census_selection is None:
                     break
                 expanded, _keys = archive.expand_raw_membership_selection(list(census_selection))
