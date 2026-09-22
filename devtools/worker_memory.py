@@ -494,9 +494,14 @@ def resize_worker_argument(
 ) -> tuple[list[str], dict[str, Any] | None]:
     """Narrow an ``-n <count>`` xdist argument to what memory allows.
 
-    Returns the command unchanged, and no basis, when it names no worker count
-    or when the count already fits. A run with ``-n 0`` asked for no xdist at
-    all and is left alone.
+    Always returns the observed budget as the basis -- selected width,
+    requested width, and which budget source answered -- even when the
+    command names no worker count or the requested count already fits. A
+    receipt built from ``None`` here cannot say what this run was admitted
+    on; only a malformed ``-n`` value returns no basis, because there is
+    nothing to report. A missing flag, ``-n 0``, or ``-n 1`` are all read as
+    a request for one worker, the width they already run at, and never
+    rewrite ``argv``.
     """
     index: int | None = None
     requested_text: str | None = None
@@ -515,14 +520,11 @@ def resize_worker_argument(
         requested = int(requested_text) if requested_text is not None else None
     except ValueError:
         return argv, None
-    if requested is None or index is None:
-        return argv, None
-    if requested <= 1:
-        return argv, None
+    effective_requested = requested if requested is not None and requested > 1 else 1
     workers, basis = memory_bounded_worker_cap(
-        requested=requested, meminfo=meminfo, process_cgroup=process_cgroup, cgroup_root=cgroup_root
+        requested=effective_requested, meminfo=meminfo, process_cgroup=process_cgroup, cgroup_root=cgroup_root
     )
-    if not basis.get("narrowed"):
+    if index is None or effective_requested <= 1 or not basis.get("narrowed"):
         return argv, basis
     resized = list(argv)
     resized[index] = (

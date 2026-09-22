@@ -81,23 +81,17 @@ timeout_seconds = 900
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["devtools", "verify", "--all"]
-# No `checkout` key (polylogue-p2mbi). AgentCTL's vocabulary is closed to
-# {"any", "default"} (projects.py validates exactly those two), and "default"
-# does not *select* a tree -- it REFUSES any workspace other than the project
-# root (launch.py: `if operation.checkout == "default" and working_directory
-# != project.root: raise JobError`). Since the operator's root checkout is
-# deliberately kept on a divergent working branch, "default" meant the corpus
-# run could only ever qualify that branch, and a coordinator could not point
-# it at an integrated candidate at all. Dropping the key restores that.
-#
-# What this does NOT fix: the 03:00 timer fires `agentctl job fire`, whose
-# `fire()` calls `start_operation` with no workspace, so it still resolves to
-# the project root. Naming a candidate tree in the declaration needs an
-# agentctl-side key that does not exist yet. Until it does, the guard that
-# matters is on the reading side: `devtools.verify_receipt_check --candidate`
-# refuses a receipt whose recorded tested SHA is not the candidate's, so a run
-# on the wrong tree produces evidence nobody can accept rather than evidence
-# nobody notices.
+# checkout = "candidate" (polylogue-p2mbi AC4). AgentCTL resolves this to its
+# own candidate worktree at [workspace].default_base, reset to that base on
+# every launch (agentctl/checkout.py candidate_tree()), independently of
+# whatever tree a caller passes or the operator's root checkout is on. A
+# scheduled `job fire` passes no workspace, so this is what makes the 03:00
+# timer qualify the integrated candidate rather than the operator's
+# deliberately divergent working branch. The reading-side guard,
+# `devtools.verify_receipt_check --candidate`, still refuses a receipt whose
+# recorded tested SHA is not the candidate's, so a run on the wrong tree
+# remains unusable as evidence even if this declaration were ever wrong.
+checkout = "candidate"
 pool = "pytest-heavy"
 result = "pytest"
 cache = "tree+environment"

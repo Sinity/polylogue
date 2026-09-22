@@ -1444,6 +1444,92 @@ def test_candidate_accept_rejects_supersede_replacement_fields(tmp_path: Path) -
         conn.close()
 
 
+def test_judge_candidate_refuses_moved_evidence(tmp_path: Path) -> None:
+    """polylogue-irtix D: approval on a reused candidate id is refused if its evidence moved.
+
+    ``_upsert_or_refresh_judgment_candidate`` deliberately reuses one
+    ``assertion_id`` per unresolved conflict so repeated detector cycles
+    don't spam the review queue (polylogue-rjtv). That reuse is reproduced
+    directly here: mint a candidate carrying ``evidence_digest``, then
+    upsert the SAME ``assertion_id`` again with a different digest and a
+    recorded ``superseded_evidence_digest`` -- the shape a refreshing
+    detector writes in place. An approval that does not name the CURRENT
+    digest (no ``expected_evidence_digest``, or the stale one the reviewer
+    actually read) must be refused; an approval naming the current digest
+    must still succeed, so the refusal is not a blanket block on the
+    candidate.
+    """
+
+    conn = connect_user_tier(tmp_path / "user.db")
+    try:
+        upsert_assertion(
+            conn,
+            assertion_id="a-evidence-conflict",
+            target_ref="session:session-1",
+            kind=AssertionKind.TRANSFORM_CANDIDATE,
+            value={"evidence_digest": "digest-A"},
+            author_ref="agent:raw-reconciler",
+            author_kind="agent",
+            now_ms=1_700_000_000_000,
+        )
+        # The refreshing detector rewrites the same assertion_id in place
+        # once the evidence it was minted from changes underneath it.
+        upsert_assertion(
+            conn,
+            assertion_id="a-evidence-conflict",
+            target_ref="session:session-1",
+            kind=AssertionKind.TRANSFORM_CANDIDATE,
+            value={"evidence_digest": "digest-B", "superseded_evidence_digest": "digest-A"},
+            author_ref="agent:raw-reconciler",
+            author_kind="agent",
+            now_ms=1_700_000_005_000,
+        )
+
+        with pytest.raises(user_write.AssertionEvidenceConflictError) as no_expected:
+            judge_assertion_candidate(
+                conn,
+                candidate_ref="assertion:a-evidence-conflict",
+                decision="accept",
+                actor_ref="user:local",
+                now_ms=1_700_000_010_000,
+            )
+        assert no_expected.value.read_digest == "digest-A"
+        assert no_expected.value.current_digest == "digest-B"
+
+        # Naming the digest the reviewer actually READ (not the current one)
+        # is refused identically -- the gate compares against the CURRENT
+        # digest, not merely "was some digest supplied".
+        with pytest.raises(user_write.AssertionEvidenceConflictError) as stale_expected:
+            judge_assertion_candidate(
+                conn,
+                candidate_ref="assertion:a-evidence-conflict",
+                decision="accept",
+                actor_ref="user:local",
+                expected_evidence_digest="digest-A",
+                now_ms=1_700_000_011_000,
+            )
+        assert stale_expected.value.current_digest == "digest-B"
+
+        refreshed = read_assertion_envelope(conn, "a-evidence-conflict")
+        assert refreshed is not None and refreshed.status is AssertionStatus.CANDIDATE
+
+        # Approving with the CURRENT digest succeeds: the refusal targets
+        # unread evidence, not this candidate categorically.
+        result = judge_assertion_candidate(
+            conn,
+            candidate_ref="assertion:a-evidence-conflict",
+            decision="accept",
+            actor_ref="user:local",
+            expected_evidence_digest="digest-B",
+            now_ms=1_700_000_012_000,
+        )
+        assert result.candidate.status is AssertionStatus.ACCEPTED
+        assert result.resulting_assertion is not None
+        assert result.resulting_assertion.status is AssertionStatus.ACTIVE
+    finally:
+        conn.close()
+
+
 def test_bulk_judgment_is_partial_idempotent_and_injection_is_reviewer_controlled(tmp_path: Path) -> None:
     """The real user-tier batch writer retains valid judgments around failures."""
 
@@ -1716,7 +1802,7 @@ def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path
             target_ref="session:concurrent",
             kind=AssertionKind.DECISION,
             body_text="detector candidate",
-            author_kind="detector",
+            author_kind="agent",
             now_ms=1,
         )
         setup.commit()
@@ -1742,7 +1828,7 @@ def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path
                     target_ref=candidate.target_ref,
                     kind=candidate.kind,
                     body_text="detector replay",
-                    author_kind="detector",
+                    author_kind="agent",
                     now_ms=2,
                 )
                 detector.commit()
@@ -1829,7 +1915,7 @@ def test_cross_connection_replay_inside_caller_owned_deferred_transaction_cannot
             target_ref="session:concurrent-deferred",
             kind=AssertionKind.DECISION,
             body_text="detector candidate",
-            author_kind="detector",
+            author_kind="agent",
             now_ms=1,
         )
         setup.commit()
@@ -1857,7 +1943,7 @@ def test_cross_connection_replay_inside_caller_owned_deferred_transaction_cannot
                     target_ref=candidate.target_ref,
                     kind=candidate.kind,
                     body_text="detector replay",
-                    author_kind="detector",
+                    author_kind="agent",
                     now_ms=2,
                 )
                 detector.commit()
@@ -1927,7 +2013,7 @@ def test_assertion_upsert_rolls_back_its_immediate_transaction(tmp_path: Path, m
                 assertion_id="rollback-candidate",
                 target_ref="session:rollback",
                 kind=AssertionKind.DECISION,
-                author_kind="detector",
+                author_kind="agent",
             )
         assert not conn.in_transaction
         assert original(conn, "rollback-candidate") is None

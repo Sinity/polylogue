@@ -740,6 +740,34 @@ def test_a_held_run_records_what_it_took(tmp_path: Path) -> None:
     assert memory["host_mem_available_mib"]["minimum"] is not None
 
 
+def test_a_held_run_with_no_explicit_worker_count_still_receipts_its_admitted_width(tmp_path: Path) -> None:
+    """A serial/no-``-n`` run's receipt still names the width and budget it was admitted on.
+
+    (polylogue-k1o3t AC2a) Before this, ``resize_worker_argument`` returned no
+    basis at all for a command naming no worker count, so a real receipt --
+    ``.cache/verify/runs/*-focused-test-*/run.json`` ``steps[0].pytest_slot_receipt``
+    -- carried only ``elapsed_s, exit_code, kind, log_path, memory,
+    schema_version, status``: no selected width, no budget, no narrowing
+    decision, ever, for the whole class of runs that name no ``-n``. A
+    command with no ``-n`` is read as a request for one worker, the width it
+    already runs at; the receipt must still name the observed budget it was
+    measured against.
+    """
+    command = [sys.executable, "-c", "print('ok')"]
+
+    outcome = run_pytest(command, cwd=str(tmp_path), env=_environment(POLYLOGUE_PYTEST_SLOT="held"), root=tmp_path)
+
+    assert outcome.returncode == 0
+    receipt = outcome.receipt
+    assert receipt is not None
+    sizing = receipt.get("sizing")
+    assert sizing is not None, "the receipt must name the width/budget this run was admitted on"
+    assert sizing["workers"] == 1
+    assert sizing["requested_workers"] == 1
+    assert sizing["narrowed"] is False
+    assert sizing["basis"] in {"cgroup_budget", "declared_budget"}
+
+
 @pytest.mark.uses_real_clock("runs a real child through the slot runner")
 def test_a_queued_run_publishes_its_result_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     """A run that ends normally files the same document a timed-out one does.
