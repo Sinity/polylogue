@@ -168,3 +168,46 @@ def test_keyword_tuple_pool_holds_its_declared_entry_budget() -> None:
     # object, so eviction has not silently disabled the interning.
     recent = f"keyword-{offered - 1}"
     assert wire_support._pooled((recent,)) is wire_support._pooled((recent,))
+
+
+def test_identity_digest_memo_holds_its_declared_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The schema-digest memo keeps exactly its declared number of objects.
+
+    RED WITHOUT: remove the ``_IDENTITY_DIGESTS.pop`` in ``_stable_digest``
+    and the memo keeps one entry per distinct object -- here twice its limit.
+    """
+    monkeypatch.setattr(wire_support, "_IDENTITY_DIGESTS", {})
+    limit = wire_support._IDENTITY_DIGEST_LIMIT
+    offered = [{"schema": index} for index in range(limit * 2)]
+    for value in offered:
+        wire_support._stable_digest(value)
+
+    assert len(offered) > limit, "the fixture must offer more than the budget"
+    assert len(wire_support._IDENTITY_DIGESTS) == limit, (
+        f"memo holds {len(wire_support._IDENTITY_DIGESTS)} entries against a {limit}-entry budget"
+    )
+
+
+def test_identity_digest_memo_answers_repeats_within_its_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Within the limit the digest is computed once per object, not per call.
+
+    RED WITHOUT: drop the memo lookup so every call digests again. That is the
+    trivial way to satisfy any retention ceiling, and it is what this bound is
+    traded against -- a multi-megabyte schema hashed on every key.
+    """
+    monkeypatch.setattr(wire_support, "_IDENTITY_DIGESTS", {})
+    digests = 0
+    real = wire_support._content_digest
+
+    def counting(value: object) -> str:
+        nonlocal digests
+        digests += 1
+        return real(value)
+
+    monkeypatch.setattr(wire_support, "_content_digest", counting)
+    live = [{"schema": index} for index in range(wire_support._IDENTITY_DIGEST_LIMIT)]
+    for _ in range(4):
+        for value in live:
+            wire_support._stable_digest(value)
+
+    assert digests == len(live), f"{digests} digests for {len(live)} objects over 4 passes: the memo is not answering"
