@@ -1432,7 +1432,16 @@ class ArchiveStore:
                 # The persistent owner reuses this compatible handle. Its
                 # factory intentionally excludes journal_mode: bootstrap made
                 # that shared database-mode decision before source.db existed.
-                conn = open_source_tier_write_connection(self.source_db_path, archive_root=self.archive_root)
+                # ``_write_lease_archive_root``, not ``archive_root``: for an
+                # inactive candidate the latter is the generation directory
+                # while the durable writer's lease was acquired for the
+                # declared archive root, so ``require_write_lease`` compared two
+                # different roots and refused the open. These durable members
+                # belong to the real archive either way -- the candidate only
+                # carries read-through symlinks to them.
+                conn = open_source_tier_write_connection(
+                    self.source_db_path, archive_root=self._write_lease_archive_root
+                )
             if self._read_only or self._inactive_candidate_durable_read_only:
                 conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
@@ -5629,7 +5638,13 @@ class ArchiveStore:
         cost that was never implicated by the incident.
         """
         self._require_writable("delete index.db sessions")
-        require_write_lease(f"ArchiveStore.delete_sessions(index={self.index_db_path})", archive_root=self.archive_root)
+        # Same binding as every other durable-writer check on this store: the
+        # lease belongs to the declared archive root, not to the candidate
+        # generation directory ``archive_root`` names.
+        require_write_lease(
+            f"ArchiveStore.delete_sessions(index={self.index_db_path})",
+            archive_root=self._write_lease_archive_root,
+        )
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
             return 0
