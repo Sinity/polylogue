@@ -2884,6 +2884,46 @@ _UNMEASURED_UNSET: Any = object()
 """Sentinel: this component has no distinct unmeasured projection."""
 
 
+#: Collection outcomes that carry no reading of the current frame at all.
+_UNMEASURED_COMPONENT_STATES = frozenset({"refreshing", "timed_out", "unavailable", "degraded"})
+
+
+def _component_is_unmeasured(snapshot: ComponentSnapshot, *, current_fingerprint: str | None) -> bool:
+    """Whether a component snapshot may not be served as a current measurement.
+
+    A snapshot in one of :data:`_UNMEASURED_COMPONENT_STATES` did not complete
+    a collection and holds either ``None`` or a previous value, so serving it
+    -- or the model default -- as a current measurement is the
+    refusal-rendered-as-a-positive-claim defect (polylogue-bu47u AC1).
+
+    ``stale`` is different, and treating it as a sixth refusal state was its
+    own false claim. It means "the last good value, plus a background refresh
+    that has not landed yet". The persistent periodic registry is polled every
+    ``_STATUS_SNAPSHOT_REFRESH_INTERVAL_SECONDS`` plus jitter while its
+    components carry a 10s ``ttl_s``, so the TTL expires on essentially every
+    tick: the published snapshot alternated between a real reading and unknown
+    readiness -- measured as ``fresh, stale, fresh, stale`` at a 10.5s cadence
+    -- and served an unknown raw frontier with ``ok: false`` for half of the
+    daemon's life, with a perfectly good ten-second-old value in hand.
+
+    What actually decides whether that value is a current measurement is the
+    fingerprint it was collected under: the registry keys its components on
+    the index/ops tier mtimes (:func:`_daemon_status_fingerprint`), so an
+    unchanged fingerprint means the frame the value describes is still the
+    live one, and a changed fingerprint means the collector in flight is
+    answering a question this value cannot. Promoting it then is the exact
+    "certify readiness for a frame that is no longer authoritative" failure
+    the blanket rule was guarding against; promoting it under an unchanged
+    fingerprint is not. A snapshot with no fingerprint at all establishes no
+    currency and stays unmeasured.
+    """
+    if snapshot.state in _UNMEASURED_COMPONENT_STATES:
+        return True
+    if snapshot.state != "stale":
+        return False
+    return snapshot.fingerprint is None or snapshot.fingerprint != current_fingerprint
+
+
 def build_daemon_status(
     *,
     sources: tuple[WatchSource, ...] | None = None,
@@ -2983,14 +3023,11 @@ def build_daemon_status(
         )
     )
 
-    # A snapshot in one of these states did not complete a collection for this
-    # call.  Its ``value`` is either ``None`` or a *previous* good value, so
-    # serving it -- or the model default -- as a current measurement is the
-    # refusal-rendered-as-a-positive-claim defect (polylogue-bu47u AC1).
-    # Stale/refreshing snapshots are advisory only. A generation fingerprint
-    # can change while the prior collector is still in flight; promoting that
-    # value would certify readiness for a frame that is no longer authoritative.
-    unmeasured_states = {"stale", "refreshing", "timed_out", "unavailable", "degraded"}
+    # The fingerprint the persistent registry's components are keyed on, read
+    # once for this call. ``None`` when nothing supplied one, which is the
+    # ephemeral per-call registry below: it holds no previous value, so it can
+    # never answer ``stale`` and never consults this.
+    current_fingerprint = _daemon_status_fingerprint(active_db) if registry is not None else None
 
     def _v(
         name: str,
@@ -3014,7 +3051,9 @@ def build_daemon_status(
         fresh snapshot or not (polylogue-20d.17 AC10).
         """
         snapshot = snapshots[name]
-        if unmeasured is not _UNMEASURED_UNSET and snapshot.state in unmeasured_states:
+        if unmeasured is not _UNMEASURED_UNSET and _component_is_unmeasured(
+            snapshot, current_fingerprint=current_fingerprint
+        ):
             return unmeasured
         value = snapshot.value
         if value is not None:

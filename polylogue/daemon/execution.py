@@ -338,6 +338,24 @@ class BoundedComputeAdapter:
     One queue reservation bounds accepted work; one dispatcher decides which
     accepted unit runs next.  Both are class-aware: a class may consume its own
     reserve plus the shared remainder, never another class's reserve.
+
+    That invariant is about *every* other reserve at once, not the submitting
+    group's own ceiling.  A per-group ceiling alone is true of each group taken
+    separately and false of any two together: with eight workers the control
+    ceiling is four slots and the background ceiling is four slots, so four
+    blocking control tasks beside four blocking background tasks occupy the
+    whole pool while each group stays inside its own bound -- and the three
+    slots the snapshot reports as reserved for ``interactive-read`` are gone.
+    Admission and dispatch therefore both check the *complement*: a unit may
+    start only if what remains afterwards still covers every other group's
+    unmet reserve.
+
+    The reserve is hard, so a saturated mix leaves the reserved capacity idle
+    when the reserved class has nothing queued. That is the same cost the
+    per-group ceilings already pay for a single class (background alone has
+    never been able to occupy more than its ceiling), extended to the combined
+    case; a soft reserve would hand the slot away exactly when it is needed,
+    which is at the moment an interactive request *arrives*.
     """
 
     def __init__(
@@ -372,6 +390,11 @@ class BoundedComputeAdapter:
     def _apply_reservations(self) -> None:
         unit_reserve = self._reserve_table(self.capacity_units)
         slot_reserve = self._reserve_table(self.max_workers)
+        self._reserved_units_by_group = dict(unit_reserve)
+        self._reserved_slots_by_group = dict(slot_reserve)
+        self._classes_by_group = {
+            key: tuple(name for name in ADMISSION_CLASSES if self._class_group(name) == key) for key in unit_reserve
+        }
         for name, state in self._classes.items():
             key = "background" if name in BACKGROUND_CLASSES else name
             state.reserved_units = unit_reserve[key]
@@ -406,6 +429,11 @@ class BoundedComputeAdapter:
             # envelope look larger than it is.
             "class_used_units": group_used_units,
             "class_ceiling_units": state.ceiling_units,
+            # A refusal can come from the complement rather than from this
+            # class's own ceiling: another group's reserve is still unmet, so
+            # the shared remainder is smaller than the ceiling suggests. Name
+            # that term instead of leaving the evidence looking contradictory.
+            "other_reserved_units": self._unmet_other_unit_reserves(state.admission_class),
         }
 
     @staticmethod
@@ -413,17 +441,44 @@ class BoundedComputeAdapter:
         return "background" if admission_class in BACKGROUND_CLASSES else admission_class
 
     def _group_used_units(self, admission_class: str) -> int:
-        group = self._class_group(admission_class)
-        return sum(state.used_units for name, state in self._classes.items() if self._class_group(name) == group)
+        return sum(
+            self._classes[name].used_units for name in self._classes_by_group[self._class_group(admission_class)]
+        )
 
     def _group_active_slots(self, admission_class: str) -> int:
+        return sum(
+            self._classes[name].active_slots for name in self._classes_by_group[self._class_group(admission_class)]
+        )
+
+    def _unmet_other_unit_reserves(self, admission_class: str) -> int:
+        """Queue units every *other* group's reserve still entitles it to.
+
+        Zero once a group has already taken at least its reserve, and zero
+        throughout on a capacity too small to divide (``_reserved_units``
+        gives up the guarantee there rather than making a single-slot adapter
+        unusable).
+        """
         group = self._class_group(admission_class)
-        return sum(state.active_slots for name, state in self._classes.items() if self._class_group(name) == group)
+        return sum(
+            max(0, reserved - sum(self._classes[name].used_units for name in self._classes_by_group[other]))
+            for other, reserved in self._reserved_units_by_group.items()
+            if other != group
+        )
+
+    def _unmet_other_slot_reserves(self, admission_class: str) -> int:
+        """Worker slots every *other* group's reserve still entitles it to."""
+        group = self._class_group(admission_class)
+        return sum(
+            max(0, reserved - sum(self._classes[name].active_slots for name in self._classes_by_group[other]))
+            for other, reserved in self._reserved_slots_by_group.items()
+            if other != group
+        )
 
     def _acquire_locked(self, state: _ClassState, units: int, estimated_bytes: int) -> None:
         group_used_units = self._group_used_units(state.admission_class)
+        other_reserved_units = self._unmet_other_unit_reserves(state.admission_class)
         if (
-            self._used_units + units > self.capacity_units
+            self._used_units + units > self.capacity_units - other_reserved_units
             or self._used_bytes + estimated_bytes > self.capacity_bytes
             or group_used_units + units > state.ceiling_units
         ):
@@ -492,7 +547,9 @@ class BoundedComputeAdapter:
 
         A class is eligible only for slots outside every other class's reserve,
         which is what makes the background starvation window finite under
-        sustained interactive load.
+        sustained interactive load. "Every other class" is the complement over
+        all groups at once: the per-group ceiling alone lets two saturated
+        groups jointly occupy the pool while each stays inside its own bound.
         """
 
         background_order = [
@@ -508,7 +565,7 @@ class BoundedComputeAdapter:
                 continue
             task = queue[0]
             state = self._classes[name]
-            if self._active_slots + task.slots > self.max_workers:
+            if self._active_slots + task.slots > self.max_workers - self._unmet_other_slot_reserves(name):
                 continue
             if self._group_active_slots(name) + task.slots > state.ceiling_slots:
                 continue

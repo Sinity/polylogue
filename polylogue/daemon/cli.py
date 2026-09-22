@@ -1448,20 +1448,43 @@ async def _emit_whale_completion_after_admission(
     )
 
 
+def _raw_component_payload_bytes(archive_root: Path, raw_id: str) -> int:
+    """Total retained payload of the component one raw seed expands to.
+
+    This is the quantity the raw-observation payload budget is actually
+    compared against, read through the same expansion the derivation uses.
+    """
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(archive_root) as pinned:
+        archive = pinned.archive
+        raw_ids, _keys = archive.expand_raw_membership_selection([raw_id])
+        sizes = archive.raw_payload_sizes(raw_ids)
+    return sum(int(size) for size in sizes.values())
+
+
 async def _maybe_run_raw_materialization_whale_pass(
     *,
     raw_observation_owner: Any | None = None,
     raw_intake_discovery: Any | None = None,
     session_profile_callback: Callable[[Sequence[str] | None], Awaitable[object]] | None = None,
 ) -> bool:
-    """Escalate one resource-blocked, stream-safe component when quiescent.
+    """Escalate one resource-blocked, stream-safe component past the ordinary limit.
 
-    polylogue-t93b: called only after the ordinary trickle conveyor has
-    drained to quiescence for this tick (see
-    ``_periodic_raw_materialization_convergence``), so a whale pass never
-    competes with ordinary-scale backlog for the writer hold. Unconditional:
-    a permanent offline-only requirement for whale components is the policy
-    bug this closes, so there is no off switch.
+    polylogue-t93b: unconditional, because a permanent offline-only
+    requirement for whale components is the policy bug this closes; there is
+    no off switch.
+
+    The only backlog check enforced here is the head of the bounded discovery
+    traversal: a pass happens exactly when the one raw this tick's page offers
+    is itself whale-scale, so a tick whose page still offers ordinary-scale
+    work escalates nothing. That is *not* quiescence -- discovery pages one
+    item at a time and alternates lanes, so ordinary backlog can remain behind
+    the head, and a whale holds the owner's convergence lock for its whole
+    duration while it runs. Proving the ordinary class has actually drained
+    needs a signal from ``FairIntakeDispatcher``/``DaemonIntakeService``,
+    which this loop is not given; until it is, the head-of-page check is the
+    claim this function can make.
 
     Returns whether a pass was genuinely attempted this call so the caller
     can decide burst-vs-outer-interval pacing.
@@ -1479,14 +1502,40 @@ async def _maybe_run_raw_materialization_whale_pass(
     # Discovery is the same bounded, process-local traversal used by fair
     # intake. It is not a whale-specific scanner or a validity cache.
     candidates = await asyncio.to_thread(raw_intake_discovery.discover_pending_raw_ids, 1)
-    candidate = next(
-        (
-            raw_id
-            for raw_id, payload_bytes in candidates
-            if payload_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES
-        ),
-        None,
-    )
+    candidate: str | None = None
+    for raw_id, payload_bytes in candidates:
+        # The ordinary admission this escalates past budgets the *component*:
+        # ``RawObservationDerivation.compute`` expands the raw's membership and
+        # compares ``sum(sizes.values())`` against its payload limit, while
+        # discovery reports only the seed row's own size. A component whose
+        # members are each inside the ordinary limit but whose total is not
+        # therefore failed every ordinary admission and was never selected
+        # here, so it stayed unmaterialized indefinitely. Ask the same question
+        # the budget asks. The seed's own size exceeding the limit already
+        # implies the component does, so the extra bounded read is skipped.
+        if payload_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES:
+            component_bytes = payload_bytes
+        else:
+            try:
+                component_bytes = await asyncio.to_thread(_raw_component_payload_bytes, root, raw_id)
+            except Exception as exc:
+                # An unreadable component size proves nothing about whale
+                # eligibility. Skipping leaves this raw to ordinary admission,
+                # which is where it already was; escalating the read failure
+                # would fail the whole periodic pass over a diagnostic.
+                emit(
+                    "daemon.raw_materialization.whale_component_size_unreadable",
+                    level=WARNING,
+                    outcome="unmeasured",
+                    reason="component_expansion_failed",
+                    raw_id=raw_id,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
+                continue
+        if component_bytes > _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES:
+            candidate = raw_id
+            break
     if candidate is None:
         return False
     receipt_id = f"whale:{candidate}:{uuid4().hex}"
