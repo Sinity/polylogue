@@ -1299,6 +1299,62 @@ def _write_manifest(
     (backup_root / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _require_exclusive_archive_ownership(root: Path) -> None:
+    """Refuse a snapshot of tiers a resident ``polylogued`` is writing.
+
+    A backup is a writer, not a reader: :func:`_backup_sqlite` opens each live
+    tier through ``open_isolated_write_connection``, drains its WAL with a
+    ``TRUNCATE`` checkpoint and holds ``BEGIN IMMEDIATE`` across the copy, and
+    :func:`_checkpoint_sqlite_for_snapshot` states the precondition outright --
+    "an exclusive boundary that already requires no concurrent writer".
+
+    Nothing in this module established that. :func:`backup_archive` mints its
+    own ``write_lease("maintenance.backup")``, which satisfies every
+    ``require_write_lease`` in this process and lets the armed connection guard
+    pass the write through, so the in-process lease proves nothing about a
+    *second process*. Beside a live daemon the snapshot truncated the daemon's
+    WAL underneath it and retried ``_SNAPSHOT_LOCK_ATTEMPTS`` times for the
+    lock.
+
+    The check lives here, at the function that mints the lease, rather than in
+    ``polylogue/cli/commands/backup.py`` where it first landed. That placement
+    covered exactly one caller: ``backup_archive`` is public API
+    (``__all__``), and an embedded Python process importing it reached the
+    whole truncating snapshot with no ownership check at all -- the standalone
+    Python entry point AC1's coverage receipt names (polylogue-8qm4k AC1,
+    polylogue-5vps8 AC1, polylogue-re6s3 AC1).
+
+    ``check_only`` never reaches here: it opens nothing writable, and a
+    prerequisite check is what an operator runs *before* stopping the daemon.
+    """
+    from polylogue.maintenance.offline_guard import (
+        ArchiveWriterOwnershipError,
+        ArchiveWriterOwnershipUndecidableError,
+        DaemonResidencyUndecidableError,
+        resident_daemon_pid,
+    )
+
+    try:
+        pid = resident_daemon_pid(root)
+    except DaemonResidencyUndecidableError as exc:
+        raise ArchiveWriterOwnershipUndecidableError(
+            f"cannot prove whether a resident daemon owns {root}: {exc}. Refusing to "
+            "checkpoint and write-lock live tiers beside a writer this platform cannot see",
+            archive_root=root,
+        ) from exc
+    if pid is None:
+        return
+    reason = f"polylogued PID {pid} is running for this archive"
+    raise ArchiveWriterOwnershipError(
+        f"refusing to back up {root}: {reason}. A backup snapshot checkpoints and "
+        "write-locks each live tier, so it must own the archive exclusively. Stop polylogued "
+        "and run the backup again, or run `polylogue ops backup --check` to verify "
+        "prerequisites without touching the tiers",
+        archive_root=root,
+        resident_writer=reason,
+    )
+
+
 def backup_archive(
     *,
     output_dir: Path,
@@ -1334,7 +1390,10 @@ def backup_archive(
             elapsed_s=round(time.monotonic() - started, 3),
         )
 
-    # Non-check mode: actually create backup.
+    # Non-check mode: actually create backup.  Prove exclusive ownership of the
+    # archive before anything is created or any tier is touched.
+    root = archive_root()
+    _require_exclusive_archive_ownership(root)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1343,7 +1402,6 @@ def backup_archive(
     # read-only.  Acquire the same process lease as daemon publications; when
     # invoked from a coordinator this is re-entrant and cannot create a second
     # ownership path.
-    root = archive_root()
     with write_lease("maintenance.backup", archive_root=root):
         result = _backup_archive(output_dir=output_dir, started=started, profile=profile, archive_root_path=root)
     if verify and result.ok and result.output_path is not None:

@@ -200,10 +200,14 @@ def test_refused_beside_resident_daemon(
     """No offline writer may touch tiers a live daemon owns.
 
     Anti-vacuity, per row: ``backup`` goes red by deleting the
-    ``_refuse_while_a_daemon_owns_the_archive()`` call in
-    ``polylogue/cli/commands/backup.py`` -- it exits 0 and writes a complete
+    ``_require_exclusive_archive_ownership(root)`` call in ``backup_archive``
+    (``polylogue/daemon/backup.py``) -- it exits 0 and writes a complete
     backup, because ``backup_archive`` mints its own
     ``write_lease("maintenance.backup")`` and so satisfies the armed guard.
+    That refusal lives at the function that mints the lease rather than in
+    this command, so an embedded importer of the public ``backup_archive`` is
+    refused on the same terms; see
+    ``tests/unit/daemon/test_backup.py::test_embedded_backup_refused_beside_resident_daemon``.
     The other three go red by dropping
     ``ctx.with_resource(cli_archive_writer_ownership())`` from the root
     callback in ``polylogue/cli/click_app.py``.

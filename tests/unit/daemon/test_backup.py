@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -2271,3 +2272,78 @@ def test_backup_verifies_a_multi_chunk_blob_without_materializing_it(
     verification = backup_mod._verify_archive_file_set_backup(backup_root)
     assert verification["ok"] is False
     assert verification["blob_inventory_exact"] is False
+
+
+def _hold_daemon_pidfile(pidfile: Path, tmp_path: Path) -> tuple[int, subprocess.Popen[str]]:
+    """Hold the daemon's own exclusive pidfile lock from a live process.
+
+    The same token ``polylogued run`` takes in
+    ``polylogue.daemon.cli._acquire_pidfile``, reproduced rather than patched so
+    the residency probe in ``polylogue.maintenance.offline_guard`` stays under
+    test rather than being stubbed out of it.
+    """
+    import sys
+
+    script = tmp_path / "hold_pidfile.py"
+    script.write_text(
+        "import fcntl, os, sys, time\n"
+        "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "os.write(fd, str(os.getpid()).encode())\n"
+        "os.fsync(fd)\n"
+        "sys.stdout.write('ready\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(300)\n"
+    )
+    process = subprocess.Popen([sys.executable, str(script), str(pidfile)], stdout=subprocess.PIPE, text=True)
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "ready"
+    return process.pid, process
+
+
+def test_embedded_backup_refused_beside_resident_daemon(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """An embedded Python caller of ``backup_archive`` is refused too.
+
+    ``backup_archive`` is public API and mints its own
+    ``write_lease("maintenance.backup")``, so it satisfies every
+    ``require_write_lease`` in its own process and the armed connection guard
+    passes its writes through. The in-process lease proves nothing about a
+    second process, and the snapshot is a writer: ``_backup_sqlite`` opens each
+    live tier writable, TRUNCATE-checkpoints its WAL and holds
+    ``BEGIN IMMEDIATE`` across the copy.
+
+    The refusal used to live in ``polylogue/cli/commands/backup.py``, covering
+    exactly one caller; ``from polylogue.daemon.backup import backup_archive``
+    reached the whole truncating snapshot beside a live daemon with no
+    ownership check at all. That is the standalone Python entry point
+    polylogue-8qm4k AC1's coverage receipt names.
+
+    Anti-vacuity: delete the ``_require_exclusive_archive_ownership(root)``
+    call from ``backup_archive`` and this goes red -- the call returns a
+    successful ``BackupResult`` and the tier digest moves, because the
+    TRUNCATE checkpoint rewrites the live tiers' WAL files.
+    """
+    from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
+
+    db_setup(workspace_env)
+    root = Path(workspace_env["archive_root"])
+    pid, process = _hold_daemon_pidfile(root / "daemon.pid", tmp_path)
+    try:
+        before = sorted((path.name, path.read_bytes()) for path in root.glob("*.db*"))
+        with pytest.raises(ArchiveWriterOwnershipError) as caught:
+            backup_archive(output_dir=tmp_path / "backups")
+        message = str(caught.value)
+        assert f"PID {pid}" in message, message
+        assert caught.value.archive_root == str(root), caught.value.archive_root
+        assert sorted((path.name, path.read_bytes()) for path in root.glob("*.db*")) == before
+        # ``--check`` stays usable: it opens nothing writable, and it is what an
+        # operator runs before stopping the daemon.
+        assert backup_archive(output_dir=tmp_path / "backups", check_only=True).check_only
+    finally:
+        process.kill()
+        process.wait(timeout=30)
+        if process.stdout is not None:
+            process.stdout.close()
