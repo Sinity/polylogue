@@ -2573,6 +2573,10 @@ def test_full_ingest_writes_archive_with_route_observability(
         "ingested_message_count": 1,
         "payload_unavailable_file_count": 0,
         "payload_replayed_from_blob_file_count": 0,
+        # polylogue-i07pw AC1. This route hands the writer no prepared rows,
+        # so the page's one session write records the gate that declined.
+        # Its presence is the observability; its value is the finding.
+        "prepared_row_dispositions": {"absent": 1},
     }
 
 
@@ -2655,6 +2659,7 @@ def test_streaming_full_ingest_writes_archive_from_blob(
         "ingested_message_count": 1,
         "payload_unavailable_file_count": 1,
         "payload_replayed_from_blob_file_count": 1,
+        "prepared_row_dispositions": {"absent": 1},
     }
     assert raw_row[0] == result.raw_fingerprints[source]
 
