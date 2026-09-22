@@ -31,7 +31,11 @@ from polylogue.storage.derived.session.input_binding import (
     session_input_bindings_async,
 )
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_DOMAIN
-from polylogue.storage.derived.session.usage_rollup import SESSION_USAGE_ROLLUP_DOMAIN
+from polylogue.storage.derived.session.usage_rollup import (
+    SESSION_USAGE_ROLLUP_DOMAIN,
+    inspect_session_usage_rollups,
+    session_usage_rollup_recipe_version,
+)
 from polylogue.storage.sqlite.write_lease import write_lease
 
 __all__ = [
@@ -429,8 +433,24 @@ def publish_session_profile(
     (:func:`inspect_session_profiles`), so a race leaves the key pending and the
     next pass recomputes it — never a row certified against inputs that moved.
 
-    Returns False for that refusal. An exception is a genuine failure and is
-    left to the caller to attribute; the two are never collapsed.
+    **This publisher writes no canonical usage** (polylogue-bp12n.1 AC2/AC7).
+    It used to, through the rebuild it calls: every invocation re-aggregated
+    ``session_model_usage`` and stamped that domain's binding, so a profile
+    publication that then returned ``False`` had already committed a usage
+    change and certified a rollup nobody asked it to reconcile. The rebuild
+    keeps that stage for the bulk route, and this one turns it off.
+
+    The rollup is :data:`SESSION_USAGE_ROLLUP_DOMAIN`'s output and a declared
+    prerequisite of this domain, and the profile's stored binding covers the
+    rollup's *inputs* rather than its rows — so publishing against an
+    unreconciled rollup would certify a profile built from superseded cost
+    values. Rather than reconcile it here, this refuses: a rollup that is not
+    VALID leaves the key pending for the pass that converges the prerequisite
+    first, which is the order the kernel already drives.
+
+    Returns False for either refusal, and a refusal commits nothing. An
+    exception is a genuine failure and is left to the caller to attribute; the
+    two are never collapsed.
     """
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
@@ -450,7 +470,25 @@ def publish_session_profile(
     if session_input_bindings(conn, (session_id,)).get(session_id, "") != input_binding:
         return False
 
-    rebuild_session_insights_sync(conn, session_ids=[session_id], page_size=page_size)
+    if (
+        inspect_session_usage_rollups(
+            conn,
+            (session_id,),
+            recipe_version=session_usage_rollup_recipe_version(),
+        )[session_id]
+        != _VALID
+    ):
+        # The prerequisite owns this write. Refusing here costs one pass and
+        # commits nothing; reconciling here would be the hidden usage write
+        # this route exists without.
+        return False
+
+    rebuild_session_insights_sync(
+        conn,
+        session_ids=[session_id],
+        page_size=page_size,
+        reconcile_usage_rollup=False,
+    )
 
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -483,7 +521,7 @@ def publish_prepared_session_profile(
     This publisher owns exactly one transaction and commits exactly one thing:
     the prepared four-table family. It does **not** reconcile canonical usage.
 
-    It used to. ``_refresh_provider_usage_rollup`` ran here and was committed
+    It used to. The usage reconciliation ran here and was committed
     before the prepared bundle's exact-value check -- so publication moved an
     input the prepared bundle had already read, and the check that followed
     necessarily failed for every session whose rollup had drifted. The first

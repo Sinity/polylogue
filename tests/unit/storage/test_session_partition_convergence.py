@@ -33,6 +33,10 @@ from polylogue.storage.derived.session.input_binding import session_input_bindin
 from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
+from polylogue.storage.derived.session.usage_rollup import (
+    publish_session_usage_rollup,
+    session_usage_rollup_recipe_version,
+)
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -96,10 +100,23 @@ def _seed(index_db: Path, name: str, *, messages: Sequence[tuple[str, str]], par
 
 
 def _converge(index_db: Path, session_ids: Sequence[str]) -> None:
-    """Publish every non-valid partition, the way the kernel drives a domain."""
+    """Publish every non-valid partition, the way the kernel drives a domain.
+
+    The canonical usage rollup is a declared prerequisite of the profile
+    domain, so it is converged first here exactly as the kernel converges a
+    prerequisite key before the profile that names it. ``publish_session_profile``
+    refuses a session whose rollup is not settled rather than reconciling it
+    inside a profile publication.
+    """
     with write_lease("test.converge"), closing(_write_connection(index_db)) as conn:
         for session_id in session_ids:
             binding = session_input_bindings(conn, (session_id,)).get(session_id, "")
+            publish_session_usage_rollup(
+                conn,
+                session_id,
+                input_binding=binding,
+                recipe_version=session_usage_rollup_recipe_version(),
+            )
             publish_session_profile(conn, session_id, input_binding=binding)
 
 

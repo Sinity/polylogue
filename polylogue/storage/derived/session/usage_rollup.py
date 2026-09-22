@@ -1,10 +1,11 @@
 """Canonical provider/model usage reconciliation as its own derivation.
 
 ``session_model_usage`` is the single per-session token and cost authority.
-It is *derived*: ``_refresh_provider_usage_rollup`` re-aggregates it from
+It is *derived*: :func:`reconcile_session_usage_rollup` re-aggregates it from
 ``messages``, ``session_provider_usage_events`` and ``sessions.reported_cost_usd``.
 
-Until polylogue-bp12n.1 that reconciliation ran inside the session-profile
+This module owns that reconciliation outright. Until polylogue-bp12n.1 it lived
+in the session-insight rebuild module and ran inside the session-profile
 publisher, which committed it and then checked whether the profile it had
 already prepared was still applicable. Publication altered its own premise:
 the prepared bundle had read the *old* rollup, so the value check that follows
@@ -12,16 +13,18 @@ the refresh necessarily failed, the partition was refused, and a later pass
 did the real work. The first computation of every session whose rollup had
 moved was doomed by construction.
 
-This module makes the reconciliation an explicit stage that runs *before*
-profile preparation, with its own transaction and its own honest result. The
-profile derivation names it as a prerequisite key, so the kernel converges it
-first in the same pass; a profile is then prepared from a rollup that is
-already settled and publishes on the first attempt.
+The reconciliation is now an explicit stage that runs *before* profile
+preparation, with its own transaction and its own honest result. The profile
+derivation names it as a prerequisite key, so the kernel converges it first in
+the same pass; a profile is then prepared from a rollup that is already settled
+and publishes on the first attempt. No profile publisher writes canonical usage
+any more: :func:`polylogue.storage.derived.session.derivation.publish_session_profile`
+refuses a session whose rollup this derivation has not settled rather than
+reconciling it behind the caller's back.
 
-Pricing semantics are unchanged: this calls the same
-``_refresh_provider_usage_rollup`` with the same provider reconciliation,
-disjoint token lanes and catalog repricing. Nothing here re-sums a provider
-total a second way.
+Pricing semantics are unchanged: the aggregation, provider reconciliation,
+disjoint token lanes and catalog repricing moved verbatim. Nothing here re-sums
+a provider total a second way.
 
 **Why a binding row.** The rollup's output rows are totals; they cannot say
 which message and provider-event *values* were summed to produce them. That is
@@ -42,9 +45,12 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+import aiosqlite
+
 from polylogue.storage.derived.session.input_binding import (
     SESSION_INPUT_RECIPE_VERSION,
     session_input_bindings,
+    session_input_bindings_async,
 )
 from polylogue.storage.sqlite.write_lease import write_lease
 
@@ -54,6 +60,10 @@ __all__ = [
     "SessionUsageRollupReplacement",
     "inspect_session_usage_rollups",
     "publish_session_usage_rollup",
+    "reconcile_session_usage_rollup",
+    "reconcile_session_usage_rollup_async",
+    "reconcile_session_usage_rollups",
+    "reconcile_session_usage_rollups_async",
     "session_usage_rollup_recipe_version",
     "stamp_session_usage_rollup_binding",
 ]
@@ -65,7 +75,7 @@ _MISSING = "missing"
 _STALE = "stale"
 
 #: Bumped when what the reconciliation *means* changes without its declared
-#: inputs changing -- a change to ``_refresh_provider_usage_rollup``'s
+#: inputs changing -- a change to :func:`reconcile_session_usage_rollup`'s
 #: aggregation, reconciliation or provider-cost apportionment. The catalog
 #: half of the recipe is derived below rather than declared, because the
 #: catalog is data.
@@ -206,6 +216,143 @@ def stamp_session_usage_rollup_binding(
     )
 
 
+def reconcile_session_usage_rollup(conn: sqlite3.Connection, session_id: str) -> int:
+    """Re-derive ``session_model_usage`` for one session from persisted evidence.
+
+    session_model_usage (the provider token/cost rollup) was historically
+    written once at ingest and never revisited by the insight rebuild path
+    (polylogue-f2qv.5), so a materializer fix or a zero-token bug left stale
+    rows behind until an operator ran a full ``ops reset --index``. Both
+    aggregation steps below are self-contained given only ``conn`` and
+    ``session_id`` -- they read ``session_provider_usage_events`` and
+    ``messages``, which are already persisted archive tables independent of
+    any in-flight ``ParsedSession`` -- so this re-derives the rollup the same
+    way ingest does, without needing the original parse.
+
+    Before the message aggregate runs, its current rows are cleared. Ingest's
+    monotonic upsert intentionally keeps a larger provider rollup from being
+    clobbered by a later append, but that rule is wrong for a rebuild: a
+    fixed-id model correction can reduce one model's message total while that
+    model still has other messages. Provider-event rollups are reapplied after
+    the message aggregate, and the persisted session-level provider total is
+    then apportioned across the refreshed model rows.
+
+    The caller owns the transaction. Nothing here commits, so a reconciliation
+    the session's binding no longer justifies rolls back with it.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        ProviderCost,
+        _aggregate_message_tokens_into_model_usage,
+        _aggregate_provider_usage_into_model_usage,
+        _reconcile_session_model_usage_rows,
+        _reprice_model_usage_rows,
+        _write_provider_cost,
+    )
+
+    conn.execute(
+        """
+        UPDATE session_model_usage AS usage
+        SET input_tokens = 0,
+            output_tokens = 0,
+            cache_read_tokens = 0,
+            cache_write_tokens = 0,
+            message_count = 0,
+            provider_cost_usd = NULL,
+            catalog_cost_usd = NULL
+        WHERE usage.session_id = ?
+          AND EXISTS (
+              SELECT 1
+              FROM messages AS message
+              WHERE message.session_id = usage.session_id
+                AND message.model_name = usage.model_name
+          )
+        """,
+        (session_id,),
+    )
+    _aggregate_message_tokens_into_model_usage(conn, session_id)
+    _reconcile_session_model_usage_rows(conn, session_id)
+    _aggregate_provider_usage_into_model_usage(conn, session_id)
+    _reprice_model_usage_rows(conn, session_id)
+    reported_cost_row = conn.execute(
+        "SELECT reported_cost_usd FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    model_names = tuple(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
+            (session_id,),
+        )
+    )
+    if reported_cost_row is not None and reported_cost_row[0] is not None and model_names:
+        _write_provider_cost(conn, session_id, model_names, ProviderCost(float(reported_cost_row[0])))
+    row = conn.execute(
+        "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+async def reconcile_session_usage_rollup_async(conn: aiosqlite.Connection, session_id: str) -> int:
+    """Run the sync reconciliation on aiosqlite's worker thread."""
+    result = await conn._execute(  # type: ignore[no-untyped-call]
+        reconcile_session_usage_rollup,
+        conn._conn,
+        session_id,
+    )
+    return int(result)
+
+
+def reconcile_session_usage_rollups(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
+    """Reconcile a batch of rollups and stamp the binding each was built from.
+
+    This is the whole stage a bulk index rebuild runs before it computes the
+    profiles that read the rollup, kept in one place so no caller can perform
+    half of it. Without the stamp, every session a build just reconciled would
+    still report MISSING to this derivation and the first recurring pass after
+    a build would reconcile the whole archive a second time for no change.
+
+    The caller owns the transaction, so the stamp can only become visible in
+    the same commit as the rows it describes -- it is never a claim about rows
+    that did not commit.
+    """
+    unique = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
+    if not unique:
+        return
+    for session_id in unique:
+        reconcile_session_usage_rollup(conn, session_id)
+    recipe_version = session_usage_rollup_recipe_version()
+    for session_id, binding in session_input_bindings(conn, unique).items():
+        stamp_session_usage_rollup_binding(
+            conn,
+            session_id,
+            input_binding=binding,
+            recipe_version=recipe_version,
+        )
+
+
+async def reconcile_session_usage_rollups_async(conn: aiosqlite.Connection, session_ids: Sequence[str]) -> None:
+    """Async sibling of :func:`reconcile_session_usage_rollups`."""
+    unique = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
+    if not unique:
+        return
+    for session_id in unique:
+        await reconcile_session_usage_rollup_async(conn, session_id)
+    recipe_version = session_usage_rollup_recipe_version()
+    bindings = await session_input_bindings_async(conn, unique)
+    for session_id, binding in bindings.items():
+        await conn.execute(
+            """
+            INSERT INTO session_usage_rollup_bindings (session_id, input_binding, recipe_version)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                input_binding  = excluded.input_binding,
+                recipe_version = excluded.recipe_version
+            """,
+            (session_id, binding, recipe_version),
+        )
+
+
 def publish_session_usage_rollup(
     conn: sqlite3.Connection,
     session_id: str,
@@ -221,8 +368,6 @@ def publish_session_usage_rollup(
     refused but usage moved anyway", which is the exact untruth the previous
     publisher told.
     """
-    from polylogue.storage.derived.session.rebuild import _refresh_provider_usage_rollup
-
     conn.execute("BEGIN IMMEDIATE")
     try:
         exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
@@ -237,7 +382,7 @@ def publish_session_usage_rollup(
         if current != input_binding:
             conn.execute("ROLLBACK")
             return False
-        _refresh_provider_usage_rollup(conn, session_id)
+        reconcile_session_usage_rollup(conn, session_id)
         stamp_session_usage_rollup_binding(
             conn,
             session_id,

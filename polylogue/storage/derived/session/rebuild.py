@@ -51,6 +51,10 @@ from polylogue.storage.derived.session.storage import (
     replace_session_profiles_bulk_sync,
 )
 from polylogue.storage.derived.session.threads import thread_root_ids_async, thread_root_ids_sync
+from polylogue.storage.derived.session.usage_rollup import (
+    reconcile_session_usage_rollups,
+    reconcile_session_usage_rollups_async,
+)
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.runtime import (
     AttachmentRecord,
@@ -1575,136 +1579,6 @@ async def build_large_session_insight_record_bundle_async(
     )
 
 
-def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) -> int:
-    """Re-derive ``session_model_usage`` for one session from persisted evidence.
-
-    session_model_usage (the provider token/cost rollup) was historically
-    written once at ingest and never revisited by the insight rebuild path
-    (polylogue-f2qv.5), so a materializer fix or a zero-token bug left stale
-    rows behind until an operator ran a full ``ops reset --index``. Both
-    aggregation steps below are self-contained given only ``conn`` and
-    ``session_id`` — they read ``session_provider_usage_events`` and
-    ``messages``, which are already persisted archive tables independent of
-    any in-flight ``ParsedSession`` — so calling them here re-derives the
-    rollup the same way ingest does, without needing the original parse. A
-    Before the message aggregate runs, its current rows are cleared. Ingest's
-    monotonic upsert intentionally keeps a larger provider rollup from being
-    clobbered by a later append, but that rule is wrong for a rebuild: a
-    fixed-id model correction can reduce one model's message total while that
-    model still has other messages. Provider-event rollups are reapplied after
-    the message aggregate, and the persisted session-level provider total is
-    then apportioned across the refreshed model rows.
-    """
-    from polylogue.storage.sqlite.archive_tiers.write import (
-        ProviderCost,
-        _aggregate_message_tokens_into_model_usage,
-        _aggregate_provider_usage_into_model_usage,
-        _reconcile_session_model_usage_rows,
-        _reprice_model_usage_rows,
-        _write_provider_cost,
-    )
-
-    conn.execute(
-        """
-        UPDATE session_model_usage AS usage
-        SET input_tokens = 0,
-            output_tokens = 0,
-            cache_read_tokens = 0,
-            cache_write_tokens = 0,
-            message_count = 0,
-            provider_cost_usd = NULL,
-            catalog_cost_usd = NULL
-        WHERE usage.session_id = ?
-          AND EXISTS (
-              SELECT 1
-              FROM messages AS message
-              WHERE message.session_id = usage.session_id
-                AND message.model_name = usage.model_name
-          )
-        """,
-        (session_id,),
-    )
-    _aggregate_message_tokens_into_model_usage(conn, session_id)
-    _reconcile_session_model_usage_rows(conn, session_id)
-    _aggregate_provider_usage_into_model_usage(conn, session_id)
-    _reprice_model_usage_rows(conn, session_id)
-    reported_cost_row = conn.execute(
-        "SELECT reported_cost_usd FROM sessions WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    model_names = tuple(
-        str(row[0])
-        for row in conn.execute(
-            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
-            (session_id,),
-        )
-    )
-    if reported_cost_row is not None and reported_cost_row[0] is not None and model_names:
-        _write_provider_cost(conn, session_id, model_names, ProviderCost(float(reported_cost_row[0])))
-    row = conn.execute(
-        "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    return int(row[0]) if row is not None else 0
-
-
-async def _refresh_provider_usage_rollup_async(conn: aiosqlite.Connection, session_id: str) -> int:
-    """Run the sync provider-usage refresh on aiosqlite's worker thread."""
-    result = await conn._execute(  # type: ignore[no-untyped-call]
-        _refresh_provider_usage_rollup,
-        conn._conn,
-        session_id,
-    )
-    return int(result)
-
-
-def _stamp_refreshed_usage_bindings(conn: sqlite3.Connection, session_ids: Sequence[str]) -> None:
-    """Record that this rebuild reconciled these sessions' canonical rollups.
-
-    Without this, every session a bulk rebuild just reconciled would still
-    report MISSING to the usage-rollup derivation, and the first recurring
-    pass after a build would reconcile the whole archive a second time for no
-    change. The stamp is written inside the rebuild's own transaction, so it
-    is never a claim about rows that did not commit.
-    """
-    from polylogue.storage.derived.session.usage_rollup import (
-        session_usage_rollup_recipe_version,
-        stamp_session_usage_rollup_binding,
-    )
-
-    if not session_ids:
-        return
-    recipe_version = session_usage_rollup_recipe_version()
-    for session_id, binding in session_input_bindings(conn, tuple(session_ids)).items():
-        stamp_session_usage_rollup_binding(
-            conn,
-            session_id,
-            input_binding=binding,
-            recipe_version=recipe_version,
-        )
-
-
-async def _stamp_refreshed_usage_bindings_async(conn: aiosqlite.Connection, session_ids: Sequence[str]) -> None:
-    """Async sibling of :func:`_stamp_refreshed_usage_bindings`."""
-    from polylogue.storage.derived.session.usage_rollup import session_usage_rollup_recipe_version
-
-    if not session_ids:
-        return
-    recipe_version = session_usage_rollup_recipe_version()
-    bindings = await session_input_bindings_async(conn, tuple(session_ids))
-    for session_id, binding in bindings.items():
-        await conn.execute(
-            """
-            INSERT INTO session_usage_rollup_bindings (session_id, input_binding, recipe_version)
-            VALUES (?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                input_binding  = excluded.input_binding,
-                recipe_version = excluded.recipe_version
-            """,
-            (session_id, binding, recipe_version),
-        )
-
-
 def _count_record_bundles(bundles: Sequence[SessionInsightRecordBundle]) -> int:
     return len(bundles)
 
@@ -1949,7 +1823,23 @@ def rebuild_session_insights_sync(
     progress_total: int | None = None,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "derived",
+    reconcile_usage_rollup: bool = True,
 ) -> SessionInsightCounts:
+    """Rebuild the per-session insight family for a scope, chunk by chunk.
+
+    ``reconcile_usage_rollup`` is the canonical-usage stage, named rather than
+    implied. A bulk index rebuild owns both jobs and runs the reconciliation
+    before the profiles that read it, committing the rollup rows, their
+    binding stamp and the profiles they produced in the same chunk
+    transaction -- the joint publication the architecture allows.
+
+    A caller that is publishing a *profile* passes ``False``: canonical usage
+    belongs to
+    :data:`~polylogue.storage.derived.session.usage_rollup.SESSION_USAGE_ROLLUP_DOMAIN`,
+    which the profile derivation names as a prerequisite key, and a profile
+    publisher that reconciled it would be committing a usage change no caller
+    asked for and no refusal can take back (polylogue-bp12n.1 AC2/AC7).
+    """
     # ``add_timing`` is handed to ``build_session_insight_record_bundles`` as
     # ``stage_timing_add`` and invoked from every per-session compute job
     # (build_session_insight_records fires it ~8x per session). When
@@ -2040,11 +1930,10 @@ def rebuild_session_insights_sync(
         if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:
             chunk_degraded_ids = chunk
             chunk_full_ids = ()
-        t0 = time.perf_counter()
-        for session_id in chunk:
-            _refresh_provider_usage_rollup(conn, session_id)
-        _stamp_refreshed_usage_bindings(conn, chunk)
-        add_timing("refresh_provider_usage_rollup", t0)
+        if reconcile_usage_rollup:
+            t0 = time.perf_counter()
+            reconcile_session_usage_rollups(conn, chunk)
+            add_timing("reconcile_session_usage_rollups", t0)
         if chunk_degraded_ids and not chunk_full_ids:
             t0 = time.perf_counter()
             degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
@@ -2232,7 +2121,9 @@ async def rebuild_session_insights_async(
     transaction_depth: int = 0,
     progress_callback: ProgressCallback | None = None,
     progress_total: int | None = None,
+    reconcile_usage_rollup: bool = True,
 ) -> SessionInsightCounts:
+    """Async twin of :func:`rebuild_session_insights_sync`, same usage stage."""
     from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
         replace_session_latency_profile,
         replace_session_profile,
@@ -2288,9 +2179,8 @@ async def rebuild_session_insights_async(
 
     for chunk_info in session_chunks:
         chunk = chunk_info.session_ids
-        for session_id in chunk:
-            await _refresh_provider_usage_rollup_async(conn, session_id)
-        await _stamp_refreshed_usage_bindings_async(conn, chunk)
+        if reconcile_usage_rollup:
+            await reconcile_session_usage_rollups_async(conn, chunk)
         chunk_degraded_ids = tuple(session_id for session_id in chunk if session_id in heavy_session_ids)
         chunk_full_ids = tuple(session_id for session_id in chunk if session_id not in heavy_session_ids)
         if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:

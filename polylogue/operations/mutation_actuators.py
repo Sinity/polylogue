@@ -2501,6 +2501,12 @@ class InsightsRebuildActuator(_FailClosedRecovery):
                 args.archive._conn,
                 session_ids=None if full_rebuild else session_ids,
                 progress_callback=args.progress_callback,
+                # A declared index rebuild owns canonical usage too: the
+                # rollup is an index-tier input of the profiles this
+                # operation replaces, and the plan's affected tier already
+                # names index. Stated rather than inherited so the one route
+                # that may reconcile usage says so (polylogue-bp12n.1 AC2).
+                reconcile_usage_rollup=True,
             )
         affected_count = counts.total()
         return MutationReceipt(

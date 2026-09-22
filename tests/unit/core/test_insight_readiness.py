@@ -220,7 +220,7 @@ async def test_provider_usage_rollup_is_a_reported_readiness_surface(cli_workspa
     """polylogue-ix65t: the readiness report must inspect the provider rollup.
 
     ``session_model_usage`` is refreshed per session by the insight rebuild
-    (``derived/session/rebuild._refresh_provider_usage_rollup``), but it was
+    (``usage_rollup.reconcile_session_usage_rollup``), but it was
     absent from ``analysis.readiness._SPECS`` and from the status descriptors,
     so the report named every other derived relation and claimed completeness
     while this one was never inspected at all.

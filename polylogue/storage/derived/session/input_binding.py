@@ -164,8 +164,8 @@ SESSION_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "boundary_message_id",
 )
 
-# ``_refresh_provider_usage_rollup`` derives ``session_model_usage`` from this
-# persisted provider evidence immediately before the profile reads that rollup.
+# ``usage_rollup.reconcile_session_usage_rollup`` derives ``session_model_usage``
+# from this persisted provider evidence before the profile reads that rollup.
 # These are its exact input columns: leaving them outside the binding lets a
 # fixed-id usage correction change the profile's dominant model while
 # inspection still reports the old partition VALID.
@@ -217,8 +217,8 @@ SESSION_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
 SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "usage_event_id": "generated from session_id and position, both already bound",
     "session_id": "the partition key: the projection selects on it and orders by it",
-    # Retained provider evidence that ``_refresh_provider_usage_rollup`` does
-    # not read: the rollup derives ``session_model_usage`` from the model and
+    # Retained provider evidence the usage reconciliation does not read: the
+    # rollup derives ``session_model_usage`` from the model and
     # token lanes alone, so none of these can move the profile's output.
     "request_id": "provider correlation id; the usage rollup reads neither it nor any identity lane",
     "source_message_provider_id": "declared attribution evidence; the rollup reads the resolved source_message_id",

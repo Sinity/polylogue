@@ -240,7 +240,7 @@ MISSING_SESSION_PROFILE_COUNT_SQL = """
 MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
 #: polylogue-ix65t: the provider token/cost rollup (``session_model_usage``)
 #: is refreshed per session by the insight rebuild
-#: (``rebuild._refresh_provider_usage_rollup``) but had no readiness surface at
+#: (``usage_rollup.reconcile_session_usage_rollup``) but had no readiness surface at
 #: all, so the report claimed completeness while one derived relation was never
 #: inspected. A rollup row is expected for every (session, model) pair named by
 #: persisted evidence -- a message carrying a model name, or a provider usage
