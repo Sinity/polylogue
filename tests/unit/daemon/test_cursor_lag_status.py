@@ -309,3 +309,71 @@ def test_cursor_lag_summary_sorts_stuck_items_by_lag_desc(tmp_path: Path) -> Non
     summary = cursor_lag_summary_info(db, now=now)
     paths = [item.source_path for item in summary.stuck]
     assert paths == ["/x/big.jsonl", "/x/mid.jsonl", "/x/small.jsonl"]
+
+
+def test_unreadable_cursor_ledger_is_unmeasured(tmp_path: Path) -> None:
+    """A read that raised must not publish "0 stuck, 0 degraded, 0 idle".
+
+    A bare ``CursorLagSummary()`` is byte-identical to the projection a quiet,
+    fully caught-up archive produces, so every downstream surface read the
+    failure as a clean ingest state (polylogue-20d.17 AC3).
+
+    Anti-vacuity: restore ``return CursorLagSummary()`` in the ``sqlite3.Error``
+    handler of ``cursor_lag_summary_info`` and this goes red on ``available``.
+    """
+    db = tmp_path / "index.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("CREATE TABLE live_cursor (source_path TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = cursor_lag_summary_info(db)
+
+    assert summary.available is False
+    assert summary.unavailable_reason is not None
+    assert summary.tracked_file_count == 0
+
+
+def test_measured_empty_cursor_ledger_stays_available(tmp_path: Path) -> None:
+    """A probe that ran and found nothing tracked is a measurement.
+
+    Pins the opposite direction: without this, marking every projection
+    unavailable would pass the test above vacuously.
+    """
+    db = tmp_path / "index.db"
+    _seed_cursor(db, rows=[])
+
+    summary = cursor_lag_summary_info(db)
+
+    assert summary.available is True
+    assert summary.unavailable_reason is None
+    assert summary.tracked_file_count == 0
+
+
+def test_unreadable_ops_ledger_with_no_index_fallback_is_unmeasured(tmp_path: Path) -> None:
+    """When the ops read raises and no index tier exists, nothing was observed.
+
+    Anti-vacuity: make ``_archive_cursor_lag_summary_info``'s error path return
+    ``None, None`` again and the caller falls through to the bare
+    ``CursorLagSummary()`` for a missing index database.
+    """
+    db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    # A real ops tier (so the connection's schema-version guard is satisfied)
+    # whose ingest_cursor relation no longer answers the projection's query.
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    conn = sqlite3.connect(str(ops_db))
+    try:
+        conn.execute("DROP TABLE ingest_cursor")
+        conn.execute("CREATE TABLE ingest_cursor (source_path TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+    assert not db.exists()
+
+    summary = cursor_lag_summary_info(db, ops_db=ops_db)
+
+    assert summary.available is False
+    assert summary.unavailable_reason is not None

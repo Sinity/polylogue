@@ -2592,7 +2592,10 @@ def _quick_check_observation() -> QuickCheckObservation:
 # refreshing, timed out, unavailable or degraded (polylogue-20d.17.4).
 _UNMEASURED_ARCHIVE_STORAGE = ArchiveStorageStatus()
 _UNMEASURED_BLOB_RESERVATIONS = BlobPublicationReservationStatus()
-_UNMEASURED_CURSOR_LAG = CursorLagSummary()
+_UNMEASURED_CURSOR_LAG = CursorLagSummary(
+    available=False,
+    unavailable_reason="cursor lag collection did not complete for this status build",
+)
 _UNMEASURED_RAW_REPLAY_BACKLOG: dict[str, object] = {
     "available": False,
     "reason": "raw replay backlog collection did not complete",
@@ -3090,9 +3093,9 @@ def build_daemon_status(
         ),
     )
     convergence = _convergence_debt_from_snapshot(snapshots["convergence"])
-    # Residual: ``CursorLagSummary`` has no availability marker, so its
-    # model default still renders as "no lag". ``unmeasured=`` at least
-    # stops a previous lag reading being served as a current one.
+    # ``CursorLagSummary`` carries ``available``/``unavailable_reason``, so the
+    # substitute below is distinguishable from a measured quiet archive rather
+    # than rendering as "no lag" (polylogue-20d.17 AC3).
     cursor_lag = _v("cursor_lag", _UNMEASURED_CURSOR_LAG, unmeasured=_UNMEASURED_CURSOR_LAG)
     catchup = catchup_status_info(
         active_db,
@@ -3965,7 +3968,12 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     # Cursor lag summary (#1232) — degraded cursors are outside the lag SLO,
     # but must be surfaced even when no ordinary cursor is stuck.
     cursor_lag = payload.get("cursor_lag")
-    if isinstance(cursor_lag, dict):
+    if isinstance(cursor_lag, dict) and cursor_lag.get("available") is False:
+        # Silence here is the defect: this block only prints when a count is
+        # positive, so an unreadable ledger rendered exactly like a quiet one.
+        reason = cursor_lag.get("unavailable_reason") or "cursor ledger unavailable"
+        lines.append(f"Cursor lag: UNMEASURED — {reason}")
+    elif isinstance(cursor_lag, dict):
         stuck = _safe_int(cursor_lag.get("stuck_file_count"))
         degraded = _safe_int(cursor_lag.get("degraded_file_count"))
         if stuck > 0 or degraded > 0:

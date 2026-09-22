@@ -184,14 +184,6 @@
       "count": 2
     },
     {
-      "file": "polylogue/daemon/cursor_lag_status.py",
-      "digest": "4df29c135746dfc7b35274b1a3319a920b8066b2"
-    },
-    {
-      "file": "polylogue/daemon/cursor_lag_status.py",
-      "digest": "a5997525b1452ab49d0f8121558ae5ae06320dd4"
-    },
-    {
       "file": "polylogue/daemon/embedding_readiness.py",
       "digest": "97dca3c36b4e51d02642c28cb842629ef5e9a1de"
     },

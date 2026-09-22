@@ -341,3 +341,43 @@ def test_load_thresholds_defaults_when_no_config_section(tmp_path: Path, monkeyp
     assert thresholds.default_critical_s == DEFAULT_CRITICAL_S
     assert thresholds.dedup_window_s == DEFAULT_DEDUP_WINDOW_S
     assert thresholds.families == {}
+
+
+def test_unreadable_ledger_cannot_clear_a_standing_alert() -> None:
+    """An unreadable ledger must not fire "cursor lag cleared".
+
+    The ordinary path derives its family set from the projection. An
+    unavailable projection has no families, so every family with a pending
+    non-ok emission received an OK resolution alert -- a recovery asserted
+    from a read that never happened -- and the health collector's
+    ``is_ok = not any(severity != OK)`` then reported cursor_lag healthy for a
+    database it could not open (polylogue-20d.17 AC9).
+
+    Anti-vacuity: delete the ``if not summary.available`` branch in
+    ``evaluate_cursor_lag``; the resolution alert reappears and the
+    unavailable alert disappears.
+    """
+    state = CursorLagDedupState(last_emit_at={"claude-code-session": (HealthSeverity.CRITICAL.value, 0.0)})
+    summary = CursorLagSummary(available=False, unavailable_reason="cursor ledger unreadable: DatabaseError: x")
+
+    alerts = evaluate_cursor_lag(summary, thresholds=CursorLagThresholds(), state=state, now=10_000.0)
+
+    assert [a.severity for a in alerts] == [HealthSeverity.WARNING]
+    assert "not measured" in alerts[0].message
+    assert HealthSeverity.OK not in {a.severity for a in alerts}
+    # The real resolution must still be able to fire once the ledger is readable.
+    assert state.last_emit_at["claude-code-session"] == (HealthSeverity.CRITICAL.value, 0.0)
+
+
+def test_a_readable_recovered_ledger_still_clears_its_alert() -> None:
+    """A genuine recovery still resolves. Pins the opposite direction.
+
+    Without this, refusing to emit OK unconditionally would pass the test
+    above while permanently suppressing every real resolution.
+    """
+    state = CursorLagDedupState(last_emit_at={"claude-code-session": (HealthSeverity.CRITICAL.value, 0.0)})
+    summary = _summary([_family(stuck=0, idle=3, max_lag_s=0.0)])
+
+    alerts = evaluate_cursor_lag(summary, thresholds=CursorLagThresholds(), state=state, now=10_000.0)
+
+    assert [a.severity for a in alerts] == [HealthSeverity.OK]
