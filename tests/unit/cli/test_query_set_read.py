@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
+import click
 from click.testing import CliRunner
 
 from polylogue.archive.models import Session
@@ -16,6 +17,7 @@ from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli import query_set_read, query_verbs
 from polylogue.cli.click_app import cli
 from polylogue.cli.read_view_handlers import ReadViewInvocation
+from polylogue.cli.read_views.base import ReadViewMessageOptions
 from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -697,3 +699,189 @@ def test_authored_content_query_set_read_passes_selection_filters_to_query_spec(
     assert spec.typed_only is True
     exported = json.loads(output)
     assert exported["id"] == "authored"
+
+
+def _two_sessions() -> list[Session]:
+    return [
+        make_conv(id="a", title="Alpha", messages=[make_msg(text="hello")]),
+        make_conv(id="b", title="Beta", messages=[make_msg(text="world")]),
+    ]
+
+
+def test_query_set_native_view_dispatches_once_for_the_set() -> None:
+    """``temporal``/``chronicle`` accept a query set, so they run once over it.
+
+    Anti-vacuity: routing them back through ``_run_registered_view_query_set``
+    calls the handler once per selected session with the request narrowed to a
+    single ``conv_id``, which makes ``len(calls) == 2`` and gives each call a
+    concrete ``session_id``.
+    """
+    calls: list[ReadViewInvocation] = []
+
+    def _capture(env: object, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+        calls.append(invocation)
+
+    for view in ("temporal", "chronicle"):
+        calls.clear()
+        with patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_capture):
+            run_query_set_read_view(
+                _stub_env(_two_sessions()),
+                _request(query="repo:polylogue"),
+                view=view,
+                output_format="json",
+                fields=None,
+                destination="stdout",
+                out_path=None,
+            )
+        assert len(calls) == 1, f"{view} fanned out into {len(calls)} per-session invocations"
+        assert calls[0].view == view
+        assert calls[0].session_id is None
+
+
+def test_per_session_view_still_dispatches_once_per_session() -> None:
+    """A view that does not accept a query set keeps its per-session fan-out."""
+    calls: list[ReadViewInvocation] = []
+
+    def _capture(env: object, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+        calls.append(invocation)
+
+    with (
+        patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_capture),
+        patch("polylogue.cli.read_views.base.deliver_content"),
+    ):
+        run_query_set_read_view(
+            _stub_env(_two_sessions()),
+            _request(query="repo:polylogue"),
+            view="messages",
+            output_format="json",
+            fields=None,
+            destination="stdout",
+            out_path=None,
+        )
+
+    assert [invocation.session_id for invocation in calls] == ["a", "b"]
+
+
+def test_query_set_read_forwards_the_full_message_option() -> None:
+    """``read --all --view messages --full`` must reach the handler as ``full``.
+
+    Anti-vacuity: building options from the projection alone leaves
+    ``ReadViewMessageOptions.full`` false, so ``run_read_messages`` applies its
+    page fallback and truncates every selected session.
+    """
+    calls: list[ReadViewInvocation] = []
+
+    def _capture(env: object, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+        calls.append(invocation)
+
+    with (
+        patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_capture),
+        patch("polylogue.cli.read_views.base.deliver_content"),
+    ):
+        run_query_set_read_view(
+            _stub_env(_two_sessions()),
+            _request(query="repo:polylogue"),
+            view="messages",
+            output_format="json",
+            fields=None,
+            destination="stdout",
+            out_path=None,
+            option_values={"full": True, "limit": None, "offset": 0},
+        )
+
+    assert calls
+    for invocation in calls:
+        assert cast(ReadViewMessageOptions, invocation.options).full is True
+
+
+def test_query_set_read_without_full_keeps_the_bounded_window() -> None:
+    """The opposite direction: no ``--full`` must not become an unbounded read."""
+    calls: list[ReadViewInvocation] = []
+
+    def _capture(env: object, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+        calls.append(invocation)
+
+    with (
+        patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_capture),
+        patch("polylogue.cli.read_views.base.deliver_content"),
+    ):
+        run_query_set_read_view(
+            _stub_env(_two_sessions()),
+            _request(query="repo:polylogue"),
+            view="messages",
+            output_format="json",
+            fields=None,
+            destination="stdout",
+            out_path=None,
+            option_values={"full": False, "limit": None, "offset": 0},
+        )
+
+    assert calls
+    for invocation in calls:
+        assert cast(ReadViewMessageOptions, invocation.options).full is False
+
+
+def test_query_set_ndjson_read_keeps_per_line_framing() -> None:
+    """``read --all --view messages --format ndjson`` stays line-framed.
+
+    Anti-vacuity: collapsing ndjson into ``json`` makes the delivered body a
+    pretty-printed JSON array, so it starts with ``[`` and ``json.loads`` of
+    the first line fails.
+    """
+    delivered: dict[str, object] = {}
+
+    def _deliver(env: object, content: str, **kwargs: object) -> None:
+        delivered["content"] = content
+        delivered["output_format"] = kwargs.get("output_format")
+
+    def _emit(env: object, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+        assert invocation.output_format == "ndjson"
+        click.echo(json.dumps({"session_id": invocation.session_id, "message_id": "m1"}))
+
+    with (
+        patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_emit),
+        patch("polylogue.cli.read_views.base.deliver_content", side_effect=_deliver),
+    ):
+        run_query_set_read_view(
+            _stub_env(_two_sessions()),
+            _request(query="repo:polylogue"),
+            view="messages",
+            output_format="ndjson",
+            fields=None,
+            destination="stdout",
+            out_path=None,
+        )
+
+    body = cast(str, delivered["content"])
+    assert delivered["output_format"] == "ndjson"
+    assert not body.lstrip().startswith("[")
+    lines = [line for line in body.splitlines() if line]
+    assert [json.loads(line)["session_id"] for line in lines] == ["a", "b"]
+
+
+def test_query_set_json_read_still_emits_one_array() -> None:
+    """The opposite direction: ``--format json`` keeps the aggregated array."""
+    delivered: dict[str, object] = {}
+
+    def _deliver(env: object, content: str, **kwargs: object) -> None:
+        delivered["content"] = content
+
+    def _emit(env: object, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
+        click.echo(json.dumps({"session_id": invocation.session_id}))
+
+    with (
+        patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_emit),
+        patch("polylogue.cli.read_views.base.deliver_content", side_effect=_deliver),
+    ):
+        run_query_set_read_view(
+            _stub_env(_two_sessions()),
+            _request(query="repo:polylogue"),
+            view="messages",
+            output_format="json",
+            fields=None,
+            destination="stdout",
+            out_path=None,
+        )
+
+    payload = json.loads(cast(str, delivered["content"]))
+    assert [item["session_id"] for item in payload] == ["a", "b"]

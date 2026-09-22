@@ -1474,6 +1474,30 @@ def read_verb(
             destination=destination,
             out_path=out_path,
             projection_spec=projection_spec,
+            # A query-set read reuses each view's registered handler, so the
+            # view-specific Click values must reach it. Building options from
+            # the projection alone dropped `--full`, `--continuation` and
+            # `--around` for every `read --all` invocation.
+            option_values=_read_view_option_values(
+                limit=limit,
+                offset=offset,
+                at_position=at_position,
+                full=full,
+                related_limit=related_limit,
+                max_sessions=max_sessions,
+                no_redact=no_redact,
+                window_hours=window_hours,
+                repo_path=repo_path,
+                since_hours=since_hours,
+                confidence_threshold=confidence_threshold,
+                github_api=github_api,
+                node_offset=node_offset,
+                node_limit=node_limit,
+                edge_offset=edge_offset,
+                edge_limit=edge_limit,
+                continuation=continuation,
+                around=around,
+            ),
         )
         return
 
