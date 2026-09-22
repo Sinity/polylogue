@@ -23,6 +23,7 @@ from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.daemon.convergence_standing_queries import make_standing_query_stage
 from polylogue.logging import INFO, WARNING, emit, span
+from polylogue.operations.lineage_prefix_recompose import make_lineage_prefix_recompose_stage
 from polylogue.operations.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWork,
     find_raw_authority_verdict_cache_work,
@@ -527,6 +528,11 @@ def make_default_convergence_stages(
             _make_attachment_bytes_stage(db_path, archive_root=archive_root()),
             make_claude_workflow_stage(db_path),
             make_delegation_work_evidence_stage(db_path),
+            # The owner of the lineage-prefix losses ``archive_tiers/write.py``
+            # records as convergence debt. Without it registered here the drain
+            # skips every such row as an unimplemented stage and the backlog
+            # never clears (polylogue-ia88n).
+            make_lineage_prefix_recompose_stage(db_path),
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.
@@ -715,6 +721,7 @@ __all__ = [
     "make_claude_workflow_stage",
     "make_delegation_work_evidence_stage",
     "make_default_convergence_stages",
+    "make_lineage_prefix_recompose_stage",
     "make_raw_authority_verdict_cache_stage",
     "make_sinex_publication_stage",
     "make_standing_query_stage",

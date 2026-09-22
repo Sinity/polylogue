@@ -18,6 +18,7 @@ from polylogue.daemon.convergence_stages import (
 from polylogue.storage.derived.session import storage as session_storage
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.write import IDENTITY_INVALIDATION_DEBT_STAGE
 
 
 class _SessionIdOnly:
@@ -39,6 +40,25 @@ def test_session_storage_dedupes_records_by_session_id() -> None:
         ("codex-session:one", "second"),
         ("codex-session:two", "third"),
     ]
+
+
+def test_lineage_prefix_recompose_stage_is_registered(tmp_path: Path) -> None:
+    """The stage the writer records debt under is registered, and it can act.
+
+    A ``ConvergenceStage`` with no ``check_sessions``/``execute_sessions`` pair
+    is SKIPPED for every session subject, and a skipped stage counts as
+    converged -- so registering an inert stage under this name would clear the
+    backlog by declaring success instead of draining it.
+
+    Anti-vacuity: drop the registration and the membership assertion goes red;
+    register a stage without the session pair and the callable assertions do.
+    """
+    stages_by_name = {stage.name: stage for stage in make_default_convergence_stages(tmp_path / "index.db")}
+
+    stage = stages_by_name[IDENTITY_INVALIDATION_DEBT_STAGE]
+    assert callable(stage.check_sessions)
+    assert callable(stage.execute_sessions)
+    assert stage.whole_archive is False
 
 
 def test_default_convergence_stages_leave_derived_domains_to_typed_owners(tmp_path: Path) -> None:

@@ -406,10 +406,11 @@ def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
 ) -> None:
     """A stage with no registered implementation leaves its debt row untouched.
 
-    ``lineage_prefix_recompose`` debt names the identity contradiction that
-    truncated a child's lineage. No convergence stage implements it, so the
-    drain measures nothing about the row; re-recording it would overwrite that
-    diagnostic with a note about the missing stage (polylogue-ia88n).
+    The drain measures nothing about a row whose stage nothing can run, so
+    re-recording it would overwrite the producer's diagnostic with a note about
+    the missing stage (polylogue-ia88n). The stage name below is now registered
+    in the real default set -- this test patches the set to an unrelated stage,
+    because the invariant is about ANY unimplemented stage, not about that one.
 
     Anti-vacuity: restoring the ``convergence retry stage unavailable: ...``
     re-record replaces ``last_error`` on the first drain pass and this
