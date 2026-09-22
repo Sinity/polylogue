@@ -141,14 +141,29 @@ def test_text_manifest_does_not_copy_raw_content(tmp_path: Path) -> None:
 class _StubResponse:
     """Minimal stand-in for the object ``_open_url`` returns; never touches a socket."""
 
-    def __init__(self, *, status: int = 200, body: bytes = b"", location: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        status: int = 200,
+        body: bytes = b"",
+        location: str | None = None,
+        content_length: str | None = None,
+    ) -> None:
         self.status = status
         self._body = body
         self._done = False
+
+        def _header(key: str, default: object = None) -> object:
+            if key.lower() == "location":
+                return location
+            if key.lower() == "content-length":
+                return content_length if content_length is not None else default
+            return default
+
         self.headers = SimpleNamespace(
             get_content_type=lambda: "text/markdown",
             get_content_charset=lambda: "utf-8",
-            get=lambda key, default=None: location if key.lower() == "location" else default,
+            get=_header,
         )
 
     def __enter__(self) -> _StubResponse:
@@ -372,3 +387,60 @@ def test_material_boundaries_validate_link_targets_and_acquisition_limits(tmp_pa
             observed_at_ms=1,
             max_bytes=0,
         )
+
+
+def test_short_body_against_a_declared_length_is_partial(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A server that advertises a length and closes early yields partial evidence.
+
+    ``HTTPResponse.read`` returns the prefix and then ``b""`` with no exception,
+    so the acquisition loop saw an ordinary EOF and persisted the truncated
+    bytes as ``acquired`` -- authoritative retained evidence for bytes that were
+    never sent.
+
+    Anti-vacuity: reverting the declared-length branch in ``acquire_material``
+    makes the first assertion read ``acquired``. The undeclared-length case
+    below pins the other direction, so classifying every response as partial
+    cannot pass.
+    """
+    _public_resolver(monkeypatch)
+    monkeypatch.setattr(
+        "polylogue.storage.materials._open_url",
+        lambda url, address, timeout: _StubResponse(body=b"# short", content_length="1000"),
+    )
+    conn = _source_db()
+    truncated = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="https://example.test/truncated.md",
+        referrer_ref="message:codex:1",
+        observed_at_ms=10,
+    )
+    assert truncated.acquisition_state == "partial"
+    assert truncated.retryable is True
+    assert "declared 1000 bytes" in truncated.diagnostic
+
+    monkeypatch.setattr(
+        "polylogue.storage.materials._open_url",
+        lambda url, address, timeout: _StubResponse(body=b"# whole", content_length="7"),
+    )
+    complete = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="https://example.test/whole.md",
+        referrer_ref="message:codex:1",
+        observed_at_ms=11,
+    )
+    assert complete.acquisition_state == "acquired"
+
+    monkeypatch.setattr(
+        "polylogue.storage.materials._open_url",
+        lambda url, address, timeout: _StubResponse(body=b"# undeclared"),
+    )
+    undeclared = acquire_material(
+        conn,
+        blob_store=BlobStore(tmp_path / "blobs"),
+        source_uri="https://example.test/undeclared.md",
+        referrer_ref="message:codex:1",
+        observed_at_ms=12,
+    )
+    assert undeclared.acquisition_state == "acquired"
