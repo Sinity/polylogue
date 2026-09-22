@@ -1,6 +1,6 @@
 {
   "provider": "antigravity",
-  "generated_at": "2026-09-21T14:48:02.957880+00:00",
+  "generated_at": "2026-09-22T03:02:34.706612+00:00",
   "latest_version": "v3",
   "default_version": "v3",
   "recommended_version": "v3",
@@ -105,7 +105,7 @@
       "anchor_kind": "agent_sidecar_meta",
       "default_element_kind": "agent_sidecar_meta",
       "first_seen": "2026-09-15T20:29:36.137264+00:00",
-      "last_seen": "2026-09-21T14:48:02.957827+00:00",
+      "last_seen": "2026-09-22T03:02:34.706557+00:00",
       "bundle_scope_count": 116,
       "sample_count": 116,
       "anchor_profile_family_id": "2db1d15ae65846284666edc0c8721dd6cb1b985fe7e7b3374281305e75055d1d",
@@ -119,7 +119,7 @@
           "artifact_count": 116,
           "supported": true,
           "first_seen": "2026-09-15T20:29:36.137264+00:00",
-          "last_seen": "2026-09-21T14:48:02.957827+00:00",
+          "last_seen": "2026-09-22T03:02:34.706557+00:00",
           "bundle_scope_count": 116,
           "bundle_scope_identities": [],
           "exact_structure_ids": [
@@ -177,17 +177,17 @@
       },
       "structure_fingerprint": "c1262f3659e657952425c837cf9bec53074bad4cdd5690dfc09cff4b009a7ef5",
       "statistics_fingerprint": "94ca41796d433a22ac78ffb9b1731a1c8421e02e14a7f2801627efcfd4694fe6",
-      "implementation_fingerprint": "a4705c9202e4a2afd4c23105d1da1e1ed6c8388d5c8f5544afebb2df14d37d63"
+      "implementation_fingerprint": "52b25438f9a0027600d94b72424f981e9c01140a248f393f9dbcc93ecbd7365e"
     },
-    "source_cache_phase_hits": {
+    "source_cache_phase_hits": {},
+    "source_cache_phase_misses": {
       "statistics": 116,
       "structure": 116
     },
-    "source_cache_phase_misses": {},
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 232,
-    "source_cache_misses": 0,
+    "source_cache_hits": 0,
+    "source_cache_misses": 232,
     "source_terminal_outcomes": {
       "included": 116,
       "intentionally_excluded": 121,
@@ -209,19 +209,19 @@
       "source_class_unsupported": 1
     },
     "source_phase_timings_ms": {
-      "collect": 183.785,
-      "fold": 101.663,
-      "hash": 34.463,
-      "inventory": 16.994,
-      "preliminary": 6.897,
-      "revision_selection": 0.484,
-      "statistics": 40.037
+      "collect": 19325.376,
+      "fold": 125.016,
+      "hash": 54.646,
+      "inventory": 18.594,
+      "preliminary": 11759.126,
+      "revision_selection": 0.696,
+      "statistics": 7385.466
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 116,
     "producer_version_conflicting_sources": 0,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "de3b447d22e2014f7e65301adc39617ee8ee22b038ee7cb25594a1aa6ef4b4a0",
+    "source_input_manifest_digest": "cd3d2711e436c1e4e1a1d57558d608241df196ac1b66ed09cb59c4bc962f58d7",
     "source_candidate_count": 291,
     "source_included_candidate_count": 116,
     "source_included_native_source_revision_count": 116

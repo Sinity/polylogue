@@ -57,7 +57,7 @@
   ],
   "input_manifests": [
     {
-      "digest": "de3b447d22e2014f7e65301adc39617ee8ee22b038ee7cb25594a1aa6ef4b4a0",
+      "digest": "cd3d2711e436c1e4e1a1d57558d608241df196ac1b66ed09cb59c4bc962f58d7",
       "provider": "antigravity",
       "unavailable_reason": null
     },
@@ -72,7 +72,7 @@
       "unavailable_reason": null
     },
     {
-      "digest": "834fa2da59cafcb21c0dfbd26b796c1131880a9f46cbc8e9491beb07ffa4fefc",
+      "digest": "10eba765e619c20bbf825acbe5c425a42993a69af41f2a7f9d6b7bc7d3380446",
       "provider": "claude-code",
       "unavailable_reason": null
     },
@@ -82,22 +82,22 @@
       "unavailable_reason": null
     },
     {
-      "digest": "f484b89798f7fe55332d38f61d923f3c5b522d534a1a630057c2e3bfcb839366",
+      "digest": "b926d6ceb4031787344cffc1328844ee9995dd3e06b7e7d17a2e74abe843763d",
       "provider": "codex",
       "unavailable_reason": null
     },
     {
-      "digest": "fc3a47d2dcab625abcc8aa7f947e77548e024727964f77ed96f321760cd6cdd6",
+      "digest": "666504342e97832bbaabc388ac378d168b6658eaca40b4ea79a0f98b020824c1",
       "provider": "gemini",
       "unavailable_reason": null
     },
     {
-      "digest": "9580b8a1143e000400ae3aa72f18b6021de9b1a9debf0e14699a690821b19dd2",
+      "digest": "6799c0138fce82eb0e0546fb84950856ac07b1cfc1ea5034756bf5d170179e9c",
       "provider": "gemini-cli",
       "unavailable_reason": null
     },
     {
-      "digest": "74e813232e50cef3d71291cc60d919f00dad53197279d15b99dfe475f5ca2626",
+      "digest": "6d382125fe42cf0465b8472585fa2792f9cc56e1d47aa1f91404877a16db1b1d",
       "provider": "hermes",
       "unavailable_reason": null
     }
@@ -134,10 +134,10 @@
           "element_kind": "agent_sidecar_meta"
         }
       ],
-      "package_hash": "856d108bc91ea99ed188132bf2bd4d7ace38bac842c8653e53b4e3077894634a",
+      "package_hash": "8df8d922be6a39167471d9e3666ecde20123ec8497a894891cf9a61bb5fd87df",
       "package_version": "v3",
       "provider": "antigravity",
-      "version_hash": "37db36812e1148e7081e59470b29f1a1b02e30cc2f4206672bd53e7d58f92cd9"
+      "version_hash": "02cbc2273a2fd1bfd9fbbd333e9954872b16e3dfc9420ca3d688fbcd72471a30"
     },
     {
       "element_hashes": [
@@ -178,7 +178,7 @@
     {
       "element_hashes": [
         {
-          "content_hash": "4f85884fc27e221f4a74d6ee066220b6d19beb9d73755cf05170317ddda40003",
+          "content_hash": "085e430d921e2a6bdabd42d59a271703cbfcc6e6eb2b3987318009ac7c5350ae",
           "element_kind": "export_asset"
         },
         {
@@ -186,14 +186,14 @@
           "element_kind": "export_asset_index"
         },
         {
-          "content_hash": "99ccfa7cc38ca37dfc9930316140810fdcebb6e33abae3ddb2f688734e94c8f1",
+          "content_hash": "4d87a4830b6cfc1394b11aebbd7e02afee360375c403e01541fe6725eafdb731",
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "aa86f835fe696362ed49140fc6e0a54c3ce6b13ea325008a29a93e4b1769ab6b",
+      "package_hash": "ecc82bbb938354504668097a0e2a24c381415d67a87e3ff651b13fa55331087c",
       "package_version": "v4",
       "provider": "chatgpt",
-      "version_hash": "5f87a87ddc0098c4fcff0c2646b7d69d58fcc36234cbf00f90201eb38d6816ca"
+      "version_hash": "4acde2427cab789abd0ff4d92afd9d3083a4715566bd8f7f835eb714337aa28c"
     },
     {
       "element_hashes": [
@@ -238,10 +238,10 @@
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "a781b23d7ece103fed5d03bd99bde245a74306dd3bbbc8bfb791d2c308e1d3df",
+      "package_hash": "fcf7657d09971f697c6fd0a122e8e05106e07ed1f565211a18faa5154c90e7d0",
       "package_version": "v4",
       "provider": "claude-ai",
-      "version_hash": "4aa72686ff9b3210b342f10b0d6ab9d56c953a593ac281541a973f539c3be696"
+      "version_hash": "c81a0a39690c9deba0eebbf72a7160e5fc781dc00fa761a38ba952e81d168667"
     },
     {
       "element_hashes": [
@@ -342,10 +342,46 @@
           "element_kind": "workflow_run_snapshot"
         }
       ],
-      "package_hash": "791ae7fce1978541dc5bb4e6a77efcb58b9bd2168dbb31bc56718950b9bc7e68",
+      "package_hash": "bb5b4526268e0c7720f9a0285bd12e2bb26e5bd7063df3fa93547c71d68f2a94",
       "package_version": "v4",
       "provider": "claude-code",
-      "version_hash": "fb90ee18173e4e53814b61d0453131c3207c18a39f2a2317fce5c8fc284fbe8d"
+      "version_hash": "f867fa1a1df8875199bce8dd372a0a5b32fb4ef2b13ed3d9bb533cd120b84502"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "7135a6ec129d022b7adc82746b00cb387e287b6d7ba226966568aff0679d3265",
+          "element_kind": "agent_sidecar_meta"
+        },
+        {
+          "content_hash": "c95a1285474ff9f7095deaf71b0a57607e8129f4ce187adb77fe7583002adb35",
+          "element_kind": "agent_transcript"
+        },
+        {
+          "content_hash": "8601d964c2c94ebf963cf1c2e3f9d38b0134585a2cf2536cc16f3f3ae3b55d4e",
+          "element_kind": "coordinator_session_stream"
+        },
+        {
+          "content_hash": "c6a2de1f77789ed5f4549cd7603653942cd7becbc6102885104a49db5d1f4a1f",
+          "element_kind": "session_index"
+        },
+        {
+          "content_hash": "bb4645ae7d14f1fbf3ba273864273b7fe7a6a939a5671c8346c81726260ffb0b",
+          "element_kind": "session_record_stream"
+        },
+        {
+          "content_hash": "63f8e47a1da055cb2baabd9be3e848ec098f1730678d5ee6e16593aa03328982",
+          "element_kind": "workflow_journal"
+        },
+        {
+          "content_hash": "7f8fe08a104fb7da92ba4ff6ab1b85c10a4c957cb44b9746e57b9efdb1fbc0c6",
+          "element_kind": "workflow_run_snapshot"
+        }
+      ],
+      "package_hash": "5ee5ed4fd465f084d350309aa9e10f15c38ae52ed67076a35a32d422c6d6fd06",
+      "package_version": "v5",
+      "provider": "claude-code",
+      "version_hash": "cab0ed7480bd618587d1f0d2cb95b9b88cc846e109a0ca9072d68f579446683c"
     },
     {
       "element_hashes": [
@@ -390,10 +426,10 @@
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "9766b15b2e5f19483bb03dd9e87db7e9d5966822466e580b2b24e030ca8a6c89",
+      "package_hash": "a167a80990b92a1a7f75bd73a0419b3ea6d146d49b336761141f3c377dec0242",
       "package_version": "v4",
       "provider": "claude-design",
-      "version_hash": "ae9aefff96de7d2008b3d0a2bcb89d40b2abf4e3060b3cb375f6a68cf6546baf"
+      "version_hash": "857d0e20a27fcf19a60252284ddfe2e9fa5d2c8654562fe9222154a01dcf80cd"
     },
     {
       "element_hashes": [
@@ -450,10 +486,10 @@
           "element_kind": "session_record_stream"
         }
       ],
-      "package_hash": "572f691d8920b89e146af09a5c240df28c07cd63ef41e1f18c48e133b7cd181f",
+      "package_hash": "274f6da3fa9ede2eeda744e7d58aac9497eb4ac606ae5dd1c4d076815868f0f1",
       "package_version": "v5",
       "provider": "codex",
-      "version_hash": "c81dab40c6893978bed7e39dbba56dd3ae90f8205bfd9a940f8ae424a6e9a595"
+      "version_hash": "149e5e314d759d2f9a69ef346ee7dcb27abe0f491a0b825ec5730d5c310d5b67"
     },
     {
       "element_hashes": [
@@ -486,10 +522,10 @@
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "d6ef93e4f82ced2bd281fe0536588444a6ac61846340f75f01a5925c3cb8ebab",
+      "package_hash": "443caf1244883b358bd82f588102f00c07bd4ad4cbef61ff3ff6e3679978a69d",
       "package_version": "v3",
       "provider": "gemini",
-      "version_hash": "2cd31ebb1c001a98504b505f90744205aa0003f59291ec9b656389c41adbb4f6"
+      "version_hash": "d3c2278ae056b6a7df75befb9857bf1d1ecdba6277ca2c37d0a2a173b1bf7127"
     },
     {
       "element_hashes": [
@@ -530,10 +566,10 @@
           "element_kind": "session_record_stream"
         }
       ],
-      "package_hash": "6470f7180f4e7b069d5c54d44d2debd6e76643f762408459e7c841702ab156ec",
+      "package_hash": "e0e46aef479c54f451d369a12169fd1e189df420d5433ad4d5970b45163c7bda",
       "package_version": "v3",
       "provider": "gemini-cli",
-      "version_hash": "a6d2eb1079bdf04f8136f2417310c34ddfa99433157191ba92bfd6f74cc16f67"
+      "version_hash": "af937a99770d6aa6249c8e1c50a8136ffcb3980616bbaf4aedbeb6644b0dfc7d"
     },
     {
       "element_hashes": [
@@ -570,13 +606,13 @@
           "element_kind": "session_document"
         }
       ],
-      "package_hash": "49ca11a4817c51ff316add33d0c3ffb84f01da423dfb4e784aaa80501d37bfd7",
+      "package_hash": "bd30617e1e4045a2f7aad7cbdac3d1fb171a9dc0facd4e460b4771e1f1cf62c2",
       "package_version": "v3",
       "provider": "hermes",
-      "version_hash": "31d30c2524b37e70e8afeec233af58694e27f61059106ea11fb9f19fe68a3e22"
+      "version_hash": "f6598e12e8e82cb212d30f049167f524141fdfd9f571d600ef6cd691d009f4bd"
     }
   ],
-  "receipt_digest": "a0aa88e83ae6dfdca506201b4b28dbdb78616e4a1301a354616ea19ef63f9584",
+  "receipt_digest": "8f28e2be78cd2f173bf2e80f6ebef0370bb069902722661bc8ad16d43b977a6a",
   "schema": "polylogue.schema-inference-handoff.v1",
   "unsupported_decisions": [
     {
@@ -1024,6 +1060,105 @@
       ],
       "element_kind": "workflow_run_snapshot",
       "package_version": "v4",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "agent_sidecar_meta",
+      "package_version": "v5",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "agent_transcript",
+      "package_version": "v5",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "coordinator_session_stream",
+      "package_version": "v5",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "session_index",
+      "package_version": "v5",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "session_record_stream",
+      "package_version": "v5",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-semantic-role",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "workflow_journal",
+      "package_version": "v5",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-publication-omitted-structure-witness-count",
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
+      ],
+      "element_kind": "workflow_run_snapshot",
+      "package_version": "v5",
       "provider": "claude-code",
       "reason": "unsupported_json_schema_construct"
     },
