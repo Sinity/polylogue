@@ -594,6 +594,22 @@ def write_wanted_source_receipt(
     return receipt
 
 
+def wanted_source_receipt_is_published(archive_root: Path) -> bool:
+    """Whether a frozen wanted-source receipt file exists for this archive root.
+
+    Existence, deliberately not validity. ``load_wanted_source_receipt``
+    reports "there is no receipt" and "the receipt is tampered" through the
+    same :class:`WantedSourceReceiptError`, so a build driver that must decide
+    *whether the frozen denominator applies at all* cannot ask it. Separating
+    the two questions is what lets the cold build refuse a published-but-
+    invalid receipt while still bootstrapping a root that has none.
+    """
+    with existing_maintenance_receipt_directory(Path(archive_root), WANTED_SOURCE_RECEIPT_DIRNAME) as directory_fd:
+        if directory_fd is None:
+            return False
+        return read_optional_receipt(directory_fd, WANTED_SOURCE_RECEIPT_FILENAME) is not None
+
+
 def _read_wanted_source_receipt(archive_root: Path) -> WantedSourceReceipt:
     with existing_maintenance_receipt_directory(Path(archive_root), WANTED_SOURCE_RECEIPT_DIRNAME) as directory_fd:
         if directory_fd is None:

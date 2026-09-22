@@ -35,6 +35,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from polylogue.logging import ERROR, emit
 from polylogue.maintenance.candidate_capacity import (
@@ -49,6 +50,7 @@ from polylogue.storage.index_generation import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 __all__ = [
+    "WANTED_SOURCE_FREEZE_COMMAND",
     "ColdBuildGeneration",
     "active_cold_build_generation",
     "active_index_generation_is_empty",
@@ -57,9 +59,99 @@ __all__ = [
 ]
 
 
+#: The only route that publishes a frozen wanted-source receipt.
+WANTED_SOURCE_FREEZE_COMMAND: Final = "polylogue ops maintenance wanted-sources --freeze"
+
+
 def _cold_build_owner_id() -> str:
     """One owner per daemon process: ownership is what promotion checks."""
     return f"cold-build:{os.getpid()}"
+
+
+def _require_frozen_wanted_sources(archive_root: Path, *, reason: str, operation_id: str) -> None:
+    """Refuse a cold build that no complete, valid wanted-source receipt authorizes.
+
+    The rebuild's conservation proof needs a denominator fixed *before* the
+    build (polylogue-co2iz). ``require_rebuild_preflight`` has owned that
+    check since #5304, but its only caller was the operator CLI, so the build
+    driver -- the thing whose behaviour the denominator constrains -- started
+    without ever consulting it.
+
+    Like the capacity preflight three lines below, this is not conditioned on
+    the operator having asked for a cold build: the auto-engaged build on an
+    empty active generation is precisely the unattended whole-archive case
+    that must not run unauthorized. It *is* conditioned on a denominator
+    existing at all, and that is a different question from operator intent:
+
+    * the receipt enumerates ``config.source_declarations``, i.e. explicitly
+      configured standalone roots only (discovery roots are ambient provider
+      state the campaign policy excludes by design);
+    * with no declared root, ``build_wanted_source_receipt`` itself refuses
+      ("no source is declared: the rebuild denominator would be empty"), so a
+      receipt requirement there is unsatisfiable, not strict -- it would make
+      every live-capture-only archive permanently unbuildable;
+    * once a receipt *is* published, it is validated unconditionally, even if
+      the roots were later undeclared. A frozen denominator that the current
+      configuration no longer matches is a refusal, never a silent downgrade.
+
+    The refusal is typed (``WantedSourceReceiptError``) and names both the
+    defect and the single command that produces a receipt. There is no branch
+    here that falls back to walking source roots fresh.
+    """
+    from polylogue.config import configured_source_declarations, resolve_runtime_config
+    from polylogue.maintenance.source_manifest_continuity import (
+        WantedSourceReceiptError,
+        campaign_default_wanted_source_policy,
+        require_rebuild_preflight,
+        wanted_source_receipt_is_published,
+    )
+
+    declarations = configured_source_declarations(resolve_runtime_config())
+    if not declarations and not wanted_source_receipt_is_published(archive_root):
+        emit(
+            "daemon.cold_build.wanted_sources_undeclared",
+            outcome="ok",
+            reason=reason,
+            operation_id=operation_id,
+            sources=0,
+        )
+        return
+    try:
+        preflight = require_rebuild_preflight(
+            archive_root,
+            policy=campaign_default_wanted_source_policy(),
+            declarations=declarations,
+        )
+    except WantedSourceReceiptError as refusal:
+        # Same reporting constraint as the capacity refusal below: the digests
+        # and counts have no registered logging field, and a refused build
+        # writes no receipt, so ``error_detail`` is the whole record.
+        detail = (
+            f"cold build refused: {refusal}. {len(declarations)} declared source root(s) form the "
+            f"rebuild denominator and no complete, valid frozen receipt authorizes this build; "
+            f"produce one with `{WANTED_SOURCE_FREEZE_COMMAND}`."
+        )
+        emit(
+            "daemon.cold_build.wanted_sources_refused",
+            level=ERROR,
+            outcome="error",
+            reason=reason,
+            operation_id=operation_id,
+            error_type=type(refusal).__name__,
+            error_detail=detail,
+            sources=len(declarations),
+        )
+        raise WantedSourceReceiptError(detail) from refusal
+    emit(
+        "daemon.cold_build.wanted_sources_authorized",
+        outcome="ok",
+        reason=reason,
+        operation_id=operation_id,
+        content_hash=preflight.receipt_sha256,
+        sources=len(declarations),
+        files=preflight.item_count,
+        bytes=preflight.byte_count,
+    )
 
 
 def active_index_generation_is_empty(archive_root: Path) -> bool:
@@ -91,8 +183,9 @@ class ColdBuildGeneration:
     def begin(cls, archive_root: Path, *, reason: str, owner_id: str | None = None) -> ColdBuildGeneration:
         """Create the inactive generation this build will fill.
 
-        Refuses on insufficient free space *before* the generation directory
-        exists. A cold build is the whole index again on disk beside the one
+        Refuses on an unauthorized denominator (``_require_frozen_wanted_sources``)
+        and then on insufficient free space, both *before* the generation
+        directory exists. A cold build is the whole index again on disk beside the one
         still serving reads, and it is engaged automatically whenever the
         active generation is empty -- so this preflight cannot be conditioned
         on the operator having asked for it, or the unattended 40 GB case
@@ -116,6 +209,10 @@ class ColdBuildGeneration:
         # ``begin`` is only reached when a cold build is actually starting.
         # That is the only cost gate this needs; intent is not a gate.
         operation_id = f"cold-build-{uuid.uuid4().hex}"
+        # Authorization before allocation, and before the capacity walk: this
+        # is the cheaper of the two preflights and the one whose refusal means
+        # "this build must not happen at all" rather than "not here, not now".
+        _require_frozen_wanted_sources(archive_root, reason=reason, operation_id=operation_id)
         try:
             require_candidate_capacity(archive_root, operation_id=operation_id)
         except InsufficientCapacityError as refusal:
