@@ -622,6 +622,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_raw_id
 ON sessions(raw_id)
 WHERE raw_id IS NOT NULL;
 
+-- polylogue-crwl6: the session-counter domain's input binding, colocated with
+-- the ``sessions`` row that *is* its output relation. A present row states
+-- which counter projection was published for that session and under which
+-- recipe; the triggers below are what make it evidence rather than a claim.
+CREATE TABLE IF NOT EXISTS session_summary_bindings (
+    {TABLE_SPECS["session_summary_bindings"].ddl_body}
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS messages (
     {TABLE_SPECS["messages"].ddl_body}
 ) STRICT;
@@ -680,6 +688,44 @@ WHERE is_active_path = 1;
 CREATE INDEX IF NOT EXISTS idx_messages_active_leaf
 ON messages(session_id, is_active_leaf)
 WHERE is_active_leaf = 1;
+
+-- polylogue-crwl6: the session-counter binding is retired by the database
+-- itself whenever the relation it was derived from is written. This is the
+-- whole reason readiness may skip the archive-wide
+-- ``sessions LEFT JOIN messages GROUP BY session_id`` census: a surviving
+-- ``session_summary_bindings`` row is proof that no ``messages`` row of that
+-- session has been touched since the counters were published, which no
+-- writer-side stamp could establish on its own (a route that bypasses the
+-- parsed-session chokepoint still cannot bypass these).
+--
+-- Deletion, not a flag flip: an absent binding is the domain saying it cannot
+-- certify that session, and the derivation republishes one when it next
+-- publishes counters. The reverse direction -- a counter column overwritten
+-- in place without touching ``messages`` -- is caught by comparing
+-- ``input_binding`` against the stored counters, not by a trigger, because
+-- the publisher's own UPDATE is indistinguishable from a corrupting one.
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_messages_ai
+AFTER INSERT ON messages BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id = NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_messages_au
+AFTER UPDATE ON messages BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id IN (OLD.session_id, NEW.session_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_messages_ad
+AFTER DELETE ON messages BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id = OLD.session_id;
+END;
+
+-- Foreign keys are not enforced on every connection profile, so the binding's
+-- ON DELETE CASCADE cannot be the only thing that retires a row whose session
+-- is gone. An orphan here would make the bound-session count equal the session
+-- count while a real session carried no binding at all -- the exact false
+-- ``ready`` this domain exists to prevent.
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_sessions_ad
+AFTER DELETE ON sessions BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id = OLD.session_id;
+END;
 
 CREATE TABLE IF NOT EXISTS blocks (
     {TABLE_SPECS["blocks"].ddl_body}

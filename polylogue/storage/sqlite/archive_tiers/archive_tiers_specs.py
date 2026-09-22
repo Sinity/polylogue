@@ -1926,6 +1926,37 @@ SESSION_USAGE_ROLLUP_BINDINGS_SPEC = _make_table_spec(
     ),
 )
 
+# The thirteen session counters are their own output relation: they live on
+# the ``sessions`` row the derivation replaces. What that row cannot carry is
+# a statement of which ``messages`` rows produced those counters, so readiness
+# had to recompute the whole archive-wide aggregate to find out
+# (polylogue-crwl6). This binding is that missing statement, kept beside the
+# output it certifies rather than in a cross-domain ledger.
+#
+# It is evidence, not a claim, because the index tier deletes the row from a
+# trigger whenever any ``messages`` row of that session is written (see the
+# ``session_summary_binding_messages_*`` triggers in ``index.py``). A present
+# row therefore proves that no message of that session has changed since the
+# counters were published, which is exactly what inspection would otherwise
+# rescan the archive to establish. ``input_binding`` carries the published
+# counter projection itself, so a counter overwritten in place -- which no
+# trigger can distinguish from a legitimate publication -- still compares
+# unequal against the stored columns.
+#
+# There is no timestamp, no attempt counter and no status: those are freshness
+# assertions, and the domain must never make one.
+SESSION_SUMMARY_BINDINGS_SPEC = _make_table_spec(
+    "session_summary_bindings",
+    (
+        _raw_column(
+            "session_id",
+            """session_id     TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE""",
+        ),
+        _raw_column("input_binding", """input_binding  TEXT NOT NULL"""),
+        _raw_column("recipe_version", """recipe_version TEXT NOT NULL"""),
+    ),
+)
+
 WORK_EVIDENCE_GRAPHS_SPEC = _make_table_spec(
     "work_evidence_graphs",
     (
@@ -2182,6 +2213,7 @@ INDEX_TABLE_SPECS = {
     "delegation_refresh_scope": DELEGATION_REFRESH_SCOPE_SPEC,
     "derived_refresh_guard": DERIVED_REFRESH_GUARD_SPEC,
     "session_usage_rollup_bindings": SESSION_USAGE_ROLLUP_BINDINGS_SPEC,
+    "session_summary_bindings": SESSION_SUMMARY_BINDINGS_SPEC,
     "work_evidence_graphs": WORK_EVIDENCE_GRAPHS_SPEC,
     "work_evidence_nodes": WORK_EVIDENCE_NODES_SPEC,
     "work_evidence_edges": WORK_EVIDENCE_EDGES_SPEC,

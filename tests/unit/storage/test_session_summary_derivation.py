@@ -7,6 +7,7 @@ duplicate are observable through the real parsed-session writer.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from polylogue.storage.derived.session.summary import (
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.sqlite_work_counter import sqlite_work_counter
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -347,4 +349,142 @@ def test_summary_census_preserves_operation_cancellation(tmp_path: Path) -> None
             conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
     finally:
         conn.set_progress_handler(None, 0)
+        conn.close()
+
+
+def _seed_counter_archive(path: Path, *, sessions: int, messages: int) -> sqlite3.Connection:
+    """Write ``sessions`` sessions of ``messages`` messages through the writer."""
+    conn = _connect(path)
+    for index in range(sessions):
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=f"scale-{index:04d}",
+                messages=[
+                    ParsedMessage(provider_message_id=f"m{position}", role=Role.USER, text="one two three")
+                    for position in range(messages)
+                ],
+            ),
+        )
+    conn.commit()
+    return conn
+
+
+def _reads_message_relation(statements: list[str]) -> list[str]:
+    """Statements that name the ``messages`` base relation, not a lookalike."""
+    return [sql for sql in statements if re.search(r"\bmessages\b(?!_)", sql)]
+
+
+def test_summary_readiness_reads_no_message_rows(tmp_path: Path) -> None:
+    """Readiness consults the binding relation and never the message population.
+
+    Anti-vacuity: restore the archive-wide
+    ``sessions LEFT JOIN messages GROUP BY session_id`` census this domain used
+    to run and the trace below carries it, so this assertion fails.  A timing
+    number could not tell those apart on a small fixture; the executed SQL can.
+    """
+    conn = _seed_counter_archive(tmp_path / "index.db", sessions=4, messages=6)
+    executed: list[str] = []
+    try:
+        conn.set_trace_callback(lambda sql: executed.append(" ".join(sql.lower().split())))
+        inspection = inspect_session_summary(conn)
+    finally:
+        conn.set_trace_callback(None)
+        conn.close()
+
+    assert inspection.state == "ready", inspection
+    assert executed, "the inspection executed no SQL at all"
+    assert _reads_message_relation(executed) == []
+
+
+def test_summary_cost_ignores_message_count(tmp_path: Path) -> None:
+    """The same session population costs the same whatever its message volume.
+
+    Anti-vacuity: the retired census reduced thirteen aggregates over every
+    message row, so the wide archive's VM-step count was a multiple of the
+    narrow one's.  Restoring it makes the ratio assertion fail.
+    """
+    narrow_path = tmp_path / "narrow" / "index.db"
+    wide_path = tmp_path / "wide" / "index.db"
+    narrow_path.parent.mkdir()
+    wide_path.parent.mkdir()
+    _seed_counter_archive(narrow_path, sessions=24, messages=1).close()
+    _seed_counter_archive(wide_path, sessions=24, messages=40).close()
+
+    def steps(path: Path) -> int:
+        with sqlite_work_counter(step_interval=4) as counter:
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            try:
+                assert inspect_session_summary(conn).state == "ready"
+            finally:
+                conn.close()
+        return counter.metric("vm_steps")
+
+    narrow_steps = steps(narrow_path)
+    wide_steps = steps(wide_path)
+    assert narrow_steps > 0
+    # 40x the messages, and the inspection is allowed no more than half again
+    # the work. The census form measured roughly 20x here.
+    assert wide_steps <= narrow_steps * 1.5, (narrow_steps, wide_steps)
+
+
+def test_message_write_retires_the_binding(tmp_path: Path) -> None:
+    """A message value change makes the domain unbound, never still-ready.
+
+    Anti-vacuity: drop the ``session_summary_binding_messages_au`` trigger and
+    the binding survives a message that no longer matches the published
+    counters, so readiness reports ``ready`` and this fails.  The mutated
+    column is one the counters reduce, and nothing else is touched.
+    """
+    conn = _seed_counter_archive(tmp_path / "index.db", sessions=2, messages=3)
+    try:
+        session_id = str(conn.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchone()[0])
+        assert inspect_session_summary(conn).state == "ready"
+        conn.execute("UPDATE messages SET word_count = word_count + 7 WHERE session_id = ?", (session_id,))
+        inspection = inspect_session_summary(conn)
+    finally:
+        conn.close()
+
+    assert inspection.state == "stale"
+    assert inspection.unbound_sessions == 1
+    # The drift was never compared, so it is never reported as measured.
+    assert inspection.stale_sessions == 0
+    assert inspection.unmeasured_reason is not None
+    assert "no session-summary binding" in inspection.unmeasured_reason
+
+
+def test_unbound_partition_is_republished(tmp_path: Path) -> None:
+    """Correct counters with no binding are work the kernel still owes.
+
+    Anti-vacuity: let ``SessionSummaryDerivation.inspect`` call a partition
+    valid on stored-equals-authoritative alone and this session stays unbound
+    forever -- the kernel reports converged while readiness reports stale.
+    """
+    from polylogue.operations.session_profile_convergence import (
+        make_session_profile_frame,
+        make_session_summary_derivation,
+    )
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    conn = _seed_counter_archive(root / "index.db", sessions=1, messages=2)
+    try:
+        session_id = str(conn.execute("SELECT session_id FROM sessions").fetchone()[0])
+        conn.execute("DELETE FROM session_summary_bindings")
+        conn.commit()
+    finally:
+        conn.close()
+
+    adapter = make_session_summary_derivation(root / "index.db", archive_root=root)
+    frame = make_session_profile_frame(root / "index.db", archive_root=root, scope=(session_id,))
+    assert adapter.inspect(frame, (session_id,))[session_id] == "stale"
+    assert converge(DerivationRegistry([adapter]), frame).done == 1
+    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
+
+    conn = sqlite3.connect(root / "index.db")
+    try:
+        assert inspect_session_summary(conn).state == "ready"
+    finally:
         conn.close()
