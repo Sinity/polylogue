@@ -9,10 +9,14 @@ could be run: ``devtools verify``'s failure rerun feeds reported ids straight
 back to pytest and got ``ERROR: not found`` with no retry, and a human
 reproducing one failure through ``devtools test <id>`` got the same.
 
+Only FAILING ids are recorded. Mapping every shortened id instead measured
+16,371 of 24,052 collected ids and a 4.3 MB file that every worker would read
+on every collection, to answer a question only a failing id ever asks.
+
 Anti-vacuity:
-- drop the ``_record_long_nodeids`` call from
-  ``pytest_collection_modifyitems`` and ``test_shortening_is_recorded`` goes
-  red, because nothing knows what the digest stood for;
+- drop the ``_record_long_nodeids`` call from ``pytest_runtest_logreport``
+  and ``test_shortening_is_recorded`` goes red, because nothing knows what the
+  digest stood for;
 - drop the ``pytest_collection`` wrapper's translation and
   ``test_a_shortened_id_is_translated`` goes red, because the selection still
   names an id no collector will produce;
@@ -81,6 +85,7 @@ def test_an_absent_map_refuses_nothing(_map_path: Path) -> None:
 
 
 def test_recording_merges_rather_than_replaces(_map_path: Path) -> None:
+    """Two xdist workers report into one file; neither may erase the other."""
     other = "tests/unit/storage/test_other.py::test_case[param-8877665544332211]"
     harness_conftest._record_long_nodeids({_SHORTENED: _ORIGINAL})
     harness_conftest._record_long_nodeids({other: "tests/unit/storage/test_other.py::test_case[long]"})

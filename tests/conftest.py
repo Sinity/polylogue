@@ -225,17 +225,31 @@ def _file_batch(path: Path, count: int) -> int:
     return zlib.crc32(path.as_posix().encode()) % count
 
 
-#: Where a run records every node ID it had to shorten.
+#: Where a run records the shortened node IDs of the tests that FAILED in it.
 #:
-#: The shortening below runs after pytest has already matched the command
-#: line against the ORIGINAL ids, so a shortened id is not collectible: both
+#: The shortening below runs after pytest has already matched the command line
+#: against the ORIGINAL ids, so a shortened id is not collectible: both
 #: ``devtools verify``'s failure rerun, which feeds reported ids straight back
-#: to pytest, and a human reproducing one failure got ``ERROR: not found``
-#: and no run at all. The digest is a pure function of the original id, so
-#: concurrent writers of this file agree by construction.
+#: to pytest, and a human reproducing one failure through ``devtools test
+#: <id>``, got ``ERROR: not found`` and no run at all.
+#:
+#: Only FAILING ids are recorded. Mapping every shortened id instead measured
+#: a 4.3 MB file -- 16,371 of the 24,052 collected ids are over the limit --
+#: that every worker would read on every collection, to answer a question only
+#: a failing id ever asks. Recording failures bounds the file by the number of
+#: distinct long-id tests that have ever failed here, and it lives in the
+#: disposable ``.cache/`` tree.
+#:
+#: A session start does NOT clear it: the run that reads the map is the rerun
+#: of the run that wrote it, and clearing before collection would delete the
+#: entries the same invocation is about to translate.
 LONG_NODEID_MAP_PATH = _TESTS_REPO_ROOT / ".cache" / "pytest-long-nodeids.json"
 #: A shortened id always ends in this marker plus the digest.
 _SHORTENED_NODEID_MARKER = "[param-"
+#: Shortened id -> original, for the items this session collected. About
+#: 200 bytes per entry and 16,371 entries on the complete corpus (~4 MB), held
+#: so that a FAILING id can be written to the map without re-deriving it.
+_SHORTENED_NODEIDS: dict[str, str] = {}
 
 
 def _load_long_nodeid_map() -> dict[str, str]:
@@ -247,7 +261,12 @@ def _load_long_nodeid_map() -> dict[str, str]:
 
 
 def _record_long_nodeids(shortened: dict[str, str]) -> None:
-    """Merge this collection's shortened ids into the shared map."""
+    """Merge failing ids into this session's map.
+
+    Merged rather than replaced because xdist workers report into one file
+    concurrently, and the digest is a pure function of the original id, so two
+    writers never disagree about an entry.
+    """
     if not shortened:
         return
     merged = _load_long_nodeid_map()
@@ -263,6 +282,15 @@ def _record_long_nodeids(shortened: dict[str, str]) -> None:
         # A read-only or missing cache directory must not fail the run; the
         # only cost is that the next rerun cannot name a shortened id.
         return
+
+
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Record a failing item's original id, which its report cannot carry."""
+    if not report.failed:
+        return
+    original = _SHORTENED_NODEIDS.get(report.nodeid)
+    if original is not None:
+        _record_long_nodeids({report.nodeid: original})
 
 
 def _restore_long_nodeid_arguments(args: list[str]) -> list[str]:
@@ -314,7 +342,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         items[:] = selected
         config.hook.pytest_deselected(items=deselected)
 
-    shortened: dict[str, str] = {}
     for item in items:
         marker = item.get_closest_marker("timeout")
         issue = None if marker is None else timeout_marker_error(marker)
@@ -328,8 +355,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             stem, _, _ = original.partition("[")
             digest = hashlib.blake2b(original.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
             item._nodeid = f"{stem}{_SHORTENED_NODEID_MARKER}{digest}]"
-            shortened[item._nodeid] = original
-    _record_long_nodeids(shortened)
+            _SHORTENED_NODEIDS[item._nodeid] = original
 
 
 # ---------------------------------------------------------------------------
