@@ -28,17 +28,19 @@ the number there, not from a prose table that goes stale.
 | `source.py` | `source.db` | `SOURCE_TIER_VERSION` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION` |
-| `user.py` | `user.db` | `ARCHIVE_FORMAT_FLOOR_VERSION` |
+| `user.py` | `user.db` | `USER_TIER_VERSION` |
 | `audit.py` | `audit.db` | `ARCHIVE_FORMAT_FLOOR_VERSION` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION` |
 
 There is no single global "schema version" number. Each tier is versioned and
 bootstrapped independently. The durable tiers (`source`, `user`, `audit`)
-deliberately declare no version constant of their own: they were renumbered
-from one by the archive format floor, and the only number that describes them
-is the one `ARCHIVE_VERSION_BY_TIER` maps them to. `user` and `audit` still sit
-at the floor; `source` is at `SOURCE_TIER_VERSION` because slot 002 registered
-`excision_policy_projections` in canonical DDL.
+deliberately declare no version constant inside their own DDL module: they were
+renumbered from one by the archive format floor, and the only number that
+describes them is the one `ARCHIVE_VERSION_BY_TIER` maps them to. `audit` still
+sits at the floor; `source` is at `SOURCE_TIER_VERSION` because slot 002 registered
+`excision_policy_projections` in canonical DDL, and `user` is at
+`USER_TIER_VERSION` because slot 002 rebuilt `assertions` with a NOT NULL
+`status`.
 
 ### Durable migration change trains
 

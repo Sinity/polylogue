@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS assertions (
     author_ref          TEXT DEFAULT 'user:local',
     author_kind         TEXT DEFAULT 'user',
     evidence_refs_json  TEXT DEFAULT '[]',
-    status              TEXT DEFAULT 'active',
+    status              TEXT NOT NULL DEFAULT 'active',
     visibility          TEXT DEFAULT 'private',
     confidence          REAL,
     staleness_json      TEXT,

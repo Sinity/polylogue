@@ -1250,6 +1250,18 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
                     detail = _probe_query_excision(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":upsert_assertion"):
+                    if train.tier is not ArchiveTier.USER:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
+                        )
+                    detail = _probe_assertion_upsert(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":mark_assertion_status"):
+                    if train.tier is not ArchiveTier.USER:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
+                        )
+                    detail = _probe_assertion_status_mark(cast(Callable[..., object], value), train.target_version)
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -1712,6 +1724,77 @@ def _probe_query_excision(apply_excision: Callable[..., object], target_version:
     if getattr(receipt, "status", None) != "applied" or remaining is not None or ledger_row is None:
         raise DurableChangeTrainError("query excision probe did not excise the promoted query into the ledger")
     return f"excised probe query {query.query_hash[:12]} with a non-resurrection ledger row"
+
+
+def _probe_assertion_upsert(upsert: Callable[..., object], target_version: int) -> str:
+    """Exercise the assertion writer against the train's projected user schema.
+
+    The rider's behavior proof is ``upsert-resolves-absent-status``: an
+    ordinary write that supplies no status must land a resolved status value,
+    never a NULL. Slot 002 makes ``assertions.status`` NOT NULL, so a writer
+    that ever passed the caller's ``None`` straight through would fail here
+    instead of silently relying on the column's nullability.
+    """
+    assertion_id = "durable-change-train-assertion"
+    with _runtime_probe_user_connection(target_version) as probe:
+        envelope = upsert(
+            probe,
+            assertion_id=assertion_id,
+            target_ref="session:durable-change-train",
+            kind="note",
+            body_text="durable-change-train assertion probe",
+            author_ref="user:durable-change-train",
+            author_kind="user",
+            now_ms=1_780_000_000_000,
+        )
+        stored = probe.execute(
+            "SELECT status FROM assertions WHERE assertion_id = ?",
+            (assertion_id,),
+        ).fetchone()
+    if stored is None or stored[0] is None:
+        raise DurableChangeTrainError("assertion upsert probe left no resolved status on the durable row")
+    returned_status = getattr(envelope, "status", None)
+    if returned_status is None or str(returned_status.value) != str(stored[0]):
+        raise DurableChangeTrainError("assertion upsert probe returned a status its durable row does not carry")
+    return f"upserted probe assertion with resolved status {stored[0]!r} and no NULL fallback"
+
+
+def _probe_assertion_status_mark(mark: Callable[..., object], target_version: int) -> str:
+    """Exercise the status marker against the train's projected user schema.
+
+    The rider's behavior proof is ``mark-needs-no-null-coalesce``: the marker's
+    own ``COALESCE(status, 'active')`` guard exists only because the column was
+    nullable. Under slot 002 the guard is answering a question the schema has
+    already settled, and this probe pins that the marker still moves a row to a
+    new terminal status and still refuses a no-op restatement of the current
+    one.
+    """
+    from polylogue.core.enums import AssertionStatus
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+    assertion_id = "durable-change-train-assertion-mark"
+    with _runtime_probe_user_connection(target_version) as probe:
+        upsert_assertion(
+            probe,
+            assertion_id=assertion_id,
+            target_ref="session:durable-change-train",
+            kind="note",
+            body_text="durable-change-train status probe",
+            author_ref="user:durable-change-train",
+            author_kind="user",
+            now_ms=1_780_000_000_000,
+        )
+        moved = mark(probe, assertion_id, AssertionStatus.SUPERSEDED, now_ms=1_780_000_000_001)
+        restated = mark(probe, assertion_id, AssertionStatus.SUPERSEDED, now_ms=1_780_000_000_002)
+        stored = probe.execute(
+            "SELECT status FROM assertions WHERE assertion_id = ?",
+            (assertion_id,),
+        ).fetchone()
+    if moved is not True or restated is not False:
+        raise DurableChangeTrainError("assertion status probe did not move exactly one row to a new status")
+    if stored is None or stored[0] != AssertionStatus.SUPERSEDED.value:
+        raise DurableChangeTrainError("assertion status probe did not persist the marked status")
+    return "marked one probe assertion superseded and refused the restatement"
 
 
 def _probe_raw_state_update_compile(compiler: Callable[..., object]) -> str:

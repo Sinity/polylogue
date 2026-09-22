@@ -44,6 +44,16 @@ ARCHIVE_FORMAT_FLOOR_VERSION = 1
 #: so the shape has to be reached by migration, not by fresh DDL alone.
 SOURCE_TIER_VERSION = 2
 
+#: The user tier's current durable target. Slot 002 -- the first numbered user
+#: train of this lineage -- rebuilt ``assertions`` with ``status TEXT NOT NULL
+#: DEFAULT 'active'`` (polylogue-lbk1 AC1/AC2). The column was nullable, no
+#: production writer could ever produce that NULL, and sixteen read sites in
+#: eight modules carried a ``COALESCE(status, ...)`` to resolve it. Fresh DDL
+#: alone would leave every existing user.db nullable, and user.db is never
+#: rebuilt from source evidence, so the shape has to be reached by
+#: copy-forward.
+USER_TIER_VERSION = 2
+
 AUDIT_COLUMN_DISPOSITIONS = audit_column_dispositions()
 assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
@@ -60,7 +70,7 @@ ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
     ArchiveTier.SOURCE: SOURCE_TIER_VERSION,
     ArchiveTier.INDEX: INDEX_SCHEMA_VERSION,
     ArchiveTier.EMBEDDINGS: EMBEDDINGS_SCHEMA_VERSION,
-    ArchiveTier.USER: ARCHIVE_FORMAT_FLOOR_VERSION,
+    ArchiveTier.USER: USER_TIER_VERSION,
     ArchiveTier.OPS: OPS_SCHEMA_VERSION,
     ArchiveTier.AUDIT: ARCHIVE_FORMAT_FLOOR_VERSION,
 }
@@ -82,5 +92,6 @@ __all__ = [
     "archive_ddl_for_tier",
     "SCHEMA_DISPOSITIONS",
     "SOURCE_TIER_VERSION",
+    "USER_TIER_VERSION",
     "SourceAttachment",
 ]
