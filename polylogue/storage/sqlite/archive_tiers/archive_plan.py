@@ -120,13 +120,28 @@ def record_fresh_archive_format(archive_root: Path) -> Path:
     return marker_path
 
 
-def assert_archive_format_lineage(archive_root: Path) -> None:
+def assert_archive_format_lineage(
+    archive_root: Path,
+    *,
+    tiers: frozenset[ArchiveTier] = _DURABLE_FORMAT_TIERS,
+) -> None:
     """Refuse an unmarked or historical v1 archive before bootstrap can write.
 
     This uses read-only SQLite catalog access only.  In particular it neither
     opens nor initializes optional derived services while reporting a format
     mismatch.
+
+    ``tiers`` narrows only the per-tier *file* proof; every marker payload
+    check stays full strength, including the requirement that the marker
+    record all six tier versions and all three durable fingerprints.  A caller
+    narrows it when one durable tier is known to be absent and the archive has
+    its own typed recovery route for that absence: proving the surviving tiers
+    still belong to this lineage is what makes that route safe to name, and
+    reporting ``names a missing durable tier`` instead would strand the
+    operator on a message that describes no action.
     """
+    if not tiers <= _DURABLE_FORMAT_TIERS:
+        raise RuntimeError(f"archive format lineage has no proof for tiers: {sorted(tiers - _DURABLE_FORMAT_TIERS)}")
     marker_path = archive_format_marker_path(archive_root)
     try:
         raw = json.loads(marker_path.read_text(encoding="utf-8"))
@@ -168,7 +183,7 @@ def assert_archive_format_lineage(archive_root: Path) -> None:
         raise RuntimeError(f"archive format marker has an incomplete six-tier floor: {marker_path}")
     if not isinstance(fingerprints, dict) or set(fingerprints) != {tier.value for tier in _DURABLE_FORMAT_TIERS}:
         raise RuntimeError(f"archive format marker has incomplete durable schema evidence: {marker_path}")
-    for tier in _DURABLE_FORMAT_TIERS:
+    for tier in tiers:
         path = archive_root / ARCHIVE_TIER_SPECS[tier].filename
         try:
             metadata = path.lstat()
