@@ -26,6 +26,7 @@ current-producer failure and never deleted here.
 from __future__ import annotations
 
 import sqlite3
+import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -337,11 +338,56 @@ def fragment_identity_shape(native_id: str) -> str | None:
     return None
 
 
+_ARCHIVE_MEMBER_SEPARATOR = "!"
+
+# Keyed by (container, mtime_ns, size) so a rewritten archive is never answered
+# from a stale namelist.
+_MEMBER_NAMELIST_CACHE: dict[tuple[str, int, int], frozenset[str] | None] = {}
+
+
+def _member_names(container: Path) -> frozenset[str] | None:
+    """Return the archive's member names, or ``None`` when it is not a readable zip."""
+    try:
+        stat = container.stat()
+    except OSError:
+        return None
+    key = (str(container), stat.st_mtime_ns, stat.st_size)
+    if key not in _MEMBER_NAMELIST_CACHE:
+        try:
+            with zipfile.ZipFile(container) as archive:
+                _MEMBER_NAMELIST_CACHE[key] = frozenset(archive.namelist())
+        except (OSError, zipfile.BadZipFile):
+            _MEMBER_NAMELIST_CACHE[key] = None
+    return _MEMBER_NAMELIST_CACHE[key]
+
+
 def _source_exists(archive_root: Path, source_path: str) -> bool:
-    path = Path(source_path)
-    if not path.is_absolute():
-        path = archive_root / path
-    return path.exists()
+    """Does the acquired source still exist on disk?
+
+    A raw acquired from inside an export bundle records an ``archive!member``
+    coordinate (``sources/source_snapshot.py`` builds it, ``blob_disposition``
+    writes it).  Probing that string as a filesystem path can never succeed, so
+    the coordinate is resolved to its container and the member is required to be
+    present in it -- container existence alone would conserve a member the
+    archive no longer holds.  A container that is not a readable zip cannot be
+    inspected here; its existence is the strongest evidence this check owns.
+    """
+
+    def _resolve(candidate: str) -> Path:
+        path = Path(candidate)
+        return path if path.is_absolute() else archive_root / path
+
+    direct = _resolve(source_path)
+    if direct.exists():
+        return True
+    container_text, separator, member = source_path.partition(_ARCHIVE_MEMBER_SEPARATOR)
+    if not separator or not member:
+        return False
+    container = _resolve(container_text)
+    if not container.is_file():
+        return False
+    names = _member_names(container)
+    return True if names is None else member in names
 
 
 def typed_raw_cte(conn: sqlite3.Connection, *, name: str) -> str:
