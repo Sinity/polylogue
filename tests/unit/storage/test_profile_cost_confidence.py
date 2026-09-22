@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
+from polylogue.analysis.archive_models import SessionEvidencePayload
 from polylogue.storage.sqlite.queries.mappers_insight_profiles import _cost_is_estimated
 
 
@@ -41,3 +42,24 @@ def test_a_stored_flag_outranks_the_provenance_fallback() -> None:
     """
     assert _cost_is_estimated(_row(cost_is_estimated=1, cost_provenance="provider_reported")) is True
     assert _cost_is_estimated(_row(cost_is_estimated=0, cost_provenance="unknown")) is False
+
+
+def test_stored_evidence_supplies_absent_columns() -> None:
+    """``session_profiles`` persists neither column; the payload holds both.
+
+    ``session_profile_insert_columns`` writes no ``cost_is_estimated`` and no
+    ``cost_provenance``, so on the production ``SELECT * FROM session_profiles``
+    path (rebuild and thread reads) both lookups above miss and every row -- a
+    provider-reported charge included -- came back as an estimate. Portfolio and
+    postmortem read the field directly and relabel a whole rollup from one such
+    row.
+
+    Anti-vacuity: remove the ``stated_evidence`` arm and the first assertion
+    goes back to ``True``. The second and third assertions are the opposite
+    direction: a synthesized payload is not a statement about cost, and a
+    stored column still outranks the payload.
+    """
+    reported = SessionEvidencePayload(cost_is_estimated=False, cost_provenance="provider_reported")
+    assert _cost_is_estimated(_row(), reported) is False
+    assert _cost_is_estimated(_row(), None) is True
+    assert _cost_is_estimated(_row(cost_is_estimated=1), reported) is True

@@ -28,18 +28,32 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 )
 
 
-def _cost_is_estimated(row: sqlite3.Row) -> bool:
+def _cost_is_estimated(row: sqlite3.Row, stated_evidence: SessionEvidencePayload | None = None) -> bool:
     """Whether this profile's cost is an estimate rather than a stated figure.
 
     Absent evidence is not a known zero. A provenance that is anything other
     than a provider-reported figure means the cost is at best an estimate: a
     subscription session is only ever an API-equivalent one, and a stated
     figure is the sole thing that makes a cost known.
+
+    ``session_profiles`` persists neither ``cost_is_estimated`` nor
+    ``cost_provenance`` (``session_profile_insert_columns``); the materializer
+    puts both in ``evidence_payload_json``. Falling back from one absent column
+    to an equally absent sibling therefore relabelled every provider-reported
+    charge as an estimate on the production read path. ``stated_evidence`` is
+    the payload as the writer stored it -- ``None`` when the row carried no
+    stored payload and the caller synthesized one from fallback columns, which
+    is not a statement about cost and must keep the conservative answer.
     """
     stored = _row_int(row, "cost_is_estimated", None)
     if stored is not None:
         return bool(int(stored))
-    return (_row_text(row, "cost_provenance") or "unknown") != "provider_reported"
+    provenance = _row_text(row, "cost_provenance")
+    if provenance is not None:
+        return provenance != "provider_reported"
+    if stated_evidence is not None:
+        return bool(stated_evidence.cost_is_estimated)
+    return True
 
 
 def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
@@ -51,12 +65,13 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         row,
         record_id=row["session_id"],
     )
-    evidence_payload = parse_payload_model(
+    stated_evidence = parse_payload_model(
         row,
         "evidence_payload_json",
         record_id=row["session_id"],
         model=SessionEvidencePayload,
     )
+    evidence_payload = stated_evidence
     if evidence_payload is None:
         evidence_payload = session_profile_evidence_from_fallback(row, fallback_payload)
     inference_payload = parse_payload_model(
@@ -117,7 +132,7 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         terminal_state_method=_row_text(row, "terminal_state_method") or "unknown",
         terminal_state_confidence=float(_row_float(row, "terminal_state_confidence", 0.0) or 0.0),
         terminal_state_evidence_json=_row_text(row, "terminal_state_evidence_json") or "{}",
-        cost_is_estimated=_cost_is_estimated(row),
+        cost_is_estimated=_cost_is_estimated(row, stated_evidence),
         thinking_duration_ms=int(_row_int(row, "thinking_duration_ms", 0) or 0),
         output_duration_ms=int(_row_int(row, "output_duration_ms", 0) or 0),
         tool_duration_ms=int(_row_int(row, "tool_duration_ms", 0) or 0),
@@ -129,7 +144,9 @@ def _row_to_session_profile_record(row: sqlite3.Row) -> SessionProfileRecord:
         total_cache_read_tokens=int(_row_int(row, "total_cache_read_tokens", 0) or 0),
         total_cache_write_tokens=int(_row_int(row, "total_cache_write_tokens", 0) or 0),
         total_credit_cost=float(_row_float(row, "total_credit_cost", 0.0) or 0.0),
-        cost_provenance=_row_text(row, "cost_provenance") or "unknown",
+        cost_provenance=_row_text(row, "cost_provenance")
+        or (stated_evidence.cost_provenance if stated_evidence is not None else None)
+        or "unknown",
         per_model_cost_json=_row_text(row, "per_model_cost_json") or "{}",
         primary_model_name=_row_text(row, "primary_model_name"),
         primary_model_family=_row_text(row, "primary_model_family"),

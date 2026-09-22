@@ -831,16 +831,22 @@ class EmbeddingGenerationStore:
                 return EmbeddingGenerationState.ELIGIBLE.value
             return generation.state
 
-        planned_inventory = tuple(
-            sorted(
-                (
-                    g.generation_id,
-                    g.owner_id,
-                    inventory_state(g),
-                )
-                for g in generations
+        def inventory_identity(generation: EmbeddingGeneration, state: str) -> tuple[str, ...]:
+            # Lease and reservation owners are part of the identity, not
+            # metadata beside it. They are the only fields an independently
+            # restored worker changes when it protects a generation after the
+            # receipt is published; a triple of (id, owner, state) compares
+            # equal across that change, so the recheck below said "unchanged"
+            # and reclamation deleted a now-protected directory.
+            return (
+                generation.generation_id,
+                generation.owner_id,
+                state,
+                generation.lease_owner or "",
+                generation.reservation_owner or "",
             )
-        )
+
+        planned_inventory = tuple(sorted(inventory_identity(g, inventory_state(g)) for g in generations))
         receipt = EmbeddingPromotionReceipt(
             str(self.archive_root),
             self._identity(self.archive_root, label="embedding archive root"),
@@ -852,7 +858,7 @@ class EmbeddingGenerationStore:
             tuple(g.generation_id for g in eligible),
         )
         self._write_receipt(receipt)
-        current_inventory = tuple(sorted((g.generation_id, g.owner_id, g.state) for g in self._generations()))
+        current_inventory = tuple(sorted(inventory_identity(g, g.state) for g in self._generations()))
         if current_inventory != planned_inventory:
             raise EmbeddingGenerationError("embedding reclamation inventory changed; retry")
         receipt_files = self._validate_receipts(self._generations())
@@ -862,16 +868,25 @@ class EmbeddingGenerationStore:
         if len(receipt_files) > 2:
             _fsync_dir(self.receipts)
         reclaimed = []
+        # A successful reclamation is a planned change, so it has to leave the
+        # expectation. Comparing every later pass against the ORIGINAL plan made
+        # a second eligible generation impossible: reclaiming the first one
+        # removed it from ``_generations()`` by design, the next iteration read a
+        # smaller inventory, and GC raised "inventory changed" after it had
+        # already deleted a directory -- and, through ``replace()``, after the
+        # active pointer had been swapped.
+        remaining_inventory = planned_inventory
         for generation in eligible:
             # Revalidate the whole union before each mutation.  A concurrent
             # writer normally cannot pass the lifecycle lock, but this check
             # also protects against an independently restored/leased
             # generation and is the fail-closed boundary for crash recovery.
-            current_inventory = tuple(sorted((g.generation_id, g.owner_id, g.state) for g in self._generations()))
-            if current_inventory != planned_inventory:
+            current_inventory = tuple(sorted(inventory_identity(g, g.state) for g in self._generations()))
+            if current_inventory != remaining_inventory:
                 raise EmbeddingGenerationError("embedding reclamation inventory changed; retry")
             self._reclaim_generation(generation)
             reclaimed.append(generation.generation_id)
+            remaining_inventory = tuple(item for item in remaining_inventory if item[0] != generation.generation_id)
         completed = EmbeddingPromotionReceipt(
             receipt.archive_root,
             receipt.archive_root_identity,

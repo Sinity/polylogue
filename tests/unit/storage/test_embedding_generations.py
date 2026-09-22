@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -634,3 +635,83 @@ def test_generation_lock_is_free_while_the_provider_computes(tmp_path: Path) -> 
 
     assert outcome.status == "embedded"
     assert observations == [True], "the generation lock must be released for the provider round trip"
+
+
+def _seed_uncollected(tmp_path: Path, count: int) -> EmbeddingGenerationStore:
+    """Build ``count`` generations without letting GC run between them.
+
+    Models the state the reviewer named: an inventory restored (or left by a
+    crash before collection) that carries more than one eligible generation.
+    Every generation is still produced by the production ``replace()`` route.
+    """
+    store = EmbeddingGenerationStore(tmp_path)
+    collect = EmbeddingGenerationStore._collect_locked
+    EmbeddingGenerationStore._collect_locked = lambda self: None  # type: ignore[method-assign]
+    try:
+        for number in range(count):
+            candidate = tmp_path / f"uncollected-{number}.db"
+            _sqlite(candidate, str(number))
+            store.replace(candidate, owner_id=f"owner-{number}")
+    finally:
+        EmbeddingGenerationStore._collect_locked = collect  # type: ignore[method-assign]
+    return store
+
+
+def test_collect_reclaims_all_eligible(tmp_path: Path) -> None:
+    """Reclaiming the first eligible generation must not abort the second.
+
+    ``_generations()`` shrinks by design after each reclamation, so comparing
+    every later pass against the original plan made a second eligible
+    generation impossible: GC raised "inventory changed" *after* it had already
+    deleted a directory.
+
+    Anti-vacuity: pin ``remaining_inventory`` back to ``planned_inventory`` and
+    this raises ``EmbeddingGenerationError`` on the second iteration. The
+    opposite direction -- dropping the recheck entirely -- is pinned by
+    ``test_collect_refuses_late_lease``.
+    """
+    store = _seed_uncollected(tmp_path, 4)
+    receipt = store.collect()
+    assert receipt is not None
+    assert len(receipt.reclaimed_generation_ids) == 2
+    assert set(receipt.reclaimed_generation_ids) == set(receipt.eligible_generation_ids)
+    remaining = {generation.generation_id for generation in store._generations()}
+    assert remaining.isdisjoint(receipt.reclaimed_generation_ids)
+    assert len(remaining) == 2
+
+
+def test_collect_refuses_late_lease(tmp_path: Path) -> None:
+    """A lease taken after the receipt is published must stop reclamation.
+
+    Only ``lease_owner``/``reservation_owner`` change when an independently
+    restored worker protects a generation. An identity of
+    ``(id, owner, state)`` compares equal across that change, so the recheck
+    said "unchanged" and the protected directory was deleted anyway.
+
+    Anti-vacuity: drop the two protection fields from ``inventory_identity``
+    and this test goes green -- the deletion proceeds. The opposite direction
+    (a recheck that always refuses) is pinned by
+    ``test_collect_reclaims_all_eligible``.
+    """
+    store = _seed_uncollected(tmp_path, 3)
+    write_receipt = EmbeddingGenerationStore._write_receipt
+    leased: list[str] = []
+
+    def _publish_then_lease(self: EmbeddingGenerationStore, receipt: Any) -> None:
+        write_receipt(self, receipt)
+        if leased:
+            return
+        for generation in self._generations():
+            if generation.generation_id in receipt.eligible_generation_ids:
+                self._write_generation(replace(generation, lease_owner="restored-worker"))
+                leased.append(generation.generation_id)
+                return
+
+    EmbeddingGenerationStore._write_receipt = _publish_then_lease  # type: ignore[method-assign]
+    try:
+        with pytest.raises(EmbeddingGenerationError, match="inventory changed"):
+            store.collect()
+    finally:
+        EmbeddingGenerationStore._write_receipt = write_receipt  # type: ignore[method-assign]
+    assert leased, "the test never published a competing lease"
+    assert leased[0] in {generation.generation_id for generation in store._generations()}

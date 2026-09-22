@@ -72,6 +72,23 @@ def create_vector_provider(
             model = config.embedding_model
         if dimension is None:
             dimension = config.embedding_dimension
+    elif model is None or dimension is None:
+        # The ambient recipe is part of the archive contract, not a nicety the
+        # caller may omit. ``resolve_optional_vector_provider`` (the repository
+        # route behind ``SessionRepository.embed_session`` / ``similarity_search``)
+        # calls this factory with ``config=None``; loading only the ambient key
+        # and skipping the recipe meant a declared ``model``/``dimension`` in
+        # polylogue.toml was silently replaced by the library defaults, so the
+        # repository wrote or queried vectors under a recipe the archive never
+        # configured. Load the recipe from the same layered config the key
+        # already comes from.
+        from polylogue.config import load_polylogue_config
+
+        settings = load_polylogue_config()
+        if model is None:
+            model = settings.embedding_model
+        if dimension is None:
+            dimension = settings.embedding_dimension
 
     if not _sqlite_vec_available():
         if not _sqlite_vec_missing_warned:

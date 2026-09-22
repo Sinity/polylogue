@@ -57,6 +57,27 @@ def census_hook_event_authority(conn: sqlite3.Connection) -> HookEventAuthorityC
     clean-generation seal.
     """
 
+    owns_snapshot = not conn.in_transaction
+    if owns_snapshot:
+        # Every statement below has to describe one database generation. In
+        # autocommit each statement takes its own snapshot, so a daemon commit
+        # between the row scan and a row's blob/carrier lookups could hide a
+        # newly admitted blocked row entirely, or pair an existing row with
+        # evidence from a later generation -- either way reporting
+        # ``source_sealable`` for a state that was never clean. A deferred read
+        # transaction pins the generation; it is released below and never
+        # commits, so this stays a read-only census safe against a live tier.
+        conn.execute("BEGIN")
+    try:
+        return _census_hook_event_authority_snapshot(conn)
+    finally:
+        if owns_snapshot and conn.in_transaction:
+            conn.rollback()
+
+
+def _census_hook_event_authority_snapshot(conn: sqlite3.Connection) -> HookEventAuthorityCensus:
+    """Classify every hook row from one pinned read generation."""
+
     try:
         tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         missing_tables = sorted({"raw_hook_events", "blob_refs", "hook_event_carriers"} - tables)
@@ -102,11 +123,22 @@ def census_hook_event_authority(conn: sqlite3.Connection) -> HookEventAuthorityC
         if blob_hash is None:
             row_issues.append("missing-blob-hash")
         else:
-            ref = conn.execute(
-                "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ? AND blob_hash = ?",
-                (event_id, blob_hash),
-            ).fetchone()
-            if ref is None or int(ref[0]) != 1:
+            # Count EVERY hook_payload ref for this event, not only the ones
+            # that already agree with the logical hash. ``blob_refs`` is keyed
+            # on ``(blob_hash, ref_id, ref_type)``, so a second ref naming a
+            # different hash for the same event is schema-valid -- exactly the
+            # damaged/partially-reconciled state this census exists to find.
+            # Filtering by the expected hash counted one row and called the
+            # contradiction clean.
+            refs = [
+                bytes(row[0])
+                for row in conn.execute(
+                    "SELECT blob_hash FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?",
+                    (event_id,),
+                )
+                if row[0] is not None
+            ]
+            if len(refs) != 1 or refs[0] != bytes(blob_hash):
                 row_issues.append("blob-ref-disagreement")
         carriers = conn.execute(
             "SELECT blob_hash, payload_digest, carrier_role FROM hook_event_carriers "
