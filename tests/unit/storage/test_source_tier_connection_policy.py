@@ -11,15 +11,33 @@ from polylogue.storage.blob_publication import BlobPublicationReceipt, BlobPubli
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, write_connection_pragma_statements
 
+# The reviewed durability contract for the DURABLE source tier, written as
+# literals on purpose. ``docs/durability-by-tier.md`` publishes source.db as
+# "WAL, synchronous=NORMAL" with a named, bounded power-loss window, and the
+# performance/logging addendum on polylogue-rk0it requires that no performance
+# receipt silently change journal/synchronous policy. Deriving these from
+# WRITE_CONNECTION_PROFILE -- the object under test -- made that unenforceable:
+# flipping the profile to synchronous=OFF kept this whole module green while
+# the durable tier lost the guarantee the document promises. Changing either
+# literal is a deliberate edit of the durability contract and must move the
+# document with it.
+_DURABLE_SOURCE_JOURNAL_MODE = "wal"
+_DURABLE_SOURCE_SYNCHRONOUS = 1  # NORMAL
 
-def _expected_synchronous() -> int:
-    statement = next(
-        statement
-        for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE)
-        if "synchronous" in statement
-    )
-    value = statement.rsplit("=", maxsplit=1)[1].strip().upper()
-    return {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}[value]
+
+def test_durable_source_tier_profile_declares_its_reviewed_durability_contract() -> None:
+    """The source tier's write profile is WAL + NORMAL, as the document publishes.
+
+    Anti-vacuity: setting WRITE_CONNECTION_PROFILE.synchronous to OFF (or
+    journal_mode away from WAL) turns this red. That mutation is exactly the
+    one every other test in this module tolerated before these literals
+    existed, because they compared the live handle against the same profile.
+    """
+    pragmas = " ".join(write_connection_pragma_statements(WRITE_CONNECTION_PROFILE)).upper()
+    assert WRITE_CONNECTION_PROFILE.journal_mode == "WAL"
+    assert WRITE_CONNECTION_PROFILE.synchronous == "NORMAL"
+    # The declared fields are what actually reach a connection.
+    assert "SYNCHRONOUS=NORMAL" in pragmas.replace(" ", "")
 
 
 def _writer_pragmas(conn: sqlite3.Connection) -> tuple[str, int, int, int]:
@@ -33,7 +51,12 @@ def _writer_pragmas(conn: sqlite3.Connection) -> tuple[str, int, int, int]:
 
 def _assert_source_writer_policy(conn: sqlite3.Connection) -> None:
     """Assert the original writer handle, never a reopened inspection connection."""
-    assert _writer_pragmas(conn) == ("wal", _expected_synchronous(), WRITE_CONNECTION_PROFILE.busy_timeout_ms, 1)
+    assert _writer_pragmas(conn) == (
+        _DURABLE_SOURCE_JOURNAL_MODE,
+        _DURABLE_SOURCE_SYNCHRONOUS,
+        WRITE_CONNECTION_PROFILE.busy_timeout_ms,
+        1,
+    )
 
 
 def test_fresh_archive_source_writer_handle_uses_durable_mode_and_local_policy(tmp_path: Path) -> None:
@@ -105,6 +128,13 @@ def test_reservation_path_observes_its_actual_source_writer_handle_policy(
         [BlobPublicationReceipt("receipt", "00" * 32, 1, "test-publisher")]
     )
 
-    assert observed == [("wal", _expected_synchronous(), WRITE_CONNECTION_PROFILE.busy_timeout_ms, 1)]
+    assert observed == [
+        (
+            _DURABLE_SOURCE_JOURNAL_MODE,
+            _DURABLE_SOURCE_SYNCHRONOUS,
+            WRITE_CONNECTION_PROFILE.busy_timeout_ms,
+            1,
+        )
+    ]
     with sqlite3.connect(root / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (1,)
