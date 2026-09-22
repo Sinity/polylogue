@@ -230,13 +230,17 @@ def test_acknowledging_an_undischarged_obligation_does_not_survive_the_next_pass
     assert len(published) == 1
     blocker_id = published[0]
 
+    assert raw_materialization_ready(raw_materialization_readiness_snapshot(tmp_path)) is False
+
+    # Readiness reads the open-blocker count, so an acknowledgement alone makes
+    # the archive look clean. That is the window the reopen has to close.
     resolve_raw_authority_blocker(tmp_path, blocker_id, resolution="acknowledged without reacquiring the bytes")
     assert _open_blocker_ids(tmp_path) == []
-    assert raw_materialization_ready(raw_materialization_readiness_snapshot(tmp_path)) is False
 
     # The evidence has not changed, so the obligation is not discharged.
     inspect_raw_authority_frontier(_config(tmp_path))
     assert _open_blocker_ids(tmp_path) == [blocker_id]
+    assert raw_materialization_ready(raw_materialization_readiness_snapshot(tmp_path)) is False
 
     # Opposite direction: evidence that no longer blocks stays closed.
     with sqlite3.connect(tmp_path / "index.db") as conn:
