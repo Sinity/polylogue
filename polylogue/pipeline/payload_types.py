@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
-from polylogue.storage.derived.session.runtime import SessionInsightRefreshChunkPayload
 
 
 class AcquireSplitPayloadSummary(TypedDict):
@@ -97,33 +96,10 @@ class IngestDiagnostics(TypedDict, total=False):
     claude_workflow: dict[str, object]
 
 
-class MaterializeStageObservation(TypedDict, total=False):
-    mode: str
-    profiles: int
-    threads: int
-    tag_rollups: int
-    sessions: int
-    unique_thread_roots: int
-    unique_provider_days: int
-    elapsed_ms: float
-    update_ms: float
-    update_chunk_count: int
-    update_slow_chunk_count: int
-    update_max_chunk_ms: float
-    update_max_chunk_load_ms: float
-    update_max_chunk_hydrate_ms: float
-    update_max_chunk_build_ms: float
-    update_max_chunk_write_ms: float
-    update_chunks: list[SessionInsightRefreshChunkPayload]
-    failed: bool
-    error: str
-
-
 __all__ = [
     "AcquireDiagnostics",
     "AcquireSplitPayloadSummary",
     "IngestDiagnostics",
-    "MaterializeStageObservation",
     "ParseBatchObservation",
     "ParseBatchObservationSummary",
 ]
