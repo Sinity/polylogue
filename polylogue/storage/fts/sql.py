@@ -79,6 +79,63 @@ FTS_MESSAGES_IDENTITY_TABLE_SQL = """
     ) STRICT;
 """
 
+# polylogue-crwl6: the block columns the message-FTS surface actually reduces.
+# ``search_text`` and ``block_id`` are generated columns and can never appear in
+# a trigger's ``UPDATE OF`` list, so the projection names their *inputs*:
+# ``text``/``tool_name``/``tool_input`` compose ``search_text`` (see
+# ``BLOCKS_SPEC``), ``message_id``/``position`` compose ``block_id``, and
+# ``content_hash`` is the identity ledger's ``source_hash``. ``session_id``
+# names the partition a row belongs to. A write to any other block column --
+# ``tool_outcome``, ``semantic_type`` -- cannot move FTS membership or identity:
+# the ``messages_fts_au`` arm still rewrites the row, but with identical text and
+# identical identity, so the readiness binding below stays true.
+FTS_BLOCK_INPUT_PROJECTION_COLUMNS: tuple[str, ...] = (
+    "session_id",
+    "message_id",
+    "position",
+    "text",
+    "tool_name",
+    "tool_input",
+    "content_hash",
+)
+
+# polylogue-crwl6: the message-FTS domain's readiness binding, colocated with
+# ``messages_fts``/``messages_fts_identity`` rather than in any cross-domain
+# freshness ledger.
+#
+# A present row is not a flag saying "FTS is fresh". It states the *result of
+# one authoritative global inspection* together with the row counts the two
+# output relations held when that inspection ran. Two independent facts then
+# make it evidence rather than a claim:
+#
+#   * the input side -- ``blocks`` -- is proven unmoved by the retirement
+#     triggers declared in ``archive_tiers/index.py``: any insert, delete, or
+#     update of a projected column deletes this row inside the writer's own
+#     transaction. Those triggers are deliberately NOT part of
+#     ``BLOCKS_FTS_TRIGGER_DDL``: the bulk-write paths suspend *those* by name
+#     (``suspend_message_fts_triggers_sync``), and a bulk write is exactly when
+#     the binding must not survive.
+#   * the output side -- ``messages_fts`` -- is a virtual table, and SQLite
+#     cannot carry a trigger on one. So the binding records the two shadow
+#     relation row counts instead, and inspection re-counts them. That is two
+#     narrow scans rather than the five archive-wide joins against ``blocks``
+#     that ``inspect_partition`` performs for the global key.
+#
+# ``recipe_id`` makes a fold/tokenizer recipe bump invalidate every existing
+# binding without touching a row, exactly as it already does for
+# ``messages_fts_identity``.
+FTS_READINESS_BINDING_TABLE_SQL = """
+    CREATE TABLE IF NOT EXISTS messages_fts_readiness_binding (
+        surface       TEXT PRIMARY KEY,
+        recipe_id     TEXT NOT NULL,
+        source_rows   INTEGER NOT NULL,
+        indexed_rows  INTEGER NOT NULL,
+        identity_rows INTEGER NOT NULL
+    ) STRICT;
+"""
+
+FTS_READINESS_BINDING_SURFACE = "messages_fts"
+
 FTS_INDEX_EXISTS_SQL = "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
 FTS_INDEX_DOC_COUNT_SQL = "SELECT COUNT(*) FROM messages_fts_docsize"
 FTS_INDEXABLE_MESSAGE_COUNT_SQL = """
@@ -460,10 +517,13 @@ __all__ = [
     "FTS_IDENTITY_REBUILD_SQL",
     "FTS_INDEXABLE_MESSAGE_COUNT_SQL",
     "FTS_INDEX_DOC_COUNT_SQL",
+    "FTS_BLOCK_INPUT_PROJECTION_COLUMNS",
     "FTS_INDEX_EXISTS_SQL",
     "FTS_MESSAGES_IDENTITY_RECIPE_ID",
     "FTS_MESSAGES_IDENTITY_TABLE_SQL",
     "FTS_MESSAGES_TABLE_SQL",
+    "FTS_READINESS_BINDING_SURFACE",
+    "FTS_READINESS_BINDING_TABLE_SQL",
     "FTS_REBUILD_SQL",
     "FTS_TRIGGER_DDL",
     "FTS_UNICODE_TOKENIZER",

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
-from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID
+from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID, FTS_READINESS_BINDING_SURFACE
 
 
 class FtsKeyStatus(StrEnum):
@@ -823,6 +823,93 @@ class FtsDerivationAdapter:
 FtsDomainAdapter = FtsDerivationAdapter
 
 
+@dataclass(frozen=True, slots=True)
+class FtsReadinessBinding:
+    """What one completed global FTS inspection found, and under what counts."""
+
+    source_rows: int
+    indexed_rows: int
+    identity_rows: int
+
+
+def _output_row_counts(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Return ``(messages_fts rows, messages_fts_identity rows)``.
+
+    The two shadow relations are the only SQLite-visible proof of what the
+    contentless virtual table currently holds, and ``messages_fts`` is a virtual
+    table -- SQLite cannot carry a trigger on one -- so this is the whole output
+    side of the readiness binding.  Both are narrow single-column scans and
+    neither touches ``blocks``.
+    """
+    indexed = int(conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] or 0)
+    identity = int(conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] or 0)
+    return indexed, identity
+
+
+def fts_readiness_binding(conn: sqlite3.Connection) -> FtsReadinessBinding | None:
+    """Return the standing readiness binding when it still describes this surface.
+
+    polylogue-crwl6.  ``None`` means "this domain cannot certify the surface from
+    a binding", which is the ordinary state immediately after any block write:
+    the retirement triggers declared in ``archive_tiers/index.py`` delete the row
+    inside the writer's own transaction.  Three things must hold for a standing
+    row to be evidence rather than a claim -- the recipe must be current, the
+    canonical trigger set must still be installed, and both output relations must
+    hold exactly the row counts the inspection recorded.
+    """
+    if not table_exists(conn, "messages_fts_readiness_binding"):
+        return None
+    row = conn.execute(
+        "SELECT source_rows, indexed_rows, identity_rows FROM messages_fts_readiness_binding "
+        "WHERE surface = ? AND recipe_id = ?",
+        (FTS_READINESS_BINDING_SURFACE, FTS_MESSAGES_IDENTITY_RECIPE_ID),
+    ).fetchone()
+    if row is None:
+        return None
+    binding = FtsReadinessBinding(*(int(value or 0) for value in row))
+    if not _schema_compatible(conn):
+        # The canonical maintainer is gone, so the trigger-retirement half of
+        # this binding's evidence does not hold for the current write either.
+        return None
+    if _output_row_counts(conn) != (binding.indexed_rows, binding.identity_rows):
+        return None
+    return binding
+
+
+def stamp_fts_readiness_binding(conn: sqlite3.Connection) -> bool:
+    """Publish a readiness binding from one authoritative global inspection.
+
+    Returns ``True`` when a binding now stands.  A surface the inspection finds
+    invalid publishes nothing: the binding states a *valid* verdict, so writing
+    one for a drifted surface would be exactly the flag-that-asserts-currency
+    this domain refuses to carry.  The caller owns the write lease and the
+    transaction.
+    """
+    if not table_exists(conn, "messages_fts_readiness_binding"):
+        return False
+    if not table_exists(conn, "blocks") or not table_exists(conn, "messages_fts"):
+        return False
+    inspection = FtsDerivationAdapter().inspect_partition(conn, GLOBAL_PARTITION)
+    if not inspection.valid or not inspection.triggers_compatible:
+        return False
+    indexed_rows, identity_rows = _output_row_counts(conn)
+    conn.execute(
+        "INSERT INTO messages_fts_readiness_binding"
+        "(surface, recipe_id, source_rows, indexed_rows, identity_rows) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(surface) DO UPDATE SET recipe_id = excluded.recipe_id, "
+        "source_rows = excluded.source_rows, indexed_rows = excluded.indexed_rows, "
+        "identity_rows = excluded.identity_rows",
+        (
+            FTS_READINESS_BINDING_SURFACE,
+            FTS_MESSAGES_IDENTITY_RECIPE_ID,
+            int(inspection.required_rows),
+            indexed_rows,
+            identity_rows,
+        ),
+    )
+    return True
+
+
 def replace_fts_partition_sync(conn: sqlite3.Connection, session_id: str) -> bool:
     """Replace one canonical-write FTS partition through the derivation SQL.
 
@@ -864,6 +951,9 @@ def converge_fts_partition_sync(conn: sqlite3.Connection, session_id: str) -> bo
 
 
 __all__ = [
+    "FtsReadinessBinding",
+    "fts_readiness_binding",
+    "stamp_fts_readiness_binding",
     "GLOBAL_PARTITION",
     "FtsDomainAdapter",
     "FtsDerivationAdapter",

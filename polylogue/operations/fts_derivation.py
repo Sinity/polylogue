@@ -15,15 +15,23 @@ from pathlib import Path
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+from polylogue.storage.fts.derivation import (
+    GLOBAL_PARTITION,
+    FtsDerivationAdapter,
+    fts_readiness_binding,
+    stamp_fts_readiness_binding,
+)
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
 __all__ = [
     "FTS_ORPHAN_INTERVAL_S",
     "archive_fts_surface",
+    "bound_archive_fts_surface",
+    "fts_readiness_binding",
     "fts_triggers_present",
     "make_fts_derivation",
     "make_fts_frame",
+    "stamp_fts_readiness_binding",
 ]
 
 
@@ -125,5 +133,39 @@ def archive_fts_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str 
         "duplicate_rows": inspection.duplicate_rows,
         "identity_mismatch_rows": inspection.wrong_identity_rows,
         "ready": inspection.valid,
+        "exact": True,
+    }
+
+
+def bound_archive_fts_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None] | None:
+    """Project the global FTS surface from its binding, or ``None`` when unbound.
+
+    This is the whole point of polylogue-crwl6 AC6.  ``archive_fts_surface``
+    answers the same question by running five archive-wide joins against
+    ``blocks`` plus a ``GROUP BY`` over the identity ledger; on a real archive
+    that is seconds, paid on every ``/healthz``, ``/api/status``, ``/metrics``,
+    ``health`` and ``status_snapshot`` request.  A standing binding answers it
+    from one indexed row plus two narrow shadow-relation counts, and a binding
+    can only be standing if no write has touched the block columns this surface
+    reduces since the inspection that published it.
+
+    ``None`` is not an accusation.  It means this domain cannot certify the
+    surface from a binding right now, and the caller runs the authoritative
+    inspection exactly as before.
+    """
+    bound = fts_readiness_binding(conn)
+    if bound is None:
+        return None
+    return {
+        "source_exists": True,
+        "exists": True,
+        "source_rows": bound.source_rows,
+        "indexed_rows": bound.indexed_rows,
+        "triggers_present": True,
+        "missing_rows": 0,
+        "excess_rows": 0,
+        "duplicate_rows": 0,
+        "identity_mismatch_rows": 0,
+        "ready": True,
         "exact": True,
     }
