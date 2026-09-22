@@ -752,6 +752,97 @@ describe("popup capture", () => {
     await vi.waitFor(() => expect(globalThis.URL.createObjectURL).toHaveBeenCalled());
   });
 
+  it("redacts conversation content from the exported support packet", async () => {
+    // The packet exists to be exported and shared. A retry-queue entry carries
+    // the whole capture envelope and `/v1/browser-actions` carries each
+    // intent's drafted reply, so serializing either verbatim disclosed
+    // transcripts to whoever received the file.
+    //
+    // Anti-vacuity: serialize `stored.polylogueCaptureQueue` and `actionStatus`
+    // directly again and both `not.toContain` assertions fail on the exact
+    // secret strings. The metadata assertions pin the opposite direction: a
+    // redaction that emptied the packet would fail them.
+    const blobs = [];
+    await loadPopup(
+      {
+        polylogueCaptureQueue: {
+          dropped_count: 2,
+          entries: [{
+            id: "req-7",
+            reason: "receiver_unreachable",
+            enqueued_at: "2026-08-26T00:00:00Z",
+            attempts: 3,
+            next_attempt_at: "2026-08-26T00:05:00Z",
+            last_error: "ECONNREFUSED",
+            tab_url: "https://chatgpt.com/c/conv-secret?share=1",
+            envelope: {
+              session: {
+                provider: "chatgpt",
+                provider_session_id: "conv-secret",
+                provider_meta: { capture_fidelity: "native_full" },
+                turns: [
+                  { provider_turn_id: "u1", role: "user", text: "MY PRIVATE PROMPT" },
+                  { provider_turn_id: "a1", role: "assistant", text: "MY PRIVATE ANSWER", attachments: [{ name: "a" }] },
+                ],
+              },
+            },
+          }],
+        },
+      },
+      [CHATGPT_TAB],
+      async (message) => {
+        if (message.type === "polylogue.browserActions.status") {
+          return {
+            ok: true,
+            actions: [{
+              action_id: "act-1",
+              provider: "chatgpt",
+              operation: "draft",
+              status: "queued",
+              phase: "queued",
+              idempotency_key: "idem-1",
+              request_sha256: "f".repeat(64),
+              target: { provider_session_id: "conv-secret", provider_message_id: "a1" },
+              text: "MY DRAFTED REPLY",
+              attachments: [],
+            }],
+          };
+        }
+        return { ok: true };
+      },
+    );
+
+    const RecordingBlob = globalThis.Blob;
+    globalThis.Blob = class extends RecordingBlob {
+      constructor(parts, options) {
+        super(parts, options);
+        blobs.push(parts.join(""));
+      }
+    };
+    globalThis.document.getElementById("debug-export").click();
+    await vi.waitFor(() => expect(blobs).toHaveLength(1));
+    globalThis.Blob = RecordingBlob;
+
+    const packet = blobs[0];
+    expect(packet).not.toContain("MY PRIVATE PROMPT");
+    expect(packet).not.toContain("MY PRIVATE ANSWER");
+    expect(packet).not.toContain("MY DRAFTED REPLY");
+    expect(packet).not.toContain("?share=1");
+
+    const parsed = JSON.parse(packet);
+    expect(parsed.automatic_capture.capture_queue.dropped_count).toBe(2);
+    expect(parsed.automatic_capture.capture_queue.entries[0]).toMatchObject({
+      id: "req-7",
+      attempts: 3,
+      last_error: "ECONNREFUSED",
+      tab_origin: "https://chatgpt.com",
+      envelope: { provider: "chatgpt", provider_session_id: "conv-secret", turn_count: 2, attachment_count: 1 },
+    });
+    expect(parsed.browser_actions[0]).toMatchObject({
+      action_id: "act-1", status: "queued", text_length: 16, attachment_count: 0,
+    });
+  });
+
   it("renders capture fidelity and asset acquisition outcome from the last capture", async () => {
     await loadPopup({
       polylogueState: {

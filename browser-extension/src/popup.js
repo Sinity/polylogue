@@ -850,6 +850,71 @@ document.getElementById("pair-with-code")?.addEventListener("click", async () =>
   }, { busy: "Pairing", ok: "Paired" });
 });
 
+// The support packet exists to be exported and shared with an operator or a
+// bug report. A retry queue entry carries the whole capture envelope --
+// `session.turns` and their text -- and `/v1/browser-actions` carries each
+// intent's drafted reply, so serializing either verbatim disclosed
+// transcripts. Project both to the diagnostic fields a triage actually reads.
+function supportPacketOrigin(url) {
+  if (typeof url !== "string" || !url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+function supportPacketCaptureQueue(queue) {
+  const entries = Array.isArray(queue?.entries) ? queue.entries : [];
+  return {
+    dropped_count: Number(queue?.dropped_count) || 0,
+    entry_count: entries.length,
+    entries: entries.map((entry) => {
+      const session = entry?.envelope?.session || {};
+      const turns = Array.isArray(session.turns) ? session.turns : [];
+      return {
+        id: entry?.id ?? null,
+        reason: entry?.reason ?? null,
+        enqueued_at: entry?.enqueued_at ?? null,
+        attempts: entry?.attempts ?? null,
+        next_attempt_at: entry?.next_attempt_at ?? null,
+        last_error: entry?.last_error ?? null,
+        tab_origin: supportPacketOrigin(entry?.tab_url),
+        envelope: {
+          provider: session.provider ?? null,
+          provider_session_id: session.provider_session_id ?? null,
+          capture_fidelity: session.provider_meta?.capture_fidelity ?? null,
+          turn_count: turns.length,
+          attachment_count: turns.reduce(
+            (count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0),
+            0,
+          ),
+        },
+      };
+    }),
+  };
+}
+
+function supportPacketAction(action) {
+  return {
+    action_id: action?.action_id ?? null,
+    provider: action?.provider ?? null,
+    operation: action?.operation ?? null,
+    status: action?.status ?? null,
+    phase: action?.phase ?? null,
+    created_at: action?.created_at ?? null,
+    updated_at: action?.updated_at ?? null,
+    idempotency_key: action?.idempotency_key ?? null,
+    request_sha256: action?.request_sha256 ?? null,
+    target: {
+      provider_session_id: action?.target?.provider_session_id ?? null,
+      provider_message_id: action?.target?.provider_message_id ?? null,
+    },
+    text_length: typeof action?.text === "string" ? action.text.length : null,
+    attachment_count: Array.isArray(action?.attachments) ? action.attachments.length : 0,
+  };
+}
+
 document.getElementById("debug-toggle").addEventListener("click", () => {
   document.getElementById("debug-panel").toggleAttribute("hidden");
 });
@@ -873,10 +938,10 @@ document.getElementById("debug-export").addEventListener("click", async () => {
       receiver: snapshot?.receiver || null,
       extension: snapshot?.extension || null,
       automatic_capture: {
-        capture_queue: stored.polylogueCaptureQueue,
+        capture_queue: supportPacketCaptureQueue(stored.polylogueCaptureQueue),
         freshness_queue: stored.polylogueCaptureFreshnessQueue,
       },
-      browser_actions: actionStatus,
+      browser_actions: (Array.isArray(actionStatus) ? actionStatus : []).map(supportPacketAction),
       debug_log: Array.isArray(stored.polylogueDebugLog) ? stored.polylogueDebugLog : [],
       capture_log: Array.isArray(stored.polylogueCaptureLog) ? stored.polylogueCaptureLog : [],
     };
