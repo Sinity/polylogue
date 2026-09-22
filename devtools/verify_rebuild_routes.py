@@ -186,16 +186,30 @@ def _definitions(tree: ast.Module, module: str) -> set[str]:
     return names
 
 
-def _import_maps(tree: ast.Module, *, module: str, is_package_init: bool) -> tuple[dict[str, str], dict[str, str]]:
-    """Return ``(symbol aliases, module aliases)`` for one module.
+#: One lexical scope's ``(symbol aliases, module aliases)``.
+ScopeImports = tuple[dict[str, str], dict[str, str]]
+
+
+def _import_maps(tree: ast.Module, *, module: str, is_package_init: bool) -> dict[tuple[str, ...], ScopeImports]:
+    """Return each lexical scope's ``(symbol aliases, module aliases)``.
 
     Imports are collected from the whole tree, not only module scope, because
     a rebuild route is routinely imported inside the function that uses it
-    (``polylogue/operations/mutation_actuators.py`` does exactly that).
+    (``polylogue/operations/mutation_actuators.py`` does exactly that). They
+    are kept PER SCOPE rather than merged, because merging lets one function's
+    local import overwrite another's binding of the same name: a later
+    ``def audit(): from polylogue.report import rebuild_index`` silently
+    replaced the module-wide mapping, and the function that really calls the
+    rebuild entrypoint disappeared from the graph -- so the census reported no
+    new route for a call that bypasses daemon convergence.
+
+    The mapping is keyed by the scope path :func:`_scope_walk` reports, so a
+    reference resolves against its own scope first and then each enclosing one.
     """
-    symbols: dict[str, str] = {}
-    modules: dict[str, str] = {}
-    for node in ast.walk(tree):
+    scopes: dict[tuple[str, ...], ScopeImports] = {(): ({}, {})}
+
+    def record(node: ast.AST, scope: tuple[str, ...]) -> None:
+        symbols, modules = scopes.setdefault(scope, ({}, {}))
         if isinstance(node, ast.ImportFrom):
             if node.level:
                 parts = module.split(".")
@@ -215,7 +229,60 @@ def _import_maps(tree: ast.Module, *, module: str, is_package_init: bool) -> tup
                 else:
                     head = alias.name.split(".")[0]
                     modules[head] = head
+
+    def walk(node: ast.AST, scope: tuple[str, ...]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+                walk(child, (*scope, child.name))
+            else:
+                if isinstance(child, ast.Import | ast.ImportFrom):
+                    record(child, scope)
+                walk(child, scope)
+
+    walk(tree, ())
+    return scopes
+
+
+def _merged_imports(scopes: Mapping[tuple[str, ...], ScopeImports]) -> ScopeImports:
+    """Every scope's bindings in one map, for chasing module re-exports.
+
+    A re-export chain is a property of the module, not of a reference site, so
+    it reads the union. Order is by scope depth so an outer binding wins over
+    a deeper one with the same name.
+    """
+    symbols: dict[str, str] = {}
+    modules: dict[str, str] = {}
+    for scope in sorted(scopes, key=len, reverse=True):
+        scope_symbols, scope_modules = scopes[scope]
+        symbols.update(scope_symbols)
+        modules.update(scope_modules)
     return symbols, modules
+
+
+def _visible_imports(scopes: Mapping[tuple[str, ...], ScopeImports], scope: tuple[str, ...]) -> ScopeImports:
+    """The bindings visible at ``scope``: its own, then each enclosing one."""
+    symbols: dict[str, str] = {}
+    modules: dict[str, str] = {}
+    for depth in range(len(scope) + 1):
+        enclosing = scopes.get(scope[:depth])
+        if enclosing is None:
+            continue
+        symbols.update(enclosing[0])
+        modules.update(enclosing[1])
+    return symbols, modules
+
+
+def _dotted_name(node: ast.AST) -> str | None:
+    """``a.b.c`` for an attribute chain rooted at a plain name, else ``None``."""
+    parts: list[str] = []
+    current: ast.AST = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(current.id)
+    return ".".join(reversed(parts))
 
 
 def build_call_graph(package_root: Path, *, repo_root: Path) -> CallGraph:
@@ -235,10 +302,11 @@ def build_call_graph(package_root: Path, *, repo_root: Path) -> CallGraph:
             graph.defined.add(name)
             graph.files[name] = relative
 
-    aliases: dict[str, tuple[dict[str, str], dict[str, str]]] = {
+    scoped_aliases: dict[str, dict[tuple[str, ...], ScopeImports]] = {
         module: _import_maps(tree, module=module, is_package_init=path.name == "__init__.py")
         for module, (path, tree) in trees.items()
     }
+    aliases: dict[str, ScopeImports] = {module: _merged_imports(scopes) for module, scopes in scoped_aliases.items()}
 
     def resolve(qualname: str) -> str:
         """Follow re-exports until the name lands on a definition.
@@ -258,24 +326,36 @@ def build_call_graph(package_root: Path, *, repo_root: Path) -> CallGraph:
         return qualname
 
     for module, (_path, tree) in trees.items():
-        symbols, module_aliases = aliases[module]
+        scopes = scoped_aliases[module]
+        visible: dict[tuple[str, ...], ScopeImports] = {}
         for node, stack, enclosing_class in _scope_walk(tree):
+            if stack not in visible:
+                visible[stack] = _visible_imports(scopes, stack)
+            symbols, module_aliases = visible[stack]
             target: str | None = None
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
                 if node.id in symbols:
                     target = symbols[node.id]
                 elif f"{module}.{node.id}" in graph.defined:
                     target = f"{module}.{node.id}"
-            elif (
-                isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and isinstance(node.value, ast.Name)
-            ):
-                base = node.value.id
-                if base == "self" and enclosing_class is not None:
+            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+                if isinstance(node.value, ast.Name) and node.value.id == "self" and enclosing_class is not None:
                     target = f"{module}.{enclosing_class}.{node.attr}"
-                elif base in module_aliases:
-                    target = f"{module_aliases[base]}.{node.attr}"
-                elif base in symbols:
-                    target = f"{symbols[base]}.{node.attr}"
+                else:
+                    # ``polylogue.pipeline.services.indexing.rebuild_index(...)``
+                    # after ``import polylogue.pipeline.services.indexing`` is
+                    # ordinary syntax, and a chain of ``ast.Attribute`` nodes.
+                    # Reading only the one whose value is an ``ast.Name`` saw
+                    # the intermediate module and never the function, so a new
+                    # non-daemon rebuild route written this way left the
+                    # blocking gate green.
+                    dotted = _dotted_name(node)
+                    if dotted is not None:
+                        head, _, rest = dotted.partition(".")
+                        if head in module_aliases:
+                            target = f"{module_aliases[head]}.{rest}" if rest else module_aliases[head]
+                        elif head in symbols:
+                            target = f"{symbols[head]}.{rest}" if rest else symbols[head]
             if target is None:
                 continue
             target = resolve(target)

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fnmatch
 import json
 import os
 import sqlite3
@@ -29,6 +30,7 @@ import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Final
 
 from testmon.common import drop_patch_version, get_system_packages
 from testmon.db import DATA_VERSION as TESTMON_DATA_VERSION
@@ -215,6 +217,57 @@ def snapshot_testmon_graph(source: Path, destination: Path) -> bool:
         with contextlib.suppress(FileNotFoundError, OSError):
             destination.with_name(destination.name + suffix).unlink()
     return True
+
+
+#: The declared corpus's test-file shapes and the root it is collected from,
+#: mirroring ``devtools.pytest_invocation.CLOSED_WORLD_COLLECTION_ARGS``. The
+#: file set has to be derived the same way the collection derives it, or the
+#: comparison below reports files pytest never looks at.
+_TEST_FILE_PATTERNS: Final = ("test_*.py", "*_test.py", "fuzz_*.py")
+_TEST_ROOT: Final = "tests"
+_COLLECTION_IGNORED: Final = ("tests/benchmarks/",)
+
+
+def declared_test_files(root: Path) -> frozenset[str]:
+    """Every repo-relative test file the declared closed-world collection reaches."""
+    base = root / _TEST_ROOT
+    if not base.is_dir():
+        return frozenset()
+    found = set()
+    for path in base.rglob("*.py"):
+        if not any(fnmatch.fnmatch(path.name, pattern) for pattern in _TEST_FILE_PATTERNS):
+            continue
+        relative = path.relative_to(root).as_posix()
+        if relative.startswith(_COLLECTION_IGNORED):
+            continue
+        found.add(relative)
+    return frozenset(found)
+
+
+def unrecorded_test_files(root: Path, *, datafile: Path | None = None) -> tuple[str, ...] | None:
+    """Declared test files the graph has no execution for, in path order.
+
+    Testmon deselects only what it has recorded; an unrecorded test is
+    unknown and runs. So these files are exactly the part of a selecting run
+    that the graph's own selection count cannot see, and counting a selection
+    without them reports a bound the run does not have.
+
+    ``None`` when the graph cannot be read at all, which is a different answer
+    from "none are missing" and must not be folded into it.
+    """
+    path = datafile or testmon_datafile(root)
+    if not path.is_file():
+        return None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+        with contextlib.closing(connection):
+            recorded = {
+                str(row[0]).split("::", 1)[0]
+                for row in connection.execute("SELECT DISTINCT test_name FROM test_execution")
+            }
+    except sqlite3.Error:
+        return None
+    return tuple(sorted(declared_test_files(root) - recorded))
 
 
 def primary_worktree() -> Path:

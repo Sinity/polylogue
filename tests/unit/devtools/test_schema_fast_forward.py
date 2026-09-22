@@ -90,3 +90,58 @@ def test_already_current_is_an_idempotent_noop() -> None:
     assert result.applied_versions == ()
     assert result.changed is False
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_two_statements_on_one_line_both_apply() -> None:
+    """Statement boundaries are SQLite's, not the author's line breaks.
+
+    ``sqlite3.complete_statement`` reports the whole accumulated line as
+    complete, so a line-at-a-time scan handed ``A; B;`` to ``execute`` in one
+    call and SQLite refused it: whether a valid transition applied depended
+    only on where its author pressed Enter.
+
+    Anti-vacuity: restore the line-at-a-time accumulation and this raises
+    ``SchemaFastForwardError`` wrapping "You can only execute one statement at
+    a time". ``test_a_newline_separated_transition_still_applies`` pins the
+    opposite direction so splitting on every semicolon -- which would break a
+    trigger body or a semicolon inside a string literal -- cannot pass.
+    """
+    conn = _seeded_connection()
+    engine = SchemaFastForwardEngine(
+        (
+            SchemaFastForwardStep(
+                2,
+                "ALTER TABLE records ADD COLUMN source TEXT; ALTER TABLE records ADD COLUMN note TEXT;",
+            ),
+        ),
+        tier="fixture",
+    )
+
+    result = engine.execute(conn)
+
+    assert result.applied_versions == (2,)
+    assert {"source", "note"} <= {row[1] for row in conn.execute("PRAGMA table_info(records)")}
+
+
+def test_a_newline_separated_transition_still_applies() -> None:
+    """A semicolon inside a string literal or a trigger body is not a boundary."""
+    conn = _seeded_connection()
+    engine = SchemaFastForwardEngine(
+        (
+            SchemaFastForwardStep(
+                2,
+                "ALTER TABLE records ADD COLUMN note TEXT DEFAULT 'a;b';\n"
+                "CREATE TRIGGER records_guard AFTER INSERT ON records\n"
+                "BEGIN\n"
+                "  UPDATE records SET note = 'seen;' WHERE rowid = NEW.rowid;\n"
+                "END;\n",
+            ),
+        ),
+        tier="fixture",
+    )
+
+    engine.execute(conn)
+
+    conn.execute("INSERT INTO records (value) VALUES ('new')")
+    assert conn.execute("SELECT note FROM records WHERE value = 'new'").fetchone()[0] == "seen;"
+    assert conn.execute("SELECT note FROM records WHERE value = 'kept'").fetchone()[0] == "a;b"

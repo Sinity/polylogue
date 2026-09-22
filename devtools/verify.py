@@ -44,9 +44,11 @@ from devtools.testmon_provision import (
     snapshot_testmon_graph,
     sync_testmon_graph,
     testmon_datafile,
+    unrecorded_test_files,
 )
 from devtools.toolchain import venv_python
 from devtools.verification_admission import (
+    AFFECTED_MAX_UNRECORDED_FILES,
     AFFECTED_MAX_WORKERS,
     AffectedAdmission,
     admit_affected_selection,
@@ -68,6 +70,7 @@ from devtools.verify_runs import (
     prune_successful_verify_runs,
     reconcile_and_record_abandoned_verify_runs,
 )
+from devtools.verify_test_collection import count_collected
 from devtools.worker_memory import CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
     MeasurementScope,
@@ -95,6 +98,13 @@ _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 #: step; the static gates still run.
 _NO_TEST_PATH_PREFIXES = (".agentctl/", ".github/")
 _NO_TEST_PATH_SUFFIXES = (".md",)
+#: Where the ``.md`` suffix stops meaning "documentation". Markdown under
+#: ``tests/`` is fixture content a test reads and asserts --
+#: ``tests/data/golden/chatgpt-simple.md`` is compared byte-for-byte by
+#: ``tests/unit/ui/test_ui_visual.py::TestGoldenMarkdownRendering::test_chatgpt_simple_session``
+#: -- so exempting it by suffix let a change set consisting only of that
+#: fixture report "no test exercises them" and run no pytest at all.
+_TEST_TREE_PREFIX = "tests/"
 #: Selections that do not consult the testmon graph.
 _GRAPH_FREE_SELECTIONS = frozenset({"descriptor", "none"})
 # These tests read the AgentCTL descriptor directly. They are the bounded
@@ -283,6 +293,14 @@ def _git_changed_paths(root: Path) -> frozenset[str] | None:
 
 
 def _no_test_path(path: str) -> bool:
+    """Whether no test exercises ``path``.
+
+    The suffix exemption is about documentation, so it stops at the test tree:
+    a file under ``tests/`` is fixture content by construction, whatever its
+    extension.
+    """
+    if path.startswith(_TEST_TREE_PREFIX):
+        return False
     return path.startswith(_NO_TEST_PATH_PREFIXES) or path.endswith(_NO_TEST_PATH_SUFFIXES)
 
 
@@ -306,28 +324,66 @@ def _selection_reason(selection: str) -> str | None:
         return (
             "every changed path is orchestration metadata, documentation or a hosted workflow "
             f"({', '.join(f'{prefix}**' for prefix in _NO_TEST_PATH_PREFIXES)}, "
-            f"{', '.join(f'*{suffix}' for suffix in _NO_TEST_PATH_SUFFIXES)}); no test exercises them"
+            f"{', '.join(f'*{suffix}' for suffix in _NO_TEST_PATH_SUFFIXES)} "
+            f"outside {_TEST_TREE_PREFIX}**); no test exercises them"
         )
     if selection == "descriptor":
         return "the change stays inside orchestration metadata and includes the AgentCTL descriptor"
     return None
 
 
-def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, float | None, str | None]:
+def _unrecorded_selection_term(root: Path) -> tuple[int | None, str | None]:
+    """How many tests the graph has never recorded, and why that is unknown.
+
+    Testmon deselects only what it has recorded, so every test in a file the
+    graph has no execution for is unknown and runs. Those tests are part of
+    the plan being admitted and none of them appear in the graph's own
+    selection, which is how a freshly initialized or interrupted graph
+    reported a two-test plan and launched the corpus. They are priced by
+    collecting exactly those files under the declared closed-world rules.
+
+    Beyond :data:`AFFECTED_MAX_UNRECORDED_FILES` the graph is not a partial
+    oracle but an absent one; the answer is a refusal naming the corpus
+    boundary, not a longer collection.
+    """
+    unrecorded = unrecorded_test_files(root)
+    if unrecorded is None:
+        return None, "the testmon graph's recorded test files could not be read"
+    if not unrecorded:
+        return 0, None
+    if len(unrecorded) > AFFECTED_MAX_UNRECORDED_FILES:
+        return None, (
+            f"the testmon graph records no execution for {len(unrecorded)} test files, "
+            f"more than the {AFFECTED_MAX_UNRECORDED_FILES} this estimate will price"
+        )
+    counted = count_collected(unrecorded, root=root)
+    if counted is None:
+        return None, f"the {len(unrecorded)} test files the graph does not record could not be collected"
+    return counted, None
+
+
+def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, float | None, str | None, int | None]:
     """Estimate the exact testmon selection without launching pytest.
 
     Testmon mutates its database while it determines stable tests, so this
     uses a SQLite backup in a temporary directory.  The live checkout graph
     and archive are never written.  ``None`` means the selection could not be
     proven; admission then refuses rather than silently widening the scope.
+
+    The fourth element is how much of the count is unrecorded-and-therefore-
+    unknown tests, kept separate so the receipt can say where the plan's size
+    came from.
     """
     if getattr(graph, "status", None) is not TestmonGraphStatus.USABLE:
-        return None, None, None
+        return None, None, None, None
     if getattr(graph, "full_rerun_cause", None):
-        return None, None, None
+        return None, None, None, None
     source = testmon_datafile(root)
     if not source.is_file():
-        return None, None, "the testmon graph disappeared before admission"
+        return None, None, "the testmon graph disappeared before admission", None
+    unrecorded_tests, unrecorded_error = _unrecorded_selection_term(root)
+    if unrecorded_tests is None:
+        return None, None, unrecorded_error, None
     try:
         from testmon import db as testmon_db
         from testmon.testmon_core import TestmonData
@@ -335,34 +391,39 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
         with tempfile.TemporaryDirectory(prefix="polylogue-affected-admission-") as temporary:
             destination = Path(temporary) / "testmondata"
             if not snapshot_testmon_graph(source, destination):
-                return None, None, "the testmon graph could not be snapshotted for admission"
+                return None, None, "the testmon graph could not be snapshotted for admission", None
             database = testmon_db.DB(str(destination), readonly=False)
             try:
                 data = TestmonData.for_local_run(rootdir=str(root), database=database, environment=TESTMON_ENVIRONMENT)
                 if data.system_packages_change:
-                    return None, None, "the testmon environment changed; affected selection is unbounded"
+                    return None, None, "the testmon environment changed; affected selection is unbounded", None
                 data.determine_stable()
                 selected = set(data.unstable_test_names) | set(data.failing_tests)
                 durations = [data.all_tests[name].get("duration") for name in selected]
                 estimated = (
                     None if any(value is None for value in durations) else sum(float(value) for value in durations)
                 )
-                return len(selected), estimated, None
+                # The unknown tests are part of what launches, so they are part
+                # of the count the cap is applied to. They have no recorded
+                # duration, so the seconds estimate stays the graph's alone and
+                # is a floor rather than a prediction.
+                return len(selected) + unrecorded_tests, estimated, None, unrecorded_tests
             finally:
                 database.con.close()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
-        return None, None, "the affected selection could not be measured from the graph"
+        return None, None, "the affected selection could not be measured from the graph", None
 
 
 def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
     """Build the bounded affected admission decision and its measurement note."""
-    selected_count, estimated_seconds, measurement_error = _estimate_affected_selection(root, graph)
+    selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(root, graph)
     decision = admit_affected_selection(
         graph_status=str(getattr(graph, "status", "unknown")),
         graph_reason=str(getattr(graph, "reason", "graph state unavailable")),
         full_rerun_cause=getattr(graph, "full_rerun_cause", None),
         selected_count=selected_count,
         estimated_seconds=estimated_seconds,
+        unrecorded_tests=unrecorded_tests,
     )
     if measurement_error and decision.admitted:
         # This is defensive: the current estimator returns an unknown count
@@ -374,6 +435,7 @@ def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
             full_rerun_cause=None,
             selected_count=None,
             estimated_seconds=None,
+            unrecorded_tests=unrecorded_tests,
         )
     if measurement_error and decision.status == "unknown":
         decision = AffectedAdmission(
@@ -385,6 +447,7 @@ def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
             max_selected_tests=decision.max_selected_tests,
             max_estimated_seconds=decision.max_estimated_seconds,
             max_workers=decision.max_workers,
+            unrecorded_tests=decision.unrecorded_tests,
         )
     return decision
 

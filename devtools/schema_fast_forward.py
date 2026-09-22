@@ -82,27 +82,46 @@ class SchemaFastForwardResult:
         return bool(self.applied_versions)
 
 
+def _split_statements(sql: str) -> list[str]:
+    """Split ``sql`` at real SQLite statement boundaries.
+
+    The boundary is a semicolon that ends a *complete* statement, which is not
+    the same as a semicolon that ends a line. Scanning by line accepted
+    ``CREATE ...; CREATE ...;`` on one line as a single complete statement and
+    handed both to ``Connection.execute``, which rejects multi-statement input
+    -- so whether a valid transition applied depended only on where its author
+    put newlines. ``sqlite3.complete_statement`` is what knows the difference:
+    it stays False inside a string literal, a comment, and a
+    ``CREATE TRIGGER ... BEGIN ... END;`` body.
+
+    A trailing fragment with no terminating semicolon is returned as its own
+    statement: callers routinely declare one ordinary DDL statement without
+    one, and SQLite parses that fine while still refusing two.
+    """
+    statements: list[str] = []
+    start = 0
+    for index, character in enumerate(sql):
+        if character != ";":
+            continue
+        candidate = sql[start : index + 1]
+        if not sqlite3.complete_statement(candidate):
+            continue
+        if candidate.strip():
+            statements.append(candidate)
+        start = index + 1
+    tail = sql[start:]
+    if tail.strip():
+        statements.append(tail)
+    return statements
+
+
 def _execute_sql(conn: sqlite3.Connection, sql: str, *, label: str) -> None:
     """Execute SQL without allowing it to escape the engine transaction."""
-    statement = ""
-    for line in sql.splitlines(keepends=True):
-        statement += line
-        if not sqlite3.complete_statement(statement):
-            continue
-        if statement.strip():
-            try:
-                conn.execute(statement)
-            except sqlite3.DatabaseError as exc:
-                raise SchemaFastForwardError(f"{label} failed: {exc}") from exc
-        statement = ""
-    if statement.strip():
-        # sqlite3.complete_statement requires a semicolon, while callers often
-        # provide one ordinary DDL statement without one.  Let SQLite parse
-        # that final statement; it still rejects multi-statement input.
+    for statement in _split_statements(sql):
         try:
             conn.execute(statement)
         except sqlite3.DatabaseError as exc:
-            raise SchemaFastForwardError(f"{label} contains an incomplete SQL statement: {exc}") from exc
+            raise SchemaFastForwardError(f"{label} failed: {exc}") from exc
 
 
 class SchemaFastForwardEngine:

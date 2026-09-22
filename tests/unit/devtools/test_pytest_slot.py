@@ -1027,3 +1027,116 @@ def test_a_signalled_held_run_writes_its_receipt_inside_the_stop_budget(tmp_path
         stream.close()
 
     assert receipt.read_text() == "terminal", "the outer handler must reach its receipt work"
+
+
+#: A held run signalled at its deadline, with the caller's disposal wired the
+#: way ``run_pytest`` wires it: the scratch telemetry sidecar is removed on the
+#: way out. Nothing here installs an outer handler, so the re-raised signal
+#: takes the process with the default action -- the shape the corpus operation
+#: dies in when AgentCTL reaches its ``timeout_seconds``.
+_INTERRUPTED_HELD_RUN = """
+import os, pathlib, sys
+sys.path.insert(0, {repo!r})
+from devtools.pytest_slot import _run_held
+
+telemetry = pathlib.Path({telemetry!r})
+result = pathlib.Path({result!r})
+
+
+def dispose():
+    telemetry.unlink(missing_ok=True)
+
+
+child = (
+    "import sys, time\\n"
+    "sys.stderr.write('up\\\\n'); sys.stderr.flush()\\n"
+    "time.sleep(120)\\n"
+)
+_run_held(
+    [sys.executable, "-c", child],
+    cwd={cwd!r},
+    env={{"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}},
+    stdout=sys.stderr,
+    on_exit=dispose,
+    telemetry_path=telemetry,
+    result_path=result,
+)
+"""
+
+
+@pytest.mark.load_sensitive
+@pytest.mark.uses_real_clock("signals a real child process group and reads what survived it")
+def test_an_interrupted_held_run_preserves_its_receipt(tmp_path: Path) -> None:
+    """A terminated held run leaves its width and its measured peak on disk.
+
+    ``verify_all`` and ``verify_affected`` run through this path whenever they
+    already hold the pytest pool. Before this, the signal handler stopped the
+    child and re-raised, so ``sampler.stop()`` and the receipt return were
+    never reached, and the caller's disposal deleted the live telemetry
+    sidecar on the way past -- a deadline kill left no evidence at all, which
+    is precisely the run whose sizing evidence matters most.
+
+    Anti-vacuity: drop ``on_signal=preserve`` from ``_run_held``'s
+    ``_on_exit`` and no result document exists; keep it but let ``dispose``
+    run first and the sampler has nothing left to read. The opposite
+    direction is pinned by
+    ``test_a_completed_held_run_writes_no_interrupted_receipt``, so a handler
+    that always writes ``timed_out`` cannot pass either.
+    """
+    telemetry = tmp_path / "telemetry.json"
+    result = tmp_path / "held-run.log"
+    repo = str(Path(pytest_slot.__file__).resolve().parents[1])
+    waiter = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _INTERRUPTED_HELD_RUN.format(repo=repo, cwd=str(tmp_path), telemetry=str(telemetry), result=str(result)),
+        ],
+        env={"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/home/nobody")},
+        stderr=subprocess.PIPE,
+    )
+    stream = waiter.stderr
+    assert stream is not None
+    try:
+        assert stream.readline().strip() == b"up", "the held child never started"
+        waiter.send_signal(signal.SIGTERM)
+        waiter.wait(timeout=30)
+    finally:
+        if waiter.poll() is None:  # pragma: no cover - only on a stuck waiter
+            waiter.kill()
+            waiter.wait(timeout=30)
+        stream.close()
+
+    # The scratch sidecar is gone: the caller's disposal ran, as it does in
+    # production. The receipt is what had to outlive it.
+    assert not telemetry.exists()
+    document = json.loads(pytest_slot._slot_result_path(result).read_text(encoding="utf-8"))
+    assert document["kind"] == "polylogue.pytest-slot-result"
+    assert document["status"] == "timed_out"
+    assert document["signal"] == "SIGTERM"
+    # The two facts the lost receipt was carrying: the width the run was
+    # admitted at, and what it took at that width.
+    assert document["sizing"]["workers"] >= 1
+    assert document["memory"]["peak"]["rss_kib"] > 0
+
+
+def test_a_completed_held_run_writes_no_interrupted_receipt(tmp_path: Path) -> None:
+    """A run that finishes on its own leaves no interruption behind.
+
+    Without this a handler that unconditionally wrote ``timed_out`` would
+    satisfy the test above while making every ordinary run look terminated.
+    """
+    result = tmp_path / "held-run.log"
+    returncode, receipt = pytest_slot._run_held(
+        [sys.executable, "-c", "pass"],
+        cwd=str(tmp_path),
+        env={"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "/home/nobody")},
+        stdout=None,
+        on_exit=lambda: None,
+        telemetry_path=tmp_path / "telemetry.json",
+        result_path=result,
+    )
+
+    assert returncode == 0
+    assert receipt["status"] == "success"
+    assert not pytest_slot._slot_result_path(result).exists()

@@ -7,6 +7,7 @@ import pytest
 from devtools.verification_admission import (
     AFFECTED_MAX_ESTIMATED_SECONDS,
     AFFECTED_MAX_SELECTED_TESTS,
+    AFFECTED_MAX_UNRECORDED_FILES,
     AFFECTED_MAX_WORKERS,
     AFFECTED_POLICY_MAX_WORKERS,
     admit_affected_selection,
@@ -30,6 +31,7 @@ def test_below_cap_is_admitted_with_exact_count_and_budget() -> None:
         "max_selected_tests": AFFECTED_MAX_SELECTED_TESTS,
         "max_estimated_seconds": AFFECTED_MAX_ESTIMATED_SECONDS,
         "max_workers": AFFECTED_MAX_WORKERS,
+        "max_unrecorded_files": AFFECTED_MAX_UNRECORDED_FILES,
     }
 
 
@@ -91,3 +93,56 @@ def test_affected_width_never_exceeds_the_memory_owner() -> None:
     assert AFFECTED_MAX_WORKERS <= CORPUS_MAX_WORKERS
     assert min(AFFECTED_POLICY_MAX_WORKERS, CORPUS_MAX_WORKERS) == AFFECTED_MAX_WORKERS
     assert AFFECTED_MAX_WORKERS >= 1
+
+
+def test_unknown_tests_are_reported_beside_the_count() -> None:
+    """The plan's size and where it came from are both on the receipt.
+
+    Testmon deselects only what it has recorded, so a test the graph has never
+    seen runs. Those tests belong in the count the cap is applied to, and the
+    receipt has to be able to say how many of them there were: a plan of 900
+    selected tests and a plan of 40 selected plus 860 never-recorded ones are
+    admitted the same way and mean different things.
+
+    Anti-vacuity: drop ``unrecorded_tests`` from ``to_payload`` and the first
+    assertion goes red; stop applying the cap to the whole count -- the defect
+    this closes, where the estimate reported the graph's number and launched
+    the graph's number plus every unknown test -- and the second goes red.
+    """
+    admitted = admit_affected_selection(
+        graph_status="usable",
+        graph_reason="testmon datafile present",
+        full_rerun_cause=None,
+        selected_count=40 + 860,
+        estimated_seconds=30.0,
+        unrecorded_tests=860,
+    )
+    assert admitted.admitted
+    assert admitted.to_payload()["unrecorded_tests"] == 860
+
+    refused = admit_affected_selection(
+        graph_status="usable",
+        graph_reason="testmon datafile present",
+        full_rerun_cause=None,
+        selected_count=40 + AFFECTED_MAX_SELECTED_TESTS,
+        estimated_seconds=30.0,
+        unrecorded_tests=AFFECTED_MAX_SELECTED_TESTS,
+    )
+    assert refused.status == "refused"
+    assert str(AFFECTED_MAX_SELECTED_TESTS) in refused.reason
+    assert refused.to_payload()["unrecorded_tests"] == AFFECTED_MAX_SELECTED_TESTS
+
+
+def test_an_unasked_unrecorded_term_stays_unknown() -> None:
+    """A caller that measured nothing reports ``None``, never a reassuring zero."""
+    decision = admit_affected_selection(
+        graph_status="usable",
+        graph_reason="testmon datafile present",
+        full_rerun_cause=None,
+        selected_count=7,
+        estimated_seconds=1.0,
+    )
+    assert decision.to_payload()["unrecorded_tests"] is None
+    budget = decision.to_payload()["budget"]
+    assert isinstance(budget, dict)
+    assert budget["max_unrecorded_files"] == AFFECTED_MAX_UNRECORDED_FILES

@@ -37,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from devtools.agent_env import HARNESS_RUN_ENV
@@ -67,15 +68,22 @@ _EXIT_NO_TESTS_COLLECTED = 5
 #: inside every agent job -- exactly where ``verify --quick`` is run.
 COLLECTION_RUN_ID = "gate-test-collection"
 
-__all__ = ["COLLECTION_RUN_ID", "collection_command", "collection_env", "main"]
+__all__ = ["COLLECTION_RUN_ID", "collection_command", "collection_env", "count_collected", "main"]
 
 
 def collection_env() -> dict[str, str]:
     return {**os.environ, HARNESS_RUN_ENV: COLLECTION_RUN_ID}
 
 
-def collection_command(*, root: Path = ROOT) -> list[str]:
-    """Return the declared collect-only invocation for the whole corpus."""
+def collection_command(*, root: Path = ROOT, paths: Sequence[str] | None = None) -> list[str]:
+    """Return the declared collect-only invocation.
+
+    ``paths`` narrows it to named files while keeping every other declared
+    argument, so a caller that needs to count part of the corpus counts it
+    under the same rules that define what the corpus is. The declared root
+    (the trailing ``tests`` argument) is what the named paths replace.
+    """
+    roots = list(CLOSED_WORLD_COLLECTION_ARGS[:-1]) + list(paths) if paths else list(CLOSED_WORLD_COLLECTION_ARGS)
     return [
         venv_python(root=root),
         "-m",
@@ -84,10 +92,31 @@ def collection_command(*, root: Path = ROOT) -> list[str]:
         "--collect-only",
         *IGNORED_COLLECTION_ARGS,
         *managed_plugin_args(testmon=False, xdist=False),
-        *CLOSED_WORLD_COLLECTION_ARGS,
+        *roots,
         "-p",
         "no:randomly",
     ]
+
+
+def count_collected(paths: Sequence[str], *, root: Path = ROOT) -> int | None:
+    """How many tests the declared rules collect from ``paths``.
+
+    ``None`` when collection did not succeed -- an unimportable module, a
+    missing path, a refused interpreter. A caller that cannot get this number
+    has no bound on what those paths will execute, and ``None`` is that
+    answer rather than a zero that would read as "nothing there".
+    """
+    if not paths:
+        return 0
+    command = collection_command(root=root, paths=paths)
+    try:
+        completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False, env=collection_env())
+    except OSError:
+        return None
+    if completed.returncode != 0:
+        return None
+    match = _COLLECTED_RE.search(f"{completed.stdout}\n{completed.stderr}")
+    return int(match.group(1)) if match else None
 
 
 def _failure_details(output: str, *, limit: int = 12) -> tuple[str, ...]:

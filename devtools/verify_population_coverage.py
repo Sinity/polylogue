@@ -27,6 +27,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Final
 
 from devtools.parser_census import Census, ParserCensusError, census_dir, latest_census, load_census
 from polylogue.archive.artifact_taxonomy.models import ArtifactKind
@@ -316,7 +317,7 @@ def _stale_unknown_artifact_constructs(
         origin = str(origin)
         original_kind = str(original_kind)
         original_support = str(original_support)
-        observation = _reinspect_unknown_row(
+        observation, unavailable = _reinspect_unknown_row(
             raw_id=raw_id,
             blob_hash=blob_hash,
             blob_size=blob_size,
@@ -330,12 +331,21 @@ def _stale_unknown_artifact_constructs(
             declared_by_path = _artifact_rule_for_path(by_origin, origin, source_path)
             # A raw-only path declaration is itself positive evidence (for
             # example the named applet access log).  A session path may cover
-            # an unavailable stale decode only when the persisted observation
-            # already records a decode failure; a fresh unknown with bytes is
-            # intentionally still uncovered because its shape was not proved.
+            # an unavailable stale decode only when the bytes are GONE and the
+            # persisted observation already records a decode failure; a fresh
+            # unknown with bytes is intentionally still uncovered because its
+            # shape was not proved.
+            #
+            # Which kind of "unavailable" is load-bearing. Reinspection also
+            # returns nothing when the row's retained bytes are right there but
+            # its nullable ``detected_provider`` gives no parser to read them
+            # with -- a gap in resolution, not in retention. Treating that as
+            # proof the blob is gone marked such a row COVERED, with a witness
+            # that said "retained blob unavailable" about bytes the archive
+            # still holds, and the gate passed without ever inspecting them.
             path_allowed = declared_by_path is not None and (
                 declared_by_path.parse_policy == "raw-only"
-                or (observation is None and original_support == ArtifactSupportStatus.DECODE_FAILED.value)
+                or (unavailable == _BLOB_ABSENT and original_support == ArtifactSupportStatus.DECODE_FAILED.value)
             )
             if path_allowed:
                 assert declared_by_path is not None
@@ -411,6 +421,16 @@ def _artifact_rule_for_path(
     return None
 
 
+#: Why a stale unknown row could not be re-observed. Only ``_BLOB_ABSENT`` is
+#: a statement about the archive -- the retained bytes are gone, so no later
+#: inspection can ever prove this row's shape, and a declared source path is
+#: the only thing left that can cover it. The other two say the bytes are
+#: still there and this check could not read them, which covers nothing.
+_BLOB_ABSENT: Final = "blob_absent"
+_PROVIDER_UNRESOLVED: Final = "provider_unresolved"
+_ROW_UNREADABLE: Final = "row_unreadable"
+
+
 def _reinspect_unknown_row(
     *,
     raw_id: object,
@@ -421,23 +441,36 @@ def _reinspect_unknown_row(
     detected_provider: object,
     origin: str,
     blob_store: BlobStore | None,
-) -> ArtifactObservationRecord | None:
-    """Return a fresh observation for one stale row, or ``None`` if unavailable."""
-    if blob_store is None or not isinstance(raw_id, str) or not isinstance(source_path, str):
-        return None
+) -> tuple[ArtifactObservationRecord | None, str | None]:
+    """Return a fresh observation for one stale row, and why there is none.
+
+    The second element separates the reasons a caller must not conflate:
+    :data:`_BLOB_ABSENT` means the retained bytes are gone and nothing can
+    ever classify this row again, while :data:`_PROVIDER_UNRESOLVED` and
+    :data:`_ROW_UNREADABLE` mean the bytes are still here and this check could
+    not read them. Only the first is evidence about the archive; the others
+    are evidence about this gate.
+    """
+    if blob_store is None:
+        # No blob tree at all: this archive retains no bytes for any row, so
+        # there is nothing left to classify -- the same standing as a hash the
+        # store does not hold.
+        return None, _BLOB_ABSENT
+    if not isinstance(raw_id, str) or not isinstance(source_path, str):
+        return None, _ROW_UNREADABLE
     if not isinstance(blob_hash, (bytes, bytearray)) or not isinstance(blob_size, int):
-        return None
+        return None, _ROW_UNREADABLE
     blob_hash_hex = bytes(blob_hash).hex()
     try:
         if not blob_store.exists(blob_hash_hex):
-            return None
+            return None, _BLOB_ABSENT
         provider = Provider.from_string(str(detected_provider or ""))
         if provider is Provider.UNKNOWN and origin == "aistudio-drive":
             # The public origin is intentionally non-injective; use the
             # acquisition family only as a parser hint for this exact shape.
             provider = Provider.GEMINI
         if provider is Provider.UNKNOWN:
-            return None
+            return None, _PROVIDER_UNRESOLVED
         record = RawSessionRecord(
             raw_id=raw_id,
             blob_hash=blob_hash_hex,
@@ -448,12 +481,13 @@ def _reinspect_unknown_row(
             blob_size=blob_size,
             acquired_at=datetime.fromtimestamp(0, tz=timezone.utc).isoformat(),
         )
-        return inspect_raw_artifact(record, blob_store=blob_store)
+        return inspect_raw_artifact(record, blob_store=blob_store), None
     except Exception:
         # This is a verification aid, not a second parser error surface.  The
         # original unknown observation remains uncovered when reinspection is
-        # unavailable or fails.
-        return None
+        # unavailable or fails. The bytes are still retained, so this is not
+        # evidence that they are gone.
+        return None, _ROW_UNREADABLE
 
 
 def _artifact_construct(

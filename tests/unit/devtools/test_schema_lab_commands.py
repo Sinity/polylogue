@@ -448,3 +448,29 @@ def test_schema_promote_reports_workflow_errors(
 
     assert schema_promote.main(["--provider", "chatgpt", "--cluster", "missing"]) == 1
     assert "schema-promote: missing cluster: missing" in capsys.readouterr().err
+
+
+def test_promotion_audits_the_tree_promotion_writes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The post-promotion audit root is the registry's storage root.
+
+    ``promote_schema_cluster`` writes through
+    ``polylogue.schemas.operator.registry.schema_registry()``, whose
+    ``storage_root`` is ``data_home()/schemas`` -- an XDG path. The audit used
+    the installed ``polylogue/schemas`` package directory instead, so it
+    inspected bundled artifacts promotion never touched and a malformed or
+    privacy-unsafe newly promoted artifact returned success uninspected.
+
+    Anti-vacuity: restore ``Path(next(iter(polylogue.schemas.__path__)))`` and
+    the first assertion fails, because that path is inside the checkout and
+    does not move with ``XDG_DATA_HOME``. The second assertion pins the
+    opposite direction: a helper that returned any tmp path would satisfy the
+    first one, so the value must be the registry's own storage root.
+    """
+    from polylogue.schemas.registry import SchemaRegistry
+
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+
+    observed = schema_promote._schema_registry_root()
+
+    assert observed == tmp_path / "share" / "polylogue" / "schemas"
+    assert observed == SchemaRegistry().storage_root

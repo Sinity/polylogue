@@ -19,15 +19,47 @@ from devtools.toolchain import venv_python
 from devtools.verify import _pytest_worker_args
 from devtools.worker_memory import CORPUS_MAX_WORKERS
 
+#: The narrowest managed corpus width this gate accepts as a default. It is a
+#: literal, not a second reading of :data:`CORPUS_MAX_WORKERS`, because the
+#: mutation this gate claims to catch is an edit to that constant: comparing
+#: the produced argument against the same constant moves both sides together,
+#: so ``CORPUS_MAX_WORKERS = 0`` produced ``-n 0`` on both and the gate stayed
+#: green while the corpus would have run without xdist at all.
+MINIMUM_DEFAULT_WORKERS = 1
+
+
+def worker_default_refusal(worker_args: list[str]) -> str | None:
+    """Why the managed default width is unusable, or ``None``.
+
+    Two independent claims, because neither catches the other's mutation:
+    the produced arguments must still be the declared corpus width, AND that
+    width must be a real xdist width on its own terms. Only the second
+    survives an edit to :data:`CORPUS_MAX_WORKERS` itself.
+    """
+    if worker_args[:2] != ["--dist=loadgroup", "-n"] or len(worker_args) != 3:
+        return f"managed verification does not request grouped xdist workers: {worker_args!r}"
+    try:
+        width = int(worker_args[2])
+    except ValueError:
+        return f"managed verification requested a non-numeric worker width: {worker_args[2]!r}"
+    if width < MINIMUM_DEFAULT_WORKERS:
+        return (
+            f"managed verification defaults to {width} workers, below the "
+            f"{MINIMUM_DEFAULT_WORKERS}-worker floor; the corpus would run without xdist"
+        )
+    if width != CORPUS_MAX_WORKERS:
+        return f"managed verification defaults to {width} workers, not the declared corpus width {CORPUS_MAX_WORKERS}"
+    return None
+
 
 def main(_argv: list[str] | None = None) -> int:
     """Trace a generated corpus, edit one leaf, and require a small rerun.
 
     Anti-vacuity: changing ``--testmon-forceselect`` to ``--testmon-noselect``
     makes the second run execute all tests; removing xdist from this command
-    would stop this gate from covering the hosted route; changing the default
-    worker count to zero makes the worker assertion fail; refusing the seed
-    makes the first run fail to establish the graph.
+    would stop this gate from covering the hosted route; setting
+    ``CORPUS_MAX_WORKERS = 0`` makes :func:`worker_default_refusal` fail;
+    refusing the seed makes the first run fail to establish the graph.
     """
     configured_workers = os.environ.pop("POLYLOGUE_PYTEST_WORKERS", None)
     try:
@@ -35,8 +67,9 @@ def main(_argv: list[str] | None = None) -> int:
     finally:
         if configured_workers is not None:
             os.environ["POLYLOGUE_PYTEST_WORKERS"] = configured_workers
-    if default_worker_args != ["--dist=loadgroup", "-n", str(CORPUS_MAX_WORKERS)]:
-        print(f"testmon-selection: managed verification does not default to {CORPUS_MAX_WORKERS} workers")
+    refusal = worker_default_refusal(default_worker_args)
+    if refusal is not None:
+        print(f"testmon-selection: {refusal}")
         return 1
     with tempfile.TemporaryDirectory(prefix="polylogue-testmon-gate-") as temporary:
         root = Path(temporary)
