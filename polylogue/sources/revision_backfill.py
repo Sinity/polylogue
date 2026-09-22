@@ -1320,7 +1320,7 @@ def _census_historical_revision_evidence(
     def apply_outcome(
         raw_id: str,
         source_index: int,
-        outcomes: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
+        outcomes: Mapping[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception],
     ) -> None:
         state.scanned += 1
         state.censused.add(raw_id)
@@ -1553,13 +1553,28 @@ def _census_historical_revision_evidence(
                     if older_raw_id != chain_probe_by_head.get(head_raw_id)
                 }
                 dispatch_raw_ids = [raw_id for raw_id in parseable_raw_ids if raw_id not in head_by_older]
-                parsed_outcomes = _parse_retained_raws(
+                # polylogue-4j9j: apply consumes outcomes as they resolve
+                # instead of after the whole page has parsed. The loop below
+                # reads each dispatched raw exactly once and in
+                # ``dispatch_raw_ids`` order -- ``dispatch_raw_ids`` is
+                # ``pending_rows`` filtered, and the skips here are the same
+                # filter -- so writes stay in the identical order and a page
+                # no longer has to hold every parsed session at once.
+                #
+                # Parse threads now run while this thread writes, which the
+                # eager form avoided by construction. That is safe at exactly
+                # this seam and nowhere else: a GIL interpreter never reaches
+                # the threaded plan at all (``resolve_revision_backfill_census_dispatch``
+                # returns SEQUENTIAL), and the polylogue-7mtf measurement that
+                # forbids concurrent parse threads -- ~5000x writer commit
+                # latency -- was taken on a GIL build.
+                with stream_retained_raws(
                     archive, dispatch_raw_ids, ingest_workers=ingest_workers, prefetch_cache=prefetch_cache
-                )
-                for raw_id, source_index in pending_rows:
-                    if raw_id in head_by_older:
-                        continue
-                    apply_outcome(raw_id, source_index, parsed_outcomes)
+                ) as parsed_outcomes:
+                    for raw_id, source_index in pending_rows:
+                        if raw_id in head_by_older:
+                            continue
+                        apply_outcome(raw_id, source_index, parsed_outcomes)
                 if head_by_older:
                     source_index_by_raw_id = dict(pending_rows)
 
@@ -3399,6 +3414,263 @@ def _parse_retained_raws(
     (every caller that does not opt in) skips this lookup/store entirely and
     is byte-identical to today's behavior.
     """
+    with stream_retained_raws(
+        archive, raw_ids, ingest_workers=ingest_workers, prefetch_cache=prefetch_cache
+    ) as outcomes:
+        return {raw_id: outcomes[raw_id] for raw_id in raw_ids}
+
+
+#: Parse tasks kept in flight per worker by :class:`_OrderedUniqueParse`.
+#:
+#: A ``ThreadPoolExecutor`` resolves a ``Future`` whether or not anyone reads
+#: it, so consuming outcomes lazily does not on its own bound memory: the
+#: parsed object graphs simply accumulate inside completed futures instead of
+#: inside a result dict. Dispatch has to be throttled as well, and this is the
+#: throttle. Above 1 a worker always has its next task queued, so the pool
+#: never idles between a consumer's two reads; the peak retained parse count
+#: is this multiple times the worker count rather than the page size.
+_INFLIGHT_PARSES_PER_WORKER: Final[int] = 2
+
+
+class _OrderedUniqueParse:
+    """Parse deduplicated raws on demand, in one fixed order, bounded in flight.
+
+    ``_parse_unique_retained_raws`` returns every outcome at once, which is
+    the shape polylogue-4j9j names: the caller's apply loop consumes outcomes
+    one at a time in ``pending_rows`` order, so a whole census page of parsed
+    ``ParsedSession`` graphs is alive simultaneously for no reason other than
+    the return type. This class resolves the same outcomes, in the same order,
+    releasing each as it is read.
+
+    Resolution order is the caller's, not completion order, so the archive
+    writes that follow stay byte-identical to both the sequential path and
+    today's eager dict -- the existing sequential-versus-parallel equivalence
+    proofs cover the new consumer unchanged.
+
+    The executor's lifetime is owned here: :meth:`close` shuts it down and
+    cancels whatever was still queued. Nothing is left for the garbage
+    collector to notice.
+    """
+
+    def __init__(
+        self,
+        archive: ArchiveStore,
+        order: Sequence[str],
+        *,
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+        ingest_workers: int,
+    ) -> None:
+        self._archive = archive
+        self._order = list(order)
+        self._descriptors = descriptors
+        self._futures: dict[str, Future[tuple[str, list[ParsedSession] | None, str | None]]] = {}
+        self._pool: ThreadPoolExecutor | None = None
+        self._dispatched = 0
+        self._peak_inflight = 0
+        plan = resolve_revision_backfill_census_dispatch(
+            ingest_workers=ingest_workers,
+            record_count=len(self._order),
+            free_threaded=parallel_threads_effective(),
+        )
+        self._sequential = plan.pool_kind is PoolKind.SEQUENTIAL
+        if self._sequential:
+            if ingest_workers > 1 and len(self._order) > 1:
+                _LOGGER.warning(
+                    "parsing %d raws sequentially: this interpreter has the GIL enabled, and "
+                    "parse threads under a GIL starve the archive writer rather than speeding "
+                    "parse up. Run polylogue on a free-threaded build (3.14t) for parallel parse.",
+                    len(self._order),
+                )
+            return
+        if not self._order:
+            return
+        self._blob_root = str(archive.archive_root / "blob")
+        self._source_db_path = str(archive.source_db_path)
+        self._max_inflight = max(1, min(len(self._order), ingest_workers * _INFLIGHT_PARSES_PER_WORKER))
+        self._pool = ThreadPoolExecutor(max_workers=min(ingest_workers, len(self._order)))
+        self._refill()
+
+    @property
+    def peak_inflight(self) -> int:
+        """Largest number of parse tasks ever dispatched and unread at once."""
+        return self._peak_inflight
+
+    @property
+    def executor_running(self) -> bool:
+        """Whether this resolver still owns a live executor."""
+        return self._pool is not None
+
+    def _submit_next(self) -> None:
+        raw_id = self._order[self._dispatched]
+        self._dispatched += 1
+        provider, blob_hash, source_path, kind, _payload_size, native_id = self._descriptors[raw_id]
+        assert self._pool is not None
+        self._futures[raw_id] = self._pool.submit(
+            census_parse_worker,
+            raw_id,
+            provider.value,
+            blob_hash,
+            source_path,
+            is_stream_record_provider(source_path, str(provider)),
+            self._blob_root,
+            self._source_db_path,
+            kind.value,
+            native_id,
+        )
+        self._peak_inflight = max(self._peak_inflight, len(self._futures))
+
+    def _refill(self) -> None:
+        while len(self._futures) < self._max_inflight and self._dispatched < len(self._order):
+            self._submit_next()
+
+    def resolve(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+        """Outcome for ``raw_id``, blocking only on that raw's own parse."""
+        if self._sequential:
+            self._peak_inflight = max(self._peak_inflight, 1)
+            try:
+                return _parse_retained_raw(self._archive, raw_id)
+            except Exception as exc:
+                return exc
+        while raw_id not in self._futures and self._dispatched < len(self._order):
+            self._submit_next()
+        future = self._futures.pop(raw_id)
+        self._refill()
+        try:
+            _raw_id, sessions, error = future.result()
+        except Exception as exc:
+            return exc
+        if error is not None:
+            return RuntimeError(error)
+        _provider, _blob_hash, _source_path, kind, payload_size, _native_id = self._descriptors[raw_id]
+        return (sessions or [], payload_size, kind)
+
+    def close(self) -> None:
+        """Shut the executor down, cancelling anything still queued."""
+        pool, self._pool = self._pool, None
+        self._futures.clear()
+        if pool is not None:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+
+class _OrderedParseOutcomes(Mapping[str, "tuple[list[ParsedSession], int, RawRevisionKind] | Exception"]):
+    """Retained-raw parse outcomes resolved on first read, released after it.
+
+    A drop-in for the dict ``_parse_retained_raws`` used to return: the census
+    apply loop only ever does ``outcomes[raw_id]``. Dedup fan-out, the
+    raw_id-keyed prefetch pop, the content cache and replay enrichment all
+    behave exactly as they did eagerly -- they are simply performed for one
+    raw at the moment that raw is read.
+
+    A group's parsed sessions are held only until its last member has been
+    read, so a dedup group costs one live parse rather than one per member,
+    and nothing survives the read of its final member.
+
+    Reading a raw more than once re-derives it; the census page reads each
+    raw exactly once. Iterating the mapping forces every raw in order, which
+    is what the eager ``_parse_retained_raws`` wrapper does.
+    """
+
+    def __init__(
+        self,
+        archive: ArchiveStore,
+        raw_ids: Sequence[str],
+        *,
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
+        prefetched: dict[str, tuple[list[ParsedSession], int, RawRevisionKind]],
+        key_by_raw_id: dict[str, ContentCacheKey],
+        pending_by_key: dict[ContentCacheKey, int],
+        representative_by_key: dict[ContentCacheKey, str],
+        unique: _OrderedUniqueParse,
+        prefetch_cache: RawParsePrefetchCache | None,
+    ) -> None:
+        self._archive = archive
+        self._raw_ids = list(raw_ids)
+        self._descriptors = descriptors
+        self._prefetched = prefetched
+        self._key_by_raw_id = key_by_raw_id
+        self._pending_by_key = pending_by_key
+        self._representative_by_key = representative_by_key
+        self._unique = unique
+        self._prefetch_cache = prefetch_cache
+        self._group_outcome: dict[ContentCacheKey, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._raw_ids)
+
+    def __len__(self) -> int:
+        return len(self._raw_ids)
+
+    @property
+    def live_group_count(self) -> int:
+        """Dedup groups whose parsed sessions are currently retained."""
+        return len(self._group_outcome)
+
+    @property
+    def peak_inflight_parses(self) -> int:
+        """Largest number of parse tasks dispatched and unread at once."""
+        return self._unique.peak_inflight
+
+    @property
+    def executor_running(self) -> bool:
+        """Whether the owned parse executor is still live."""
+        return self._unique.executor_running
+
+    def _group_result(self, key: ContentCacheKey) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+        cached = self._group_outcome.get(key)
+        if cached is not None:
+            return cached
+        if self._prefetch_cache is not None:
+            content_hit = self._prefetch_cache.get_content(key)
+            if content_hit is not None:
+                self._group_outcome[key] = content_hit
+                return content_hit
+        outcome = self._unique.resolve(self._representative_by_key[key])
+        if self._prefetch_cache is not None and not isinstance(outcome, Exception):
+            sessions, rep_size, rep_kind = outcome
+            self._prefetch_cache.put_content(key, sessions, payload_bytes=rep_size, revision_kind=rep_kind)
+        self._group_outcome[key] = outcome
+        return outcome
+
+    def __getitem__(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+        popped = self._prefetched.pop(raw_id, None)
+        if popped is not None:
+            return _enrich_retained_parse_outcome(
+                self._archive, raw_id, descriptor=self._descriptors[raw_id], outcome=popped
+            )
+        key = self._key_by_raw_id[raw_id]
+        group_outcome = self._group_result(key)
+        remaining = self._pending_by_key[key] - 1
+        self._pending_by_key[key] = remaining
+        if remaining <= 0:
+            self._group_outcome.pop(key, None)
+        if isinstance(group_outcome, Exception):
+            return group_outcome
+        sessions, _rep_size, _rep_kind = group_outcome
+        _provider, _blob_hash, _source_path, kind, size, _native_id = self._descriptors[raw_id]
+        return _enrich_retained_parse_outcome(
+            self._archive, raw_id, descriptor=self._descriptors[raw_id], outcome=(sessions, size, kind)
+        )
+
+
+@contextmanager
+def stream_retained_raws(
+    archive: ArchiveStore,
+    raw_ids: list[str],
+    *,
+    ingest_workers: int,
+    prefetch_cache: RawParsePrefetchCache | None = None,
+) -> Iterator[_OrderedParseOutcomes]:
+    """Parse ``raw_ids`` lazily, in caller order, with the executor owned here.
+
+    Same inputs, same dedup, same per-raw outcomes as
+    :func:`_parse_retained_raws`; the difference is that outcomes are produced
+    as they are read instead of all at once, so a census page's apply loop no
+    longer requires the whole page's parsed sessions to be resident.
+
+    The caller must read each raw at most once and in the order it passed. On
+    exit the executor is shut down and queued work cancelled, whether the body
+    completed or raised.
+    """
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
     for raw_id in raw_ids:
         provider, blob_hash, source_path, kind, size = archive.raw_revision_descriptor(raw_id)
@@ -3408,7 +3680,8 @@ def _parse_retained_raws(
         # identical fallback -- see ``census_parse_worker``'s docstring.
         native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
         descriptors[raw_id] = (provider, blob_hash, source_path, kind, size, native_id)
-    results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
+
+    prefetched: dict[str, tuple[list[ParsedSession], int, RawRevisionKind]] = {}
     remaining_raw_ids = raw_ids
     if prefetch_cache is not None and raw_ids:
         remaining_raw_ids = []
@@ -3417,50 +3690,38 @@ def _parse_retained_raws(
             if cached is None:
                 remaining_raw_ids.append(raw_id)
             else:
-                results[raw_id] = cached
-    grouped: dict[ContentCacheKey, list[str]] = {}
+                prefetched[raw_id] = cached
+
+    key_by_raw_id: dict[str, ContentCacheKey] = {}
+    pending_by_key: dict[ContentCacheKey, int] = {}
+    representative_by_key: dict[ContentCacheKey, str] = {}
     for raw_id in remaining_raw_ids:
         provider, blob_hash, source_path, _kind, _size, native_id = descriptors[raw_id]
         dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
-        grouped.setdefault((provider, blob_hash, dedup_path, native_id), []).append(raw_id)
+        key = (provider, blob_hash, dedup_path, native_id)
+        key_by_raw_id[raw_id] = key
+        pending_by_key[key] = pending_by_key.get(key, 0) + 1
+        representative_by_key.setdefault(key, raw_id)
 
-    content_hits: dict[ContentCacheKey, tuple[list[ParsedSession], int, RawRevisionKind]] = {}
-    representatives: list[str] = []
-    for key, members in grouped.items():
-        content_hit = prefetch_cache.get_content(key) if prefetch_cache is not None else None
-        if content_hit is not None:
-            content_hits[key] = content_hit
-        else:
-            representatives.append(members[0])
-
-    unique = _parse_unique_retained_raws(
-        archive, representatives, descriptors=descriptors, ingest_workers=ingest_workers
-    )
-
-    if prefetch_cache is not None:
-        for key, members in grouped.items():
-            if key in content_hits:
-                continue
-            fresh_outcome = unique[members[0]]
-            if isinstance(fresh_outcome, Exception):
-                continue
-            sessions, rep_size, rep_kind = fresh_outcome
-            prefetch_cache.put_content(key, sessions, payload_bytes=rep_size, revision_kind=rep_kind)
-
-    for key, members in grouped.items():
-        content_outcome = content_hits.get(key)
-        outcome: tuple[list[ParsedSession], int, RawRevisionKind] | Exception = (
-            content_outcome if content_outcome is not None else unique[members[0]]
+    # Dispatch order follows the caller's read order through each group's
+    # representative, so a bounded in-flight window always holds the raws the
+    # consumer is about to ask for rather than an arbitrary prefix.
+    order = [representative_by_key[key] for key in dict.fromkeys(key_by_raw_id[raw_id] for raw_id in remaining_raw_ids)]
+    unique = _OrderedUniqueParse(archive, order, descriptors=descriptors, ingest_workers=ingest_workers)
+    try:
+        yield _OrderedParseOutcomes(
+            archive,
+            raw_ids,
+            descriptors=descriptors,
+            prefetched=prefetched,
+            key_by_raw_id=key_by_raw_id,
+            pending_by_key=pending_by_key,
+            representative_by_key=representative_by_key,
+            unique=unique,
+            prefetch_cache=prefetch_cache,
         )
-        for raw_id in members:
-            if isinstance(outcome, Exception):
-                results[raw_id] = outcome
-            else:
-                sessions, _rep_size, _rep_kind = outcome
-                _provider, _blob_hash, _source_path, kind, size, _native_id = descriptors[raw_id]
-                results[raw_id] = (sessions, size, kind)
-    _enrich_retained_parse_results(archive, descriptors=descriptors, results=results)
-    return results
+    finally:
+        unique.close()
 
 
 def _enrich_retained_parse_results(
@@ -3487,28 +3748,52 @@ def _enrich_retained_parse_results(
     # probes into accidental SQLite integration tests.
     if not isinstance(archive, ArchiveStore):
         return
-    source_conn = archive._ensure_source_conn()
-    index_conn = archive.index_connection
     for raw_id, outcome in tuple(results.items()):
-        if isinstance(outcome, Exception):
-            continue
-        provider, _blob_hash, descriptor_source_path, _descriptor_kind, _size, _native_id = descriptors[raw_id]
-        sessions, payload_bytes, kind = outcome
-        sessions = _normalize_retained_parse_sessions(source_conn, raw_id, sessions)
-        if sessions:
-            provider = Provider.from_string(sessions[0].source_name)
-        results[raw_id] = (
-            _replay_safe_enrich_sessions(
-                provider=provider,
-                sessions=sessions,
-                index_conn=index_conn,
-                source_conn=source_conn,
-                blob_root=Path(archive.archive_root) / "blob",
-                source_path=descriptor_source_path,
-            ),
-            payload_bytes,
-            kind,
+        results[raw_id] = _enrich_retained_parse_outcome(
+            archive, raw_id, descriptor=descriptors[raw_id], outcome=outcome
         )
+
+
+def _enrich_retained_parse_outcome(
+    archive: ArchiveStore,
+    raw_id: str,
+    *,
+    descriptor: tuple[Provider, str, str, RawRevisionKind, int, str | None],
+    outcome: tuple[list[ParsedSession], int, RawRevisionKind] | Exception,
+) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+    """Enrich one decoded raw -- the per-raw body of enrichment.
+
+    Enrichment never reads across raws: each outcome is normalized against its
+    own ``raw_id``'s retained mtime and assembled against its own descriptor's
+    source path. That independence is what lets the streaming consumer enrich
+    a raw at the moment it is read instead of holding a whole page to enrich
+    it in one pass. :func:`_enrich_retained_parse_results` is this function
+    applied over an already-materialized dict.
+    """
+    if isinstance(outcome, Exception):
+        return outcome
+    # Unit-level parser/dedupe probes deliberately pass tiny protocol fakes;
+    # enrichment is an ArchiveStore production concern.
+    if not isinstance(archive, ArchiveStore):
+        return outcome
+    provider, _blob_hash, descriptor_source_path, _descriptor_kind, _size, _native_id = descriptor
+    sessions, payload_bytes, kind = outcome
+    source_conn = archive._ensure_source_conn()
+    sessions = _normalize_retained_parse_sessions(source_conn, raw_id, sessions)
+    if sessions:
+        provider = Provider.from_string(sessions[0].source_name)
+    return (
+        _replay_safe_enrich_sessions(
+            provider=provider,
+            sessions=sessions,
+            index_conn=archive.index_connection,
+            source_conn=source_conn,
+            blob_root=Path(archive.archive_root) / "blob",
+            source_path=descriptor_source_path,
+        ),
+        payload_bytes,
+        kind,
+    )
 
 
 def _normalize_retained_parse_sessions(

@@ -4812,3 +4812,170 @@ def test_owned_generation_pipelined_decode_matches_serial_archive_state(
     assert manifests[0] == manifests[1]
     assert pipelined_result.stage_timings_s.get("spill_prefetch.consumed", 0.0) > 0
     assert "spill_prefetch.consumed" not in serial_result.stage_timings_s
+
+
+def _cost_probe_descriptors(count: int, *, blob_hash: str | None = None) -> dict[str, Any]:
+    """``count`` retained-raw descriptors, one dedup group each unless shared."""
+    return {
+        f"raw-{index}": (
+            Provider.CODEX,
+            blob_hash if blob_hash is not None else f"hash-{index}",
+            f"path-{index}.jsonl",
+            RawRevisionKind.FULL,
+            10,
+        )
+        for index in range(count)
+    }
+
+
+class _CostProbeArchive:
+    """Protocol-shaped stand-in; enrichment skips anything not an ArchiveStore."""
+
+    def __init__(self, descriptors: dict[str, Any], root: Path) -> None:
+        self._descriptors = descriptors
+        self.archive_root = root
+        self.source_db_path = root / "source.db"
+
+    def raw_revision_descriptor(self, raw_id: str) -> Any:
+        return self._descriptors[raw_id]
+
+
+def test_streaming_census_parse_costs_one_group_not_one_page(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """polylogue-4j9j: a census page must not hold every parsed session at once.
+
+    This is a cost assertion, not a behavioural one. ``_parse_retained_raws``
+    returned a complete dict, so the page's whole parsed tree was resident
+    while the apply loop walked it one raw at a time. The streaming resolver
+    parses a raw when it is read and drops it when its dedup group is spent,
+    so the retained-parse count is a constant rather than the page size.
+
+    Anti-vacuity: resolve every outcome up front (an eager resolver) and
+    ``parsed`` is already full before the first read; stop releasing a spent
+    group and ``live_group_count`` climbs with every read instead of
+    returning to zero.
+    """
+    descriptors = _cost_probe_descriptors(8)
+    parsed: list[str] = []
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        return ([], 10, RawRevisionKind.FULL)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+    archive = _CostProbeArchive(descriptors, tmp_path)
+
+    with revision_backfill.stream_retained_raws(
+        archive,  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=1,
+    ) as outcomes:
+        assert parsed == [], "nothing may be parsed before the first outcome is read"
+        parses_after_each_read: list[int] = []
+        for raw_id in descriptors:
+            outcomes[raw_id]
+            parses_after_each_read.append(len(parsed))
+            # Every group here has a single member, so reading it spends it.
+            assert outcomes.live_group_count == 0
+        # Exactly one parse per read: the page was never materialized.
+        assert parses_after_each_read == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert parsed == list(descriptors)
+
+
+def test_streaming_release_waits_for_a_dedup_group_last_member(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A shared blob is parsed once and retained exactly until its last reader.
+
+    Releasing on first read would re-parse every duplicate, which is the cost
+    polylogue-869u's dedup exists to avoid; never releasing is the leak this
+    bead exists to remove.
+    """
+    descriptors = _cost_probe_descriptors(3, blob_hash="shared")
+    # Path-independent provider: all three rows share one dedup group.
+    descriptors = {
+        raw_id: (provider, blob, "same.jsonl", kind, size)
+        for raw_id, (provider, blob, _path, kind, size) in descriptors.items()
+    }
+    parsed: list[str] = []
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        return ([], 10, RawRevisionKind.FULL)
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+    archive = _CostProbeArchive(descriptors, tmp_path)
+
+    with revision_backfill.stream_retained_raws(
+        archive,  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=1,
+    ) as outcomes:
+        outcomes["raw-0"]
+        assert outcomes.live_group_count == 1
+        outcomes["raw-1"]
+        assert outcomes.live_group_count == 1
+        outcomes["raw-2"]
+        assert outcomes.live_group_count == 0
+    assert parsed == ["raw-0"], "the shared blob must still be parsed exactly once"
+
+
+def test_streaming_parse_dispatch_is_bounded_in_flight(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Lazy reads alone do not bound memory -- dispatch is throttled too.
+
+    A ``ThreadPoolExecutor`` resolves a future whether or not anyone reads it,
+    so without a submission window the parsed graphs simply accumulate inside
+    completed futures. The window is ``ingest_workers *
+    _INFLIGHT_PARSES_PER_WORKER``.
+
+    Anti-vacuity: widen ``_max_inflight`` to the page length and
+    ``peak_inflight_parses`` becomes the page size.
+    """
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    descriptors = _cost_probe_descriptors(16)
+
+    def fake_worker(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
+        return (raw_id, [], None)
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
+    archive = _CostProbeArchive(descriptors, tmp_path)
+    ingest_workers = 2
+
+    with revision_backfill.stream_retained_raws(
+        archive,  # type: ignore[arg-type]
+        list(descriptors),
+        ingest_workers=ingest_workers,
+    ) as outcomes:
+        for raw_id in descriptors:
+            assert not isinstance(outcomes[raw_id], Exception)
+        bound = ingest_workers * revision_backfill._INFLIGHT_PARSES_PER_WORKER
+        assert outcomes.peak_inflight_parses <= bound
+        assert outcomes.peak_inflight_parses < len(descriptors)
+        # The window must actually be used, or the bound is met by doing
+        # nothing in parallel at all.
+        assert outcomes.peak_inflight_parses == bound
+        assert outcomes.executor_running
+    assert not outcomes.executor_running, "the resolver owns its executor and shuts it down on exit"
+
+
+def test_streaming_resolver_shuts_its_executor_down_when_the_body_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """AC2: the pool's lifetime is owned, never left to the garbage collector."""
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    descriptors = _cost_probe_descriptors(4)
+
+    def fake_worker(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
+        return (raw_id, [], None)
+
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
+    archive = _CostProbeArchive(descriptors, tmp_path)
+
+    escaped: list[Any] = []
+    with pytest.raises(RuntimeError, match="census apply failed"):
+        with revision_backfill.stream_retained_raws(
+            archive,  # type: ignore[arg-type]
+            list(descriptors),
+            ingest_workers=2,
+        ) as outcomes:
+            escaped.append(outcomes)
+            outcomes["raw-0"]
+            raise RuntimeError("census apply failed")
+    assert not escaped[0].executor_running
