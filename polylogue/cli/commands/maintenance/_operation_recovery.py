@@ -85,6 +85,17 @@ def operation_recovery_command(
         # Refuse rather than become a second writer beside a live daemon.
         if block_reason := offline_maintenance_block_reason(env.config, active=True, dry_run=False):
             raise click.ClickException(block_reason)
+        # The very crash this command recovers from can leave a prepared but
+        # uncommitted audit continuity command behind. Adjudication is itself
+        # an audit mutation, so without reconciling first it failed with
+        # "another audit continuity mutation is already pending" -- refusing
+        # to recover exactly the operation the operator came here to close.
+        # Reconciliation runs here, after the offline guard, because it is a
+        # durable repair and must not be performed by a bare inspection.
+        try:
+            audit.reconcile_continuity()
+        except Exception as exc:
+            raise click.ClickException(f"audit continuity reconciliation failed: {exc}") from exc
         try:
             audit.adjudicate_recovery(operation_id, target_outcomes=outcomes, reason=reason, adjudicator=adjudicator)
         except ValueError as exc:

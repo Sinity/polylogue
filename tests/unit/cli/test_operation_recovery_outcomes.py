@@ -86,3 +86,97 @@ def test_operation_recovery_list_outputs_unresolved_runs_and_targets(monkeypatch
             }
         ]
     }
+
+
+def test_adjudication_reconciles_pending_continuity_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A prepared-but-uncommitted audit command must not block recovery.
+
+    The crash this command exists to recover from can leave a prepared audit
+    continuity command behind. Adjudication is itself an audit mutation, so
+    without reconciling first it failed with "another audit continuity
+    mutation is already pending" -- refusing to recover exactly the operation
+    the operator came here to close.
+
+    Anti-vacuity: removing the `reconcile_continuity()` call makes `calls`
+    start with `adjudicate` and the stub raises that pending error, so the
+    command exits non-zero.
+    """
+    calls: list[str] = []
+
+    class _Audit:
+        def reconcile_continuity(self) -> None:
+            calls.append("reconcile")
+
+        def adjudicate_recovery(self, operation_id: str, **_: object) -> None:
+            calls.append("adjudicate")
+            if calls[0] != "reconcile":
+                raise ValueError("another audit continuity mutation is already pending")
+
+        def get_operation(self, operation_id: str) -> dict[str, object]:
+            return {"operation_id": operation_id, "status": "recovered"}
+
+        def list_events(self, operation_id: str) -> tuple[object, ...]:
+            return ()
+
+        def list_targets(self, operation_id: str) -> tuple[dict[str, object], ...]:
+            return ({"target_ref": "session:one", "state": "applied"},)
+
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._operation_recovery.AuditRepository.for_archive_root",
+        lambda root: _Audit(),
+    )
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._operation_recovery.offline_maintenance_block_reason",
+        lambda *_args, **_kwargs: None,
+    )
+    env = SimpleNamespace(config=SimpleNamespace(archive_root=Path("/archive")))
+    result = CliRunner().invoke(
+        _operation_recovery.operation_recovery_command,
+        [
+            "--operation-id",
+            "operation:interrupted",
+            "--target-outcome",
+            "session:one=applied",
+            "--reason",
+            "operator evidence",
+            "--confirm",
+            "--output-format",
+            "json",
+        ],
+        obj=env,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["reconcile", "adjudicate"]
+
+
+def test_inspection_never_performs_the_durable_repair(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The opposite direction: a bare inspection stays a read."""
+    calls: list[str] = []
+
+    class _Audit:
+        def reconcile_continuity(self) -> None:
+            calls.append("reconcile")
+
+        def get_operation(self, operation_id: str) -> dict[str, object]:
+            return {"operation_id": operation_id, "status": "interrupted"}
+
+        def list_events(self, operation_id: str) -> tuple[object, ...]:
+            return ()
+
+        def list_targets(self, operation_id: str) -> tuple[dict[str, object], ...]:
+            return ()
+
+    monkeypatch.setattr(
+        "polylogue.cli.commands.maintenance._operation_recovery.AuditRepository.for_archive_root",
+        lambda root: _Audit(),
+    )
+    env = SimpleNamespace(config=SimpleNamespace(archive_root=Path("/archive")))
+    result = CliRunner().invoke(
+        _operation_recovery.operation_recovery_command,
+        ["--operation-id", "operation:interrupted", "--output-format", "json"],
+        obj=env,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == []
