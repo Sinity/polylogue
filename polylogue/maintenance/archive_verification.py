@@ -2220,10 +2220,16 @@ def _check_attachment_coverage_at_index_path(
     missing = report.acquired_missing_blob_count
     unverifiable = report.acquired_unverifiable_count
     unreachable = report.acquired_unreachable_count
-    debt_count = missing + unverifiable + unreachable
+    # An object present at the recorded hash's path whose content hashes to
+    # something else is debt in its own right: the coverage summary used to
+    # certify it as "has bytes" because presence was checked and content was
+    # not (polylogue-o0uw5, PR #5378).
+    corrupt = report.acquired_corrupt_count
+    debt_count = missing + unverifiable + unreachable + corrupt
     details = [
         *(f"acquired-missing-blob:{attachment_id}" for attachment_id in report.acquired_missing_blob_sample),
         *(f"acquired-unverifiable:{attachment_id}" for attachment_id in report.acquired_unverifiable_sample),
+        *(f"acquired-corrupt:{attachment_id}" for attachment_id in report.acquired_corrupt_sample),
         *(f"acquired-unreachable:{attachment_id}" for attachment_id in report.acquired_unreachable_sample),
     ]
     return ArchiveVerificationCheck(
@@ -2231,10 +2237,11 @@ def _check_attachment_coverage_at_index_path(
         status=OutcomeStatus.ERROR if debt_count else OutcomeStatus.OK,
         summary=(
             f"acquired attachment debt: missing_blob={missing:,}, "
-            f"unverifiable={unverifiable:,}, unreachable={unreachable:,}"
+            f"unverifiable={unverifiable:,}, corrupt={corrupt:,}, unreachable={unreachable:,}"
             if debt_count
             else (
-                f"all {report.acquired_reachable_count:,} acquired attachment(s) have bytes and a live attachment reference"
+                f"all {report.acquired_reachable_count:,} acquired attachment(s) re-hash to their recorded "
+                "bytes and hold a live attachment reference"
                 + (f"; {report.acquired_unowned_count:,} retained unowned" if report.acquired_unowned_count else "")
             )
         ),
@@ -2244,6 +2251,7 @@ def _check_attachment_coverage_at_index_path(
             "scan": report.to_dict(),
             "missing_blob_count": missing,
             "unverifiable_count": unverifiable,
+            "corrupt_count": corrupt,
             "unreachable_count": unreachable,
         },
     )
