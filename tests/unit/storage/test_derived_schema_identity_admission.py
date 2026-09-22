@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -182,6 +183,58 @@ def test_an_unreadable_schema_is_not_reported_as_drift(
         conn.close()
 
     assert caught.value.lifecycle_action == expected_action
+
+
+def test_an_unreadable_identity_is_retryable_not_a_rebuild_prescription(tmp_path: Path) -> None:
+    """A lock while reading the identity is a failed read, not a stale tier.
+
+    ``read_schema_identity`` already reports an absent ledger as ``None`` -- the
+    unstamped case skew is meant to refuse -- so a query that still raises is a
+    lock, an I/O error, or a damaged page. Substituting ``found = None`` for it
+    reported a measurement that was never taken and prescribed rebuilding a
+    sound index.
+
+    Anti-vacuity: restore the ``except Exception ... found = None`` swallow in
+    ``assert_derived_schema_identity`` (or move the call back outside
+    ``assert_readable_archive_layout``'s ``except sqlite3.Error`` handler) and
+    this raises ``SchemaSkewError`` with ``found=None`` instead -- executed
+    against the pre-change files. The clean-read case below pins the other
+    direction, so refusing every open cannot pass.
+    """
+    path = tmp_path / "index.db"
+    conn = sqlite3.connect(path)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.commit()
+    finally:
+        conn.close()
+
+    class _LockedIdentityRead:
+        """A sound index whose identity SELECT alone raises."""
+
+        def __init__(self, real: sqlite3.Connection) -> None:
+            self._real = real
+
+        def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+            if "schema_identity" in sql and sql.lstrip().upper().startswith("SELECT IDENTITY"):
+                raise sqlite3.OperationalError("database is locked")
+            return self._real.execute(sql, parameters)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._real, name)
+
+    real = sqlite3.connect(path)
+    real.row_factory = sqlite3.Row
+    try:
+        assert_readable_archive_layout(real)  # clean read: no refusal at all
+
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(cast("sqlite3.Connection", _LockedIdentityRead(real)))
+    finally:
+        real.close()
+
+    assert caught.value.lifecycle_action == "retry"
+    assert "was not inspected" in str(caught.value)
 
 
 def test_canonical_manifest_is_rendered_once_per_declared_schema() -> None:
