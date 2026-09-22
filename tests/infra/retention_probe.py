@@ -46,6 +46,15 @@ _CONTAINER_REPORT_COUNT = 60
 _OWNER_REPORT_COUNT = 40
 #: Sample the RSS curve this often, in tests.
 _CURVE_EVERY = 50
+#: Hard budgets for the walk. A diagnostic that cannot be afforded is worse
+#: than no diagnostic: an unbounded traversal of this heap reached 20 GiB in a
+#: self-test before it was killed, which inside the pytest slice would take
+#: another lane's run down with it. Every walk stops at these and says so.
+_MAX_VISITS = 3_000_000
+#: Extra resident memory the walk may add above where the session ended.
+_WALK_RSS_HEADROOM_MIB = 768
+#: How often the budget is re-read, in visited objects.
+_BUDGET_CHECK_EVERY = 100_000
 
 _OPAQUE = (ModuleType, type, FunctionType, MethodType, BuiltinFunctionType, FrameType)
 
@@ -80,8 +89,38 @@ def _sizeof(obj: object) -> int:
         return 0
 
 
-def _deep_size(roots: list[Any], seen: set[int]) -> tuple[int, int]:
-    """Bytes and object count reachable from ``roots``, treating code as opaque."""
+class _Budget:
+    """A ceiling on visits and on resident growth, shared by every walk."""
+
+    def __init__(self) -> None:
+        self.ceiling_mib = _rss_kib() / 1024 + _WALK_RSS_HEADROOM_MIB
+        self.visits = 0
+        self.exhausted = False
+        self._next_check = _BUDGET_CHECK_EVERY
+
+    def spend(self, visits: int) -> bool:
+        """Charge ``visits`` and report whether the walk may continue."""
+        self.visits += visits
+        if self.exhausted:
+            return False
+        if self.visits >= _MAX_VISITS:
+            self.exhausted = True
+            return False
+        if self.visits >= self._next_check:
+            self._next_check = self.visits + _BUDGET_CHECK_EVERY
+            if _rss_kib() / 1024 > self.ceiling_mib:
+                self.exhausted = True
+                return False
+        return True
+
+
+def _deep_size(roots: list[Any], seen: set[int], budget: _Budget) -> tuple[int, int]:
+    """Bytes and object count reachable from ``roots``, treating code as opaque.
+
+    Referents are filtered against ``seen`` before they are pushed: the object
+    graph has far more edges than nodes, and an unfiltered ``extend`` makes the
+    work list, not the heap, the thing that runs out of memory.
+    """
     total = 0
     count = 0
     stack = list(roots)
@@ -93,12 +132,18 @@ def _deep_size(roots: list[Any], seen: set[int]) -> tuple[int, int]:
         seen.add(marker)
         total += _sizeof(obj)
         count += 1
+        if count % 4096 == 0 and not budget.spend(4096):
+            break
         if isinstance(obj, _OPAQUE):
             continue
         try:
-            stack.extend(gc.get_referents(obj))
+            referents = gc.get_referents(obj)
         except Exception:  # pragma: no cover - a hostile __getattr__
             continue
+        for referent in referents:
+            if id(referent) not in seen:
+                stack.append(referent)
+    budget.spend(count % 4096)
     return total, count
 
 
@@ -126,8 +171,8 @@ def _module_global_index() -> dict[int, str]:
     return index
 
 
-def _heap_by_type() -> tuple[dict[str, dict[str, float]], int, list[Any]]:
-    """Aggregate the whole reachable heap by type; return the tracked objects too."""
+def _heap_by_type(budget: _Budget) -> tuple[dict[str, dict[str, float]], int, list[Any]]:
+    """Aggregate the reachable heap by type; return the tracked objects too."""
     tracked = gc.get_objects()
     seen: set[int] = set()
     totals: dict[str, list[float]] = defaultdict(lambda: [0.0, 0.0])
@@ -144,12 +189,17 @@ def _heap_by_type() -> tuple[dict[str, dict[str, float]], int, list[Any]]:
         entry[0] += size
         entry[1] += 1
         walked += 1
+        if walked % 4096 == 0 and not budget.spend(4096):
+            break
         if isinstance(obj, _OPAQUE):
             continue
         try:
-            stack.extend(gc.get_referents(obj))
+            referents = gc.get_referents(obj)
         except Exception:  # pragma: no cover
             continue
+        for referent in referents:
+            if id(referent) not in seen:
+                stack.append(referent)
     ranked = {
         name: {"mib": round(values[0] / _MIB, 2), "count": int(values[1])}
         for name, values in sorted(totals.items(), key=lambda item: item[1][0], reverse=True)[:40]
@@ -157,7 +207,7 @@ def _heap_by_type() -> tuple[dict[str, dict[str, float]], int, list[Any]]:
     return ranked, walked, tracked
 
 
-def _named_containers(tracked: list[Any], module_index: dict[int, str]) -> list[dict[str, Any]]:
+def _named_containers(tracked: list[Any], module_index: dict[int, str], budget: _Budget) -> list[dict[str, Any]]:
     """Every large container in the heap, deep-sized and ranked.
 
     Sizing is one shared-``seen`` pass in descending-length order, so the whole
@@ -178,7 +228,7 @@ def _named_containers(tracked: list[Any], module_index: dict[int, str]) -> list[
     shared: set[int] = set()
     rows: list[dict[str, Any]] = []
     for obj in candidates:
-        size, count = _deep_size([obj], shared)
+        size, count = _deep_size([obj], shared, budget)
         rows.append(
             {
                 "type": _type_name(obj),
@@ -193,7 +243,7 @@ def _named_containers(tracked: list[Any], module_index: dict[int, str]) -> list[
     rows = rows[:_CONTAINER_REPORT_COUNT]
     for row in rows:
         own_seen: set[int] = set()
-        own_bytes, _ = _deep_size([row["_obj"]], own_seen)
+        own_bytes, _ = _deep_size([row["_obj"]], own_seen, budget)
         row["own_mib"] = round(own_bytes / _MIB, 2)
     return rows
 
@@ -232,7 +282,7 @@ def _attribute_owners(rows: list[dict[str, Any]], module_index: dict[int, str]) 
         row["owners"] = owners.get(marker) or ["<unattributed>"]
 
 
-def _wire_support_report() -> dict[str, Any] | None:
+def _wire_support_report(budget: _Budget) -> dict[str, Any] | None:
     module = sys.modules.get("tests.infra.wire_support")
     if module is None:
         return None
@@ -244,8 +294,8 @@ def _wire_support_report() -> dict[str, Any] | None:
             caches[name] = {"absent": True}
             continue
         own_seen: set[int] = set()
-        own_bytes, own_objects = _deep_size([cache], own_seen)
-        marginal_bytes, _ = _deep_size([cache], shared)
+        own_bytes, own_objects = _deep_size([cache], own_seen, budget)
+        marginal_bytes, _ = _deep_size([cache], shared, budget)
         caches[name] = {
             "len": len(cache),
             "own_mib": round(own_bytes / _MIB, 3),
@@ -309,18 +359,26 @@ class _RetentionProbe:
         try:
             gc.collect()
             payload["after_gc_rss_mib"] = round(_rss_kib() / 1024, 1)
-            payload["wire_support"] = _wire_support_report()
+            budget = _Budget()
+            payload["walk_budget"] = {
+                "max_visits": _MAX_VISITS,
+                "rss_ceiling_mib": round(budget.ceiling_mib, 1),
+            }
+            payload["wire_support"] = _wire_support_report(budget)
             module_index = _module_global_index()
-            by_type, walked, tracked = _heap_by_type()
+            by_type, walked, tracked = _heap_by_type(budget)
             payload["heap_objects_walked"] = walked
             payload["heap_by_type"] = by_type
-            rows = _named_containers(tracked, module_index)
+            rows = _named_containers(tracked, module_index, budget)
             _attribute_owners(rows, module_index)
             for row in rows:
                 row.pop("_obj", None)
             payload["large_containers"] = rows
             del tracked
             payload["walk_wall_s"] = round(time.monotonic() - self.started - wall_s, 1)
+            payload["walk_truncated"] = budget.exhausted
+            payload["walk_visits"] = budget.visits
+            payload["post_walk_rss_mib"] = round(_rss_kib() / 1024, 1)
         except BaseException as exc:  # pragma: no cover - diagnostic only
             payload["walk_error"] = f"{type(exc).__name__}: {exc}"
         self._write(f"retention-{worker}-{os.getpid()}.json", payload)
