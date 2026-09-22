@@ -42,6 +42,7 @@ from polylogue.archive.revision_authority import (
     parser_census_is_complete,
 )
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
+from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -70,7 +71,11 @@ from polylogue.sources.parsers import antigravity, codex_state, hermes_identity,
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
-from polylogue.sources.sqlite_snapshot import is_declared_logical_export
+from polylogue.sources.sqlite_snapshot import (
+    is_declared_logical_export,
+    is_sqlite_page_image,
+    is_undeclared_logical_export,
+)
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -1404,6 +1409,7 @@ def _census_historical_revision_evidence(
                         [],
                         parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                         censused_at_ms=0,
+                        detail=(LEGACY_PAGE_IMAGE_CENSUS_DETAIL if _retained_page_image_raw(archive, raw_id) else ""),
                         retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
                         manage_transaction=False,
                     )
@@ -5062,6 +5068,27 @@ def _detected_provider_for_empty_replay(
     return provider
 
 
+LEGACY_PAGE_IMAGE_CENSUS_DETAIL = (
+    "retained legacy SQLite page image; no current parser reads this material and it is "
+    "not a logical export, so it produces no session"
+)
+
+
+def _retained_page_image_raw(archive: ArchiveStore, raw_id: str) -> bool:
+    """Return whether this raw's retained bytes are a SQLite page image.
+
+    Conservation accounting has to distinguish "parsed to nothing" from
+    "deliberately retained material the current parser cannot read", so the
+    terminal receipt names which one happened (polylogue-qjscw).
+    """
+    try:
+        _provider, blob_hash, _source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+    except Exception:
+        return False
+    blob_path = archive.blob_path_for_hash(blob_hash)
+    return blob_path is not None and is_sqlite_page_image(blob_path)
+
+
 def _persist_terminal_non_session_artifact(
     archive: ArchiveStore,
     raw_id: str,
@@ -5201,8 +5228,15 @@ def _parse_one_raw(
     fallback_id = fallback_id_override or Path(source_path).stem
     if provider is Provider.HERMES and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
-            if not is_declared_logical_export(sqlite_path, source_path):
-                raise RuntimeError(f"retained Hermes SQLite material is not the declared logical export: {source_path}")
+            if not (
+                is_declared_logical_export(sqlite_path, source_path)
+                or is_undeclared_logical_export(sqlite_path, source_path)
+            ):
+                # A page image is refused: it cannot be proven against the
+                # database it was copied from. A well-framed export acquired
+                # under a noncanonical filename carries its own scope header
+                # and stays replayable (polylogue-qjscw).
+                raise RuntimeError(f"retained Hermes SQLite material is not a logical export: {source_path}")
             if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
                 return hermes_state.parse_state_db(
                     sqlite_path,
@@ -5219,8 +5253,26 @@ def _parse_one_raw(
                 )
     if provider is Provider.ANTIGRAVITY and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
+            # Antigravity declares no database member, so
+            # ``is_declared_logical_export`` can never hold here. Without an
+            # undeclared-export gate a legacy PAGE IMAGE would be parsed into
+            # sessions as current authority -- rebuildable state derived from
+            # a snapshot that re-snapshots on every commit (polylogue-qjscw).
+            if is_sqlite_page_image(sqlite_path):
+                return []
             if antigravity.looks_like_trajectory_db_path(sqlite_path, immutable=True):
                 return list(antigravity.parse_trajectory_db(sqlite_path, fallback_id=fallback_id, immutable=True))
+    if looks_like_sqlite_bytes(payload):
+        # polylogue-qjscw: a retained SQLite PAGE IMAGE reaching this point has
+        # no current parser -- every provider that can replay a database has
+        # already claimed its export above. Feeding these bytes to the JSON
+        # stream parser raises, and on the frozen-candidate route that single
+        # exception is promoted to FrozenSourceRemediationRequiredError, which
+        # ends the WHOLE rebuild rather than failing one raw. The archive
+        # deliberately retained this material, so it becomes terminal
+        # non-session evidence instead: no session, no abort, and a receipt
+        # that still names what the material was.
+        return []
     rule = artifact_rule_for_path(provider, source_path)
     declared_path_session_evidence = False
     if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):

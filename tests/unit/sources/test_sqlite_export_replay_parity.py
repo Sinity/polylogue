@@ -200,5 +200,5 @@ def test_hermes_page_image_is_refused_by_the_retained_replay_route(tmp_path: Pat
     state_db = tmp_path / "state.db"
     _write_hermes_state_db(state_db)
 
-    with pytest.raises(RuntimeError, match="declared logical export"):
+    with pytest.raises(RuntimeError, match="is not a logical export"):
         _parse_one(Provider.HERMES, state_db.read_bytes(), str(state_db), payload_path=state_db)

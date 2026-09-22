@@ -489,3 +489,115 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
     expect(attemptedIds).toEqual(["sandbox:msg-a:/mnt/data/a.md"]);
   });
 });
+
+describe("chatgpt.js capture-owned native reads do not re-enter the freshness queue", () => {
+  // polylogue-6nzro: this is the actual feedback-loop cut. The bridge tags its
+  // own conversation read `source: "polylogue_native_fetch"` before
+  // re-broadcasting it, and the content script refuses to schedule a freshness
+  // hint for a read polylogue itself caused. Without this pair every capture
+  // observes itself and schedules the next one, which is the 13-15s recapture
+  // storm the bead reports.
+  //
+  // Anti-vacuity: delete the `&& data.capture.source !== "polylogue_native_fetch"`
+  // clause in src/content/chatgpt.js, or the `source:` tag in
+  // src/content/chatgpt_bridge.js, and the first test below goes red.
+  function nativeCaptureEvent(dom, { source = null } = {}) {
+    const capture = {
+      ok: true,
+      body: JSON.stringify({ conversation_id: "conversation-1", update_time: 1_700_000_000 }),
+    };
+    if (source) capture.source = source;
+    dom.window.postMessage({ type: "polylogue.chatgpt.nativeCapture", capture });
+  }
+
+  function collectHints() {
+    const hints = [];
+    const runtimeMessage = async (message) => {
+      if (message.type !== "polylogue.captureFreshnessHint") return undefined;
+      hints.push(message);
+      return { ok: true };
+    };
+    return { hints, runtimeMessage };
+  }
+
+  // The content script debounces a freshness hint for 750ms before sending it.
+  const afterHintDebounce = () => new Promise((resolve) => setTimeout(resolve, 1200));
+
+  it("schedules no freshness hint for a capture-initiated bridge read", async () => {
+    const { hints, runtimeMessage } = collectHints();
+    const { dom } = installChatgpt({ runtimeMessage });
+
+    nativeCaptureEvent(dom, { source: "polylogue_native_fetch" });
+    await afterHintDebounce();
+
+    expect(hints).toEqual([]);
+  });
+
+  it("still schedules a freshness hint for an organic provider read", async () => {
+    const { hints, runtimeMessage } = collectHints();
+    const { dom } = installChatgpt({ runtimeMessage });
+
+    nativeCaptureEvent(dom);
+    await afterHintDebounce();
+
+    expect(hints).toMatchObject([
+      { reason: "provider_native_observed", provider: "chatgpt", provider_session_id: "conversation-1" },
+    ]);
+  });
+});
+
+describe("chatgpt.js capture-initiated native fetch does not observe itself", () => {
+  // polylogue-6nzro: the end-to-end form of the loop cut. A real capture drives
+  // the MAIN-world bridge's fetchConversation, which calls
+  // remember({ ...capture, source: "polylogue_native_fetch" }); remember() then
+  // re-broadcasts that capture as a nativeCapture message, straight back into
+  // the content script's own listener. If either half of the pair is missing,
+  // the capture observes itself and queues a provider_native_observed hint --
+  // the next capture then does the same, which is the recapture storm.
+  //
+  // Anti-vacuity: this test goes red under EITHER mutation -- dropping the
+  // `source:` tag in src/content/chatgpt_bridge.js, or dropping the
+  // `data.capture.source !== "polylogue_native_fetch"` clause in
+  // src/content/chatgpt.js.
+  it("emits no freshness hint for the conversation it just captured", async () => {
+    const hints = [];
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conv-loop") {
+        return jsonResponse({
+          conversation_id: "conv-loop",
+          update_time: 1_700_000_000,
+          mapping: {
+            node: {
+              id: "node",
+              parent: null,
+              message: { id: "m", author: { role: "user" }, content: { parts: ["hello"] } },
+            },
+          },
+        });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({
+      url: "https://chatgpt.com/c/conv-loop",
+      fetch,
+      runtimeMessage: async (message) => {
+        if (message.type !== "polylogue.captureFreshnessHint") return undefined;
+        hints.push(message);
+        return { ok: true };
+      },
+    });
+
+    const result = await sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "completion_monitor",
+      providerSessionId: "conv-loop",
+    });
+    expect(result).toMatchObject({ ok: true });
+
+    // Past the content script's 750ms freshness-hint debounce.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    expect(hints).toEqual([]);
+  });
+});

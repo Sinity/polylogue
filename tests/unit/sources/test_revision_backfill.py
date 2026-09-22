@@ -26,6 +26,7 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
+    LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
     RawParsePrefetchCache,
     _browser_snapshot_fidelity,
     _lineage_aware_replay_schedule,
@@ -1326,6 +1327,65 @@ def _codex_thread_state_snapshot_bytes(tmp_path: Path, title: str) -> bytes:
         )
         conn.commit()
     return logical_export_bytes(state_path, scope=member_export_scope(state_path))
+
+
+def _codex_thread_state_page_image_bytes(tmp_path: Path, title: str) -> bytes:
+    """Return the PAGE IMAGE of one Codex state database, not its export.
+
+    Pre-logical-export acquisition retained the raw SQLite file. That material
+    is still in the archive, and a cold rebuild must account for it without
+    parsing it and without ending the run.
+    """
+    state_path = tmp_path / f"{title}" / "state_5.sqlite"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(state_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, title TEXT, cwd TEXT, created_at_ms INTEGER,
+                updated_at_ms INTEGER, source TEXT, model TEXT, agent_nickname TEXT,
+                agent_role TEXT, archived INTEGER
+            );
+            CREATE TABLE thread_spawn_edges (
+                parent_thread_id TEXT, child_thread_id TEXT, status TEXT
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("codex-state-thread", title, "/work", 1, 1, "cli", None, None, None, 0),
+        )
+        conn.commit()
+    return state_path.read_bytes()
+
+
+def test_legacy_codex_page_image_does_not_abort_frozen_validation(tmp_path: Path) -> None:
+    """A retained legacy page image is terminal non-session, not a run abort.
+
+    Anti-vacuity: revert the page-image guard in ``_legacy_page_image_raw_ids``
+    and this raises FrozenSourceRemediationRequiredError, because the SQLite
+    bytes reach the JSON parser and that exception is promoted to a whole-run
+    refusal.
+    """
+    bootstrap_archive_root(tmp_path)
+    payload = _codex_thread_state_page_image_bytes(tmp_path, "legacy page image")
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(tmp_path / "codex" / "state_5.sqlite"),
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path)
+    validate_frozen_source_authority(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        detail = archive.source_connection.execute(
+            "SELECT detail FROM raw_membership_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert detail is not None, "the legacy page image must leave a terminal receipt"
+    assert LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(detail[0])
 
 
 def test_codex_state_replay_applies_payload_budget_before_sqlite_parse(tmp_path: Path) -> None:

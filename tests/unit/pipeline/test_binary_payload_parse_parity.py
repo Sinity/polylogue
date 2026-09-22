@@ -322,7 +322,7 @@ def test_ingest_refuses_a_hermes_page_image_the_replay_route_refuses(blob_store:
     _write_hermes_state_db(db_path)
     page_image = db_path.read_bytes()
 
-    with pytest.raises(RuntimeError, match="not the declared logical export"):
+    with pytest.raises(RuntimeError, match="is not a logical export"):
         _parse_one(
             Provider.HERMES,
             page_image,

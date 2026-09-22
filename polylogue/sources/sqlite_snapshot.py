@@ -233,6 +233,42 @@ def sqlite_member_revision(path: Path, *, immutable: bool = False) -> str:
     return logical_export_digest(path, scope=member_export_scope(path), immutable=immutable)
 
 
+def is_sqlite_page_image(blob_path: Path) -> bool:
+    """Return whether *blob_path* is a raw SQLite page image, not an export.
+
+    Pre-logical-export acquisition retained the database file itself. A page
+    image cannot be proven against the live database it was copied from and
+    re-snapshots on every commit, so it is never replay authority -- but it is
+    deliberately retained material that a rebuild must still account for.
+    """
+    try:
+        with blob_path.open("rb") as handle:
+            prefix = handle.read(len(SQLITE_MAGIC_HEADER))
+    except OSError:
+        return False
+    return prefix.startswith(SQLITE_MAGIC_HEADER)
+
+
+def is_undeclared_logical_export(blob_path: Path, source_path: Path | str) -> bool:
+    """Return whether *blob_path* is a well-framed export with no declared member.
+
+    A database acquired under a noncanonical filename (``backup.db``) resolves
+    to no :func:`database_member_for_filename` binding, so
+    :func:`is_declared_logical_export` is false even though the retained bytes
+    are a real logical export. Such material is replayable: its own header
+    carries the scope it was written under.
+    """
+    if declared_database_member(Path(source_path)) is not None:
+        return False
+    if not looks_like_logical_export_path(blob_path):
+        return False
+    try:
+        read_export_header(blob_path)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    return True
+
+
 def is_declared_logical_export(blob_path: Path, source_path: Path | str) -> bool:
     """Return whether *blob_path* is the canonical export for *source_path*.
 
@@ -401,6 +437,8 @@ __all__ = [
     "member_export_scope",
     "hermes_profile_raw_id",
     "is_declared_logical_export",
+    "is_sqlite_page_image",
+    "is_undeclared_logical_export",
     "is_sqlite_path",
     "original_sqlite_source_path",
     "retained_content_revision",
