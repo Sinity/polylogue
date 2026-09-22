@@ -63,6 +63,10 @@ _SESSION_ARCHIVE_ROOT: Path | None = None
 #: hook runs; the probe is a diagnostic for the worker-memory ceiling that
 #: sizes ``devtools.worker_memory.CORPUS_MAX_WORKERS``, not a standing cost.
 RETENTION_PROBE_ENV = "POLYLOGUE_TEST_RETENTION_PROBE"
+#: Treatment arm for the same probe: ``malloc_trim(0)`` every N tests. Two
+#: runs over one selection, one with this set, measure how much of a worker's
+#: ceiling is memory the process had already freed.
+RETENTION_TRIM_ENV = "POLYLOGUE_TEST_RETENTION_TRIM"
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -71,7 +75,11 @@ def pytest_configure(config: pytest.Config) -> None:
     if destination:
         from tests.infra.retention_probe import RetentionProbe
 
-        config.pluginmanager.register(RetentionProbe(report_path=Path(destination)), "polylogue-retention-probe")
+        probe = RetentionProbe(
+            report_path=Path(destination),
+            trim_every=int(os.environ.get(RETENTION_TRIM_ENV, "0") or "0"),
+        )
+        config.pluginmanager.register(probe, "polylogue-retention-probe")
     if _CHECKOUT_GUARD_ERROR is not None:
         raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
     bare = refuse_bare_pytest(os.environ)

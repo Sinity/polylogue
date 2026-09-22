@@ -120,11 +120,18 @@ class RetentionProbe:
     files: dict[str, _FileCost] = field(default_factory=dict)
     peaks: list[tuple[int, str]] = field(default_factory=list)
     trajectory: list[dict[str, int]] = field(default_factory=list)
+    trimmed_kib: int = 0
+    trim_calls: int = 0
 
     #: How often a trajectory point is recorded.  The curve's shape (linear,
     #: plateauing, stepped) is what separates a leak from bounded retention,
     #: and it needs far fewer points than tests.
     sample_every: int = 100
+    #: Trim every N tests, or 0 to leave the allocator alone. A run that
+    #: trims is the treatment arm: its high-water mark is comparable to an
+    #: untrimmed run over the same selection, which is how much of the
+    #: ceiling is memory the process had already freed.
+    trim_every: int = 0
 
     def pytest_sessionstart(self, session: Any) -> None:
         del session
@@ -164,6 +171,12 @@ class RetentionProbe:
         self.previous_anon_kib = current["RssAnon"]
         self.previous_hwm_kib = current["VmHWM"]
         self.tests_seen += 1
+        if self.trim_every and self.tests_seen % self.trim_every == 0:
+            before_trim = read_memory_kib()["RssAnon"]
+            if _malloc_trim():
+                self.trim_calls += 1
+                self.trimmed_kib += max(before_trim - read_memory_kib()["RssAnon"], 0)
+            self.previous_anon_kib = read_memory_kib()["RssAnon"]
         if self.tests_seen % self.sample_every == 0:
             self.trajectory.append(
                 {"tests": self.tests_seen, "anon_kib": current["RssAnon"], "hwm_kib": current["VmHWM"]}
@@ -188,6 +201,9 @@ class RetentionProbe:
             "after_malloc_trim_kib": after_trim,
             "malloc_trim_available": trimmed,
             "gc_collected_objects": collected,
+            "trim_every": self.trim_every,
+            "trim_calls": self.trim_calls,
+            "returned_by_periodic_trim_kib": self.trimmed_kib,
             "recovery_kib": {
                 "import_floor": self.post_collection.get("RssAnon", 0) - self.baseline["RssAnon"],
                 "accumulated_while_running": before["RssAnon"] - self.post_collection.get("RssAnon", 0),
