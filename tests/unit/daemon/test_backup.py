@@ -369,6 +369,67 @@ def test_backup_verification_refuses_linked_sqlite_sidecar(
     assert not (backup_root / "verification-receipt.json").exists()
 
 
+def test_full_evidence_backup_verifies_wal_mode_durable_tiers(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Verification must not manufacture the sidecars it then refuses.
+
+    ``_backup_sqlite`` checkpoints TRUNCATE and copies the main tier file
+    alone, so a copied WAL-mode tier declares WAL journalling with no ``-wal``
+    beside it. The archive-format lineage gate reads that copy through a
+    ``mode=ro`` connection, which makes SQLite materialize an empty
+    ``-shm``/``-wal`` pair inside the scratch restore. Without the cleanup the
+    scratch inventory then diverges from the published backup and every
+    verified full-evidence backup of a complete archive is refused.
+    """
+    archive_root = workspace_env["archive_root"]
+    initialize_active_archive_root(archive_root)
+    for tier in ("source", "user", "audit"):
+        with sqlite3.connect(archive_root / f"{tier}.db") as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+    for tier in ("source", "user", "audit"):
+        with sqlite3.connect(f"file:{archive_root / f'{tier}.db'}?mode=ro", uri=True) as conn:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok is True, result.error
+    assert result.verified is True
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    assert (backup_root / "verification-receipt.json").exists()
+    assert not [path.name for path in backup_root.rglob("*") if path.name.endswith(("-wal", "-shm", "-journal"))]
+
+
+def test_backup_verification_refuses_a_copied_omitted_tier_sidecar(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Scratch cleanup stays scoped to sidecars verification itself created.
+
+    ``index.db`` is omitted from this profile, so a planted ``index.db-wal``
+    is reached by no per-tier refusal: only the scratch artifact inventory
+    sees it. Widening the cleanup to "drop every sidecar from the scratch
+    copy" leaves the published root as the only witness, and the refusal
+    arrives as a receipt-write failure instead -- so the error identity, not
+    merely ``ok is False``, is what this pins.
+    """
+    db_setup(workspace_env)
+    result = backup_archive(output_dir=tmp_path / "backups", verify=False)
+    assert result.output_path is not None
+    backup_root = Path(result.output_path)
+    (backup_root / "index.db-wal").write_bytes(b"published-sidecar")
+
+    backup_mod._verify_backup_result(result)
+
+    assert result.ok is False
+    assert result.verified is False
+    assert str(result.error).startswith("backup contains an unbound SQLite sidecar")
+    assert str(result.error).endswith("index.db-wal")
+    assert not (backup_root / "verification-receipt.json").exists()
+
+
 @pytest.mark.contract
 def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     workspace_env: dict[str, Path],

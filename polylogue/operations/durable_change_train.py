@@ -1677,7 +1677,15 @@ def restore_adopted_audit_tier(
             },
         )
         if has_pending_restore:
-            with closing(sqlite3.connect(manifest_path.parent / "source.db")) as backup_source:
+            # A backup artifact is read ``immutable=1``: a writable (or plain
+            # ``mode=ro``) open of a copied WAL-mode tier materializes a
+            # ``-shm``/``-wal`` pair inside the backup directory, and the
+            # ``revalidate_exact_backup()`` below inventories that same
+            # directory and refuses unbound sidecars.
+            backup_source_uri = (
+                f"{(manifest_path.parent / 'source.db').resolve(strict=True).as_uri()}?mode=ro&immutable=1"
+            )
+            with closing(sqlite3.connect(backup_source_uri, uri=True)) as backup_source:
                 backup_head = backup_source.execute(
                     "SELECT committed_generation, committed_head_sha256 FROM audit_continuity_control WHERE singleton = 1"
                 ).fetchone()

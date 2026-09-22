@@ -1323,12 +1323,24 @@ def _validate_source_continuity_rebind_delta(
     expected_mutation_id: str,
     prepared_restore: Mapping[str, object] | None,
 ) -> None:
-    """Allow a retrying restore to differ only in the source continuity table."""
+    """Allow a retrying restore to differ only in the source continuity table.
+
+    The attached side is a backup artifact, so it is opened ``immutable=1``
+    rather than ``mode=ro``. ``_backup_sqlite`` copies a TRUNCATE-checkpointed
+    main file with no ``-wal`` beside it, and the copy still declares WAL
+    journalling: a plain ``mode=ro`` open makes SQLite materialize a ``-shm``
+    and ``-wal`` inside the backup directory. Those leftovers then trip this
+    operation's own :func:`_backup_artifact_inventory` refusal, so a restore
+    that consults the backup's continuity head poisons the backup it is
+    restoring from. ``live_path`` stays ``mode=ro``: it is a live tier whose
+    WAL must be honoured.
+    """
 
     try:
         with closing(sqlite3.connect(f"{live_path.resolve(strict=True).as_uri()}?mode=ro", uri=True)) as connection:
             connection.execute(
-                "ATTACH DATABASE ? AS backup_source", (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro",)
+                "ATTACH DATABASE ? AS backup_source",
+                (f"{backup_path.resolve(strict=True).as_uri()}?mode=ro&immutable=1",),
             )
             control = connection.execute(
                 "SELECT pending_mutation_id, pending_payload_json, pending_payload_sha256 "
