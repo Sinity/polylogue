@@ -131,55 +131,115 @@ def test_multi_million_codex_stream_uses_real_stream_dispatch_without_truncation
     assert replay_passes <= 2
 
 
-def test_stream_dispatch_does_not_retain_distinct_input_records() -> None:
-    """A restored list(records) fails from live-record accumulation before parsing."""
+#: One ~1 KB state record. 120,000 of them is about 110 MB of input, an
+#: order of magnitude past ``_CODEX_REPLAY_MEMORY_BUDGET_BYTES``.
+_BUDGET_STREAM_RECORD_FILLER = "s" * 900
+_BUDGET_STREAM_SMALL_RECORDS = 12_000
+_BUDGET_STREAM_LARGE_RECORDS = 120_000
+# Measured 2026-09-22 on this fixture. Head: 11.2 MB traced peak at BOTH
+# record counts -- the peak is the declared replay budget, not the input.
+# With the byte-budgeted list replaced by ``list(records)``: 137.6 MB at
+# 120,000 records, and rising with the count. The bound sits between them.
+_BUDGET_STREAM_PEAK_BYTES_MAX = 40 * 1024 * 1024
+
+
+def _budget_stream(record_count: int) -> Iterator[dict[str, object]]:
+    yield {"type": "session_meta", "payload": {"id": "bounded-stream"}}
+    yield {
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "id": "bounded-stream-message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "bounded"}],
+        },
+    }
+    for sequence in range(record_count):
+        yield {
+            "record_type": "state",
+            "sequence": sequence,
+            "filler": f"{_BUDGET_STREAM_RECORD_FILLER}{sequence}",
+        }
+    yield {"type": "future_whale_record"}
+
+
+def _parse_budget_stream(record_count: int) -> tuple[list[object], int]:
+    """Parse ``record_count`` state records and return the sessions and traced peak."""
+    import tracemalloc
+
     from polylogue.sources.dispatch import parse_stream_payload
 
-    class TrackedStateRecord(dict[str, object]):
-        live = 0
+    tracemalloc.start()
+    try:
+        sessions = parse_stream_payload(
+            "codex",
+            _budget_stream(record_count),
+            "bounded-stream",
+            source_path="bounded.jsonl",
+        )
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    return list(sessions), peak
 
-        def __init__(self, sequence: int) -> None:
-            super().__init__(record_type="state", sequence=sequence)
-            type(self).live += 1
 
-        def __del__(self) -> None:
-            type(self).live -= 1
+def test_stream_dispatch_retention_stays_inside_its_declared_replay_budget() -> None:
+    """Lookahead retention is bounded by the declared budget, not by input size.
 
-        def __reduce__(self) -> tuple[object, tuple[dict[str, object]]]:
-            return dict, (dict(self),)
+    The parser needs two lookahead-derived indexes before its materializing
+    pass, so it must be able to see the record sequence twice. It keeps a
+    byte-budgeted in-memory list and spools to disk above that budget
+    (``_CODEX_REPLAY_MEMORY_BUDGET_BYTES``, polylogue-s8x8s AC2), rather than
+    serializing every decoded record through pickle unconditionally.
 
-    def guarded_stream() -> Iterator[dict[str, object]]:
-        yield {"type": "session_meta", "payload": {"id": "bounded-stream"}}
-        yield {
-            "type": "response_item",
-            "payload": {
-                "type": "message",
-                "id": "bounded-stream-message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "bounded"}],
-            },
-        }
-        for sequence in range(10_000):
-            if TrackedStateRecord.live > 4:
-                raise AssertionError("stream parser retained decoded input records")
-            yield TrackedStateRecord(sequence)
-        yield {"type": "future_whale_record"}
+    This replaces an earlier control that asserted *zero* retention by
+    counting simultaneously-live decoded records (at most four). That
+    condition contradicts the declared budget rather than bounding it: a
+    stream whose records fit inside the budget is retained on purpose. What
+    has to stay true is the memory bound, and a live-object count cannot see
+    it -- so this asserts the traced allocation peak, the same way every
+    other bound in this polylogue-ro922 family does.
 
-    sessions = parse_stream_payload("codex", guarded_stream(), "bounded-stream", source_path="bounded.jsonl")
+    Anti-vacuity: replace the budgeted accumulation with ``list(records)``
+    and the peak goes to 137.6 MB against a 40 MB bound, and keeps rising
+    with the record count instead of staying flat.
+    """
+    sessions, peak = _parse_budget_stream(_BUDGET_STREAM_LARGE_RECORDS)
 
+    assert peak < _BUDGET_STREAM_PEAK_BYTES_MAX, f"traced peak {peak / 1024 / 1024:.1f} MB"
     assert len(sessions) == 1
     assert sessions[0].messages[0].text == "bounded"
+    expected_outer = _BUDGET_STREAM_LARGE_RECORDS + 3
     accounting = sessions[0].unit_accounting
     assert accounting is not None
-    assert accounting.expected[AdmissionUnit.OUTER_RECORD] == 10_003
+    assert accounting.expected[AdmissionUnit.OUTER_RECORD] == expected_outer
     outer = [outcome for outcome in accounting.iter_outcomes() if outcome.unit is AdmissionUnit.OUTER_RECORD]
-    assert len(outer) == 10_003
+    assert len(outer) == expected_outer
     assert [outcome.disposition for outcome in outer[-2:]] == [
         AdmissionDisposition.MATERIALIZED,
         AdmissionDisposition.TYPED_UNKNOWN,
     ]
-    assert outer[-1].ordinal == 10_002
+    assert outer[-1].ordinal == expected_outer - 1
     assert outer[-1].key == "future_whale_record"
+
+
+def test_stream_dispatch_retention_does_not_grow_with_the_record_count() -> None:
+    """Ten times the input, the same peak: the budget is what bounds it.
+
+    A bound that a larger stream can still satisfy by accident is not a
+    bound. This compares two stream sizes an order of magnitude apart, both
+    well past the replay budget, and requires the peak not to track the
+    input. ``list(records)`` fails it by construction: 11.3 MB at 12,000
+    records and 137.6 MB at 120,000 (measured 2026-09-22).
+    """
+    _small_sessions, small_peak = _parse_budget_stream(_BUDGET_STREAM_SMALL_RECORDS)
+    _large_sessions, large_peak = _parse_budget_stream(_BUDGET_STREAM_LARGE_RECORDS)
+
+    record_ratio = _BUDGET_STREAM_LARGE_RECORDS / _BUDGET_STREAM_SMALL_RECORDS
+    assert large_peak < small_peak * 2, (
+        f"traced peak grew {large_peak / small_peak:.1f}x for {record_ratio:.0f}x the records "
+        f"({small_peak / 1024 / 1024:.1f} MB -> {large_peak / 1024 / 1024:.1f} MB)"
+    )
 
 
 # polylogue-ro922. Codex session files are untrusted input, so the parser's
