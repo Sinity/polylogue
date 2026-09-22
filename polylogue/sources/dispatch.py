@@ -10,7 +10,7 @@ from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
-from polylogue.browser_capture.models import BrowserCaptureEnvelope
+from polylogue.browser_capture.models import BrowserCaptureEnvelope, has_chatgpt_native_payload
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import (
@@ -1955,7 +1955,7 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
             # never-materialized message ids as conservation drops, and an
             # empty compact mapping reported a session with zero content
             # units. Ask the parser's own predicate instead of re-deriving it.
-            if envelope.session.provider is Provider.CHATGPT and browser_capture.has_chatgpt_native_payload(native):
+            if envelope.session.provider is Provider.CHATGPT and has_chatgpt_native_payload(native):
                 conversation_id = optional_string(native.get("id")) or optional_string(native.get("uuid"))
                 conversation_id = (
                     conversation_id

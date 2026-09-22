@@ -32,6 +32,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureAttachment,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
+    envelope_has_native_provider_payload,
 )
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import JSONDecodeError, dumps_bytes
@@ -764,23 +765,38 @@ def _check_spool_quota(
 
 
 def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
-    """Prevent a stale, smaller snapshot from replacing a richer spool item."""
+    """Prevent a stale, smaller snapshot from replacing a richer spool item.
+
+    Two things are deliberately NOT freshness evidence here. A provider-native
+    payload arriving over a DOM fallback is a fidelity improvement even when
+    it lists fewer turns -- the archive boundary
+    (``archive_tiers.ingest_precedence.browser_capture_precedence``) already
+    admits exactly that, so discarding it at the spool made the two rules
+    disagree and retained the lower-fidelity content permanently. And
+    ``provenance.captured_at`` is an observation by one extension instance,
+    not a session revision (see :func:`capture_dedup_content_hash`): with two
+    instances whose clocks are skewed it must not veto a strictly newer
+    provider revision or a richer turn set.
+    """
     incoming_updated = _session_update_evidence_ms(incoming)
     existing_updated = _session_update_evidence_ms(existing)
     incoming_captured = to_epoch_ms(incoming.provenance.captured_at, numeric_unit="seconds")
     existing_captured = to_epoch_ms(existing.provenance.captured_at, numeric_unit="seconds")
     incoming_turns = len(incoming.session.turns)
     existing_turns = len(existing.session.turns)
-    if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
+    native_over_fallback = envelope_has_native_provider_payload(incoming) and not envelope_has_native_provider_payload(
+        existing
+    )
+    if incoming_turns < existing_turns and not native_over_fallback:
         return False
-    if incoming_turns < existing_turns:
-        return False
-    # A later observation with more turns is directly richer evidence.  A
-    # provider's update timestamp can lag that observation, so it must not
-    # veto the turn-count improvement.
-    if incoming_turns > existing_turns:
+    if incoming_turns > existing_turns or native_over_fallback:
         return True
-    if existing_updated is not None and incoming_updated is not None and incoming_updated < existing_updated:
+    if existing_updated is not None and incoming_updated is not None:
+        if incoming_updated > existing_updated:
+            return True
+        if incoming_updated < existing_updated:
+            return False
+    if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
         return False
     # An absent update timestamp is unknown, not a change from an existing
     # provider timestamp.  Only compare that field when the incoming capture
@@ -863,6 +879,26 @@ def write_capture_envelope_bytes(
     return _write_capture_envelope(envelope, raw, spool_path=spool_path)
 
 
+def _accepted_identities(
+    envelope: BrowserCaptureEnvelope,
+    root: Path,
+) -> tuple[BrowserCaptureAcceptedIdentity, ...]:
+    """Project the message identities one retained capture artifact carries."""
+    session_ref = f"{_capture_origin(envelope.provider.value)}:{envelope.provider_session_id}"
+    artifact_ref = capture_artifact_ref(envelope, root)
+    return tuple(
+        BrowserCaptureAcceptedIdentity(
+            session_ref=session_ref,
+            message_ref=f"{session_ref}:n:{turn.provider_turn_id}",
+            evidence_ref=f"{artifact_ref}#message:{turn.provider_turn_id}",
+            fidelity="native" if turn.identity_observation.fidelity == "native" else "unknown",
+            adapter_version=envelope.provenance.adapter_version,
+        )
+        for turn in envelope.session.turns
+        if turn.provider_turn_id and turn.identity_observation is not None
+    )
+
+
 def _write_capture_envelope(
     envelope: BrowserCaptureEnvelope,
     raw: bytes,
@@ -871,18 +907,7 @@ def _write_capture_envelope(
 ) -> BrowserCaptureWriteResult:
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     target = capture_artifact_path(envelope, root)
-    session_ref = f"{_capture_origin(envelope.provider.value)}:{envelope.provider_session_id}"
-    accepted_identities = tuple(
-        BrowserCaptureAcceptedIdentity(
-            session_ref=session_ref,
-            message_ref=f"{session_ref}:n:{turn.provider_turn_id}",
-            evidence_ref=f"{capture_artifact_ref(envelope, root)}#message:{turn.provider_turn_id}",
-            fidelity="native" if turn.identity_observation.fidelity == "native" else "unknown",
-            adapter_version=envelope.provenance.adapter_version,
-        )
-        for turn in envelope.session.turns
-        if turn.provider_turn_id and turn.identity_observation is not None
-    )
+    accepted_identities = _accepted_identities(envelope, root)
     dedup_content_hash = capture_dedup_content_hash(envelope)
     with _SPOOL_WRITE_LOCK, _spool_file_lock(root):
         replaced = target.exists()
@@ -914,7 +939,12 @@ def _write_capture_envelope(
                         else capture_dedup_content_hash(existing)
                     ),
                     capture_instance_id=envelope.provenance.extension_instance_id,
-                    accepted_identities=accepted_identities,
+                    # The retained artifact is `existing`, so the identities
+                    # this delivery acknowledges are its identities. Echoing
+                    # the rejected incoming envelope told the extension a
+                    # branch was captured whose messages were never written
+                    # and are not in the spool.
+                    accepted_identities=_accepted_identities(existing, root),
                     convergence=convergence,
                 )
         else:
