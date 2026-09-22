@@ -96,20 +96,70 @@ _AUTHORITIES = frozenset(
 )
 _DURABILITY = frozenset({"ephemeral", "ops", "user", "audit"})
 _PRIVACY = frozenset({"public", "private", "sensitive", "secret"})
+#: Ascending disclosure risk. Combining two classifications takes the maximum,
+#: never the envelope's own declaration.
+_PRIVACY_ORDER: dict[str, int] = {"public": 0, "private": 1, "sensitive": 2, "secret": 3}
+_VALUE_STATES = frozenset({"known", "unknown", "unavailable", "redacted"})
+
+
+class FrozenMapping(dict):  # type: ignore[type-arg]
+    """A JSON-serializable mapping that refuses mutation.
+
+    A content-addressed identity that can be changed after it is read is not
+    an identity: saving ``old_ref = definition.ref_text`` and then mutating
+    ``definition.content`` made the same object produce a different
+    ``ref_text``, so a receipt or reference persisted before the mutation
+    disagreed with every later serialization. Freezing the canonical payload
+    is what makes ``digest``/``world_id`` stable for the object's lifetime.
+
+    It subclasses ``dict`` deliberately: ``json.dumps``, ``hash_payload`` and
+    every ``isinstance(x, dict)`` consumer keep working unchanged, while every
+    mutating entry point raises.
+    """
+
+    __slots__ = ()
+
+    def _frozen(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("canonical analysis-contract payloads are immutable")
+
+    __setitem__ = _frozen
+    __delitem__ = _frozen
+    setdefault = _frozen  # type: ignore[assignment]
+    pop = _frozen  # type: ignore[assignment]
+    popitem = _frozen  # type: ignore[assignment]
+    clear = _frozen  # type: ignore[assignment]
+    update = _frozen  # type: ignore[assignment]
+    __ior__ = _frozen  # type: ignore[assignment]
+
+
+class FrozenSequence(tuple):  # type: ignore[type-arg]
+    """A JSON-serializable sequence that cannot be mutated in place.
+
+    ``json.dumps`` renders a tuple as an array, so the serialized payload is
+    unchanged; the identity simply stops depending on whether a consumer
+    appended to a nested list after reading the ref.
+    """
+
+    __slots__ = ()
 
 
 def _canonical(value: object) -> object:
-    """Canonicalize JSON-ish values without importing the analysis package."""
+    """Canonicalize JSON-ish values without importing the analysis package.
+
+    The result is immutable all the way down -- see :class:`FrozenMapping`.
+    """
 
     if isinstance(value, Mapping):
-        return {nfc(str(k)): _canonical(v) for k, v in sorted(value.items(), key=lambda item: nfc(str(item[0])))}
+        return FrozenMapping(
+            (nfc(str(k)), _canonical(v)) for k, v in sorted(value.items(), key=lambda item: nfc(str(item[0])))
+        )
     if isinstance(value, (set, frozenset)):
         values = [_canonical(item) for item in value]
-        return sorted(
-            values, key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+        return FrozenSequence(
+            sorted(values, key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=True, separators=(",", ":")))
         )
     if isinstance(value, (list, tuple)):
-        return [_canonical(item) for item in value]
+        return FrozenSequence(_canonical(item) for item in value)
     if isinstance(value, str):
         return nfc(value)
     if value is None or isinstance(value, (int, float, bool)):
@@ -387,8 +437,16 @@ class ResultEnvelope:
             raise AnalysisContractError("result definition and relation definition differ")
         if self.relation.evaluation_world.world_id != self.evaluation_world.world_id:
             raise AnalysisContractError("result relation was evaluated in a different world")
+        if self.value_state not in _VALUE_STATES:
+            raise AnalysisContractError(f"unsupported result value state: {self.value_state!r}")
         if self.value_state == "known" and self.value is None:
             raise AnalysisContractError("known result values cannot be null")
+        if self.value_state != "known" and self.value is not None:
+            # A value carried behind ``unknown``/``unavailable``/``redacted``
+            # leaves consumers to disagree about whether it is usable, which is
+            # exactly the fail-closed contract ``EvidenceObservation`` already
+            # enforces. The state is the answer; there is no second one.
+            raise AnalysisContractError(f"a {self.value_state!r} result cannot carry a value")
         if self.sampling_interval is not None and self.relation.enumeration == "exact":
             raise AnalysisContractError("sampling intervals are not valid for exact enumeration")
 
@@ -446,13 +504,24 @@ class TypedReceiptEnvelope:
     excision_link: str | None = None
     evidence_refs: tuple[ObjectRef, ...] = ()
 
+    @property
+    def effective_privacy_class(self) -> PrivacyClass:
+        """The stricter of the receipt's own class and its embedded definition's.
+
+        ``to_dict`` serializes the definition's content verbatim, so a receipt
+        declaring ``private`` cannot make a ``secret`` definition safe to
+        persist at ``audit`` durability. Classification is a property of the
+        content carried, not of the envelope's own declaration.
+        """
+        return max((self.privacy_class, self.definition.privacy_class), key=_PRIVACY_ORDER.__getitem__)
+
     def __post_init__(self) -> None:
         if self.durability not in _DURABILITY or self.privacy_class not in _PRIVACY:
             raise AnalysisContractError("receipt has unsupported privacy or durability")
         if (
             self.durability in {"user", "audit"}
-            and self.privacy_class in {"sensitive", "secret"}
-            and not (self.promoted or self.cited)
+            and self.effective_privacy_class in {"sensitive", "secret"}
+            and not (self.promoted or self.cited or (self.definition.promoted or self.definition.cited))
         ):
             raise AnalysisContractError("sensitive receipt requires explicit promotion or citation")
         if (self.promoted or self.cited) and (not self.retention_policy or not self.excision_link):
@@ -628,10 +697,15 @@ class ImprovementLoopContract:
         _text(self.pilot_key, "pilot_key")
 
     def compatible_with(self, other: ImprovementLoopContract) -> bool:
+        # The complete ``state_ref``, not just its kind: two pilots pointing at
+        # ``workspace:curriculum-state`` and ``workspace:recovery-state`` share
+        # a ref KIND and nothing else, which is precisely the per-loop state
+        # fork ``require_shared_loop_contract`` exists to reject. The scheduler
+        # ref was already compared whole.
         return (
             self.protocol_version == other.protocol_version
             and self.scheduler_ref == other.scheduler_ref
-            and self.state_ref.kind == other.state_ref.kind
+            and self.state_ref == other.state_ref
         )
 
 
@@ -648,6 +722,8 @@ def require_shared_loop_contract(*loops: ImprovementLoopContract) -> None:
 
 __all__ = [
     "AnalysisContractError",
+    "FrozenMapping",
+    "FrozenSequence",
     "BasketPointer",
     "DefinitionIdentity",
     "DurabilityTier",
