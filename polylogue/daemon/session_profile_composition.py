@@ -15,6 +15,7 @@ from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance, make_session_insight_maintenance
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import (
+    make_session_marker_derivation,
     make_session_profile_derivation,
     make_session_profile_frame,
     make_session_summary_derivation,
@@ -56,8 +57,13 @@ def compose_session_profile_callback(
         archive_root=archive_root,
         now=now,
     )
+    # Ordered after the profile: marker lowering reads the same session
+    # evidence, and the edge is one-way -- a user-tier marker failure leaves
+    # this domain's work pending without invalidating the index family
+    # (polylogue-ylh7v).
+    markers = make_session_marker_derivation(index_path, archive_root=archive_root)
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger(stages=(), derivations=(summary, usage_rollup, profile)),
+        DaemonConverger(stages=(), derivations=(summary, usage_rollup, profile, markers)),
         compute_adapter=compute_adapter,
         write_bridge=write_bridge,
     )

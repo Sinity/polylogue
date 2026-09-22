@@ -41,7 +41,6 @@ from polylogue.storage.sqlite.write_lease import write_lease
 __all__ = [
     "SESSION_PARTITION_INSPECT_CHUNK",
     "SESSION_PROFILE_DOMAIN",
-    "SessionProfileMarkerLoweringError",
     "SessionProfilePartFacts",
     "SessionProfileDerivation",
     "SessionProfileReplacement",
@@ -62,72 +61,6 @@ SESSION_PROFILE_RECIPE_VERSION = SESSION_INPUT_RECIPE_VERSION
 _VALID = "valid"
 _MISSING = "missing"
 _STALE = "stale"
-
-
-class SessionProfileMarkerLoweringError(RuntimeError):
-    """A user-tier marker publication failed after a known index outcome.
-
-    ``index_family_committed`` records an index-tier replacement committed by
-    *this* invocation.  A valid existing profile with a missing marker may
-    still need user-tier recovery, but a failed recovery attempt has not
-    committed a new index replacement and must not claim one.
-    """
-
-    def __init__(self, *, index_family_committed: bool) -> None:
-        super().__init__("session profile marker lowering failed after index publication")
-        self.index_family_committed = index_family_committed
-
-
-def _marker_assertion_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
-    from polylogue.markers.lowering import assertion_id_for_marker
-    from polylogue.storage.derived.session.rebuild import marker_candidates_for_session_sync
-
-    return tuple(
-        assertion_id
-        for candidate in marker_candidates_for_session_sync(conn, session_id)
-        if (assertion_id := assertion_id_for_marker(candidate)) is not None
-    )
-
-
-def _marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[str]) -> bool:
-    # Marker identity intentionally coalesces identical markers in one block.
-    # Compare unique requested IDs with SQL set membership, not occurrence count.
-    assertion_ids = tuple(dict.fromkeys(assertion_ids))
-    if not assertion_ids:
-        return True
-    placeholders = ",".join("?" * len(assertion_ids))
-    found = conn.execute(
-        f"SELECT COUNT(*) FROM assertions WHERE assertion_id IN ({placeholders})",
-        tuple(assertion_ids),
-    ).fetchone()
-    return found is not None and int(found[0]) == len(assertion_ids)
-
-
-def _lower_prepared_markers(
-    marker_write_connection: Callable[[], sqlite3.Connection],
-    prepared: object,
-) -> None:
-    """Publish marker candidates after the index family has committed.
-
-    The user tier cannot share SQLite atomicity with the derived index tier.
-    It is deliberately a separate, idempotent assertion transaction; restart
-    inspection above re-discovers a missing lowering without relying on a
-    volatile ingest hint.
-    """
-    from polylogue.markers import lower_markers
-    from polylogue.storage.derived.session.rebuild import PreparedSessionInsightPartition
-
-    if not isinstance(prepared, PreparedSessionInsightPartition) or prepared.bundle is None:
-        return
-    candidates = prepared.bundle.marker_candidates
-    if not candidates:
-        return
-    conn = marker_write_connection()
-    try:
-        lower_markers(conn, candidates)
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _connection_generation(conn: sqlite3.Connection) -> str:
@@ -652,8 +585,6 @@ class SessionProfileDerivation:
         page_size: int = 200,
         quiet_keys: Callable[[object], frozenset[str]] | None = None,
         quiet_key: Callable[[object, str], bool] | None = None,
-        marker_read_connection: Callable[[], sqlite3.Connection] | None = None,
-        marker_write_connection: Callable[[], sqlite3.Connection] | None = None,
         generation_binding: Callable[[], str] | None = None,
     ) -> None:
         self._read_connection = read_connection
@@ -663,8 +594,6 @@ class SessionProfileDerivation:
         self._page_size = page_size
         self._quiet_keys = quiet_keys
         self._quiet_key = quiet_key
-        self._marker_read_connection = marker_read_connection
-        self._marker_write_connection = marker_write_connection
         self._generation_binding = generation_binding
 
     def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
@@ -682,29 +611,23 @@ class SessionProfileDerivation:
         return page, (page[-1] if start + len(page) < len(keys) and page else None)
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Classify each session from the index relations this domain owns.
+
+        polylogue-ylh7v: an absent user-tier marker assertion no longer
+        downgrades a valid index family. Marker delivery is its own domain
+        (``storage/derived/session/marker_domain.py``) with its own required,
+        inspect, compute and publish steps, so a user-tier outage leaves marker
+        work pending instead of re-deriving profiles that were never wrong.
+        """
+        del frame
         conn = self._read_connection()
         try:
-            # Output rows, input values and marker candidates must come from
-            # one commit; mixing snapshots can certify a never-valid family.
+            # Output rows and input values must come from one commit; mixing
+            # snapshots can certify a never-valid family.
             conn.execute("BEGIN")
-            statuses = dict(inspect_session_profiles(conn, keys, materializer_version=self._materializer_version))
-            if self._marker_read_connection is None:
-                return statuses
-            marker_ids_by_session = {
-                key: _marker_assertion_ids(conn, key) for key, status in statuses.items() if status == _VALID
-            }
+            return dict(inspect_session_profiles(conn, keys, materializer_version=self._materializer_version))
         finally:
             conn.close()
-        if not marker_ids_by_session:
-            return statuses
-        marker_conn = self._marker_read_connection()
-        try:
-            for key, assertion_ids in marker_ids_by_session.items():
-                if not _marker_assertions_present(marker_conn, assertion_ids):
-                    statuses[key] = _STALE
-        finally:
-            marker_conn.close()
-        return statuses
 
     def selected_part_facts(self, frame: object, session_id: str) -> SessionProfilePartFacts:
         """Read the exact family facts a sealed owner target may certify.
@@ -713,12 +636,11 @@ class SessionProfileDerivation:
         Maintenance needs neither discovery nor a connection escape hatch, but
         it must retain the current source binding, stored binding, and actual
         partition counts beside its one-key receipt. Keep that inspection in
-        the storage adapter so marker presence remains part of the same
-        validity definition used by recurring convergence.
+        the storage adapter so it uses the same validity definition recurring
+        convergence does -- which, since polylogue-ylh7v, is the index family
+        alone.
         """
-        marker_read_connection = self._marker_read_connection
         conn = self._read_connection()
-        marker_ids: tuple[str, ...] = ()
         try:
             # A read transaction freezes every field in this receipt to one
             # index snapshot.  Without it a concurrent replacement can mix a
@@ -742,17 +664,8 @@ class SessionProfileDerivation:
                 input_binding,
                 materializer_version=self._materializer_version,
             )
-            if status == _VALID and marker_read_connection is not None:
-                marker_ids = _marker_assertion_ids(conn, session_id)
         finally:
             conn.close()
-        if marker_ids and marker_read_connection is not None:
-            marker_conn = marker_read_connection()
-            try:
-                if not _marker_assertions_present(marker_conn, marker_ids):
-                    status = _STALE
-            finally:
-                marker_conn.close()
         return SessionProfilePartFacts(
             session_present=session_present,
             status=status,
@@ -849,7 +762,6 @@ class SessionProfileDerivation:
             ):
                 return False
             conn = self._write_connection()
-            index_family_committed = False
             try:
                 if (
                     replacement.generation_binding is not None
@@ -875,18 +787,12 @@ class SessionProfileDerivation:
                             else lambda: generation_binding() == replacement.generation_binding
                         ),
                     )
-                    index_family_committed = published
             finally:
                 conn.close()
-            if published and self._marker_write_connection is not None:
-                try:
-                    _lower_prepared_markers(self._marker_write_connection, replacement.payload)
-                except Exception as exc:
-                    # The index transaction has already committed and cannot
-                    # share atomicity with user assertions.  Preserve that
-                    # fact for the owner; normal inspection will rediscover
-                    # the missing marker lowering for a later idempotent pass.
-                    raise SessionProfileMarkerLoweringError(index_family_committed=index_family_committed) from exc
+            # polylogue-ylh7v: no second, non-atomic user-tier transaction
+            # runs behind this commit. Marker delivery is its own domain, so
+            # this publication now has exactly one commit and exactly one
+            # outcome.
             return published
 
 

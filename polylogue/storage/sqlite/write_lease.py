@@ -455,14 +455,10 @@ def write_lease(
         # the ``finally`` below would replace an in-flight exception with this
         # timing complaint, demoting it to ``__context__`` where no ``except``
         # clause matches it. That is worst precisely under contention -- the
-        # only condition that puts a hold over budget -- and it erases typed
-        # partial-write facts: ``SessionProfileMarkerLoweringError`` carries
-        # ``index_family_committed``, which ``_publication_commit_known``
-        # recovers by ``isinstance``, so masking it reports a committed index
-        # replacement with an unlowered marker as an ordinary failure and
-        # drops the committed fact the operator needs. An over-budget hold is
-        # still reported: the caller's own error is the stronger signal, and
-        # the budget breach is logged rather than raised.
+        # only condition that puts a hold over budget -- and it erases the
+        # caller's own typed failure, which is the fact an operator needs. An
+        # over-budget hold is still reported: the caller's own error is the
+        # stronger signal, and the budget breach is logged rather than raised.
         if lease.over_budget:
             logger.warning(
                 "writer %s held the lease %.3fs against a declared %.3fs budget "

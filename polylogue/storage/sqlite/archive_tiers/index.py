@@ -13,8 +13,10 @@ from polylogue.storage.derived.session.input_binding import (
 )
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MESSAGE_PROJECTION
 from polylogue.storage.fts.sql import (
+    FTS_BLOCK_INPUT_PROJECTION_COLUMNS,
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
     FTS_MESSAGES_TABLE_SQL,
+    FTS_READINESS_BINDING_TABLE_SQL,
     FTS_TRIGGER_DDL,
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
@@ -874,6 +876,33 @@ ON session_refs(kind, repo, ref_number);
 -- FTS_MESSAGES_IDENTITY_TABLE_SQL is a Python constant substituted at
 -- INDEX_DDL build time, not a SQL brace literal.
 {FTS_MESSAGES_IDENTITY_TABLE_SQL}
+
+-- polylogue-crwl6: the message-FTS readiness binding and the triggers that make
+-- it evidence. See FTS_READINESS_BINDING_TABLE_SQL in storage/fts/sql.py for
+-- what a present row asserts and why the output side is re-counted instead of
+-- trigger-retired.
+{FTS_READINESS_BINDING_TABLE_SQL}
+
+-- These are declared HERE, in INDEX_DDL, and not in BLOCKS_FTS_TRIGGER_DDL.
+-- The bulk-write paths drop the FTS maintenance triggers by name
+-- (suspend_message_fts_triggers_sync / reset_message_fts_index_sync) and write
+-- messages_fts through their own SQL; if retirement travelled with them, a bulk
+-- write would leave a binding standing over a surface it never inspected. The
+-- ``UPDATE OF`` list is generated from FTS_BLOCK_INPUT_PROJECTION_COLUMNS -- the
+-- declaration that already owns which block columns this surface reduces -- so a
+-- column added to the projection is covered without a second list to maintain.
+CREATE TRIGGER IF NOT EXISTS messages_fts_readiness_binding_blocks_ai
+AFTER INSERT ON blocks BEGIN
+    DELETE FROM messages_fts_readiness_binding;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_readiness_binding_blocks_au
+AFTER UPDATE OF {_binding_columns(FTS_BLOCK_INPUT_PROJECTION_COLUMNS)} ON blocks BEGIN
+    DELETE FROM messages_fts_readiness_binding;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_readiness_binding_blocks_ad
+AFTER DELETE ON blocks BEGIN
+    DELETE FROM messages_fts_readiness_binding;
+END;
 
 -- FTS triggers for messages_fts table are now dynamically composed from sql.py
 -- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)

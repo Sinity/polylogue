@@ -600,6 +600,7 @@ def _resolve_finding_object_ref(
     normalized_ref: str,
     object_ref: ObjectRef,
 ) -> PublicRefResolutionPayload:
+    from polylogue.operations.finding_evidence import evaluate_finding_evidence
     from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
     from polylogue.surfaces.payloads import (
         FindingEvidenceRefState,
@@ -618,7 +619,8 @@ def _resolve_finding_object_ref(
         conn.row_factory = sqlite3.Row
         provenance = compute_finding_provenance(conn, object_ref.object_id)
         controls_document = _finding_controls_document(conn, object_ref.object_id)
-    if provenance is None:
+        integrity = None if provenance is None else evaluate_finding_evidence(conn, provenance)
+    if provenance is None or integrity is None:
         return cast(
             PublicRefResolutionPayload,
             _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
@@ -642,9 +644,21 @@ def _resolve_finding_object_ref(
         created_at_ms=provenance.created_at_ms,
         updated_at_ms=provenance.updated_at_ms,
     )
+    # polylogue-rxdo.4: the shared 37t.14 evaluator decides support, not this
+    # route and not the legacy current/stale helper. A finding whose ancestry
+    # is stale, unresolved, circular, closed-loop, frame-incomplete or
+    # incompatible stays addressable -- the payload below is still returned --
+    # but it reports the evaluator's versioned verdict and its decisive
+    # witness, so no consumer can read an advisory string as support.
     caveats: tuple[str, ...] = ()
     if provenance.staleness_verdict != "current":
         caveats = (f"finding evidence staleness verdict: {provenance.staleness_verdict}",)
+    if not integrity.supported:
+        caveats = (
+            *caveats,
+            f"finding evidence is not current-supported: {integrity.status.value}",
+            *(f"evidence-integrity witness: {code}" for code in integrity.reason_codes),
+        )
     object_refs = tuple(
         dict.fromkeys(
             ref_value
@@ -658,6 +672,26 @@ def _resolve_finding_object_ref(
         )
     )
     payload_document = model_json_document(payload)
+    # The shared verdict travels with the payload as its own named section, so
+    # a consumer reads one versioned status instead of parsing prose caveats.
+    payload_document["evidence_integrity"] = {
+        "status": integrity.status.value,
+        "supported": integrity.supported,
+        "evaluator_version": integrity.evaluator_version,
+        "reason_codes": list(integrity.reason_codes),
+        "blind_spot_codes": list(integrity.blind_spots),
+        "frame_ref": integrity.frame_ref,
+        "definition_ref": integrity.definition_ref,
+        "witnesses": [
+            {"code": witness.code, "path": list(witness.path), "detail": witness.detail}
+            for witness in integrity.witnesses
+        ],
+    }
+    if not integrity.supported and payload_document.get("staleness_verdict") == "current":
+        # The legacy helper resolves declared refs and nothing else, so it can
+        # call a finding "current" whose ancestry the shared evaluator refuses.
+        # Publishing both verbatim would let a reader pick the one it likes.
+        payload_document["staleness_verdict"] = "unknown"
     if controls_document is not None:
         payload_document["controls"] = controls_document["controls"]
         payload_document["rank_tier"] = controls_document["rank_tier"]

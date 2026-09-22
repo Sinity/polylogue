@@ -496,6 +496,93 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+def make_fts_readiness_binding_stage(db_path: Path) -> ConvergenceStage:
+    """Publish the message-FTS readiness binding once per quiet archive.
+
+    polylogue-crwl6 AC6.  The five request paths (``/healthz``, ``/api/status``,
+    ``/metrics``, ``health``, ``status_snapshot``) all reach FTS readiness
+    through ``daemon.fts_status.fts_readiness_info``, which ran the
+    archive-proportional global inspection on every call.  That inspection now
+    has a domain-local binding to compare against -- but a binding has to be
+    *published* by something holding the writer, and readiness probes are
+    read-only by contract.
+
+    This stage is that publisher, and it is deliberately the cheapest possible
+    scheduler: ``check`` is a single indexed row read, so a bound archive costs
+    nothing per pass.  The one authoritative inspection runs only when the
+    binding is absent, which after ingest quiesces happens exactly once --
+    every block write retires the binding again, so a burst does not run it
+    repeatedly per row, it runs it once after the burst.
+    """
+
+    def _index_path() -> Path:
+        return ArchiveLocation.resolve(db_path.parent).active_index_path
+
+    def check(_path: Path) -> bool:
+        from polylogue.operations.fts_derivation import fts_readiness_binding
+
+        index_db = _index_path()
+        if not index_db.exists():
+            return False
+        conn = open_readonly_connection(index_db, validate_schema=False)
+        try:
+            if not _table_exists(conn, "messages_fts_readiness_binding"):
+                return False
+            if not _table_exists(conn, "blocks") or not _table_exists(conn, "messages_fts"):
+                return False
+            return fts_readiness_binding(conn) is None
+        finally:
+            conn.close()
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        if not paths:
+            return set()
+        return set(paths) if check(paths[0]) else set()
+
+    def execute(_path: Path) -> StageExecuteReturn:
+        return execute_many((_path,))
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        from polylogue.operations.fts_derivation import stamp_fts_readiness_binding
+
+        with span("daemon.stage.execute", stage="fts_readiness_binding", files=len(paths)) as work:
+            index_db = _index_path()
+            if not index_db.exists():
+                work.empty(bound=False, reason="no_index_tier")
+                return True
+            conn = open_daemon_connection(index_db, archive_root=db_path.parent)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                bound = stamp_fts_readiness_binding(conn)
+                conn.execute("COMMIT" if bound else "ROLLBACK")
+            except Exception:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+            if bound:
+                work.ok(bound=True)
+            else:
+                # Not a failure and not converged: the surface itself is not
+                # valid right now, or a writer moved ``blocks`` underneath the
+                # inspection. Either way readiness keeps answering from the
+                # authoritative inspection and this stage retries.
+                work.degraded("fts_surface_not_valid", bound=False)
+            return bound
+
+    return ConvergenceStage(
+        name="fts_readiness_binding",
+        description="Publish the message-FTS readiness binding from one authoritative inspection",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+        false_means_pending=True,
+        whole_archive=True,
+    )
+
+
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -533,6 +620,9 @@ def make_default_convergence_stages(
             # skips every such row as an unimplemented stage and the backlog
             # never clears (polylogue-ia88n).
             make_lineage_prefix_recompose_stage(db_path),
+            # polylogue-crwl6 AC6: the only production writer of the message-FTS
+            # readiness binding the five status request paths compare against.
+            make_fts_readiness_binding_stage(db_path),
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.

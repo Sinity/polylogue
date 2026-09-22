@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from polylogue.archive.query.evaluator import (
@@ -22,6 +23,7 @@ from polylogue.archive.query.evaluator import (
     ScopedCanonicalPlanEvaluator,
     session_origin,
 )
+from polylogue.archive.query.metadata import DATE_QUERY_FIELD_REGISTRY
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.hashing import hash_payload
 from polylogue.core.query_identity import query_ref, result_set_ref
@@ -45,7 +47,112 @@ from polylogue.storage.sqlite.query_objects import (
     put_evaluation_receipt,
     put_result_set,
     put_watched_query_baseline,
+    watched_query_baseline_updated_at_ms,
 )
+
+#: The declared clock boundary a watched definition is re-evaluated across.
+#: One UTC day: relative bounds in this grammar are written in hours, days,
+#: weeks and months (``_parse_relative_date``), so a day is the coarsest period
+#: that cannot skip a whole generation of them, and it bounds a clock-only
+#: re-evaluation to once per watch per day rather than once per convergence
+#: pass.
+CLOCK_BOUNDARY_MS = 24 * 60 * 60 * 1000
+
+#: Predicate fields whose declared bound is an instant. Taken from the grammar's
+#: own date registry plus the two relative-date spec filters it does not carry
+#: (``since``/``until``, declared in ``archive/query/metadata.py``) and the
+#: terminal-unit ``time`` field. A relative bound on any other field is not
+#: expressible in this grammar, so probing every string value in the AST would
+#: add only false positives from search terms and titles.
+_CLOCK_BOUND_FIELDS = frozenset(DATE_QUERY_FIELD_REGISTRY) | {"since", "until", "time"}
+
+
+def clock_boundary_start_ms(now_ms: int, *, boundary_ms: int = CLOCK_BOUNDARY_MS) -> int:
+    """Return the start of the clock boundary ``now_ms`` falls in."""
+    if boundary_ms <= 0:
+        raise ValueError("clock boundary must be positive")
+    return now_ms - (now_ms % boundary_ms)
+
+
+def _resolve_at(value: str, base: datetime) -> datetime | None:
+    """Resolve one declared bound against an explicit clock, never the wall clock."""
+    import dateparser  # deferred: the timezone tables cost ~0.26s to import
+
+    resolved: datetime | None = dateparser.parse(
+        value,
+        settings={
+            "PREFER_DATES_FROM": "past",
+            "RETURN_AS_TIMEZONE_AWARE": True,
+            "TIMEZONE": "UTC",
+            "RELATIVE_BASE": base,
+        },
+    )
+    if resolved is not None and resolved.tzinfo is None:
+        resolved = resolved.replace(tzinfo=timezone.utc)
+    return resolved
+
+
+def _clock_bound_values(node: object) -> Iterator[str]:
+    """Yield every declared instant bound in one canonical predicate AST."""
+    if isinstance(node, Mapping):
+        field = node.get("field")
+        if isinstance(field, str) and field in _CLOCK_BOUND_FIELDS:
+            values = node.get("values")
+            if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+                for value in values:
+                    if isinstance(value, str):
+                        yield value
+        for child in node.values():
+            yield from _clock_bound_values(child)
+    elif isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
+        for child in node:
+            yield from _clock_bound_values(child)
+
+
+def query_is_clock_relative(query: QueryObject) -> bool:
+    """Whether this definition's own membership moves when only the clock moves.
+
+    Measured, not pattern-matched: each declared instant bound is resolved
+    against two explicit bases one boundary apart, and the definition is
+    clock-relative exactly when some bound lands on a different instant. An
+    absolute literal (``2026-01-01``) resolves identically against both bases
+    and is therefore never scheduled by the clock; ``7 days ago`` -- what
+    ``_parse_relative_date`` stores for ``7d`` -- is.
+    """
+    ast = query.canonical_plan.get("ast")
+    if not isinstance(ast, Mapping):
+        return False
+    base = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    later = base + timedelta(milliseconds=CLOCK_BOUNDARY_MS)
+    for value in _clock_bound_values(ast):
+        first = _resolve_at(value, base)
+        second = _resolve_at(value, later)
+        if first is None or second is None:
+            continue
+        if first != second:
+            return True
+    return False
+
+
+def _clock_due_watches(conn: sqlite3.Connection, *, now_ms: int) -> tuple[QueryObject, ...]:
+    """Return the enabled watches whose declared clock boundary has passed.
+
+    AC1's other half. A watch on ``time >= 7 days ago`` changes membership with
+    no ingestion event at all, so the session-scoped trigger below can never
+    fire for it; without this the watch is enabled and silently never runs.
+    Only watches the user actually enabled are considered, and a watch whose
+    baseline was already advanced inside the current boundary is not due -- one
+    boundary, one evaluation.
+    """
+    boundary_start = clock_boundary_start_ms(now_ms)
+    due: list[QueryObject] = []
+    for query in list_watched_queries(conn):
+        if not query_is_clock_relative(query):
+            continue
+        updated_at_ms = watched_query_baseline_updated_at_ms(conn, query.query_hash)
+        if updated_at_ms is None or updated_at_ms < boundary_start:
+            due.append(query)
+    return tuple(due)
 
 
 def make_standing_query_stage(
@@ -62,10 +169,65 @@ def make_standing_query_stage(
     """
 
     def check(_path: Path) -> bool:
-        return False
+        """Whole-archive trigger: a declared clock boundary, not an ingest event."""
+        if evaluator is None:
+            return False
+        user_db = _standing_user_db_path(db_path)
+        if not user_db.exists():
+            return False
+        with closing(open_readonly_connection(user_db)) as conn:
+            return bool(_clock_due_watches(conn, now_ms=int(time.time() * 1000)))
 
     def execute(_path: Path) -> StageExecuteReturn:
+        """Re-evaluate exactly the watches whose clock boundary has passed."""
+        if evaluator is None:
+            return True
+        user_db = _standing_user_db_path(db_path)
+        if not user_db.exists():
+            return True
+        now_ms = int(time.time() * 1000)
+        conn = open_daemon_connection(user_db, timeout=30.0)
+        try:
+            due = _clock_due_watches(conn, now_ms=now_ms)
+            if not due:
+                return True
+            for query in due:
+                evaluation = evaluator.evaluate(
+                    QueryEvaluationRequest(
+                        query=query,
+                        purpose="standing-watch",
+                        changed_session_ids=(),
+                        excluded_scope_refs=(query_ref(query.query_hash).format(),),
+                        excluded_origin_prefixes=("notice.",),
+                    )
+                )
+                if evaluation.cache_only:
+                    continue
+                _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
+            conn.commit()
+        finally:
+            conn.close()
+        emit(
+            "daemon.stage.clock_boundary",
+            level=INFO,
+            outcome="ok",
+            stage="standing-queries",
+            reason="clock_boundary_passed",
+            watches=len(due),
+        )
         return True
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        # One clock read for the whole batch: the boundary is a property of the
+        # archive, not of any one source file.
+        if not paths:
+            return set()
+        return set(paths) if check(paths[0]) else set()
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        if not paths:
+            return True
+        return execute(paths[0])
 
     def check_sessions(session_ids: Sequence[str]) -> set[str]:
         if evaluator is None or not session_ids:
@@ -164,9 +326,14 @@ def make_standing_query_stage(
         description="Re-evaluate watched query definitions and emit candidate deltas",
         check=check,
         execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
         check_sessions=check_sessions,
         execute_sessions=execute_sessions,
         false_means_pending=True,
+        # The clock-boundary trigger is a function of the archive's watches and
+        # the wall clock, not of the batch's subjects (polylogue-rxdo.5 AC1).
+        whole_archive=True,
     )
 
 

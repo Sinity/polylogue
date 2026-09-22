@@ -14,6 +14,11 @@ from polylogue.storage.derived.session.derivation import (
     SESSION_PROFILE_RECIPE_VERSION,
     SessionProfileDerivation,
 )
+from polylogue.storage.derived.session.marker_domain import (
+    SESSION_MARKER_DOMAIN,
+    SESSION_MARKER_RECIPE_VERSION,
+    SessionMarkerDerivation,
+)
 from polylogue.storage.derived.session.summary import (
     SESSION_SUMMARY_DOMAIN,
     SESSION_SUMMARY_RECIPE_VERSION,
@@ -28,6 +33,7 @@ from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
 
 __all__ = [
+    "make_session_marker_derivation",
     "make_session_profile_derivation",
     "make_session_profile_frame",
     "make_session_summary_derivation",
@@ -147,14 +153,35 @@ def make_session_profile_derivation(
 
     quiet_key = _hot_session_quiet_key(read_connection, archive_root=archive_root, now=now)
 
-    user_db = archive_root / "user.db"
+    return SessionProfileDerivation(
+        read_connection,
+        write_connection,
+        materializer_version=materializer_version,
+        session_scope=_session_scope,
+        quiet_key=quiet_key,
+        generation_binding=generation_binding,
+    )
 
-    # Marker availability is resolved when a connection is opened, never when
-    # this adapter is constructed.  The daemon owner is composed once, before
-    # the first tier-creating call, so a construction-time ``exists()`` check
-    # would blind the whole process run to markers whenever ``user.db`` is
-    # created afterwards -- and ``user.db`` is the durable, irreplaceable
-    # tier, so silently deriving without it is the wrong failure direction.
+
+def make_session_marker_derivation(
+    index_db_path: Path,
+    *,
+    archive_root: Path,
+) -> SessionMarkerDerivation:
+    """Build the marker-lowering adapter the daemon owner drives after profiles.
+
+    polylogue-ylh7v: marker delivery is its own domain rather than a tail on
+    profile publication. Marker availability is resolved when a connection is
+    opened, never when this adapter is constructed. The daemon owner is
+    composed once, before the first tier-creating call, so a construction-time
+    ``exists()`` check would blind the whole process run to markers whenever
+    ``user.db`` is created afterwards -- and ``user.db`` is the durable,
+    irreplaceable tier, so silently deriving without it is the wrong failure
+    direction.
+    """
+    del index_db_path
+    read_connection, _write_connection, generation_binding = _session_derivation_connections(archive_root)
+    user_db = archive_root / "user.db"
 
     def marker_read_connection() -> sqlite3.Connection:
         return open_readonly_connection(user_db, timeout_class="background-read")
@@ -162,14 +189,11 @@ def make_session_profile_derivation(
     def marker_write_connection() -> sqlite3.Connection:
         return open_daemon_connection(user_db, archive_root=archive_root)
 
-    return SessionProfileDerivation(
+    return SessionMarkerDerivation(
         read_connection,
-        write_connection,
-        materializer_version=materializer_version,
+        marker_read_connection,
+        marker_write_connection,
         session_scope=_session_scope,
-        quiet_key=quiet_key,
-        marker_read_connection=marker_read_connection,
-        marker_write_connection=marker_write_connection,
         generation_binding=generation_binding,
     )
 
@@ -189,6 +213,7 @@ def make_session_profile_frame(
             SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
             SESSION_USAGE_ROLLUP_DOMAIN: session_usage_rollup_recipe_version(),
             SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
+            SESSION_MARKER_DOMAIN: SESSION_MARKER_RECIPE_VERSION,
         },
         scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
     )

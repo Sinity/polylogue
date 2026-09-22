@@ -14,7 +14,12 @@ from polylogue.daemon.session_profile_composition import compose_session_profile
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import make_session_profile_frame
 from polylogue.storage.derived.session.derivation import SESSION_PROFILE_DOMAIN, SESSION_PROFILE_RECIPE_VERSION
+from polylogue.storage.derived.session.marker_domain import SESSION_MARKER_DOMAIN, SESSION_MARKER_RECIPE_VERSION
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_DOMAIN, SESSION_SUMMARY_RECIPE_VERSION
+from polylogue.storage.derived.session.usage_rollup import (
+    SESSION_USAGE_ROLLUP_DOMAIN,
+    session_usage_rollup_recipe_version,
+)
 from tests.infra.convergence_harness import seed_partial_convergence_archive
 
 
@@ -39,9 +44,15 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
         archive_root=recovered.root,
         scope=(recovered.target_session_id,),
     )
+    # Every domain the composed owner drives, in the order it drives them.
+    # Omitting one here made this assertion pass vacuously against a frame that
+    # already carried the usage rollup (inherited red at 9ef655cb8, repaired
+    # rather than re-narrowed).
     assert frame.recipe_versions == {
         SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
+        SESSION_USAGE_ROLLUP_DOMAIN: session_usage_rollup_recipe_version(),
         SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
+        SESSION_MARKER_DOMAIN: SESSION_MARKER_RECIPE_VERSION,
     }
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
@@ -54,8 +65,11 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
             now=lambda: 0.0,
         )
         report = await composed.callback((recovered.target_session_id,))
+        # The declared run order, all of it. Naming only two domains let this
+        # pass while a third already ran (inherited red at 9ef655cb8).
         assert [(item.key.domain, item.outcome) for item in report.outcomes] == [
             (SESSION_SUMMARY_DOMAIN, Outcome.DONE),
+            (SESSION_USAGE_ROLLUP_DOMAIN, Outcome.DONE),
             (SESSION_PROFILE_DOMAIN, Outcome.DONE),
         ]
         with sqlite3.connect(recovered.index_db) as conn:

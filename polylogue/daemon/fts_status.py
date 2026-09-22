@@ -70,13 +70,24 @@ def _archive_index_path_for(dbf: Path) -> Path | None:
 
 
 def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | str | None]:
-    """Read authoritative FTS membership; freshness rows never certify it."""
+    """Read authoritative FTS membership; freshness rows never certify it.
+
+    polylogue-crwl6 AC6: the standing readiness binding is consulted first.
+    It is not a freshness record -- it is this domain's own statement of what a
+    completed global inspection found, retired by the database itself on any
+    write to the block columns the surface reduces.  When no binding stands the
+    authoritative inspection runs exactly as before; nothing here reports a
+    verdict that was not measured against the current relations.
+    """
     # Imported here, not at module scope: polylogue.operations.fts_derivation
     # imports polylogue.daemon.derivation, whose package __init__ reaches back
     # into this module. A module-level import makes importing the operations
     # module directly an ImportError.
-    from polylogue.operations.fts_derivation import archive_fts_surface
+    from polylogue.operations.fts_derivation import archive_fts_surface, bound_archive_fts_surface
 
+    bound = bound_archive_fts_surface(conn)
+    if bound is not None:
+        return bound
     return archive_fts_surface(conn)
 
 

@@ -77,13 +77,6 @@ class _SelectedSessionFacts(Protocol):
     profiles: int
 
 
-@runtime_checkable
-class _PublicationCommitKnown(Protocol):
-    """Failure contract for an adapter that knows whether its index write committed."""
-
-    index_family_committed: bool
-
-
 class _SelectedSessionAdapter(Protocol):
     recipe_version: str
 
@@ -332,14 +325,6 @@ def _is_selected_session_facts(value: object) -> TypeGuard[_SelectedSessionFacts
     )
 
 
-def _publication_commit_known(exc: BaseException) -> bool | None:
-    """Return the adapter's explicit committed-publication fact, if supplied."""
-    if not isinstance(exc, _PublicationCommitKnown):
-        return None
-    committed: object = exc.index_family_committed
-    return committed if isinstance(committed, bool) else None
-
-
 def _selected_counts(facts: _SelectedSessionFacts) -> SelectedSessionCounts:
     return SelectedSessionCounts(profiles=int(facts.profiles))
 
@@ -575,37 +560,13 @@ def _converge_selected_session_parts_sync(
             try:
                 accepted = admission("session_profile", partial(adapter.publish, frame, replacement))
             except Exception as exc:
-                if (index_family_committed := _publication_commit_known(exc)) is not None:
-                    # Index and user tiers deliberately do not share a
-                    # transaction. A marker failure can therefore follow an
-                    # already-committed index replacement. Preserve that
-                    # effect and certify its actual family facts; ordinary
-                    # inspection keeps the missing marker retryable.
-                    try:
-                        after_marker_failure = _selected_session_facts(adapter, frame, target.session_id)
-                    except Exception as facts_exc:
-                        outcomes.append(
-                            _selected_outcome(
-                                target,
-                                "unknown",
-                                None,
-                                input_binding=prepared_binding,
-                                publication_known_committed=index_family_committed,
-                                reason=f"marker lowering and post-failure certification: {facts_exc}",
-                            )
-                        )
-                    else:
-                        outcomes.append(
-                            _selected_outcome(
-                                target,
-                                "failed",
-                                after_marker_failure,
-                                input_binding=prepared_binding,
-                                publication_known_committed=index_family_committed,
-                                reason="marker lowering failed after index publication",
-                            )
-                        )
-                    break
+                # polylogue-ylh7v: session-profile publication is one index
+                # transaction with one outcome. The partial-commit branch this
+                # used to carry existed only for marker lowering, which ran a
+                # second, non-atomic user-tier transaction behind an
+                # already-committed index write. Markers are their own domain
+                # now (``storage/derived/session/marker_domain.py``), so a
+                # failed publication here failed, full stop.
                 outcomes.append(
                     _selected_outcome(
                         target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
