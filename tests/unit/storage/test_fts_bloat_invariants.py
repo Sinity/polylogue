@@ -174,23 +174,60 @@ def test_messages_fts_deletion_consistency_with_external_content(tmp_path: Path)
         conn.close()
 
 
-def test_session_replacement_purges_fts_when_delete_triggers_missing(tmp_path: Path) -> None:
-    """Replacement must not orphan FTS rows if bulk ingest has suspended triggers."""
-    from polylogue.storage.session_replacement import replace_session_runtime_state_sync
+def test_session_rewrite_purges_fts_when_only_the_delete_trigger_is_missing(tmp_path: Path) -> None:
+    """Replacement must not orphan FTS rows when only ``messages_fts_ad`` is gone.
+
+    This scenario used to be asserted against
+    ``storage/session_replacement.replace_session_runtime_state_sync``, a
+    helper no production route called (polylogue-8xvlf). The production owner
+    is ``write.py``'s ``_purge_session_message_fts_when_delete_trigger_missing``,
+    reached through ``write_parsed_session_to_archive``, and its guard keys on
+    ``messages_fts_ad`` alone -- so dropping only that trigger is the exact
+    input that distinguishes the guarded path from the trigger-driven one. The
+    bulk case below drops all three triggers; this one pins the narrow
+    predicate the guard actually reads.
+
+    The replacement session must be SHORTER than the original. A same-shape
+    rewrite reuses every block rowid, so the surviving ``messages_fts_au``
+    trigger updates each FTS row in place and no orphan can exist whether the
+    guard runs or not -- measured: that fixture stays green with the guard
+    no-oped. Shrinking two blocks to one frees a rowid whose docsize row only
+    the guard removes.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
     from polylogue.storage.sqlite.schema import SCHEMA_DDL
+
+    def parsed_session(*texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="delete-trigger-missing",
+            title="Delete trigger missing",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="\n".join(texts),
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text) for text in texts],
+                )
+            ],
+        )
 
     conn = sqlite3.connect(str(tmp_path / "fts_replace_missing_triggers.db"))
     try:
         conn.executescript(SCHEMA_DDL)
-        session_id = _seed_session(conn)
-        _seed_message(conn, session_id=session_id, native_id="m1", position=0, text="replace orphan needle")
+        write_parsed_session_to_archive(conn, parsed_session("replace orphan needle", "second stale block"))
         conn.commit()
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
+        old_block_rowids = {row[0] for row in conn.execute("SELECT rowid FROM blocks").fetchall()}
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 2
 
+        conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DROP TRIGGER messages_fts_ad")
-        replace_session_runtime_state_sync(conn, session_id)
+        write_parsed_session_to_archive(conn, parsed_session("fresh replacement needle"))
         conn.commit()
 
+        new_block_rowids = {row[0] for row in conn.execute("SELECT rowid FROM blocks").fetchall()}
+        # Without a freed rowid the assertion below is vacuous.
+        assert old_block_rowids - new_block_rowids
         message_orphans = conn.execute(
             """
             SELECT COUNT(*)
@@ -200,6 +237,7 @@ def test_session_replacement_purges_fts_when_delete_triggers_missing(tmp_path: P
             """
         ).fetchone()[0]
         assert message_orphans == 0
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 1
     finally:
         conn.close()
 

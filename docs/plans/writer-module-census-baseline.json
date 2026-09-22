@@ -316,13 +316,6 @@
     ]
   },
   {
-    "file": "polylogue/storage/session_replacement.py",
-    "tiers": [
-      "embeddings",
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/storage/sqlite/action_pairs.py",
     "tiers": [
       "index"

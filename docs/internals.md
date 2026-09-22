@@ -304,8 +304,10 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `_suspend_message_fts_for_session`, and the trigger-missing purge in
   `_purge_session_message_fts_when_delete_trigger_missing`) is now paired
   with the matching `delete_session_identity_rows_sql`/
-  `insert_session_identity_rows_sql` call, and the sync/async twin purge
-  helpers in `storage/session_replacement.py` are paired the same way.
+  `insert_session_identity_rows_sql` call. The sync/async twin purge helpers
+  in `storage/session_replacement.py` carried the same pairing and were
+  retired with that module (polylogue-8xvlf): no production route called
+  them, and `write.py`'s dependent-delete family does strictly more.
   Sessions written through the ordinary session-replace path are no longer
   identity-coverage-incomplete; `message_identity_mismatch_sql` still
   deliberately does not count a missing ledger entry as a conflict (see its
