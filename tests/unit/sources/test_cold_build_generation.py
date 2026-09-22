@@ -457,3 +457,39 @@ def test_an_undeclared_denominator_still_builds(tmp_path: Path, monkeypatch: pyt
         assert generation.generation.state == "inactive"
     finally:
         generation.discard()
+
+
+def test_undeclared_denominator_build_is_reported_degraded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build with no frozen denominator is a named gap, not a clean run.
+
+    With no declared source root ``build_wanted_source_receipt`` itself
+    refuses, so requiring a receipt here would make every live-capture-only
+    archive permanently unbuildable -- the skip is deliberate. What was not
+    deliberate is that it emitted ``outcome="ok"``, making an
+    unauthorized-denominator whole-archive rebuild indistinguishable from an
+    authorized one in the event stream.
+
+    Anti-vacuity: restoring ``outcome="ok"`` on the
+    ``wanted_sources_undeclared`` emit makes this red. The positive control
+    below fails instead if the event is turned into a refusal, which would
+    make live-capture-only archives unbuildable.
+    """
+    from polylogue.sources.live import cold_build as cold_build_module
+
+    archive = _fresh_archive_root(tmp_path)
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    def _record(kind: str, **fields: Any) -> None:
+        emitted.append((kind, fields))
+
+    monkeypatch.setattr(cold_build_module, "emit", _record)
+    cold_build_module._require_frozen_wanted_sources(
+        archive, reason="empty active index generation", operation_id="op-test"
+    )
+
+    undeclared = [fields for kind, fields in emitted if kind.endswith("wanted_sources_undeclared")]
+    assert undeclared, f"no wanted_sources_undeclared event: {emitted}"
+    assert undeclared[0]["outcome"] == "degraded"
+    # Positive control: the build is NOT refused. A live-capture-only archive
+    # must stay buildable, so this path returns rather than raising.
+    assert undeclared[0]["sources"] == 0

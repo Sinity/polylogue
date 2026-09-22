@@ -231,9 +231,21 @@ def _require_frozen_wanted_sources(archive_root: Path, *, reason: str, operation
 
     declarations = configured_source_declarations(resolve_runtime_config())
     if not declarations and not wanted_source_receipt_is_published(archive_root):
+        # The build proceeds -- with no declared root
+        # ``build_wanted_source_receipt`` itself refuses, so requiring a
+        # receipt here would make every live-capture-only archive permanently
+        # unbuildable. But proceeding without a frozen denominator is a named
+        # gap, not a clean run, and this docstring's own promise is "never a
+        # silent downgrade". Reporting ``ok`` made an unauthorized-denominator
+        # build indistinguishable from an authorized one in the event stream,
+        # which is exactly how a whole-archive rebuild runs unnoticed without
+        # the conservation proof polylogue-co2iz requires. The event kind is
+        # the named reason -- ``logging_fields`` registers no
+        # ``degraded_reason`` and an unregistered field is dropped at the emit
+        # boundary rather than recorded.
         emit(
             "daemon.cold_build.wanted_sources_undeclared",
-            outcome="ok",
+            outcome="degraded",
             reason=reason,
             operation_id=operation_id,
             sources=0,
