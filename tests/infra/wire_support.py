@@ -72,6 +72,14 @@ __all__ = ["shared_wire_generation", "shared_wire_support_receipt"]
 #: per call would cost more than the work the memo saves. Each entry holds its
 #: own strong reference, so an id is never reused underneath it, and the bound
 #: keeps the retained schemas to the handful one build has live at once.
+#:
+#: MEASURED 2026-09-22: those sixteen schemas are 163.8 MiB and 1.67M objects,
+#: which makes this bounded memo the single largest retainer in this module --
+#: larger than all six growing memos below put together after six builds. The
+#: bound is doing its job (the number is flat from one build to six); it is the
+#: per-entry cost that is large. Narrowing it trades resident memory against
+#: re-digesting a multi-megabyte schema per call and is not attempted here
+#: without measuring that cost.
 _IDENTITY_DIGESTS: dict[int, tuple[object, str]] = {}
 _IDENTITY_DIGEST_LIMIT = 16
 
@@ -103,13 +111,26 @@ def _handler_key() -> tuple[str, ...]:
 #: every artifact of that element reports the same ones. Held per artifact the
 #: memo would retain hundreds of megabytes, so the strings and the tuples are
 #: pooled before a coverage result is kept.
+#: The string pool is left unbounded deliberately, and its size is declared
+#: rather than assumed: it held 19,560 entries / 4.35 MiB after one catalog
+#: build and *the same* 19,560 / 4.35 MiB after six, because its key space is
+#: the catalog's schema vocabulary, not the number of calls. Bounding it would
+#: only break the interning that keeps the coverage results small.
 _KEYWORDS: dict[str, str] = {}
-_KEYWORD_TUPLES: dict[tuple[str, ...], tuple[str, ...]] = {}
+#: The tuple pool does grow with distinct keyword combinations (937 after one
+#: build, 3,696 after six), so it carries a bound. 2048 is twice one build's
+#: live set; above it the oldest tuple stops being deduplicated, which costs
+#: memory only for a combination nothing has asked for recently.
+_KEYWORD_TUPLE_LIMIT = 2048
+_KEYWORD_TUPLES: OrderedDict[tuple[str, ...], tuple[str, ...]] = OrderedDict()
 
 
 def _pooled(keywords: tuple[str, ...]) -> tuple[str, ...]:
     pooled = tuple(_KEYWORDS.setdefault(keyword, keyword) for keyword in keywords)
-    return _KEYWORD_TUPLES.setdefault(pooled, pooled)
+    shared = _KEYWORD_TUPLES.setdefault(pooled, pooled)
+    _KEYWORD_TUPLES.move_to_end(shared)
+    _evict_to(_KEYWORD_TUPLES, _KEYWORD_TUPLE_LIMIT)
+    return shared
 
 
 def _pooled_coverage(coverage: ConstructCoverage) -> ConstructCoverage:
@@ -122,10 +143,71 @@ def _pooled_coverage(coverage: ConstructCoverage) -> ConstructCoverage:
     )
 
 
-_GENERATED_WITNESSES: dict[tuple[Any, ...], list[bytes]] = {}
-_GENERATED_BATCHES: dict[tuple[Any, ...], SyntheticGenerationBatch] = {}
-_CONSTRUCT_COVERAGE: dict[tuple[Any, ...], ConstructCoverage] = {}
-_VALIDATIONS: dict[tuple[Any, ...], ValidationResult] = {}
+#: Every memo below is bounded, and every bound is the measurement that chose
+#: it. Measured 2026-09-22 at 6fa844051 by driving ``shared_wire_support_receipt``
+#: over the packaged catalog (52 entries) once, and then over six distinct
+#: seeds, reading each memo's deep size back with ``tests.infra.retention_probe``:
+#:
+#: memo                  1 build          6 builds        per build
+#: _GENERATED_WITNESSES  36 / 34.3 MiB    216 / 209.6 MiB  +35 MiB
+#: _KEYWORD_TUPLES       937 / 7.6 MiB    3696 / 32.5 MiB  +5 MiB
+#: _CONSTRUCT_COVERAGE   654 / 1.8 MiB    3580 / 10.6 MiB  +1.8 MiB
+#: _RECEIPTS             1 / 0.8 MiB      6 / 4.5 MiB      +0.8 MiB
+#: _VALIDATIONS          1321 / 0.5 MiB   7351 / 2.9 MiB   +0.5 MiB
+#: _GENERATED_BATCHES    36 / 0.5 MiB     216 / 2.9 MiB    +0.5 MiB
+#:
+#: (Sizes are marginal -- what a memo retains that no earlier memo in the same
+#: walk already claimed -- so they sum rather than double-count the pooled
+#: keyword strings the coverage results share.)
+#:
+#: Every limit is set well above one build's live working set, which is the
+#: quantity that decides whether a build evicts its own entries mid-run: no
+#: bound here can make a single build recompute anything it just produced.
+#: What they stop is the second, sixth and hundredth distinct corpus a long
+#: session accumulates and never reads again.
+
+#: Generated witness payloads dominate this module's retention, and the budget
+#: is in BYTES rather than entries because an entry is a list of wire payloads
+#: whose size follows the schema it came from -- 0.97 MiB each on the packaged
+#: catalog, but nothing declares that it stays there. 96 MiB holds roughly
+#: 2.8 full catalog builds against a 34.3 MiB per-build working set.
+_GENERATED_WITNESS_BYTES_LIMIT = 96 * 1024 * 1024
+_GENERATED_WITNESSES: OrderedDict[tuple[Any, ...], list[bytes]] = OrderedDict()
+_GENERATED_WITNESS_BYTES = 0
+#: A batch is small (13 KiB measured); the bound exists so the count cannot run
+#: away with the number of distinct corpora a session touches.
+_GENERATED_BATCH_LIMIT = 128
+_GENERATED_BATCHES: OrderedDict[tuple[Any, ...], SyntheticGenerationBatch] = OrderedDict()
+#: Coverage results are pooled (see ``_pooled``), so their own retention is
+#: small; 2048 is three full catalog builds' worth of distinct results.
+_CONSTRUCT_COVERAGE_LIMIT = 2048
+_CONSTRUCT_COVERAGE: OrderedDict[tuple[Any, ...], ConstructCoverage] = OrderedDict()
+#: One build validates 1,321 payloads; 4096 is three of those.
+_VALIDATION_LIMIT = 4096
+_VALIDATIONS: OrderedDict[tuple[Any, ...], ValidationResult] = OrderedDict()
+
+
+def _evict_to(cache: OrderedDict[Any, Any], limit: int) -> None:
+    """Keep ``cache`` at ``limit`` entries, oldest use first."""
+    while len(cache) > limit:
+        cache.popitem(last=False)
+
+
+def _retain_witnesses(key: tuple[Any, ...], witnesses: list[bytes]) -> None:
+    """Memoize one generated corpus under the module's declared byte budget.
+
+    The newest entry is never the one evicted: a corpus larger than the whole
+    budget still answers the call that produced it, because a memo that
+    discards what it was just asked for is a slower no-op, not a bound.
+    """
+    global _GENERATED_WITNESS_BYTES
+    _GENERATED_WITNESSES[key] = witnesses
+    _GENERATED_WITNESSES.move_to_end(key)
+    _GENERATED_WITNESS_BYTES += sum(len(payload) for payload in witnesses)
+    while _GENERATED_WITNESS_BYTES > _GENERATED_WITNESS_BYTES_LIMIT and len(_GENERATED_WITNESSES) > 1:
+        _, evicted = _GENERATED_WITNESSES.popitem(last=False)
+        _GENERATED_WITNESS_BYTES -= sum(len(payload) for payload in evicted)
+
 
 # Parser results are immutable input evidence for an unmodified production
 # route, but the ParsedSession model contains mutable lists.  Keep only one
@@ -183,7 +265,9 @@ def shared_wire_generation() -> Iterator[None]:
         witnesses = _GENERATED_WITNESSES.get(key)
         if witnesses is None:
             witnesses = real_witnesses(corpus, seed=seed, max_witnesses=max_witnesses)
-            _GENERATED_WITNESSES[key] = witnesses
+            _retain_witnesses(key, witnesses)
+        else:
+            _GENERATED_WITNESSES.move_to_end(key)
         return list(witnesses)
 
     def memo_batch(self: Any, *args: Any, **kwargs: Any) -> SyntheticGenerationBatch:
@@ -201,6 +285,9 @@ def shared_wire_generation() -> Iterator[None]:
         if batch is None:
             batch = real_batch(self, **kwargs)
             _GENERATED_BATCHES[key] = batch
+            _evict_to(_GENERATED_BATCHES, _GENERATED_BATCH_LIMIT)
+        else:
+            _GENERATED_BATCHES.move_to_end(key)
         return batch
 
     def memo_coverage(
@@ -221,6 +308,9 @@ def shared_wire_generation() -> Iterator[None]:
         if coverage is None:
             coverage = _pooled_coverage(real_coverage(schema, payloads, handler_names=handler_names, **kwargs))
             _CONSTRUCT_COVERAGE[key] = coverage
+            _evict_to(_CONSTRUCT_COVERAGE, _CONSTRUCT_COVERAGE_LIMIT)
+        else:
+            _CONSTRUCT_COVERAGE.move_to_end(key)
         return coverage
 
     def memo_validate(self: Any, data: object, *, include_drift: bool | None = None) -> ValidationResult:
@@ -235,6 +325,9 @@ def shared_wire_generation() -> Iterator[None]:
                 else real_validate(self, data, include_drift=include_drift)
             )
             _VALIDATIONS[key] = result
+            _evict_to(_VALIDATIONS, _VALIDATION_LIMIT)
+        else:
+            _VALIDATIONS.move_to_end(key)
         # ValidationResult carries mutable lists; hand every caller its own.
         return ValidationResult(
             is_valid=result.is_valid,
@@ -329,7 +422,12 @@ def shared_wire_generation() -> Iterator[None]:
         dispatch_module.parse_payload = real_parse
 
 
-_RECEIPTS: dict[tuple[str, tuple[str, ...] | None, int], WireSupportReceipt] = {}
+#: A whole receipt is 5.8 MiB of typed entries; six distinct ones retained
+#: 35.1 MiB. Eight is well above the handful of (root, selection, seed) triples
+#: the suite actually asks for, and a ninth costs one rebuild, not a wrong
+#: answer -- the receipt is a pure function of its key.
+_RECEIPT_LIMIT = 8
+_RECEIPTS: OrderedDict[tuple[str, tuple[str, ...] | None, int], WireSupportReceipt] = OrderedDict()
 
 _CACHE_VERSION = 1
 
@@ -571,6 +669,9 @@ def shared_wire_support_receipt(
                         )
                     _write_cached_receipt(cache_path, receipt)
         _RECEIPTS[key] = receipt
+        _evict_to(_RECEIPTS, _RECEIPT_LIMIT)
+    else:
+        _RECEIPTS.move_to_end(key)
     return receipt
 
 
