@@ -730,6 +730,33 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    _write_verdict_line(payload, stream=sys.stderr)
+
+
+def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
+    """State this run's verdict last, in the stream, on every terminal path.
+
+    A pipeline exits with its last command's status, so ``devtools verify |
+    tail`` reports tail's 0 whatever the gates found, and the per-gate ``ok``
+    lines above do not close the gap: a run whose third gate failed still ends
+    its output with the last gate's ``ok``, which reads as green. The verdict
+    has to be the last thing said for a truncating reader to see it.
+
+    ``devtools test`` already states its verdict this way (``run_tests.main``);
+    this is the same sentence from the other runner, so one reader habit covers
+    both. The receipt is this run's own ``run.json``, never a ``current-*``
+    name a concurrent run in the same checkout would overwrite.
+    """
+    exit_code = int(payload.get("exit_code") or 0)
+    verdict = "PASSED" if exit_code == 0 else "FAILED"
+    # A verification that found nothing wrong carries no diagnosis, so the
+    # clause is omitted rather than filled with ``unknown`` -- which would
+    # claim the run failed to determine something it never had to.
+    diagnosis = payload.get("diagnosis")
+    named = f" diagnosis={diagnosis}" if diagnosis else ""
+    artifact_dir = payload.get("artifact_dir")
+    receipt = f" receipt={Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
+    stream.write(f"\nverify: {verdict} exit={exit_code}{named}{receipt}\n")
 
 
 def _emit_affected_admission_refusal(*, graph: Any, decision: AffectedAdmission, stream: Any | None = None) -> None:
