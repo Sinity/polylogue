@@ -155,25 +155,29 @@ def test_repo_inference_strength_returns_typed_band() -> None:
     assert repo_inference_strength(cast(SessionProfile, _WithRepos())) is ConfidenceBand.STRONG
 
 
-def test_profile_support_level_ignores_phase_compat_confidence() -> None:
-    """Phase rows are evidence intervals; their legacy confidence cannot boost
-    profile inference support."""
+def test_profile_support_level_stays_weak_without_a_confidence_measurement() -> None:
+    """``profile_support_level`` has no confidence measurement to feed it.
+
+    #5314 (dafcfc612) deleted the retired phase/work-event insight tables --
+    the only source of a per-event confidence score -- and rewired
+    ``profile_support_level`` to call ``support_level(0.0, ...)``
+    unconditionally, so the band can never rise above WEAK regardless of how
+    many support signals are present. Anti-vacuity: reintroducing a nonzero
+    confidence input (e.g. deriving one from ``engaged_duration_ms``) makes
+    this go MODERATE/STRONG instead of WEAK even though real repo/touched-path
+    signals are present.
+    """
 
     from typing import cast
 
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.storage.derived.session.profiles import profile_support_level
 
-    class _Phase:
-        confidence: float = 0.99
-        duration_ms: int = 60_000
-
     class _Profile:
-        repo_paths: tuple[str, ...] = ()
-        repo_names: tuple[str, ...] = ()
-        file_paths_touched: tuple[str, ...] = ()
+        repo_paths: tuple[str, ...] = ("/a",)
+        repo_names: tuple[str, ...] = ("a",)
+        file_paths_touched: tuple[str, ...] = ("/a/f.py",)
         cwd_paths: tuple[str, ...] = ()
-        work_events: tuple[object, ...] = ()
-        phases: tuple[object, ...] = (_Phase(),)
+        engaged_duration_ms: int = 60_000
 
     assert profile_support_level(cast(SessionProfile, _Profile())) is ConfidenceBand.WEAK

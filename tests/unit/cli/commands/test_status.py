@@ -857,10 +857,6 @@ class TestArchiveStatusSurfaces:
             "messages_fts_count": 0,
             "profile_row_count": 0,
             "missing_profile_row_count": 0,
-            "work_event_row_count": 0,
-            "missing_work_events_materialization": 0,
-            "phase_row_count": 0,
-            "missing_phases_materialization": 0,
             "thread_count": 0,
             "missing_thread_materialization": 0,
             "action_count": 0,
@@ -881,10 +877,6 @@ class TestArchiveStatusSurfaces:
             "messages_fts_count": 0,
             "profile_row_count": 0,
             "missing_profile_row_count": 0,
-            "work_event_row_count": 0,
-            "missing_work_events_materialization": 0,
-            "phase_row_count": 0,
-            "missing_phases_materialization": 0,
             "thread_count": 0,
             "missing_thread_materialization": 0,
             "action_count": 0,
@@ -932,10 +924,6 @@ class TestArchiveStatusSurfaces:
             "messages_fts_count": 1,
             "profile_row_count": 0,
             "missing_profile_row_count": 0,
-            "work_event_row_count": 0,
-            "missing_work_events_materialization": 0,
-            "phase_row_count": 0,
-            "missing_phases_materialization": 0,
             "thread_count": 0,
             "missing_thread_materialization": 0,
             "action_count": 0,
@@ -958,10 +946,6 @@ class TestArchiveStatusSurfaces:
             "messages_fts_count": 1,
             "profile_row_count": 0,
             "missing_profile_row_count": 0,
-            "work_event_row_count": 0,
-            "missing_work_events_materialization": 0,
-            "phase_row_count": 0,
-            "missing_phases_materialization": 0,
             "thread_count": 0,
             "missing_thread_materialization": 0,
             "action_count": 0,
@@ -983,10 +967,6 @@ class TestArchiveStatusSurfaces:
             "messages_fts_count": 8,  # mismatch
             "profile_row_count": 0,
             "missing_profile_row_count": 0,
-            "work_event_row_count": 0,
-            "missing_work_events_materialization": 0,
-            "phase_row_count": 0,
-            "missing_phases_materialization": 0,
             "thread_count": 0,
             "missing_thread_materialization": 0,
             "action_count": 0,
@@ -997,30 +977,14 @@ class TestArchiveStatusSurfaces:
         assert result["search"]["ready"] is False
         assert "messages_fts_row_mismatch" in result["search"]["blockers"]
 
-    def test_derived_timeline_surfaces_do_not_use_marker_counts(self) -> None:
-        """Timeline surfaces remain ordinary derived projections."""
-        counts: dict[str, int] = {
-            "session_count": 2,
-            "raw_link_count": 0,
-            "missing_raw_session_count": 0,
-            "message_count": 1,
-            "text_block_count": 1,
-            "messages_fts_count": 1,
-            "profile_row_count": 0,
-            "missing_profile_row_count": 0,
-            "work_event_row_count": 0,
-            "phase_row_count": 0,
-            "thread_count": 0,
-            "action_count": 0,
-        }
-        result = _archive_status_surfaces(counts, source_check_available=True)
-        assert result["timeline_work_events"]["ready"] is True
-        assert result["timeline_work_events"]["blockers"] == []
-        assert result["timeline_phases"]["ready"] is True
-        assert result["timeline_phases"]["blockers"] == []
+    def test_threads_surface_blocks_on_stale_or_mismatched_rows(self) -> None:
+        """Threads surface uses canonical readiness shape, not materialization presence alone.
 
-    def test_timeline_surfaces_block_on_stale_or_mismatched_rows(self) -> None:
-        """Timeline surfaces use canonical readiness shape, not materialization presence alone."""
+        Formerly covered the timeline-work-event/timeline-phase readiness
+        surfaces too; #5314 (dafcfc612) deleted both along with the
+        retired phase/work-event insight tables, so only the threads
+        assertions here still name a live surface.
+        """
         counts: dict[str, int] = {
             "session_count": 2,
             "raw_link_count": 0,
@@ -1031,16 +995,6 @@ class TestArchiveStatusSurfaces:
             "profile_row_count": 2,
             "missing_profile_row_count": 0,
             "missing_session_profile_materialization": 0,
-            "work_event_row_count": 1,
-            "expected_work_event_row_count": 3,
-            "stale_work_event_row_count": 1,
-            "orphan_work_event_row_count": 0,
-            "missing_work_events_materialization": 0,
-            "phase_row_count": 4,
-            "expected_phase_row_count": 2,
-            "stale_phase_row_count": 0,
-            "orphan_phase_row_count": 1,
-            "missing_phases_materialization": 0,
             "thread_count": 1,
             "root_thread_count": 2,
             "stale_thread_count": 1,
@@ -1052,17 +1006,6 @@ class TestArchiveStatusSurfaces:
 
         result = _archive_status_surfaces(counts, source_check_available=True)
 
-        assert result["timeline_work_events"]["ready"] is False
-        assert result["timeline_work_events"]["blockers"] == [
-            "stale_work_event_row_count",
-            "work_event_row_mismatch",
-        ]
-        assert result["timeline_work_events"]["evidence"]["expected_work_event_row_count"] == 3
-        assert result["timeline_phases"]["ready"] is False
-        assert result["timeline_phases"]["blockers"] == [
-            "orphan_phase_row_count",
-            "phase_row_mismatch",
-        ]
         assert result["threads"]["ready"] is False
         assert result["threads"]["blockers"] == [
             "stale_thread_count",
@@ -1080,10 +1023,6 @@ class TestArchiveStatusSurfaces:
             "messages_fts_count": 0,
             "profile_row_count": 0,
             "missing_profile_row_count": 0,
-            "work_event_row_count": 0,
-            "missing_work_events_materialization": 0,
-            "phase_row_count": 0,
-            "missing_phases_materialization": 0,
             "thread_count": 0,
             "missing_thread_materialization": 0,
             "action_count": 0,
@@ -1096,8 +1035,6 @@ class TestArchiveStatusSurfaces:
             "raw_artifacts",
             "search",
             "session_profiles",
-            "timeline_work_events",
-            "timeline_phases",
             "threads",
             "tool_usage",
             "latency_profiles",

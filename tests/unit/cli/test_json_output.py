@@ -95,9 +95,7 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["analyze", "insights", "coverage"], False),
     (["analyze", "insights", "debt"], False),
     (["analyze", "insights", "profiles"], False),
-    (["analyze", "insights", "phases"], False),
     (["analyze", "insights", "threads"], False),
-    (["analyze", "insights", "work-events"], False),
     (["analyze", "insights", "cost-rollups"], False),
     (["analyze", "insights", "costs"], False),
     (["analyze", "insights", "tool-usage"], False),
@@ -129,7 +127,6 @@ _EXCLUDED: list[str] = [
     "open (side effect: opens browser)",
     "ops backup (creates backup file)",
     "recent (pre-existing bug: hardcoded sort=updated_at is invalid)",
-    "analyze insights timeline (requires SESSION_ID argument)",
     "insights export (requires --out argument)",
     "mark mutation writes require an explicit query target",
 ]
