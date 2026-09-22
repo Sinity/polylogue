@@ -22,6 +22,7 @@ attribute the entire heap to whichever root was visited first.
 
 from __future__ import annotations
 
+import atexit
 import gc
 import json
 import os
@@ -46,6 +47,15 @@ _CONTAINER_REPORT_COUNT = 60
 _OWNER_REPORT_COUNT = 40
 #: Sample the RSS curve this often, in tests.
 _CURVE_EVERY = 50
+#: Executed-test counts at which a full heap walk is taken and written.
+#:
+#: A session-end-only report is worth nothing from a run that does not reach
+#: its end, and the run this probe exists to measure is exactly the one the
+#: kernel kills: two of these selections in one 12 GiB pytest slice were both
+#: SIGKILLed at 99% and 55%, and neither left a byte of evidence behind. The
+#: milestones are geometric so the early trajectory is dense and a long run
+#: pays the walk a handful of times.
+_WALK_AT = (200, 500, 1000, 2000, 4000, 8000, 16000, 32000)
 #: Hard budgets for the walk. A diagnostic that cannot be afforded is worse
 #: than no diagnostic: an unbounded traversal of this heap reached 20 GiB in a
 #: self-test before it was killed, which inside the pytest slice would take
@@ -336,6 +346,9 @@ class _RetentionProbe:
         self.peak_rss_kib = _rss_kib()
         self.start_rss_kib = self.peak_rss_kib
         self.curve: list[dict[str, int]] = []
+        self.worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+        self.stem = f"{self.worker}-{os.getpid()}"
+        atexit.register(self._write_curve)
 
     def _write(self, name: str, payload: dict[str, Any]) -> None:
         try:
@@ -345,6 +358,21 @@ class _RetentionProbe:
             sys.stderr.write(f"retention-probe: wrote {path}\n")
         except OSError as exc:  # pragma: no cover - diagnostic only
             sys.stderr.write(f"retention-probe: could not write {name}: {exc}\n")
+
+    def _base_payload(self) -> dict[str, Any]:
+        return {
+            "worker": self.worker,
+            "pid": os.getpid(),
+            "tests": self.tests,
+            "wall_s": round(time.monotonic() - self.started, 1),
+            "start_rss_mib": round(self.start_rss_kib / 1024, 1),
+            "peak_rss_mib": round(self.peak_rss_kib / 1024, 1),
+            "rss_curve": self.curve,
+        }
+
+    def _write_curve(self) -> None:
+        """The cheap report: no walk, so a killed run still leaves its trajectory."""
+        self._write(f"curve-{self.stem}.json", self._base_payload())
 
     def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
         if report.when != "teardown":
@@ -362,22 +390,14 @@ class _RetentionProbe:
                     if cache is not None:
                         sample[f"len:{name}"] = len(cache)
             self.curve.append(sample)
+            self._write_curve()
+        if self.tests in _WALK_AT:
+            self._write(f"walk-{self.stem}-at{self.tests}.json", self._walked_payload())
 
-    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
-        del session, exitstatus
-        pre_walk_rss_kib = _rss_kib()
+    def _walked_payload(self) -> dict[str, Any]:
         wall_s = round(time.monotonic() - self.started, 1)
-        worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
-        payload: dict[str, Any] = {
-            "worker": worker,
-            "pid": os.getpid(),
-            "tests": self.tests,
-            "wall_s": wall_s,
-            "start_rss_mib": round(self.start_rss_kib / 1024, 1),
-            "peak_rss_mib": round(self.peak_rss_kib / 1024, 1),
-            "pre_walk_rss_mib": round(pre_walk_rss_kib / 1024, 1),
-            "rss_curve": self.curve,
-        }
+        payload = self._base_payload()
+        payload["pre_walk_rss_mib"] = round(_rss_kib() / 1024, 1)
         # A probe is diagnostic: a failure in the walk must not decide the run.
         try:
             gc.collect()
@@ -417,7 +437,11 @@ class _RetentionProbe:
             payload["post_walk_rss_mib"] = round(_rss_kib() / 1024, 1)
         except BaseException as exc:  # pragma: no cover - diagnostic only
             payload["walk_error"] = f"{type(exc).__name__}: {exc}"
-        self._write(f"retention-{worker}-{os.getpid()}.json", payload)
+        return payload
+
+    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
+        del session, exitstatus
+        self._write(f"retention-{self.stem}.json", self._walked_payload())
 
 
 def pytest_configure(config: pytest.Config) -> None:
