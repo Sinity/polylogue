@@ -26,13 +26,22 @@ the helper's body -- rather than its wrong caller -- cannot pass.
 
 from __future__ import annotations
 
+import inspect
 from collections import defaultdict
 from pathlib import Path
+
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Origin, Provider
 from polylogue.sources.dispatch import parse_payload
-from polylogue.sources.origin_specs import origin_specs
+from polylogue.sources.origin_specs import (
+    OriginSpec,
+    TopologyCapabilities,
+    _absent_topology,
+    _executable_spec,
+    origin_specs,
+)
 from polylogue.sources.parsers.base import ParsedMessage, fill_linear_parent_chain
 
 _HELPER = "fill_linear_parent_chain"
@@ -117,3 +126,48 @@ def test_gap_fill_helper_still_chains() -> None:
     filled = fill_linear_parent_chain(messages)
 
     assert [message.parent_message_provider_id for message in filled] == [None, "m0", "m1"]
+
+
+def test_topology_declaration_has_no_silent_default() -> None:
+    """ksgg AC11: an Origin cannot inherit structurally-absent by omission.
+
+    The recorded residual said ``_no_topology_capabilities`` "still defaults
+    EVERY dimension to structurally-absent for any origin that does not
+    override", leaving a produced-but-undeclared capability silently
+    declarable as absent. At this head that is not reachable by omission:
+    ``OriginSpec.topology_capabilities`` and ``_executable_spec``'s
+    keyword-only parameter both carry no default, and ``TopologyCapabilities``
+    requires all five dimensions. Calling ``_no_topology_capabilities`` is an
+    explicit declaration, not a fallback.
+
+    Nothing pinned that, so a later ``= _no_topology_capabilities(origin)``
+    default would silently reopen the hole. This is the pin. Anti-vacuity:
+    give either parameter a default and the corresponding assertion goes red;
+    the construction attempts below stay red-on-omission independently.
+    """
+    for owner, parameter in (
+        (OriginSpec, "topology_capabilities"),
+        (_executable_spec, "topology_capabilities"),
+    ):
+        signature = inspect.signature(owner)
+        assert signature.parameters[parameter].default is inspect.Parameter.empty, owner
+
+    # Not only the signature: omitting it actually refuses.
+    with pytest.raises(TypeError):
+        _executable_spec(  # type: ignore[call-arg]
+            Origin.UNKNOWN_EXPORT,
+            provider=Provider.UNKNOWN,
+            tightness=1,
+            discovery="probe",
+            acquisition_modes=("probe",),
+            parser_paths=(),
+            fixture_paths=(),
+            display_description="probe",
+        )
+    with pytest.raises(TypeError):
+        TopologyCapabilities(  # type: ignore[call-arg]
+            message_parent=_absent_topology("probe"),
+            message_branch_state=_absent_topology("probe"),
+            session_parent_target=_absent_topology("probe"),
+            inheritance_branch_point=_absent_topology("probe"),
+        )
