@@ -875,12 +875,21 @@ def session_summary_component_from_connection(index_conn: sqlite3.Connection) ->
             repair_hint="polylogued run",
         )
     ready = inspection.state == "ready"
+    # A summary that is not ready is one of two different facts, and reporting
+    # only the ``stale_sessions`` number would publish measured drift the
+    # inspection never observed. Unbound sessions are carried as their own
+    # count and caveat (polylogue-crwl6).
     return ComponentReadiness(
         component="session_summary",
         scope="archive",
         state=CapabilityReadinessState.READY if ready else CapabilityReadinessState.STALE,
         summary="ready" if ready else "session counters stale",
-        counts={"total_sessions": inspection.total_sessions, "stale_sessions": inspection.stale_sessions},
+        counts={
+            "total_sessions": inspection.total_sessions,
+            "stale_sessions": inspection.stale_sessions,
+            "unbound_sessions": inspection.unbound_sessions,
+        },
+        caveats=() if inspection.unmeasured_reason is None else (inspection.unmeasured_reason,),
         repair_hint=None if ready else "polylogued run",
     )
 

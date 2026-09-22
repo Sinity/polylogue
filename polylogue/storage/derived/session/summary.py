@@ -15,6 +15,7 @@ it to the stored columns, which makes a damaged historical counter stale.
 from __future__ import annotations
 
 import bisect
+import hashlib
 import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -29,6 +30,7 @@ __all__ = [
     "SESSION_SUMMARY_DOMAIN",
     "SESSION_SUMMARY_MEASURES",
     "SESSION_SUMMARY_MESSAGE_PROJECTION",
+    "SESSION_SUMMARY_BINDING_RECIPE",
     "SESSION_SUMMARY_RECIPE_VERSION",
     "SessionSummaryDerivation",
     "SessionSummaryInspection",
@@ -38,6 +40,8 @@ __all__ = [
     "authoritative_session_summary",
     "inspect_session_summary",
     "refresh_session_summary",
+    "session_summary_input_binding",
+    "stored_session_summary_binding",
 ]
 
 SESSION_SUMMARY_DOMAIN = "session_summary"
@@ -118,12 +122,30 @@ class SessionSummaryValues:
 
 @dataclass(frozen=True, slots=True)
 class SessionSummaryInspection:
-    """One bounded census of the stored session-counter projection."""
+    """One binding-bounded verdict on the stored session-counter projection.
+
+    ``stale_sessions`` is measured drift and nothing else: a session whose
+    stored counters disagree with the projection its own binding says was
+    published.  ``unbound_sessions`` is the opposite kind of fact -- sessions
+    this inspection did **not** compare, because they carry no binding at the
+    current recipe.  Folding the second number into the first would report
+    drift that was never observed; folding it into ``ready`` would certify
+    counters from an input set the domain never checked.  Both are wrong in the
+    way polylogue-crwl6 exists to prevent, so the two counts stay separate and
+    ``unmeasured_reason`` names what was left uninspected.
+
+    ``state`` is ``ready`` only when both counts are zero.  An unbound session
+    makes the verdict ``stale`` -- the derivation owes that session a
+    publication -- while ``unmeasured_reason`` keeps the claim honest about
+    which of the two reasons produced it.
+    """
 
     state: Literal["ready", "stale", "unknown"]
     total_sessions: int = 0
     stale_sessions: int = 0
+    unbound_sessions: int = 0
     reason: str | None = None
+    unmeasured_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,23 +202,65 @@ WHERE m.session_id = ?
 _SUMMARY_SELECT_SQL = _summary_select_sql()
 
 
-def _summary_census_sql() -> str:
-    stored_columns = ",\n       ".join(f"s.{measure.column}" for measure in SESSION_SUMMARY_MEASURES)
-    authoritative_columns = ",\n       ".join(
-        f"{measure.sql_expression()} AS authoritative_{measure.column}" for measure in SESSION_SUMMARY_MEASURES
-    )
-    return f"""
-SELECT s.session_id,
-       {stored_columns},
-       {authoritative_columns}
-FROM sessions AS s
-LEFT JOIN messages AS m ON m.session_id = s.session_id
-GROUP BY s.session_id
-ORDER BY s.session_id
+#: Bound into every stored binding so that changing *which* counters the
+#: domain publishes -- not just how one is computed -- compares unequal on
+#: every existing row without touching one. The measure list is the whole
+#: output contract, so it is hashed rather than trusted to move
+#: ``SESSION_SUMMARY_RECIPE_VERSION`` by hand.
+def _summary_binding_recipe() -> str:
+    digest = hashlib.blake2b(digest_size=8)
+    digest.update(SESSION_SUMMARY_RECIPE_VERSION.encode("utf-8"))
+    for measure in SESSION_SUMMARY_MEASURES:
+        digest.update(b"\x1e")
+        digest.update(
+            b"\x1f".join(
+                b"" if value is None else str(value).encode("utf-8")
+                for value in (measure.column, measure.source, measure.role, measure.material_origin)
+            )
+        )
+    return f"{SESSION_SUMMARY_RECIPE_VERSION}:{digest.hexdigest()}"
+
+
+SESSION_SUMMARY_BINDING_RECIPE = _summary_binding_recipe()
+
+
+def session_summary_input_binding(values: SessionSummaryValues) -> str:
+    """Return the published counter projection as this domain's binding value.
+
+    Not a generic content address: these are the exact aggregate outputs the
+    partition publishes, in the declared measure order, which is what lets a
+    counter column overwritten in place compare unequal against its own
+    binding without reading a single message row.
+    """
+    return ":".join(str(value) for value in values.values)
+
+
+#: The same value expressed over the stored columns, so the comparison happens
+#: inside SQLite instead of hydrating every session into Python. The two
+#: spellings must agree exactly; ``tests/unit/storage/test_session_summary_derivation.py``
+#: pins them against each other.
+_SUMMARY_STORED_BINDING_EXPRESSION = " || ':' || ".join(
+    f"CAST(s.{measure.column} AS TEXT)" for measure in SESSION_SUMMARY_MEASURES
+)
+
+#: One statement, three counts, and not a single ``messages`` row: the whole
+#: point of polylogue-crwl6. ``unbound`` names the sessions whose counters this
+#: inspection cannot certify; ``drifted`` names the ones it compared and found
+#: wrong. Cost is proportional to ``sessions`` and its binding index, never to
+#: the archive's message population.
+_SUMMARY_BINDING_SQL = f"""
+SELECT
+    (SELECT COUNT(*) FROM sessions),
+    (SELECT COUNT(*)
+       FROM sessions AS s
+       LEFT JOIN session_summary_bindings AS b ON b.session_id = s.session_id
+      WHERE b.session_id IS NULL OR b.recipe_version <> ?),
+    (SELECT COUNT(*)
+       FROM sessions AS s
+       JOIN session_summary_bindings AS b ON b.session_id = s.session_id
+      WHERE b.recipe_version = ?
+        AND b.input_binding <> ({_SUMMARY_STORED_BINDING_EXPRESSION}))
 """
-
-
-_SUMMARY_CENSUS_SQL = _summary_census_sql()
 
 
 def inspect_session_summary(
@@ -204,11 +268,25 @@ def inspect_session_summary(
     *,
     deadline_s: float | None = 1.0,
 ) -> SessionSummaryInspection:
-    """Compare every stored counter with its message-derived value in one bounded scan.
+    """Answer counter readiness from this domain's bindings, not from a census.
 
-    The supplied connection stays open and retains its snapshot ownership.  A
-    nested deadline preserves the operation's cancellation handler. An expired
-    scan reports ``unknown`` rather than certifying partial authority.
+    The retired form of this function compared every stored counter with its
+    message-derived value in one archive-wide ``sessions LEFT JOIN messages
+    GROUP BY session_id`` scan, then guillotined that scan on a wall-clock
+    deadline and reported ``unknown`` for any archive it could not finish.  Its
+    cost was proportional to the message population, which is why it timed out
+    on exactly the archives readiness matters for.
+
+    What replaces it is a comparison of two stored facts.  A
+    ``session_summary_bindings`` row states the counter projection published
+    for that session; the index tier deletes that row from a trigger the moment
+    any of the session's ``messages`` rows are written.  So a surviving binding
+    already proves the input side, and the only thing left to check is the
+    output side -- whether the stored counters still equal the projection the
+    binding says was published.  That is an indexed join over ``sessions``.
+
+    Sessions with no current binding are not certified and not accused: they
+    are counted in ``unbound_sessions`` and named in ``unmeasured_reason``.
     """
     if deadline_s is not None and deadline_s < 0:
         raise ValueError("session summary inspection deadline must be non-negative")
@@ -219,65 +297,62 @@ def inspect_session_summary(
     from polylogue.core.evidence import Measured, Unavailable
     from polylogue.storage.tier_access import capture_sqlite_read
 
-    total_sessions = 0
-    stale_sessions = 0
-
-    def scan() -> SessionSummaryInspection:
-        nonlocal total_sessions, stale_sessions
+    def compare() -> SessionSummaryInspection:
         with query_deadline(conn, seconds=deadline_s):
-            for row in conn.execute(_SUMMARY_CENSUS_SQL):
-                if deadline is not None and time.monotonic() >= deadline:
-                    # A partial scan cannot prove readiness, but one drifted
-                    # session is a complete counterexample to it. Reporting
-                    # ``unknown`` here would discard a proof already in hand.
-                    if stale_sessions:
-                        return SessionSummaryInspection(
-                            state="stale",
-                            total_sessions=total_sessions,
-                            stale_sessions=stale_sessions,
-                            reason="session-summary inspection stopped early on measured drift",
-                        )
-                    return SessionSummaryInspection(
-                        state="unknown",
-                        total_sessions=total_sessions,
-                        stale_sessions=stale_sessions,
-                        reason="session-summary inspection deadline exceeded",
-                    )
-                total_sessions += 1
-                stored = tuple(int(row[index] or 0) for index in range(1, len(SESSION_SUMMARY_MEASURES) + 1))
-                start = len(SESSION_SUMMARY_MEASURES) + 1
-                authoritative = tuple(
-                    int(row[index] or 0) for index in range(start, start + len(SESSION_SUMMARY_MEASURES))
-                )
-                if stored != authoritative:
-                    stale_sessions += 1
+            row = conn.execute(
+                _SUMMARY_BINDING_SQL,
+                (SESSION_SUMMARY_BINDING_RECIPE, SESSION_SUMMARY_BINDING_RECIPE),
+            ).fetchone()
+        total, unbound, drifted = (int(row[index] or 0) for index in range(3))
         return SessionSummaryInspection(
-            state="ready" if stale_sessions == 0 else "stale",
-            total_sessions=total_sessions,
-            stale_sessions=stale_sessions,
+            state="ready" if not unbound and not drifted else "stale",
+            total_sessions=total,
+            stale_sessions=drifted,
+            unbound_sessions=unbound,
+            unmeasured_reason=(
+                None
+                if not unbound
+                else f"{unbound} of {total} sessions carry no session-summary binding at the current recipe"
+            ),
         )
 
-    evidence = capture_sqlite_read(scan)
+    evidence = capture_sqlite_read(compare)
     if isinstance(evidence, Unavailable):
-        # ``query_deadline`` interrupts the running statement, so an expired
-        # scan arrives here rather than through the row-loop check above. The
-        # rows already compared are still measured: keep a counterexample.
-        if stale_sessions:
-            return SessionSummaryInspection(
-                state="stale",
-                total_sessions=total_sessions,
-                stale_sessions=stale_sessions,
-                reason="session-summary inspection stopped early on measured drift",
-            )
         return SessionSummaryInspection(
             state="unknown",
-            total_sessions=total_sessions,
-            stale_sessions=stale_sessions,
             reason=f"session-summary inspection unavailable: {evidence.detail or evidence.reason}",
         )
     if not isinstance(evidence, Measured):
         raise AssertionError("summary inspection produced unsupported evidence")
     return evidence.value
+
+
+def stored_session_summary_binding(conn: sqlite3.Connection, session_id: str) -> str | None:
+    """Return the binding value published for ``session_id`` at this recipe."""
+    row = conn.execute(
+        "SELECT input_binding FROM session_summary_bindings WHERE session_id = ? AND recipe_version = ?",
+        (session_id, SESSION_SUMMARY_BINDING_RECIPE),
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _stamp_session_summary_binding(
+    conn: sqlite3.Connection,
+    session_id: str,
+    values: SessionSummaryValues,
+) -> None:
+    """Record what this session's counters were published from.
+
+    Must run in the same transaction as the counter write and after it: the
+    message triggers retire the binding on every ``messages`` write, so a stamp
+    taken before the replacement would certify the wrong projection.
+    """
+    conn.execute(
+        "INSERT INTO session_summary_bindings(session_id, input_binding, recipe_version) VALUES (?, ?, ?) "
+        "ON CONFLICT(session_id) DO UPDATE SET input_binding = excluded.input_binding, "
+        "recipe_version = excluded.recipe_version",
+        (session_id, session_summary_input_binding(values), SESSION_SUMMARY_BINDING_RECIPE),
+    )
 
 
 def authoritative_session_summary(conn: sqlite3.Connection, session_id: str) -> SessionSummaryValues | None:
@@ -303,10 +378,14 @@ def _stored_session_summary(conn: sqlite3.Connection, session_id: str) -> Sessio
 
 
 def refresh_session_summary(conn: sqlite3.Connection, session_id: str) -> bool:
-    """Atomically replace a session's stored counters from its base relation.
+    """Atomically replace a session's stored counters and stamp their binding.
 
     The caller owns transaction/lease policy.  This is the parsed-session
-    writer's short, authoritative publication primitive.
+    writer's short, authoritative publication primitive, and it is the only
+    place a ``session_summary_bindings`` row is created: the binding states
+    what this replacement published, so publishing and stamping cannot be
+    separate operations without a window in which the counters are certified
+    by a projection nobody computed.
     """
     values = authoritative_session_summary(conn, session_id)
     if values is None:
@@ -316,6 +395,7 @@ def refresh_session_summary(conn: sqlite3.Connection, session_id: str) -> bool:
         f"UPDATE sessions SET {assignments} WHERE session_id = ?",
         (*values.values, session_id),
     )
+    _stamp_session_summary_binding(conn, session_id, values)
     return True
 
 
@@ -402,10 +482,17 @@ class SessionSummaryDerivation:
                     # second recipe marker. A frame that does not name this
                     # declaration cannot certify those rows or publish one.
                     statuses[key] = "stale"
-                elif _stored_session_summary(conn, key) == authoritative:
-                    statuses[key] = "valid"
-                else:
+                elif _stored_session_summary(conn, key) != authoritative:
                     statuses[key] = "stale"
+                elif stored_session_summary_binding(conn, key) != session_summary_input_binding(authoritative):
+                    # Correct counters with no current binding are still work
+                    # this domain owes: readiness reads the binding, so a
+                    # partition that cannot say what it was published from
+                    # would otherwise stay uncertifiable forever while the
+                    # kernel reported it converged.
+                    statuses[key] = "stale"
+                else:
+                    statuses[key] = "valid"
             if self._generation_binding is not None and self._generation_binding() != generation:
                 raise RuntimeError("session summary index generation changed during inspection")
             return statuses
@@ -462,7 +549,12 @@ class SessionSummaryDerivation:
                 if current is None:
                     conn.execute("ROLLBACK")
                     return False
-                if _stored_session_summary(conn, replacement.key) == current:
+                published = session_summary_input_binding(current)
+                bound = stored_session_summary_binding(conn, replacement.key) == published
+                if bound and _stored_session_summary(conn, replacement.key) == current:
+                    # Nothing to publish only when the binding is there too: a
+                    # retired binding is real work even where the counters
+                    # already happen to be right.
                     conn.execute("ROLLBACK")
                     return True
                 refresh_session_summary(conn, replacement.key)

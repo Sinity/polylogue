@@ -3,6 +3,15 @@
 from __future__ import annotations
 
 from polylogue.archive.topology.edge import topology_status_composes_sql, topology_status_excluded_sql
+from polylogue.storage.derived.session.input_binding import (
+    SESSION_ATTACHMENT_PROJECTION_COLUMNS,
+    SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS,
+    SESSION_EVENT_PROJECTION_COLUMNS,
+    SESSION_INPUT_PROJECTION_COLUMNS,
+    SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS,
+    SESSION_ROW_PROJECTION_COLUMNS,
+)
+from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MESSAGE_PROJECTION
 from polylogue.storage.fts.sql import (
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
     FTS_MESSAGES_TABLE_SQL,
@@ -13,6 +22,16 @@ from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPE
 from polylogue.storage.sqlite.archive_tiers.query_unit_frame import index_frame_bump_sql, index_frame_seed_sql
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
+
+
+# polylogue-crwl6: the profile domain's binding-retirement triggers are
+# generated from the projections the binding itself digests, never from a
+# second hand-maintained column list. A column added to a projection without
+# being added here would leave the binding intact across a change to the very
+# value it commits to -- the one failure this domain has no other guard for.
+def _binding_columns(columns: tuple[str, ...], *, exclude: tuple[str, ...] = ()) -> str:
+    return ", ".join(column for column in columns if column not in exclude)
+
 
 # polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
 # 9x22 field-landing decisions):
@@ -622,6 +641,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_raw_id
 ON sessions(raw_id)
 WHERE raw_id IS NOT NULL;
 
+-- polylogue-crwl6: the session-counter domain's input binding, colocated with
+-- the ``sessions`` row that *is* its output relation. A present row states
+-- which counter projection was published for that session and under which
+-- recipe; the triggers below are what make it evidence rather than a claim.
+CREATE TABLE IF NOT EXISTS session_summary_bindings (
+    {TABLE_SPECS["session_summary_bindings"].ddl_body}
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS messages (
     {TABLE_SPECS["messages"].ddl_body}
 ) STRICT;
@@ -680,6 +707,51 @@ WHERE is_active_path = 1;
 CREATE INDEX IF NOT EXISTS idx_messages_active_leaf
 ON messages(session_id, is_active_leaf)
 WHERE is_active_leaf = 1;
+
+-- polylogue-crwl6: the session-counter binding is retired by the database
+-- itself whenever the relation it was derived from is written. This is the
+-- whole reason readiness may skip the archive-wide
+-- ``sessions LEFT JOIN messages GROUP BY session_id`` census: a surviving
+-- ``session_summary_bindings`` row is proof that no value the counters reduce
+-- has been written since they were published, which no writer-side stamp could
+-- establish on its own (a route that bypasses the parsed-session chokepoint
+-- still cannot bypass these).
+--
+-- The ``UPDATE OF`` list is generated from ``SESSION_SUMMARY_MESSAGE_PROJECTION``
+-- -- the declaration that already owns what these counters read -- so a column
+-- added to the projection is covered without a second list to maintain, and a
+-- write to a message column the counters do not reduce (``input_tokens``, say)
+-- does not manufacture derivation work for this domain. Insert and delete stay
+-- unconditional: a message appearing or disappearing always moves a counter.
+--
+-- Deletion, not a flag flip: an absent binding is the domain saying it cannot
+-- certify that session, and the derivation republishes one when it next
+-- publishes counters. The reverse direction -- a counter column overwritten
+-- in place without touching ``messages`` -- is caught by comparing
+-- ``input_binding`` against the stored counters, not by a trigger, because
+-- the publisher's own UPDATE is indistinguishable from a corrupting one.
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_messages_ai
+AFTER INSERT ON messages BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id = NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_messages_au
+AFTER UPDATE OF session_id, {_binding_columns(SESSION_SUMMARY_MESSAGE_PROJECTION)} ON messages BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id IN (OLD.session_id, NEW.session_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_messages_ad
+AFTER DELETE ON messages BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id = OLD.session_id;
+END;
+
+-- Foreign keys are not enforced on every connection profile, so the binding's
+-- ON DELETE CASCADE cannot be the only thing that retires a row whose session
+-- is gone. An orphan here would make the bound-session count equal the session
+-- count while a real session carried no binding at all -- the exact false
+-- ``ready`` this domain exists to prevent.
+CREATE TRIGGER IF NOT EXISTS session_summary_binding_sessions_ad
+AFTER DELETE ON sessions BEGIN
+    DELETE FROM session_summary_bindings WHERE session_id = OLD.session_id;
+END;
 
 CREATE TABLE IF NOT EXISTS blocks (
     {TABLE_SPECS["blocks"].ddl_body}
@@ -1376,6 +1448,108 @@ END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_profiles_delete
 AFTER DELETE ON session_profiles BEGIN
     {index_frame_bump_sql("session_profiles")}
+END;
+
+-- polylogue-crwl6: retire the session-profile input binding whenever one of
+-- the relations that binding digests is written. ``input_content_hash`` says
+-- which input values the partition was computed from, and
+-- ``_classify_partition`` already refuses to call a partition with a missing
+-- or disagreeing binding valid -- but establishing "disagreeing" used to mean
+-- re-digesting every message, attachment, event and usage row of the archive,
+-- which is what made archive-wide readiness cost 20 s on a real archive.
+--
+-- With these triggers a surviving binding is the database's own statement
+-- that the digest would come out the same, so the archive-wide route can hand
+-- the stored binding to the shared classifier instead of recomputing one. The
+-- ``UPDATE OF`` column lists are generated from the very projections the
+-- digest commits to, so the two cannot drift apart in a review.
+--
+-- ``blocks`` is deliberately absent: the declared projection binds block
+-- content through ``messages.content_hash`` rather than reading blocks
+-- directly (see ``input_binding.SESSION_INPUT_PROJECTION_COLUMNS``).
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_ai
+AFTER INSERT ON messages BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_au
+AFTER UPDATE OF {_binding_columns(SESSION_INPUT_PROJECTION_COLUMNS)} ON messages BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL
+     WHERE session_id IN (OLD.session_id, NEW.session_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_ad
+AFTER DELETE ON messages BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+END;
+
+-- The session row is an input in its own right: the profile caches its title,
+-- sort key, repository paths and counters, so a binding over messages alone
+-- reports valid after a session-row change that moved the output.
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_sessions_au
+AFTER UPDATE OF {_binding_columns(SESSION_ROW_PROJECTION_COLUMNS)} ON sessions BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_ai
+AFTER INSERT ON attachment_refs BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_au
+AFTER UPDATE OF session_id, {_binding_columns(SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS)} ON attachment_refs BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL
+     WHERE session_id IN (OLD.session_id, NEW.session_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_ad
+AFTER DELETE ON attachment_refs BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+END;
+
+-- Attachment metadata reaches the profile through its refs, so the retirement
+-- follows the same join the projection does. ``ref_count`` is deliberately not
+-- in the column list: it is a maintained counter no hydrated attachment
+-- carries, and invalidating on it would churn every profile on unrelated
+-- reference accounting.
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_attachments_au
+AFTER UPDATE OF {_binding_columns(SESSION_ATTACHMENT_PROJECTION_COLUMNS, exclude=("attachment_id",))} ON attachments
+BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL
+     WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = NEW.attachment_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_attachments_ad
+AFTER DELETE ON attachments BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL
+     WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = OLD.attachment_id);
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_ai
+AFTER INSERT ON session_events BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_au
+AFTER UPDATE OF session_id, {_binding_columns(SESSION_EVENT_PROJECTION_COLUMNS)} ON session_events BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL
+     WHERE session_id IN (OLD.session_id, NEW.session_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_ad
+AFTER DELETE ON session_events BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+END;
+
+-- The usage rollup is recomputed from these rows immediately before the
+-- profile reads it, so a fixed-id usage correction moves the profile's
+-- dominant model while nothing else in the projection changes.
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_ai
+AFTER INSERT ON session_provider_usage_events BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_au
+AFTER UPDATE OF session_id, {_binding_columns(SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS)}
+ON session_provider_usage_events BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL
+     WHERE session_id IN (OLD.session_id, NEW.session_id);
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_ad
+AFTER DELETE ON session_provider_usage_events BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
 END;
 
 -- Delegations are derived from exact provider dispatch evidence. The parent
