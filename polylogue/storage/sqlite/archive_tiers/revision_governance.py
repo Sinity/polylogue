@@ -116,8 +116,10 @@ from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
+    LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
+    WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -2191,7 +2193,7 @@ def replace_raw_membership_census(
             ).fetchone()
             if dependent is not None:
                 raise ActiveByteRevisionChainError("an active byte-revision chain cannot move to membership governance")
-            if sessions and detail not in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS:
+            if sessions and detail not in WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS:
                 # A retirement that leaves membership rows behind is only observable
                 # through its ``raw_membership_census.detail`` marker: the retired raw
                 # loses its ``logical_source_key`` and goes ``quarantined``, so
@@ -2202,14 +2204,28 @@ def replace_raw_membership_census(
                 # same identity is then accepted as an unconditional singleton
                 # byte-proven baseline, which is exactly the polylogue-52l2 hazard the
                 # marker exists to prevent. Refuse the write instead of letting an
-                # unknown source value read back as success (polylogue-sze30).
+                # unknown source value read back as success (polylogue-sze30 AC2).
+                #
+                # The accepted set is the WRITABLE vocabulary, not the wider read
+                # vocabulary: ``LEGACY_FULL_REVISION_GOVERNANCE_DETAILS`` exists so
+                # durable pre-#3234 rows stay legible, and the module comment that
+                # declares it "read-only, never write" was until now enforced by
+                # nothing. Emitting the legacy spelling afresh would be harmless to
+                # the 52l2 guard but would make the compat branch impossible to
+                # retire, because no query could distinguish a pre-fix row from a
+                # new one (polylogue-sze30 AC1).
                 #
                 # A census with no surviving membership row (a non-session artifact or
                 # retained-state export) has no logical identity to be ambiguous
                 # about, so its detail stays free explanatory prose.
+                legacy_note = (
+                    " (that marker is read-compatibility only and may never be written)"
+                    if detail in LEGACY_FULL_REVISION_GOVERNANCE_DETAILS
+                    else ""
+                )
                 raise ValueError(
                     "full-revision retirement with membership rows requires a recognized governance marker; "
-                    f"got {detail!r}, expected one of {RETIRED_FULL_REVISION_GOVERNANCE_DETAILS!r}"
+                    f"got {detail!r}, expected one of {WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS!r}{legacy_note}"
                 )
             conn.execute(
                 """

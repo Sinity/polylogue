@@ -181,26 +181,39 @@ def parser_census_is_complete(
 #: later-discovered raw as an unconditional singleton byte-proven baseline.
 HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL = "historical non-prefix full revision governance"
 
-#: All ``raw_membership_census.detail`` marker literals that mean "this raw
-#: was retired from full-revision byte governance to membership governance"
-#: (polylogue-hm2f, residual of polylogue-52l2). Durable ``raw_membership_
-#: census`` rows written before the #3234 fix used the literal
-#: ``"cross-route full revision governance"`` at the live-watcher call site
-#: (``sources/live/batch.py``, pre-fix) -- a DIFFERENT string from
+#: The retirement markers a *writer* may emit today. One marker, one meaning:
+#: a new retirement always spells itself ``HISTORICAL_NON_PREFIX_GOVERNANCE_
+#: DETAIL``, so the legacy spelling below can eventually be retired by proving
+#: no row younger than the rebuild carries it (polylogue-sze30 AC1).
+WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS: tuple[str, ...] = (HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,)
+
+#: The retirement markers a *reader* must still recognize, and nothing more.
+#: Durable ``raw_membership_census`` rows written before the #3234 fix used
+#: the literal ``"cross-route full revision governance"`` at the live-watcher
+#: call site (``sources/live/batch.py``, pre-fix) -- a DIFFERENT string from
 #: ``HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL``, which only the offline
 #: backfill call site used at the time. Those pre-fix rows are durable
 #: (``source.db``) and were never rewritten in place (durable-tier changes
 #: need an explicit additive migration, not a silent detail-string rewrite),
 #: so identities retired under the legacy literal remain invisible to a guard
-#: query keyed on the new marker alone. ``ArchiveStore.raw_membership_
-#: retired_full_revision_siblings`` matches against every literal in this
-#: tuple so old and new retirements are both recognized. The legacy literal
-#: is frozen here for read-compatibility only -- it must never be written by
-#: new code (both current call sites use ``HISTORICAL_NON_PREFIX_GOVERNANCE_
-#: DETAIL`` exclusively).
-RETIRED_FULL_REVISION_GOVERNANCE_DETAILS: tuple[str, ...] = (
-    HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+#: query keyed on the new marker alone (polylogue-hm2f, residual of
+#: polylogue-52l2).
+LEGACY_FULL_REVISION_GOVERNANCE_DETAILS: tuple[str, ...] = (
     "cross-route full revision governance",  # legacy pre-#3234 literal -- read-only, never write.
+)
+
+#: Read vocabulary: every marker that means "this raw was retired from
+#: full-revision byte governance to membership governance", writable and
+#: legacy alike. ``ArchiveStore.raw_membership_retired_full_revision_
+#: siblings`` and ``_raw_revision_source_path_has_divergent_evidence`` match
+#: against this set so old and new retirements are both recognized. The
+#: read/write split is what keeps the legacy spelling's read-compatibility
+#: from turning into permission to keep emitting it: the write boundary in
+#: ``archive_tiers/revision_governance.replace_raw_membership_census``
+#: accepts only ``WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS``.
+RETIRED_FULL_REVISION_GOVERNANCE_DETAILS: tuple[str, ...] = (
+    *WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS,
+    *LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
 )
 
 
