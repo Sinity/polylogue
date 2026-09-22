@@ -38,6 +38,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.daemon_operations import cli_daemon_archive
+from tests.infra.durable_tier_fixtures import refresh_archive_format_marker, refresh_fresh_bootstrap_marker
 from tests.infra.live_ingest import write_index_session
 
 _ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
@@ -452,72 +453,59 @@ def _seed_assertion_export_rows(archive_root: Path) -> None:
         )
 
 
-def _create_user_v3(path: Path) -> None:
-    path.unlink(missing_ok=True)
-    with sqlite3.connect(path) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE assertions (
-                assertion_id        TEXT PRIMARY KEY,
-                scope_ref           TEXT,
-                target_ref          TEXT NOT NULL,
-                key                 TEXT,
-                kind                TEXT NOT NULL,
-                value_json          TEXT,
-                body_text           TEXT,
-                author_ref          TEXT DEFAULT 'user:local',
-                author_kind         TEXT DEFAULT 'user',
-                evidence_refs_json  TEXT DEFAULT '[]',
-                status              TEXT DEFAULT 'active',
-                visibility          TEXT DEFAULT 'private',
-                confidence          REAL,
-                staleness_json      TEXT,
-                context_policy_json TEXT DEFAULT '{"inject":false}',
-                supersedes_json     TEXT DEFAULT '[]',
-                created_at_ms       INTEGER NOT NULL,
-                updated_at_ms       INTEGER NOT NULL
-            ) STRICT;
-            CREATE INDEX idx_assertions_target_kind
-            ON assertions(target_ref, kind);
-            CREATE INDEX idx_assertions_kind_status_updated
-            ON assertions(kind, status, updated_at_ms);
-            CREATE INDEX idx_assertions_target_kind_status_visibility
-            ON assertions(target_ref, kind, status, visibility);
-            PRAGMA user_version = 3;
-            """
-        )
-    _refresh_fresh_bootstrap_marker(path.parent)
+def _create_user_at_previous_slot(path: Path) -> None:
+    """Stage a user tier one numbered slot below this runtime's target.
 
+    The pre-reset fixture hand-wrote a ``PRAGMA user_version = 3`` schema.
+    This lineage has no version 3, so every route that opened the tier
+    refused it with ``user schema skew`` before the migration under test ran.
 
-def _refresh_archive_format_marker(archive_root: Path) -> None:
-    """Re-publish the format marker after a fixture rebuilt a durable tier by hand.
-
-    The marker binds each durable tier's birth version to that tier's schema
-    fingerprint, so replacing the file on disk invalidates it exactly the way a
-    transplanted historical tier would. A fixture that deliberately authors the
-    tier has to restate that evidence; leaving the original marker in place
-    makes every later refusal a fixture artifact instead of the behavior under
-    test.
+    The shape that still matters is the one the tier's single numbered slot
+    (``002_assertions_status_not_null.sql``) migrates away from:
+    ``assertions.status`` nullable. It is derived from the live canonical DDL
+    rather than transcribed, so a canonical change cannot silently leave this
+    fixture describing a schema nothing ships.
     """
-    from polylogue.storage.sqlite.archive_tiers.archive_plan import (
-        archive_format_marker_path,
-        record_fresh_archive_format,
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, USER_TIER_VERSION
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    previous = USER_TIER_VERSION - 1
+    assert previous >= ARCHIVE_FORMAT_FLOOR_VERSION, (
+        "the user tier owns no numbered slot, so there is no previous shape to stage and "
+        "migrate-tier has nothing to apply"
     )
 
-    marker = archive_format_marker_path(archive_root)
-    assert marker.is_file(), f"fixture must carry an archive format marker: {marker}"
-    marker.unlink()
-    record_fresh_archive_format(archive_root)
-
-
-def _refresh_fresh_bootstrap_marker(archive_root: Path) -> None:
-    """Rebind a fixture bootstrap receipt after deliberate durable-tier edits."""
-    marker = archive_root / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    assert marker.is_file(), f"fixture must carry a fresh bootstrap marker: {marker}"
-    from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-    marker.unlink()
-    _record_fresh_durable_bootstrap(archive_root)
+    path.unlink(missing_ok=True)
+    initialize_archive_database(path, ArchiveTier.USER)
+    with sqlite3.connect(path) as conn:
+        canonical = str(
+            conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assertions'").fetchone()[0]
+        )
+        nullable = canonical.replace(
+            "status              TEXT NOT NULL DEFAULT 'active'", "status TEXT DEFAULT 'active'"
+        )
+        assert nullable != canonical, (
+            "canonical assertions.status is no longer the NOT NULL column slot 002 introduced; "
+            "this fixture no longer stages the shape that slot migrates away from"
+        )
+        dependents = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT sql FROM sqlite_master WHERE tbl_name = 'assertions' AND type IN ('index', 'trigger') "
+                "AND sql IS NOT NULL"
+            )
+        ]
+        columns = [str(row[1]) for row in conn.execute("PRAGMA table_info(assertions)")]
+        column_list = ", ".join(columns)
+        conn.executescript(nullable.replace("assertions", "assertions__previous_slot", 1))
+        conn.execute(f"INSERT INTO assertions__previous_slot ({column_list}) SELECT {column_list} FROM assertions")
+        conn.execute("DROP TABLE assertions")
+        conn.execute("ALTER TABLE assertions__previous_slot RENAME TO assertions")
+        for statement in dependents:
+            conn.executescript(statement)
+        conn.execute(f"PRAGMA user_version = {previous}")
+    refresh_fresh_bootstrap_marker(path.parent)
+    refresh_archive_format_marker(path.parent)
 
 
 def _run_verified_backup_cli(cli_runner: CliRunner, output_dir: Path, *, profile: str) -> Path:
@@ -1655,13 +1643,33 @@ def test_archive_init_cli_executes_confirmed_initialization(
     ]
 
 
-def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt(
+def test_migrate_tier_cli_applies_the_user_slot(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     tmp_path: Path,
 ) -> None:
+    """A verified backup lets the CLI apply the user tier's one numbered slot.
+
+    The pre-reset version of this test described a multi-step climb: a legacy
+    chain committing to an adoption floor of 10, the v11 train then refusing
+    the manifest taken before that climb, and a second migrate with a fresh
+    backup applying 11..N. None of that exists -- the user tier owns exactly
+    one numbered slot (002), reached in one step from the floor -- so the
+    staleness leg it asserted has no producer left and is not re-expressed
+    here.
+
+    What survives is the property the route exists for: a verified backup
+    manifest admits the slot, the tier lands at the runtime target, and the
+    rebuilt column is the one the slot declares.
+
+    Anti-vacuity: revert ``assertions.status`` to nullable in the canonical
+    user DDL and the fixture's ``assert nullable != canonical`` fires; skip
+    the migration and ``applied_versions`` is empty with ``status`` still
+    nullable below.
+    """
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_v3(user_db)
+    _create_user_at_previous_slot(user_db)
+    target = ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
     manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="user_overlays")
 
     result = cli_runner.invoke(
@@ -1680,47 +1688,17 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
         catch_exceptions=False,
     )
 
-    # The legacy climb to the adoption floor commits, then the v11 train
-    # refuses the now-stale manifest with an actionable instruction instead
-    # of a bare fingerprint mismatch.
-    assert result.exit_code == 1
-    assert "Take a fresh verified backup" in result.output
-    with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 10
-        assert conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='context_deliveries'"
-        ).fetchone()
-
-    fresh_manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup-post-floor", profile="user_overlays")
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "migrate-tier",
-            "user",
-            "--backup-manifest",
-            str(fresh_manifest),
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
-
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["tier"] == "user"
-    assert payload["from_version"] == 10
-    assert payload["to_version"] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
-    assert payload["applied_versions"] == list(range(11, ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] + 1))
+    assert payload["from_version"] == target - 1
+    assert payload["to_version"] == target
+    assert payload["applied_versions"] == [target]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
-        assert conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='query_excision_ledger'"
-        ).fetchone()
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == target
+        status = next(row for row in conn.execute("PRAGMA table_info(assertions)") if row[1] == "status")
+        assert status[3] == 1, "slot 002 must leave assertions.status NOT NULL"
 
 
 def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
@@ -1815,8 +1793,8 @@ def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
         conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
         conn.execute("PRAGMA user_version = 1")
         conn.commit()
-    _refresh_fresh_bootstrap_marker(cli_workspace["archive_root"])
-    _refresh_archive_format_marker(cli_workspace["archive_root"])
+    refresh_fresh_bootstrap_marker(cli_workspace["archive_root"])
+    refresh_archive_format_marker(cli_workspace["archive_root"])
 
     result = cli_runner.invoke(
         cli,
@@ -1904,7 +1882,7 @@ def test_migrate_tier_cli_refuses_live_daemon_before_sql(
     cli_runner: CliRunner,
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_v3(user_db)
+    _create_user_at_previous_slot(user_db)
     pidfile = cli_workspace["archive_root"] / "daemon.pid"
     # The daemon proves ownership by holding an exclusive ``flock`` on its
     # pidfile for the whole run (``polylogue.daemon.cli._acquire_pidfile``), and
@@ -1950,7 +1928,7 @@ def test_migrate_tier_cli_refuses_live_daemon_before_sql(
     assert payload["ok"] is False
     assert "daemon to be stopped" in payload["error"]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
 
 
 def test_migrate_tier_cli_uses_shared_stable_archive_lock(
@@ -1960,7 +1938,7 @@ def test_migrate_tier_cli_uses_shared_stable_archive_lock(
     from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
 
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_v3(user_db)
+    _create_user_at_previous_slot(user_db)
     with OwnedArchiveLocation.acquire(
         ArchiveLocation.resolve(cli_workspace["archive_root"]),
         owner_id="test:daemon-owner",
@@ -1976,7 +1954,7 @@ def test_migrate_tier_cli_uses_shared_stable_archive_lock(
     assert payload["ok"] is False
     assert "archive location already owned" in payload["error"]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
 
 
 def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
@@ -1985,7 +1963,7 @@ def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
     tmp_path: Path,
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_v3(user_db)
+    _create_user_at_previous_slot(user_db)
     backup = cli_runner.invoke(
         cli,
         [
@@ -2022,7 +2000,7 @@ def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
     assert result.exit_code == 1
     assert "successful backup verification receipt" in json.loads(result.stdout)["error"]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
 
 
 def test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_changes(
@@ -2031,7 +2009,7 @@ def test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_c
     tmp_path: Path,
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_v3(user_db)
+    _create_user_at_previous_slot(user_db)
     manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="user_overlays")
     copied_tier = manifest.with_name("user.db")
     copied_bytes = bytearray(copied_tier.read_bytes())
@@ -2057,7 +2035,7 @@ def test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_c
     assert result.exit_code == 1
     assert "tier artifact hash mismatch" in json.loads(result.stdout)["error"]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
 
 
 def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
@@ -2066,7 +2044,7 @@ def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
     tmp_path: Path,
 ) -> None:
     user_db = cli_workspace["archive_root"] / "user.db"
-    _create_user_v3(user_db)
+    _create_user_at_previous_slot(user_db)
     manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="diagnostics_bundle")
 
     result = cli_runner.invoke(
@@ -2090,8 +2068,9 @@ def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
     assert payload["ok"] is False
     assert "does not include user.db" in payload["error"]
     with sqlite3.connect(user_db) as conn:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
-        assert not conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_settings'").fetchone()
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
+        status = next(row for row in conn.execute("PRAGMA table_info(assertions)") if row[1] == "status")
+        assert status[3] == 0, "the refused migration must leave assertions.status nullable"
 
 
 def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliRunner) -> None:

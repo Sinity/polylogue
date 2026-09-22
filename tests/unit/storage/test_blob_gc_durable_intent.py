@@ -18,9 +18,6 @@ import pytest
 import polylogue.storage.blob_gc as blob_gc
 from polylogue.storage.blob_liveness import BlobLiveness
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
@@ -779,61 +776,6 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
     assert report.deleted_count == 0
     assert store.exists(blob_hash)
     assert _member_rows(tmp_path / "source.db")[0][2] == "skipped_still_live"
-
-
-def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path) -> None:
-    """The v34/v35 durable additions need no backup and preserve v33 rows."""
-    source_db = tmp_path / "source.db"
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(SOURCE_DDL)
-        conn.execute("DROP VIEW source_item_reconciliation")
-        conn.execute("DROP INDEX idx_source_items_disposition")
-        conn.execute("DROP INDEX idx_source_items_raw_id")
-        conn.execute("DROP INDEX idx_hook_event_carriers_event")
-        conn.execute("DROP TABLE source_items")
-        conn.execute("DROP TABLE source_generations")
-        conn.execute("DROP TABLE hook_event_carriers")
-        conn.execute("DROP INDEX idx_gc_generation_members_pending")
-        conn.execute("DROP TABLE gc_generation_members")
-        conn.execute("DROP TABLE gc_generations")
-        conn.execute("DROP INDEX idx_material_evidence_links_ref")
-        conn.execute("DROP INDEX idx_material_observations_blob")
-        conn.execute("DROP INDEX idx_material_observations_state")
-        conn.execute("DROP TABLE material_evidence_links")
-        conn.execute("DROP TABLE material_observations")
-        conn.execute(
-            "CREATE TABLE gc_generations (generation_id TEXT PRIMARY KEY, started_at_ms INTEGER NOT NULL, "
-            "completed_at_ms INTEGER, reclaimed_count INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_count >= 0), "
-            "reclaimed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes >= 0)) STRICT"
-        )
-        conn.execute("PRAGMA user_version = 33")
-        conn.execute(
-            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-            "VALUES ('before-v34', 1, 1, 0, 0)"
-        )
-        conn.execute(
-            "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
-            "VALUES ('memberless-pre035', 2, NULL, 0, 0)"
-        )
-        conn.commit()
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None, target_version=35)
-        assert result.applied_versions == (34, 35)
-        assert conn.execute("PRAGMA user_version").fetchone() == (35,)
-        assert conn.execute("SELECT generation_id FROM gc_generations").fetchone() == ("before-v34",)
-        assert conn.execute("SELECT COUNT(*) FROM gc_generation_members").fetchone() == (0,)
-        assert conn.execute(
-            "SELECT completed_at_ms FROM gc_generations WHERE generation_id = 'memberless-pre035'"
-        ).fetchone() == (2,)
-        assert "blob_namespace_marker" in {row[1] for row in conn.execute("PRAGMA table_info(gc_generations)")}
-        assert [row[1] for row in conn.execute("PRAGMA table_info(gc_generation_members)")] == [
-            "generation_id",
-            "blob_hash",
-            "candidate_size_bytes",
-            "intent_committed_at_ms",
-            "outcome",
-            "outcome_at_ms",
-            "outcome_detail",
-        ]
 
 
 def test_gc_refuses_a_missing_source_tier_before_planning(tmp_path: Path) -> None:

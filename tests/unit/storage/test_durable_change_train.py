@@ -72,6 +72,7 @@ from polylogue.storage.sqlite.migration_runner import (
     write_durable_change_train_manifest,
 )
 from tests.infra.durable_schema_reset import reset_source_fixture_to_version
+from tests.infra.durable_tier_fixtures import refresh_archive_format_marker
 
 _CURRENT_VERSION = 1
 _TARGET_VERSION = 2
@@ -2623,26 +2624,44 @@ def test_runtime_bootstrap_refuses_an_established_archive_missing_audit(
     assert not (archive_root / "audit.db").exists()
 
 
-def test_runtime_bootstrap_refuses_source_v31_archive_missing_audit(workspace_env: dict[str, Path]) -> None:
-    """Bootstrap evidence remains authoritative before source v32 exists."""
+def test_pre_slot_source_missing_audit_names_adoption(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lineage member one slot behind, without audit.db, names its recovery route.
+
+    A source tier standing below the runtime target is ordinary: the archive
+    was born before that tier's numbered slot shipped. Losing ``audit.db`` on
+    top of that must still produce the adoption instruction an operator can
+    act on -- not a schema complaint, and never a silently recreated audit
+    tier over durable evidence nobody has.
+
+    The pre-reset version stamped ``user_version = 31`` and reconstructed a
+    v31 schema. Neither exists now, and 31 is above every version this lineage
+    can hold, so ``assert_archive_format_lineage`` skipped its fingerprint
+    comparison entirely and the test passed without describing a real archive.
+    The fixture is bootstrapped at the floor through the production route and
+    then reduced to the pre-slot-002 shape, with the marker restated, so the
+    archive it hands bootstrap is one this runtime could actually have
+    written.
+
+    Anti-vacuity: remove the ``established_pair_without_audit`` branch from
+    ``_initialize_active_archive_root`` and the second bootstrap recreates
+    ``audit.db`` instead of refusing, turning both assertions red.
+    """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    archive_root = workspace_env["archive_root"]
-    initialize_active_archive_root(archive_root)
-    with sqlite3.connect(archive_root / "source.db") as source:
-        # The archive was bootstrapped at the CURRENT version, so claiming v31
-        # leaves every later table, index and column in place and the next
-        # migration fails on its own CREATE/ALTER.
-        reset_source_fixture_to_version(source, 31)
+    _pin_source_runtime_version(monkeypatch, _SOURCE_ADOPTION_FLOOR)
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        reset_source_fixture_to_version(source, _SOURCE_ADOPTION_FLOOR)
         source.execute("DROP TABLE IF EXISTS audit_continuity_control")
-        source.execute("PRAGMA user_version = 31")
+        source.execute(f"PRAGMA user_version = {_SOURCE_ADOPTION_FLOOR}")
         source.commit()
-    (archive_root / "audit.db").unlink()
+    refresh_archive_format_marker(tmp_path)
+    (tmp_path / "audit.db").unlink()
 
     with pytest.raises(RuntimeError, match="adopt-established-audit"):
-        initialize_active_archive_root(archive_root)
+        initialize_active_archive_root(tmp_path)
 
-    assert not (archive_root / "audit.db").exists()
+    assert not (tmp_path / "audit.db").exists()
 
 
 def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(

@@ -1,8 +1,16 @@
-"""Reconstruct a historical durable source tier from the migration files.
+"""Reconstruct an earlier durable source tier from the migration files.
 
-Durable fixtures build an old schema by subtracting from the CURRENT DDL. Every
-hand-written removal list went stale the moment a migration added a table,
-index or column, so the set is derived here instead.
+Durable fixtures build an older schema by subtracting from the CURRENT DDL.
+Every hand-written removal list went stale the moment a migration added a
+table, index or column, so the set is derived here instead.
+
+The archive format floor reset deleted the whole v2..v46 source chain, and
+with it the two hand-maintained registries this module used to carry: the
+retired tables introduced at slots 18-29, and the pre-v46
+``raw_authority_blockers`` shape. Both could only re-create objects no shipped
+migration introduces any more, which would have made a fixture staged at the
+floor describe a schema this lineage never had. They are removed rather than
+kept as no-ops; the derivation below is now the whole module.
 """
 
 from __future__ import annotations
@@ -12,180 +20,6 @@ import sqlite3
 from pathlib import Path
 
 __all__ = ["reset_source_fixture_to_version"]
-
-#: The source-migration slot that introduced each retired table.
-_RETIRED_SOURCE_INTRODUCED_AT: dict[str, int] = {
-    "raw_live_source_reconciliation_receipts": 18,
-    "raw_membership_writeback_receipts": 19,
-    "raw_append_chain_backfill_receipts": 20,
-    "raw_byte_duplicate_supersession_receipts": 23,
-    "raw_quarantine_group_dedup_receipts": 25,
-    "raw_unknown_export_reclassification_receipts": 26,
-    "raw_non_session_duplicate_exclusion_receipts": 27,
-    "raw_failure_disposition_receipts": 29,
-}
-
-#: The post-v41 shape a migrated tier still carries for each retired table.
-_RETIRED_SOURCE_HISTORICAL_DDL: dict[str, str] = {
-    "raw_live_source_reconciliation_receipts": """
-CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
-    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    verdict                     TEXT NOT NULL CHECK(verdict IN ('exact_match', 'codex_header_strip_match')),
-    previous_revision_authority TEXT NOT NULL,
-    source_path                 TEXT NOT NULL,
-    blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
-    compared_at_ms              INTEGER NOT NULL CHECK(compared_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_live_source_reconciliation_receipts_compared_at
-ON raw_live_source_reconciliation_receipts(compared_at_ms);
-""",
-    "raw_membership_writeback_receipts": """
-CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
-    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    logical_source_key          TEXT NOT NULL,
-    provider_session_id         TEXT NOT NULL,
-    membership_decision         TEXT NOT NULL,
-    previous_revision_authority TEXT NOT NULL,
-    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_membership_writeback_receipts_promoted_at
-ON raw_membership_writeback_receipts(promoted_at_ms);
-""",
-    "raw_append_chain_backfill_receipts": """
-CREATE TABLE IF NOT EXISTS raw_append_chain_backfill_receipts (
-    raw_id                           TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    logical_source_key                TEXT,
-    source_path                      TEXT NOT NULL,
-    blob_hash                        BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                        INTEGER NOT NULL CHECK(blob_size >= 0),
-    append_start_offset              INTEGER NOT NULL CHECK(append_start_offset >= 0),
-    append_end_offset                INTEGER NOT NULL CHECK(append_end_offset > append_start_offset),
-    matched_after_codex_header_strip INTEGER NOT NULL CHECK(matched_after_codex_header_strip IN (0, 1)),
-    previous_revision_authority      TEXT NOT NULL,
-    compared_at_ms                    INTEGER NOT NULL CHECK(compared_at_ms >= 0),
-    tool_version                      TEXT NOT NULL,
-    backup_manifest_path              TEXT NOT NULL,
-    detail                            TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_append_chain_backfill_receipts_compared_at
-ON raw_append_chain_backfill_receipts(compared_at_ms);
-""",
-    "raw_byte_duplicate_supersession_receipts": """
-CREATE TABLE IF NOT EXISTS raw_byte_duplicate_supersession_receipts (
-    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
-    duplicate_of_raw_id         TEXT NOT NULL,
-    duplicate_of_session_id     TEXT NOT NULL,
-    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
-    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_promoted_at
-ON raw_byte_duplicate_supersession_receipts(promoted_at_ms);
-
-CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_duplicate_of
-ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
-""",
-    "raw_failure_disposition_receipts": """
-CREATE TABLE IF NOT EXISTS raw_failure_disposition_receipts (
-    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    artifact_id                TEXT NOT NULL UNIQUE REFERENCES raw_artifacts(artifact_id),
-    origin                     TEXT NOT NULL,
-    source_path                TEXT NOT NULL,
-    source_index               INTEGER NOT NULL,
-    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
-    previous_parse_error       TEXT NOT NULL,
-    previous_validation_status TEXT,
-    previous_artifact_kind     TEXT NOT NULL,
-    previous_support_status    TEXT NOT NULL,
-    previous_classification_reason TEXT NOT NULL,
-    disposition_kind           TEXT NOT NULL CHECK(disposition_kind IN (
-        'terminal_corrupt_input',
-        'terminal_unsupported_shape'
-    )),
-    manifest_sha256            TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
-    disposed_at_ms             INTEGER NOT NULL CHECK(disposed_at_ms >= 0),
-    tool_version               TEXT NOT NULL,
-    backup_manifest_path       TEXT NOT NULL,
-    detail                     TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_failure_disposition_receipts_disposed_at
-ON raw_failure_disposition_receipts(disposed_at_ms);
-""",
-    "raw_non_session_duplicate_exclusion_receipts": """
-CREATE TABLE IF NOT EXISTS raw_non_session_duplicate_exclusion_receipts (
-    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
-    indexed_twin_raw_id        TEXT NOT NULL,
-    indexed_twin_session_id    TEXT NOT NULL,
-    parser_fingerprint         TEXT NOT NULL,
-    excluded_at_ms             INTEGER NOT NULL CHECK(excluded_at_ms >= 0),
-    tool_version               TEXT NOT NULL,
-    detail                     TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_non_session_duplicate_exclusion_receipts_twin
-ON raw_non_session_duplicate_exclusion_receipts(indexed_twin_raw_id);
-""",
-    "raw_quarantine_group_dedup_receipts": """
-CREATE TABLE IF NOT EXISTS raw_quarantine_group_dedup_receipts (
-    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    source_path                TEXT NOT NULL,
-    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
-    representative_raw_id      TEXT NOT NULL,
-    representative_session_id  TEXT NOT NULL,
-    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_quarantine_group_dedup_receipts_promoted_at
-ON raw_quarantine_group_dedup_receipts(promoted_at_ms);
-
-CREATE INDEX IF NOT EXISTS idx_raw_quarantine_group_dedup_receipts_representative
-ON raw_quarantine_group_dedup_receipts(representative_raw_id);
-""",
-    "raw_unknown_export_reclassification_receipts": """
-CREATE TABLE IF NOT EXISTS raw_unknown_export_reclassification_receipts (
-    raw_id                  TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    previous_origin         TEXT NOT NULL CHECK(previous_origin = 'unknown-export'),
-    new_origin              TEXT NOT NULL CHECK(new_origin = 'chatgpt-export'),
-    previous_capture_mode   TEXT,
-    new_capture_mode        TEXT NOT NULL CHECK(new_capture_mode = 'chatgpt'),
-    embedded_provider       TEXT NOT NULL CHECK(embedded_provider = 'chatgpt'),
-    source_path             TEXT NOT NULL,
-    blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
-    reclassified_at_ms      INTEGER NOT NULL CHECK(reclassified_at_ms >= 0),
-    tool_version            TEXT NOT NULL,
-    backup_manifest_path    TEXT NOT NULL,
-    index_reparse_required  INTEGER NOT NULL CHECK(index_reparse_required = 1),
-    detail                  TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_unknown_export_reclassification_receipts_reclassified_at
-ON raw_unknown_export_reclassification_receipts(reclassified_at_ms);
-""",
-}
 
 
 def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> None:
@@ -270,29 +104,7 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
             continue
         existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
         if column in existing:
-            try:
-                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
-            except sqlite3.OperationalError:
-                # The SQLite build used by the managed harness cannot drop
-                # the trailing STRICT column from this commented table. Keep
-                # the historical fixture exact and retain any seeded rows.
-                if (table, column) != ("raw_container_coordinates", "addressing_mode"):
-                    raise
-                conn.executescript(
-                    """
-                    CREATE TABLE raw_container_coordinates__fixture (
-                        raw_id TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-                        coordinate_format TEXT NOT NULL CHECK(coordinate_format = 'zip-v2'),
-                        entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal >= 0),
-                        split_index INTEGER NOT NULL CHECK(split_index >= 0)
-                    ) STRICT;
-                    INSERT INTO raw_container_coordinates__fixture
-                        SELECT raw_id, coordinate_format, entry_ordinal, split_index
-                        FROM raw_container_coordinates;
-                    DROP TABLE raw_container_coordinates;
-                    ALTER TABLE raw_container_coordinates__fixture RENAME TO raw_container_coordinates;
-                    """
-                )
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
     view_definition_pattern = re.compile(
         r"CREATE VIEW (?:IF NOT EXISTS )?([A-Za-z_][A-Za-z0-9_]*) AS\s+.*?;",
         re.I | re.S,
@@ -309,60 +121,3 @@ def reset_source_fixture_to_version(conn: sqlite3.Connection, version: int) -> N
         if historical_sql is None:
             raise AssertionError(f"no historical definition found for replaced source view: {view_name}")
         conn.executescript(historical_sql)
-    _restore_retired_source_objects(conn, version)
-    _restore_pre_v46_raw_authority_blockers(conn, version)
-
-
-#: The pre-v46 ``raw_authority_blockers`` shape (polylogue-5dzj9).  Migration
-#: 046 rebuilds the table to drop its foreign keys into the two ledger tables
-#: the 2026-09-15 ruling on polylogue-6kur retires, and the reset above
-#: deliberately never drops a rebuilt table -- so a fixture staged below v46
-#: keeps the CURRENT shape unless the historical one is restored here.
-_PRE_V46_RAW_AUTHORITY_BLOCKERS_DDL = """
-DROP INDEX IF EXISTS idx_raw_authority_blockers_open_plan;
-DROP TABLE IF EXISTS raw_authority_blockers;
-CREATE TABLE raw_authority_blockers (
-    blocker_id          TEXT PRIMARY KEY,
-    plan_id             TEXT NOT NULL REFERENCES raw_authority_plans(plan_id),
-    census_id           TEXT NOT NULL REFERENCES raw_authority_censuses(census_id),
-    reason              TEXT NOT NULL,
-    expected_json       TEXT NOT NULL CHECK(json_valid(expected_json)),
-    observed_json       TEXT NOT NULL CHECK(json_valid(observed_json)),
-    created_at_ms       INTEGER NOT NULL CHECK(created_at_ms >= 0),
-    resolved_at_ms      INTEGER CHECK(resolved_at_ms IS NULL OR resolved_at_ms >= created_at_ms),
-    resolution          TEXT,
-    CHECK((resolved_at_ms IS NULL) = (resolution IS NULL))
-) STRICT;
-CREATE UNIQUE INDEX idx_raw_authority_blockers_open_plan
-ON raw_authority_blockers(plan_id)
-WHERE resolved_at_ms IS NULL;
-"""
-
-
-def _restore_pre_v46_raw_authority_blockers(conn: sqlite3.Connection, version: int) -> None:
-    """Put the historical blocker shape back on a fixture staged below v46."""
-    if version >= 46:
-        return
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(raw_authority_blockers)")}
-    if not columns or "plan_input_digest" not in columns:
-        return
-    rows = int(conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0])
-    if rows:
-        raise AssertionError(
-            "reset_source_fixture_to_version cannot re-key populated raw_authority_blockers rows backwards; "
-            "seed blocker rows after the reset"
-        )
-    conn.executescript(_PRE_V46_RAW_AUTHORITY_BLOCKERS_DDL)
-
-
-def _restore_retired_source_objects(conn: sqlite3.Connection, version: int) -> None:
-    """Re-create the retired objects a tier at *version* still carries.
-
-    Fresh source generations omit them, so a fixture subtracted from current
-    DDL starts without them, and the numbered chain above the fixture version
-    still rebuilds them.
-    """
-    for table, introduced_at in _RETIRED_SOURCE_INTRODUCED_AT.items():
-        if introduced_at > version:
-            continue
-        conn.executescript(_RETIRED_SOURCE_HISTORICAL_DDL[table])
