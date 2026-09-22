@@ -31,6 +31,7 @@ afterwards.
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import uuid
 from dataclasses import dataclass
@@ -66,6 +67,128 @@ WANTED_SOURCE_FREEZE_COMMAND: Final = "polylogue ops maintenance wanted-sources 
 def _cold_build_owner_id() -> str:
     """One owner per daemon process: ownership is what promotion checks."""
     return f"cold-build:{os.getpid()}"
+
+
+def _hold_ops_checkpoints(archive_root: Path) -> sqlite3.Connection | None:
+    """Hold one ``ops.db`` handle open for a cold-build pass.
+
+    Measured defect (polylogue-rk0it, synthetic 16-file cold-build page):
+    ``CursorStore._connect_ops`` opens a one-shot ``ops.db`` connection for
+    every cursor, convergence-debt and stage-event write that falls outside
+    the pass' ``ops_write_scope`` -- 94 open/commit/close cycles for 16 files.
+    Every one of those closes is the *last* connection to the file, so SQLite
+    runs its close-time checkpoint: fsync the WAL, copy it into ``ops.db``,
+    fsync that, delete the WAL, fsync the directory. ``strace`` counted 111
+    ``fdatasync`` calls on ``ops.db``/``ops.db-wal`` plus 39 on the archive
+    directory for eight ingested files, against six on ``source.db``; and
+    ``sqlite3.Connection.commit`` alone was 0.586 s of a 2.195 s ingest
+    window, all of it on ``ops.db``. A profiled open/commit/close cycle costs
+    ~14-20 ms; the same commit with any second handle attached costs ~0.3 ms.
+
+    Holding a handle makes those closes stop being the last one, so the
+    checkpoint never fires there. Nothing about the *writes* changes: same
+    statements, same per-operation commits, same ``WRITE_CONNECTION_PROFILE``
+    (WAL, ``synchronous=NORMAL``, 30 s busy timeout) that ``_connect_ops``
+    already opens with -- which is why the holder is opened through exactly
+    that factory rather than a read handle. A read-only handle was tried and
+    is *not* equivalent: ``ops.db`` is still in rollback-journal mode when a
+    cold build begins, and a reader attached before the first writer's
+    ``journal_mode=WAL`` transition holds nothing afterwards.
+
+    The holder never opens a transaction, so it takes no lock and blocks no
+    checkpoint, no reader and no other writer.
+
+    Durability, stated exactly (rk0it AC3):
+
+    * ``ops`` is the disposable tier. It carries ingest cursors, convergence
+      debt and stage telemetry -- all reconstructible, all re-derived by
+      re-ingesting the file, which is idempotent by content hash.
+    * Process crash: unchanged. The commits are in ``ops.db-wal``, a durable
+      file the next open replays. Deferring the *checkpoint* does not defer
+      the commit.
+    * Power loss: this is the window that widens, and it is the only one.
+      At ``synchronous=NORMAL`` a WAL commit is not fsynced, so today's
+      per-write close-time checkpoint is what happened to make each ops write
+      power-loss durable. With the holder they become power-loss durable at
+      the next checkpoint: the daemon's recurring coordinator, which runs
+      every 300 s (``daemon/cli.py::_WAL_CHECKPOINT_INTERVAL_SECONDS``) over
+      every archive tier including ``ops.db``, or the holder's own release
+      when the generation settles.
+    * What a loss costs: up to one checkpoint interval of cursor advances and
+      convergence debt. The recovery is to re-ingest those files, which is
+      what an un-advanced cursor already means.
+    * Why this direction is the safe one: the hazard an ingest cursor can
+      actually cause is surviving a source write that did not -- a cursor
+      more durable than the durable tier it certifies. ``source.db`` is
+      WAL/``NORMAL`` too and is checkpointed at that same recurring boundary,
+      so the shape this replaces (ops flushed per write, source flushed per
+      coordinator tick) is the inverted one. Moving ops' flush boundary onto
+      source's tick removes an inversion rather than adding one.
+    * Boundary: cold build only, released the moment the generation settles.
+      It is not a change to the live archive's ops policy, and it never
+      touches ``source``, ``user`` or ``audit`` -- the tiers a rebuild cannot
+      reconstruct.
+
+    Failures are not swallowed. Opening ``ops.db`` for writing under the lease
+    the caller already holds is the same thing every cursor write in the pass
+    is about to do, so an error here is the pass failing early rather than a
+    performance property quietly not applying.
+    """
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import open_connection
+
+    ops_db = archive_root / "ops.db"
+    if not ops_db.exists():
+        # Not a degraded open: an archive root with no ops tier has no
+        # close-time churn to suppress, and creating one here would leave an
+        # uninitialized tier behind whatever the build does next.
+        return None
+    # ``validate_schema=False`` deliberately: this handle reads no rows.
+    # Coupling a checkpoint-suppression holder to tier-schema validation would
+    # invent a new way for a build to refuse.
+    conn = open_connection(
+        ops_db,
+        tier=ArchiveTier.OPS,
+        validate_schema=False,
+        archive_root=archive_root,
+        # The holder outlives the thread that opened it: passes run on the
+        # write coordinator's worker threads and the settle that releases it
+        # runs on another. The handle is only ever touched under the
+        # single-writer lease, so this is a lifetime statement, not concurrent
+        # use. Leaving the thread check on made every cross-thread pass close
+        # the holder and open a new one -- a leak per thread, and no
+        # suppression while the replacement was being built.
+        check_same_thread=False,
+    )
+    if _ops_holder_is_attached(conn, ops_db):
+        return conn
+    # The handle is open but attached to nothing, so it suppresses nothing.
+    # Keeping it would be a connection with no purpose.
+    conn.close()
+    return None
+
+
+def _ops_holder_is_attached(conn: sqlite3.Connection, ops_db: Path) -> bool:
+    """Whether this handle actually suppresses the close-time checkpoint.
+
+    Measured, not assumed, and the obvious proxies are all wrong. Holding a
+    connection object is not enough, and neither is reading ``journal_mode``
+    back as ``wal``: SQLite opens the database file and attaches the WAL index
+    lazily, so a handle that has only run PRAGMAs leaves ``ops.db-shm`` absent
+    and the one-shot writers keep checkpointing at ~20 ms/cycle. One real read
+    attaches it and the same cycle costs ~0.3 ms.
+
+    So this runs the read and then checks the only direct evidence there is:
+    the WAL index exists. The read is fully fetched, leaving no open
+    transaction -- a held read mark would block the recurring coordinator's
+    PASSIVE checkpoint, which is the boundary the durability argument leans on.
+
+    ``False`` means "this handle is attached to nothing", which is an ordinary
+    answer on a tier still in rollback-journal mode. A read that *fails* is
+    not that answer and is not caught here.
+    """
+    conn.execute("SELECT count(*) FROM sqlite_schema").fetchall()
+    return ops_db.with_name(f"{ops_db.name}-shm").exists()
 
 
 def _require_frozen_wanted_sources(archive_root: Path, *, reason: str, operation_id: str) -> None:
@@ -178,6 +301,9 @@ class ColdBuildGeneration:
     _store: IndexGenerationStore
     _promoted: bool = False
     _discarded: bool = False
+    #: Open for the build's lifetime so one-shot ``ops.db`` writers stop
+    #: checkpointing on every close. See :func:`_hold_ops_checkpoints`.
+    _ops_checkpoint_holder: sqlite3.Connection | None = None
 
     @classmethod
     def begin(cls, archive_root: Path, *, reason: str, owner_id: str | None = None) -> ColdBuildGeneration:
@@ -276,6 +402,7 @@ class ColdBuildGeneration:
         """
         if self.settled:
             raise RuntimeError(f"cold-build generation {self.generation_id} is no longer writable")
+        self._retain_ops_checkpoints()
         return ArchiveStore.open_cold_build_generation(
             self.generation_root,
             generation_id=self.generation_id,
@@ -288,6 +415,37 @@ class ColdBuildGeneration:
         with self.open_writer() as archive:
             row = archive._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
         return int(row[0]) if row is not None else 0
+
+    def _retain_ops_checkpoints(self) -> None:
+        """Hold ``ops.db`` open for this pass so its writers stop checkpointing.
+
+        Established here rather than in :meth:`begin` because the suppression
+        is an *attachment*, not an open: it is asserted per pass, which is the
+        dispatcher page the batching is bounded by, and re-asserted if a
+        journal-mode transition ever dropped it.
+        """
+        holder = self._ops_checkpoint_holder
+        if holder is not None and _ops_holder_is_attached(holder, self.archive_root / "ops.db"):
+            return
+        self._release_ops_checkpoint_holder()
+        self._ops_checkpoint_holder = _hold_ops_checkpoints(self.archive_root)
+
+    def _release_ops_checkpoint_holder(self) -> None:
+        """Give ``ops.db`` its close-time checkpoint back at the build boundary.
+
+        Closing the holder makes the next one-shot ops writer the last
+        connection again, so the deferred WAL is checkpointed on its close --
+        the build does not hand a settled archive a WAL it never drains.
+
+        The daemon's shutdown path calls :meth:`discard` from the event-loop
+        thread while the holder was opened on a write-coordinator thread, which
+        is exactly why the handle is opened without the same-thread check.
+        """
+        holder = self._ops_checkpoint_holder
+        if holder is None:
+            return
+        self._ops_checkpoint_holder = None
+        holder.close()
 
     def promote(self) -> IndexGeneration:
         """Run the readiness pass and swap the active-index pointer."""
@@ -304,6 +462,7 @@ class ColdBuildGeneration:
         self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
         promoted = self._store.promote(self.generation)
         self._promoted = True
+        self._release_ops_checkpoint_holder()
         emit(
             "daemon.cold_build.generation_promoted",
             outcome="ok",
@@ -319,6 +478,7 @@ class ColdBuildGeneration:
             return False
         discarded = self._store.discard_if_inactive(self.generation)
         self._discarded = True
+        self._release_ops_checkpoint_holder()
         emit(
             "daemon.cold_build.generation_discarded",
             outcome="ok" if discarded else "degraded",
