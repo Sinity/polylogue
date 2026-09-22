@@ -49,6 +49,7 @@ def annotations_command() -> None:
 @click.option("--model-ref", required=True)
 @click.option("--prompt-ref", required=True)
 @click.option("--metadata-json", default="{}", show_default=True, help="Batch provenance metadata JSON object.")
+@click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="json", show_default=True)
 @click.pass_obj
 def import_annotations_command(
     env: AppEnv,
@@ -62,6 +63,7 @@ def import_annotations_command(
     model_ref: str,
     prompt_ref: str,
     metadata_json: str,
+    output_format: str,
 ) -> None:
     """Import bounded JSONL labels as candidate assertions.
 
@@ -106,7 +108,13 @@ def import_annotations_command(
     result = written.get("result")
     if not isinstance(result, dict):
         raise click.ClickException("daemon accepted the annotation batch but returned no result")
-    click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    if output_format == "json":
+        click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return
+    click.echo(
+        f"Imported {result.get('valid_count')}/{result.get('total_count')} row(s) into "
+        f"{result.get('batch_ref')} ({result.get('status')})."
+    )
 
 
 @annotations_command.command("join")
