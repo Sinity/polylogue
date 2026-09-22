@@ -202,32 +202,55 @@ surfaces:
     description: >-
       Interactive reads served while background units occupy the same bounded
       scheduler. Gates the interactive side; the profile additionally asserts
-      nonzero background throughput and a bounded background admission wait.
-      MEASURED 2026-09-22 at 9ef655cb8, 2 runs on a loaded host: p50 1863.9 /
-      1785.5 ms for the eight-read batch, stable to 4%. That is neither the
-      2150 ms on polylogue-gd9i1 nor the 3552.7 ms in the committed baseline
-      receipt; all three are single-sample figures from differently loaded
-      hosts.
-      RULING (polylogue-gd9i1 AC4), in two parts.
-      (1) The 250/500 pair is not a target this workload ever missed -- it
-      was calibrated when the background load was sleep-only kernel units and
-      the reads were cache hits, so it describes a workload the lane no longer
-      runs. Comparing the honest workload against it is meaningless in either
-      direction, and that is a RECALIBRATION owed, not a defect found.
-      (2) The recalibration is NOT taken here, because this lane cannot yet
-      declare a p95. It writes real mutation.session.tag operations, so it is
-      deliberately one-shot, and a one-shot lane reports its single sample as
-      both p50 and p95. Insufficient samples by construction is a different
-      fact from a noisy measurement; the fix is a repeatable mixed-load shape,
-      not a number chosen from one observation.
-      What DOES reproduce: ~233 ms per read under write load against ~29 ms
-      per read quiet (daemon_concurrent_reads, same host, same day) -- the
-      ~6x the bead flags. Per AC3 it is NOT attributed to a phase, because no
-      phase attribution was measured. Any future budget here carries that
-      unexplained penalty inside it and must say so.
+      nonzero background throughput, a bounded background admission wait, and
+      that the write load did not grow the state the measured read joins.
+      The previous ruling said a recalibration was owed but could not be taken
+      because the lane could not declare a p95. Both reasons are now fixed
+      (polylogue-bp12n.4 AC4), and the recalibration is taken -- but not in the
+      direction the fix suggested. See the third point.
+      (1) REPEATABLE. The lane took one round because its write load added a
+      fresh tag per write and cli.query rows carry user tags -- list_summaries
+      LEFT JOINs the user-overlay tag relation on every plain listing
+      (archive.py:6335-6337), so round N really was reading the backlog rounds
+      1..N-1 left. Measured, not reasoned: restore the per-write fresh tag and
+      the later rounds' reads breach the 5s client deadline and come back
+      outcome == "timed-out". The write load now cycles a bounded tag set, so
+      every round reads the same shape, and the lane takes 5 rounds.
+      (2) VALID. The lane's reads were not all archive reads. Its params were
+      "2 + index % 4" over range(8) -- 2,3,4,5,2,3,4,5 -- so four of the eight
+      were cache hits, and mutation.session.tag cannot invalidate them because
+      it commits changed_session_ids=() (archive.py:4262) and so never moves
+      the cache epoch. That is the #5211 fault this lane's neighbour was fixed
+      for, still live here. Params are now unique across the whole repeated
+      window, proved two-sided by
+      test_mixed_load_series_stays_on_the_archive_path_across_rounds.
+      (3) STILL NOT A TARGET, and this is the measured result rather than a
+      deferral. MEASURED 2026-09-22 at b24e49f63 + this change, 4 runs on a
+      shared host: p50 1437.6 / 1436.0 / 3328.7 / 1532.7 ms, p95 1538.3 /
+      1597.6 / 4992.5 / 1911.8 ms. Within a run the five rounds are tight (p95
+      spread 3.9% across the first two runs); run to run the same lane spans
+      2.3x, and the outlier is one run of the four. The third run
+      was host-wide contention, not this lane -- untouched `query` went p95
+      77.4 -> 389.4 ms and cli_status_cold 3350 -> 4465 ms in the same run,
+      while `reader` got faster. So a real distribution was necessary for a
+      budget and is not sufficient for one: the dominant variance here is host
+      load, not the workload, and this is the most concurrency-sensitive lane
+      in the catalog. Numbers below are a NOISE CEILING chosen above the worst
+      observed run so the lane catches a genuine regression without firing on a
+      busy host -- they are not a target this workload is being held to, and
+      tightening them needs a quiet-host re-measure, not a choice.
+      Stays informational for the same reason cli_status_cold does. Note that
+      an informational gate does not make the numbers free: a MEASURED
+      violation blocks whatever the gate says (see this file's header), which
+      is why the ceiling is set where it is.
+      The substantive finding is unchanged and now rests on honest reads:
+      ~180 ms per read under write load against ~28 ms per read quiet
+      (daemon_concurrent_reads, same host, same runs) -- ~6.4x, the ~6x the
+      bead flags. It is still NOT attributed to a phase, because no phase
+      attribution was measured.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_mixed_load"
-    p50_ms: 250
-    p95_ms: 500
+    p50_ms: 4000
+    p95_ms: 6000
     gate: "informational"
     tier: "lab"
 
