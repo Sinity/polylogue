@@ -1,18 +1,25 @@
 """The blocks-only campaign closure must survive its own inversions.
 
-Anti-vacuity (each mutation is executed, not asserted):
+Anti-vacuity. Each mutation below was executed against this file on
+2026-09-22 and the named test was observed red; the counts are measured, not
+predicted. All 17 tests pass unmutated.
 
-* reverse the edge direction in ``load_graph``
-  (``prerequisites.setdefault(prerequisite, ...).add(dependent)``) ->
-  ``test_closure_walks_to_prerequisites_not_dependents`` and
-  ``test_unblocked_requires_every_blocker_closed`` go red;
-* drop the ``if edge_type != SELECTION_EDGE_TYPE: continue`` guard so
-  ``relates-to``/``discovered-from`` become prerequisites ->
-  ``test_only_blocks_edges_enter_the_closure`` and
-  ``test_report_names_followed_and_ignored_edges`` go red;
-* delete the ``if record.is_closed: ... continue`` branch in
-  ``compute_closure`` -> ``test_closed_members_leave_the_selection`` and
-  ``test_state_partition_sums_to_nonclosed`` go red.
+* Reverse the edge direction in ``load_graph``
+  (``prerequisites.setdefault(prerequisite, set()).add(dependent)``): 15 of 17
+  red. ``test_closure_walks_to_prerequisites_not_dependents`` reports the
+  inversion signature directly -- the closure collapses to
+  ``{bead-root, bead-dependent}`` and loses every real prerequisite.
+* Drop the ``if edge_type != SELECTION_EDGE_TYPE: continue`` guard so
+  ``relates-to``/``discovered-from`` become prerequisites: 5 of 17 red, led by
+  ``test_only_blocks_edges_enter_the_closure`` ("bead-sibling" enters the
+  closure). ``test_report_names_followed_and_ignored_edges`` stays green under
+  this one -- the edge census is built before the filter, so the text is
+  unchanged; it pins the report's honesty, not the filter.
+* Delete the ``continue`` from the ``if record.is_closed:`` branch in
+  ``compute_closure``: 7 of 17 red, led by
+  ``test_closed_members_leave_the_selection`` (bead-done and bead-shipped
+  reappear as nonclosed) and ``test_state_partition_sums_to_nonclosed``
+  (unblocked 3 != 2).
 
 The fixture is built so each mutation moves a *different* observable, which is
 why it carries a dependent (``bead-dependent``), a ``relates-to`` sibling
@@ -290,7 +297,12 @@ def test_backfill_plan_derives_only_criterion_three() -> None:
     assert proposals["bead-orphan"].proposed == "specification-required"
     assert proposals["bead-orphan"].basis == "no-acceptance-text"
     assert proposals["bead-orphan"].is_derived
-    assert proposals["bead-orphan"].command == "bd update bead-orphan --metadata disposition=specification-required"
+    # `--metadata` replaces the whole map and would destroy write_scope /
+    # execution_shape on every record it touched; only `--set-metadata` merges.
+    assert proposals["bead-orphan"].command == (
+        "bd update bead-orphan --set-metadata disposition=specification-required"
+    )
+    assert " --metadata " not in proposals["bead-orphan"].command
 
     # bead-impl already carries a valid disposition, so it is not a violation.
     assert "bead-impl" not in proposals

@@ -498,7 +498,16 @@ class BackfillProposal:
 
     @property
     def command(self) -> str:
-        return f"bd update {self.id} --metadata disposition={self.proposed}"
+        """The merging write.
+
+        ``bd update --metadata`` takes a whole JSON object and *replaces* the
+        record's metadata map, which on these records would destroy
+        ``write_scope``, ``execution_shape``, ``dispatch_group`` and
+        ``conflict_keys``. ``--set-metadata key=value`` merges one key, so it
+        is the only form this plan will ever emit.
+        """
+
+        return f"bd update {self.id} --set-metadata disposition={self.proposed}"
 
     def to_dict(self) -> dict[str, object]:
         return {
