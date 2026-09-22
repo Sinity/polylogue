@@ -215,7 +215,11 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, PreparedSessionShardRows
+from polylogue.storage.sqlite.archive_tiers.write import (
+    PreparedRows,
+    PreparedSessionShardRows,
+    prepared_row_dispositions,
+)
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
 if TYPE_CHECKING:
@@ -333,6 +337,12 @@ def _hot_capture_prefix_is_proven(
 
 def _is_json_stream_decode_error(error: BaseException) -> bool:
     return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError, JsonlDecodeError))
+
+
+def _disposition_delta(before: Mapping[str, int], after: Mapping[str, int]) -> dict[str, int]:
+    """Prepared-row dispositions recorded between two snapshots, zero terms dropped."""
+    delta = {reason: after[reason] - before.get(reason, 0) for reason in after}
+    return {reason: count for reason, count in sorted(delta.items()) if count}
 
 
 def _is_tool_result_sidecar_path(path: Path, *, provider: Provider) -> bool:
@@ -3351,6 +3361,12 @@ class LiveBatchProcessor:
                     },
                     force=True,
                 )
+            # polylogue-i07pw AC1: the writer records why each session write
+            # did or did not consume the parse worker's prepared rows. The
+            # delta over this page is what says whether parallel preparation
+            # removed writer-side work on a real route, which no configured
+            # worker count can establish.
+            dispositions_before = prepared_row_dispositions()
             try:
                 archive_write = self._ingest_full_records_archive(
                     raw_records,
@@ -3405,6 +3421,9 @@ class LiveBatchProcessor:
                         "ingested_message_count": archive_write.message_count,
                         "payload_unavailable_file_count": len(missing_payload_records),
                         "payload_replayed_from_blob_file_count": len(missing_payload_records),
+                        "prepared_row_dispositions": _disposition_delta(
+                            dispositions_before, prepared_row_dispositions()
+                        ),
                     },
                     force=True,
                 )
