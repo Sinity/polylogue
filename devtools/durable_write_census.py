@@ -148,9 +148,17 @@ _CREATE_TABLE_RE = re.compile(
 
 #: Rewrite verbs. ``INSERT INTO`` is matched so that an ``ON CONFLICT ... DO
 #: UPDATE`` tail can promote it; on its own it is dropped.
+#:
+#: The optional ``schema.`` qualifier is part of the table reference, not part
+#: of the table name. Without it the pattern bound ``table`` to the ATTACH
+#: alias -- ``UPDATE user_tier.assertions`` resolved to the table
+#: ``user_tier``, which no tier declares, so three durable ``user.db``
+#: rewrites in ``storage/derived/feedback`` were dropped by the very census
+#: that exists to enumerate them.
 _REWRITE_RE = re.compile(
     r"\b(?P<verb>UPDATE\s+OR\s+\w+|UPDATE|DELETE\s+FROM|INSERT\s+OR\s+REPLACE\s+INTO|REPLACE\s+INTO|INSERT\s+INTO)"
-    r"\s+[`\"\[]?(?P<table>[A-Za-z_][A-Za-z0-9_]*|\{\})",
+    r"\s+(?:[`\"\[]?(?P<schema>[A-Za-z_][A-Za-z0-9_]*)[`\"\]]?\s*\.\s*)?"
+    r"[`\"\[]?(?P<table>[A-Za-z_][A-Za-z0-9_]*|\{\})",
     re.IGNORECASE,
 )
 _DO_UPDATE_RE = re.compile(r"ON\s+CONFLICT\b.*?\bDO\s+UPDATE\b", re.IGNORECASE | re.DOTALL)

@@ -1013,7 +1013,54 @@ def _format_violation(violation: dict[str, object]) -> str:
             detail = f" contract={violation['contract']}"
         line = f":{violation['line']}" if "line" in violation else ""
         return f"  {violation['file']}{line}: {rule}{detail}"
-    return f"  {violation['file']}: imports {violation['import']} ({violation['rule']})"
+    if _CENSUS_RULE_RE.match(rule):
+        return _format_census_violation(rule, violation)
+    if "file" in violation and "import" in violation:
+        return f"  {violation['file']}: imports {violation['import']} ({rule})"
+    return _format_unrendered_violation(rule, violation)
+
+
+#: Declaration-census rule families. Every one of these reports a *declaration*
+#: row rather than an import edge, so it is keyed on the census key and may
+#: carry no ``file`` at all (a missing declaration file, or a stale entry whose
+#: site is gone). Rendering one through the import fall-through raised
+#: ``KeyError`` and took the whole plaintext report down with it, which is how
+#: the armed ``durable_write_*`` family from #5377 could not report a finding
+#: (polylogue-1or21).
+_CENSUS_RULE_RE = re.compile(
+    r"^(?:durable_write_|caller_supplied_sql_|derived_sweep_|controlled_read_|rebuild_route_|rebuild_census_|rebuild_entrypoint_)"
+)
+
+#: Fields a census violation carries as *evidence*, rendered after the rule in
+#: declaration order so two violations of one family read the same way.
+_CENSUS_DETAIL_FIELDS = ("declared", "observed", "detail")
+
+
+def _format_census_violation(rule: str, violation: dict[str, object]) -> str:
+    """Render one declaration-census violation without assuming any field."""
+
+    location = str(violation.get("file") or violation.get("key") or "")
+    if "line" in violation:
+        location = f"{location}:{violation['line']}"
+    details = [f"{name}={violation[name]}" for name in _CENSUS_DETAIL_FIELDS if name in violation]
+    if "file" in violation and "key" in violation:
+        details.insert(0, f"key={violation['key']}")
+    suffix = f" ({'; '.join(details)})" if details else ""
+    return f"  {location}: {rule}{suffix}"
+
+
+def _format_unrendered_violation(rule: str, violation: dict[str, object]) -> str:
+    """Render a rule family no branch above claims, loudly rather than silently.
+
+    A violation whose shape nothing here anticipates is still a finding and must
+    reach the report. Printing it through a branch built for a different shape
+    is what produced the ``KeyError`` this function now avoids, and printing it
+    as if it were understood would hide that a family lost its renderer. So the
+    line names the gap in the tool, then dumps every field verbatim.
+    """
+
+    fields = "; ".join(f"{name}={value!r}" for name, value in sorted(violation.items()) if name != "rule")
+    return f"  <no renderer for rule family>: {rule} (add a branch to devtools.verify_layering._format_violation; {fields})"
 
 
 #: Exit code for "this checkout cannot run the check", kept distinct from the
