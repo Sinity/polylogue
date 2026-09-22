@@ -90,6 +90,67 @@ def test_finished_build_resource_probe_skips_linked_source_authority(tmp_path: P
     assert measurement.storage_bytes == len(b"index")
 
 
+def test_resource_probe_peak_is_the_interval(tmp_path: Path) -> None:
+    """An arm's peak RSS is its own, not a mark some earlier workload set.
+
+    Every other counter on this probe is a delta it subtracts. ``ru_maxrss``
+    is a maximum, so a peak reached before ``start()`` survives subtraction
+    and the arm inherits it. The finished-build measurement makes that
+    concrete: its module-scoped sealed-input template builds 210 MB of raw
+    payload in the same process before any arm runs.
+
+    Anti-vacuity: remove the ``_reset_peak_rss()`` call from ``start`` and
+    this goes red, because the probe then reports the released 256 MB
+    allocation's mark rather than the interval's. The assertion is
+    unconditional on purpose -- accepting the fallback here would make the
+    test pass under exactly that mutation.
+    """
+    import resource as resource_module
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "index.db").write_bytes(b"index")
+
+    released = bytearray(256 * 1024 * 1024)
+    for offset in range(0, len(released), 4096):
+        released[offset] = 1
+    lifetime_mark_bytes = max(resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss, 0) * 1024
+    del released
+    gc.collect()
+
+    measurement = FinishedBuildResourceProbe.start().finish(candidate)
+
+    assert measurement.peak_rss_source == "interval"
+    assert measurement.peak_rss_self_bytes < lifetime_mark_bytes - 128 * 1024 * 1024
+
+
+def test_a_refused_watermark_reset_is_labelled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A kernel that refuses ``clear_refs`` yields a labelled lifetime mark.
+
+    The measurement must say which question its peak answers rather than
+    present a process-lifetime maximum as one arm's interval reading.
+
+    Anti-vacuity: report ``interval`` unconditionally, or fall back silently
+    to ``ru_maxrss`` without moving the label, and this goes red.
+    """
+    import resource as resource_module
+
+    import tests.infra.workload_artifacts as artifacts
+
+    monkeypatch.setattr(artifacts, "_reset_peak_rss", lambda: False)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "index.db").write_bytes(b"index")
+
+    measurement = FinishedBuildResourceProbe.start().finish(candidate)
+
+    assert measurement.peak_rss_source == "process_lifetime"
+    assert (
+        measurement.peak_rss_self_bytes
+        == max(resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss, 0) * 1024
+    )
+
+
 def small_specs() -> tuple[CorpusSpec, ...]:
     """Build the small workload. Spawned probes import this by name.
 

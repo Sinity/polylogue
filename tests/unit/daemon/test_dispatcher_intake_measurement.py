@@ -35,6 +35,7 @@ from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntake
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage import raw_retention
 from tests.infra.workload_declarations import convergence_corpus_specs
@@ -106,27 +107,44 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
     ``whole_archive_convergence`` at its own default here would put
     archive-wide convergence on one arm only, so the two arms would not be
     the same unit of work.
+
+    The processor is built with the same owned ``LiveParseStage`` that
+    ``LiveWatcher.__init__`` always constructs for its own batch processor
+    (polylogue-wf8a: it is unconditional, and an explicit stage only takes
+    over the lifecycle). Left at ``parse_stage=None`` this arm parses inline
+    while the dispatcher arm pre-parses off the writer hold, so the two arms
+    would be running different parsing implementations and the ratio would
+    move with parse-stage changes alone -- contradicting the named
+    anti-vacuity claim that removing the dispatcher makes the probes
+    identical. The stage is shut down inside the measured interval because
+    the dispatcher arm's ``watcher.stop()`` -- which shuts down the stage it
+    owns -- is inside its own.
     """
     files = _jsonl_files(corpus_root)
     db_path = archive_root / "index.db"
     converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
     polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
+    parse_stage = LiveParseStage(shard_directory=archive_root / "parse-shards")
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="claude-code", root=corpus_root),),
         cursor=CursorStore(db_path),
         parser_fingerprint="dispatcher-measure-direct",
         converger=converger,
+        parse_stage=parse_stage,
     )
     started = time.perf_counter()
-    metrics = asyncio.run(
-        processor.ingest_files(
-            files,
-            queued_file_count=len(files),
-            emit_event=True,
-            whole_archive_convergence=False,
+    try:
+        metrics = asyncio.run(
+            processor.ingest_files(
+                files,
+                queued_file_count=len(files),
+                emit_event=True,
+                whole_archive_convergence=False,
+            )
         )
-    )
+    finally:
+        parse_stage.shutdown()
     elapsed = time.perf_counter() - started
     payload = _payload_bytes(files)
     return {
