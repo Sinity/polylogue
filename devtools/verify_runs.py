@@ -531,7 +531,10 @@ def aggregate_pytest_statistics(
 ) -> dict[str, Any]:
     report = _read_json(step_dir / PYTEST_CANONICAL_REPORT_NAME)
     selection = _read_json(step_dir / "selection.json") or {}
-    summary = _read_json(step_dir / "summary.json") or {}
+    # Deliberately not ``or {}``: an absent or unreadable terminal summary is a
+    # different fact from a present one, and the evidence predicate refuses the
+    # step on the former rather than accepting a missing exitstatus.
+    summary = _read_json(step_dir / "summary.json")
     outcomes: dict[str, int] = {}
     for test in (report or {}).get("tests", []):
         if isinstance(test, Mapping):
@@ -577,7 +580,7 @@ def aggregate_pytest_statistics(
         "canonical_report_status": "present" if report is not None else "missing",
         "selected_count": selection.get("selected_count"),
         "deselected_count": selection.get("deselected_count"),
-        "summary_exitstatus": summary.get("exitstatus"),
+        "summary_exitstatus": None if summary is None else summary.get("exitstatus"),
         "event_count": event_count,
         **evidence,
     }

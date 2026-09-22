@@ -47,6 +47,15 @@ def test_outcomes_parses_ordinary_refs_without_embedded_equals() -> None:
 
 
 def test_operation_recovery_list_outputs_unresolved_runs_and_targets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``--list --output-format json`` emits the repository's rows verbatim.
+
+    Anti-vacuity: bypassing the ``--list`` branch, or emitting anything other
+    than the repository result (an empty envelope, a summary count, a
+    re-derived shape), makes the exact-equality assertion red. The fake audit
+    repository returns one interrupted operation with one unknown target, so
+    both the operation record and its target list must survive the surface.
+    """
+
     class _Audit:
         def __init__(self) -> None:
             self.archive_root: Path | None = None

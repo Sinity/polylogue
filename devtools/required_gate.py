@@ -51,23 +51,53 @@ class GateResult:
         }
 
 
+def _venv_root(executable: str) -> Path | None:
+    """The ``.venv`` a gate executable is addressed inside, if it is in one."""
+    parts = Path(executable).parts
+    if len(parts) < 3 or parts[-2] != "bin" or parts[-3] != ".venv":
+        return None
+    return Path(*parts[:-2])
+
+
+def _shebang_interpreter(path: Path) -> str | None:
+    """The absolute interpreter a script's ``#!`` names, if it names one."""
+    try:
+        with path.open("rb") as handle:
+            first_line = handle.readline().decode("utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not first_line.startswith("#!"):
+        return None
+    interpreter = first_line[2:].split(maxsplit=1)[0]
+    return interpreter if interpreter.startswith("/") else None
+
+
 def _resolved(executable: str, env: Mapping[str, str] | None) -> bool:
     if os.path.dirname(executable):
         path = Path(executable)
         if not path.is_file() or not os.access(executable, os.X_OK):
             return False
-        # A relocated venv can leave console scripts behind whose shebang
-        # still names the old worktree interpreter.  Such a file exists but
-        # cannot be launched, so classify it as an incomplete gate tool.
-        try:
-            first_line = path.open("rb").readline().decode("utf-8", errors="replace").strip()
-        except OSError:
+        # A relocated or copied venv leaves console scripts behind whose
+        # shebang still names the ORIGINAL checkout's interpreter. Two cases,
+        # and only rejecting the first left the dangerous one open:
+        #
+        #   * the original tree is gone -- the script exists but cannot be
+        #     launched at all, so it is an incomplete gate tool;
+        #   * the original tree is still there -- the script launches happily
+        #     and the kernel runs the OTHER checkout's environment, which is
+        #     exactly the non-hermetic dependency resolution this gate's
+        #     checkout-local addressing exists to prevent. Nothing downstream
+        #     can see that it happened, because the verdict looks ordinary.
+        #
+        # Only a shebang naming a DIFFERENT ``.venv`` interpreter is refused.
+        # That is the copied-venv shape exactly. An ambient or Nix-store
+        # interpreter is a separate question this gate does not decide, and
+        # refusing it here would reject ordinary shell wrappers that live
+        # inside a venv's ``bin``.
+        interpreter = _shebang_interpreter(path)
+        if interpreter is not None and not Path(interpreter).is_file():
             return False
-        if first_line.startswith("#!"):
-            interpreter = first_line[2:].split(maxsplit=1)[0]
-            if interpreter.startswith("/") and not Path(interpreter).is_file():
-                return False
-        return True
+        return foreign_environment_binding(executable) is None
     return shutil.which(executable, path=(env or os.environ).get("PATH")) is not None
 
 
@@ -77,6 +107,14 @@ def _resolved(executable: str, env: Mapping[str, str] | None) -> bool:
 UNPROVISIONED_ENVIRONMENT_REMEDY = (
     "this checkout has no .venv: run `nix develop --accept-flake-config --command true` here. "
     "Never share or symlink another checkout's .venv -- its editable install would run that tree's product."
+)
+
+
+#: Told to whoever copied a venv in instead of provisioning one. The script
+#: launches, which is precisely why nothing else notices.
+FOREIGN_ENVIRONMENT_REMEDY = (
+    "re-provision this checkout's .venv with `nix develop --accept-flake-config --command true`; "
+    "a copied or relocated venv keeps the original tree's interpreter and resolves that tree's dependencies."
 )
 
 
@@ -90,11 +128,37 @@ def unprovisioned_environment(executable: str | None) -> str | None:
     """
     if not executable:
         return None
-    parts = Path(executable).parts
-    if len(parts) < 3 or parts[-2] != "bin" or parts[-3] != ".venv":
+    venv_root = _venv_root(executable)
+    if venv_root is None:
         return None
-    venv_root = Path(*parts[:-2])
     return None if venv_root.is_dir() else str(venv_root)
+
+
+def foreign_environment_binding(executable: str | None) -> str | None:
+    """The other checkout's interpreter this console script would launch, if any.
+
+    A ``.venv`` that was copied or relocated keeps its console-script shebangs
+    pointing at the interpreter of the tree it was built in. When that tree
+    still exists the script runs, resolving the gate's dependencies out of the
+    other checkout -- silently, because the verdict looks like any other.
+
+    The binding is only reported when the shebang names an interpreter inside
+    a different ``.venv``: that is the copied-venv shape, and nothing else
+    produces it. A shell or store interpreter inside a venv's ``bin`` is an
+    ordinary wrapper, not a foreign environment.
+    """
+    if not executable:
+        return None
+    venv_root = _venv_root(executable)
+    if venv_root is None:
+        return None
+    interpreter = _shebang_interpreter(Path(executable))
+    if interpreter is None:
+        return None
+    interpreter_venv = _venv_root(interpreter)
+    if interpreter_venv is None or interpreter_venv == venv_root:
+        return None
+    return None if not Path(interpreter).is_file() else interpreter
 
 
 def executable_gate_result(command: Sequence[str], *, gate: str, env: Mapping[str, str] | None = None) -> GateResult:
@@ -108,6 +172,11 @@ def executable_gate_result(command: Sequence[str], *, gate: str, env: Mapping[st
     elif (venv_root := unprovisioned_environment(executable)) is not None:
         diagnosis = "gate_unprovisioned_environment"
         details = (f"{venv_root}: {UNPROVISIONED_ENVIRONMENT_REMEDY}",)
+    elif (interpreter := foreign_environment_binding(executable)) is not None:
+        diagnosis = "gate_foreign_environment"
+        details = (
+            f"{executable}: shebang names {interpreter}, outside this checkout's .venv. {FOREIGN_ENVIRONMENT_REMEDY}",
+        )
     else:
         diagnosis, details = "gate_missing_executable", (str(executable),)
     return GateResult(
