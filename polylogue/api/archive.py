@@ -4337,7 +4337,16 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             assertion_refs=assertion_refs,
             omitted=tuple(omitted),
             caveats=caveats,
-            token_estimate=admission.token_cost,
+            # The estimate a caller budgets against must describe the payload
+            # this image actually carries. ``admission.token_cost`` is the
+            # scheduler's own charge, and a budget-degraded admission charges
+            # the floor it applied rather than the segment it admitted: a
+            # ``max_tokens=1`` image reported 1 token while returning 14
+            # tokens of markdown (measured on the seeded two-session fixture).
+            # Each segment's own ``token_estimate`` is honest, so the image's
+            # is their sum. It can exceed ``spec.max_tokens`` -- that is the
+            # minimum-viable-segment floor being visible instead of hidden.
+            token_estimate=sum(segment.token_estimate for segment in admitted_segments),
             execution_context_ref=execution_context,
             ledger=admission.ledger,
             build_ref=admission.build_ref,

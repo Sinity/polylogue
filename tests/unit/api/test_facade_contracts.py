@@ -1791,6 +1791,57 @@ async def test_compile_context_builds_message_segments_from_refs_and_query(tmp_p
         await archive.close()
 
 
+async def test_a_budget_degraded_image_reports_the_payload_it_carries(tmp_path: Path) -> None:
+    """`ContextImage.token_estimate` must describe the markdown it returns.
+
+    A budget-degraded admission charges the scheduler's minimum-viable-segment
+    floor, not the segment it admitted, so `admission.token_cost` was 1 while
+    the image carried 14 tokens of markdown -- a 14x under-report of the very
+    number a caller budgets against. Each segment's own `token_estimate` was
+    already honest, so the image's is their sum. It may exceed
+    `spec.max_tokens`: that is the floor being visible rather than hidden.
+
+    Anti-vacuity: restoring `token_estimate=admission.token_cost` makes the
+    squeezed image report 1 while its single segment reports 14.
+    """
+    from polylogue.context.compiler import ContextSpec
+    from polylogue.context.scheduler import ContextLedgerRow
+
+    archive = _archive(tmp_path)
+    await _seed_two_sessions(archive.config.db_path)
+
+    try:
+        squeezed = await archive.compile_context(
+            ContextSpec(seed_refs=("session:claude-ai-export:conv-alpha",), max_tokens=1)
+        )
+        assert [cast(ContextLedgerRow, row).decision for row in squeezed.ledger] == ["degraded"]
+        assert len(squeezed.segments) == 1
+        carried = squeezed.segments[0].token_estimate
+        assert carried > 1, "fixture no longer exercises a degraded admission"
+        assert squeezed.token_estimate == carried
+    finally:
+        await archive.close()
+
+
+async def test_an_unsqueezed_image_still_reports_its_admitted_cost(tmp_path: Path) -> None:
+    """The opposite direction: an image that fits reports the same number as before."""
+    from polylogue.context.compiler import ContextSpec
+    from polylogue.context.scheduler import ContextLedgerRow
+
+    archive = _archive(tmp_path)
+    await _seed_two_sessions(archive.config.db_path)
+
+    try:
+        image = await archive.compile_context(
+            ContextSpec(seed_refs=("session:claude-ai-export:conv-alpha",), max_tokens=20_000)
+        )
+        assert [cast(ContextLedgerRow, row).decision for row in image.ledger] == ["included"]
+        assert image.token_estimate == sum(segment.token_estimate for segment in image.segments)
+        assert image.token_estimate <= 20_000
+    finally:
+        await archive.close()
+
+
 async def test_compile_context_composes_temporal_and_chronicle_views(tmp_path: Path) -> None:
     """Composed context images materialize non-message read views as segments."""
     from polylogue.context.compiler import ContextSpec
