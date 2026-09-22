@@ -515,13 +515,35 @@ def repair_message_fts_index_sync(
     The supplied sessions are a bounded scope, so this operation never
     publishes a global READY verdict. ``record_exact_snapshot`` is retained
     for caller compatibility but no longer authorizes an archive-wide scan.
+
+    The repair is one transaction over the whole batch, not one per session
+    (polylogue-av5j1). ``publish_partition`` already declines to own a
+    transaction when its connection is inside one, so holding a single
+    ``BEGIN IMMEDIATE`` here collapses N per-session commits -- and the FTS5
+    segment flush each of them forced -- into one. The change is toward
+    atomicity, not away from it: a batch that raises part-way used to leave
+    the sessions it had already published committed and the rest not, and now
+    leaves the partition set exactly as it found it. A caller that already
+    owns a transaction keeps owning it, so the canonical write path
+    (``archive/write_effects``) is unaffected.
     """
     if not session_ids:
         return
     from polylogue.storage.fts.derivation import replace_fts_partition_sync
 
-    for session_id in dict.fromkeys(session_ids):
-        replace_fts_partition_sync(conn, session_id)
+    unique_session_ids = tuple(dict.fromkeys(session_ids))
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        for session_id in unique_session_ids:
+            replace_fts_partition_sync(conn, session_id)
+    except Exception:
+        if owns_transaction and conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    if owns_transaction:
+        conn.execute("COMMIT")
     del record_exact_snapshot
 
 
