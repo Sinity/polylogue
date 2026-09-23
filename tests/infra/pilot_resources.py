@@ -99,28 +99,30 @@ def pilot_artifact() -> SeededArchiveArtifact:
 @pytest.fixture(scope="module")
 def pilot_query_archive(
     pilot_artifact: SeededArchiveArtifact,
-    request: pytest.FixtureRequest,
-) -> SeededArchiveQueryLease:
+) -> Iterator[SeededArchiveQueryLease]:
     """Share one authenticated read-only artifact lease across pilot reads."""
     selection = _pilot_selection()
     lease = acquire_query_only_seeded_archive(
         pilot_artifact,
         seeded_archive_key(selection.corpus_specs()),
     )
-    request.addfinalizer(lease.close)
-    return lease
+    try:
+        yield lease
+    finally:
+        lease.close()
 
 
 @pytest.fixture
 def pilot_writable_archive(
     pilot_artifact: SeededArchiveArtifact,
     tmp_path: Path,
-    request: pytest.FixtureRequest,
 ) -> Iterator[SeededArchiveClone]:
     """Provide a private clone for tests that must commit archive mutations."""
     clone = clone_seeded_archive(pilot_artifact, tmp_path / "pilot-writable-archive")
-    request.addfinalizer(clone.close)
-    yield clone
+    try:
+        yield clone
+    finally:
+        clone.close()
 
 
 @pytest.fixture
