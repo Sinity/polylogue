@@ -29,12 +29,14 @@ from polylogue.storage.sqlite.archive_tiers import (
     archive_plan,
 )
 from polylogue.storage.sqlite.archive_tiers import bootstrap as tier_bootstrap
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
     initialize_active_archive_root,
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 
 DURABLE_TIERS = (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
@@ -214,19 +216,39 @@ def test_a_transplanted_tier_at_the_birth_version_is_still_refused_above_the_flo
         archive_plan.assert_archive_format_lineage(tmp_path)
 
 
-def test_audit_schema_change_is_rejected_until_its_numbered_route_is_authorized(tmp_path: Path) -> None:
-    """A simulated audit change cannot bypass the missing v2 authority.
+def test_audit_v2_route_requires_backup_and_matches_fresh_ddl(tmp_path: Path) -> None:
+    """The v2 route is real, backup-gated, and represented in fresh DDL.
 
-    Audit is durable, but its fresh schema still stamps the format floor.  A
-    caller asking for the first numbered migration must therefore be rejected
-    before any SQL or backup state is touched.  This is the anti-vacuity guard
-    for the route record in ``migrations/audit``: adding an audit migration
-    without first advancing the tier authority would otherwise create a
-    migration file that production can never safely admit.
+    Anti-vacuity: deleting the slot sidecar, changing its SQL hash, or leaving
+    the fresh DDL at v1 makes discovery/parity fail; bypassing the backup gate
+    would mutate the durable file without the required full-evidence proof.
     """
+    package = Path(__file__).parents[3] / "polylogue/storage/sqlite/migrations/audit"
+    sql_path = package / "002_machine_request_operation_index.sql"
+    sidecars = validate_durable_migration_sidecars(
+        ArchiveTier.AUDIT, ((sql_path.name, sql_path.read_text(encoding="utf-8")),)
+    )
+    assert sidecars[0].train.target_version == 2
+    assert sidecars[0].train.migration.requires_backup is True
+    assert sidecars[0].train.backup_plan_ref == "backup-plan:polylogue-a7xr.27.3.2:audit-full-evidence"
+
+    fresh_path = tmp_path / "fresh-audit.db"
+    initialize_archive_database(fresh_path, ArchiveTier.AUDIT)
+    with sqlite3.connect(fresh_path) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_machine_requests_operation'"
+        ).fetchone() == (1,)
+
     path = tmp_path / "audit.db"
-    initialize_archive_database(path, ArchiveTier.AUDIT)
     with sqlite3.connect(path) as conn:
-        with pytest.raises(MigrationError, match="newer than this runtime expects"):
+        conn.executescript(AUDIT_DDL)
+        conn.execute("PRAGMA user_version = 1")
+    with sqlite3.connect(path) as conn:
+        with pytest.raises(MigrationError, match="backup"):
             migrate_archive_tier(conn, ArchiveTier.AUDIT, backup_manifest=None, target_version=2)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 1
+        conn.execute(sql_path.read_text(encoding="utf-8"))
+        conn.execute("PRAGMA user_version = 2")
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_machine_requests_operation'"
+        ).fetchone() == (1,)

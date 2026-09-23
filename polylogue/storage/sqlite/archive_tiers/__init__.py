@@ -54,6 +54,11 @@ SOURCE_TIER_VERSION = 4
 #: copy-forward.
 USER_TIER_VERSION = 2
 
+# Audit slot 002 adds the operation lookup index declared in the fresh DDL.
+# Keep this in the single tier authority map: durable readers and bootstrap
+# must agree on the version an audit migration train produces.
+AUDIT_TIER_VERSION = 2
+
 AUDIT_COLUMN_DISPOSITIONS = audit_column_dispositions()
 assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
@@ -72,7 +77,7 @@ ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
     ArchiveTier.EMBEDDINGS: EMBEDDINGS_SCHEMA_VERSION,
     ArchiveTier.USER: USER_TIER_VERSION,
     ArchiveTier.OPS: OPS_SCHEMA_VERSION,
-    ArchiveTier.AUDIT: ARCHIVE_FORMAT_FLOOR_VERSION,
+    ArchiveTier.AUDIT: AUDIT_TIER_VERSION,
 }
 
 SCHEMA_DISPOSITIONS = schema_dispositions()
@@ -89,6 +94,7 @@ __all__ = [
     "ARCHIVE_DDL_BY_TIER",
     "ARCHIVE_FORMAT_FLOOR_VERSION",
     "ARCHIVE_VERSION_BY_TIER",
+    "AUDIT_TIER_VERSION",
     "archive_ddl_for_tier",
     "SCHEMA_DISPOSITIONS",
     "SOURCE_TIER_VERSION",
