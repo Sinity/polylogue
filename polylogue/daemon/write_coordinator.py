@@ -271,6 +271,7 @@ _LATEST_TELEMETRY: dict[str, object] = {
     "last_event": None,
     "detached_writer_failures": 0,
     "detached_writer_failures_by_actor": {},
+    "over_budget_holds": 0,
 }
 
 
@@ -672,6 +673,12 @@ class DaemonWriteCoordinator:
             "last_event": None,
             "detached_writer_failures": snapshot.detached_writer_failures,
             "detached_writer_failures_by_actor": dict(snapshot.detached_writer_failures_by_actor),
+            # Keep the daemon-lifetime hold counter in the process telemetry
+            # envelope as well as the typed snapshot.  Checkpoint wait/hold
+            # evidence is consumed through this route by status surfaces; if
+            # the counter only lived on ``snapshot()`` it disappeared at the
+            # production boundary.
+            "over_budget_holds": snapshot.over_budget_holds,
         }
         if event is not None:
             payload["last_event"] = {
@@ -682,6 +689,8 @@ class DaemonWriteCoordinator:
                 "wait_seconds": event.wait_seconds,
                 "hold_seconds": event.hold_seconds,
                 "outcome": event.outcome,
+                "hold_budget_s": event.hold_budget_s,
+                "hold_over_budget": event.hold_over_budget,
             }
         with _TELEMETRY_LOCK:
             _LATEST_TELEMETRY.clear()

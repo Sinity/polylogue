@@ -840,6 +840,33 @@ async def test_daemon_write_telemetry_payload_isolated_from_nested_map_mutation(
     assert refreshed_failures == {"stable-actor": 1}
 
 
+@pytest.mark.asyncio
+async def test_daemon_write_telemetry_exposes_hold_budget_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The status envelope retains checkpoint/publication hold accounting.
+
+    Anti-vacuity: removing the snapshot counter or the release-event budget
+    fields from ``_publish_telemetry`` makes this assertion lose the evidence
+    that a writer exceeded its declared bound.
+    """
+    from polylogue.daemon import write_coordinator as wc
+
+    monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
+    coordinator = wc.DaemonWriteCoordinator()
+
+    async def operation() -> None:
+        await asyncio.sleep(0.01)
+
+    await coordinator.run("slow.actor", operation)
+    payload = wc.daemon_write_telemetry_payload()
+    assert payload["over_budget_holds"] == 1
+    event = payload["last_event"]
+    assert isinstance(event, dict)
+    assert event["hold_budget_s"] == 0.0
+    assert event["hold_over_budget"] is True
+
+
 def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed() -> None:
     """polylogue-es7b: a worker thread finishing after its loop closed must not hang silently.
 
