@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from time import monotonic, time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.query.transaction import (
@@ -138,6 +138,18 @@ if TYPE_CHECKING:
         ArchiveStore,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveMessageRow, ArchiveSessionEnvelope
+
+
+class _AttachmentRow(Protocol):
+    """What the attachment library page needs from an attachment record.
+
+    Declared structurally rather than imported: gate layering disallows
+    ``polylogue/daemon`` importing ``polylogue/storage``, and the facade
+    cannot name the record type either for the same reason.
+    """
+
+    session_id: object
+    message_id: str | None
 
 
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
@@ -3057,7 +3069,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             state_filter=state_filter,
         )
         entries: list[LibraryEntry] = []
-        for att, title, origin in rows:
+        for raw_att, title, origin in rows:
+            # The facade returns the attachment opaquely: polylogue/api may not
+            # import polylogue/storage (gate layering), so the record type cannot
+            # be named in its signature. Bind it structurally here instead.
+            att = cast(_AttachmentRow, raw_att)
             sid = str(att.session_id)
             envelope = attachment_to_envelope(att, session_id=sid, message_id=att.message_id)
             entries.append(

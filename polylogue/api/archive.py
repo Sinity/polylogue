@@ -6218,7 +6218,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
     async def _get_attachment_library_page(
         self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
-    ) -> list[tuple[object, str, str | None]]:
+    ) -> Sequence[tuple[object, str, str | None]]:
         """Return a bounded attachment page from the declared archive read."""
         return await self.repository.get_attachment_library_page(
             limit=limit,
