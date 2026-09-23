@@ -76,6 +76,29 @@ class TestOutcomeDecision:
         assert outcome.state == "error"
         assert outcome.reason == "index_unreadable"
 
+    @pytest.mark.parametrize("error", [RuntimeError("SECRET_MARKER"), "internal failure: SECRET_MARKER"])
+    def test_error_reason_is_a_public_code_not_exception_text(self, error: object) -> None:
+        """Serialized outcomes never publish an internal exception message.
+
+        Anti-vacuity: removing reason normalization makes the marker appear in
+        the envelope JSON (and in the human renderer for the error state).
+        """
+
+        outcome = decide_outcome(matched=0, error=error)  # type: ignore[arg-type]
+        serialized = json.dumps(outcome.to_dict())
+        assert "SECRET_MARKER" not in serialized
+        assert outcome.reason == "operation_failed"
+
+    def test_nested_raw_gap_is_normalized_when_composed(self) -> None:
+        inner = OutcomeEnvelope(
+            state="degraded",
+            reason="safe_gap",
+            detail={"gaps": ["internal failure: SECRET_MARKER"]},
+        )
+        combined = combine_outcomes([inner])
+        assert "SECRET_MARKER" not in json.dumps(combined.to_dict())
+        assert combined.detail["gaps"] == ["safe_gap", "unnamed_gap"]
+
     def test_only_ok_and_empty_are_authoritative(self) -> None:
         assert decide_outcome(matched=1).rows_are_authoritative
         assert decide_outcome(matched=0).rows_are_authoritative

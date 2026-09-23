@@ -15,11 +15,12 @@ is what makes a broken surface indistinguishable from an empty archive.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from http import HTTPStatus
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TerminalOutcomeState = Literal["ok", "empty", "degraded", "error"]
 """The closed terminal-outcome vocabulary every action envelope carries."""
@@ -33,6 +34,23 @@ NO_ROWS_IN_SCOPE = "no_rows_in_scope"
 #: ``ok`` (polylogue-xvwpi).
 UNNAMED_GAP = "unnamed_gap"
 
+# Reasons cross the public surface boundary.  Keep the vocabulary deliberately
+# small and structural: callers may add a stable detail after ``:`` but may
+# not publish prose, paths, exception reprs, or other internal diagnostics.
+OPERATION_FAILED = "operation_failed"
+_PUBLIC_REASON = re.compile(r"^[a-z][a-z0-9_]*(?::[a-z0-9_.-]+)*$")
+
+
+def _public_reason(value: object, *, fallback: str) -> str:
+    """Return a machine-readable reason without exposing internal text."""
+
+    if isinstance(value, BaseException):
+        return fallback
+    if not isinstance(value, str):
+        return fallback
+    candidate = value.strip()
+    return candidate if _PUBLIC_REASON.fullmatch(candidate) else fallback
+
 
 class OutcomeEnvelope(BaseModel):
     """The terminal outcome of one operation, decided at the operation boundary."""
@@ -42,6 +60,31 @@ class OutcomeEnvelope(BaseModel):
     state: TerminalOutcomeState
     reason: str | None = None
     detail: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitize_public_reason(cls, data: object) -> object:
+        if not isinstance(data, Mapping):
+            return data
+        state = data.get("state")
+        if state == "error":
+            raw_reason = data.get("reason")
+            fallback = UNNAMED_GAP if raw_reason is None or not str(raw_reason).strip() else OPERATION_FAILED
+            reason = _public_reason(raw_reason, fallback=fallback)
+        elif state == "degraded":
+            reason = _public_reason(data.get("reason"), fallback=UNNAMED_GAP)
+        else:
+            return data
+        detail = data.get("detail") or {}
+        if not isinstance(detail, Mapping):
+            detail = {}
+        nested = detail.get("gaps")
+        if isinstance(nested, Sequence) and not isinstance(nested, str | bytes):
+            safe_gaps = list(
+                dict.fromkeys(_public_reason(gap, fallback=UNNAMED_GAP) if gap else UNNAMED_GAP for gap in nested)
+            )
+            detail = {**detail, "gaps": safe_gaps}
+        return {**data, "reason": reason, "detail": detail}
 
     @property
     def rows_are_authoritative(self) -> bool:
@@ -57,7 +100,7 @@ def decide_outcome(
     *,
     matched: int,
     degraded: Sequence[str] = (),
-    error: str | None = None,
+    error: str | BaseException | None = None,
     empty_reason: str = NO_ROWS_IN_SCOPE,
     detail: Mapping[str, object] | None = None,
 ) -> OutcomeEnvelope:
@@ -69,12 +112,18 @@ def decide_outcome(
     type exists to prevent.
     """
 
-    gaps = tuple(dict.fromkeys(str(reason) if reason else UNNAMED_GAP for reason in degraded))
+    gaps = tuple(
+        dict.fromkeys(_public_reason(reason, fallback=UNNAMED_GAP) if reason else UNNAMED_GAP for reason in degraded)
+    )
     payload = dict(detail or {})
     if gaps:
         payload.setdefault("gaps", list(gaps))
     if error is not None:
-        return OutcomeEnvelope(state="error", reason=error, detail=payload)
+        return OutcomeEnvelope(
+            state="error",
+            reason=_public_reason(error, fallback=OPERATION_FAILED),
+            detail=payload,
+        )
     if gaps:
         return OutcomeEnvelope(state="degraded", reason=gaps[0], detail=payload)
     if matched <= 0:
@@ -108,10 +157,10 @@ def combine_outcomes(outcomes: Sequence[OutcomeEnvelope], *, empty_reason: str =
     for entry in outcomes:
         if entry.state not in {"error", "degraded"}:
             continue
-        collected.append(entry.reason or UNNAMED_GAP)
+        collected.append(_public_reason(entry.reason, fallback=UNNAMED_GAP) if entry.reason else UNNAMED_GAP)
         nested = entry.detail.get("gaps")
         if isinstance(nested, Sequence) and not isinstance(nested, str | bytes):
-            collected.extend(str(gap) if gap else UNNAMED_GAP for gap in nested)
+            collected.extend(_public_reason(gap, fallback=UNNAMED_GAP) if gap else UNNAMED_GAP for gap in nested)
     gaps = tuple(dict.fromkeys(collected))
     if gaps:
         return OutcomeEnvelope(state="degraded", reason=gaps[0], detail={"gaps": list(gaps)})
@@ -177,6 +226,7 @@ def render_outcome_line(outcome: OutcomeEnvelope) -> str | None:
 
 __all__ = [
     "NO_ROWS_IN_SCOPE",
+    "OPERATION_FAILED",
     "OUTCOME_EXIT_CODES",
     "UNNAMED_GAP",
     "OutcomeEnvelope",
