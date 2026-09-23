@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -58,7 +59,7 @@ def _run_subprocess(args: list[str], *, env: dict[str, str], expect_exit: int = 
 
 
 @pytest.fixture
-def cli_daemon(cli_env: dict[str, str], monkeypatch: pytest.MonkeyPatch):
+def cli_daemon(cli_env: dict[str, str], monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     with cli_daemon_archive(Path(cli_env["POLYLOGUE_ARCHIVE_ROOT"]), monkeypatch, home=Path(cli_env["HOME"])):
         yield
 
