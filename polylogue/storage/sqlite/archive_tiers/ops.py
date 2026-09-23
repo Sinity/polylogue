@@ -75,6 +75,21 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
         "context scheduler", "one admission decision per candidate item", True, "retain"
     ),
     "schema_identity": OpsTableDisposition("schema bootstrap", "one derived-schema identity", True, "retain"),
+    # Historical/live objects observed in reopened archives but no longer
+    # declared by the canonical DDL.  Keeping these dispositions explicit is
+    # important: the ops tier has no migration chain, so a pre-retirement
+    # archive can contain them until a named convergence entry removes them.
+    "slo_samples": OpsTableDisposition("retired SLO probe", "one legacy SLO sample", False, "retire via convergence"),
+    "query_runs": OpsTableDisposition(
+        "retired query probe", "one legacy query timing row", False, "retire via convergence"
+    ),
+    "otlp_spans": OpsTableDisposition("retired OTLP receiver", "one legacy span", False, "retire via convergence"),
+    "otlp_telemetry": OpsTableDisposition(
+        "retired OTLP receiver", "one legacy telemetry row", False, "retire via convergence"
+    ),
+    "polylogue_ops_schema_state": OpsTableDisposition(
+        "schema bootstrap", "one current derived-schema digest", True, "retain"
+    ),
 }
 # Batch aggregation is a terminal run state distinct from both success and
 # failure: completed siblings and retryable failed siblings remain visible.
