@@ -1,7 +1,7 @@
 """Small semantic witnesses for the demand-driven resource pilot.
 
 The workload-artifact manifest deliberately contains construction facts only.
-These four witnesses therefore live beside the tests that own their meaning.
+These compact witnesses therefore live beside the tests that own their meaning.
 Each case has two wire representations and one separately authored expectation;
 the representation normalizer is intentionally tiny and local rather than a
 second scenario registry or a general-purpose harness.
@@ -21,6 +21,8 @@ class PilotExpectation:
     weighted_total: int | None = None
     window_members: tuple[str, ...] = ()
     local_native: tuple[tuple[str, str], ...] = ()
+    payload_tail: tuple[str, ...] = ()
+    revision_order: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,34 @@ def local_native_preservation() -> PilotScenario:
     )
 
 
+def payload_tail_preservation() -> PilotScenario:
+    """Preserve opaque payload tails when providers split the wire value."""
+
+    return PilotScenario(
+        name="payload-tail-preservation",
+        seed=47,
+        representations=(
+            {"payload": "header|tail-a|tail-b"},
+            {"payload_parts": ["header", "tail-a", "tail-b"]},
+        ),
+        expected=PilotExpectation(payload_tail=("tail-a", "tail-b")),
+    )
+
+
+def ordering_revision_relations() -> PilotScenario:
+    """Keep declared order while selecting the highest revision per item."""
+
+    return PilotScenario(
+        name="ordering-revision-relations",
+        seed=53,
+        representations=(
+            {"records": [{"id": "a", "revision": 2}, {"id": "b", "revision": 1}]},
+            {"revisions": {"a": [1, 2], "b": [1]}},
+        ),
+        expected=PilotExpectation(revision_order=(("a", 2), ("b", 1))),
+    )
+
+
 def pilot_scenarios() -> tuple[PilotScenario, ...]:
     """Return the bounded pilot witnesses; no corpus-wide generation occurs."""
 
@@ -97,6 +127,8 @@ def pilot_scenarios() -> tuple[PilotScenario, ...]:
         multiplicity_sensitive_sum(),
         sparse_nested_windows(),
         local_native_preservation(),
+        payload_tail_preservation(),
+        ordering_revision_relations(),
     )
 
 
@@ -135,6 +167,24 @@ def project_representation(case: PilotScenario, representation: dict[str, Any]) 
         native = identity["native_id"] if "native_id" in identity else identity["native"]
         return PilotExpectation(local_native=((str(local), str(native)),))
 
+    if case.name == "payload-tail-preservation":
+        payload = representation.get("payload")
+        if payload is not None:
+            parts = str(payload).split("|")
+            return PilotExpectation(payload_tail=tuple(parts[1:]))
+        return PilotExpectation(payload_tail=tuple(str(item) for item in representation["payload_parts"][1:]))
+
+    if case.name == "ordering-revision-relations":
+        records = representation.get("records")
+        if records is not None:
+            return PilotExpectation(revision_order=tuple((str(item["id"]), int(item["revision"])) for item in records))
+        revisions = representation["revisions"]
+        return PilotExpectation(
+            revision_order=tuple(
+                (str(identifier), max(int(revision) for revision in values)) for identifier, values in revisions.items()
+            )
+        )
+
     raise ValueError(f"unknown pilot scenario {case.name!r}")
 
 
@@ -143,6 +193,8 @@ __all__ = [
     "PilotScenario",
     "local_native_preservation",
     "multiplicity_sensitive_sum",
+    "ordering_revision_relations",
+    "payload_tail_preservation",
     "pilot_scenarios",
     "project_representation",
     "same_witness_matching",
