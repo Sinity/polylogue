@@ -588,6 +588,10 @@ def test_marker_recovery_is_its_own_domain_and_never_rewrites_the_profile(
     assert markers.inspect(frame, (session_id,))[session_id] == "missing"
     assert markers.publish(frame, markers.compute(frame, session_id)) is True
     assert markers.inspect(frame, (session_id,))[session_id] == "valid"
+    with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as conn:
+        assert conn.execute(
+            "SELECT input_binding FROM session_marker_delivery WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
 
     with closing(sqlite3.connect(user_db)) as conn:
         assertion_id = conn.execute("SELECT assertion_id FROM assertions").fetchone()[0]

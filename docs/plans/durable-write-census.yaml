@@ -21,6 +21,13 @@ writes:
     tier: "source"
     classification: unclassified
     reason: "FINDING (polylogue-1or21 adjudication): an analysis-tier materializer rewriting durable source.db classification. _ensure_current_artifact_inventory re-derives artifact_kind, support_status, classification_reason, parse_as_session, schema_eligible and link_group_key for EVERY CLAUDE_CODE_SESSION raw from the OriginSpec taxonomy and DELETEs rows whose content evidence disagrees, outside the acquisition writer that owns those columns -- its own docstring calls this 'repaired here for daemon/direct raw writers'. No permitted member fits: it is not inside the producer and is unguarded (guarded_producer_refinement), it is not a declared state advance (lifecycle_transition), nothing is re-acquired (row_supersession), and the delete is not a retention policy (declared_retention). The design answer is to fix the acquisition-time producers, which live in other lanes"
+  - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
+    function: "advance_session_marker_delivery"
+    table: "session_marker_delivery"
+    kind: "upsert_do_update"
+    tier: "user"
+    classification: lifecycle_transition
+    reason: "polylogue-bp12n.1 sink delivery position. The row is a per-session cursor, not content: session_id is the primary key and the only mutable columns are the input binding and the applied timestamp. The upsert carries its own prior state in the conflict clause -- WHERE excluded.applied_at_ms >= session_marker_delivery.applied_at_ms -- so the position advances monotonically and a late or replayed delivery cannot rewind it. It commits in the same transaction as the assertion rows it describes, which is why it is in user.db rather than a rebuildable tier: after a crash a derived cursor could disagree with the durable rows it claims to have delivered. No column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository._bind_machine_batch"
     table: "machine_request_parts"

@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.storage.derived.session.derivation import SESSION_PROFILE_DOMAIN
+from polylogue.storage.sqlite.archive_tiers.user_write import advance_session_marker_delivery
 
 if TYPE_CHECKING:
     from polylogue.markers import MarkerCandidate
@@ -41,6 +42,7 @@ __all__ = [
     "SessionMarkerReplacement",
     "marker_assertion_ids",
     "marker_assertions_present",
+    "marker_delivery_binding",
 ]
 
 SESSION_MARKER_DOMAIN = "session_markers"
@@ -75,6 +77,38 @@ def marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[
         unique_ids,
     ).fetchone()
     return found is not None and int(found[0]) == len(unique_ids)
+
+
+def marker_delivery_binding(conn: sqlite3.Connection, session_id: str) -> str | None:
+    """Return the user sink's last applied marker input for ``session_id``.
+
+    The cursor is application history, not profile validity.  In particular,
+    a missing or rejected assertion must never cause an index profile to be
+    re-derived; callers use this only to make a marker delivery idempotent.
+    """
+    row = conn.execute(
+        "SELECT input_binding FROM session_marker_delivery WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _ensure_delivery_cursor(conn: sqlite3.Connection) -> None:
+    """Admit pre-cursor user tiers without a separate destructive migration.
+
+    The relation is additive and is also part of fresh USER_DDL.  Creating it
+    lazily lets an already-open archive adopt the sink cursor on its first
+    marker delivery while keeping the assertion/cursor write transactional.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS session_marker_delivery (
+            session_id TEXT PRIMARY KEY,
+            input_binding TEXT NOT NULL,
+            applied_at_ms INTEGER NOT NULL CHECK(applied_at_ms >= 0)
+        ) STRICT
+        """
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,13 +249,41 @@ class SessionMarkerDerivation:
         del frame
         assert isinstance(replacement, SessionMarkerReplacement)
         from polylogue.markers import lower_markers
+        from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms
 
-        if not replacement.payload:
-            return True
         conn = self._marker_write_connection()
         try:
+            _ensure_delivery_cursor(conn)
+            # The assertion rows and sink cursor are one user-tier
+            # transaction.  ``lower_markers`` intentionally does not commit;
+            # a failure rolls back both effects and leaves this domain
+            # pending for restart.
+            conn.execute("BEGIN IMMEDIATE")
+            if marker_delivery_binding(conn, replacement.key) == replacement.input_binding:
+                from polylogue.markers.lowering import assertion_id_for_marker
+
+                ids = tuple(
+                    assertion_id
+                    for candidate in replacement.payload
+                    if (assertion_id := assertion_id_for_marker(candidate)) is not None
+                )
+                if marker_assertions_present(conn, ids):
+                    conn.rollback()
+                    return True
             lower_markers(conn, replacement.payload)
+            # The durable user tier owns this row; the statement lives with its
+            # writer (user_write.advance_session_marker_delivery) so a derived
+            # module does not mutate user.db directly.
+            advance_session_marker_delivery(
+                conn,
+                session_id=replacement.key,
+                input_binding=replacement.input_binding,
+                applied_at_ms=_now_ms(),
+            )
             conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         finally:
             conn.close()
         return True
