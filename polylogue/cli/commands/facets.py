@@ -77,8 +77,8 @@ def _fetch_daemon_facets(
     disabled: bool,
 ) -> FacetsResponse:
     """Use the same supplied-reader facet operation for both serving modes."""
-    from polylogue.cli.operation_kernel import configured_read_operation
-    from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.cli.operation_kernel import OperationUnavailableError, configured_read_operation
+    from polylogue.cli.shared.helpers import DaemonRequiredError, load_effective_config
     from polylogue.config import load_polylogue_config
     from polylogue.surfaces.payloads import FacetsResponse
 
@@ -91,10 +91,18 @@ def _fetch_daemon_facets(
     }
     if origin:
         params["origin"] = origin
-    result = configured_read_operation(
-        config,
-        "facets",
-        {"params": params},
-        daemon_disabled=disabled or settings.no_daemon or settings.daemon_client_mode == "off",
-    )
+    try:
+        result = configured_read_operation(
+            config,
+            "facets",
+            {"params": params},
+            daemon_disabled=disabled or settings.no_daemon or settings.daemon_client_mode == "off",
+        )
+    except OperationUnavailableError as exc:
+        # The kernel's refusal is a RuntimeError, not a ClickException, so
+        # without this it escaped the command and Click reported exit 1 with
+        # NO output at all -- the operator saw an empty screen where a typed
+        # "start polylogued run" belongs. The delete route already converts it
+        # this way (archive_query.py:1590); facets is the read-side gap.
+        raise DaemonRequiredError(str(exc), operation=exc.operation) from None
     return FacetsResponse.model_validate(result.value)
