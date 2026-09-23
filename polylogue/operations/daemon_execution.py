@@ -177,7 +177,7 @@ def validate_execution_request(request: DaemonOperationRequest, context: Operati
     assert spec is not None
     if spec.capability not in context.principal.capabilities:
         raise PermissionError(f"operation requires capability {spec.capability}")
-    if context.runtime is None and not spec.direct_allowed:
+    if context.runtime is None:
         raise PermissionError("daemon_required")
     return request
 

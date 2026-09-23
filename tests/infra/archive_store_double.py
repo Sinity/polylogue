@@ -236,6 +236,7 @@ class ArchiveStoreDouble:
             setattr(self, attribute, archive_root / filename)
         active_index = index_path if index_path is not None else resolve_active_index_path(archive_root)
         setattr(self, _ACTIVE_INDEX_ATTRIBUTE, active_index)
+        self.index_db_path = active_index
 
     def count_sessions(self, **kwargs: object) -> int:
         """Report an empty archive unless the double says otherwise.
@@ -326,4 +327,36 @@ def install_archive_store_double(
         return store
 
     monkeypatch.setattr(target, classmethod(_open_existing))
+
+    # Query-law tests exercise the CLI adapter, whose read authority is now the
+    # resident daemon.  When a test installs this store double, provide the
+    # smallest daemon transport seam that executes the declared read operation
+    # against that same double.  This keeps the assertions on filtering and
+    # rendering intact without reintroducing a production direct-read path.
+    class _DoubleDaemonClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def operation(
+            self,
+            operation: str,
+            payload: dict[str, object],
+            **_kwargs: object,
+        ) -> dict[str, object]:
+            from polylogue.operations.daemon_reads import execute_read_operation
+
+            root = _kwargs.get("archive_root")
+            if root is not None:
+                pinned = getattr(store, "index_db_path", None)
+                store.bind_archive_root(Path(str(root)), Path(str(pinned)) if pinned is not None else None)
+            with store as archive:
+                result = execute_read_operation(
+                    operation,
+                    payload,
+                    archive=archive,  # type: ignore[arg-type]
+                    serving_identity="test-daemon",
+                )
+            return {"operation": operation, "outcome": "completed", "result": result}
+
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", _DoubleDaemonClient)
     return store

@@ -3,15 +3,8 @@
 The single subtlety here is why the answer is read off the result's
 *authority* rather than off the call succeeding.  The declared ``status``
 operation is the one read a probe can afford, but it declares
-``DaemonFallback.DIRECT_READ``: with no daemon running at all, the dispatch
-still succeeds by executing the read in this process.  Reporting that as
-"a daemon is reachable" would be a lie, and strictly worse than the HTTP
-probe this replaced, which at least failed honestly.
-
-``OperationResult.authority["mode"]`` is the discriminator: ``"daemon"``
-when a daemon served the operation, ``"direct"`` when the local reader did
-(it is stamped from ``OperationContext.serving_identity``).  Do not
-"simplify" this into `try: dispatch(); return True`.
+The result's authority is the discriminator, so a successful call proves the
+resident daemon answered. Do not simplify this into `try: dispatch(); return True`.
 """
 
 from __future__ import annotations
@@ -33,7 +26,7 @@ def daemon_serving_probe(config: Any) -> tuple[bool, str | None]:
         mode = result.authority.get("mode")
         if mode == "daemon":
             return True, None
-        return False, f"served directly by this process (authority mode {mode!r}); no daemon answered"
+        return False, f"unexpected authority mode {mode!r}"
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
 

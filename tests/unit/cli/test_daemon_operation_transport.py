@@ -85,17 +85,13 @@ def test_unit_route_sends_parameters_as_values(monkeypatch: pytest.MonkeyPatch, 
 
 
 def test_a_disabled_daemon_never_opens_a_client(monkeypatch: pytest.MonkeyPatch, _config: Any) -> None:
-    """``--no-daemon`` executes the canonical read without constructing transport."""
-    from tests.infra.archive_templates import bootstrap_archive_root
-
-    bootstrap_archive_root(_config.archive_root)
+    """``--no-daemon`` is a typed refusal and never constructs transport."""
+    from polylogue.cli.operation_kernel import OperationUnavailableError
 
     def _explode(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("a disabled daemon must not construct a client")
 
     monkeypatch.setattr("polylogue.daemon_client.DaemonClient", _explode)
 
-    result = dispatch(_config, OperationRequest("cli.query", {"params": {}}), daemon_disabled=True)
-    assert isinstance(result.value, dict)
-    assert result.value["items"] == []
-    assert result.value["total"] == 0
+    with pytest.raises(OperationUnavailableError, match="polylogued run"):
+        dispatch(_config, OperationRequest("cli.query", {"params": {}}), daemon_disabled=True)
