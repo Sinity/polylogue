@@ -242,7 +242,13 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
             FROM messages m JOIN sessions s ON s.session_id=m.session_id
             UNION ALL
             SELECT 'session:' || e.session_id, e.session_id, s.origin, 'session-event',
-                   e.event_type, e.occurred_at_ms, e.event_id, e.source_message_id, e.summary
+                   e.event_type, e.occurred_at_ms, e.event_id, e.source_message_id,
+                   -- polylogue-kc8eq retired the stored ``summary`` column as a
+                   -- write-time render of the payload. This is that render,
+                   -- moved to the read path: same COALESCE order, same '' floor,
+                   -- so the timeline text for a session-event is unchanged.
+                   COALESCE(json_extract(e.payload_json, '$.summary'),
+                            json_extract(e.payload_json, '$.text'), '')
             FROM session_events e JOIN sessions s ON s.session_id=e.session_id
         ) """
         where = "WHERE (? IS NULL OR origin=?) AND (? IS NULL OR instr(lower(text), lower(?))>0)"

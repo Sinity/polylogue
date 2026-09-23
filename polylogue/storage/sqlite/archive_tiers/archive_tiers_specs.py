@@ -1207,8 +1207,16 @@ SESSION_EVENTS_SPEC = _make_table_spec(
         # polylogue-kc8eq: no ``summary`` column. It was a write-time render of
         # ``payload_json["summary"] or payload_json["text"]`` -- derivable from
         # the retained payload in 7,403,923 of 7,403,923 live rows with zero
-        # exceptions, absent from SESSION_EVENT_PROJECTION_COLUMNS, and never
-        # selected by the read path. 178.9 MB of the index restating the payload.
+        # exceptions, and absent from SESSION_EVENT_PROJECTION_COLUMNS. 178.9 MB
+        # of the index restating the payload.
+        #
+        # This comment previously also claimed the column was "never selected by
+        # the read path". That was FALSE and is why the removal shipped broken:
+        # operations/session_reads.py's timeline UNION selected ``e.summary`` for
+        # the session-event arm, so the MCP session-timeline route raised at
+        # runtime until the render was moved read-side (COALESCE over
+        # payload_json $.summary then $.text). Retiring a column requires
+        # grepping readers, not only writers.
         _raw_column(
             "payload_json",
             f"""payload_json               TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")})""",
