@@ -56,6 +56,7 @@ _EQUIVALENCES: tuple[tuple[str, dict[str, object], str], ...] = (
     ("has_tool_use", {"filter_has_tool_use": True}, "has:tools"),
     ("has_thinking", {"filter_has_thinking": True}, "has:thinking"),
     ("has_paste", {"filter_has_paste": True}, "has:paste"),
+    ("typed_only", {"typed_only": True}, "typed_only:true"),
     ("min_messages", {"min_messages": 10}, "messages:>=10"),
     ("max_messages", {"max_messages": 10}, "messages:<=10"),
     ("min_words", {"min_words": 200}, "words:>=200"),
@@ -81,7 +82,6 @@ _NOT_A_PREDICATE: dict[str, str] = {
     "similar_text": "similarity seed, spelled near:",
     "since": "date bound, spelled since: (covered by the date-field tests)",
     "sort": "ordering key",
-    "typed_only": "spelled as the count predicate `sessions where paste_messages = 0`",
     "until": "date bound, spelled until: (covered by the date-field tests)",
 }
 

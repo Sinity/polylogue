@@ -29,6 +29,7 @@ from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
     replay_zip_entry_acquisition_payloads,
+    stream_preserved_zip_entry_raw_data,
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
@@ -214,6 +215,33 @@ def test_whole_member_document_is_acquired_as_a_whole_member(tmp_path: Path, rec
     assert [record.addressing_mode for record in records] == [MemberAddressingMode.WHOLE_MEMBER]
     assert [record.source_index for record in records] == [None]
     assert [item.addressing_mode for item in replayed] == [MemberAddressingMode.WHOLE_MEMBER]
+
+
+def test_preserved_whole_member_drops_element_index_hint(tmp_path: Path) -> None:
+    """A transport coordinate must not become a positional member address."""
+    zip_path = tmp_path / "preserved.zip"
+    _write_member(zip_path, {"metadata": "document"})
+    blob_store = BlobStore(tmp_path / "blob")
+
+    with zipfile.ZipFile(zip_path) as archive:
+        entry = archive.infolist()[0]
+        context = ZipEntryReadContext(
+            source=Source(name="chatgpt", path=tmp_path),
+            zip_path=zip_path,
+            entry=entry,
+            file_mtime=None,
+            provider_hint=Provider.CHATGPT,
+            blob_store=blob_store,
+        )
+        record = stream_preserved_zip_entry_raw_data(
+            archive,
+            context,
+            provider_hint=Provider.CHATGPT,
+            source_index=17,
+        )
+
+    assert record.addressing_mode is MemberAddressingMode.WHOLE_MEMBER
+    assert record.source_index is None
 
 
 def test_split_member_elements_are_acquired_as_elements(tmp_path: Path) -> None:

@@ -415,12 +415,21 @@ class ColdBuildGeneration:
         if self.settled:
             raise RuntimeError(f"cold-build generation {self.generation_id} is no longer writable")
         self._retain_ops_checkpoints()
-        return ArchiveStore.open_cold_build_generation(
-            self.generation_root,
-            generation_id=self.generation_id,
-            owner_id=self.generation.owner_id,
-            defer_secondary_indexes=True,
-        )
+        try:
+            return ArchiveStore.open_cold_build_generation(
+                self.generation_root,
+                generation_id=self.generation_id,
+                owner_id=self.generation.owner_id,
+                defer_secondary_indexes=True,
+            )
+        except BaseException:
+            # The holder is acquired before the candidate open so that every
+            # pass gets the same checkpoint policy.  If opening the candidate
+            # fails, however, there is no pass left to own that handle; keep a
+            # failed open from pinning ops WAL frames until the whole build is
+            # settled (or leaking across a retry).
+            self._release_ops_checkpoint_holder()
+            raise
 
     def session_count(self) -> int:
         """How many sessions the build has materialized so far."""

@@ -159,3 +159,28 @@ def test_the_holder_blocks_no_checkpoint(tmp_path: Path, cold_build: ColdBuildGe
         checkpointer.close()
     assert busy == 0
     assert _ops_wal(tmp_path).stat().st_size == 0
+
+
+def test_failed_candidate_open_releases_the_ops_holder(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed pass open must not retain the build's checkpoint handle.
+
+    The holder is acquired before the candidate open, so an open failure is a
+    real cleanup boundary rather than an ordinary ``with ArchiveStore`` exit.
+    Anti-vacuity: removing the exception cleanup in ``open_writer`` leaves the
+    holder populated after this deliberate open failure.
+    """
+
+    def fail_open(*args: object, **kwargs: object) -> object:
+        raise sqlite3.OperationalError("candidate open failed")
+
+    # ArchiveStore is imported into cold_build for use, not re-exported, so
+    # patch it at its owning module and let cold_build resolve the same object.
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    monkeypatch.setattr(ArchiveStore, "open_cold_build_generation", classmethod(fail_open))
+    with pytest.raises(sqlite3.OperationalError, match="candidate open failed"):
+        cold_build.open_writer()
+    assert cold_build._ops_checkpoint_holder is None
+    assert not _ops_wal(tmp_path).exists()

@@ -137,6 +137,14 @@ def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
     before = _open_fd_count()
     if before is not None:
         item.stash[_FD_BEFORE] = before
+    original = item.stash.get(_ORIGINAL_NODEID, None)
+    if original is not None:
+        _SHORTENED_NODEIDS[item.nodeid] = original
+        # The collected item owns the original only until execution starts;
+        # reports use the transient map above, and failed IDs are persisted
+        # before the map is discarded at teardown.  Deselected items therefore
+        # retain no duplicate long string at all.
+        del item.stash[_ORIGINAL_NODEID]
     yield
 
 
@@ -246,10 +254,13 @@ def _file_batch(path: Path, count: int) -> int:
 LONG_NODEID_MAP_PATH = _TESTS_REPO_ROOT / ".cache" / "pytest-long-nodeids.json"
 #: A shortened id always ends in this marker plus the digest.
 _SHORTENED_NODEID_MARKER = "[param-"
-#: Shortened id -> original, for the items this session collected. About
-#: 200 bytes per entry and 16,371 entries on the complete corpus (~4 MB), held
-#: so that a FAILING id can be written to the map without re-deriving it.
+#: Shortened id -> original for items currently executing.  Collection keeps
+#: the source value on each item; this transient map exists only because pytest
+#: reports carry the node ID, not the item object.  Retaining every original
+#: for the whole worker made collection pay for a ~4 MB table (16,371 entries
+#: on the complete corpus) even though only failing executed items need it.
 _SHORTENED_NODEIDS: dict[str, str] = {}
+_ORIGINAL_NODEID: pytest.StashKey[str] = pytest.StashKey()
 
 
 def _load_long_nodeid_map() -> dict[str, str]:
@@ -286,11 +297,14 @@ def _record_long_nodeids(shortened: dict[str, str]) -> None:
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     """Record a failing item's original id, which its report cannot carry."""
-    if not report.failed:
-        return
-    original = _SHORTENED_NODEIDS.get(report.nodeid)
-    if original is not None:
-        _record_long_nodeids({report.nodeid: original})
+    if report.failed:
+        original = _SHORTENED_NODEIDS.get(report.nodeid)
+        if original is not None:
+            _record_long_nodeids({report.nodeid: original})
+    # Teardown is the last report for an item. Discard the runtime mapping so
+    # a full corpus does not accumulate one entry per executed test.
+    if report.when == "teardown":
+        _SHORTENED_NODEIDS.pop(report.nodeid, None)
 
 
 def _restore_long_nodeid_arguments(args: list[str]) -> list[str]:
@@ -355,7 +369,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             stem, _, _ = original.partition("[")
             digest = hashlib.blake2b(original.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
             item._nodeid = f"{stem}{_SHORTENED_NODEID_MARKER}{digest}]"
-            _SHORTENED_NODEIDS[item._nodeid] = original
+            item.stash[_ORIGINAL_NODEID] = original
 
 
 # ---------------------------------------------------------------------------

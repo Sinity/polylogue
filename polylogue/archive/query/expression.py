@@ -3735,6 +3735,7 @@ class _SpecAccumulator:
     filter_has_paste: bool = False
     filter_has_tool_use: bool = False
     filter_has_thinking: bool = False
+    typed_only: bool = False
     title: str | None = None
     session_id: str | None = None
     since: str | None = None
@@ -3943,6 +3944,17 @@ class _SpecAccumulator:
                 else:
                     self.has_types.append(sub)
 
+        elif fname == "typed_only":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'typed_only'", field=fname)
+            try:
+                enabled = optional_bool("typed_only", values[-1] if values else None)
+            except QuerySpecError as exc:
+                raise ExpressionCompileError(
+                    "invalid typed_only value; expected typed_only:true or typed_only:false", field=fname
+                ) from exc
+            self.typed_only = bool(enabled)
+
         elif fname in {"id", "session"}:
             if tok.negated:
                 raise ExpressionCompileError(f"negation is not supported for {fname!r}", field=fname)
@@ -4059,6 +4071,7 @@ class _SpecAccumulator:
             filter_has_paste=self.filter_has_paste,
             filter_has_tool_use=self.filter_has_tool_use,
             filter_has_thinking=self.filter_has_thinking,
+            typed_only=self.typed_only,
             title=self.title,
             session_id=self.session_id,
             since=self.since,
@@ -4104,6 +4117,8 @@ class _SpecAccumulator:
             self.filter_has_tool_use = True
         if other.filter_has_thinking:
             self.filter_has_thinking = True
+        if other.typed_only:
+            self.typed_only = True
         if other.title is not None:
             self.title = other.title
         if other.session_id is not None:

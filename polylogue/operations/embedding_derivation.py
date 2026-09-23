@@ -14,10 +14,36 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 __all__ = [
     "embedding_session_ids_for_paths",
+    "select_embedding_session_window",
     "estimated_embedding_message_cost",
     "make_embedding_derivation",
     "make_embedding_frame",
 ]
+
+
+def select_embedding_session_window(
+    index_db_path: Path,
+    *,
+    archive_root: Path,
+    rebuild: bool = False,
+    max_sessions: int | None = None,
+    max_messages: int | None = None,
+    min_messages: int | None = None,
+) -> tuple[str, ...]:
+    """Resolve one bounded pending-session window for a daemon operation."""
+    from polylogue.storage.embeddings.materialization import select_pending_session_window
+
+    del archive_root
+    with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
+        rows = select_pending_session_window(
+            conn,
+            rebuild=rebuild,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+        )
+    if min_messages is not None:
+        rows = [row for row in rows if row.message_count >= min_messages]
+    return tuple(row.session_id for row in rows)
 
 
 def make_embedding_frame(

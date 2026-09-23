@@ -10,6 +10,50 @@ from typing import Final
 
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
+# Source remains intentionally hand-written.  Unlike the index/embeddings
+# column-only tables, these relations contain cross-table foreign keys,
+# lifecycle indexes, and (for a few ledgers) trigger-sensitive retirement
+# semantics.  There is no concrete source schema change in this train that
+# would justify moving one of them behind TableColumnSpec.  Keep the measured
+# inventory explicit so a future table cannot silently evade that decision.
+SOURCE_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
+    (
+        "source_generations",
+        "excision_policy_projections",
+        "source_items",
+        "source_attachments",
+        "material_observations",
+        "material_evidence_links",
+        "source_item_raw_members",
+        "source_item_member_dispositions",
+        "raw_sessions",
+        "raw_container_coordinates",
+        "raw_capture_observations",
+        "raw_session_memberships",
+        "raw_membership_census",
+        "raw_legacy_append_resynthesis_receipts",
+        "raw_authority_parser_census",
+        "raw_authority_blockers",
+        "raw_authority_verdicts",
+        "blob_refs",
+        "blob_publication_reservations",
+        "gc_generations",
+        "gc_generation_members",
+        "raw_artifacts",
+        "raw_hook_events",
+        "hook_event_carriers",
+        "history_sidecars",
+        "sinex_publication_obligations",
+        "sinex_publication_payloads",
+        "sinex_publication_segments",
+        "sinex_publication_receipts",
+        "excised_content",
+        "verified_blob_receipts",
+        "audit_continuity_control",
+    ),
+    "cross-table durable lifecycle DDL; no concrete schema delta requires TableColumnSpec",
+)
+
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
 # These objects may remain in a migrated historical source tier. Fresh source
 # generations omit them, and parity excludes only this explicit retired set.
@@ -875,4 +919,4 @@ INSERT OR IGNORE INTO audit_continuity_control(
 
 """
 
-__all__ = ["RETIRED_SOURCE_SCHEMA_OBJECTS", "SOURCE_DDL"]
+__all__ = ["RETIRED_SOURCE_SCHEMA_OBJECTS", "SOURCE_DDL", "SOURCE_HAND_WRITTEN_DDL_REASONS"]

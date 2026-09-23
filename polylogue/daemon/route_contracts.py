@@ -56,6 +56,25 @@ class RouteContract:
     notes: str = ""
     domain_operation: str | None = None
 
+    @property
+    def metadata_only_reason(self) -> str | None:
+        """Explain why a route is not yet backed by a kernel declaration.
+
+        The HTTP registry intentionally contains a few generations of routes:
+        the four proof-critical reads above are executable declarations, while
+        the older shell/workbench adapters still have hand-written dispatch.
+        Making that distinction queryable keeps the inventory honest and
+        prevents a metadata-only route from silently looking like a migrated
+        one.  ``notes`` is the route owner's named reason; the fallback keeps
+        older concise contracts explicit rather than returning an empty value.
+        """
+
+        if self.domain_operation is not None:
+            return None
+        if self.notes:
+            return self.notes
+        return f"legacy {self.kind} adapter retained until its declaration migration"
+
 
 @dataclass(frozen=True, slots=True)
 class RouteSpec:
@@ -311,6 +330,19 @@ def declared_route_keys() -> frozenset[tuple[str, str]]:
     """
 
     return frozenset((route.method, route.pattern) for route in ROUTE_CONTRACTS if route.domain_operation is not None)
+
+
+def metadata_only_api_routes() -> tuple[RouteContract, ...]:
+    """Return API contracts that remain metadata-only, with named reasons.
+
+    This is deliberately a read-only inventory.  It is used by the focused
+    route-contract gate to ensure a newly added ``/api`` route cannot bypass
+    either a declaration or an explicit migration classification.
+    """
+
+    return tuple(
+        route for route in ROUTE_CONTRACTS if route.pattern.startswith("/api/") and route.domain_operation is None
+    )
 
 
 ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
@@ -894,5 +926,6 @@ __all__ = [
     "route_contract_for_pattern",
     "route_contract_from_declaration",
     "declared_route_keys",
+    "metadata_only_api_routes",
     "stable_route_contracts",
 ]
