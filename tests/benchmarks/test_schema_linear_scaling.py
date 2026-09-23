@@ -14,7 +14,7 @@ from pathlib import Path
 
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
-from tests.infra.workload_artifacts import SeededArchiveClone
+from tests.infra.workload_artifacts import SeededArchiveQueryLease
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
 
@@ -27,14 +27,14 @@ def _measure(db_path: Path, record_limit: int | None) -> float:
     return (time.perf_counter() - start) * 1000
 
 
-def test_schema_check_completes_quickly(named_seeded_archive: Callable[[str], SeededArchiveClone]) -> None:
+def test_schema_check_completes_quickly(named_seeded_archive: Callable[[str], SeededArchiveQueryLease]) -> None:
     """Smoke: verify_raw_corpus finishes and returns a valid report."""
     db = named_seeded_archive("schema-small").root / "index.db"
     ms = _measure(db, record_limit=None)
     assert ms < 30_000, f"10-record corpus took {ms:.0f} ms; expected <30s"
 
 
-def test_schema_check_linear_scaling(named_seeded_archive: Callable[[str], SeededArchiveClone]) -> None:
+def test_schema_check_linear_scaling(named_seeded_archive: Callable[[str], SeededArchiveQueryLease]) -> None:
     """Wall time must grow sub-quadratically across record limits.
 
     Uses a single seeded DB with 50 records and compares verify_raw_corpus

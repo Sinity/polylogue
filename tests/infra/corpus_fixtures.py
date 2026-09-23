@@ -53,7 +53,7 @@ def named_seeded_artifact() -> Callable[[str], SeededArchiveArtifact]:
 
 
 @pytest.fixture
-def named_seeded_archive(
+def named_seeded_archive_rw(
     workspace_env: dict[str, Path],
     request: pytest.FixtureRequest,
     named_seeded_artifact: Callable[[str], SeededArchiveArtifact],
@@ -62,7 +62,7 @@ def named_seeded_archive(
 
     For consumers that MUTATE the archive (ingest, insight rebuild, marks,
     maintenance). A non-mutating consumer should take
-    :func:`named_seeded_archive_ro` instead and skip the clone entirely.
+    :func:`named_seeded_archive` instead and skip the clone entirely.
     """
     archive_root = workspace_env["archive_root"]
     clones: list[SeededArchiveClone] = []
@@ -89,20 +89,20 @@ def named_seeded_archive(
 
 
 @pytest.fixture
-def named_seeded_archive_ro(
+def named_seeded_archive(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
     workspace_env: dict[str, Path],
     named_seeded_artifact: Callable[[str], SeededArchiveArtifact],
 ) -> Callable[[str], SeededArchiveQueryLease]:
-    """Give read consumers an authenticated, query-only artifact lease.
+    """Give consumers an authenticated, query-only artifact lease by default.
 
     CLI and completion tests open ``POLYLOGUE_ARCHIVE_ROOT`` by ordinary
     filesystem paths.  The artifact is already sealed and content-addressed,
     so a read-only consumer can share it directly; the lease remains held for
     the fixture lifetime and is closed by the fixture finalizer. Only a
     mutating consumer receives a private clone through
-    :func:`named_seeded_archive`.
+    :func:`named_seeded_archive_rw`.
     """
 
     leases: list[SeededArchiveQueryLease] = []
@@ -122,3 +122,11 @@ def named_seeded_archive_ro(
         return lease
 
     return seed
+
+
+@pytest.fixture
+def named_seeded_archive_ro(
+    named_seeded_archive: Callable[[str], SeededArchiveQueryLease],
+) -> Callable[[str], SeededArchiveQueryLease]:
+    """Compatibility alias for the default read-only named archive fixture."""
+    return named_seeded_archive

@@ -1832,15 +1832,15 @@ def test_default_cache_root_falls_back_when_realm_is_absent(monkeypatch: pytest.
 # ---------------------------------------------------------------------------
 
 
-def test_named_seeded_archive_ro_shares_the_authenticated_immutable_artifact(
-    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
+def test_named_seeded_archive_defaults_to_authenticated_immutable_artifact(
+    named_seeded_archive: Callable[[str], SeededArchiveQueryLease],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Read-only path consumers do not pay for a writable clone.
 
     Anti-vacuity: restoring the old clone path makes the patched clone helper
-    fail, while mutating consumers continue to use ``named_seeded_archive``.
+    fail, while mutating consumers continue to use ``named_seeded_archive_rw``.
     """
     monkeypatch.setattr(
         "tests.infra.corpus_fixtures.build_seeded_archive",
@@ -1850,7 +1850,7 @@ def test_named_seeded_archive_ro_shares_the_authenticated_immutable_artifact(
         "tests.infra.corpus_fixtures.clone_seeded_archive",
         lambda *_args, **_kwargs: pytest.fail("read-only fixture unexpectedly cloned the artifact"),
     )
-    lease = named_seeded_archive_ro("cli-chatgpt")
+    lease = named_seeded_archive("cli-chatgpt")
     db_path = lease.path
 
     assert db_path.is_file()
