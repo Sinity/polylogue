@@ -87,6 +87,7 @@ Arguments:
 | `view` | `string` | no | Declared projection/view for the referenced object. |
 | `limit` | `integer` | no | Page size for collection-like or recursive reads. |
 | `offset` | `integer` | no | Offset into collection-like reads that use decimal offset pagination. |
+| `around` | `string` | no | Message reference whose surrounding window should be read. |
 | `continuation` | `string` | no | Opaque token from the preceding read response; send alone. |
 
 Example — Read a session chronicle:

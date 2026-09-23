@@ -408,6 +408,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("view", "string", False, "Declared projection/view for the referenced object."),
             _arg("limit", "integer", False, "Page size for collection-like or recursive reads."),
             _arg("offset", "integer", False, "Offset into collection-like reads that use decimal offset pagination."),
+            _arg("around", "string", False, "Message reference whose surrounding window should be read."),
             _arg("continuation", "string", False, "Opaque token from the preceding read response; send alone."),
         ),
         examples=(
