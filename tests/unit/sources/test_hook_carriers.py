@@ -475,6 +475,66 @@ def test_compact_folds_the_retired_spool_into_carriers(tmp_path: Path, monkeypat
         assert conn.execute("SELECT COUNT(DISTINCT session_native_id) FROM raw_hook_events").fetchone()[0] == 3
 
 
+def test_compact_quiesces_carrier_producer_and_defers_mid_drain_arrival(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A producer racing the drain is blocked, then admitted on the next pass."""
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    pending = spool_root / "pending" / "2026-09-14"
+    pending.mkdir(parents=True)
+    (pending / f"{0:032x}.json").write_text(_envelope(0), encoding="utf-8")
+
+    from polylogue.sources.hook_producer import _CompactionSink
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_append = _CompactionSink.append
+
+    def pause_once(self: _CompactionSink, record: dict[str, object]) -> Path:
+        entered.set()
+        release.wait(timeout=5)
+        return original_append(self, record)
+
+    monkeypatch.setattr(_CompactionSink, "append", pause_once)
+    result: dict[str, object] = {}
+
+    drain = threading.Thread(target=lambda: result.update(compact_legacy_spool(spool_root)))
+    drain.start()
+    assert entered.wait(timeout=5)
+
+    appended = threading.Event()
+
+    def append_during_drain() -> None:
+        append_hook_event(
+            event_type="PostToolUse",
+            session_id="live-session",
+            provider="codex",
+            timestamp=_TIMESTAMP,
+            payload={},
+            root=spool_root,
+            event_id="f" * 32,
+        )
+        appended.set()
+
+    producer = threading.Thread(target=append_during_drain)
+    producer.start()
+    assert not appended.wait(timeout=0.1)
+    release.set()
+    drain.join(timeout=5)
+    producer.join(timeout=5)
+
+    assert result["carrier_quiesced"] is True
+    assert result["carrier_arrivals_during_drain"] == 0
+    policy = result["carrier_arrival_policy"]
+    assert policy == "producer blocked by exclusive drain lock; post-release arrivals deferred"
+    assert result["conservation_reconciliation"] == (
+        "event_id basename; acknowledged day shard is destination metadata"
+    )
+    assert appended.is_set()
+    assert materialize_hook_carriers(archive_root) == 2
+
+
 def _envelope(index: int, *, session: str = "legacy-session") -> str:
     return json.dumps(
         {

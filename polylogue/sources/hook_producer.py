@@ -25,9 +25,12 @@ reaches for it.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -279,9 +282,10 @@ def append_event(
     resolved_id = str(normalized["event_id"])
     if not resolved_id or not _EVENT_ID_ALPHABET.issuperset(resolved_id):
         raise HookSpoolRecordError("hook carrier event_id must contain only letters, digits, '_' or '-'")
-    target = carrier_path(root, str(normalized["provider"]))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    append_carrier_line(target, normalized)
+    with _carrier_lock(Path(root), exclusive=False):
+        target = carrier_path(root, str(normalized["provider"]))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        append_carrier_line(target, normalized)
     return str(target)
 
 
@@ -336,6 +340,26 @@ def fsync_directory(path: Path) -> None:
 MAX_COMPACTED_CARRIER_BYTES = 64 * 1024 * 1024
 
 ACKNOWLEDGED_DIRNAME = "acknowledged"
+_CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
+
+
+@contextmanager
+def _carrier_lock(root: Path, *, exclusive: bool) -> Iterator[None]:
+    """Block producers while the legacy carrier drain owns the spool."""
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / _CARRIER_DRAIN_LOCK).open("a+b") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _carrier_paths(root: Path) -> list[str]:
+    carrier_root = root / CARRIERS_DIRNAME
+    if not carrier_root.exists():
+        return []
+    return sorted(str(path) for path in carrier_root.rglob("*.ndjson") if path.is_file())
 
 
 class _CompactionSink:
@@ -422,7 +446,7 @@ def _sorted_directory(directory: Path) -> list[os.DirEntry[str]]:
         return []
 
 
-def compact_legacy_spool(
+def _compact_legacy_spool_unlocked(
     root: Path,
     *,
     max_bytes: int = MAX_COMPACTED_CARRIER_BYTES,
@@ -554,6 +578,33 @@ def compact_legacy_spool(
         "refused_bytes": dict(sorted(refused_bytes.items())),
         "retired": retired,
     }
+
+
+def compact_legacy_spool(
+    root: Path,
+    *,
+    max_bytes: int = MAX_COMPACTED_CARRIER_BYTES,
+    checkpoint_events: int = COMPACTION_CHECKPOINT_EVENTS,
+) -> dict[str, object]:
+    """Drain the retired spool under an explicit carrier-producer quiesce.
+
+    A producer racing this operation blocks on the shared lock and resumes
+    only after the receipt is complete. Such an event is a post-release
+    arrival for the next acquisition pass, never an omitted in-flight item.
+    """
+
+    with _carrier_lock(root, exclusive=True):
+        before = _carrier_paths(root)
+        summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
+        after = _carrier_paths(root)
+    summary.update(
+        carrier_quiesced=True,
+        carrier_arrivals_during_drain=0,
+        carrier_arrival_policy="producer blocked by exclusive drain lock; post-release arrivals deferred",
+        carrier_scope=sorted(set(before) | set(after)),
+        conservation_reconciliation="event_id basename; acknowledged day shard is destination metadata",
+    )
+    return summary
 
 
 def _option_value(args: list[str], name: str) -> str | None:
