@@ -2874,6 +2874,14 @@ def test_refresh_thread_fast_path_keeps_current_thread_membership(tmp_path: Path
 
 
 def test_refresh_thread_appends_suffix_without_rebuilding_membership(tmp_path: Path) -> None:
+    """A new sibling append is representable without an ownership ambiguity.
+
+    ``thread_sessions`` keys each membership by ``(thread_id, session_id)``;
+    the append path therefore adds exactly one distinct child and preserves
+    every prior membership.  There is no last-writer choice for a sibling to
+    make, which is the construction-level verdict for the named
+    sibling-append case.
+    """
     conn = _connect(tmp_path / "index.db")
     parent = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
@@ -2941,6 +2949,12 @@ def test_refresh_thread_appends_suffix_without_rebuilding_membership(tmp_path: P
         (first_child_id, 1),
         (second_child_id, 2),
     ]
+    assert tuple(
+        conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT session_id) FROM thread_sessions WHERE thread_id = ?",
+            (parent_id,),
+        ).fetchone()
+    ) == (3, 3)
     assert parent_thread_deletes == []
 
 
