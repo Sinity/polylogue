@@ -240,6 +240,13 @@ writes:
     reason: "operator-invoked session excision (polylogue-27m): the archive forgetting on purpose. Every statement removes the named session's own durable rows and records an excised_content marker per blob hash so re-ingest cannot resurrect them; the single UPDATE only nulls supersedes_material_id on the chain about to be deleted, because that FK is non-deferred. No producer output is corrected -- content is destroyed"
   - file: "polylogue/security/excision.py"
     function: "_apply_single_session_excision"
+    table: "assertions"
+    kind: "update"
+    tier: "user"
+    classification: deliberate_redaction
+    reason: "operator-invoked session excision tombstones deterministic marker assertions before deleting the remaining content-bearing assertions; it scrubs target, value, body and evidence while retaining only the terminal id/status needed to prevent marker convergence from replaying excised material"
+  - file: "polylogue/security/excision.py"
+    function: "_apply_single_session_excision"
     table: "blob_publication_reservations"
     kind: "delete"
     tier: "source"

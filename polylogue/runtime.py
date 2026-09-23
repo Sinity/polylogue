@@ -159,6 +159,7 @@ class RuntimeIdentity:
     implementation: str
     version: tuple[int, int, int]
     gil_enabled: bool
+    thread_inherit_context: bool | None
     abi_flags: str
     executable: str
 
@@ -171,6 +172,7 @@ class RuntimeIdentity:
             "implementation": self.implementation,
             "version": ".".join(str(part) for part in self.version),
             "gil_enabled": self.gil_enabled,
+            "thread_inherit_context": self.thread_inherit_context,
             "free_threaded": self.free_threaded,
             "abi_flags": self.abi_flags,
             "executable": self.executable,
@@ -212,6 +214,11 @@ def runtime_identity() -> RuntimeIdentity:
         implementation=sys.implementation.name,
         version=version,
         gil_enabled=gil_enabled,
+        thread_inherit_context=(
+            bool(thread_inherit_context)
+            if (thread_inherit_context := getattr(sys.flags, "thread_inherit_context", None)) is not None
+            else None
+        ),
         abi_flags=str(getattr(sys, "abiflags", "")),
         executable=sys.executable,
     )

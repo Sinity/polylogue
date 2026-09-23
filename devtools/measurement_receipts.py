@@ -133,6 +133,11 @@ def host_fingerprint() -> dict[str, object]:
         "python_implementation": platform.python_implementation(),
         "python_version": platform.python_version(),
         "free_threaded": not bool(getattr(sys, "_is_gil_enabled", lambda: True)()),
+        "thread_inherit_context": (
+            bool(thread_inherit_context)
+            if (thread_inherit_context := getattr(sys.flags, "thread_inherit_context", None)) is not None
+            else None
+        ),
         "system": platform.system(),
         "machine": platform.machine(),
         "cpu_count": os.cpu_count(),

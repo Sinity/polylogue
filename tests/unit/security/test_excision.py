@@ -283,6 +283,38 @@ class TestApplySessionExcision:
             conn.close()
         assert remaining == 0
 
+    def test_apply_tombstones_marker_assertions_without_retaining_content(self, tmp_path: Path) -> None:
+        session_id = _seed_session(tmp_path, native_id="apply-marker-tombstone")
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            block_id = str(conn.execute("SELECT block_id FROM blocks LIMIT 1").fetchone()[0])
+        user_db = tmp_path / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+            upsert_assertion(
+                conn,
+                assertion_id="marker-excision-test",
+                target_ref=f"block:{block_id}",
+                kind=AssertionKind.NOTE,
+                value={"marker_kind": "note", "arguments": {}},
+                body_text="secret marker body",
+                author_ref=f"block:{block_id}",
+                author_kind="agent",
+                now_ms=1,
+            )
+            conn.commit()
+
+        apply_session_excision(tmp_path, session_id, reason="remove marker", actor="user:local")
+
+        with sqlite3.connect(user_db) as conn:
+            row = conn.execute(
+                "SELECT target_ref, value_json, body_text, evidence_refs_json, status "
+                "FROM assertions WHERE assertion_id = ?",
+                ("marker-excision-test",),
+            ).fetchone()
+        assert row == (f"excision-marker:{session_id}", "{}", None, "[]", "deleted")
+
     def test_apply_is_idempotent(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-4")
         first = apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
