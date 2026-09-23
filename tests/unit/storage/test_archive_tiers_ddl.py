@@ -1448,6 +1448,32 @@ def test_embeddings_tier_tables_render_from_specs(tmp_path: Path) -> None:
     assert f"CHECK(dimension = {EMBEDDING_DIMENSION})" in EMBEDDINGS_DDL
 
 
+def test_source_and_user_hand_written_tables_have_explicit_measured_reasons() -> None:
+    """Every durable source/user table is accounted for by the DDL decision.
+
+    The current train has no concrete source/user schema delta, so these
+    tables remain hand-written.  The inventory is deliberately compared with
+    the rendered DDL: adding a table without either a spec or a reason fails.
+    Anti-vacuity: adding an unlisted ``CREATE TABLE`` to either DDL makes the
+    corresponding equality fail instead of silently widening the exception.
+    """
+    import re
+
+    from polylogue.storage.sqlite.archive_tiers.source import (
+        SOURCE_DDL,
+        SOURCE_HAND_WRITTEN_DDL_REASONS,
+    )
+    from polylogue.storage.sqlite.archive_tiers.user import USER_DDL, USER_HAND_WRITTEN_DDL_REASONS
+
+    def names(ddl: str) -> set[str]:
+        return set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)", ddl))
+
+    assert names(SOURCE_DDL) == set(SOURCE_HAND_WRITTEN_DDL_REASONS)
+    assert names(USER_DDL) == set(USER_HAND_WRITTEN_DDL_REASONS)
+    assert all(reason.strip() for reason in SOURCE_HAND_WRITTEN_DDL_REASONS.values())
+    assert all(reason.strip() for reason in USER_HAND_WRITTEN_DDL_REASONS.values())
+
+
 def test_embeddings_vocabularies_generate_their_check_from_the_python_owner(tmp_path: Path) -> None:
     """The two closed embeddings vocabularies accept exactly their declared members.
 

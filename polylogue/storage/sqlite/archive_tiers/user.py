@@ -2,6 +2,33 @@
 
 from __future__ import annotations
 
+# User relations are durable state with intentionally cross-table foreign keys,
+# triggers, and JSON invariants.  No concrete schema delta in this train needs
+# TableColumnSpec ownership; keep the measured inventory explicit until such a
+# delta exists.
+USER_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
+    (
+        "query_unit_frame_state",
+        "assertions",
+        "queries",
+        "query_names",
+        "result_sets",
+        "query_excision_ledger",
+        "result_set_members",
+        "query_edges",
+        "retained_query_runs",
+        "query_evaluation_receipts",
+        "watched_query_baselines",
+        "result_set_holdout_policies",
+        "holdout_access_receipts",
+        "annotation_schemas",
+        "annotation_batches",
+        "user_settings",
+        "context_deliveries",
+    ),
+    "cross-table durable state DDL; no concrete schema delta requires TableColumnSpec",
+)
+
 USER_DDL = """
 CREATE TABLE IF NOT EXISTS query_unit_frame_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -361,4 +388,4 @@ CREATE INDEX IF NOT EXISTS idx_context_deliveries_run_time
 ON context_deliveries(run_ref, delivered_at_ms DESC);
 """
 
-__all__ = ["USER_DDL"]
+__all__ = ["USER_DDL", "USER_HAND_WRITTEN_DDL_REASONS"]
