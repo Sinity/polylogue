@@ -93,5 +93,5 @@ async def test_session_search_compiles_expression_after_canonical_normalization(
         SessionSearch(expression="typed_only:true needle", limit=3),
     )
 
-    assert result == "stub-page"
+    assert cast(object, result) == "stub-page"
     assert calls == ["normalize", "compile"]
