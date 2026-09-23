@@ -21,11 +21,9 @@ user-visible drift in rendering of real session rows triggers a snapshot diff.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Iterator
 from pathlib import Path
-from typing import cast
 
 import pytest
 from click.testing import CliRunner
@@ -44,8 +42,7 @@ from tests.infra.workload_declarations import named_corpus_specs
 syrupy = pytest.importorskip("syrupy")
 
 from polylogue.cli.click_app import cli
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.daemon_operations import cli_daemon_archive
 
 _TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?")
 _DURATION_RE = re.compile(r"\d+(?:\.\d+)?\s?(?:ms|µs|us|s)\b")
@@ -55,7 +52,6 @@ _SIZE_BYTES_FIELD_RE = re.compile(r'("(?:db_)?size_bytes": )\d+')
 # that never move, so the rendered value changes on its own as time passes.
 _RELATIVE_AGE_RE = re.compile(r"\b\d+[a-z]{1,2} (?:ago|from now)\b")
 _ELAPSED_FIELD_RE = re.compile(r'("elapsed_s": )(?:null|-?\d+(?:\.\d+)?)')
-_SCHEMA_VERSION_FIELD_RE = re.compile(r'("(?:expected_)?user_version": )\d+')
 # Match path-like sequences (anything with a "/" between segments).
 _PATH_RE = re.compile(r"(/[A-Za-z0-9_.\-]+){2,}")
 
@@ -102,12 +98,18 @@ def seeded_db_env(
     query_archive_lease: SeededArchiveQueryLease,
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> Path:
     """Point the CLI query verbs at the module's deterministic corpus DB."""
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(query_archive_lease.root))
+    clone = clone_seeded_archive(query_archive_lease.artifact, tmp_path / "query-daemon-archive")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clone.root))
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    return query_archive_lease.path
+    try:
+        with cli_daemon_archive(clone.root, monkeypatch):
+            yield clone.root / "index.db"
+    finally:
+        clone.close()
 
 
 @pytest.fixture(scope="module")
@@ -144,7 +146,8 @@ def postmortem_seeded_env(
     """Point the CLI at the module's insight-materialized corpus DB."""
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(postmortem_archive.root))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    return postmortem_archive.root / "index.db"
+    with cli_daemon_archive(postmortem_archive.root, monkeypatch):
+        yield postmortem_archive.root / "index.db"
 
 
 def _invoke(runner: CliRunner, args: list[str]) -> str:
@@ -570,35 +573,15 @@ def test_analyze_facets_reports_degraded_when_it_misses_its_declared_budget(
     assert "interactive budget" in payload["availability"]["detail"]
 
 
-def test_json_status_snapshot(
+def test_json_status_without_a_daemon_refuses_with_a_typed_error(
     runner: CliRunner,
-    seeded_db_env: Path,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    snapshot: object,
 ) -> None:
-    """Direct status reports current tier versions while pinning its JSON shape.
-
-    Schema version values identify the package's current storage generation,
-    so they intentionally change when a tier evolves. The CLI must still
-    expose integer expected and actual versions that agree for the seeded
-    archive. The snapshot redacts only those release counters after this
-    production-path assertion, leaving every field and its surrounding shape
-    under snapshot coverage.
-    """
+    """Status names the required operation when its daemon endpoint is absent."""
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
-    output = _invoke_json(runner, ["ops", "status", "--format", "json"], redact=False)
-    payload = cast(dict[str, object], json.loads(output))
-    assert payload["source"] == "direct"
-    assert payload["daemon_liveness"] is False
-    archive_tiers = payload["archive_tiers"]
-    assert isinstance(archive_tiers, dict)
-    for tier_name, tier_status in archive_tiers.items():
-        assert isinstance(tier_name, str)
-        assert isinstance(tier_status, dict)
-        expected_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier(tier_name)]
-        assert tier_status["expected_user_version"] == expected_version
-        assert tier_status["user_version"] == expected_version
-        assert tier_status["version_status"] == "ok"
-
-    redacted_output = _redact(output)
-    assert _SCHEMA_VERSION_FIELD_RE.sub(r"\1<SCHEMA_VERSION>", redacted_output) == snapshot
+    result = runner.invoke(cli, ["--plain", "ops", "status", "--format", "json"], catch_exceptions=False)
+    assert result.exit_code != 0
+    assert result.output.strip()
+    assert "ops.status" in result.output or "status" in result.output

@@ -28,10 +28,10 @@
               "session_id": "chatgpt-export:eef16694-50ca-432d-8aba-<HASH>"
             },
             {
-              "session_id": "claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>"
+              "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
             },
             {
-              "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
+              "session_id": "claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH>"
             }
           ]
         },
@@ -74,9 +74,12 @@
         "wallclock_span": {
           "earliest_first_message_at": "<TIMESTAMP>",
           "latest_last_message_at": "<TIMESTAMP>",
-          "span_ms": 75192153659,
+          "span_ms": 76452789486,
           "summed_wall_duration_ms": <HASH>,
           "evidence_refs": [
+            {
+              "session_id": "claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH>"
+            },
             {
               "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
@@ -84,12 +87,12 @@
         },
         "wallclock_distribution_s": {
           "count": 4,
-          "total": 129570673.603,
+          "total": 129570853.603,
           "minimum": 240.0,
-          "p50": 420.0,
+          "p50": 600.0,
           "p90": 75192153.659,
           "maximum": 75192153.659,
-          "mean": 32392668.40075
+          "mean": 32392713.40075
         },
         "pathologies": {
           "status": "clean",
@@ -143,19 +146,22 @@
               "session_id": "chatgpt-export:eef16694-50ca-432d-8aba-<HASH>"
             },
             {
-              "session_id": "claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>"
+              "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
             },
             {
-              "session_id": "claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>"
+              "session_id": "claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH>"
             }
           ]
         },
         "wallclock_span": {
           "earliest_first_message_at": "<TIMESTAMP>",
           "latest_last_message_at": "<TIMESTAMP>",
-          "span_ms": 75192153659,
+          "span_ms": 76452789486,
           "summed_wall_duration_ms": <HASH>,
           "evidence_refs": [
+            {
+              "session_id": "claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH>"
+            },
             {
               "session_id": "chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>"
             }
@@ -509,6 +515,7 @@
         },
         "terminal_state": "unknown",
         "title": "Improving search index performance",
+        "title_is_synthesized": false,
         "updated_at": "<TIMESTAMP>",
         "words": 78
       },
@@ -542,6 +549,7 @@
         },
         "terminal_state": "unknown",
         "title": "Debugging flaky async pipeline tests",
+        "title_is_synthesized": false,
         "updated_at": "<TIMESTAMP>",
         "words": 47
       }
@@ -557,953 +565,9 @@
       "reason": null,
       "state": "ok"
     },
-    "source": "direct",
+    "source": "daemon",
     "total": 2,
     "total_unit": "top-level sessions"
-  }
-  
-  '''
-# ---
-# name: test_json_status_snapshot
-  '''
-  {
-    "ok": true,
-    "source": "direct",
-    "daemon_liveness": false,
-    "full_status_command": "polylogue ops status --json --full",
-    "archive_root": "<PATH>",
-    "active_archive_root": "<PATH>",
-    "active_archive_root_matches_configured": true,
-    "db_exists": true,
-    "active_db_path": "<PATH>",
-    "config_exists": true,
-    "config_path": null,
-    "next_action": "runtime diagnostics not observed from pinned archive",
-    "sessions": 2,
-    "messages": 13,
-    "component_readiness": {
-      "raw_materialization": {
-        "component": "raw_materialization",
-        "scope": "archive",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "total": 0,
-          "critical": 0,
-          "warning": 0,
-          "actionable": 0,
-          "blocked": 0,
-          "classified": 0,
-          "affected_total": 0,
-          "affected_actionable": 0,
-          "affected_open": 0,
-          "affected_classified": 0,
-          "unchecked": 0,
-          "affected_unchecked": 0,
-          "lost_source_evidence_count": 0,
-          "parser_census_incomplete_count": 0,
-          "parser_census_incomplete_blob_bytes": 0,
-          "raw_artifact_count": 2,
-          "materialized_raw_artifact_count": 2,
-          "archive_session_count": 2,
-          "join_gap_count": 0
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": [],
-        "metadata": {
-          "category_counts": {
-            "raw_id_join_gap": 0,
-            "skipped": 0,
-            "parse_failed": 0,
-            "raw_parse_failed": 0,
-            "parsed_without_index_session": 0
-          },
-          "source_family_counts": {},
-          "lost_source_evidence_samples": [],
-          "raw_authority_parser_census": {
-            "available": true,
-            "complete_count": 2,
-            "incomplete_count": 0,
-            "incomplete_blob_bytes": 0,
-            "missing_receipt_count": 0,
-            "non_complete_receipt_count": 0,
-            "incomplete_origin_summary": []
-          }
-        }
-      },
-      "raw_frontier_integrity": {
-        "component": "raw_frontier_integrity",
-        "scope": "archive",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "broken_head_count": 0,
-          "broken_head_checked_count": 2,
-          "missing_source_raw_count": 0,
-          "cursor_ahead_count": 0,
-          "cursor_ahead_checked_count": 0,
-          "cursor_head_comparison_count": 0,
-          "cursor_ahead_comparison_count": 0,
-          "cursor_authority_gap_count": 0,
-          "cursor_authority_deferred_count": 0
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": []
-      },
-      "search": {
-        "component": "search",
-        "scope": "lexical",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "message_indexed_count": 13,
-          "message_indexable_count": 13,
-          "missing_rows": 0,
-          "excess_rows": 0,
-          "identity_mismatch_rows": 0
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": []
-      },
-      "session_profiles": {
-        "component": "session_profiles",
-        "scope": "insights",
-        "state": "missing",
-        "summary": "session profiles not derived",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "sessions_with_profiles": 0,
-          "total_sessions": 2,
-          "missing_profiles": 2,
-          "stale_profiles": 0,
-          "orphan_profiles": 0
-        },
-        "caveats": [],
-        "repair_hint": "polylogued run",
-        "evidence_refs": []
-      },
-      "session_summary": {
-        "component": "session_summary",
-        "scope": "archive",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "total_sessions": 2,
-          "stale_sessions": 0
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": []
-      },
-      "embeddings": {
-        "component": "embeddings",
-        "scope": "semantic",
-        "state": "missing",
-        "summary": "none",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "total_sessions": 2,
-          "embedded_sessions": 0,
-          "embedded_messages": 0,
-          "pending_sessions": 2,
-          "pending_messages": null,
-          "pending_messages_exact": false,
-          "stale_messages": 0,
-          "failure_count": 0,
-          "retrieval_ready": false
-        },
-        "caveats": [],
-        "repair_hint": "polylogue ops embed enable --voyage-api-key ...",
-        "evidence_refs": []
-      },
-      "assertions": {
-        "component": "assertions",
-        "scope": "user",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "assertion_count": 0,
-          "target_count": 0,
-          "active_count": 0
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": [
-          "user.db:assertions"
-        ],
-        "metadata": {
-          "overlay_audit": {
-            "surfaces": [
-              {
-                "name": "marks",
-                "storage": "assertions",
-                "assertion_kind": "mark",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "highlights",
-                "storage": "assertions",
-                "assertion_kind": "highlight",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "annotations",
-                "storage": "assertions",
-                "assertion_kind": "annotation",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "suppressions",
-                "storage": "assertions",
-                "assertion_kind": "suppression",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "corrections",
-                "storage": "assertions",
-                "assertion_kind": "correction",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "tag_assertions",
-                "storage": "assertions",
-                "assertion_kind": "tag",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "metadata_assertions",
-                "storage": "assertions",
-                "assertion_kind": "metadata",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "saved_views",
-                "storage": "assertions",
-                "assertion_kind": "saved_query",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "recall_packs",
-                "storage": "assertions",
-                "assertion_kind": "recall_pack",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "workspaces",
-                "storage": "assertions",
-                "assertion_kind": "workspace_note",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "blackboard_notes",
-                "storage": "assertions",
-                "assertion_kind": "note",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "decisions",
-                "storage": "assertions",
-                "assertion_kind": "decision",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "caveats",
-                "storage": "assertions",
-                "assertion_kind": "caveat",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "lessons",
-                "storage": "assertions",
-                "assertion_kind": "lesson",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "blockers",
-                "storage": "assertions",
-                "assertion_kind": "blocker",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "handoffs",
-                "storage": "assertions",
-                "assertion_kind": "handoff",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "judgments",
-                "storage": "assertions",
-                "assertion_kind": "judgment",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "run_state",
-                "storage": "assertions",
-                "assertion_kind": "run_state",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "prompt_evals",
-                "storage": "assertions",
-                "assertion_kind": "prompt_eval",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "ontology_candidates",
-                "storage": "assertions",
-                "assertion_kind": "ontology_candidate",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "ontology_governance_receipts",
-                "storage": "assertions",
-                "assertion_kind": "ontology_governance",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "transform_candidates",
-                "storage": "assertions",
-                "assertion_kind": "transform_candidate",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "pathologies",
-                "storage": "assertions",
-                "assertion_kind": "pathology",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "findings",
-                "storage": "assertions",
-                "assertion_kind": "finding",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "secret_candidates",
-                "storage": "assertions",
-                "assertion_kind": "secret_candidate",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "excision_records",
-                "storage": "assertions",
-                "assertion_kind": "excision_record",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "excision_requests",
-                "storage": "assertions",
-                "assertion_kind": "excision_request",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              },
-              {
-                "name": "comparative_judgments",
-                "storage": "assertions",
-                "assertion_kind": "comparative_judgment",
-                "table": "assertions",
-                "total_count": 0,
-                "active_count": 0,
-                "deleted_count": 0,
-                "candidate_count": 0,
-                "rationale": "assertion lifecycle claim"
-              }
-            ]
-          }
-        }
-      },
-      "transforms": {
-        "component": "transforms",
-        "scope": "session-analysis",
-        "state": "ready",
-        "summary": "ready",
-        "last_success": null,
-        "last_attempt": null,
-        "counts": {
-          "transform_count": 1,
-          "session_count": 2,
-          "session_digest_transform_version": 1
-        },
-        "caveats": [],
-        "repair_hint": null,
-        "evidence_refs": [
-          "transform_registry"
-        ]
-      }
-    },
-    "claim_guard": {
-      "openable": {
-        "claim": "openable",
-        "value": true,
-        "determinate": true,
-        "reason": "all archive tiers present with matching schema version",
-        "signal": "archive_storage.archive_schema_ready (per-tier PRAGMA user_version match)"
-      },
-      "converged": {
-        "claim": "converged",
-        "value": false,
-        "determinate": true,
-        "reason": "session profiles not derived",
-        "signal": "derived_domain_readiness.session_profiles"
-      },
-      "search_ready": {
-        "claim": "search_ready",
-        "value": true,
-        "determinate": true,
-        "reason": "ready",
-        "signal": "component_readiness.search (FTS freshness)"
-      },
-      "perf_measurable": {
-        "claim": "perf_measurable",
-        "value": true,
-        "determinate": true,
-        "reason": "no concurrent archive write/rebuild detected",
-        "signal": "live_ingest_attempts.running_count"
-      }
-    },
-    "archive_tiers": {
-      "source": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": null,
-        "expected_user_version": <SCHEMA_VERSION>,
-        "user_version": <SCHEMA_VERSION>,
-        "version_status": "ok",
-        "identity_status": null,
-        "table_counts": {
-          "raw_sessions": 2,
-          "raw_artifacts": 0,
-          "raw_membership_census": 0,
-          "raw_session_memberships": 0
-        },
-        "table_count_precision": {
-          "raw_sessions": "exact",
-          "raw_artifacts": "exact",
-          "raw_membership_census": "exact",
-          "raw_session_memberships": "exact"
-        },
-        "file_metadata": {
-          "state": "not_observed",
-          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
-        }
-      },
-      "index": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": null,
-        "expected_user_version": <SCHEMA_VERSION>,
-        "user_version": <SCHEMA_VERSION>,
-        "version_status": "ok",
-        "identity_status": {
-          "status": "ok",
-          "expected": "<HASH>",
-          "actual": "<HASH>"
-        },
-        "table_counts": {
-          "sessions": 2,
-          "messages": 13,
-          "blocks": 13,
-          "actions": 0,
-          "messages_fts": 13,
-          "session_profiles": 0,
-          "threads": 2,
-          "thread_sessions": 2
-        },
-        "table_count_precision": {
-          "sessions": "exact",
-          "messages": "exact",
-          "blocks": "exact",
-          "actions": "exact",
-          "messages_fts": "exact",
-          "session_profiles": "exact",
-          "threads": "exact",
-          "thread_sessions": "exact"
-        },
-        "file_metadata": {
-          "state": "not_observed",
-          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
-        }
-      },
-      "embeddings": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": null,
-        "expected_user_version": <SCHEMA_VERSION>,
-        "user_version": <SCHEMA_VERSION>,
-        "version_status": "ok",
-        "identity_status": null,
-        "table_counts": {
-          "embedding_status": 0,
-          "message_embeddings_meta": 0,
-          "embedding_failures": 0
-        },
-        "table_count_precision": {
-          "embedding_status": "exact",
-          "message_embeddings_meta": "exact",
-          "embedding_failures": "exact"
-        },
-        "file_metadata": {
-          "state": "not_observed",
-          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
-        }
-      },
-      "user": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": null,
-        "expected_user_version": <SCHEMA_VERSION>,
-        "user_version": <SCHEMA_VERSION>,
-        "version_status": "ok",
-        "identity_status": null,
-        "table_counts": {
-          "assertions": 0,
-          "user_settings": 0,
-          "annotation_schemas": 6
-        },
-        "table_count_precision": {
-          "assertions": "exact",
-          "user_settings": "exact",
-          "annotation_schemas": "exact"
-        },
-        "file_metadata": {
-          "state": "not_observed",
-          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
-        }
-      },
-      "ops": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": null,
-        "expected_user_version": <SCHEMA_VERSION>,
-        "user_version": <SCHEMA_VERSION>,
-        "version_status": "ok",
-        "identity_status": {
-          "status": "ok",
-          "expected": "<HASH>",
-          "actual": "<HASH>"
-        },
-        "table_counts": {
-          "ingest_cursor": 0,
-          "ingest_attempts": 0,
-          "convergence_debt": 0,
-          "schema_drift_samples": 0,
-          "embedding_catchup_runs": 0
-        },
-        "table_count_precision": {
-          "ingest_cursor": "exact",
-          "ingest_attempts": "exact",
-          "convergence_debt": "exact",
-          "schema_drift_samples": "exact",
-          "embedding_catchup_runs": "exact"
-        },
-        "file_metadata": {
-          "state": "not_observed",
-          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
-        }
-      },
-      "audit": {
-        "path": "<PATH>",
-        "exists": true,
-        "size_bytes": null,
-        "expected_user_version": <SCHEMA_VERSION>,
-        "user_version": <SCHEMA_VERSION>,
-        "version_status": "ok",
-        "identity_status": null,
-        "table_counts": {
-          "operation_previews": 0,
-          "operation_authorizations": 0,
-          "operation_attempts": 0
-        },
-        "table_count_precision": {
-          "operation_previews": "exact",
-          "operation_authorizations": "exact",
-          "operation_attempts": "exact"
-        },
-        "file_metadata": {
-          "state": "not_observed",
-          "reason": "operation snapshot pins SQLite evidence, not filesystem size/WAL metadata"
-        }
-      }
-    },
-    "sqlite_maintenance": {
-      "archive_root": null,
-      "total_wal_bytes": null,
-      "tiers_with_planner_stats": [
-        "source",
-        "index",
-        "embeddings",
-        "user",
-        "ops"
-      ],
-      "tiers": {
-        "source": {
-          "exists": true,
-          "wal_bytes": null,
-          "sqlite_stat1_rows": 14,
-          "planner_stats_present": true,
-          "state": "fresh",
-          "wal_metadata": {
-            "state": "not_observed",
-            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
-          }
-        },
-        "index": {
-          "exists": true,
-          "wal_bytes": null,
-          "sqlite_stat1_rows": 42,
-          "planner_stats_present": true,
-          "state": "fresh",
-          "wal_metadata": {
-            "state": "not_observed",
-            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
-          }
-        },
-        "embeddings": {
-          "exists": true,
-          "wal_bytes": null,
-          "sqlite_stat1_rows": 1,
-          "planner_stats_present": true,
-          "state": "fresh",
-          "wal_metadata": {
-            "state": "not_observed",
-            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
-          }
-        },
-        "user": {
-          "exists": true,
-          "wal_bytes": null,
-          "sqlite_stat1_rows": 1,
-          "planner_stats_present": true,
-          "state": "fresh",
-          "wal_metadata": {
-            "state": "not_observed",
-            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
-          }
-        },
-        "ops": {
-          "exists": true,
-          "wal_bytes": null,
-          "sqlite_stat1_rows": 2,
-          "planner_stats_present": true,
-          "state": "fresh",
-          "wal_metadata": {
-            "state": "not_observed",
-            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
-          }
-        },
-        "audit": {
-          "exists": true,
-          "wal_bytes": null,
-          "sqlite_stat1_rows": null,
-          "planner_stats_present": null,
-          "state": "unavailable",
-          "wal_metadata": {
-            "state": "not_observed",
-            "reason": "filesystem sidecar metadata is outside pinned SQLite snapshot"
-          }
-        }
-      }
-    },
-    "storage": {
-      "db_size_bytes": <SIZE_BYTES>,
-      "active_db_path": "<PATH>"
-    },
-    "sinex_publication": {
-      "state": "not_observed",
-      "reason": "sinex runtime mode not supplied"
-    },
-    "ingest": {
-      "available": true,
-      "actively_ingesting": false,
-      "running_count": 0,
-      "running": [],
-      "throughput": {
-        "window_minutes": 5,
-        "batches": 0,
-        "files": 0,
-        "materialized": 0,
-        "files_per_second": 0.0
-      },
-      "cursor": {
-        "tracked": 0,
-        "excluded": 0,
-        "retry_pending": 0
-      },
-      "debt": {
-        "total": 0,
-        "by_status": {}
-      },
-      "lifetime_attempts": {}
-    },
-    "assertion_candidate_queue": {
-      "state": "not_observed",
-      "reason": "judgment scheduler runtime/config not supplied",
-      "pending_count": null
-    },
-    "raw_materialization_readiness": {
-      "available": true,
-      "classification": "not_run",
-      "precision": "raw_id_join_gap",
-      "raw_artifact_count": 2,
-      "materialized_raw_artifact_count": 2,
-      "archive_session_count": 2,
-      "join_gap_count": 0,
-      "total": 0,
-      "critical": 0,
-      "warning": 0,
-      "actionable": 0,
-      "blocked": 0,
-      "classified": 0,
-      "unchecked": 0,
-      "affected_total": 0,
-      "affected_actionable": 0,
-      "affected_blocked": 0,
-      "affected_open": 0,
-      "affected_classified": 0,
-      "affected_unchecked": 0,
-      "lost_source_evidence_count": 0,
-      "lost_source_evidence_samples": [],
-      "category_counts": {
-        "raw_id_join_gap": 0,
-        "skipped": 0,
-        "parse_failed": 0,
-        "raw_parse_failed": 0,
-        "parsed_without_index_session": 0
-      },
-      "source_family_counts": {},
-      "raw_authority_frontier_remediation_refs": [],
-      "raw_authority_blocker_count": 0,
-      "raw_authority_parser_census": {
-        "available": true,
-        "complete_count": 2,
-        "incomplete_count": 0,
-        "incomplete_blob_bytes": 0,
-        "missing_receipt_count": 0,
-        "non_complete_receipt_count": 0,
-        "incomplete_origin_summary": []
-      },
-      "raw_authority_parser_census_incomplete_count": 0,
-      "raw_authority_parser_census_incomplete_blob_bytes": 0
-    },
-    "raw_frontier_integrity": {
-      "cursor_authority_deferred_count": 0,
-      "available": true,
-      "overall_status": "healthy",
-      "broken_head_status": "healthy",
-      "broken_head_count": 0,
-      "broken_head_checked_count": 2,
-      "broken_head_reason": "",
-      "missing_source_raw_status": "healthy",
-      "missing_source_raw_count": 0,
-      "missing_source_raw_reason": "",
-      "cursor_ahead_status": "healthy",
-      "cursor_ahead_count": 0,
-      "cursor_ahead_checked_count": 0,
-      "cursor_head_comparison_count": 0,
-      "cursor_ahead_comparison_count": 0,
-      "cursor_authority_gap_count": 0,
-      "cursor_ahead_reason": ""
-    },
-    "raw_replay_backlog": {
-      "available": true,
-      "scan": "bounded_raw_observation_page",
-      "candidate_count": 2,
-      "total_blob_bytes": 15790,
-      "max_blob_bytes": 9542,
-      "top_raw_rows": [
-        {
-          "raw_id": "<HASH>",
-          "origin": "chatgpt-export",
-          "source_path": "<PATH>",
-          "blob_size": 9542,
-          "oversized": false,
-          "stream_safe": true
-        },
-        {
-          "raw_id": "<HASH>",
-          "origin": "chatgpt-export",
-          "source_path": "<PATH>",
-          "blob_size": 6248,
-          "oversized": false,
-          "stream_safe": true
-        }
-      ],
-      "origin_summary": [
-        {
-          "origin": "chatgpt-export",
-          "raw_count": 2,
-          "total_blob_bytes": 15790,
-          "max_blob_bytes": 9542
-        }
-      ],
-      "page_limit": 5,
-      "page_complete": true
-    },
-    "raw_failures": {
-      "parse": 0,
-      "validation": 0,
-      "quarantined": 0,
-      "deferred_retryable": 0,
-      "terminal_rejections": 0,
-      "unexplained": 0,
-      "lifecycle_available": true,
-      "lifecycle_state": "healthy",
-      "lifecycle_reason": null,
-      "sample_count": 0
-    },
-    "diagnostic": {
-      "kind": "not_observed",
-      "reason": "CLI first-run diagnostics excluded from pinned status"
-    }
   }
   
   '''
@@ -1521,7 +585,7 @@
   ## Distributions
   
   - Cost per session (USD): no signal
-  - Wall time per session: n=4 total=1.29571e+<DURATION> min=240 p50=420 p90=7.51922e+07 max=7.51922e+07 mean=3.23927e+07
+  - Wall time per session: n=4 total=1.29571e+<DURATION> min=240 p50=600 p90=7.51922e+07 max=7.51922e+07 mean=3.23927e+07
   
   ## Failure-mode pathologies
   
@@ -1547,7 +611,7 @@
   | Field | Value |
   | --- | --- |
   | session_count | 4 |
-  | wallclock_span | span_ms=75192153659, summed_wall_ms=<HASH> |
+  | wallclock_span | span_ms=76452789486, summed_wall_ms=<HASH> |
   | estimated_cost_usd | $0.000000 (estimated) |
   | token_lanes | input=0, output=0, cache_read=0, cache_write=0 |
   | top_expensive_session | no_signal: no session in scope carries a positive cost figure |
@@ -1561,8 +625,8 @@
   
   | Field | Evidence refs |
   | --- | --- |
-  | session_count | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>, chatgpt-export:eef16694-50ca-432d-8aba-<HASH>, claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH> |
-  | wallclock_span | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
+  | session_count | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>, chatgpt-export:eef16694-50ca-432d-8aba-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>, claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH> |
+  | wallclock_span | claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH>, chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
   | estimated_cost | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
   | top_expensive_session | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
   | subagent_branch_count | chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH> |
@@ -1585,8 +649,8 @@
   total_cost: $0.00 (estimated) across 4 sessions, 4 unpriced
   tokens: in=0 out=0 cache_read=0 cache_write=0
   cost_per_session_usd: no signal
-  wall_per_session_s: n=4 total=1.29571e+<DURATION> min=240 p50=420 p90=7.51922e+07 max=7.51922e+07 mean=3.23927e+07
-  wallclock_span_ms: 75192153659
+  wall_per_session_s: n=4 total=1.29571e+<DURATION> min=240 p50=600 p90=7.51922e+07 max=7.51922e+07 mean=3.23927e+07
+  wallclock_span_ms: 76452789486
   pathologies: clean (detectors ran over all 4 sessions in scope; no pathology found)
   context_loss: clean (detectors ran over all 4 sessions in scope; no pathology found)
   
@@ -1597,7 +661,7 @@
   Postmortem bundle
     scope: matched=4, analyzed=4
     sessions: 4
-    wallclock: span_ms=75192153659 summed_wall_ms=<HASH> (<TIMESTAMP> -> <TIMESTAMP>)
+    wallclock: span_ms=76452789486 summed_wall_ms=<HASH> (<TIMESTAMP> -> <TIMESTAMP>)
     cost: $0.000000 (estimated)
       tokens: input=0 output=0 cache_read=0 cache_write=0
     top_expensive_session: no_signal (no session in scope carries a positive cost figure)
@@ -1607,8 +671,8 @@
     wasted_loop: clean (no pathology found across all 4 sessions in scope)
     failure_mode: clean (no pathology found across all 4 sessions in scope)
     evidence:
-      session_count: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>, chatgpt-export:eef16694-50ca-432d-8aba-<HASH>, claude-code-session:1723199d-bf2c-44a0-ba3c-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>
-      wallclock_span: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
+      session_count: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>, chatgpt-export:eef16694-50ca-432d-8aba-<HASH>, claude-code-session:3eb13b90-4668-4257-bdd6-<HASH>, claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH>
+      wallclock_span: claude-code-session:9e11d2cd-0930-4ef6-8a80-<HASH>, chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
       estimated_cost: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
       top_expensive_session: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
       subagent_branch_count: chatgpt-export:a46b6fce-e78d-447c-bd87-<HASH>
