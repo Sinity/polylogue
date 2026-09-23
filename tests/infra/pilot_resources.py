@@ -22,20 +22,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from polylogue.sources.parsers.base import ParsedSession
-from tests.infra.source_builders import ProviderSourcePackage, provider_source_package
-from tests.infra.workload_artifacts import (
-    SeededArchiveArtifact,
-    SeededArchiveClone,
-    SeededArchiveQueryLease,
-    acquire_query_only_seeded_archive,
-    clone_seeded_archive,
-    seeded_archive_key,
-)
-
 if TYPE_CHECKING:
+    from polylogue.sources.parsers.base import ParsedSession
     from tests.infra.daemon_operations import DaemonOperationStack
     from tests.infra.integration_profile import IntegrationSelection
+    from tests.infra.source_builders import ProviderSourcePackage
+    from tests.infra.workload_artifacts import SeededArchiveArtifact, SeededArchiveClone, SeededArchiveQueryLease
 
 
 def _pilot_selection() -> IntegrationSelection:
@@ -53,6 +45,7 @@ def build_pilot_provider_packages(root: Path) -> tuple[ProviderSourcePackage, ..
     depending on whether a module-scoped fixture happened to run first.
     """
     from polylogue.schemas.synthetic import SyntheticCorpus
+    from tests.infra.source_builders import provider_source_package
 
     packages: list[ProviderSourcePackage] = []
     for index, spec in enumerate(_pilot_selection().corpus_specs()):
@@ -101,6 +94,8 @@ def pilot_query_archive(
     pilot_artifact: SeededArchiveArtifact,
 ) -> Iterator[SeededArchiveQueryLease]:
     """Share one authenticated read-only artifact lease across pilot reads."""
+    from tests.infra.workload_artifacts import acquire_query_only_seeded_archive, seeded_archive_key
+
     selection = _pilot_selection()
     lease = acquire_query_only_seeded_archive(
         pilot_artifact,
@@ -118,6 +113,8 @@ def pilot_writable_archive(
     tmp_path: Path,
 ) -> Iterator[SeededArchiveClone]:
     """Provide a private clone for tests that must commit archive mutations."""
+    from tests.infra.workload_artifacts import clone_seeded_archive
+
     clone = clone_seeded_archive(pilot_artifact, tmp_path / "pilot-writable-archive")
     try:
         yield clone
@@ -132,6 +129,7 @@ def pilot_daemon_operations(
 ) -> Iterator[DaemonOperationStack]:
     """Start the real UDS operation transport only for transport tests."""
     from tests.infra.daemon_operations import running_daemon_operations
+    from tests.infra.workload_artifacts import clone_seeded_archive
 
     archive_root = tmp_path / "pilot-daemon-archive"
 
