@@ -66,7 +66,7 @@ def test_seeded_corpus_satisfies_raw_frontier_integrity(
 
 
 def test_broken_predecessor_chain_in_the_same_corpus_is_reported(
-    named_seeded_archive: Callable[[str], SeededArchiveClone],
+    named_seeded_archive_rw: Callable[[str], SeededArchiveClone],
 ) -> None:
     """Red twin: the invariant is not vacuously green on this corpus shape.
 
@@ -74,7 +74,7 @@ def test_broken_predecessor_chain_in_the_same_corpus_is_reported(
     genuinely broken active chain, and the check must name it -- otherwise the
     green result above proves nothing about the corpus.
     """
-    root = named_seeded_archive("cli-chatgpt").root
+    root = named_seeded_archive_rw("cli-chatgpt").root
 
     conn = sqlite3.connect(root / "source.db")
     with conn:
