@@ -21,11 +21,34 @@ def test_every_canonical_ops_table_has_a_disposition() -> None:
     """
     declared = _declared_tables()
     assert declared
-    assert declared == set(OPS_TABLE_DISPOSITIONS)
-    for disposition in OPS_TABLE_DISPOSITIONS.values():
+    assert declared <= set(OPS_TABLE_DISPOSITIONS)
+    for name in declared:
+        disposition = OPS_TABLE_DISPOSITIONS[name]
         assert disposition.owner
         assert disposition.grain
         assert disposition.replacement
+
+
+def test_historical_ops_tables_have_explicit_retirement_dispositions() -> None:
+    """A stale archive object is not silently treated as disposable.
+
+    Anti-vacuity: removing one measured historical table from the map leaves
+    the inventory incomplete and fails this assertion.  The bootstrap
+    convergence plan remains the only authority allowed to retire these
+    objects; this test records the decision without dropping live state.
+    """
+    measured_live = {
+        "slo_samples",
+        "query_runs",
+        "otlp_spans",
+        "otlp_telemetry",
+        "polylogue_ops_schema_state",
+    }
+    assert measured_live <= set(OPS_TABLE_DISPOSITIONS)
+    assert OPS_TABLE_DISPOSITIONS["polylogue_ops_schema_state"].replacement == "retain"
+    assert {OPS_TABLE_DISPOSITIONS[name].replacement for name in measured_live - {"polylogue_ops_schema_state"}} == {
+        "retire via convergence"
+    }
 
 
 def test_restart_required_state_is_not_a_retirement_target() -> None:
