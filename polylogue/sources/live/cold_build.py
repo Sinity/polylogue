@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import types
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -416,7 +417,7 @@ class ColdBuildGeneration:
             raise RuntimeError(f"cold-build generation {self.generation_id} is no longer writable")
         self._retain_ops_checkpoints()
         try:
-            return ArchiveStore.open_cold_build_generation(
+            archive = ArchiveStore.open_cold_build_generation(
                 self.generation_root,
                 generation_id=self.generation_id,
                 owner_id=self.generation.owner_id,
@@ -430,6 +431,23 @@ class ColdBuildGeneration:
             # settled (or leaking across a retry).
             self._release_ops_checkpoint_holder()
             raise
+
+        # The dispatcher owns one ArchiveStore for one intake page.  Tie the
+        # checkpoint holder to that same lifetime: retaining it across pages
+        # would silently widen the ops power-loss window to the whole build.
+        # ``ArchiveStore`` is intentionally not changed for this cold-build
+        # concern; binding the existing close method preserves its public
+        # type and all normal close/rollback behavior.
+        close = archive.close
+
+        def close_page(_archive: ArchiveStore) -> None:
+            try:
+                close()
+            finally:
+                self._release_ops_checkpoint_holder()
+
+        archive.close = types.MethodType(close_page, archive)
+        return archive
 
     def session_count(self) -> int:
         """How many sessions the build has materialized so far."""
