@@ -30,7 +30,6 @@ import click
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import OperationStatus
-from polylogue.rendering.identity import identity_frame
 
 if TYPE_CHECKING:
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -598,18 +597,10 @@ def backfill_subcommand(
     (or all sessions if ``--rebuild``) and emits running totals so the
     user can interrupt before the soft monthly cap kicks in.
     """
-    from polylogue.storage.search_providers import create_vector_provider
+    from polylogue.cli.operation_kernel import configured_accepted_operation
 
     if output_format == "json" and not yes:
         raise click.UsageError("backfill --format json requires --yes so stdout stays machine-readable.")
-
-    key = _resolve_voyage_key(env, None)
-    if not key:
-        click.echo(
-            "Error: Voyage API key not configured. Run [bold]polylogue ops embed enable[/bold] first.",
-            err=True,
-        )
-        raise click.Abort()
 
     report = _build_preflight_report(
         env,
@@ -624,247 +615,23 @@ def backfill_subcommand(
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")
         return
-    location = _active_archive_location(env.config.db_path)
-    if location is None:
-        click.echo(
-            "Error: index.db not found. Initialize the archive tiers first.",
-            err=True,
-        )
-        raise click.Abort()
-    index_db = location.active_index_path
-
-    embeddings_db = location.active_tier("embeddings").configured_path
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
-    vec_provider = create_vector_provider(
-        voyage_api_key=key,
-        db_path=embeddings_db,
-        model=report.model,
-        dimension=report.dimension,
-    )
-    if vec_provider is None:
-        click.echo("Error: vector provider unavailable (sqlite-vec or voyage init failed).", err=True)
-        raise click.Abort()
-
-    # AFTER the tier open and the provider, never before (polylogue-d02y8 AC2).
-    # ``--rebuild`` is a second write: it marks every session needs-reindex so
-    # the loop below re-embeds them. Running it first meant an abort between
-    # the mark and the loop -- an uninitialized embeddings tier, or a provider
-    # that failed to construct because sqlite-vec is missing or the Voyage key
-    # is rejected, both of which are the ordinary way this command fails --
-    # left the whole archive marked stale with nothing written and no run
-    # ledger row, and the only route back was another successful backfill.
-    # Ordering it here does not make the pair atomic; it removes the two
-    # failure modes that reach it before a single embedding could be produced.
-    if rebuild:
-        from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
-
-        mark_all_archive_sessions_needs_reindex(index_db, embeddings_db_path=embeddings_db)
-
-    payload = _run_archive_backfill(
-        env,
-        index_db,
-        embeddings_db,
-        vec_provider,
-        report,
-        rebuild=rebuild,
-        max_sessions=max_sessions,
-        stop_after_seconds=stop_after_seconds,
-        max_errors=max_errors,
-        min_messages=min_messages,
-        output_format=output_format,
-        configured_root=location.configured_root,
-    )
-    if output_format == "json":
-        _render_backfill_json(payload)
-
-
-def _run_archive_backfill(
-    env: AppEnv,
-    index_db: Path,
-    embeddings_db: Path,
-    vec_provider: object,
-    report: PreflightReport,
-    *,
-    rebuild: bool,
-    max_sessions: int | None,
-    stop_after_seconds: int | None,
-    max_errors: int | None,
-    min_messages: int | None = None,
-    output_format: str = "text",
-    configured_root: Path | None = None,
-) -> BackfillResultPayload:
-    """Run the embedding backfill loop.
-
-    ``embeddings_db`` is resolved by the caller via
-    ``ArchiveLocation.active_tier("embeddings")``, not derived from
-    ``index_db`` here -- an index-only external generation's ``index_db``
-    can live outside the configured archive root, and this tier must stay
-    rooted at the configured root regardless (see ``_active_archive_location``).
-    """
-    from polylogue.core.protocols import VectorProvider
-    from polylogue.storage.embeddings.materialization import (
-        embed_archive_session_sync,
-        select_pending_archive_session_window,
-    )
-    from polylogue.storage.search_providers.sqlite_vec_support import (
-        ESTIMATED_TOKENS_PER_MESSAGE,
-        VOYAGE_4_COST_PER_1M_TOKENS,
-    )
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-    conn = open_readonly_connection(index_db)
-    try:
-        if embeddings_db.exists():
-            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
-            status_table = "embeddings.embedding_status"
-        else:
-            status_table = ""
-        from polylogue.storage.embeddings.identity import EmbeddingRecipe
-
-        pending = select_pending_archive_session_window(
-            conn,
-            status_table=status_table,
-            rebuild=rebuild,
-            max_sessions=max_sessions,
-            max_messages=report.max_messages,
-            min_messages=min_messages,
-            recipe=EmbeddingRecipe.current(model=report.model, dimensions=report.dimension),
-        )
-    finally:
-        conn.close()
-    if not pending:
-        payload: BackfillResultPayload = {
-            "status": "complete",
-            "embedded_sessions": 0,
-            "skipped_sessions": 0,
-            "error_count": 0,
-            "estimated_cost_usd": 0.0,
-            "stopped_reason": None,
-            "candidate_sessions": 0,
-            "processed_sessions": 0,
-            "preflight": _preflight_payload(report),
-            "sessions": [],
-        }
-        if output_format == "text":
-            click.echo("All sessions are already embedded.")
-        return payload
-
-    cap = _effective_cost_cap(report.cost_cap_usd, report.max_cost_usd)
-    cumulative_cost = 0.0
-    embedded = 0
-    skipped = 0
-    errors = 0
-    processed = 0
-    started_at_ms = int(time.time() * 1000)
-    session_payloads: list[BackfillSessionPayload] = []
-    console = env.ui.console
-    started_at = time.monotonic()
-    stopped_reason: str | None = None
-    typed_provider = cast(VectorProvider, vec_provider)
-    identities = identity_frame(item.session_id for item in pending)
-
-    for index, item in enumerate(pending, start=1):
-        if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
-            stopped_reason = f"time limit reached ({stop_after_seconds}s)"
-            break
-        estimated_batch_cost = (
-            item.message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
-        )
-        if cap > 0 and cumulative_cost + estimated_batch_cost > cap:
-            stopped_reason = f"cost cap would be exceeded (~${cumulative_cost + estimated_batch_cost:.4f} > ${cap:.2f})"
-            if output_format == "text":
-                console.print(
-                    f"[yellow]Cost cap would be exceeded by {item.title or identities.display(item.session_id)} "
-                    f"(~${cumulative_cost + estimated_batch_cost:.4f} > ${cap:.2f}). Stopping.[/yellow]"
-                )
-            break
-        outcome = embed_archive_session_sync(
-            index_db, typed_provider, item.session_id, embeddings_db_path=embeddings_db
-        )
-        processed += 1
-        batch_cost = 0.0
-        if outcome.status == "embedded":
-            embedded += 1
-            batch_cost = (
-                outcome.embedded_message_count * ESTIMATED_TOKENS_PER_MESSAGE * VOYAGE_4_COST_PER_1M_TOKENS / 1_000_000
-            )
-            cumulative_cost += batch_cost
-            if output_format == "text":
-                console.print(
-                    f"  [{index}/{len(pending)}] {item.title or identities.display(item.session_id)}: "
-                    f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
-                )
-            if cap > 0 and cumulative_cost > cap:
-                stopped_reason = f"cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f})"
-                if output_format == "text":
-                    console.print(
-                        f"[yellow]Cost cap reached (~${cumulative_cost:.4f} > ${cap:.2f}). "
-                        f"Stopping after {embedded} sessions.[/yellow]"
-                    )
-        elif outcome.status in {"no_messages", "no_embeddable_messages"}:
-            skipped += 1
-            if output_format == "text":
-                console.print(
-                    f"  [{index}/{len(pending)}] {item.title or identities.display(item.session_id)}: no embeddable messages"
-                )
-        elif outcome.status == "error":
-            errors += 1
-            if output_format == "text":
-                console.print(f"  [{index}/{len(pending)}] {item.session_id}: error {outcome.error}")
-            if max_errors is not None and errors >= max_errors:
-                stopped_reason = f"max errors reached ({max_errors})"
-        session_payloads.append(
-            {
-                "index": index,
-                "total": len(pending),
-                "session_id": item.session_id,
-                "title": item.title,
-                "status": outcome.status,
-                "embedded_message_count": outcome.embedded_message_count,
-                "estimated_cost_usd": round(batch_cost, 8),
-                "error": outcome.error,
-            }
-        )
-        if stopped_reason:
-            break
-
-    display_status: Literal["complete", "stopped"] = "stopped" if stopped_reason else "complete"
-    payload = cast(
-        BackfillResultPayload,
+    result = configured_accepted_operation(
+        env.config,
+        "maintenance.embeddings.backfill",
         {
-            "status": display_status,
-            "embedded_sessions": embedded,
-            "skipped_sessions": skipped,
-            "error_count": errors,
-            "estimated_cost_usd": round(cumulative_cost, 8),
-            "stopped_reason": stopped_reason,
-            "candidate_sessions": len(pending),
-            "processed_sessions": processed,
-            "preflight": _preflight_payload(report),
-            "sessions": session_payloads,
+            "max_sessions": max_sessions,
+            "max_messages": max_messages,
+            "max_cost_usd": max_cost_usd,
+            "min_messages": min_messages,
+            "stop_after_seconds": stop_after_seconds,
+            "max_errors": max_errors,
+            "rebuild": rebuild,
         },
     )
-    _record_archive_backfill_run(
-        index_db,
-        started_at_ms=started_at_ms,
-        status=payload["status"],
-        processed_sessions=processed,
-        embedded_sessions=embedded,
-        skipped_sessions=skipped,
-        error_count=errors,
-        embedded_messages=sum(item["embedded_message_count"] for item in session_payloads),
-        estimated_cost_usd=cumulative_cost,
-        stop_reason=stopped_reason,
-        configured_root=configured_root,
-    )
-    if output_format == "text":
-        click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
-        if stopped_reason:
-            click.echo(f"Stopped early: {stopped_reason}.")
-    return payload
+    if output_format == "json":
+        click.echo(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        click.echo("Embedding backfill submitted to polylogued run.")
 
 
 def _record_archive_backfill_run(

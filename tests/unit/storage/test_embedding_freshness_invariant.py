@@ -15,12 +15,11 @@ from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TypeVar, cast
+from typing import TypeVar
 
 import pytest
 
 from polylogue.archive.message.roles import Role
-from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.derivation_identity import (
@@ -31,11 +30,10 @@ from polylogue.storage.derivation_identity import (
 )
 from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, vector_derivation_hash
 from polylogue.storage.embeddings.materialization import (
-    EmbedSessionOutcome,
     embed_archive_session_sync,
     select_pending_archive_session_window,
 )
-from polylogue.storage.embeddings.preflight import PreflightReport, build_preflight_report
+from polylogue.storage.embeddings.preflight import build_preflight_report
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
@@ -207,55 +205,6 @@ def test_message_derivation_inspection_rejects_ref_after_message_semantics_chang
         quiet=lambda _frame, _key: True,
     )
     assert quiet_adapter.quiet(frame, keys[0]) is True
-
-
-def test_manual_backfill_mutation_restoring_stale_check_bypass_misses_changed_content(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Production dependency: ``polylogue embed`` archive backfill selection."""
-    from polylogue.cli.commands import embed as embed_command
-    from polylogue.storage.embeddings import materialization
-
-    index_db, embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
-    selected: list[str] = []
-
-    def _observe_embed(
-        _index_db: Path, _provider: object, selected_session_id: str, **_kwargs: object
-    ) -> EmbedSessionOutcome:
-        selected.append(selected_session_id)
-        return EmbedSessionOutcome(status="embedded", session_id=selected_session_id, embedded_message_count=1)
-
-    monkeypatch.setattr(materialization, "embed_archive_session_sync", _observe_embed)
-    monkeypatch.setattr(embed_command, "_record_archive_backfill_run", lambda *_args, **_kwargs: None)
-    report = PreflightReport(
-        total_sessions=1,
-        pending_sessions=1,
-        pending_messages=1,
-        estimated_tokens=1,
-        estimated_cost_usd=0.0,
-        model="voyage-4",
-        dimension=1024,
-        cost_cap_usd=0.0,
-    )
-    env = cast(
-        AppEnv, SimpleNamespace(ui=SimpleNamespace(console=SimpleNamespace(print=lambda *_args, **_kwargs: None)))
-    )
-
-    payload = embed_command._run_archive_backfill(
-        env,
-        index_db,
-        embeddings_db,
-        object(),
-        report,
-        rebuild=False,
-        max_sessions=None,
-        stop_after_seconds=None,
-        max_errors=None,
-        output_format="json",
-    )
-
-    assert payload["candidate_sessions"] == 1
-    assert selected == [session_id]
 
 
 def test_preflight_mutation_restoring_stale_check_bypass_misses_changed_content(

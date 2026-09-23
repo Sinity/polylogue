@@ -476,7 +476,11 @@ class DaemonOperationRuntime:
                     return execute_operation(request, context)
 
                 try:
-                    if request.operation in {"ingest", "maintenance.insights.rebuild"}:
+                    if request.operation in {
+                        "ingest",
+                        "maintenance.insights.rebuild",
+                        "maintenance.embeddings.backfill",
+                    }:
                         if self._owner_loop is None:
                             self._exchanges.pop(request_id)
                             return operation_envelope(
@@ -485,14 +489,15 @@ class DaemonOperationRuntime:
                                 outcome="rejected",
                                 error={"code": "ingest_runtime_unavailable", "retryable": False},
                             ).to_dict()
+                        from polylogue.daemon.embedding_owner import execute_embedding_backfill_operation
                         from polylogue.operations.daemon_ingest import execute_ingest_operation
                         from polylogue.operations.daemon_insights import execute_insights_rebuild_operation
 
-                        staged = (
-                            execute_ingest_operation
-                            if request.operation == "ingest"
-                            else execute_insights_rebuild_operation
-                        )
+                        staged = {
+                            "ingest": execute_ingest_operation,
+                            "maintenance.insights.rebuild": execute_insights_rebuild_operation,
+                            "maintenance.embeddings.backfill": execute_embedding_backfill_operation,
+                        }[request.operation]
 
                         exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)
 

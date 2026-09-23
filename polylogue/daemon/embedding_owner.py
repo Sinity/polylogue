@@ -34,6 +34,8 @@ from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
 if TYPE_CHECKING:
     from polylogue.daemon.derivation import DerivationReport
+    from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
+    from polylogue.operations.operation_context import OperationContext
 
 T = TypeVar("T")
 
@@ -42,6 +44,7 @@ __all__ = [
     "DaemonEmbeddingAdmission",
     "EmbeddingConvergenceResult",
     "compose_embedding_convergence",
+    "execute_embedding_backfill_operation",
 ]
 
 
@@ -279,3 +282,45 @@ def compose_embedding_convergence(
                     active_receipt = None
 
     return ComposedEmbeddingConvergence(converge)
+
+
+async def execute_embedding_backfill_operation(
+    request: DaemonOperationRequest, context: OperationContext
+) -> DaemonOperationEnvelope:
+    """Run an operator-requested pass through the resident embedding owner.
+
+    The CLI supplies bounds as intent; provider credentials, tier writes, cost
+    reservation, and the actual derivation remain daemon-owned.  The ambient
+    backlog owner is deliberately reused so a manual pass cannot create a
+    second embedding writer.
+    """
+    from polylogue.daemon.execution import daemon_compute_adapter
+    from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, daemon_write_coordinator
+    from polylogue.operations.daemon_execution import operation_envelope
+
+    runtime = context.runtime
+    owner_loop = getattr(runtime, "_owner_loop", None) if runtime is not None else None
+    if runtime is None or owner_loop is None:
+        raise PermissionError("daemon_required")
+    root = context.archive_root
+    owner = compose_embedding_convergence(
+        root / "index.db",
+        compute_adapter=daemon_compute_adapter(),
+        write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
+    )
+    result = await owner(None)
+    report = result.report
+    payload = {
+        "operation": request.operation,
+        "outcome": "completed" if result.deferred_reason is None else "stopped",
+        "sequence": 1,
+        "effect": "committed" if report is not None and report.done else "no-effect",
+        "affected_count": 0 if report is None else report.done,
+        "stop_reason": result.deferred_reason,
+        "result": {
+            "done": 0 if report is None else report.done,
+            "pending": 0 if report is None else report.pending,
+            "failed": 0 if report is None else report.failed,
+        },
+    }
+    return operation_envelope(request, context, result=payload)
