@@ -15,7 +15,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
-from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -61,6 +60,41 @@ class _EmbeddingStatusEnv:
     """Adapts ``ServerCallbacks`` config access to ``embedding_status_payload``'s ``_HasConfig`` protocol."""
 
     config: Config
+
+
+def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str, object]) -> str:
+    """Submit a privileged request to the resident daemon only."""
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+
+    config = hooks.get_config()
+    # ``no_daemon``/``daemon_client_mode`` live on PolylogueConfig (the settings
+    # layer), not on the Config that ServerCallbacks hands out. Use the same
+    # helper the CLI read path uses so one rule decides "daemon disabled"
+    # everywhere rather than this surface growing its own.
+    from polylogue.cli.read_dispatch import daemon_route_disabled
+
+    if daemon_route_disabled(flag=False):
+        return hooks.error_json("start polylogued run to serve this operation", code="daemon_required")
+    client = DaemonClient(
+        daemon_socket_path(config.archive_root),
+        auth_token=lambda: resolve_api_auth_token(
+            getattr(config, "api_auth_token", None), allow_no_auth=getattr(config, "api_allow_no_auth", False)
+        ),
+    )
+    try:
+        response = client.operation(operation, payload, archive_root=str(config.archive_root))
+    except Exception:
+        return hooks.error_json("daemon operation unavailable", code="daemon_required")
+    if response is None:
+        return hooks.error_json("start polylogued run to serve this operation", code="daemon_required")
+    if response.get("outcome") in {"rejected", "failed", "indeterminate"}:
+        error = response.get("error")
+        detail = error.get("message") if isinstance(error, dict) else "daemon operation refused"
+        return hooks.error_json(str(detail), code="daemon_required")
+    result = response.get("result")
+    return json.dumps(result if isinstance(result, dict) else response, indent=2, ensure_ascii=False, default=str)
 
 
 def _object_ref(ref: str) -> str:
@@ -2658,25 +2692,10 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         if confirm_error is not None:
             return confirm_error
         session_ids = kwargs.get("session_ids")
-        try:
-            counts = await hooks.get_polylogue().rebuild_insights(
-                session_ids=list(session_ids) if session_ids else None
-            )
-        except InsightMaintenanceRequiresDaemonError as exc:
-            # Insight maintenance is a sealed, page-bounded daemon machine.
-            # MCP has no way to hold that authority, so report the sanctioned
-            # route instead of surfacing an internal transaction error.
-            return hooks.error_json(str(exc), code="daemon_required")
-        return hooks.json_payload(
-            MCPRootPayload(
-                root={
-                    "status": "ok",
-                    "session_count": len(session_ids) if session_ids else None,
-                    "counts": counts.to_dict(),
-                    "total": counts.total(),
-                }
-            ),
-            exclude_none=True,
+        return _daemon_operation(
+            hooks,
+            "maintenance.insights.rebuild",
+            {"session_ids": list(session_ids) if session_ids else None},
         )
 
     return hooks.error_json(f"unknown maintenance operation: {operation!r}", code="invalid_argument")

@@ -652,7 +652,7 @@ def _record_archive_backfill_run(
 
     ``configured_root`` names the durable-tier archive root explicitly (an
     index-only external generation's ``index_db`` can live outside it, same
-    rationale as ``embeddings_db`` in :func:`_run_archive_backfill`); it
+    rationale as the daemon-owned embedding backfill operation); it
     defaults to ``index_db.with_name("ops.db")`` for callers that never
     diverge from the plain convention.
     """

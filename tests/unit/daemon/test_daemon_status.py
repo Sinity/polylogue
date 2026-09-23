@@ -1975,10 +1975,28 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
     assert "broken predecessor chain" in str(claim_guard["converged"]["reason"])
 
 
-def test_daemon_and_direct_status_share_zero_head_unavailable_ops_semantics(tmp_path: Path) -> None:
-    """Daemon and CLI operation routes consume the same pinned projection."""
+def test_zero_head_unavailable_ops_semantics_and_no_direct_status_route(tmp_path: Path) -> None:
+    """The daemon projection holds, and there is no in-process route to compare it to.
 
-    from polylogue.cli.operation_kernel import configured_read_operation
+    This test used to assert that the daemon and a direct CLI read produced the
+    same payload, by calling ``configured_read_operation(..., daemon_disabled=True)``.
+    polylogue-3eexy retired the CLI's direct-read execution mode, so that call is
+    now a typed refusal rather than a second implementation of status -- which is
+    the point: there is no longer a second implementation that could drift.
+
+    What is still worth pinning is kept: the daemon-side zero-head semantics, and
+    that the retired route refuses in a typed way naming the operation instead of
+    silently executing or raising something generic.
+
+    Anti-vacuity: restore an in-process execution path for ``status`` and the
+    ``pytest.raises`` block stops raising; change the zero-head classification and
+    the three payload assertions go red.
+    """
+
+    from polylogue.cli.operation_kernel import (
+        OperationUnavailableError,
+        configured_read_operation,
+    )
     from polylogue.config import Config
     from polylogue.daemon.status import RawMaterializationReadiness, _raw_frontier_integrity_info
 
@@ -1988,18 +2006,15 @@ def test_daemon_and_direct_status_share_zero_head_unavailable_ops_semantics(tmp_
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"):
         daemon_payload = _raw_frontier_integrity_info(readiness).model_dump()
-    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
-    operation_result = configured_read_operation(config, "status", {}, daemon_disabled=True)
-    direct_result = cast(dict[str, object], operation_result.value)
-    direct_payload = cast(dict[str, object], direct_result["raw_frontier_integrity"])
-    embedding_payload = cast(dict[str, object], direct_result["embedding_status"])
 
-    assert daemon_payload == direct_payload
-    assert embedding_payload["status"] == "unavailable"
-    assert embedding_payload["freshness_status"] == "unavailable"
     assert daemon_payload["broken_head_status"] == "healthy"
     assert daemon_payload["cursor_ahead_status"] == "unknown"
     assert daemon_payload["overall_status"] == "unknown"
+
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
+    with pytest.raises(OperationUnavailableError) as refusal:
+        configured_read_operation(config, "status", {}, daemon_disabled=True)
+    assert refusal.value.operation == "status"
 
 
 @pytest.mark.parametrize("overall_status", ["unknown", "violated"])

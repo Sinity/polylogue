@@ -300,6 +300,19 @@ def route_contract_from_declaration(declaration: DaemonRouteDeclaration) -> Rout
     )
 
 
+def declared_route_keys() -> frozenset[tuple[str, str]]:
+    """Return the route identities that are required to remain executable.
+
+    The four migrated routes are represented in ``ROUTE_CONTRACTS`` with a
+    non-null ``domain_operation``.  Keeping this expectation independent from
+    ``DAEMON_ROUTE_DECLARATIONS`` is deliberate: otherwise removing a
+    declaration would remove it from both sides of a reachability comparison
+    and the completeness check could certify the missing route.
+    """
+
+    return frozenset((route.method, route.pattern) for route in ROUTE_CONTRACTS if route.domain_operation is not None)
+
+
 ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     RouteContract(
         "GET",
@@ -880,5 +893,6 @@ __all__ = [
     "route_contract_for",
     "route_contract_for_pattern",
     "route_contract_from_declaration",
+    "declared_route_keys",
     "stable_route_contracts",
 ]

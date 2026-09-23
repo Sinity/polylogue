@@ -35,6 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 
 DURABLE_TIERS = (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT)
 
@@ -211,3 +212,21 @@ def test_a_transplanted_tier_at_the_birth_version_is_still_refused_above_the_flo
 
     with pytest.raises(RuntimeError, match="is not part of polylogue.archive-format.v1"):
         archive_plan.assert_archive_format_lineage(tmp_path)
+
+
+def test_audit_schema_change_is_rejected_until_its_numbered_route_is_authorized(tmp_path: Path) -> None:
+    """A simulated audit change cannot bypass the missing v2 authority.
+
+    Audit is durable, but its fresh schema still stamps the format floor.  A
+    caller asking for the first numbered migration must therefore be rejected
+    before any SQL or backup state is touched.  This is the anti-vacuity guard
+    for the route record in ``migrations/audit``: adding an audit migration
+    without first advancing the tier authority would otherwise create a
+    migration file that production can never safely admit.
+    """
+    path = tmp_path / "audit.db"
+    initialize_archive_database(path, ArchiveTier.AUDIT)
+    with sqlite3.connect(path) as conn:
+        with pytest.raises(MigrationError, match="newer than this runtime expects"):
+            migrate_archive_tier(conn, ArchiveTier.AUDIT, backup_manifest=None, target_version=2)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT]

@@ -121,6 +121,15 @@ def test_unreachable_generated_route_fails_the_reachability_oracle(monkeypatch: 
         validate_declared_route_reachability(DaemonAPIHandler)
 
 
+def test_removed_declaration_binding_fails_against_contract_expectation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing declaration cannot self-authorize by shrinking both route sets."""
+
+    monkeypatch.setattr("polylogue.daemon.http.DAEMON_ROUTE_DECLARATIONS", DAEMON_ROUTE_DECLARATIONS[:-1])
+
+    with pytest.raises(RuntimeError, match="generation mismatch"):
+        validate_declared_route_reachability(DaemonAPIHandler)
+
+
 def test_unreachable_declaration_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
     """Adding a declaration without an executable handler cannot self-authorize."""
 
