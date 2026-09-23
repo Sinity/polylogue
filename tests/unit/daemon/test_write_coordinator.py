@@ -1576,3 +1576,32 @@ async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_w
     assert await successor_task == "entered"
     assert receipts == ["committed"]
     assert await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_failed_admission_hook_publishes_terminal_release() -> None:
+    """An admission refusal still settles the acquired gate in telemetry.
+
+    Anti-vacuity: removing the admission-failure ``released`` event makes the
+    final assertion fail even though the gate itself is released, leaving
+    observers unable to distinguish a stuck writer from a refused one.
+    """
+    events: list[DaemonWriteEvent] = []
+    coordinator = DaemonWriteCoordinator(observer=events.append)
+
+    def refuse() -> None:
+        raise RuntimeError("admission refused")
+
+    async def operation() -> None:
+        raise AssertionError("a refused admission must not run the body")
+
+    with pytest.raises(RuntimeError, match="admission refused"):
+        await coordinator.run("control.refused", operation, on_admit=refuse)
+
+    assert [event.phase for event in events] == ["queued", "acquired", "released"]
+    release = events[-1]
+    assert release.outcome == "error"
+    assert release.hold_budget_s is not None
+    assert coordinator.snapshot().active_actor is None
+    assert await coordinator.run("successor", lambda: _return_ready()) == "ready"
+    assert await coordinator.shutdown(timeout=1.0)
