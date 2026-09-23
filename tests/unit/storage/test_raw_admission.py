@@ -120,6 +120,26 @@ def test_same_raw_identity_fills_null_file_mtime_on_later_observation(tmp_path: 
         )
 
 
+def test_capture_mode_is_unknown_when_writer_has_no_route_observation(tmp_path: Path) -> None:
+    """Provider identity must not be manufactured as capture-route evidence."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","id":"route-unknown"}\n',
+            source_path="route-unknown.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+        row = (
+            archive._ensure_source_conn()
+            .execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+            .fetchone()
+        )
+    assert row is not None
+    assert row[0] is None
+
+
 def test_revision_bearing_raw_payload_uses_typed_admission(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     envelope = RawRevisionEnvelope(

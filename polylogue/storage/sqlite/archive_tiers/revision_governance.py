@@ -711,6 +711,12 @@ def write_raw_payload(
     chokepoint bypass, not as precedent.
     """
     policy_snapshot = _policy_snapshot_for_store(store)
+    # DRIVE is a deliberate compatibility carrier for the non-injective
+    # AISTUDIO_DRIVE origin mapping.  Preserve it when callers use the legacy
+    # direct-provider API; every other omitted route remains unknown.
+    observed_capture_mode = (
+        capture_mode if capture_mode is not None else (Provider.DRIVE if provider is Provider.DRIVE else None)
+    )
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
     if blob_publication_receipt_id is None:
@@ -723,7 +729,11 @@ def write_raw_payload(
         admission = admit_raw_observation(
             store._ensure_source_conn(),
             origin=origin_from_provider(provider),
-            capture_mode=capture_mode or provider,
+            # A missing capture mode is an unknown observation.  Do not
+            # manufacture route provenance from provider identity; callers
+            # that genuinely observed a provider-shaped route pass it
+            # explicitly.
+            capture_mode=observed_capture_mode,
             source_path=source_path,
             source_index=source_index,
             payload=payload,
@@ -746,7 +756,7 @@ def write_raw_payload(
         admission = admit_raw_observation(
             store._ensure_source_conn(),
             origin=origin_from_provider(provider),
-            capture_mode=capture_mode or provider,
+            capture_mode=observed_capture_mode,
             source_path=source_path,
             source_index=source_index,
             payload=payload,
@@ -764,7 +774,7 @@ def write_raw_payload(
     return write_source_raw_session(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
-        capture_mode=capture_mode or provider,
+        capture_mode=observed_capture_mode,
         source_path=source_path,
         source_index=source_index,
         payload=payload,
@@ -802,6 +812,9 @@ def write_raw_blob_ref(
     (polylogue-1fijp); the only caller reaching it here is test infrastructure.
     """
     policy_snapshot = _policy_snapshot_for_store(store)
+    observed_capture_mode = (
+        capture_mode if capture_mode is not None else (Provider.DRIVE if provider is Provider.DRIVE else None)
+    )
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
     if post_parse:
@@ -810,7 +823,7 @@ def write_raw_blob_ref(
         admission = admit_raw_blob_observation(
             store._ensure_source_conn(),
             origin=origin_from_provider(provider),
-            capture_mode=capture_mode or provider,
+            capture_mode=observed_capture_mode,
             source_path=source_path,
             source_index=source_index,
             blob_hash=bytes.fromhex(blob_hash_hex),
@@ -827,7 +840,7 @@ def write_raw_blob_ref(
     return write_source_raw_session_blob_ref(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
-        capture_mode=capture_mode or provider,
+        capture_mode=observed_capture_mode,
         source_path=source_path,
         source_index=source_index,
         blob_hash=bytes.fromhex(blob_hash_hex),
