@@ -121,6 +121,10 @@ def compose_embedding_convergence(
     compute_adapter: BoundedComputeAdapter,
     write_bridge: DaemonWriteThreadBridge,
     quiet: Callable[[], bool] | None = None,
+    max_messages: int | None = None,
+    max_cost_usd: float | None = None,
+    stop_after_seconds: int | None = None,
+    max_errors: int | None = None,
 ) -> ComposedEmbeddingConvergence:
     """Compose the common-kernel embedding owner once for a daemon process.
 
@@ -213,6 +217,10 @@ def compose_embedding_convergence(
         nonlocal active_receipt
         async with pass_lock:
             compute_budget = EMBEDDING_PASS_MAX_MESSAGES
+            if max_messages is not None:
+                compute_budget = min(compute_budget, max_messages)
+            if max_cost_usd is not None:
+                compute_budget = min(compute_budget, max(0, int(max_cost_usd / estimated_cost_per_message)))
             if monthly_cap > 0.0:
                 from polylogue.daemon.embedding_backlog import _archive_embedding_catchup_estimated_cost_this_month
 
@@ -242,7 +250,10 @@ def compose_embedding_convergence(
                         compute=compute_budget,
                         publication=compute_budget,
                         retained_outcomes=compute_budget,
-                        deadline_s=EMBEDDING_PASS_DEADLINE_S,
+                        deadline_s=min(
+                            EMBEDDING_PASS_DEADLINE_S,
+                            float(stop_after_seconds) if stop_after_seconds is not None else EMBEDDING_PASS_DEADLINE_S,
+                        ),
                     ),
                     domains=(adapter.domain,),
                 )
@@ -273,9 +284,15 @@ def compose_embedding_convergence(
                             error_message="embedding derivation key failures" if failures else None,
                         ),
                     )
-                deferred = (
-                    "monthly_cost_cap" if compute_budget < EMBEDDING_PASS_MAX_MESSAGES and report.pending else None
-                )
+                deferred = None
+                if max_cost_usd is not None and compute_budget < EMBEDDING_PASS_MAX_MESSAGES and report.pending:
+                    deferred = "cost_cap_exceeded"
+                elif monthly_cap > 0.0 and compute_budget < EMBEDDING_PASS_MAX_MESSAGES and report.pending:
+                    deferred = "monthly_cost_cap"
+                elif stop_after_seconds is not None and report.pending:
+                    deferred = "stop_after_seconds"
+                elif max_errors is not None and failures >= max_errors:
+                    deferred = "max_errors"
                 return EmbeddingConvergenceResult(report, deferred)
             finally:
                 with receipt_lock:
@@ -303,12 +320,44 @@ async def execute_embedding_backfill_operation(
     if runtime is None or owner_loop is None:
         raise PermissionError("daemon_required")
     root = context.archive_root
+    payload = request.payload
+    max_sessions = payload.get("max_sessions")
+    max_messages = payload.get("max_messages")
+    max_cost_usd = payload.get("max_cost_usd")
+    min_messages = payload.get("min_messages")
+    stop_after_seconds = payload.get("stop_after_seconds")
+    max_errors = payload.get("max_errors")
+
+    # Resolve the bounded session window on the daemon's read side.  The
+    # resulting ids are only intent; all embedding writes still go through the
+    # resident owner and its write coordinator.
+    scope: tuple[str, ...] | None = None
+    if max_sessions is not None or max_messages is not None or min_messages is not None or bool(payload.get("rebuild")):
+        from polylogue.operations.embedding_derivation import (
+            select_embedding_session_window,
+        )
+
+        scope = select_embedding_session_window(
+            root / "index.db",
+            archive_root=root,
+            rebuild=bool(payload.get("rebuild")),
+            max_sessions=int(max_sessions) if max_sessions is not None else None,
+            max_messages=int(max_messages) if max_messages is not None else None,
+            min_messages=int(min_messages) if min_messages is not None else None,
+        )
+
     owner = compose_embedding_convergence(
         root / "index.db",
         compute_adapter=daemon_compute_adapter(),
         write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
+        max_messages=int(max_messages) if max_messages is not None else None,
+        max_cost_usd=float(max_cost_usd) if max_cost_usd is not None else None,
+        stop_after_seconds=int(stop_after_seconds) if stop_after_seconds is not None else None,
+        max_errors=int(max_errors) if max_errors is not None else None,
     )
-    result = await owner(None)
+    result = await owner(scope)
+    from polylogue.operations.embedding_derivation import estimated_embedding_message_cost
+
     report = result.report
     payload = {
         "operation": request.operation,
@@ -317,6 +366,12 @@ async def execute_embedding_backfill_operation(
         "effect": "committed" if report is not None and report.done else "no-effect",
         "affected_count": 0 if report is None else report.done,
         "stop_reason": result.deferred_reason,
+        "progress": {
+            "state": "stopped" if result.deferred_reason is not None else "complete",
+            "computed": 0 if report is None else report.work.computed,
+            "failed": 0 if report is None else report.failed,
+            "cost_usd": 0.0 if report is None else report.work.computed * estimated_embedding_message_cost(),
+        },
         "result": {
             "done": 0 if report is None else report.done,
             "pending": 0 if report is None else report.pending,
