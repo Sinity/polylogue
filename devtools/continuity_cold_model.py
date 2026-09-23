@@ -1,42 +1,4 @@
-"""Cold, wire-only model planning lane over the existing continuity replay.
-
-The production replay in :mod:`devtools.continuity_replay` stays the execution
-oracle: it runs every declared scenario over real MCP stdio with paging,
-cancellation, mutation and budget proofs.  This module adds the half that was
-missing -- asking a model to *formulate* the plan from sparse operator wording
-plus nothing but public, wire-captured discovery, and grading that formulation
-on axes separate from the product route's own results.
-
-Three properties are load-bearing and each has a guard:
-
-- **Cold.** The only scenario-derived input a model ever sees is
-  :attr:`ContinuityScenarioSpec.sparse_prompt`.  Route steps, fact
-  projections, oracle answers, fixture keys, plan families and equivalent
-  signatures are read only by the evaluator, strictly after the model has
-  committed a plan.  :func:`build_cold_prompt` is the single place a prompt is
-  assembled, and it takes the sparse wording as a plain string so a scenario
-  object cannot leak into it.
-- **Wire-only.** Discovery comes from :func:`capture_wire_discovery`, which
-  pages the real ``explain`` tool over the same
-  :class:`~devtools.continuity_replay.StdioMCPContinuityRoute` the replay
-  uses, following the server's own continuations to exhaustion.  This module
-  deliberately never imports
-  ``polylogue.archive.query.discovery.QUERY_DISCOVERY_EXAMPLES``; there is no
-  in-process registry fallback, and a continuation that fails to advance or
-  drops its subject raises instead of degrading.
-- **Registry-complete.** :func:`reconcile_registry_coverage` reconciles the
-  per-scenario results against ``CONTINUITY_SCENARIOS`` itself, so a missing,
-  duplicated, stale or unknown scenario is a lane failure rather than a silent
-  skip.
-
-Backends are provider-neutral: one typed plan contract, one evaluation schema,
-no provider-specific parser, score field or scenario fork.
-:class:`ScriptedColdModelBackend` replays a recorded plan artifact and is what
-the test suite and CI use, keeping the harness hermetic.
-:class:`HTTPColdModelBackend` speaks either the OpenAI chat-completions or the
-Anthropic messages dialect through that same contract, and is constructed only
-when an operator explicitly asks for it on the command line.
-"""
+"""Cold, wire-only model planning lane over continuity replay."""
 
 from __future__ import annotations
 
@@ -51,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol, TypeAlias, cast
 
 if __package__ in {None, ""}:  # pragma: no cover - exercised by the script entry point
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -106,8 +68,6 @@ _ALLOWED_UNCERTAINTY: frozenset[str] = frozenset({"low", "medium", "high"})
 
 
 class ColdModelLaneError(RuntimeError):
-    """Structured cold-lane failure reportable without a traceback."""
-
     def __init__(self, message: str, *, kind: str, axis: ColdModelAxis) -> None:
         super().__init__(message)
         self.kind = kind
@@ -115,22 +75,11 @@ class ColdModelLaneError(RuntimeError):
 
 
 def _as_tool(value: str) -> ContinuityTool:
-    """Narrow an already-validated tool token to the declared literal."""
-    mapping: dict[str, ContinuityTool] = {
-        "query": "query",
-        "read": "read",
-        "get": "get",
-        "explain": "explain",
-        "context": "context",
-        "status": "status",
-    }
-    return mapping[value]
+    return cast(ContinuityTool, value)
 
 
 def _as_uncertainty(value: str) -> ColdModelUncertainty:
-    """Narrow an already-validated uncertainty token to the declared literal."""
-    mapping: dict[str, ColdModelUncertainty] = {"low": "low", "medium": "medium", "high": "high"}
-    return mapping[value]
+    return cast(ColdModelUncertainty, value)
 
 
 def _digest(value: object) -> str:
@@ -142,8 +91,6 @@ def _digest(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ColdModelPlanStep:
-    """One tool call a model proposes before any oracle access."""
-
     tool: ContinuityTool
     arguments: PlanArguments
 
@@ -161,8 +108,6 @@ class ColdModelPlanStep:
 
 @dataclass(frozen=True, slots=True)
 class ColdModelPlan:
-    """A model's committed plan.  Constructed only from model output."""
-
     steps: tuple[ColdModelPlanStep, ...]
     stop_conditions: tuple[str, ...]
     citation_fields: tuple[str, ...]
@@ -288,8 +233,6 @@ def parse_cold_model_plan(text: str) -> ColdModelPlan:
 
 @dataclass(frozen=True, slots=True)
 class WireDiscoveryCapture:
-    """Everything public a cold client can learn from the live server."""
-
     transport_name: str
     protocol_version: str
     tools: tuple[str, ...]
@@ -341,13 +284,6 @@ async def capture_wire_discovery(
     subjects: Sequence[str] = EXPLAIN_DISCOVERY_SUBJECTS,
     max_hops: int = 40,
 ) -> WireDiscoveryCapture:
-    """Page the live ``explain`` tool to exhaustion over the real wire.
-
-    There is no in-process fallback.  A budget-exceeded response that returns
-    no page, drops its ``subject``, or fails to advance its ``offset`` raises
-    :class:`ColdModelLaneError` -- the controlled regression that the closed
-    polylogue-3k30 defect would trip.
-    """
 
     names, schemas = _discovery_tool_schemas(route.discovery)
     protocol_version = route.discovery.get("protocol_version")
@@ -468,8 +404,6 @@ def _collect_examples(raw: object, into: dict[str, JSONDocument]) -> None:
 
 @dataclass(frozen=True, slots=True)
 class ColdModelIdentity:
-    """Who answered, under which declared version."""
-
     family: str
     model: str
     prompt_version: str
@@ -480,8 +414,6 @@ class ColdModelIdentity:
 
 @dataclass(frozen=True, slots=True)
 class ColdModelAnswer:
-    """One backend answer plus its declared resource measurements."""
-
     text: str
     prompt_bytes: int
     answer_bytes: int
@@ -498,8 +430,6 @@ class ColdModelAnswer:
 
 
 class ColdModelBackend(Protocol):
-    """One typed contract for every provider family."""
-
     @property
     def identity(self) -> ColdModelIdentity:
         raise NotImplementedError
@@ -512,13 +442,6 @@ PROMPT_VERSION = "cold-continuity-plan-v1"
 
 
 def build_cold_prompt(sparse_prompt: str, discovery: WireDiscoveryCapture, *, max_calls: int) -> str:
-    """Assemble the only text a model sees.
-
-    Takes the sparse wording as a plain string rather than a scenario object,
-    so no route step, fact projection, fixture key or plan family can reach a
-    prompt by accident.
-    """
-
     contract = {
         "steps": [{"tool": "<one of the tools below>", "arguments": {"<argument>": "<value>"}}],
         "stop_conditions": ["<when you would stop calling>"],
@@ -544,15 +467,6 @@ def build_cold_prompt(sparse_prompt: str, discovery: WireDiscoveryCapture, *, ma
 
 @dataclass(frozen=True, slots=True)
 class ScriptedColdModelBackend:
-    """Replay a recorded plan artifact.  Hermetic: no network, no clock skew.
-
-    This is the backend the test suite and CI use.  It is not a stand-in for a
-    model's judgement -- it replays answers a model (or an author) produced
-    out of band, so the evaluator, the wire discovery client and the registry
-    reconciliation are all exercised without the harness making its first ever
-    outbound request.
-    """
-
     answers: Mapping[str, str]
     model_identity: ColdModelIdentity = ColdModelIdentity(
         family="scripted", model="recorded-plan-artifact", prompt_version=PROMPT_VERSION
@@ -596,14 +510,6 @@ def _scenario_key_from_prompt(prompt: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class HTTPColdModelBackend:
-    """One HTTP adapter for both supported families.
-
-    The request body and the answer extraction differ by dialect because the
-    wire formats differ; the *plan contract* and the *evaluation schema* do
-    not.  There is no provider-specific plan parser, score field or scenario
-    fork anywhere downstream of this class.
-    """
-
     dialect: ColdModelDialect
     model: str
     base_url: str
@@ -665,13 +571,15 @@ class HTTPColdModelBackend:
                 message = choices[0].get("message")
                 if isinstance(message, dict) and isinstance(message.get("content"), str):
                     return str(message["content"])
-        else:
-            content = body.get("content")
-            if isinstance(content, list):
-                parts = [block.get("text", "") for block in content if isinstance(block, dict)]
-                joined = "".join(part for part in parts if isinstance(part, str))
-                if joined:
-                    return joined
+        content = body.get("content")
+        if isinstance(content, list):
+            joined = "".join(
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and isinstance(block.get("text"), str)
+            )
+            if joined:
+                return joined
         raise ColdModelLaneError(
             f"{self.dialect} backend answer carried no text",
             kind="backend_answer_malformed",
@@ -679,7 +587,6 @@ class HTTPColdModelBackend:
         )
 
     def _native_counts(self, body: object) -> JSONDocument:
-        """Record the backend's own counters verbatim; never add across families."""
         if not isinstance(body, dict):
             return {}
         usage = body.get("usage")
@@ -693,8 +600,6 @@ class HTTPColdModelBackend:
 
 @dataclass(frozen=True, slots=True)
 class ColdModelAxisGrade:
-    """One graded axis, independent of every other axis."""
-
     axis: ColdModelAxis
     status: Literal["pass", "fail"]
     detail: str
@@ -716,13 +621,6 @@ def grade_formulation(
     plan: ColdModelPlan,
     capture: WireDiscoveryCapture,
 ) -> tuple[ColdModelAxisGrade, ...]:
-    """Grade the committed plan against the answer key.
-
-    Every input read here -- discovery requirements, allowed surfaces,
-    equivalent plan signatures, evidence projections, stop conditions -- is
-    read *after* the model has committed, and none of it was ever in a prompt.
-    """
-
     grades: list[ColdModelAxisGrade] = []
 
     required_tools = {requirement.tool for requirement in scenario.discovery_requirements}
@@ -797,8 +695,6 @@ def grade_formulation(
 
 
 def grade_execution(replay_result: Mapping[str, JSONValue]) -> tuple[ColdModelAxisGrade, ...]:
-    """Grade the product route's own outcome, separately from formulation."""
-
     status = replay_result.get("status")
     diagnostics = replay_result.get("diagnostics")
     diagnostic_count = len(diagnostics) if isinstance(diagnostics, list) else 0
@@ -828,8 +724,6 @@ def grade_execution(replay_result: Mapping[str, JSONValue]) -> tuple[ColdModelAx
 
 @dataclass(frozen=True, slots=True)
 class ColdModelVariancePolicy:
-    """Declared repeated-run policy separating product defects from variance."""
-
     attempts: int = 1
     required_passes: int = 1
 
@@ -854,8 +748,6 @@ class ColdModelVariancePolicy:
 
 
 def reconcile_registry_coverage(scenario_ids: Sequence[str]) -> tuple[str, ...]:
-    """Return one error per missing, duplicated or unknown scenario."""
-
     declared = [scenario.scenario_id for scenario in CONTINUITY_SCENARIOS]
     errors: list[str] = []
     seen: dict[str, int] = {}
@@ -884,8 +776,6 @@ async def run_cold_model_lane(
     scenario_names: Sequence[str] | None = None,
     route: ContinuityRoute | None = None,
 ) -> JSONDocument:
-    """Run the cold lane over every registry scenario and reconcile coverage."""
-
     policy = variance or ColdModelVariancePolicy()
     selected = (
         tuple(scenario.scenario_id for scenario in CONTINUITY_SCENARIOS)

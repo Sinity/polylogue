@@ -30,6 +30,7 @@ from devtools.continuity_cold_model import (
 from devtools.continuity_scenarios import CONTINUITY_SCENARIOS, continuity_scenario
 
 _MODULE = Path(__file__).resolve().parents[3] / "devtools" / "continuity_cold_model.py"
+_PLANS = Path(__file__).resolve().parents[2] / "data" / "continuity" / "cold-model-plans.json"
 
 
 def _capture(tools: tuple[str, ...] = ("query", "status", "explain", "read", "get", "context")) -> WireDiscoveryCapture:
@@ -123,6 +124,12 @@ class TestColdness:
                 imported.update(alias.name for alias in node.names)
         assert "QUERY_DISCOVERY_EXAMPLES" not in imported
         assert not any(name.startswith("polylogue.archive.query.discovery") for name in imported)
+
+    def test_plan_artifact_declares_model_generation(self) -> None:
+        """The checked-in answers must identify model output, not author recording."""
+        payload = json.loads(_PLANS.read_text(encoding="utf-8"))
+        assert payload["generation"]["kind"] == "model-output"
+        assert payload["model"] != "author-recorded-v1"
 
 
 class TestGrading:
