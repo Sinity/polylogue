@@ -663,6 +663,24 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
 COST_STATUS_FILTER_CANDIDATE_CAP = 20_000
 
 
+def _assert_active_cold_build_index_only(index_path: Path, *, durable_paths: tuple[Path, ...]) -> None:
+    """Keep the unsafe cold-build profile away from every durable tier.
+
+    The active cold-build profile deliberately trades durability for speed, but
+    only the rebuildable index may use it.  This guard is intentionally based
+    on the opened path rather than the caller's mode flag, so a future routing
+    change cannot silently apply ``synchronous=OFF`` to source, user, or audit
+    state.
+    """
+    resolved_index = index_path.resolve()
+    durable = {path.resolve() for path in durable_paths}
+    if resolved_index in durable:
+        raise RuntimeError(
+            "active cold-build write profile is restricted to the rebuildable index tier; "
+            f"refusing durable path {resolved_index}"
+        )
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -996,6 +1014,16 @@ class ArchiveStore:
             )
             write_profile = BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             if active_cold_build and not bulk_build_profile:
+                _assert_active_cold_build_index_only(
+                    self.index_db_path,
+                    durable_paths=(
+                        self.source_db_path,
+                        self.user_db_path,
+                        self.embeddings_db_path,
+                        self.ops_db_path,
+                        archive_root / "audit.db",
+                    ),
+                )
                 from polylogue.storage.sqlite.connection_profile import COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
 
                 write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE

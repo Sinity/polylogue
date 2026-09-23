@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.index_generation import IndexGenerationStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, _assert_active_cold_build_index_only
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_CACHE_SIZE_KIB,
@@ -70,6 +70,42 @@ def test_live_active_archive_writer_keeps_wal_profile(tmp_path: Path, monkeypatc
     # or OFF when the harness's scratch override dropped fsync for the run.
     assert synchronous == _declared_synchronous(write_connection_pragma_statements(WRITE_CONNECTION_PROFILE))
     assert abs(cache_size) == WRITE_CACHE_SIZE_KIB
+
+
+def test_active_cold_build_profile_refuses_a_durable_tier_path(tmp_path: Path) -> None:
+    """The unsafe profile is structurally limited to the rebuildable index.
+
+    Anti-vacuity: removing the path guard (or changing it to inspect only a
+    caller flag) lets this durable source path through and makes the assertion
+    green, so this test exercises the actual safety boundary.
+    """
+    source = tmp_path / "source.db"
+    source.touch()
+    with pytest.raises(RuntimeError, match="restricted to the rebuildable index"):
+        _assert_active_cold_build_index_only(source, durable_paths=(source,))
+
+
+def test_active_cold_build_routes_guard_through_index_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production cold-build branch invokes the durable-tier guard."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    calls: list[tuple[Path, tuple[Path, ...]]] = []
+
+    import polylogue.storage.sqlite.archive_tiers.archive as archive_module
+
+    real_guard = archive_module._assert_active_cold_build_index_only
+
+    def record(index_path: Path, *, durable_paths: tuple[Path, ...]) -> None:
+        calls.append((index_path, durable_paths))
+        real_guard(index_path, durable_paths=durable_paths)
+
+    monkeypatch.setattr(archive_module, "_assert_active_cold_build_index_only", record)
+    with ArchiveStore.open_active_cold_build(root):
+        pass
+
+    assert calls, "active cold-build profile bypassed its index-only guard"
+    index_path, durable_paths = calls[0]
+    assert index_path.resolve() not in {path.resolve() for path in durable_paths}
 
 
 def _declared_synchronous(statements: tuple[str, ...]) -> int:
