@@ -260,7 +260,7 @@ def test_unreadable_status_fingerprint_invalidates_cached_frame(
     monkeypatch.setattr(status_module, "archive_root", lambda: tmp_path)
     original_stat = type(active).stat
 
-    def _stat(path: Path, *args: object, **kwargs: object) -> Any:
+    def _stat(path: Path, *args: Any, **kwargs: Any) -> Any:
         if path == active:
             raise OSError("stat refused")
         return original_stat(path, *args, **kwargs)
