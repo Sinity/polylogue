@@ -63,6 +63,18 @@ def test_a_count_pytest_did_not_report_is_none_and_not_zero() -> None:
     assert collection_cost._collected_count("5 tests collected\n7 tests collected") == 7
 
 
+def test_collection_cost_is_normalized_by_the_reported_count() -> None:
+    """A corpus-size change cannot launder a collection regression.
+
+    Anti-vacuity: dividing by a fixed baseline, or omitting the count, makes
+    fewer collected tests look like an improvement; both cases are rejected
+    by the per-item metric.
+    """
+    assert collection_cost._cost_kib_per_item(22.3, 1024) == 22.3
+    assert collection_cost._cost_kib_per_item(22.3, 0) is None
+    assert collection_cost._cost_kib_per_item(22.3, None) is None
+
+
 def _measured(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "kind": "polylogue.collection-cost",
@@ -71,6 +83,7 @@ def _measured(**overrides: Any) -> dict[str, Any]:
         "wall_clock_s": 92.78,
         "peak_rss_mib": 581.3,
         "peak_rss_delta_mib": 545.1,
+        "collection_cost_kib_per_item": 23.7,
         "returncode": 0,
         "tail": [],
     }
@@ -95,6 +108,22 @@ def test_over_budget_and_a_broken_collection_exit_differently(
         collection_cost, "measure_collection", lambda selection, *, root: _measured(returncode=2, collected=None)
     )
     assert collection_cost.main(["--budget-mib", "430"]) == 2
+
+
+def test_per_item_budget_is_a_separate_collection_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(collection_cost, "measure_collection", lambda selection, *, root: _measured())
+
+    assert collection_cost.main(["--budget-kib-per-item", "22.3"]) == collection_cost.OVER_BUDGET_EXIT
+    assert "OVER 22.3" in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        collection_cost,
+        "measure_collection",
+        lambda selection, *, root: _measured(collection_cost_kib_per_item=22.3),
+    )
+    assert collection_cost.main(["--budget-kib-per-item", "22.3"]) == 0
 
 
 def test_without_a_budget_a_measurement_is_never_a_verdict(
