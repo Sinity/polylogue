@@ -214,6 +214,13 @@
           "required_initial": false
         },
         {
+          "description": "Message reference whose surrounding window should be read.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "around",
+          "required_initial": false
+        },
+        {
           "description": "Opaque token from the preceding read response; send alone.",
           "enum_values": [],
           "kind": "string",
