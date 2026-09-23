@@ -42,7 +42,7 @@ ARCHIVE_FORMAT_FLOOR_VERSION = 1
 #: time (polylogue-j264r AC3). An archive born before that slot carries the
 #: table only if a policy-bearing generation happened to be published into it,
 #: so the shape has to be reached by migration, not by fresh DDL alone.
-SOURCE_TIER_VERSION = 3
+SOURCE_TIER_VERSION = 4
 
 #: The user tier's current durable target. Slot 002 -- the first numbered user
 #: train of this lineage -- rebuilt ``assertions`` with ``status TEXT NOT NULL
