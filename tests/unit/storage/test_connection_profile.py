@@ -17,12 +17,13 @@ def _declared_profile(name: str) -> connection_profile.SQLiteConnectionProfile:
     return connection_profile.READ_PROFILES.get(name) or connection_profile.WRITE_PROFILES[name]
 
 
-def test_declared_read_profiles_are_query_only() -> None:
+def test_declared_timeout_classes_cover_read_and_write_profiles() -> None:
     assert set(connection_profile.TIMEOUT_CLASSES) == {
         "interactive-read",
         "background-read",
         "publication",
         "offline-bulk",
+        "active-cold-build",
     }
     assert all(profile.role == "read" and profile.query_only for profile in connection_profile.READ_PROFILES.values())
 
