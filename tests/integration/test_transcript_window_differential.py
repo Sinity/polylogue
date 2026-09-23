@@ -65,6 +65,7 @@ from click.testing import CliRunner
 
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
+from polylogue.archive.query.transaction import QueryContinuationInvalidError
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -338,6 +339,82 @@ async def test_mcp_messages_continuation_resumes_the_window(
     assert json.dumps(bad).find("invalid_continuation") >= 0, bad
 
 
+async def test_malformed_continuation_is_typed_across_api_cli_mcp_http(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every surface refuses a malformed token instead of falling back to page one.
+
+    Anti-vacuity: decoding an invalid token as offset zero (or swallowing the
+    decoder error) makes the API return rows, the CLI exit successfully, or the
+    HTTP route return 200; the four assertions then fail on the concrete
+    transport contract rather than merely comparing an implementation detail.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _seed_session(archive_root)
+    invalid = "not-a-query-continuation"
+
+    archive = Polylogue(archive_root=archive_root)
+    try:
+        with pytest.raises(QueryContinuationInvalidError):
+            await archive.read_transcript_window(session_id, limit=2, continuation=invalid)
+    finally:
+        await archive.close()
+
+    from polylogue.cli.click_app import cli
+
+    cli_result = CliRunner().invoke(
+        cli,
+        [
+            "--no-daemon",
+            "read",
+            f"session:{session_id}",
+            "--view",
+            "messages",
+            "--limit",
+            "2",
+            "--continuation",
+            invalid,
+            "--format",
+            "json",
+        ],
+        catch_exceptions=True,
+    )
+    assert cli_result.exit_code != 0, cli_result.output
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        mcp_payload = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref=f"session:{session_id}",
+                view="messages",
+                limit=2,
+                continuation=invalid,
+            )
+        )
+    assert mcp_payload.get("code") == "invalid_continuation", mcp_payload
+
+    with _running_http_server() as base_url:
+        try:
+            with urlopen(
+                Request(
+                    f"{base_url}/api/sessions/{session_id}/messages?limit=2&continuation={quote(invalid, safe='')}"
+                ),
+                timeout=10,
+            ) as response:
+                raise AssertionError(f"expected a refusal, got {response.status}")
+        except HTTPError as exc:
+            assert exc.code == HTTPStatus.BAD_REQUEST
+            payload = json.loads(exc.read())
+            assert payload["error"] == "invalid_continuation", payload
+
+
 async def _api_window_payload(archive_root: Path, session_id: str, *, limit: int, offset: int) -> dict[str, Any]:
     """The Python API's own transcript-window entry point, serialized like the rest."""
 
@@ -362,6 +439,7 @@ def _cli_window_payload(session_id: str, *, limit: int, offset: int) -> dict[str
     result = CliRunner().invoke(
         cli,
         [
+            "--no-daemon",
             "read",
             f"session:{session_id}",
             "--view",
@@ -539,6 +617,7 @@ def _cli_anchor_window(session_id: str, *, limit: int, around: str) -> tuple[tup
     result = CliRunner().invoke(
         cli,
         [
+            "--no-daemon",
             "read",
             f"session:{session_id}",
             "--view",
@@ -675,7 +754,7 @@ async def test_anchored_window_is_refused_the_same_way_on_every_surface(
 
     result = CliRunner().invoke(
         cli,
-        ["read", f"session:{session_id}", "--view", "messages", "--limit", "2", "--around", missing],
+        ["--no-daemon", "read", f"session:{session_id}", "--view", "messages", "--limit", "2", "--around", missing],
         catch_exceptions=True,
     )
     assert result.exit_code != 0, result.output
