@@ -1228,13 +1228,16 @@ class DaemonConverger:
                 t_check = time.perf_counter()
                 try:
                     batch_needs_work = set(stage.check_many(active_paths)).intersection(active_paths)
-                except Exception:
+                except Exception as exc:
+                    _record_stage_times(batch_stage_times, f"{stage_name}.check", time.perf_counter() - t_check, {})
                     emit(
                         "daemon.stage.check_failed",
                         level=ERROR,
                         stage=stage_name,
                         outcome="error",
                         reason="batch_check_raised",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc),
                     )
                     for path in active_paths:
                         state = self._file_states[path]
@@ -1259,6 +1262,7 @@ class DaemonConverger:
                         try:
                             execute_result = _run_stage_execute(stage, partial(stage.execute_many, ordered_needs_work))
                         except Exception as exc:
+                            _record_stage_times(batch_stage_times, stage_name, time.perf_counter() - t_stage, {})
                             emit(
                                 "daemon.stage.execute_failed",
                                 level=ERROR,

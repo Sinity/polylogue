@@ -141,6 +141,67 @@ def test_converger_batches_stage_execution(tmp_path: Path) -> None:
     assert converger._file_states == {}
 
 
+def test_converger_records_batch_check_time_when_check_fails(tmp_path: Path) -> None:
+    """A failed batch probe remains visible in the timing ledger.
+
+    Anti-vacuity: omitting the failure-path timing record makes the stage
+    appear to have consumed no time, hiding a slow or blocked production
+    checkpoint/readiness probe from bounded diagnostics.
+    """
+    paths = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
+    for path in paths:
+        path.write_text("{}\n", encoding="utf-8")
+
+    def check_many(_candidates: Sequence[Path]) -> set[Path]:
+        raise RuntimeError("probe unavailable")
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="checkpoint",
+                description="bounded checkpoint probe",
+                check=lambda _candidate: True,
+                execute=lambda _candidate: True,
+                check_many=check_many,
+                execute_many=lambda _candidates: True,
+            )
+        ]
+    )
+
+    states, timings = converger.converge_batch(paths)
+
+    assert timings["checkpoint.check"] >= 0.0
+    assert all(state.stages["checkpoint"] is StageState.FAILED for state in states.values())
+
+
+def test_converger_records_batch_execute_time_when_execute_fails(tmp_path: Path) -> None:
+    """A failed batch body remains visible in the timing ledger."""
+    paths = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
+    for path in paths:
+        path.write_text("{}\n", encoding="utf-8")
+
+    def execute_many(_candidates: Sequence[Path]) -> bool:
+        raise RuntimeError("checkpoint failed")
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="checkpoint",
+                description="bounded checkpoint execution",
+                check=lambda _candidate: True,
+                execute=lambda _candidate: True,
+                check_many=lambda candidates: set(candidates),
+                execute_many=execute_many,
+            )
+        ]
+    )
+
+    states, timings = converger.converge_batch(paths)
+
+    assert timings["checkpoint"] >= 0.0
+    assert all(state.stages["checkpoint"] is StageState.FAILED for state in states.values())
+
+
 def test_converger_retains_failed_batch_state_for_diagnostics(tmp_path: Path) -> None:
     paths = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
     for path in paths:
