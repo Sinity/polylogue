@@ -60,6 +60,7 @@ from polylogue.storage.sqlite.archive_tiers.types import (
     DelegationResultStatus,
     EmbeddingAttemptState,
     EmbeddingFailureState,
+    RevisionFrontierKind,
 )
 
 _TOOL_COMMAND_SQL = sql_coalesced_json_extract("tool_input", TOOL_COMMAND_INPUT_KEYS)
@@ -697,9 +698,9 @@ RAW_REVISION_APPLICATIONS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "accepted_frontier_kind",
-            """accepted_frontier_kind   TEXT CHECK(
+            f"""accepted_frontier_kind   TEXT CHECK(
                                  accepted_frontier_kind IS NULL
-                                 OR accepted_frontier_kind IN ('byte', 'semantic')
+                                 OR {literal_check("accepted_frontier_kind", *get_args(RevisionFrontierKind))}
                              )""",
         ),
         _raw_column(
@@ -751,7 +752,7 @@ RAW_REVISION_HEADS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "accepted_frontier_kind",
-            f"""accepted_frontier_kind   TEXT NOT NULL CHECK({literal_check("accepted_frontier_kind", "byte", "semantic")})""",
+            f"""accepted_frontier_kind   TEXT NOT NULL CHECK({literal_check("accepted_frontier_kind", *get_args(RevisionFrontierKind))})""",
         ),
         _raw_column("accepted_frontier", """accepted_frontier        INTEGER NOT NULL CHECK(accepted_frontier >= 0)"""),
         _raw_column(

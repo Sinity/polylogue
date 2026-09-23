@@ -50,6 +50,7 @@ class VocabularyInventory:
     """Complete six-tier vocabulary evidence."""
 
     checks: tuple[VocabularyCheck, ...]
+    equivalent_owner_groups: tuple[tuple[str, ...], ...] = ()
 
     @property
     def denominator(self) -> int:
@@ -74,6 +75,7 @@ class VocabularyInventory:
             "denominator": self.denominator,
             "durable_exclusions": self.durable_exclusions,
             "unknown_ownership": self.unknown_ownership,
+            "equivalent_owner_groups": [list(group) for group in self.equivalent_owner_groups],
             "checks": [
                 {
                     "tier": item.tier.value,
@@ -101,33 +103,45 @@ def _walk_enums() -> tuple[type[PolylogueStrEnum], ...]:
     return tuple(found)
 
 
-def _owner_sets() -> dict[frozenset[str], str]:
-    """Return reachable enum/Literal sets with stable owner names."""
+def _owner_sets() -> tuple[dict[frozenset[str], str], tuple[tuple[str, ...], ...]]:
+    """Return canonical value-set owners and collapsed aliases.
+
+    Ownership is keyed by the value set, not by the spelling of a class or
+    alias.  A second enum/Literal with the same members therefore becomes an
+    alias in the inventory instead of a second DDL vocabulary.
+    """
     # Importing the canonical DDL loads the archive-owned Literal aliases and
     # all enum classes referenced by generated checks.
     tuple(ARCHIVE_DDL_BY_TIER.values())
-    owners: dict[frozenset[str], str] = {}
+    names_by_values: dict[frozenset[str], list[str]] = {}
     for enum in _walk_enums():
         values = frozenset(member.value for member in enum)
         if values:
-            owners.setdefault(values, enum.__name__)
+            names_by_values.setdefault(values, []).append(enum.__name__)
 
     modules: tuple[ModuleType, ...]
     from polylogue.storage.sqlite import query_objects
     from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs, ops, types
 
-    modules = (archive_tiers_specs, ops, types, query_objects)
+    # Declaration modules precede consumers that re-export their types.  This
+    # makes the canonical owner stable while still retaining those re-exports
+    # in the alias groups below.
+    modules = (types, archive_tiers_specs, ops, query_objects)
     for module in modules:
         for name, value in vars(module).items():
             args = typing.get_args(value)
             if args and all(isinstance(item, str) for item in args):
-                owners.setdefault(frozenset(args), f"{module.__name__}.{name}")
-    return owners
+                names_by_values.setdefault(frozenset(args), []).append(f"{module.__name__}.{name}")
+    owners = {values: names[0] for values, names in names_by_values.items()}
+    aliases = tuple(
+        tuple(names) for names in sorted(names_by_values.values(), key=lambda group: tuple(group)) if len(names) > 1
+    )
+    return owners, aliases
 
 
 def build_inventory() -> VocabularyInventory:
     """Build the complete inventory from all six canonical tier DDL strings."""
-    owners = _owner_sets()
+    owners, equivalent_owner_groups = _owner_sets()
     rows: list[VocabularyCheck] = []
     for tier, ddl in ARCHIVE_DDL_BY_TIER.items():
         tables = list(_TABLE.finditer(ddl))
@@ -163,7 +177,7 @@ def build_inventory() -> VocabularyInventory:
                     reason=reason,
                 )
             )
-    return VocabularyInventory(checks=tuple(rows))
+    return VocabularyInventory(checks=tuple(rows), equivalent_owner_groups=equivalent_owner_groups)
 
 
 def main(argv: list[str] | None = None) -> int:

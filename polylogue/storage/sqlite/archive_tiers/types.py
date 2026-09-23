@@ -50,6 +50,12 @@ ProvenRevisionAuthority = Literal["byte_proven", "quarantined"]
 EmbeddingFailureState = Literal["retryable", "terminal", "acknowledged", "superseded", "resolved"]
 EmbeddingAttemptState = Literal["pending", "succeeded", "failed_retryable", "failed_terminal"]
 
+# One owner for the revision frontier vocabulary.  Both the nullable
+# application receipt and the non-null revision-head row persist the same
+# concept; keeping the Literal here prevents those two DDL declarations from
+# acquiring independent value lists.
+RevisionFrontierKind = Literal["byte", "semantic"]
+
 
 __all__ = [
     "ArchiveTier",
@@ -58,4 +64,5 @@ __all__ = [
     "EmbeddingAttemptState",
     "EmbeddingFailureState",
     "ProvenRevisionAuthority",
+    "RevisionFrontierKind",
 ]

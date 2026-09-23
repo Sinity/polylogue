@@ -372,6 +372,33 @@ def record_raw_container_coordinate(
                 (content_identity, raw_id),
             )
 
+        # Keep the durable raw row in step with its coordinate evidence when
+        # the additive member-identity migration is present.  Older source
+        # databases may reach this writer before migration 003 is applied, so
+        # the compatibility probe is deliberate; the coordinate sidecar
+        # remains the fallback until the durable columns exist.
+        raw_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_sessions)")}
+        if {"addressing_mode", "content_identity"} <= raw_columns:
+            raw_identity = conn.execute(
+                "SELECT addressing_mode, content_identity FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+            if raw_identity is None:
+                raise ValueError(f"raw session missing for {raw_id}")
+            if mode is not None and raw_identity[0] not in {None, mode}:
+                raise ValueError(f"raw addressing mode changed for {raw_id}")
+            if content_identity is not None and raw_identity[1] not in {None, content_identity}:
+                raise ValueError(f"raw content identity changed for {raw_id}")
+            conn.execute(
+                """
+                UPDATE raw_sessions
+                   SET addressing_mode = COALESCE(addressing_mode, ?),
+                       content_identity = COALESCE(content_identity, ?)
+                 WHERE raw_id = ?
+                """,
+                (mode, content_identity, raw_id),
+            )
+
 
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:
     """Read every acquisition mode ever observed for ``raw_id``, explicitly ambiguous or not.

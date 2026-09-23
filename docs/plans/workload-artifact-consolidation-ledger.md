@@ -96,7 +96,15 @@ pass" below.
   smoke/representative/archive-shaped/stress set. Malformed material survives
   only as fuzz corpora and Hypothesis strategies beside their owning laws, not
   as a historical-output profile.
-- **AC11 — reporting satisfied; deletion performed, see below.**
+- **AC11 — reporting satisfied; the deletion half requires a rewrite.** The
+  orphan retirement pass below is complete, but the remaining named fixture
+  modules are not duplicates: `archive_scenarios.py` is the shared scenario
+  and tag-seeding seam used by six consumers, while `whale_fixtures.py`
+  drives the production `AcquisitionService` for scale/revision coverage.
+  Deleting either module would remove coverage or force a new test-only
+  replacement, which conflicts with this bead's own prohibition on inventing
+  another fixture substrate. The deletion criterion is therefore
+  **AC-REWRITE**, not an open implementation task.
 - **AC2 — see the retirement pass below.** The two candidates this ledger
   first recorded as "true duplicates" are re-examined there: one is refuted on
   evidence, one is refused with a reason.
@@ -189,6 +197,28 @@ duplicate builders, not the `tests/infra` aggregate.
   deletion. `copy_sqlite_database` is a six-line `shutil` helper, not an
   alternate clone substrate. This bead's own caution — do not create a narrow
   leaf without a true duplicate — applies.
+
+### AC11 deletion re-evaluation (2026-09-23)
+
+The current heads measure 456 lines for `tests/infra/archive_scenarios.py`
+and 609 lines for `tests/infra/whale_fixtures.py`. Their consumers and
+responsibilities are distinct from the canonical workload-artifact owner:
+
+* `archive_scenarios.py` delegates through `SessionBuilder` and the
+  production `ArchiveStore` tag API. Its six seeding consumers depend on that
+  direct scenario shape, while most of its wider fan-in uses pure identity or
+  connection helpers. Removing it would not remove duplicate artifact
+  construction; it would remove the shared scenario contract.
+* `whale_fixtures.py` exercises the production acquisition path and keeps
+  revision-chain/append behaviour observable at scale. Wrapping it in a
+  `CorpusArtifactManifest` would change its acquisition contract, not retire a
+  duplicate builder.
+
+No coverage-preserving successor exists at this head. The measured deletion
+target is therefore not achievable without a new design decision. Rewrite
+AC11 to require the completed orphan-retirement ledger and an explicit
+disposition for these two retained seams, rather than requiring their
+deletion. This is an AC-REWRITE, not an attempted implementation.
 
 ### Unsatisfied, with the remaining action
 

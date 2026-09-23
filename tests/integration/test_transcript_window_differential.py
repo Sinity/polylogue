@@ -65,7 +65,7 @@ from click.testing import CliRunner
 
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
-from polylogue.archive.query.transaction import QueryContinuationInvalidError
+from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -79,7 +79,7 @@ pytestmark = pytest.mark.xdist_group("web-reader")
 _MESSAGE_COUNT = 6
 
 
-def _seed_session(archive_root: Path) -> str:
+def _seed_session(archive_root: Path, *, native_id: str = "transcript-window") -> str:
     """Write one multi-message session through the production writer."""
 
     with ArchiveStore(archive_root) as archive_db:
@@ -87,7 +87,7 @@ def _seed_session(archive_root: Path) -> str:
             archive_db,
             ParsedSession(
                 source_name=Provider.CODEX,
-                provider_session_id="transcript-window",
+                provider_session_id=native_id,
                 title="Transcript window parity",
                 messages=[
                     ParsedMessage(
@@ -596,6 +596,108 @@ async def test_every_surface_mints_a_snapshot_bound_continuation(
     assert int(resumed["offset"]) == half
     assert _row_ids(resumed) != first_ids
     assert resumed["continuation"] is None and resumed["next_offset"] is None
+
+
+async def test_snapshot_bound_tokens_resume_identically_on_every_surface(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token minted by any surface is valid on each other surface.
+
+    The single-route contract is stronger than "every surface emits a token":
+    a surface-local token format or a resume path that re-asks an offset can
+    still pass that assertion.  This 4x4 matrix resumes each issuer's token
+    through every consumer and compares the resulting rows and bound
+    coordinates.  A write between issuance and resume must also reject every
+    token, proving the archive epoch is part of the shared continuation rather
+    than an implementation detail of one adapter.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _seed_session(archive_root)
+    half = _MESSAGE_COUNT // 2
+
+    api = await _api_window_payload(archive_root, session_id, limit=half, offset=0)
+    cli = _cli_window_payload(archive_root, session_id, limit=half, offset=0)
+    mcp = await _mcp_window_payload(mcp_server, archive_root, session_id, limit=half, offset=0)
+    with _running_http_server() as base_url:
+        http = _get_json(base_url, f"/api/sessions/{session_id}/messages?limit={half}&offset=0")
+
+    issuers = {
+        name: str(payload["continuation"])
+        for name, payload in (("api", api), ("cli", cli), ("mcp", mcp), ("http", http))
+    }
+
+    async def resume_api(token: str) -> tuple[tuple[str, ...], int]:
+        archive = Polylogue(archive_root=archive_root)
+        try:
+            window = await archive.read_transcript_window(session_id, limit=half, continuation=token)
+        finally:
+            await archive.close()
+        return tuple(str(message.id) for message in window.rows), window.offset
+
+    async def resume_mcp(token: str) -> tuple[tuple[str, ...], int]:
+        with (
+            patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+            patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+        ):
+            payload = json.loads(
+                await invoke_surface_async(
+                    mcp_server._tool_manager._tools["read"].fn,
+                    ref=f"session:{session_id}",
+                    view="messages",
+                    continuation=token,
+                )
+            )
+        assert "error" not in payload, payload
+        return _row_ids(payload), int(payload["offset"])
+
+    def resume_cli(token: str) -> tuple[tuple[str, ...], int]:
+        # Invoke the continuation form explicitly for the matrix consumer.
+        result = _cli_invoke(
+            archive_root,
+            [
+                "read",
+                f"session:{session_id}",
+                "--view",
+                "messages",
+                "--continuation",
+                token,
+                "--format",
+                "json",
+            ],
+            catch_exceptions=True,
+        )
+        if result.exception is not None and not isinstance(result.exception, SystemExit):
+            raise result.exception
+        assert result.exit_code == 0, result.output
+        resumed = cast(dict[str, Any], json.loads(result.output))
+        return _row_ids(resumed), int(resumed["offset"])
+
+    with _running_http_server() as matrix_base_url:
+        for issuer, token in issuers.items():
+            api_rows = await resume_api(token)
+            cli_rows = resume_cli(token)
+            mcp_rows = await resume_mcp(token)
+            http_payload = _get_json(
+                matrix_base_url,
+                f"/api/sessions/{session_id}/messages?continuation={quote(token, safe='')}",
+            )
+            http_rows = (_row_ids(http_payload), int(http_payload["offset"]))
+            assert api_rows == cli_rows == mcp_rows == http_rows, issuer
+
+    # Every issuer's token is bound to the same archive epoch.  A mutation
+    # invalidates all of them, regardless of which adapter minted the token.
+    _seed_session(archive_root, native_id="snapshot-mutation")
+    for _issuer, token in issuers.items():
+        archive = Polylogue(archive_root=archive_root)
+        try:
+            with pytest.raises(QueryContinuationStaleError):
+                await archive.read_transcript_window(session_id, limit=half, continuation=token)
+        finally:
+            await archive.close()
 
 
 # ----------------------------------------------------------------------

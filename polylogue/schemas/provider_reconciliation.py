@@ -202,6 +202,29 @@ class ProviderMatrix:
     inference_configuration: JSONDocument
     blockers: tuple[str, ...] = field(default_factory=tuple)
 
+    def __post_init__(self) -> None:
+        """Reject an aggregate that does not account for its denominator.
+
+        The normal reconciliation route constructs one subject row for every
+        denominator entry.  Keep that invariant at the publication boundary
+        as well: a future partial-generation path must not be able to stamp
+        the aggregate run provenance onto an omitted subject.
+        """
+
+        expected = tuple(item.subject for item in self.denominator.subjects)
+        actual = tuple(item.subject for item in self.subjects)
+        if len(actual) != len(expected) or set(actual) != set(expected):
+            raise ValueError(
+                "provider matrix subjects do not account for the complete denominator "
+                f"(outcomes={len(actual)}, denominator={len(expected)})"
+            )
+        outcome_total = sum(self.counts_by_outcome().values())
+        if outcome_total != len(expected):
+            raise ValueError(
+                "provider matrix outcome_counts do not account for the complete denominator "
+                f"(outcomes={outcome_total}, denominator={len(expected)})"
+            )
+
     @property
     def ok(self) -> bool:
         return not self.blockers
