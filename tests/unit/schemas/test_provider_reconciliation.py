@@ -9,6 +9,11 @@ denominator, and these go red.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from polylogue.core.json import JSONValue
+
 from dataclasses import replace
 from pathlib import Path
 
@@ -457,7 +462,7 @@ def test_negative_or_out_of_range_counts_break_conservation(
     frontier = _frontier("codex", members=4)
     receipt = _receipt("codex", candidates=candidates, included=included, samples=40, statuses=("unchanged",))
     source = json_document(json_document(json_document(receipt["result"])["phase_receipt"])["source"])
-    source["source_candidate_terminal_outcomes"] = terminal
+    source["source_candidate_terminal_outcomes"] = cast("JSONValue", terminal)
 
     matrix = _reconcile(denominator, frontier, [receipt])
     entry = matrix.subjects[0]
