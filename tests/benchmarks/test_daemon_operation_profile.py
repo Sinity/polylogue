@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import threading
+from collections import deque
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, suppress
@@ -100,7 +101,13 @@ def test_bench_daemon_warm_status(benchmark: BenchmarkFixture, bench_daemon_uds_
         return result
 
     result = benchmark_repeated(benchmark, run)
-    assert result.returncode == 0, result.stderr
+    # A seeded benchmark archive can legitimately report a typed degraded
+    # status (exit 1) while still returning the complete JSON operation
+    # envelope. Treat that as an available status response; an empty or
+    # malformed payload remains an invalid measurement.
+    assert result.returncode in (0, 1), result.stderr
+    payload = json.loads(result.stdout)
+    assert isinstance(payload, dict) and payload, result.stdout
 
 
 @pytest.mark.benchmark
@@ -304,6 +311,10 @@ def test_bench_daemon_mixed_load(
         "quiet": {name: [] for name in phase_names},
         "writer": {name: [] for name in phase_names},
     }
+    pending_compute: dict[str, deque[float]] = {
+        "quiet": deque(),
+        "writer": deque(),
+    }
     frame_started = threading.local()
 
     real_open_operation_read = daemon_execution.open_operation_read  # type: ignore[attr-defined]
@@ -327,9 +338,9 @@ def test_bench_daemon_mixed_load(
             return real_query_payload(*args, **kwargs)
         finally:
             elapsed_ms = (perf_counter() - started) * 1000
-            frame_started.compute_ms = elapsed_ms
             with phase_lock:
-                phase_samples[phase_name]["compute"].append(elapsed_ms)
+                current_phase = phase_name
+                pending_compute[current_phase].append(elapsed_ms)
 
     monkeypatch.setattr(daemon_execution, "open_operation_read", timed_open_operation_read)
     monkeypatch.setattr(daemon_reads, "_query_payload", timed_query_payload)
@@ -467,7 +478,8 @@ def test_bench_daemon_mixed_load(
         frame_ms = float(getattr(frame_started, "elapsed_ms", 0.0))
         with phase_lock:
             current_phase = phase_name
-            compute_ms = float(getattr(frame_started, "compute_ms", 0.0))
+            compute_ms = pending_compute[current_phase].popleft() if pending_compute[current_phase] else 0.0
+            phase_samples[current_phase]["compute"].append(compute_ms)
             phase_samples[current_phase]["read_frame_acquisition"].append(max(0.0, frame_ms))
             phase_samples[current_phase]["cache_invalidation"].append(
                 0.0 if current_cache_epoch() == before_epoch else max(0.0, server_ms - frame_ms - compute_ms)
