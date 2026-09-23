@@ -1326,45 +1326,13 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     # attached ops schema (status_payload.py:1416-1443). Seed the production
     # tier rather than the pre-split monolith shape.
     run_id = "legacy-run-1"
-    with sqlite3.connect(_index_path(db_path).with_name("ops.db")) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
-                run_id TEXT PRIMARY KEY,
-                started_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                completed_at TEXT,
-                status TEXT NOT NULL,
-                stop_reason TEXT,
-                rebuild INTEGER NOT NULL DEFAULT 0,
-                max_sessions INTEGER,
-                max_messages INTEGER,
-                stop_after_seconds INTEGER,
-                max_errors INTEGER,
-                planned_sessions INTEGER NOT NULL DEFAULT 0,
-                planned_messages INTEGER NOT NULL DEFAULT 0,
-                processed_sessions INTEGER NOT NULL DEFAULT 0,
-                embedded_sessions INTEGER NOT NULL DEFAULT 0,
-                skipped_sessions INTEGER NOT NULL DEFAULT 0,
-                error_count INTEGER NOT NULL DEFAULT 0,
-                embedded_messages INTEGER NOT NULL DEFAULT 0,
-                estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
-                last_session_id TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO embedding_catchup_runs (
-                run_id, started_at, updated_at, completed_at, status, stop_reason,
-                rebuild, max_sessions, max_messages, planned_sessions, planned_messages
-            ) VALUES (?, datetime('now'), datetime('now'), datetime('now'), 'interrupted',
-                      'keyboard interrupt', 1, 2, 10, 2, 2)
-            """,
-            (run_id,),
-        )
+    ops_db = _index_path(db_path).with_name("ops.db")
+    # Production DDL, not a hand-written shape: list_embedding_catchup_runs
+    # selects the full declared column set, and a partial table reads back as
+    # no runs rather than as an error.
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
         conn.commit()
-    _stamp_tier(_index_path(db_path).with_name("ops.db"), "ops")
 
     payload = _run_status(db_path)
 

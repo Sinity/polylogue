@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from polylogue import Polylogue
+
+if TYPE_CHECKING:
+    from polylogue.api.runtime import RuntimeServices
 
 
 class _Repository:
@@ -27,8 +30,8 @@ async def test_attachment_library_page_delegates_one_bounded_read() -> None:
     """The product facade carries page bounds and filters to the repository."""
 
     repository = _Repository()
-    poly = cast(Polylogue, Polylogue.__new__(Polylogue))
-    poly._services = SimpleNamespace(get_repository=lambda: repository)
+    poly = Polylogue.__new__(Polylogue)
+    poly._services = cast("RuntimeServices", SimpleNamespace(get_repository=lambda: repository))
 
     result = await poly._get_attachment_library_page(
         limit=21,
