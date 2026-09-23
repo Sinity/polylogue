@@ -41,7 +41,6 @@ class DaemonAuthority(StrEnum):
 
 
 class DaemonFallback(StrEnum):
-    DIRECT_READ = "direct-read"
     NEVER = "never"
 
 
@@ -805,8 +804,6 @@ class DaemonOperationSpec:
     )
 
     def __post_init__(self) -> None:
-        if self.direct_allowed and self.authority is not DaemonAuthority.READ:
-            raise ValueError("only read operations may permit direct fallback")
         if self.request_model is _OperationPayload or self.result_model is _OperationResult:
             raise ValueError("operation declarations require concrete request and result models")
         if not self.handler:
@@ -816,10 +813,6 @@ class DaemonOperationSpec:
         stem = "".join(part.capitalize() for part in self.name.replace(".", "-").split("-"))
         object.__setattr__(self, "request_type", self.request_type or f"{stem}Request")
         object.__setattr__(self, "result_type", self.result_type or f"{stem}Result")
-
-    @property
-    def direct_allowed(self) -> bool:
-        return self.fallback is DaemonFallback.DIRECT_READ
 
     def to_dict(self) -> dict[str, object]:
         """Serialize the declaration for discovery and conformance checks."""
@@ -898,7 +891,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "cli.query",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         result_contract="cli.query.result/v1",
         request_type="QueryRequest",
         result_type="QueryResult",
@@ -908,7 +901,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "query.units",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         result_contract="query.units.result/v1",
         request_type="QueryUnitsRequest",
         result_type="QueryUnitsResult",
@@ -918,7 +911,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "query.aggregate",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         # Aggregates scan the selection rather than one page of it.
         deadline_s=10.0,
         result_contract="query.aggregate.result/v1",
@@ -930,7 +923,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "session.read",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         result_contract="session.read.result/v1",
         request_type="SessionReadRequest",
         result_type="SessionReadResult",
@@ -940,7 +933,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "session.reference",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         deadline_s=5.0,
         result_contract="session.reference.result/v1",
         request_type="SessionReferenceRequest",
@@ -951,7 +944,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "status",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         result_contract="status.result/v1",
         request_type="StatusRequest",
         result_type="StatusResult",
@@ -961,7 +954,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "completion",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         result_contract="completion.result/v1",
         request_type="CompletionRequest",
         result_type="CompletionResult",
@@ -971,7 +964,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
         "facets",
         DaemonAuthority.READ,
-        DaemonFallback.DIRECT_READ,
+        DaemonFallback.NEVER,
         result_contract="facets.result/v1",
         request_type="FacetsRequest",
         result_type="FacetsResult",

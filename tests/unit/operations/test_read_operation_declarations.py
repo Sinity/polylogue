@@ -79,14 +79,13 @@ def _run(root: Path, name: str, payload: dict[str, object]) -> dict[str, object]
 
 
 class TestDeclaration:
-    def test_every_new_read_permits_direct_execution(self) -> None:
-        """Mutation: declare one of these with DaemonFallback.NEVER and a CLI read
-        stops working whenever no daemon is resident."""
+    def test_every_read_requires_the_daemon(self) -> None:
+        """Reads have one execution route: the resident daemon."""
 
         for name in ("query.aggregate", "session.read", "session.reference"):
             spec = daemon_operation_spec(name)
             assert spec is not None, name
-            assert spec.direct_allowed, name
+            assert spec.fallback.value == "never", name
             assert spec.capability == "read", name
 
 

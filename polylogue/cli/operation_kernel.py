@@ -1,10 +1,8 @@
 """Import-light operation dispatch for CLI adapters.
 
-The CLI owns syntax and delivery only.  This module is the small seam between
-those concerns and an operation transport: both daemon and direct execution
-return the same typed result, while authority metadata records which executor
-served it.  It intentionally has no archive, storage, or daemon-server
-imports.
+The CLI owns syntax and delivery only. This module is the small seam between
+those concerns and the resident daemon transport. It intentionally has no
+archive, storage, or daemon-server imports.
 """
 
 from __future__ import annotations
@@ -12,14 +10,13 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 from polylogue.operations.daemon_errors import (
     DaemonMutationIndeterminateError,
     DaemonOperationProtocolError,
 )
 from polylogue.operations.daemon_protocol import (
-    DAEMON_OPERATION_PROTOCOL,
     MAX_OPERATION_RESULT_BYTES,
     DaemonOperationSpec,
     OperationStatus,
@@ -32,7 +29,7 @@ class OperationKernelError(RuntimeError):
 
 
 class OperationUnavailableError(OperationKernelError):
-    """The daemon is absent and the operation cannot execute directly."""
+    """The daemon is absent and the operation cannot execute."""
 
     code = "daemon_required"
 
@@ -141,7 +138,7 @@ class OperationRequest:
 
 @dataclass(frozen=True, slots=True)
 class OperationResult:
-    """Typed result shared by daemon and direct execution paths."""
+    """Typed result returned by the daemon transport."""
 
     operation: str
     value: object
@@ -251,93 +248,6 @@ class OperationKernel:
         )
 
 
-def _direct_execution_context(config: Any, *, archive_root: Any = None, read_control: Any = None) -> Any:
-    """Build the local read authority — only once a direct read is certain.
-
-    ``DaemonReadDependencies`` resolves a vector binding, which opens the
-    embeddings tier's configuration and can touch the filesystem.  A warm
-    daemon answers without ever needing it, so constructing this eagerly made
-    every served-over-UDS query pay for an executor it did not use.
-    """
-    from time import time
-
-    from polylogue.operations.daemon_reads import DaemonReadDependencies, vector_binding_from_config
-    from polylogue.operations.operation_context import OperationContext
-
-    context = OperationContext.direct_read(
-        archive_root if archive_root is not None else config.archive_root,
-        read_dependencies=DaemonReadDependencies(
-            vector_binding=vector_binding_from_config(config),
-            status_now_ms=int(time() * 1000),
-            status_config=config,
-        ),
-    )
-    if read_control is not None:
-        from dataclasses import replace as _replace
-
-        context = _replace(context, read_control=read_control)
-    return context
-
-
-def _execute_directly(
-    config: Any,
-    operation: str,
-    payload: dict[str, object],
-    *,
-    archive_root: Any = None,
-    read_control: Any = None,
-) -> Mapping[str, Any]:
-    """Run one declared read in-process and return its envelope.
-
-    A handler's typed *refusal of the request* — "semantic retrieval is
-    unavailable", "sample does not combine with search terms" — is a result of
-    the operation, not a transport fault, so it is framed as the declared error
-    envelope here.  Letting it propagate as a bare exception would escape the
-    kernel's error map and reach the operator as a traceback with no exit code.
-
-    Deliberately narrow.  Faults that describe the *archive* rather than the
-    request — a missing tier, a schema skew, a raw ``sqlite3`` error — keep
-    propagating, because callers distinguish them: ``ops status`` reads a
-    missing index as "no archive yet, daemon not running" and would otherwise
-    report the far less useful "daemon unreachable".
-    """
-    import uuid
-
-    from polylogue.core.errors import EmbeddingRetrievalNotReadyError
-    from polylogue.operations.daemon_execution import execute_operation
-    from polylogue.operations.daemon_protocol import DaemonOperationRequest
-
-    request = DaemonOperationRequest.from_dict(
-        {
-            "protocol": DAEMON_OPERATION_PROTOCOL,
-            "operation": operation,
-            "payload": payload,
-            "request_id": uuid.uuid4().hex,
-            "archive_root": str(archive_root if archive_root is not None else config.archive_root),
-        }
-    )
-    context = _direct_execution_context(config, archive_root=archive_root, read_control=read_control)
-    try:
-        return cast("Mapping[str, Any]", execute_operation(request, context).to_dict())
-    except EmbeddingRetrievalNotReadyError as exc:
-        return {
-            "operation": operation,
-            "outcome": "failed",
-            "error": {"code": getattr(exc, "code", None) or "embedding_retrieval_not_ready", "detail": str(exc)},
-        }
-    except ValueError as exc:
-        # Declared read handlers state a refused request as ``ValueError``.
-        # A refusal that carries its own declared code keeps it: a stale or
-        # foreign continuation is refused by the same token on every surface,
-        # and flattening every refusal to ``invalid_request`` dropped exactly
-        # the token a caller branches on.
-        return {
-            "operation": operation,
-            "outcome": "failed",
-            "error": {"code": str(getattr(exc, "code", "") or "invalid_request"), "detail": str(exc)},
-        }
-
-
 def dispatch(
     config: Any,
     request: OperationRequest,
@@ -348,11 +258,10 @@ def dispatch(
     deadline_ms: int | None = None,
     read_control: Any = None,
 ) -> OperationResult:
-    """Execute one declared read over the daemon, or directly when it is absent.
+    """Execute one declared operation over the resident daemon.
 
     The transport choice is the only thing decided here: the same declared
-    handler answers either way, so a CLI route never branches on whether a
-    daemon is running.
+    handler is owned by one execution route.
 
     The file set read is resolved from the configuration, not assumed to be
     ``config.archive_root``: a ``--db`` pin at a non-active generation names the
@@ -361,19 +270,13 @@ def dispatch(
     ``archive_root`` overrides that resolution for a caller that already knows
     the root.  ``deadline_ms`` overrides the operation's declared deadline for the socket
     call and ``read_control`` carries the caller's cancellation/deadline state
-    into a direct read; all three are passed through rather than reinterpreted.
+    into the daemon request; all three are passed through rather than reinterpreted.
 
-    ``daemon_only`` refuses the local fallback instead of taking it, raising
-    :class:`OperationUnavailableError` when no socket answers. It exists for
-    callers whose latency budget the direct reader cannot meet -- shell
-    completion runs on a keystroke, and executing the read locally means
-    building the execution graph and opening the archive for a TAB press. Such
-    a caller wants the typed "no daemon" refusal, not a correct answer seconds
-    later.
+    ``daemon_only`` is retained for callers that explicitly require an
+    immediate typed refusal when no socket answers.
     """
     spec = request.spec
     operation = request.operation
-    payload = dict(request.payload)
     if archive_root is not None:
         root = archive_root
     else:
@@ -386,10 +289,7 @@ def dispatch(
         root = operation_archive_root(config)
 
     if daemon_disabled:
-        if daemon_only or not spec.direct_allowed:
-            raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}", operation=operation)
-        envelope = _execute_directly(config, operation, payload, archive_root=root, read_control=read_control)
-        return OperationKernel(lambda _request: envelope).execute(request)
+        raise OperationUnavailableError("start polylogued run to serve this operation", operation=operation) from None
 
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
@@ -410,19 +310,7 @@ def dispatch(
     try:
         return OperationKernel(_ask_daemon).execute(request)
     except OperationUnavailableError:
-        # No socket answered.  Fall through to the local reader.
-        if daemon_only or not spec.direct_allowed:
-            raise
-
-    # Deliberately executed OUTSIDE the kernel.  The kernel's catch-all maps any
-    # exception from its call into ``daemon_transport_error``, which is the right
-    # reading of a failure while talking to a daemon and the wrong reading of one
-    # raised by the local reader: callers distinguish "no archive here" from
-    # "could not reach the daemon", and ``ops status`` renders those as two
-    # different diagnoses. Only now is a direct read certain, so only now is its
-    # context built.
-    envelope = _execute_directly(config, operation, payload, archive_root=root, read_control=read_control)
-    return OperationKernel(lambda _request: envelope).execute(request)
+        raise OperationUnavailableError("start polylogued run to serve this operation", operation=operation) from None
 
 
 def configured_read_operation(

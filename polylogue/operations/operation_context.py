@@ -45,25 +45,10 @@ class ConcurrentArchivePublicationError(DatabaseError):
 class OperationContext:
     archive_root: Path
     principal: MutationPrincipal
-    serving_identity: Literal["daemon", "direct"]
+    serving_identity: Literal["daemon"]
     runtime: OperationRuntime | None = None
     read_dependencies: DaemonReadDependencies | None = None
     read_control: QueryExecutionContext | None = None
-
-    @classmethod
-    def direct_read(
-        cls,
-        archive_root: Path,
-        *,
-        read_dependencies: DaemonReadDependencies | None = None,
-    ) -> OperationContext:
-        """Construct the deliberately read-only local adapter authority."""
-        return cls(
-            archive_root,
-            MutationPrincipal("cli:direct-read", frozenset({"read"}), "cli"),
-            "direct",
-            read_dependencies=read_dependencies,
-        )
 
 
 @dataclass(frozen=True, slots=True)

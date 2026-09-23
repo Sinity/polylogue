@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -11,7 +10,6 @@ import pytest
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     DAEMON_OPERATION_SPECS,
-    DaemonAuthority,
     DaemonFallback,
     DaemonOperationRequest,
     OperationResultContractError,
@@ -76,12 +74,9 @@ def test_operation_specs_bind_concrete_payload_models() -> None:
         )
 
 
-@pytest.mark.parametrize("authority", [DaemonAuthority.WRITE, DaemonAuthority.CONTROL, DaemonAuthority.LONG_RUNNING])
-def test_declared_nonread_authority_cannot_acquire_direct_fallback(authority: DaemonAuthority) -> None:
-    """A fallback metadata mutant must fail at declaration, before any dispatcher consumes it."""
-    status = next(spec for spec in DAEMON_OPERATION_SPECS if spec.name == "status")
-    with pytest.raises(ValueError, match="only read"):
-        replace(status, authority=authority, fallback=DaemonFallback.DIRECT_READ)
+def test_operation_specs_have_no_direct_fallback() -> None:
+    """Every declared operation requires the resident daemon."""
+    assert all(spec.fallback is DaemonFallback.NEVER for spec in DAEMON_OPERATION_SPECS)
 
 
 def test_discovery_schema_validates_the_declared_control_request() -> None:

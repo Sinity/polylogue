@@ -45,12 +45,11 @@ class TestDeclaredMutationAuthority:
 
     @pytest.mark.parametrize("operation", sorted(MUTATION_OPERATION_NAMES))
     def test_mutation_operations_declare_no_direct_fallback(self, operation: str) -> None:
-        """Anti-vacuity: flipping a spec to ``DIRECT_READ`` turns this red."""
+        """Anti-vacuity: changing the fallback metadata turns this red."""
         spec = daemon_operation_spec(operation)
         assert spec is not None
         assert spec.authority is not DaemonAuthority.READ
         assert spec.fallback is DaemonFallback.NEVER
-        assert spec.direct_allowed is False
 
     def test_mutation_names_cover_every_non_read_declaration(self) -> None:
         declared = {spec.name for spec in DAEMON_OPERATION_SPECS if spec.authority is not DaemonAuthority.READ}

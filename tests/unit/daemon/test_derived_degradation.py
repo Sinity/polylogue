@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +12,7 @@ from polylogue.daemon.derived_degradation import schema_refusal_details
 from polylogue.daemon.health import HealthSeverity, _check_schema_version_fast
 from polylogue.daemon.status import _derived_identity_mismatches
 from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, DaemonOperationRequest
+from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import OperationContext
 
 
@@ -63,7 +66,14 @@ def test_operation_refusal_is_degraded_and_typed(monkeypatch: pytest.MonkeyPatch
         }
     )
 
-    envelope = daemon_execution.execute_operation(request, OperationContext.direct_read(tmp_path)).to_dict()
+    daemon_runtime = SimpleNamespace(publication_guard=lambda: nullcontext())
+    context = OperationContext(
+        tmp_path,
+        MutationPrincipal("test-daemon", frozenset({"read"}), "daemon"),
+        "daemon",
+        daemon_runtime,
+    )
+    envelope = daemon_execution.execute_operation(request, context).to_dict()
 
     assert envelope["outcome"] == "degraded"
     assert envelope["readiness"] == {
