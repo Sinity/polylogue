@@ -115,7 +115,6 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
-    LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
@@ -2198,6 +2197,9 @@ def replace_raw_membership_census(
             ).fetchone()
             if dependent is not None:
                 raise ActiveByteRevisionChainError("an active byte-revision chain cannot move to membership governance")
+            # A typed authority is the protocol value; ``detail`` is display
+            # text.  Keep the detail-only bridge for older producers, but do
+            # not make explicitly typed writes depend on a prose spelling.
             census_authority = revision_authority or revision_authority_for_census_detail(detail)
             if sessions and census_authority is not RawRevisionAuthority.QUARANTINED:
                 # A retirement that leaves membership rows behind is only observable
@@ -2224,8 +2226,6 @@ def replace_raw_membership_census(
                 # A census with no surviving membership row (a non-session artifact or
                 # retained-state export) has no logical identity to be ambiguous
                 # about, so its detail stays free explanatory prose.
-                if detail in LEGACY_FULL_REVISION_GOVERNANCE_DETAILS:
-                    raise ValueError("legacy marker is read-compatibility only and may never be written")
                 raise ValueError(
                     "full-revision retirement with membership rows requires a recognized governance marker "
                     "with quarantined revision authority"
