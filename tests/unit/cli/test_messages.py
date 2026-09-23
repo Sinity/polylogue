@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import cast
@@ -293,7 +293,7 @@ def _seeded_request(tmp_path: Path) -> RootModeRequest:
 
 
 @pytest.fixture
-def daemon_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def daemon_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Serve message reads through the production daemon operation route."""
 
     with cli_daemon_archive(tmp_path, monkeypatch):

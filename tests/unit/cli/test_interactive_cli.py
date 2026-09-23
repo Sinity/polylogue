@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import stat
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -59,7 +60,7 @@ def _interactive_daemon(
     cli_workspace: dict[str, Path],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-):
+) -> Iterator[Path]:
     """Expose the fixture's real UDS at the deterministic child-process path."""
     from polylogue.daemon.socket_path import daemon_socket_path
 

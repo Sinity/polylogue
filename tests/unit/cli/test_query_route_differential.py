@@ -27,7 +27,7 @@ forwarding bug that widened every filter cannot pass by agreeing with itself.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,7 +46,7 @@ PARENT_A = "claude-code-session:ext-parent-a"
 
 
 @pytest.fixture
-def query_route_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+def query_route_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Path]]:
     """A seeded archive for the root query, served by the production daemon."""
 
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)

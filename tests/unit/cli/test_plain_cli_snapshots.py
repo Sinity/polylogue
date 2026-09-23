@@ -99,7 +99,7 @@ def seeded_db_env(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> Path:
+) -> Iterator[Path]:
     """Point the CLI query verbs at the module's deterministic corpus DB."""
     clone = clone_seeded_archive(query_archive_lease.artifact, tmp_path / "query-daemon-archive")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clone.root))
@@ -142,7 +142,7 @@ def postmortem_seeded_env(
     postmortem_archive: SeededArchiveClone,
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
-) -> Path:
+) -> Iterator[Path]:
     """Point the CLI at the module's insight-materialized corpus DB."""
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(postmortem_archive.root))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
