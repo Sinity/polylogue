@@ -89,8 +89,14 @@ class ReadRequest:
         preset_name = str(preset or raw.get("preset") or "summary")
         selected = read_preset(preset_name)
         projection = selected.projection(raw)
+        supplied_selection = raw.get("selection")
+        selection = (
+            supplied_selection
+            if isinstance(supplied_selection, SessionQuerySpec)
+            else SessionQuerySpec.from_params(raw)
+        )
         return cls(
-            selection=SessionQuerySpec.from_params(raw),
+            selection=selection,
             projection=projection.projection,
             render=projection.render,
             preset=selected.name,

@@ -34,6 +34,15 @@ def test_normalizer_owns_selection_projection_and_render() -> None:
     assert request.render.out == "dialogue.json"
 
 
+def test_normalizer_preserves_already_lowered_selection() -> None:
+    selection = SessionQuerySpec.from_params({"query": "needle", "origin": "chatgpt-export", "filter_has_paste": True})
+
+    request = ReadRequest.normalize({"selection": selection}, preset="summary")
+
+    assert request.selection is selection
+    assert request.selection.filter_has_paste is True
+
+
 def test_preset_catalog_and_schema_are_derived_from_the_registry() -> None:
     catalog = read_preset_catalog()
     schema = read_contract_schema()
