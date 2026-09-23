@@ -76,7 +76,10 @@ def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str,
     from polylogue.cli.read_dispatch import daemon_route_disabled
 
     if daemon_route_disabled(flag=False):
-        return hooks.error_json("start polylogued run to serve this operation", code="daemon_required")
+        # Name the operation: the MCP error payload has no separate field for
+        # it, so a client told only "start polylogued run" cannot tell WHICH
+        # privileged route refused (the gap #5474 closed for the CLI envelope).
+        return hooks.error_json(f"start polylogued run to serve this operation: {operation}", code="daemon_required")
     client = DaemonClient(
         daemon_socket_path(config.archive_root),
         auth_token=lambda: resolve_api_auth_token(
@@ -88,7 +91,10 @@ def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str,
     except Exception:
         return hooks.error_json("daemon operation unavailable", code="daemon_required")
     if response is None:
-        return hooks.error_json("start polylogued run to serve this operation", code="daemon_required")
+        # Name the operation: the MCP error payload has no separate field for
+        # it, so a client told only "start polylogued run" cannot tell WHICH
+        # privileged route refused (the gap #5474 closed for the CLI envelope).
+        return hooks.error_json(f"start polylogued run to serve this operation: {operation}", code="daemon_required")
     if response.get("outcome") in {"rejected", "failed", "indeterminate"}:
         error = response.get("error")
         detail = error.get("message") if isinstance(error, dict) else "daemon operation refused"
