@@ -1064,7 +1064,7 @@ class ArchiveStore:
             return
         self._active_cold_build_engaged = True
 
-    def finish_active_cold_build(self) -> None:
+    def finish_active_cold_build(self) -> tuple[int, int, int] | None:
         """Release the active cold-build shape at the end of a pass.
 
         This boundary deliberately mutates **nothing**: it neither commits nor
@@ -1089,7 +1089,9 @@ class ArchiveStore:
 
         The one useful thing left is draining the WAL the raised autocheckpoint
         threshold let grow, which is not valid inside a transaction and is
-        therefore best-effort.
+        therefore best-effort. The checkpoint tuple is returned to the caller
+        so the release event preserves the bounded busy/log/checkpointed
+        evidence instead of discarding it.
 
         That drain runs at the **recurring** checkpoint boundary, so PASSIVE is
         the only mode it may attempt. This connection writes the *active*
@@ -1108,10 +1110,12 @@ class ArchiveStore:
 
         self._require_writable("finish an active cold build")
         if not self._active_cold_build_engaged:
-            return
+            return None
+        checkpoint_result: tuple[int, int, int] | None = None
         if not self._conn.in_transaction:
-            checkpoint_connection(self._conn, "PASSIVE", boundary="recurring")
+            checkpoint_result = checkpoint_connection(self._conn, "PASSIVE", boundary="recurring")
         self._active_cold_build_engaged = False
+        return checkpoint_result
 
     def restore_deferred_secondary_indexes(self) -> None:
         """Recreate deferred reader indexes before publishing a generation."""

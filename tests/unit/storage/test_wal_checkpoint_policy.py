@@ -353,10 +353,11 @@ def test_the_cold_build_pass_boundary_checkpoints_through_the_owner(
         archive._conn.commit()
         wal = tmp_path / "index.db-wal"
         assert wal.exists() and wal.stat().st_size > 0, "no WAL to drain; the boundary would be vacuous"
-        archive.finish_active_cold_build()
+        checkpoint_result = archive.finish_active_cold_build()
         assert archive.active_cold_build_engaged is False
 
     assert len(calls) == 1, calls
+    assert checkpoint_result == calls[0][2]
     mode, boundary, (busy_pages, log_pages, checkpointed_pages) = calls[0]
     assert (mode, boundary) == ("PASSIVE", "recurring")
     # PASSIVE is a real drain here, not a downgrade to a no-op: nothing else
