@@ -1610,6 +1610,70 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
     assert promoted.accepted_raw_ids == ()
 
 
+def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path: Path) -> None:
+    """A missing census code cannot turn a quarantined retirement into success.
+
+    Source migration 004 leaves arbitrary historical census details with a NULL
+    ``revision_authority``.  The raw row itself is already durably quarantined,
+    so the retirement reader must use that typed source authority as a second
+    proof rather than promoting a later singleton when the census code is
+    unknown.
+    """
+    bootstrap_archive_root(tmp_path)
+
+    def parsed_solo(tail: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="s1",
+            messages=[
+                ParsedMessage(provider_message_id=f"s1-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(("base", tail))
+            ],
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        retired = []
+        for label, payload, tail in (("a", b"aaa-left", "left"), ("b", b"bbb-right", "right")):
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=1
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
+                ),
+            )
+            archive.replace_raw_membership_census(
+                raw_id,
+                [parsed_solo(tail)],
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                censused_at_ms=0,
+                detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                retire_full_revision_governance=True,
+            )
+            retired.append(raw_id)
+
+        conn = archive._ensure_source_conn()
+        with conn:
+            conn.executemany(
+                "UPDATE raw_membership_census SET detail = ?, revision_authority = NULL WHERE raw_id = ?",
+                [("historical wording no longer classifies this row", raw_id) for raw_id in retired],
+            )
+
+        raw_c = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
+        )
+        archive.bind_raw_revision(
+            raw_c,
+            RawRevisionEnvelope(
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
+
+    assert plan.accepted_raw_ids == ()
+
+
 def test_typed_retirement_authority_allows_detail_wording_to_change(
     tmp_path: Path,
 ) -> None:
