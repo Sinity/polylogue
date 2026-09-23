@@ -179,6 +179,15 @@ if TYPE_CHECKING:
         TagMutationResult,
     )
 
+
+def _require_archive_write_authority(config: Config, purpose: str) -> None:
+    """Require the current caller to hold the lease for this archive."""
+
+    from polylogue.core.write_lease import require_write_lease
+
+    require_write_lease(purpose, archive_root=_active_archive_root(config))
+
+
 _BOUNDED_MESSAGES_FALLBACK_READ_VIEWS = frozenset({"raw", "context", "neighbors", "correlation", "chronicle"})
 
 _FACET_CORE_FAMILIES = (
@@ -1549,6 +1558,7 @@ def _archive_record_context_delivery(
     user_db = _active_archive_root(config) / "user.db"
     if not user_db.exists():
         raise ValueError("context-delivery user tier is not initialized")
+    _require_archive_write_authority(config, "api.context_delivery")
     record = context_snapshot_record_from_image(
         image, boundary=boundary, run_ref=run_ref, inheritance_mode=inheritance_mode
     )
@@ -2310,6 +2320,7 @@ def _archive_judge_assertion_candidate(
     user_db = _active_archive_root(config) / "user.db"
     if not user_db.exists():
         raise ValueError("assertion user tier is not initialized")
+    _require_archive_write_authority(config, "api.judge_assertion_candidate")
     try:
         conn = open_connection(user_db)
         conn.row_factory = sqlite3.Row
@@ -2429,6 +2440,7 @@ def _archive_capture_assertion_candidate(
     ).hexdigest()
 
     try:
+        _require_archive_write_authority(config, "api.capture_assertion_candidate")
         conn = open_connection(user_db)
         conn.row_factory = sqlite3.Row
         try:
@@ -2504,6 +2516,7 @@ def _archive_judge_assertion_candidates(
     user_db = _active_archive_root(config) / "user.db"
     if not user_db.exists():
         raise ValueError("assertion user tier is not initialized")
+    _require_archive_write_authority(config, "api.judge_assertion_candidates")
     try:
         conn = open_connection(user_db)
         conn.row_factory = sqlite3.Row
@@ -2537,6 +2550,7 @@ def _archive_record_comparative_judgment(
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_comparative_judgment_assertion
 
     user_db = _active_archive_root(config) / "user.db"
+    _require_archive_write_authority(config, "api.record_comparative_judgment")
     initialize_archive_database(user_db, ArchiveTier.USER)
     try:
         conn = open_connection(user_db)
@@ -3948,6 +3962,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             raise ValueError("manual continuation requires origin-prefixed child and parent session ids")
         parent_origin, parent_native = parent.split(":", 1)
         root = _active_archive_root(self.config)
+        _require_archive_write_authority(self.config, "api.record_manual_continuation")
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
         index = open_connection(root / "index.db")
         try:
@@ -4297,6 +4312,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         )
         try:
             ops_db = _active_archive_root(self.config) / "ops.db"
+            _require_archive_write_authority(self.config, "api.context_injection_ledger")
             if not ops_db.exists():
                 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
                 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
