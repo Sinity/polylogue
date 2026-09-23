@@ -1076,7 +1076,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
     rows = conn.execute(
         """
         SELECT event_id, source_message_id, source_message_provider_id,
-               position, event_type, summary, payload_json, occurred_at_ms
+               position, event_type, payload_json, occurred_at_ms
         FROM session_events
         WHERE session_id = ?
         ORDER BY position
@@ -1090,7 +1090,6 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "source_message_provider_id": "m1",
             "position": 0,
             "event_type": "compaction",
-            "summary": "compressed context",
             "payload_json": '{"summary":"compressed context"}',
             "occurred_at_ms": 1_767_225_601_000,
         },
@@ -1100,7 +1099,6 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "source_message_provider_id": "missing-provider-message",
             "position": 1,
             "event_type": "capture_gap",
-            "summary": "DOM fallback skipped; richer capture already exists",
             "payload_json": '{"summary":"DOM fallback skipped; richer capture already exists"}',
             "occurred_at_ms": 1_767_225_602_000,
         },
@@ -1110,7 +1108,6 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
             "source_message_provider_id": None,
             "position": 2,
             "event_type": "turn_context",
-            "summary": "",
             "payload_json": '{"cwd":"/tmp"}',
             "occurred_at_ms": None,
         },

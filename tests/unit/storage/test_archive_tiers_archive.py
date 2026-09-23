@@ -1000,7 +1000,7 @@ def test_archive_tiers_archive_facade_skips_lower_precedence_dom_fallback(tmp_pa
             (first.session_id,),
         ).fetchone()
         event = conn.execute(
-            "SELECT event_type, summary FROM session_events WHERE session_id = ?",
+            "SELECT event_type, payload_json FROM session_events WHERE session_id = ?",
             (first.session_id,),
         ).fetchone()
     finally:
@@ -1015,7 +1015,7 @@ def test_archive_tiers_archive_facade_skips_lower_precedence_dom_fallback(tmp_pa
     assert stored["raw_id"] == first.raw_id
     assert stored["message_count"] == 2
     assert event["event_type"] == "capture_gap"
-    assert "DOM browser-capture fallback" in event["summary"]
+    assert "DOM browser-capture fallback" in event["payload_json"]
 
 
 def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path: Path) -> None:
@@ -1059,7 +1059,7 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
             (first.session_id,),
         ).fetchone()
         event = conn.execute(
-            "SELECT event_type, summary FROM session_events WHERE session_id = ?",
+            "SELECT event_type, payload_json FROM session_events WHERE session_id = ?",
             (first.session_id,),
         ).fetchone()
     finally:
@@ -1071,7 +1071,7 @@ def test_archive_tiers_archive_facade_replaces_dom_fallback_with_native(tmp_path
     assert stored["raw_id"] == second.raw_id
     assert stored["message_count"] == 2
     assert event["event_type"] == "capture_gap"
-    assert "DOM browser-capture fallback" in event["summary"]
+    assert "DOM browser-capture fallback" in event["payload_json"]
 
 
 # A genuine, non-browser-capture arrival (plain "export" below) always
