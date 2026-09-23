@@ -41,6 +41,19 @@ def test_durable_rows_are_excluded_even_when_a_domain_owner_matches() -> None:
     assert durable
     assert all(item.disposition == "DURABLE_WRITE_BOUNDARY" for item in durable)
     assert all("write boundary" in item.reason for item in durable)
+    assert all(item.lifecycle == "durable" for item in durable)
+
+
+def test_inventory_records_lifecycle_for_every_row_and_serializes_it() -> None:
+    inventory = build_inventory()
+
+    assert {item.lifecycle for item in inventory.checks} == {"durable", "derived"}
+    assert all(
+        item.lifecycle == ("durable" if item.tier.value in {"source", "user", "audit"} else "derived")
+        for item in inventory.checks
+    )
+    payload = inventory.to_payload()
+    assert all("lifecycle" in row for row in payload["checks"])
 
 
 def test_equivalent_python_vocabularies_are_reported_as_one_owner_group() -> None:

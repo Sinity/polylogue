@@ -26,6 +26,7 @@ _STRING_LITERAL = re.compile(r"'((?:[^']|'')*)'")
 _TABLE = re.compile(r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 
 Disposition = Literal["DURABLE_WRITE_BOUNDARY", "GENERATED_FROM_OWNER", "STORAGE_LOCAL"]
+Lifecycle = Literal["durable", "derived"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,7 @@ class VocabularyCheck:
     column: str
     values: tuple[str, ...]
     owner: str | None
+    lifecycle: Lifecycle
     disposition: Disposition
     reason: str
 
@@ -83,6 +85,7 @@ class VocabularyInventory:
                     "column": item.column,
                     "values": list(item.values),
                     "owner": item.owner,
+                    "lifecycle": item.lifecycle,
                     "disposition": item.disposition,
                     "reason": item.reason,
                 }
@@ -158,12 +161,15 @@ def build_inventory() -> VocabularyInventory:
             table = table_match.group(1) if table_match is not None else "<unknown-table>"
             owner = owners.get(frozenset(values))
             if tier in {ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT}:
+                lifecycle: Lifecycle = "durable"
                 disposition: Disposition = "DURABLE_WRITE_BOUNDARY"
                 reason = "durable DDL carries no enum-generated membership CHECK; validate at the write boundary"
             elif owner is not None:
+                lifecycle = "derived"
                 disposition = "GENERATED_FROM_OWNER"
                 reason = "membership set is owned by the referenced enum/Literal"
             else:
+                lifecycle = "derived"
                 disposition = "STORAGE_LOCAL"
                 reason = "no product/domain type owns this storage-local vocabulary"
             rows.append(
@@ -173,6 +179,7 @@ def build_inventory() -> VocabularyInventory:
                     column=match.group(1),
                     values=tuple(sorted(values)),
                     owner=owner,
+                    lifecycle=lifecycle,
                     disposition=disposition,
                     reason=reason,
                 )
@@ -188,4 +195,4 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if inventory.unknown_ownership == 0 else 1
 
 
-__all__ = ["VocabularyCheck", "VocabularyInventory", "build_inventory", "main"]
+__all__ = ["Lifecycle", "VocabularyCheck", "VocabularyInventory", "build_inventory", "main"]
