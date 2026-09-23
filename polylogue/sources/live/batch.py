@@ -4396,13 +4396,25 @@ class LiveBatchProcessor:
                 # re-selects the shape from generation state -- by then this
                 # generation is no longer empty, so the ordinary live shape is
                 # what it gets, which is the transition back.
-                archive.finish_active_cold_build()
-                emit(
-                    "live.ingest.cold_build_shape_released",
-                    outcome="ok",
-                    reason="pass complete; cold-build shape surrendered with the connection",
-                    sessions=len(result.session_ids),
-                )
+                checkpoint_result = archive.finish_active_cold_build()
+                if checkpoint_result is not None:
+                    busy_pages, log_pages, checkpointed_pages = checkpoint_result
+                    emit(
+                        "live.ingest.cold_build_shape_released",
+                        outcome="ok",
+                        reason="pass complete; cold-build shape surrendered with the connection",
+                        sessions=len(result.session_ids),
+                        checkpoint_busy_pages=busy_pages,
+                        checkpoint_log_pages=log_pages,
+                        checkpointed_pages=checkpointed_pages,
+                    )
+                else:
+                    emit(
+                        "live.ingest.cold_build_shape_released",
+                        outcome="ok",
+                        reason="pass complete; cold-build shape surrendered with the connection",
+                        sessions=len(result.session_ids),
+                    )
         # The loop checks before each later record, but a one-record pass has
         # no such boundary, so the final record is checked here. This
         # checkpoint sits AFTER the archive commit: raising would produce a
