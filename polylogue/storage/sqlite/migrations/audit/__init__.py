@@ -1,11 +1,9 @@
 """Numbered additive migrations for the durable audit tier.
 
-The audit tier is currently at the archive-format floor (``user_version=1``),
-which is the fresh-bootstrap version.  Its first in-place change therefore
-owns slot ``002``.  That slot is intentionally not reserved by this package:
-the schema owner must first advance ``ARCHIVE_VERSION_BY_TIER[AUDIT]`` and land
-the matching fresh DDL.  Until then, the migration runner rejects a requested
-target above v1 instead of silently accepting an untracked audit schema.
+The audit tier's fresh-bootstrap version is v2. Slot ``002`` adds the
+operation lookup index to an archive born at v1; the schema owner advances
+``ARCHIVE_VERSION_BY_TIER[AUDIT]`` and fresh DDL together so upgraded and new
+audit files have the same inventory.
 
 When the route is opened, the migration must be accompanied by a
 ``002.train.json`` sidecar with ``requires_backup=true`` and a non-empty,

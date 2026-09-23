@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS machine_requests (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_machine_requests_artifact
 ON machine_requests(artifact_kind, artifact_ref);
+CREATE INDEX IF NOT EXISTS idx_machine_requests_operation
+ON machine_requests(operation_name, accepted_at_ms);
 CREATE TABLE IF NOT EXISTS machine_request_parts (
     archive_identity TEXT NOT NULL,
     request_id TEXT NOT NULL,

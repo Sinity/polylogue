@@ -117,6 +117,38 @@ def test_pilot_repeated_provider_build_reports_setup_and_byte_cost(tmp_path: Pat
     )
 
 
+def test_pilot_archive_reuse_reports_cold_warm_setup_and_bytes(tmp_path: Path) -> None:
+    """Measure the canonical archive build once, then verify warm reuse.
+
+    A second request with the same recipe must hit the workload-artifact
+    identity/memoization path.  The assertion on the artifact root and
+    manifest prevents a test-only cache from merely producing equivalent
+    output while repeating the expensive construction.
+    """
+    from tests.infra.integration_profile import build_integration_archive
+
+    cache_root = tmp_path / "pilot-artifact-cache"
+    timings: list[float] = []
+    artifacts = []
+    for _ in range(2):
+        started = perf_counter()
+        artifact = build_integration_archive(cache_root=cache_root)
+        timings.append(perf_counter() - started)
+        artifacts.append(artifact)
+
+    cold, warm = artifacts
+    assert cold.root == warm.root
+    assert cold.manifest.manifest_id == warm.manifest.manifest_id
+    assert cold.manifest.resources.total_bytes > 0
+    assert warm.manifest.resources.total_bytes == cold.manifest.resources.total_bytes
+    print(
+        "pilot-archive-build-cost="
+        f"{{'builds': 2, 'bytes': {cold.manifest.resources.total_bytes}, "
+        f"'setup_seconds': [{timings[0]:.6f}, {timings[1]:.6f}], "
+        "'same_artifact': true}}"
+    )
+
+
 def test_parser_resource_acquisition_opens_no_archive_tier(tmp_path: Path) -> None:
     """Acquiring AND parsing the pilot's bytes opens no SQLite tier at all.
 

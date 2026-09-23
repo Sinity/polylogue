@@ -47,6 +47,9 @@ PROFILE_METRICS: tuple[str, ...] = (
     "background_operations",
     "background_throughput",
     "concurrent_interference_p95_ms",
+    "mixed_load_phase_percentiles",
+    "mixed_load_dominant_phase",
+    "mixed_load_series_summary",
 )
 
 TERMINAL_COLUMNS: tuple[int, ...] = (40, 80, 120, 200)
@@ -69,7 +72,7 @@ def profile_manifest() -> dict[str, object]:
     }
 
 
-def record_metrics(benchmark: Any, **metrics: int | float | str) -> None:
+def record_metrics(benchmark: Any, **metrics: object) -> None:
     """Attach decomposed production-route metrics to pytest-benchmark output."""
     unknown = set(metrics) - set(PROFILE_METRICS)
     if unknown:

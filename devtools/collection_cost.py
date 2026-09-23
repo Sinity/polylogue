@@ -47,6 +47,7 @@ from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS
 from devtools.verify_test_collection import collection_command, collection_env
 
 __all__ = [
+    "COLLECTION_COST_TARGET_KIB_PER_ITEM",
     "CORPUS_COLLECTION_BUDGET_MIB",
     "OVER_BUDGET_EXIT",
     "collection_argv",
@@ -72,6 +73,11 @@ _CORPUS_ROOT_ARG: Final = CLOSED_WORLD_COLLECTION_ARGS[-1]
 #: against each other.
 CORPUS_COLLECTION_BUDGET_MIB: Final = 430
 
+# The rewritten campaign criterion measures the collection footprint against
+# the corpus it collected.  Keeping the target in KiB/item prevents a larger
+# corpus from looking better merely because its absolute RSS happened to move.
+COLLECTION_COST_TARGET_KIB_PER_ITEM: Final = 22.3
+
 #: Over the budget the caller asked for. Distinct from the selection's own
 #: non-zero exit so the two failures are never confused for each other.
 OVER_BUDGET_EXIT: Final = 3
@@ -90,6 +96,13 @@ def _collected_count(output: str) -> int | None:
     for match in _COLLECTED_RE.finditer(output):
         last = int(match.group(1).replace(",", ""))
     return last
+
+
+def _cost_kib_per_item(peak_rss_mib: float, collected: int | None) -> float | None:
+    """Return collection RSS per collected item, or ``None`` without a count."""
+    if collected is None or collected <= 0:
+        return None
+    return round(peak_rss_mib * 1024 / collected, 2)
 
 
 def collection_argv(selection: list[str], *, root: Path) -> list[str]:
@@ -123,17 +136,24 @@ def measure_collection(selection: list[str], *, root: Path) -> dict[str, Any]:
     elapsed = time.monotonic() - started
     after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
+    peak_rss_mib = round(max(before, after) / 1024, 1)
+    peak_rss_delta_mib = round(max(0, after - before) / 1024, 1)
+    collected = _collected_count(output)
     return {
         "kind": "polylogue.collection-cost",
         "selection": list(selection) or ["<whole corpus>"],
-        "collected": _collected_count(output),
+        "collected": collected,
         "wall_clock_s": round(elapsed, 2),
         # ru_maxrss is the high-water mark across every reaped child, so the
         # later reading is this child's peak unless an earlier child in the
         # same process was larger. The delta is reported beside it, not
         # instead of it, so that case stays visible.
-        "peak_rss_mib": round(max(before, after) / 1024, 1),
-        "peak_rss_delta_mib": round(max(0, after - before) / 1024, 1),
+        "peak_rss_mib": peak_rss_mib,
+        "peak_rss_delta_mib": peak_rss_delta_mib,
+        # The delta excludes this command's already-paid child high-water
+        # mark. It is the comparable collection cost when this process has
+        # measured more than one selection; retain the absolute peak too.
+        "collection_cost_kib_per_item": _cost_kib_per_item(peak_rss_delta_mib, collected),
         "returncode": completed.returncode,
         "tail": [line for line in output.strip().splitlines() if line.strip()][-3:],
     }
@@ -145,6 +165,12 @@ def main(argv: list[str] | None = None) -> int:
         "selection",
         nargs="*",
         help="pytest selection to collect (default: the whole declared corpus)",
+    )
+    parser.add_argument(
+        "--budget-kib-per-item",
+        type=float,
+        default=None,
+        help="exit 3 when collection RSS per collected item exceeds this value",
     )
     parser.add_argument(
         "--budget-mib",
@@ -162,6 +188,10 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.budget_mib is not None:
         result["budget_mib"] = arguments.budget_mib
         result["within_budget"] = result["peak_rss_mib"] <= arguments.budget_mib
+    if arguments.budget_kib_per_item is not None:
+        measured = result["collection_cost_kib_per_item"]
+        result["budget_kib_per_item"] = arguments.budget_kib_per_item
+        result["within_budget_kib_per_item"] = measured is not None and measured <= arguments.budget_kib_per_item
 
     if arguments.json:
         print(json.dumps(result, indent=2, sort_keys=True))
@@ -172,12 +202,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  selection: {' '.join(str(item) for item in result['selection'])}")
         if arguments.budget_mib is not None:
             print(f"  budget: {'within' if result['within_budget'] else 'OVER'} {arguments.budget_mib} MiB")
+        if arguments.budget_kib_per_item is not None:
+            measured = result["collection_cost_kib_per_item"]
+            verdict = measured is not None and measured <= arguments.budget_kib_per_item
+            print(
+                f"  collection cost: {measured if measured is not None else 'unmeasured'} KiB/item ({'within' if verdict else 'OVER'} {arguments.budget_kib_per_item})"
+            )
         for line in result["tail"]:
             print(f"  {line}")
 
     if result["returncode"] != 0:
         return int(result["returncode"])
     if arguments.budget_mib is not None and not result["within_budget"]:
+        return OVER_BUDGET_EXIT
+    if arguments.budget_kib_per_item is not None and not result["within_budget_kib_per_item"]:
         return OVER_BUDGET_EXIT
     return 0
 

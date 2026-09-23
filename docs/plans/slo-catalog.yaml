@@ -246,8 +246,15 @@ surfaces:
       The substantive finding is unchanged and now rests on honest reads:
       ~180 ms per read under write load against ~28 ms per read quiet
       (daemon_concurrent_reads, same host, same runs) -- ~6.4x, the ~6x the
-      bead flags. It is still NOT attributed to a phase, because no phase
-      attribution was measured.
+      bead flags. Wave 6 adds a pinned phase receipt to this lane: the managed
+      run records quiet and writer-load p50/p95/p99 for read-frame acquisition,
+      query compute, cache invalidation, instrumentation tail, and response
+      serialization tail, plus queue delay, writer hold, and background
+      throughput. The receipt also names the writer-load p95 dominant phase;
+      any remaining unexplained tail is retained as instrumentation tail rather
+      than silently charged to query compute. The 250/500 ms product target is
+      preserved; this informational ceiling remains a noise ceiling until a
+      quiet-host run attributes a fixable phase.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_mixed_load"
     p50_ms: 4000
     p95_ms: 6000

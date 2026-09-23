@@ -184,21 +184,43 @@ async def test_paste_browser_walk_reports_unknown_total_when_the_page_fills() ->
             word_count=3,
         )
 
-    class _Filter:
-        async def list_summaries(self) -> list[object]:
-            return [SimpleNamespace(id="codex-session:s1", display_title="s1", origin="codex-session")]
-
     class _Poly:
-        def filter(self) -> _Filter:
-            return _Filter()
+        """The bounded query-unit route polylogue-q54dt moved this handler onto.
 
-        async def get_session(self, _sid: str) -> object:
-            return SimpleNamespace(messages=[_message(0), _message(1), _message(2)])
+        The double used to expose ``filter()``/``get_session()`` -- the
+        full-archive walk the route no longer performs -- so it drifted from
+        production and raised AttributeError rather than testing anything.
+        ``next_offset`` is what the executor sets from its limit+1 probe, and
+        it is what makes the page read as truncated below.
+        """
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def query_units(self, _query: object, *, limit: int, offset: int) -> object:
+            self.calls.append({"limit": limit, "offset": offset})
+            rows = [
+                SimpleNamespace(
+                    message_id=f"m{index}",
+                    session_id="codex-session:s1",
+                    title="s1",
+                    origin="codex-session",
+                    role="user",
+                    text="@@ -1,2 +1,2 @@\n-a\n+b\n",
+                    occurred_at_ms=None,
+                    word_count=3,
+                )
+                for index in range(offset, offset + limit)
+            ]
+            return SimpleNamespace(items=rows, next_offset=offset + limit)
 
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    payload = await handler._do_paste_browser(cast("Any", _Poly()), limit=1, offset=0)
+    poly = _Poly()
+    payload = await handler._do_paste_browser(cast("Any", poly), limit=1, offset=0)
 
     assert isinstance(payload, dict)
+    # One bounded read, not a walk.
+    assert poly.calls == [{"limit": 1, "offset": 0}]
     assert len(payload["items"]) == 1
     assert payload["total"] is None, payload
     assert payload["total_is_exact"] is False
