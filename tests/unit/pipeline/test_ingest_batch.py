@@ -2231,15 +2231,15 @@ def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Pat
         assert raw_id == "raw-native"
         event = conn.execute(
             """
-            SELECT event_type, summary
+            SELECT event_type, payload_json
             FROM session_events
             WHERE session_id = ?
             """,
             ("codex-session:dom-precedence",),
         ).fetchone()
         assert event["event_type"] == "capture_gap"
-        assert "DOM browser-capture fallback" in event["summary"]
-        assert "raw-dom-fallback" in event["summary"]
+        assert "DOM browser-capture fallback" in event["payload_json"]
+        assert "raw-dom-fallback" in event["payload_json"]
 
 
 def test_write_session_same_content_dom_fallback_does_not_refresh_native_raw_link(tmp_path: Path) -> None:
