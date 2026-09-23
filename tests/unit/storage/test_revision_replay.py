@@ -1610,6 +1610,46 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
     assert promoted.accepted_raw_ids == ()
 
 
+def test_typed_retirement_authority_allows_detail_wording_to_change(
+    tmp_path: Path,
+) -> None:
+    """Machine-readable authority keeps interpretation independent of prose."""
+    bootstrap_archive_root(tmp_path)
+
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="s1",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"payload", source_path="capture.json", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
+            ),
+        )
+        archive_revision_governance.replace_raw_membership_census(
+            archive,
+            raw_id,
+            [session],
+            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            censused_at_ms=0,
+            detail="operator-facing wording may change",
+            revision_authority=RawRevisionAuthority.QUARANTINED,
+            retire_full_revision_governance=True,
+        )
+        row = (
+            archive._ensure_source_conn()
+            .execute("SELECT detail, revision_authority FROM raw_membership_census WHERE raw_id = ?", (raw_id,))
+            .fetchone()
+        )
+
+    assert tuple(row) == ("operator-facing wording may change", RawRevisionAuthority.QUARANTINED.value)
+
+
 def test_legacy_governance_marker_is_never_writable(
     tmp_path: Path,
 ) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import time
 import zipfile
 from collections.abc import Callable, Iterable
@@ -17,7 +19,6 @@ from polylogue.config import Source
 from polylogue.core.content_identity import (
     STRUCTURAL_IDENTITY_MAX_BYTES,
     bounded_payload_content_identity,
-    payload_content_identity,
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
@@ -49,6 +50,23 @@ AcquisitionObservation: TypeAlias = JSONDocument
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
+
+
+def _bounded_payload_identity(payload_bytes: bytes) -> str:
+    """Return the identity used for a serialized acquisition unit.
+
+    ZIP splitting has already bounded the payload in memory, but the identity
+    contract is still the decoded structural value (with the declared byte
+    digest fallback above the ceiling).  Keeping this helper next to the
+    producer prevents split rows from stamping a byte hash that replay would
+    incorrectly treat as a structural identity.
+    """
+    identity, _skipped = bounded_payload_content_identity(
+        io.BytesIO(payload_bytes),
+        size=len(payload_bytes),
+        byte_digest=hashlib.sha256(payload_bytes).hexdigest(),
+    )
+    return identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,7 +145,7 @@ class SplitPayloadBuffer:
                 payload_bytes=payload_bytes,
                 source_index=self._next_source_index,
                 addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                content_identity=payload_content_identity(payload_bytes),
+                content_identity=_bounded_payload_identity(payload_bytes),
             )
             self._next_source_index += 1
             return (payload,)
@@ -143,7 +161,7 @@ class SplitPayloadBuffer:
                 payload_bytes=pending_payload_bytes,
                 source_index=index,
                 addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                content_identity=payload_content_identity(pending_payload_bytes),
+                content_identity=_bounded_payload_identity(pending_payload_bytes),
             )
             for index, (pending_provider, pending_payload_bytes) in enumerate(
                 self._pending,
@@ -339,7 +357,7 @@ def make_split_entry_raw_data(
         source_index=split_payload.source_index,
         blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         addressing_mode=split_payload.addressing_mode,
-        content_identity=split_payload.content_identity or payload_content_identity(split_payload.payload_bytes),
+        content_identity=split_payload.content_identity or _bounded_payload_identity(split_payload.payload_bytes),
     )
 
 
@@ -676,7 +694,7 @@ def replay_zip_entry_acquisition_payloads(
                 payload_bytes=payload_bytes,
                 source_index=None,
                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-                content_identity=payload_content_identity(payload_bytes),
+                content_identity=_bounded_payload_identity(payload_bytes),
             )
         return
 
@@ -697,7 +715,7 @@ def replay_zip_entry_acquisition_payloads(
             payload_bytes=payload_bytes,
             source_index=None,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-            content_identity=payload_content_identity(payload_bytes),
+            content_identity=_bounded_payload_identity(payload_bytes),
         )
 
 

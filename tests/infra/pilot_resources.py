@@ -69,13 +69,13 @@ def build_pilot_provider_packages(root: Path) -> tuple[ProviderSourcePackage, ..
     return tuple(packages)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def pilot_provider_packages(tmp_path_factory: pytest.TempPathFactory) -> tuple[ProviderSourcePackage, ...]:
-    """Generate only the provider bytes requested by parser pilot tests."""
+    """Generate provider bytes once per pytest worker on first parser use."""
     return build_pilot_provider_packages(tmp_path_factory.mktemp("pilot-provider-bytes"))
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def pilot_parsed_sessions(pilot_provider_packages: tuple[ProviderSourcePackage, ...]) -> tuple[ParsedSession, ...]:
     """Parse provider bytes without acquiring any archive/database resource."""
     from polylogue.sources import iter_source_sessions
@@ -88,15 +88,15 @@ def pilot_parsed_sessions(pilot_provider_packages: tuple[ProviderSourcePackage, 
     )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def pilot_artifact() -> SeededArchiveArtifact:
-    """Acquire the shared multi-provider artifact from its declared owner."""
+    """Acquire the shared multi-provider artifact once per pytest worker."""
     from tests.infra.integration_profile import build_integration_archive
 
     return build_integration_archive()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def pilot_query_archive(
     pilot_artifact: SeededArchiveArtifact,
 ) -> Iterator[SeededArchiveQueryLease]:

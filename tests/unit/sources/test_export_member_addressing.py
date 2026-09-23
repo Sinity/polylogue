@@ -245,6 +245,37 @@ def test_split_member_elements_are_acquired_as_elements(tmp_path: Path) -> None:
     assert [record.source_index for record in records] == [0, 1]
 
 
+def test_split_elements_persist_structural_identity_for_replay(tmp_path: Path) -> None:
+    """Production split rows use value identity, not their serialization bytes.
+
+    Anti-vacuity: the member is rewritten with different JSON separators and
+    key order after acquisition. A byte-hash producer leaves the durable
+    identity unable to match the replay candidate even though the value is
+    unchanged.
+    """
+    zip_path = tmp_path / "structural-split.zip"
+    first = {**_session("one"), "ordinal": 1}
+    second = {**_session("two"), "ordinal": 2}
+    _write_member(zip_path, [first, second])
+    blob_store = BlobStore(tmp_path / "blob")
+    with zipfile.ZipFile(zip_path) as archive:
+        entry = archive.infolist()[0]
+        context = ZipEntryReadContext(
+            source=Source(name="chatgpt", path=tmp_path),
+            zip_path=zip_path,
+            entry=entry,
+            file_mtime=None,
+            provider_hint=Provider.CHATGPT,
+            blob_store=blob_store,
+        )
+        records = list(iter_zip_entry_raw_data(archive, context))
+
+    assert [record.content_identity for record in records] == [
+        structural_content_identity(first),
+        structural_content_identity(second),
+    ]
+
+
 def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
     """A row recorded as whole-member reads the member, not an element.
 
