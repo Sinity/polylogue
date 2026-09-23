@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from polylogue.cli.click_app import cli
 from polylogue.core.json import loads
 from polylogue.operations.action_contracts import ACTION_CONTRACT_BY_PATH, action_affordance_payloads
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
+from tests.infra.daemon_operations import cli_daemon_archive
 
 
 def _demo_env(root: Path) -> dict[str, str]:
@@ -30,16 +32,11 @@ def _demo_env(root: Path) -> dict[str, str]:
     }
 
 
-def _seed_demo_archive(runner: CliRunner, tmp_path: Path) -> dict[str, str]:
-    env = _demo_env(tmp_path / "archive")
-    result = runner.invoke(
-        cli,
-        ["demo", "seed", "--with-overlays", "--format", "json"],
-        env=env,
-        catch_exceptions=False,
-    )
-    assert result.exit_code == 0, result.output
-    return env
+def _seed_demo_archive(root: Path) -> None:
+    """Seed the synthetic corpus before the daemon starts serving CLI reads."""
+    from polylogue.demo import seed_demo_archive
+
+    asyncio.run(seed_demo_archive(root, force=True, with_overlays=True, explicit_root=True))
 
 
 def _parse_json_output(output: str) -> Any:
@@ -126,28 +123,30 @@ def test_shared_action_affordance_payload_uses_grouped_contract_fields() -> None
 def test_demo_archive_golden_path_executes_registry_command(
     golden: ExecutableWorkflowGoldenPath,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner = CliRunner()
-    env = _seed_demo_archive(runner, tmp_path)
+    archive_root = tmp_path / "archive"
+    with cli_daemon_archive(archive_root, monkeypatch, seed_archive=_seed_demo_archive):
+        runner = CliRunner()
+        env = _demo_env(archive_root)
+        result = runner.invoke(cli, list(golden.command), env=env, catch_exceptions=False)
+        assert result.exit_code == 0, result.output
 
-    result = runner.invoke(cli, list(golden.command), env=env, catch_exceptions=False)
-    assert result.exit_code == 0, result.output
+        for expected in golden.stdout_contains:
+            assert expected in result.output
 
-    for expected in golden.stdout_contains:
-        assert expected in result.output
+        known_affordances = {payload.id for payload in action_affordance_payloads()}
+        assert set(golden.required_affordance_ids) <= known_affordances
+        assert golden.action_path in ACTION_CONTRACT_BY_PATH
 
-    known_affordances = {payload.id for payload in action_affordance_payloads()}
-    assert set(golden.required_affordance_ids) <= known_affordances
-    assert golden.action_path in ACTION_CONTRACT_BY_PATH
+        if golden.output_kind == "human":
+            return
 
-    if golden.output_kind == "human":
-        return
+        payload = _parse_json_output(result.output)
+        if golden.output_kind == "json_object":
+            assert isinstance(payload, dict)
+        elif golden.output_kind == "json_array":
+            assert isinstance(payload, list)
 
-    payload = _parse_json_output(result.output)
-    if golden.output_kind == "json_object":
-        assert isinstance(payload, dict)
-    elif golden.output_kind == "json_array":
-        assert isinstance(payload, list)
-
-    for expectation in golden.json_expectations:
-        _assert_json_expectation(payload, expectation)
+        for expectation in golden.json_expectations:
+            _assert_json_expectation(payload, expectation)

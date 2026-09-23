@@ -42,6 +42,7 @@ from polylogue.cli.verb_cardinality import (
     check_cardinality,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -234,18 +235,20 @@ _COVERED_REFUSALS: tuple[tuple[str, list[str]], ...] = (
     ids=[name for name, _ in _COVERED_REFUSALS],
 )
 def test_selection_refusals_reach_the_terminal_with_a_next_action(
-    refusal_archive: Path, name: str, argv: list[str]
+    refusal_archive: Path, name: str, argv: list[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A covered refusal never arrives as a bare sentence."""
-    result = _invoke(refusal_archive, argv)
+    with cli_daemon_archive(refusal_archive, monkeypatch):
+        result = CliRunner().invoke(cli, argv)
     assert result.exit_code != 0, f"{name} did not refuse: {result.output}"
     assert "Next:" in result.output, f"{name} refused without a next action: {result.output}"
     assert "\n  - " in result.output, f"{name} rendered no action line: {result.output}"
 
 
-def test_an_ambiguous_refusal_lists_the_candidate_refs(refusal_archive: Path) -> None:
+def test_an_ambiguous_refusal_lists_the_candidate_refs(refusal_archive: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-interactive consumer can resolve the ambiguity from the refusal."""
-    result = _invoke(refusal_archive, ["find", "repo:polylogue", "then", "delete", "--yes"])
+    with cli_daemon_archive(refusal_archive, monkeypatch):
+        result = CliRunner().invoke(cli, ["find", "repo:polylogue", "then", "delete", "--yes"])
     assert result.exit_code != 0
     assert "Candidates:" in result.output
     assert "ambiguous-0" in result.output

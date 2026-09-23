@@ -27,13 +27,14 @@ forwarding bug that widened every filter cannot pass by agreeing with itself.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 # Session ids as the writer computes them (``origin || ':' || native_id``),
@@ -45,13 +46,22 @@ PARENT_A = "claude-code-session:ext-parent-a"
 
 
 @pytest.fixture
-def query_route_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """A seeded archive for the root query, with daemon discovery neutral."""
+def query_route_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Path]]:
+    """A seeded archive for the root query, served by the production daemon."""
 
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
-    _seed(cli_workspace["archive_root"] / "index.db")
-    return cli_workspace
+
+    def seed(root: Path) -> None:
+        _seed(root / "index.db")
+
+    with cli_daemon_archive(
+        cli_workspace["archive_root"],
+        monkeypatch,
+        seed_archive=seed,
+        home=cli_workspace["state_dir"],
+    ):
+        yield cli_workspace
 
 
 def _seed(db_path: Path) -> None:
@@ -176,14 +186,11 @@ FLAG_CASES: tuple[FlagCase, ...] = (
 def _run(args: Sequence[str]) -> tuple[int, dict[str, object]]:
     """Run one root query end to end against the seeded archive.
 
-    ``--no-daemon`` pins the transport: no daemon socket exists in this
-    workspace, and the declared ``DIRECT_READ`` fallback would run the same
-    handler in-process anyway, but naming it keeps the test from depending on
-    an ambient daemon on the host.
+    The workspace fixture points CLI daemon discovery at its real UDS listener.
     """
     from polylogue.cli import cli
 
-    result = CliRunner().invoke(cli, ["--plain", "--no-daemon", *args], catch_exceptions=True)
+    result = CliRunner().invoke(cli, ["--plain", *args], catch_exceptions=True)
     if result.exception is not None and not isinstance(result.exception, SystemExit):
         raise result.exception
     try:
@@ -284,7 +291,10 @@ def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest
     from polylogue.api import archive as archive_api
 
     total = 1000
-    summaries = [SimpleNamespace(session_id=f"codex-session:s{i:04d}", display_label=None) for i in range(total)]
+    summaries = [
+        SimpleNamespace(session_id=f"codex-session:s{i:04d}", display_label=None, display_label_source=None)
+        for i in range(total)
+    ]
     reads: list[str] = []
 
     class _Archive:
@@ -305,7 +315,12 @@ def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest
         )
     )
 
-    def _to_session(envelope: SimpleNamespace, *, display_label: object = None) -> SimpleNamespace:
+    def _to_session(
+        envelope: SimpleNamespace,
+        *,
+        display_label: object = None,
+        display_label_source: object = None,
+    ) -> SimpleNamespace:
         return SimpleNamespace(id=envelope.session_id)
 
     monkeypatch.setattr(archive_api, "archive_envelope_to_session", _to_session)

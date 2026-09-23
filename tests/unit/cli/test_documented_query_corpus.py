@@ -28,6 +28,7 @@ import asyncio
 import json
 import re
 import shlex
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,7 @@ from devtools import repo_root
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.click_app import cli
 from polylogue.config import Config
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 _SEEDED_SESSION_ID = "claude-ai-export:ext-conv-0"
@@ -121,33 +122,31 @@ def documented_invocations() -> tuple[str, ...]:
 _EXECUTED = tuple(command for command in documented_invocations() if command not in _NOT_EXECUTED)
 
 
-@pytest.fixture(scope="module")
-def documented_archive(tmp_path_factory: pytest.TempPathFactory) -> Path:
+@pytest.fixture
+def documented_archive(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Seed an archive whose rows satisfy the reference's example filters."""
-    root = tmp_path_factory.mktemp("documented-corpus")
-    initialize_active_archive_root(root)
-    index_db = root / "index.db"
-    for index in range(4):
-        (
-            SessionBuilder(index_db, f"conv-{index}")
-            .provider("claude-ai" if index % 2 == 0 else "chatgpt")
-            .title(f"Session {index}")
-            .git_repository_url("https://github.com/Sinity/polylogue")
-            .working_directories(["/realm/project/polylogue"])
-            .add_message(f"m{index}a", role="user", text="hello alpha bravo urgent migration cost tracking")
-            .add_message(f"m{index}b", role="assistant", text="charlie delta echo README.md")
-            .save()
-        )
-    return root
+    root = cli_workspace["archive_root"]
+
+    def seed(archive_root: Path) -> None:
+        index_db = archive_root / "index.db"
+        for index in range(4):
+            (
+                SessionBuilder(index_db, f"conv-{index}")
+                .provider("claude-ai" if index % 2 == 0 else "chatgpt")
+                .title(f"Session {index}")
+                .git_repository_url("https://github.com/Sinity/polylogue")
+                .working_directories(["/realm/project/polylogue"])
+                .add_message(f"m{index}a", role="user", text="hello alpha bravo urgent migration cost tracking")
+                .add_message(f"m{index}b", role="assistant", text="charlie delta echo README.md")
+                .save()
+            )
+
+    with cli_daemon_archive(root, monkeypatch, seed_archive=seed, home=cli_workspace["state_dir"]):
+        yield root
 
 
 def _invoke(archive_root: Path, argv: list[str]) -> Result:
-    env = {
-        "POLYLOGUE_ARCHIVE_ROOT": str(archive_root),
-        "POLYLOGUE_DB_PATH": str(archive_root / "index.db"),
-        "POLYLOGUE_NO_DAEMON": "1",
-    }
-    return CliRunner().invoke(cli, ["--no-daemon", *argv], env=env)
+    return CliRunner().invoke(cli, argv)
 
 
 def _resolve_placeholders(command: str) -> list[str]:

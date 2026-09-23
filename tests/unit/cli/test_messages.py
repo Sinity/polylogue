@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import cast
@@ -17,6 +17,7 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.storage.runtime import LineageCompleteness
+from tests.infra.daemon_operations import cli_daemon_archive
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
@@ -277,12 +278,7 @@ def _seed_dangling_fork(tmp_path: Path) -> str:
 
 
 def _seeded_request(tmp_path: Path) -> RootModeRequest:
-    """A root request pinned at ``tmp_path`` with the daemon route opted out.
-
-    ``no_daemon`` is explicit so these tests measure the declared read's own
-    in-process executor rather than whichever daemon happens to be listening
-    on the developer's machine.
-    """
+    """A root request pinned at ``tmp_path`` for the test daemon."""
 
     return RootModeRequest.from_params(
         {
@@ -292,9 +288,16 @@ def _seeded_request(tmp_path: Path) -> RootModeRequest:
                 sources=[],
                 db_path=tmp_path / "index.db",
             ),
-            "no_daemon": True,
         }
     )
+
+
+@pytest.fixture
+def daemon_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Serve message reads through the production daemon operation route."""
+
+    with cli_daemon_archive(tmp_path, monkeypatch):
+        yield tmp_path
 
 
 def _seed_messages(tmp_path: Path, *messages: dict[str, object], title: str = "Seeded") -> str:
@@ -316,7 +319,9 @@ def _seed_messages(tmp_path: Path, *messages: dict[str, object], title: str = "S
     return builder.native_session_id()
 
 
-def test_run_messages_emits_json_and_passes_pagination(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_emits_json_and_passes_pagination(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """The verb's window coordinates reach the declared read, not a local page.
 
     Anti-vacuity: serve the window from offset 0 and the asserted row text
@@ -340,7 +345,9 @@ def test_run_messages_emits_json_and_passes_pagination(tmp_path: Path, capsys: p
     assert payload["total"] == 4
 
 
-def test_run_messages_json_names_the_executor_that_answered(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_json_names_the_executor_that_answered(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """The rendered authority names the executor the result reported.
 
     Anti-vacuity: hard-code ``server_identity="daemon"`` in ``run_messages``
@@ -352,10 +359,12 @@ def test_run_messages_json_names_the_executor_that_answered(tmp_path: Path, caps
     run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, output_format="json")
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["authority"]["server_identity"] == "direct"
+    assert payload["authority"]["server_identity"] == "daemon"
 
 
-def test_run_messages_verbose_prints_the_serving_executor(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_verbose_prints_the_serving_executor(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """``--verbose`` names which executor served the page, on stderr.
 
     Anti-vacuity: drop the ``verbose`` branch and no ``served-by:`` line is
@@ -368,11 +377,13 @@ def test_run_messages_verbose_prints_the_serving_executor(tmp_path: Path, capsys
     run_messages(_env(), request, session_id=session_id, output_format="json")
 
     captured = capsys.readouterr()
-    assert captured.err.strip().startswith("served-by: direct")
+    assert captured.err.strip().startswith("served-by: daemon")
     assert "served-by:" not in captured.out
 
 
-def test_run_messages_json_surfaces_truncated_lineage(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_json_surfaces_truncated_lineage(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """polylogue-ppkj: a dangling branch point must not silently render a
     partial transcript as if it were the whole conversation.
 
@@ -390,7 +401,9 @@ def test_run_messages_json_surfaces_truncated_lineage(tmp_path: Path, capsys: py
     assert payload["outcome"]["state"] == "degraded"
 
 
-def test_run_messages_json_lineage_complete_by_default(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_json_lineage_complete_by_default(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "hi"})
 
     run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, output_format="json")
@@ -400,7 +413,9 @@ def test_run_messages_json_lineage_complete_by_default(tmp_path: Path, capsys: p
     assert "lineage_truncation_reason" not in payload
 
 
-def test_run_messages_full_composes_every_remaining_window(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_full_composes_every_remaining_window(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """``--full`` composes the rest of the transcript out of bounded windows.
 
     Anti-vacuity: stop the window loop after the first window and only one of
@@ -430,7 +445,9 @@ def test_run_messages_full_composes_every_remaining_window(tmp_path: Path, capsy
     assert "continuation" not in payload
 
 
-def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_messages_json_is_single_finite_document(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """`read --view messages --format json` emits one finite JSON value (#1818)."""
     import jsonschema
 
@@ -452,7 +469,7 @@ def test_run_messages_json_is_single_finite_document(tmp_path: Path, capsys: pyt
     assert payload["total"] == 2
 
 
-def test_write_messages_file_streams_json_payload(tmp_path: Path) -> None:
+def test_write_messages_file_streams_json_payload(tmp_path: Path, daemon_archive: Path) -> None:
     env = _env()
     out = tmp_path / "messages.json"
     session_id = _seed_messages(
@@ -480,7 +497,9 @@ def test_write_messages_file_streams_json_payload(tmp_path: Path) -> None:
     assert [message["text"] for message in payload["messages"]] == ["second"]
 
 
-def test_write_messages_file_preserves_the_destination_when_the_read_fails(tmp_path: Path) -> None:
+def test_write_messages_file_preserves_the_destination_when_the_read_fails(
+    tmp_path: Path, daemon_archive: Path
+) -> None:
     """A failed first window must not destroy the file it was going to replace.
 
     ``read_message_windows`` is a generator: nothing is read until the write
@@ -516,7 +535,7 @@ def test_write_messages_file_preserves_the_destination_when_the_read_fails(tmp_p
     assert sorted(child.name for child in tmp_path.iterdir() if child.name.startswith(".messages.json")) == []
 
 
-def test_write_messages_file_replaces_the_destination_on_success(tmp_path: Path) -> None:
+def test_write_messages_file_replaces_the_destination_on_success(tmp_path: Path, daemon_archive: Path) -> None:
     """The opposite direction: a successful read still rewrites the file.
 
     Anti-vacuity: leave the staged file in place and never ``os.replace`` it
@@ -545,7 +564,7 @@ def test_write_messages_file_replaces_the_destination_on_success(tmp_path: Path)
 
 
 def test_run_messages_ndjson_emits_one_json_document_per_line(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`--format ndjson` streams one parseable JSON document per message (#1818)."""
     import jsonschema
@@ -571,6 +590,7 @@ def test_run_messages_ndjson_emits_one_json_document_per_line(
 
 def test_run_messages_markdown_and_not_found_paths(
     tmp_path: Path,
+    daemon_archive: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     env = _env()
@@ -591,6 +611,7 @@ def test_run_messages_markdown_and_not_found_paths(
 
 def test_run_messages_text_alias_emits_human_rows(
     tmp_path: Path,
+    daemon_archive: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     session_id = _seed_messages(
@@ -608,6 +629,7 @@ def test_run_messages_text_alias_emits_human_rows(
 
 def test_run_messages_markdown_uses_structural_shell_outcome(
     tmp_path: Path,
+    daemon_archive: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     session_id = _seed_messages(

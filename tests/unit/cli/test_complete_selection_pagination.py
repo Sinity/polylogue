@@ -23,6 +23,7 @@ import pytest
 from polylogue.cli.operation_kernel import OperationFailedError
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.config import Config
+from tests.infra.daemon_operations import cli_daemon_archive
 
 SEEDED_SESSIONS = 7
 PAGE = 3
@@ -59,7 +60,7 @@ def _config(root: Path) -> Config:
 
 @pytest.mark.parametrize("params,row_key", [({}, "items"), ({"query": (TOKEN,)}, "hits")])
 def test_operation_payloads_carry_the_same_next_page_offset(
-    seeded_root: Path, params: dict[str, object], row_key: str
+    seeded_root: Path, params: dict[str, object], row_key: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The list and ranked operation payloads own the same continuation.
 
@@ -70,22 +71,20 @@ def test_operation_payloads_carry_the_same_next_page_offset(
     from polylogue.cli.lowering import lower_cli_query
     from polylogue.cli.operation_kernel import dispatch
 
-    result = dispatch(
-        _config(seeded_root),
-        lower_cli_query(RootModeRequest.from_params(params), limit=PAGE, offset=0),
-        daemon_disabled=True,
-    )
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        result = dispatch(
+            _config(seeded_root),
+            lower_cli_query(RootModeRequest.from_params(params), limit=PAGE, offset=0),
+        )
+        last = dispatch(
+            _config(seeded_root),
+            lower_cli_query(RootModeRequest.from_params(params), limit=PAGE, offset=6),
+        ).value
     payload = result.value
     assert isinstance(payload, dict)
     assert payload["total"] == SEEDED_SESSIONS
     assert payload["next_offset"] == PAGE
     assert len(payload[row_key]) == PAGE
-
-    last = dispatch(
-        _config(seeded_root),
-        lower_cli_query(RootModeRequest.from_params(params), limit=PAGE, offset=6),
-        daemon_disabled=True,
-    ).value
     assert isinstance(last, dict)
     assert last["next_offset"] is None
 
@@ -104,9 +103,8 @@ def test_complete_selection_resolves_every_seeded_session(seeded_root: Path, mon
     import polylogue.cli.session_rows as session_rows
 
     monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", PAGE)
-    ids = session_rows.query_complete_session_ids(
-        _config(seeded_root), RootModeRequest.from_params({}), daemon_disabled=True
-    )
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        ids = session_rows.query_complete_session_ids(_config(seeded_root), RootModeRequest.from_params({}))
 
     assert len(ids) == SEEDED_SESSIONS
     assert len(set(ids)) == SEEDED_SESSIONS
@@ -137,9 +135,8 @@ def test_complete_selection_walks_the_ordinary_over_500_boundary(
     import polylogue.cli.session_rows as session_rows
 
     monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", 500)
-    ids = query_complete_session_ids(
-        _config(tmp_path), RootModeRequest.from_params({"query": (TOKEN,)}), daemon_disabled=True
-    )
+    with cli_daemon_archive(tmp_path, monkeypatch):
+        ids = query_complete_session_ids(_config(tmp_path), RootModeRequest.from_params({"query": (TOKEN,)}))
 
     assert len(ids) == LARGE_SEEDED_SESSIONS
     assert len(set(ids)) == LARGE_SEEDED_SESSIONS
@@ -164,7 +161,8 @@ def test_complete_selection_all_verbs_receive_every_real_operation_id(
     monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", PAGE)
     env = make_app_env(archive_root=seeded_root)
     request = RootModeRequest.from_params({"query": (TOKEN,)})
-    expected = resolve_session_ids_for_verb(env, request)
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        expected = resolve_session_ids_for_verb(env, request)
     assert len(expected) == SEEDED_SESSIONS
     assert len(set(expected)) == SEEDED_SESSIONS
 
@@ -192,10 +190,11 @@ def test_complete_selection_all_verbs_receive_every_real_operation_id(
     mark_callback = getattr(query_verbs.mark_verb.callback, "__wrapped__", None)
     assert callable(delete_callback)
     assert callable(mark_callback)
-    with patch("polylogue.cli.archive_query.execute_delete_by_session_ids", side_effect=record_delete):
-        delete_callback(child, False, True, True, None)
-    with patch("polylogue.cli.archive_query.submit_cli_mutation", side_effect=record_mark):
-        mark_callback(child, ("reviewed",), (), False, False, False, False, False, False, None, True, False, None)
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        with patch("polylogue.cli.archive_query.execute_delete_by_session_ids", side_effect=record_delete):
+            delete_callback(child, False, True, True, None)
+        with patch("polylogue.cli.archive_query.submit_cli_mutation", side_effect=record_mark):
+            mark_callback(child, ("reviewed",), (), False, False, False, False, False, False, None, True, False, None)
 
     assert deleted == [expected]
     assert mark_operations == [

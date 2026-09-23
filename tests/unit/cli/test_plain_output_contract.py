@@ -17,6 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from tests.infra.daemon_operations import cli_daemon_archive
 
 
 def _unreachable_daemon_url() -> str:
@@ -113,8 +114,9 @@ class TestPlainEmptyArchiveMessages:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``polylogue --plain analyze --count`` succeeds before archive files exist."""
-        exit_code, stdout, stderr = _invoke_plain(["--plain", "analyze", "--count"], monkeypatch)
+        """``analyze --count`` reports zero through the resident daemon."""
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            exit_code, stdout, stderr = _invoke_plain(["--plain", "analyze", "--count"], monkeypatch)
         assert exit_code == 0, f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
         assert stdout == "0\n"
 
@@ -123,8 +125,9 @@ class TestPlainEmptyArchiveMessages:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``polylogue --plain analyze`` succeeds before archive files exist."""
-        exit_code, stdout, stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
+        """``analyze`` reports an empty archive through the resident daemon."""
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            exit_code, stdout, stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
         assert exit_code == 0, f"unexpected exit {exit_code}: stdout={stdout!r} stderr={stderr!r}"
         assert "Sessions: 0" in stdout
         assert "Messages: 0" in stdout
@@ -140,8 +143,8 @@ class TestPlainEmptyArchiveMessages:
         valid empty result: exit 0 with no JSON-shaped output. Only search mode
         emits the "No sessions matched." line and exits 2.
         """
-        _init_empty_archive(workspace_env)
-        exit_code, stdout, _stderr = _invoke_plain(["--plain", "read", "--all"], monkeypatch)
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            exit_code, stdout, _stderr = _invoke_plain(["--plain", "read", "--all"], monkeypatch)
         assert exit_code == 0, f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
             f"plain read --all emitted JSON-shaped output instead of human text: {stdout!r}"
@@ -153,8 +156,8 @@ class TestPlainEmptyArchiveMessages:
         workspace_env: dict[str, Path],
     ) -> None:
         """``polylogue --plain analyze`` reports empty archive in human prose."""
-        _init_empty_archive(workspace_env)
-        exit_code, stdout, _stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            exit_code, stdout, _stderr = _invoke_plain(["--plain", "analyze"], monkeypatch)
         assert exit_code == 0, f"unexpected exit {exit_code}: {stdout!r}"
         assert not stdout.lstrip().startswith("{"), (
             f"plain analyze emitted JSON-shaped output instead of human text: {stdout!r}"

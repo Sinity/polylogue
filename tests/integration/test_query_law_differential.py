@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.query_census import (
     ArchiveSnapshot,
     CensusConcurrencyError,
@@ -59,8 +60,16 @@ def _evaluate(corpus: QueryCorpus, *, probes: Sequence[object] = UNIT_PROBES) ->
     return asyncio.run(_run())
 
 
-@pytest.fixture(scope="module")
-def query_law_run(query_law_corpus: QueryCorpus) -> LawRun:
+@pytest.fixture
+def query_law_daemon(query_law_corpus: QueryCorpus, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Serve the CLI leg of the law harness through the production UDS daemon."""
+
+    with cli_daemon_archive(query_law_corpus.archive_root, monkeypatch):
+        yield
+
+
+@pytest.fixture
+def query_law_run(query_law_corpus: QueryCorpus, query_law_daemon: None) -> LawRun:
     return _evaluate(query_law_corpus)
 
 
@@ -129,7 +138,9 @@ def test_query_law_exemptions_are_recorded_as_outcomes(query_law_run: LawRun) ->
 
 
 @pytest.mark.parametrize("mutant", QUERY_LAW_MUTANTS, ids=lambda mutant: mutant.mutant_id)
-def test_query_law_mutation_fails_the_production_harness(mutant: LawMutant, query_law_corpus: QueryCorpus) -> None:
+def test_query_law_mutation_fails_the_production_harness(
+    mutant: LawMutant, query_law_corpus: QueryCorpus, query_law_daemon: None
+) -> None:
     """A broken pushdown, continuation, public type or ref route turns its law red.
 
     Each mutation patches one production seam -- structural predicate
@@ -146,7 +157,9 @@ def test_query_law_mutation_fails_the_production_harness(mutant: LawMutant, quer
     assert not missing, f"{mutant.mutant_id} did not turn {missing} red; violated={sorted(violated)}"
 
 
-def test_query_law_unmutated_run_is_green_for_the_same_probes(query_law_corpus: QueryCorpus) -> None:
+def test_query_law_unmutated_run_is_green_for_the_same_probes(
+    query_law_corpus: QueryCorpus, query_law_daemon: None
+) -> None:
     """The mutation tests compare against a green baseline, not a red one."""
 
     probes = (UNIT_PROBE_BY_UNIT["message"], UNIT_PROBE_BY_UNIT["action"])
@@ -159,7 +172,7 @@ def test_query_law_unmutated_run_is_green_for_the_same_probes(query_law_corpus: 
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def census_snapshot(
     query_law_corpus: QueryCorpus, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[ArchiveSnapshot]:
@@ -169,9 +182,12 @@ def census_snapshot(
     shutil.rmtree(snapshot.root, ignore_errors=True)
 
 
-@pytest.fixture(scope="module")
-def census(census_snapshot: ArchiveSnapshot) -> tuple[CensusObservation, ...]:
-    return asyncio.run(run_workload_census(census_snapshot))
+@pytest.fixture
+def census(census_snapshot: ArchiveSnapshot, monkeypatch: pytest.MonkeyPatch) -> tuple[CensusObservation, ...]:
+    # The census runs against the reflink copy, so its CLI leg needs a daemon
+    # rooted at that copy rather than the source corpus archive.
+    with cli_daemon_archive(census_snapshot.root, monkeypatch):
+        return asyncio.run(run_workload_census(census_snapshot))
 
 
 def test_query_law_census_covers_every_declared_family(census: tuple[CensusObservation, ...]) -> None:

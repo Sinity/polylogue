@@ -99,10 +99,13 @@ def _run_machine(
 @pytest.mark.parametrize(
     ("verb_args", "operation"),
     [
-        (("mark", "--star"), "mutation.session.mark"),
-        (("mark", "--tag-add", "X"), "mutation.session.tag"),
-        (("mark", "--tag-remove", "X"), "mutation.session.tag"),
-        (("mark", "--note", "n"), "mutation.annotation.save"),
+        # Query resolution is itself daemon-owned.  With no daemon, these
+        # composed forms refuse at ``cli.query`` before the mark branch can
+        # submit its mutation; the direct mutation routes are covered below.
+        (("mark", "--star"), "cli.query"),
+        (("mark", "--tag-add", "X"), "cli.query"),
+        (("mark", "--tag-remove", "X"), "cli.query"),
+        (("mark", "--note", "n"), "cli.query"),
     ],
 )
 def test_mark_mutation_refuses_without_a_daemon(
