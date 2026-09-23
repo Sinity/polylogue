@@ -16,7 +16,7 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from polylogue.annotations.importer import MAX_ANNOTATION_IMPORT_BYTES
+from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import OperationStatus
 from polylogue.operations.machine_receipts import IngestHistoricalReceipt
 from polylogue.operations.read_contracts import (

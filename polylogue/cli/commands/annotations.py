@@ -19,18 +19,19 @@ from polylogue.annotations.join import (
 from polylogue.api import Polylogue
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import AssertionStatus
 from polylogue.paths import archive_root
 
-#: Mirrors ``polylogue.annotations.importer.MAX_ANNOTATION_IMPORT_BYTES`` and
-#: the ``jsonl`` bound on ``mutation.annotation.import_batch``'s request
-#: contract. Duplicated as a literal rather than imported: importing that
-#: module from ``polylogue/cli`` is exactly the direct substrate-driving
-#: import the mutation-authority layering rule (docs/plans/layering.yaml)
-#: disallows for this package (polylogue-gjwto / polylogue-r29bv AC3), and
-#: this bound is not the enforcement -- it only keeps a CLI process from
+#: The ``jsonl`` bound on ``mutation.annotation.import_batch``'s request
+#: contract. Read from the leaf owner in ``polylogue.core``, which holds no
+#: substrate imports, so this is not the direct substrate-driving import the
+#: mutation-authority layering rule (docs/plans/layering.yaml) disallows for
+#: this package (polylogue-gjwto / polylogue-r29bv AC3). It was previously
+#: duplicated as a literal here for exactly that reason; one owner now serves
+#: both. This bound is not the enforcement -- it only keeps a CLI process from
 #: buffering more than the operation would ever accept before sending it.
-_MAX_ANNOTATION_JSONL_READ_BYTES = 1_048_576
+_MAX_ANNOTATION_JSONL_READ_BYTES = MAX_ANNOTATION_IMPORT_BYTES
 
 
 @click.group("annotations")
