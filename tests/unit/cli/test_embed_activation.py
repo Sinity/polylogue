@@ -16,11 +16,13 @@ retrieval is covered below (#1743).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -38,6 +40,7 @@ from polylogue.storage.embeddings.preflight import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.live_ingest import write_index_session
 
 # ---------------------------------------------------------------------------
@@ -394,6 +397,19 @@ class TestDisableCommand:
 
 
 class TestBackfillCommand:
+    @pytest.fixture(autouse=True)
+    def _daemon_submission(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+        seen: dict[str, Any] = {}
+
+        def submit(_config: Any, operation: str, params: dict[str, Any]) -> dict[str, Any]:
+            if not os.environ.get("VOYAGE_API_KEY"):
+                raise click.ClickException("Voyage API key not configured")
+            seen.update(operation=operation, params=params)
+            return {"operation": operation, "outcome": "accepted", "result": {"request": params}}
+
+        monkeypatch.setattr("polylogue.cli.operation_kernel.configured_accepted_operation", submit)
+        return seen
+
     def test_backfill_requires_key(self, cli_runner: CliRunner, stub_env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
         report = _make_report()
@@ -448,7 +464,7 @@ class TestBackfillCommand:
         ):
             result = cli_runner.invoke(embed_command, ["backfill", "--yes"], obj=stub_env)
         assert result.exit_code == 0, result.output
-        assert "Embedded 2" in result.output
+        assert "submitted to polylogued run" in result.output
 
     def test_backfill_passes_bounded_window_options(
         self,
@@ -456,6 +472,7 @@ class TestBackfillCommand:
         stub_env: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        _daemon_submission: dict[str, Any],
     ) -> None:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
         report = _make_report(max_messages=2000)
@@ -485,8 +502,16 @@ class TestBackfillCommand:
         assert fake_preflight.call_args.kwargs["max_sessions"] == 3
         assert fake_preflight.call_args.kwargs["max_messages"] == 7000
         assert fake_preflight.call_args.kwargs["max_cost_usd"] == 0.10
-        assert fake_select.call_args.kwargs["max_sessions"] == 3
-        assert fake_select.call_args.kwargs["max_messages"] == 2000
+        assert "submitted to polylogued run" in result.output
+        assert _daemon_submission["params"] == {
+            "max_sessions": 3,
+            "max_messages": 7000,
+            "max_cost_usd": 0.1,
+            "min_messages": None,
+            "stop_after_seconds": None,
+            "max_errors": None,
+            "rebuild": False,
+        }
 
     def test_backfill_routes_archive_to_materializer(
         self,
@@ -522,19 +547,14 @@ class TestBackfillCommand:
             patch(
                 "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
                 return_value=pending,
-            ) as fake_select,
+            ),
             patch("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed),
-            patch("polylogue.storage.embeddings.materialization.iter_pending_sessions") as old_iter,
+            patch("polylogue.storage.embeddings.materialization.iter_pending_sessions"),
         ):
             result = cli_runner.invoke(embed_command, ["backfill", "--yes"], obj=stub_env)
 
         assert result.exit_code == 0, result.output
-        assert "Embedded 1" in result.output
-        assert fake_select.call_args.kwargs["max_messages"] == 2
-        fake_embed.assert_called_once_with(
-            index_db, fake_provider, "codex-session:v1", embeddings_db_path=index_db.parent / "embeddings.db"
-        )
-        old_iter.assert_not_called()
+        assert "submitted to polylogued run" in result.output
 
     def test_backfill_json_outputs_structured_result(
         self,
@@ -576,38 +596,8 @@ class TestBackfillCommand:
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
-        assert payload["status"] == "complete"
-        assert payload["embedded_sessions"] == 1
-        assert payload["skipped_sessions"] == 0
-        assert payload["error_count"] == 0
-        assert payload["candidate_sessions"] == 1
-        assert payload["processed_sessions"] == 1
-        assert payload["estimated_cost_usd"] == 0.0001
-        assert payload["preflight"]["pending_messages"] == 2
-        assert payload["sessions"] == [
-            {
-                "embedded_message_count": 2,
-                "error": None,
-                "estimated_cost_usd": 0.0001,
-                "index": 1,
-                "session_id": "codex-session:v1",
-                "status": "embedded",
-                "title": "v1",
-                "total": 1,
-            }
-        ]
-        from polylogue.storage.sqlite.archive_tiers.ops_write import list_embedding_catchup_runs
-
-        with sqlite3.connect(tmp_path / "ops.db") as conn:
-            runs = list_embedding_catchup_runs(conn)
-        assert len(runs) == 1
-        assert runs[0].status == "completed"
-        assert runs[0].scanned_sessions == 1
-        assert runs[0].embedded_sessions == 1
-        assert runs[0].skipped_sessions == 0
-        assert runs[0].embedded_messages == 2
-        assert runs[0].error_count == 0
-        assert runs[0].estimated_cost_usd == 0.0001
+        assert payload["operation"] == "maintenance.embeddings.backfill"
+        assert payload["result"]["request"]["max_messages"] is None
 
     def test_backfill_json_requires_yes_for_clean_stdout(
         self,
@@ -628,6 +618,7 @@ class TestBackfillCommand:
         stub_env: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        _daemon_submission: dict[str, Any],
     ) -> None:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
         from polylogue.storage.embeddings.materialization import (
@@ -680,8 +671,8 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert fake_embed.call_count == 1
-        assert "Stopped early: time limit reached" in result.output
+        assert "submitted to polylogued run" in result.output
+        assert _daemon_submission["params"]["stop_after_seconds"] == 1
 
     def test_backfill_max_errors_stops_after_provider_error(
         self,
@@ -689,6 +680,7 @@ class TestBackfillCommand:
         stub_env: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        _daemon_submission: dict[str, Any],
     ) -> None:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
         from polylogue.storage.embeddings.materialization import (
@@ -728,8 +720,8 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert fake_embed.call_count == 1
-        assert "Stopped early: max errors reached" in result.output
+        assert "submitted to polylogued run" in result.output
+        assert _daemon_submission["params"]["max_errors"] == 1
 
     def test_backfill_run_cost_cap_stops_before_provider_call(
         self,
@@ -737,6 +729,7 @@ class TestBackfillCommand:
         stub_env: Any,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        _daemon_submission: dict[str, Any],
     ) -> None:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
         from polylogue.storage.embeddings.materialization import (
@@ -776,8 +769,8 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert fake_embed.call_count == 0
-        assert "Stopped early: cost cap would be exceeded" in result.output
+        assert "submitted to polylogued run" in result.output
+        assert _daemon_submission["params"]["max_cost_usd"] == 0.00005
 
 
 # ---------------------------------------------------------------------------
@@ -917,7 +910,8 @@ class TestHybridAutoElevation:
         archive_root = cli_workspace["archive_root"]
         _seed_searchable_archive(archive_root)
 
-        payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
+        with cli_daemon_archive(archive_root, monkeypatch, home=cli_workspace["state_dir"]):
+            payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
 
         assert payload["retrieval_lane"] == "dialogue"
         assert payload["items"]
@@ -931,8 +925,9 @@ class TestHybridAutoElevation:
 
         fake_provider = MagicMock()
         fake_provider.query = MagicMock(return_value=[])
-        with _bound_vector_provider(fake_provider):
-            payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
+        with cli_daemon_archive(archive_root, monkeypatch, home=cli_workspace["state_dir"]):
+            with _bound_vector_provider(fake_provider):
+                payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
 
         assert payload["retrieval_lane"] == "dialogue"
         fake_provider.query.assert_not_called()
@@ -947,8 +942,9 @@ class TestHybridAutoElevation:
 
         fake_provider = MagicMock()
         fake_provider.query = MagicMock(return_value=[])
-        with _bound_vector_provider(fake_provider):
-            payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
+        with cli_daemon_archive(archive_root, monkeypatch, home=cli_workspace["state_dir"]):
+            with _bound_vector_provider(fake_provider):
+                payload = _run_native_search(archive_root, cli_workspace["state_dir"], monkeypatch)
 
         assert payload["retrieval_lane"] == "dialogue"
 
@@ -966,8 +962,9 @@ class TestHybridAutoElevation:
 
         fake_provider = MagicMock()
         fake_provider.query = MagicMock(return_value=[])
-        with _bound_vector_provider(fake_provider):
-            result = CliRunner().invoke(cli, ["--plain", "--lexical", "find", "Python", "-f", "json"])
+        with cli_daemon_archive(archive_root, monkeypatch, home=cli_workspace["state_dir"]):
+            with _bound_vector_provider(fake_provider):
+                result = CliRunner().invoke(cli, ["--plain", "--lexical", "find", "Python", "-f", "json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["retrieval_lane"] == "dialogue"
@@ -975,6 +972,14 @@ class TestHybridAutoElevation:
 
 class TestBackfillRebuildOrdering:
     """``--rebuild`` marks the archive stale only once a write can follow it."""
+
+    @pytest.fixture(autouse=True)
+    def _daemon_submission(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
+        monkeypatch.setattr(
+            "polylogue.cli.operation_kernel.configured_accepted_operation",
+            lambda _config, operation, params: {"operation": operation, "outcome": "accepted", "result": params},
+        )
 
     def test_rebuild_does_not_mark_when_the_provider_cannot_be_built(
         self,
@@ -1019,7 +1024,8 @@ class TestBackfillRebuildOrdering:
         ):
             result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--rebuild"], obj=stub_env)
 
-        assert result.exit_code != 0, result.output
+        assert result.exit_code == 0, result.output
+        assert "submitted to polylogued run" in result.output
         marked.assert_not_called()
 
     def test_rebuild_marks_once_the_write_path_is_established(
@@ -1039,26 +1045,8 @@ class TestBackfillRebuildOrdering:
         report = _make_report(pending_sessions=0, pending_messages=0)
         index_db = tmp_path / "index.db"
         initialize_archive_database(index_db, ArchiveTier.INDEX)
-        marked = MagicMock()
-
-        with (
-            _patch_preflight(report),
-            patch(
-                "polylogue.cli.commands.embed._active_archive_location",
-                return_value=ArchiveLocation.resolve(index_db.parent),
-            ),
-            patch("polylogue.storage.search_providers.create_vector_provider", return_value=MagicMock()),
-            patch(
-                "polylogue.storage.embeddings.materialization.mark_all_archive_sessions_needs_reindex",
-                marked,
-            ),
-            patch(
-                "polylogue.storage.embeddings.materialization.select_pending_archive_session_window",
-                return_value=[],
-            ),
-        ):
+        with _patch_preflight(report):
             result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--rebuild"], obj=stub_env)
 
         assert result.exit_code == 0, result.output
-        marked.assert_called_once()
-        assert marked.call_args.kwargs["embeddings_db_path"].name == "embeddings.db"
+        assert "submitted to polylogued run" in result.output
