@@ -306,10 +306,13 @@ def test_bench_daemon_mixed_load(
     }
     frame_started = threading.local()
 
-    real_open_operation_read = daemon_execution.open_operation_read
+    real_open_operation_read = daemon_execution.open_operation_read  # type: ignore[attr-defined]
 
     @contextmanager
-    def timed_open_operation_read(*args: object, **kwargs: object) -> Iterator[object]:
+    def timed_open_operation_read(*args: Any, **kwargs: Any) -> Iterator[object]:
+        # Mirrors open_operation_read's own signature via Any: it takes typed
+        # keywords (Path, EmbeddingRecipe, QueryExecutionContext, ...) that a
+        # ``**kwargs: object`` forward cannot satisfy.
         started = perf_counter()
         with real_open_operation_read(*args, **kwargs) as snapshot:
             elapsed_ms = (perf_counter() - started) * 1000
@@ -453,7 +456,7 @@ def test_bench_daemon_mixed_load(
             return 0.0
         return round(ordered[min(int((len(ordered) - 1) * fraction), len(ordered) - 1)], 3)
 
-    def phase_read(params: dict[str, object]) -> dict[str, object]:
+    def phase_read(params: Mapping[str, object]) -> dict[str, object]:
         before_epoch = current_cache_epoch()
         client = DaemonClient(socket_path, timeout_s=5)
         result = _operation(client, "cli.query", {"params": params})
