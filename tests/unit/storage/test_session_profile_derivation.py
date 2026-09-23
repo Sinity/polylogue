@@ -459,10 +459,10 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
             conn.execute(
                 """
                 INSERT INTO session_events
-                    (session_id, source_message_id, position, event_type, summary, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (session_id, source_message_id, position, event_type, payload_json)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_id, message_id, 0, "compaction", "before", '{"state":"before"}'),
+                (session_id, message_id, 0, "compaction", '{"state":"before","summary":"before"}'),
             )
         conn.commit()
 
