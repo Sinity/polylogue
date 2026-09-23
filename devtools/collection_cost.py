@@ -83,6 +83,7 @@ COLLECTION_COST_TARGET_KIB_PER_ITEM: Final = 22.3
 OVER_BUDGET_EXIT: Final = 3
 
 _COLLECTED_RE: Final = re.compile(r"(\d[\d,]*)\s+tests?\s+collected")
+_IMPORT_TIME_RE: Final = re.compile(r"^\s*import time:\s+(\d+)\s+\|\s+(\d+)\s+\|\s+(.*?)\s*$")
 
 
 def _collected_count(output: str) -> int | None:
@@ -103,6 +104,44 @@ def _cost_kib_per_item(peak_rss_mib: float, collected: int | None) -> float | No
     if collected is None or collected <= 0:
         return None
     return round(peak_rss_mib * 1024 / collected, 2)
+
+
+def _import_time_attribution(output: str) -> dict[str, Any]:
+    """Extract Python's import-time profile from the collection child.
+
+    ``PYTHONPROFILEIMPORTTIME`` writes one row per imported module to stderr.
+    Keeping the rows in the collection receipt makes an optimization claim
+    falsifiable: a lower RSS number without an import-time or per-item
+    attribution is not evidence of a cheaper collection.
+    """
+    rows: list[tuple[int, int, str]] = []
+    for line in output.splitlines():
+        match = _IMPORT_TIME_RE.match(line)
+        if match is None:
+            continue
+        self_us, cumulative_us, module = match.groups()
+        rows.append((int(self_us), int(cumulative_us), module))
+    rows.sort(reverse=True)
+    return {
+        "import_time_reported": bool(rows),
+        "import_time_s": round(sum(row[0] for row in rows) / 1_000_000, 3) if rows else None,
+        "import_time_modules": len(rows),
+        "import_time_top": [
+            {"module": module, "self_us": self_us, "cumulative_us": cumulative_us}
+            for self_us, cumulative_us, module in rows[:10]
+        ],
+    }
+
+
+def _attribution_complete(result: dict[str, Any]) -> bool:
+    """Whether a result can support an efficiency claim rather than RSS-only prose."""
+    collected = result.get("collected")
+    return bool(
+        isinstance(collected, int)
+        and collected > 0
+        and result.get("collection_cost_kib_per_item") is not None
+        and result.get("import_time_reported")
+    )
 
 
 def collection_argv(selection: list[str], *, root: Path) -> list[str]:
@@ -132,14 +171,15 @@ def measure_collection(selection: list[str], *, root: Path) -> dict[str, Any]:
     command = collection_argv(selection, root=root)
     before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     started = time.monotonic()
-    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False, env=collection_env())
+    environment = {**collection_env(), "PYTHONPROFILEIMPORTTIME": "1"}
+    completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False, env=environment)
     elapsed = time.monotonic() - started
     after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     output = (completed.stdout or "") + "\n" + (completed.stderr or "")
     peak_rss_mib = round(max(before, after) / 1024, 1)
     peak_rss_delta_mib = round(max(0, after - before) / 1024, 1)
     collected = _collected_count(output)
-    return {
+    result: dict[str, Any] = {
         "kind": "polylogue.collection-cost",
         "selection": list(selection) or ["<whole corpus>"],
         "collected": collected,
@@ -157,6 +197,9 @@ def measure_collection(selection: list[str], *, root: Path) -> dict[str, Any]:
         "returncode": completed.returncode,
         "tail": [line for line in output.strip().splitlines() if line.strip()][-3:],
     }
+    result.update(_import_time_attribution(output))
+    result["attribution_complete"] = _attribution_complete(result)
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,6 +251,12 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  collection cost: {measured if measured is not None else 'unmeasured'} KiB/item ({'within' if verdict else 'OVER'} {arguments.budget_kib_per_item})"
             )
+        import_time = result.get("import_time_s")
+        print(
+            f"  attribution: {'complete' if result.get('attribution_complete', False) else 'incomplete'}; "
+            f"import time {import_time if import_time is not None else 'unmeasured'}s "
+            f"across {result.get('import_time_modules', 0)} module(s)"
+        )
         for line in result["tail"]:
             print(f"  {line}")
 

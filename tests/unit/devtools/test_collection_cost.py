@@ -75,6 +75,42 @@ def test_collection_cost_is_normalized_by_the_reported_count() -> None:
     assert collection_cost._cost_kib_per_item(22.3, None) is None
 
 
+def test_import_time_attribution_is_structured_and_keeps_rss_only_claims_invalid() -> None:
+    output = """
+    import time:       120 |        120 | tiny
+    import time:       880 |       1000 | heavy
+    2 tests collected in 0.1s
+    """
+    attribution = collection_cost._import_time_attribution(output)
+    assert attribution["import_time_reported"] is True
+    assert attribution["import_time_s"] == 0.001
+    assert attribution["import_time_modules"] == 2
+    assert attribution["import_time_top"][0]["module"] == "heavy"
+
+    measured = _measured(**attribution)
+    measured["collected"] = 2
+    measured["collection_cost_kib_per_item"] = 22.3
+    assert collection_cost._attribution_complete(measured)
+    measured.pop("import_time_reported")
+    assert not collection_cost._attribution_complete(measured)
+
+
+def test_collection_regression_is_visible_in_per_item_attribution() -> None:
+    baseline = _measured(
+        collected=100,
+        collection_cost_kib_per_item=22.3,
+        import_time_reported=True,
+    )
+    regressed = _measured(
+        collected=100,
+        collection_cost_kib_per_item=26.4,
+        import_time_reported=True,
+    )
+    assert collection_cost._attribution_complete(baseline)
+    assert collection_cost._attribution_complete(regressed)
+    assert regressed["collection_cost_kib_per_item"] > baseline["collection_cost_kib_per_item"]
+
+
 def _measured(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "kind": "polylogue.collection-cost",

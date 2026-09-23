@@ -4,8 +4,9 @@ import asyncio
 import sqlite3
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -285,3 +286,57 @@ def test_daemon_status_lines_include_latest_embedding_catchup() -> None:
         }
     )
     assert "  latest catch-up: running, 3/10 convs, 42 msgs embedded" in lines
+
+
+def test_embedding_derivation_emits_intermediate_progress_before_terminal_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The embedding seam exposes work while a pass is still computing.
+
+    Anti-vacuity: removing the progress callback from ``make_embedding_derivation``
+    leaves the adapter's quiet observation point silent, so the event list stays
+    empty even though the derivation was constructed successfully.
+    """
+
+    class _Provider:
+        model = "voyage-4"
+        dimension = 1024
+
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            del texts, input_type
+            return []
+
+    captured: dict[str, object] = {}
+
+    class _Adapter:
+        domain = "embeddings"
+        recipe_version = "recipe"
+
+    def fake_adapter(*args: object, **kwargs: object) -> _Adapter:
+        del args
+        captured.update(kwargs)
+        return _Adapter()
+
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda **_: _Provider())
+    monkeypatch.setattr("polylogue.operations.embedding_derivation.EmbeddingDerivationAdapter", fake_adapter)
+    monkeypatch.setattr(
+        "polylogue.operations.embedding_derivation.resolve_active_index_path",
+        lambda _root: tmp_path / "index.db",
+    )
+    events: list[dict[str, object]] = []
+    from polylogue.operations.embedding_derivation import make_embedding_derivation
+
+    adapter = make_embedding_derivation(
+        tmp_path / "index.db",
+        archive_root=tmp_path,
+        voyage_api_key="key",
+        model="voyage-4",
+        dimension=1024,
+        reserve=lambda _actor, fn: fn(),
+        progress_callback=cast("Callable[[Mapping[str, object]], None]", events.append),
+    )
+    assert adapter is not None
+    quiet = captured["quiet"]
+    assert callable(quiet)
+    assert quiet(None, "message:m1") is False
+    assert events == [{"state": "started", "message_id": "m1", "session_id": None}]

@@ -102,7 +102,7 @@ def test_cold_build_retains_the_ops_wal(tmp_path: Path, cold_build: ColdBuildGen
     ``ColdBuildGeneration.open_writer`` and the close-time checkpoint fires
     again -- the WAL is drained and removed, and the first assertion is red.
     """
-    cold_build.open_writer().close()
+    page = cold_build.open_writer()
     _ops_write(tmp_path, "one.jsonl")
 
     wal = _ops_wal(tmp_path)
@@ -113,6 +113,8 @@ def test_cold_build_retains_the_ops_wal(tmp_path: Path, cold_build: ColdBuildGen
         assert replayed.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0] == 1
     finally:
         replayed.close()
+    page.close()
+    assert not wal.exists()
 
 
 def test_settling_the_build_drains_the_wal(tmp_path: Path, cold_build: ColdBuildGeneration) -> None:
@@ -126,9 +128,11 @@ def test_settling_the_build_drains_the_wal(tmp_path: Path, cold_build: ColdBuild
     ``ColdBuildGeneration.discard`` and the WAL survives the settled build --
     the final assertion is red.
     """
-    cold_build.open_writer().close()
+    page = cold_build.open_writer()
     _ops_write(tmp_path, "one.jsonl")
     assert _ops_wal(tmp_path).exists()
+    page.close()
+    assert not _ops_wal(tmp_path).exists()
 
     assert cold_build.discard() is True
 
@@ -148,7 +152,7 @@ def test_the_holder_blocks_no_checkpoint(tmp_path: Path, cold_build: ColdBuildGe
     before the read, no commit) and ``wal_checkpoint(TRUNCATE)`` answers
     ``busy=1`` with frames left behind.
     """
-    cold_build.open_writer().close()
+    page = cold_build.open_writer()
     _ops_write(tmp_path, "one.jsonl")
     assert _ops_wal(tmp_path).exists()
 
@@ -159,6 +163,7 @@ def test_the_holder_blocks_no_checkpoint(tmp_path: Path, cold_build: ColdBuildGe
         checkpointer.close()
     assert busy == 0
     assert _ops_wal(tmp_path).stat().st_size == 0
+    page.close()
 
 
 def test_failed_candidate_open_releases_the_ops_holder(

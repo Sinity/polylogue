@@ -458,7 +458,13 @@ def publish_session_profile(
         # it excess on every pass, which is a livelock rather than convergence.
         conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
+            # The retained family is profile + latency.  Removing only the
+            # parent leaves an orphan latency row behind, so a later rebuild or
+            # family census can still observe stale derived state for a session
+            # that no longer exists.  Retire both relations in this one
+            # transaction, matching the prepared publisher's excess path.
+            for table in ("session_latency_profiles", "session_profiles"):
+                conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
         except BaseException:
             conn.rollback()
             raise
