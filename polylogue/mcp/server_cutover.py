@@ -69,7 +69,13 @@ def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str,
     from polylogue.daemon_client import DaemonClient
 
     config = hooks.get_config()
-    if config.no_daemon or config.daemon_client_mode == "off":
+    # ``no_daemon``/``daemon_client_mode`` live on PolylogueConfig (the settings
+    # layer), not on the Config that ServerCallbacks hands out. Use the same
+    # helper the CLI read path uses so one rule decides "daemon disabled"
+    # everywhere rather than this surface growing its own.
+    from polylogue.cli.read_dispatch import daemon_route_disabled
+
+    if daemon_route_disabled(flag=False):
         return hooks.error_json("start polylogued run to serve this operation", code="daemon_required")
     client = DaemonClient(
         daemon_socket_path(config.archive_root),

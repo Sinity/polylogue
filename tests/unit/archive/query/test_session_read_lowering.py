@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import cast
+
 import pytest
 
 from polylogue.operations import session_reads
@@ -37,11 +40,11 @@ async def test_session_query_lowers_selection_through_read_request(monkeypatch: 
     monkeypatch.setattr(session_reads, "QueryTransaction", StubTransaction)
 
     result = await session_reads.session_query(
-        "/tmp/archive",  # transaction is stubbed; no filesystem access occurs
+        Path("/tmp/archive"),  # transaction is stubbed; no filesystem access occurs
         SessionList(repo="polylogue", limit=3),
     )
 
-    assert result == "stub-page"
+    assert cast(object, result) == "stub-page"
     assert len(calls) == 1
     params, preset = calls[0]
     assert preset == "summary"
