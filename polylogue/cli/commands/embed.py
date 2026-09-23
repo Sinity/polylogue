@@ -598,18 +598,10 @@ def backfill_subcommand(
     (or all sessions if ``--rebuild``) and emits running totals so the
     user can interrupt before the soft monthly cap kicks in.
     """
-    from polylogue.storage.search_providers import create_vector_provider
+    from polylogue.cli.operation_kernel import configured_accepted_operation
 
     if output_format == "json" and not yes:
         raise click.UsageError("backfill --format json requires --yes so stdout stays machine-readable.")
-
-    key = _resolve_voyage_key(env, None)
-    if not key:
-        click.echo(
-            "Error: Voyage API key not configured. Run [bold]polylogue ops embed enable[/bold] first.",
-            err=True,
-        )
-        raise click.Abort()
 
     report = _build_preflight_report(
         env,
@@ -624,61 +616,23 @@ def backfill_subcommand(
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")
         return
-    location = _active_archive_location(env.config.db_path)
-    if location is None:
-        click.echo(
-            "Error: index.db not found. Initialize the archive tiers first.",
-            err=True,
-        )
-        raise click.Abort()
-    index_db = location.active_index_path
-
-    embeddings_db = location.active_tier("embeddings").configured_path
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
-    vec_provider = create_vector_provider(
-        voyage_api_key=key,
-        db_path=embeddings_db,
-        model=report.model,
-        dimension=report.dimension,
-    )
-    if vec_provider is None:
-        click.echo("Error: vector provider unavailable (sqlite-vec or voyage init failed).", err=True)
-        raise click.Abort()
-
-    # AFTER the tier open and the provider, never before (polylogue-d02y8 AC2).
-    # ``--rebuild`` is a second write: it marks every session needs-reindex so
-    # the loop below re-embeds them. Running it first meant an abort between
-    # the mark and the loop -- an uninitialized embeddings tier, or a provider
-    # that failed to construct because sqlite-vec is missing or the Voyage key
-    # is rejected, both of which are the ordinary way this command fails --
-    # left the whole archive marked stale with nothing written and no run
-    # ledger row, and the only route back was another successful backfill.
-    # Ordering it here does not make the pair atomic; it removes the two
-    # failure modes that reach it before a single embedding could be produced.
-    if rebuild:
-        from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
-
-        mark_all_archive_sessions_needs_reindex(index_db, embeddings_db_path=embeddings_db)
-
-    payload = _run_archive_backfill(
-        env,
-        index_db,
-        embeddings_db,
-        vec_provider,
-        report,
-        rebuild=rebuild,
-        max_sessions=max_sessions,
-        stop_after_seconds=stop_after_seconds,
-        max_errors=max_errors,
-        min_messages=min_messages,
-        output_format=output_format,
-        configured_root=location.configured_root,
+    result = configured_accepted_operation(
+        env.config,
+        "maintenance.embeddings.backfill",
+        {
+            "max_sessions": max_sessions,
+            "max_messages": max_messages,
+            "max_cost_usd": max_cost_usd,
+            "min_messages": min_messages,
+            "stop_after_seconds": stop_after_seconds,
+            "max_errors": max_errors,
+            "rebuild": rebuild,
+        },
     )
     if output_format == "json":
-        _render_backfill_json(payload)
+        click.echo(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        click.echo("Embedding backfill submitted to polylogued run.")
 
 
 def _run_archive_backfill(

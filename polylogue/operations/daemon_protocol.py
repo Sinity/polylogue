@@ -425,6 +425,18 @@ class DemoAugmentRequest(_OperationPayload):
     with_overlays: bool = False
 
 
+class EmbeddingBackfillRequest(_OperationPayload):
+    """Operator bounds for one daemon-owned embedding catch-up pass."""
+
+    max_sessions: int | None = Field(default=None, ge=1)
+    max_messages: int | None = Field(default=None, ge=1)
+    max_cost_usd: float | None = Field(default=None, gt=0.0)
+    min_messages: int | None = Field(default=None, ge=1)
+    stop_after_seconds: int | None = Field(default=None, ge=1)
+    max_errors: int | None = Field(default=None, ge=1)
+    rebuild: bool = False
+
+
 class OperationStatusRequest(_OperationPayload):
     request_id: str = Field(min_length=1)
 
@@ -1312,6 +1324,23 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=DemoAugmentRequest,
         result_model=MutationResult,
         handler="maintenance_demo_augment",
+    ),
+    DaemonOperationSpec(
+        "maintenance.embeddings.backfill",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.embeddings.backfill",
+        deadline_s=300.0,
+        progress=True,
+        accepted_reference=True,
+        request_contract="maintenance.embeddings.backfill.request/v1",
+        result_contract="maintenance.embeddings.backfill.result/v1",
+        request_type="EmbeddingBackfillRequest",
+        result_type="MutationResult",
+        request_model=EmbeddingBackfillRequest,
+        result_model=MutationResult,
+        idempotent=True,
+        handler="maintenance_embeddings_backfill",
     ),
 )
 

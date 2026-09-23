@@ -203,6 +203,7 @@ CLI_EXTERNAL_OPERATIONS: Mapping[str, str] = {
     "operation.cancel": "transport-owned: DaemonClient cancels a submitted operation, not a CLI route",
     "operation.status": "no consumer on any surface; retained for receipt recovery tooling",
     "maintenance.insights.rebuild": "daemon-internal derivation; no CLI verb requests it",
+    "maintenance.embeddings.backfill": "daemon-owned embedding convergence; CLI submits it directly",
 }
 
 
