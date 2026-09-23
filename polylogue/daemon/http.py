@@ -52,6 +52,7 @@ from polylogue.daemon.route_contracts import (
     RouteContract,
     RouteSpec,
     declared_route_keys,
+    metadata_only_api_routes,
     route_contract_for_pattern,
     route_contract_from_declaration,
 )
@@ -443,6 +444,16 @@ def _declared_get_routes() -> tuple[_StaticGetRoute | _ParameterizedGetRoute, ..
 
 def validate_declared_route_reachability(handler_class: type[BaseHTTPRequestHandler]) -> None:
     """Fail startup when a migrated declaration cannot reach the installed router."""
+
+    # Keep the migration boundary explicit: routes outside the declaration
+    # kernel are still allowed during the staged cutover, but every one must
+    # carry a named metadata-only reason.  A newly added API contract without
+    # that classification fails before the daemon can start serving it.
+    unclassified = [
+        f"{route.method} {route.pattern}" for route in metadata_only_api_routes() if not route.metadata_only_reason
+    ]
+    if unclassified:
+        raise RuntimeError(f"metadata-only API routes lack migration reasons: {sorted(unclassified)}")
 
     declared = tuple((item.method, item.path) for item in DAEMON_ROUTE_DECLARATIONS)
     if len(declared) != len(set(declared)):

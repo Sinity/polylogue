@@ -22,6 +22,7 @@ from polylogue.daemon.route_contracts import (
     DAEMON_ROUTE_REGISTRY,
     ROUTE_CONTRACTS,
     daemon_route_declaration,
+    metadata_only_api_routes,
     route_contract_for,
     route_contract_for_pattern,
     stable_route_contracts,
@@ -82,6 +83,16 @@ def test_declared_routes_are_generated_and_reachable_from_daemon_handler() -> No
     generated = {(route.contract.method, route.pattern) for route in _declared_get_routes()}
     declared = {(route.method, route.path) for route in DAEMON_ROUTE_DECLARATIONS}
     assert generated == declared
+
+
+def test_metadata_only_api_inventory_has_an_explicit_migration_reason() -> None:
+    """Undeclared API routes stay visible as named, bounded migration debt."""
+
+    routes = metadata_only_api_routes()
+    assert routes
+    assert all(route.domain_operation is None for route in routes)
+    assert all(route.metadata_only_reason for route in routes)
+    assert all(route.metadata_only_reason != "metadata-only" for route in routes)
 
 
 def test_proof_critical_read_declarations_drive_dispatch_and_openapi() -> None:
