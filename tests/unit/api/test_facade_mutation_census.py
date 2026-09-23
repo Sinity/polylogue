@@ -84,6 +84,40 @@ _EXPECTED_FACADE_MUTATIONS = frozenset(
     }
 )
 
+# These are the only facade methods whose operation family already has a
+# declared daemon counterpart.  This is a capability inventory, not a
+# permission to lower them: every one is MCP-reached (and none is CLI-reached),
+# so moving any of them changes D2's MCP-without-daemon deployment contract.
+_DECLARED_OPERATION_CANDIDATES = {
+    "add_mark": "mutation.session.mark",
+    "add_tag": "mutation.session.tag",
+    "bulk_tag_sessions": "mutation.session.tag",
+    "capture_assertion_candidate": "mutation.assertion.candidate.capture",
+    "remove_mark": "mutation.session.mark",
+    "remove_tag": "mutation.session.tag",
+    "save_annotation": "mutation.annotation.save",
+    "set_metadata": "mutation.session.metadata",
+}
+
+
+def test_declared_operation_candidates_are_exactly_the_open_subset() -> None:
+    """Pin the eight facade methods that have a declared daemon counterpart.
+
+    The remaining twelve methods are D2-blocked: no declared operation exists
+    for them.  The candidate methods remain in-process until the MCP owner
+    decides whether writes require a running daemon.
+    """
+
+    from polylogue.operations.daemon_protocol import daemon_operation_spec
+
+    assert set(_DECLARED_OPERATION_CANDIDATES) <= _EXPECTED_FACADE_MUTATIONS
+    missing = [
+        (method, operation)
+        for method, operation in _DECLARED_OPERATION_CANDIDATES.items()
+        if daemon_operation_spec(operation) is None
+    ]
+    assert not missing, f"facade candidate(s) name undeclared daemon operation(s): {missing}"
+
 
 def _facade_mutation_callers(source: str) -> set[str]:
     """Return the enclosing function names that call the mutation helper."""
