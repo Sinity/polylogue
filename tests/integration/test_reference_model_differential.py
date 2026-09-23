@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.reference_corpus_programs import (
     DIVERGENCE_KINDS,
     divergent_corpus,
@@ -32,7 +33,6 @@ from tests.infra.reference_corpus_programs import (
 )
 from tests.infra.reference_model import ModelCorpus, ModelRequest
 from tests.infra.surface_differential import (
-    SURFACE_NAMES,
     Divergence,
     ExpressionSurfaceSet,
     build_expression_surface_set,
@@ -50,7 +50,7 @@ CORPUS_SEEDS: tuple[int, ...] = (11, 2027, 90210)
 
 #: Surfaces that carry every request.  MCP's session projection carries named
 #: filters instead of the DSL, so it answers the translatable subset only.
-FULL_COVERAGE_SURFACES: frozenset[str] = frozenset({"api", "cli", "cli-direct", "daemon"})
+FULL_COVERAGE_SURFACES: frozenset[str] = frozenset({"api", "cli", "daemon"})
 
 #: The fewest requests MCP must carry per seed.  Every seed's request set
 #: translates well above this; the floor exists so a translation that quietly
@@ -69,16 +69,25 @@ def seeded_corpus(request: pytest.FixtureRequest, db_path: Path) -> Iterator[tup
 
 
 @pytest_asyncio.fixture
-async def surfaces(db_path: Path, workspace_env: dict[str, Path]) -> AsyncIterator[ExpressionSurfaceSet]:
-    surface_set = build_expression_surface_set(
-        archive_root=workspace_env["archive_root"],
-        db_path=db_path,
-        names=SURFACE_NAMES,
-    )
-    try:
-        yield surface_set
-    finally:
-        await surface_set.close()
+async def surfaces(
+    db_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[ExpressionSurfaceSet]:
+    # The CLI is a thin client now: its read operation is served by the
+    # resident daemon, so differential requests must use the real UDS route.
+    # ``cli-direct`` intentionally exercised the retired in-process transport
+    # and is no longer a public surface in this oracle.
+    with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+        surface_set = build_expression_surface_set(
+            archive_root=workspace_env["archive_root"],
+            db_path=db_path,
+            names=("api", "cli", "mcp", "daemon"),
+        )
+        try:
+            yield surface_set
+        finally:
+            await surface_set.close()
 
 
 def differential_requests(corpus: ModelCorpus, seed: int) -> tuple[ModelRequest, ...]:
@@ -192,8 +201,9 @@ async def test_predicate_differential_rejects_dropped_predicates_page_counts_and
 
     predicate_answers = await surfaces.execute(predicate_request)
     page_answers = await surfaces.execute(page_request)
-    assert {facts.surface for facts in predicate_answers} == set(SURFACE_NAMES)
-    assert {facts.surface for facts in page_answers} == set(SURFACE_NAMES)
+    expected_surfaces = set(FULL_COVERAGE_SURFACES) | {"mcp"}
+    assert {facts.surface for facts in predicate_answers} == expected_surfaces
+    assert {facts.surface for facts in page_answers} == expected_surfaces
     assert all(facts.session_ids for facts in page_answers)
 
     unfiltered = model.query(ModelRequest(name="without-predicate", expression="sessions"))
@@ -210,13 +220,14 @@ async def test_predicate_differential_rejects_dropped_predicates_page_counts_and
     )
     for name, request, mutated, diagnostic in controls:
         divergences = compare_to_model(model, mutated)
-        assert {item.surface for item in divergences} == set(SURFACE_NAMES), (
+        expected_surfaces = set(FULL_COVERAGE_SURFACES) | {"mcp"}
+        assert {item.surface for item in divergences} == expected_surfaces, (
             f"{name} was not rejected by every real surface adapter:\n{format_divergences(divergences)}"
         )
         assert all(item.request == request for item in divergences)
         assert all(
             any(diagnostic in item.detail for item in divergences if item.surface == surface)
-            for surface in SURFACE_NAMES
+            for surface in expected_surfaces
         )
 
 

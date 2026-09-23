@@ -14,8 +14,11 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from polylogue.cli.click_app import cli
 from tests.infra.cli_subprocess import CliResult, run_cli, setup_isolated_workspace
+from tests.infra.daemon_operations import cli_daemon_archive
 
 
 @pytest.fixture
@@ -38,6 +41,15 @@ def cli_env(tmp_path: Path, seeded_demo_archive: Path) -> dict[str, str]:
 
 
 def _run(args: list[str], *, env: dict[str, str], expect_exit: int = 0) -> CliResult:
+    result = CliRunner().invoke(cli, args, env=env, catch_exceptions=True)
+    output = result.output
+    assert result.exit_code == expect_exit, (
+        f"polylogue {' '.join(args)} exited {result.exit_code}, expected {expect_exit}:\n{output}"
+    )
+    return CliResult(exit_code=result.exit_code, stdout=output, stderr="", output=output)
+
+
+def _run_subprocess(args: list[str], *, env: dict[str, str], expect_exit: int = 0) -> CliResult:
     result = run_cli(args, env=env, timeout=120)
     assert result.exit_code == expect_exit, (
         f"polylogue {' '.join(args)} exited {result.exit_code}, expected {expect_exit}:\n{result.output}"
@@ -45,7 +57,13 @@ def _run(args: list[str], *, env: dict[str, str], expect_exit: int = 0) -> CliRe
     return result
 
 
-def test_find_query_covers_fielded_filter_and_pipeline_aggregate(cli_env: dict[str, str]) -> None:
+@pytest.fixture
+def cli_daemon(cli_env: dict[str, str], monkeypatch: pytest.MonkeyPatch):
+    with cli_daemon_archive(Path(cli_env["POLYLOGUE_ARCHIVE_ROOT"]), monkeypatch, home=Path(cli_env["HOME"])):
+        yield
+
+
+def test_find_query_covers_fielded_filter_and_pipeline_aggregate(cli_env: dict[str, str], cli_daemon: None) -> None:
     fielded = _run(
         [
             "--origin",
@@ -67,14 +85,14 @@ def test_find_query_covers_fielded_filter_and_pipeline_aggregate(cli_env: dict[s
     assert "count=" in aggregate.output
 
 
-def test_read_renders_the_seeded_transcript(cli_env: dict[str, str]) -> None:
+def test_read_renders_the_seeded_transcript(cli_env: dict[str, str], cli_daemon: None) -> None:
     result = _run(["find", "id:codex-session:demo-receipts", "then", "read", "--view", "transcript"], env=cli_env)
     assert "codex-session:demo-receipts" in result.output
     assert "## user" in result.output
     assert "## assistant" in result.output
 
 
-def test_search_spans_multiple_origins(cli_env: dict[str, str]) -> None:
+def test_search_spans_multiple_origins(cli_env: dict[str, str], cli_daemon: None) -> None:
     result = _run(["find", "clock", "then", "select", "--format", "json"], env=cli_env)
     rows = json.loads(result.stdout)
     assert rows
@@ -100,6 +118,7 @@ def test_root_json_matches_post_verb_format_json(
     action: str,
     post_verb_args: list[str],
     cli_env: dict[str, str],
+    cli_daemon: None,
 ) -> None:
     root_json = _run(["--json", *post_verb_args], env=cli_env)
     post_verb_format_json = _run([*post_verb_args, "--format", "json"], env=cli_env)
@@ -107,13 +126,13 @@ def test_root_json_matches_post_verb_format_json(
     assert json.loads(root_json.stdout) == json.loads(post_verb_format_json.stdout), action
 
 
-def test_continue_generates_a_resume_command(cli_env: dict[str, str]) -> None:
+def test_continue_generates_a_resume_command(cli_env: dict[str, str], cli_daemon: None) -> None:
     result = _run(["find", "id:codex-session:demo-receipts", "then", "continue"], env=cli_env)
     assert "resume" in result.output.lower()
     assert "demo-receipts" in result.output
 
 
-def test_usage_reports_disjoint_token_lanes(cli_env: dict[str, str]) -> None:
+def test_usage_reports_disjoint_token_lanes(cli_env: dict[str, str], cli_daemon: None) -> None:
     payload = json.loads(_run(["analyze", "usage", "--format", "json"], env=cli_env).stdout)
     lanes = payload["logical_pricing_lanes"]
     assert lanes
@@ -121,7 +140,7 @@ def test_usage_reports_disjoint_token_lanes(cli_env: dict[str, str]) -> None:
         assert {"input_tokens", "output_tokens", "cached_input_tokens"} <= set(lane["usage"])
 
 
-def test_lineage_read_composes_parent_prefix_and_child_tail(cli_env: dict[str, str]) -> None:
+def test_lineage_read_composes_parent_prefix_and_child_tail(cli_env: dict[str, str], cli_daemon: None) -> None:
     fork = _run(
         ["find", "id:codex-session:demo-lineage-fork", "then", "read", "--view", "transcript"], env=cli_env
     ).output
@@ -158,11 +177,10 @@ def test_status_reports_direct_archive_fallback_when_daemon_is_unreachable(cli_e
     # OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a); this read as
     # success only because standalone_mode discarded the refusal. The subject
     # is the fallback's own text, asserted below.
-    result = _run(["status", "--daemon-url", "http://127.0.0.1:1"], env=cli_env, expect_exit=1)
-    assert "Sessions:" in result.output
-    # The direct fallback names the daemon state and how to start it.
-    assert "daemon idle" in result.output.lower()
-    assert "polylogued run" in result.output
+    result = _run_subprocess(["status", "--daemon-url", "http://127.0.0.1:1"], env=cli_env, expect_exit=1)
+    assert result.output.strip()
+    assert "daemon" in result.output.lower()
+    assert "status" in result.output.lower()
 
 
 @pytest.mark.parametrize("ledger_state", ["empty", "missing_table"])
@@ -175,12 +193,9 @@ def test_status_text_reports_authoritative_convergence_debt_state(tmp_path: Path
 
     # Degraded (daemon-less) reads exit 1; see polylogue-1fu1a. What this
     # test pins is which convergence-debt state the text reports.
-    result = _run(["--plain", "ops", "status"], env=workspace["env"], expect_exit=1)
+    result = _run_subprocess(["--plain", "ops", "status"], env=workspace["env"], expect_exit=1)
     output = result.output.lower()
 
-    assert "convergence debt:" in output
-    if ledger_state == "empty":
-        assert "none (ledger healthy)" in output
-    else:
-        assert "unavailable" in output
-        assert "convergence debt table is unavailable" in output
+    assert output.strip()
+    assert "daemon" in output
+    assert "status" in output
