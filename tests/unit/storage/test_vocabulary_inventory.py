@@ -41,3 +41,16 @@ def test_durable_rows_are_excluded_even_when_a_domain_owner_matches() -> None:
     assert durable
     assert all(item.disposition == "DURABLE_WRITE_BOUNDARY" for item in durable)
     assert all("write boundary" in item.reason for item in durable)
+
+
+def test_equivalent_python_vocabularies_are_reported_as_one_owner_group() -> None:
+    """DDL ownership is keyed by members, so aliases cannot form new lists."""
+    inventory = build_inventory()
+
+    # The frontier kind is deliberately declared once in ``types.py`` and
+    # consumed by both revision tables.  The inventory's owner projection
+    # remains useful if a future enum/Literal alias is introduced: it reports
+    # the collapsed group rather than silently choosing two owners.
+    frontier = [item for item in inventory.checks if item.column == "accepted_frontier_kind"]
+    assert len(frontier) == 2
+    assert {item.owner for item in frontier} == {"polylogue.storage.sqlite.archive_tiers.types.RevisionFrontierKind"}

@@ -1512,3 +1512,44 @@ def test_embeddings_vocabularies_generate_their_check_from_the_python_owner(tmp_
             )
     finally:
         conn.close()
+
+
+def test_revision_frontier_vocabulary_uses_one_literal_owner(tmp_path: Path) -> None:
+    """Both revision tables derive the same closed vocabulary from one owner."""
+    from typing import get_args
+
+    from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import (
+        RAW_REVISION_APPLICATIONS_SPEC,
+        RAW_REVISION_HEADS_SPEC,
+    )
+    from polylogue.storage.sqlite.archive_tiers.types import RevisionFrontierKind
+
+    conn = _connect(tmp_path / "frontier.db")
+    try:
+        conn.execute(f"CREATE TABLE raw_revision_applications ({RAW_REVISION_APPLICATIONS_SPEC.ddl_body}) STRICT")
+        conn.execute(f"CREATE TABLE raw_revision_heads ({RAW_REVISION_HEADS_SPEC.ddl_body}) STRICT")
+        for value in get_args(RevisionFrontierKind):
+            conn.execute(
+                "INSERT INTO raw_revision_applications "
+                "(decision_id, raw_id, session_id, logical_source_key, source_revision, "
+                "acquisition_generation, decision, accepted_raw_id, accepted_source_revision, "
+                "accepted_content_hash, accepted_frontier_kind, accepted_frontier, detail, decided_at_ms) "
+                "VALUES (?, 'r', 's', 'k', '1', 0, 'selected_baseline', 'r', '1', zeroblob(32), ?, 0, '', 0)",
+                (f"d-{value}", value),
+            )
+            conn.execute(
+                "INSERT INTO raw_revision_heads "
+                "(logical_source_key, session_id, accepted_raw_id, accepted_source_revision, "
+                "accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, decided_at_ms) "
+                "VALUES (?, 's', 'r', '1', zeroblob(32), ?, 0, 0, 0)",
+                (f"k-{value}", value),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO raw_revision_heads "
+                "(logical_source_key, session_id, accepted_raw_id, accepted_source_revision, "
+                "accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, decided_at_ms) "
+                "VALUES ('bad', 's', 'r', '1', zeroblob(32), 'character', 0, 0, 0)"
+            )
+    finally:
+        conn.close()
