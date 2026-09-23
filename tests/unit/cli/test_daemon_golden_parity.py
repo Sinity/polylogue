@@ -390,7 +390,9 @@ def test_facets_json_parity_between_direct_and_daemon(
         availability = payload.get("availability")
         if isinstance(availability, dict):
             availability.pop("elapsed_s", None)
-    assert daemon_payload["facets"]
+    # The daemon serves the canonical FacetsResponse envelope (global/scoped
+    # families), rather than the retired direct-route ``facets`` alias.
+    assert daemon_payload.get("global") or daemon_payload.get("scoped")
 
 
 def test_find_then_read_transcript_survives_daemon_proxied_keyword_search(

@@ -1137,7 +1137,6 @@ def test_async_execute_query_archive_sorts_lists(
                 # the same store through ``_archive_list_summaries_for_spec``; its
                 # equivalence with this branch is proven per flag in
                 # ``tests/unit/cli/test_query_route_differential.py``.
-                "no_daemon": True,
             },
         )
     )
@@ -1632,7 +1631,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
                 # probe.  The declared ``cli.query`` route reaches the same store through
                 # the shared API helpers; per-flag equivalence of the two routes is proven
                 # in ``tests/unit/cli/test_query_route_differential.py``.
-                "no_daemon": True,
             },
         )
     )
@@ -1780,7 +1778,6 @@ def test_async_execute_query_archive_filters_since_session_id(
                 # the same store through the shared API helpers; per-flag equivalence
                 # of the two routes is proven in
                 # ``tests/unit/cli/test_query_route_differential.py``.
-                "no_daemon": True,
             },
         )
     )
@@ -2149,7 +2146,6 @@ def test_async_execute_query_archive_sorts_search_terms(
                     # the same store through the shared API helpers; per-flag equivalence
                     # of the two routes is proven in
                     # ``tests/unit/cli/test_query_route_differential.py``.
-                    "no_daemon": True,
                 },
             )
         )
@@ -2505,7 +2501,9 @@ def test_async_execute_query_archive_session_seed_without_vector_backend_fails_t
     assert caught.value.code != EMPTY_EXIT_CODE
 
 
-def test_lineage_id_cli_query_materializes_parent_child_refs(cli_workspace: dict[str, Path]) -> None:
+def test_lineage_id_cli_query_materializes_parent_child_refs(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``lineage:id:<ref>`` through the CLI root query route projects lineage edges.
 
     Regression for polylogue-z9gh.3: the ``lineage:id:`` predicate already
@@ -2544,10 +2542,14 @@ def test_lineage_id_cli_query_materializes_parent_child_refs(cli_workspace: dict
         .save()
     )
 
-    result = CliRunner().invoke(
-        cli,
-        ["--plain", "find", "lineage:id:codex-session:ext-lineage-parent", "-f", "json"],
-    )
+    with running_daemon_operations(cli_workspace["archive_root"]) as stack:
+        monkeypatch.setattr(
+            "polylogue.daemon.socket_path.daemon_socket_path", lambda *_args, **_kwargs: stack.socket_path
+        )
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "find", "lineage:id:codex-session:ext-lineage-parent", "-f", "json"],
+        )
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
@@ -4084,12 +4086,10 @@ class TestSearchIndexRebuild:
         runner = CliRunner()
         # Query mode
         result = runner.invoke(cli, ["--plain", "find", "searchable"])
-        # Should either succeed (rebuild worked) or report no results.
-        assert result.exit_code in (0, 2)
-        if result.exit_code == 0:
-            assert "searchable" in result.output.lower() or "c1" in result.output
-        else:
-            assert "no session" in result.output.lower() or "matched" in result.output.lower()
+        # Reads are daemon-owned; a missing resident daemon is a typed refusal,
+        # not an invitation to rebuild or read the index in-process.
+        assert result.exit_code == 1
+        assert "start the daemon" in result.output.lower()
 
 
 def test_daemon_unit_fast_path_defers_session_only_modes_to_local_validation(
@@ -4231,6 +4231,7 @@ def test_a_bounded_stream_reads_every_window_its_limit_covers(
                 origin="codex-session",
                 title="Windowed",
                 active_leaf_message_id=f"codex-session:native-1:m{total_messages - 1}",
+                total_message_count=total_messages,
                 messages=rows[offset : offset + limit],
             )
 
