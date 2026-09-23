@@ -395,6 +395,14 @@ def test_revised_hook_claim_supersedes_the_previous_authoritative_edge(tmp_path:
     links = _links(index, child_id)
     authoritative = [name for name, row in links.items() if row["method"] == HOOK_AUTHORITATIVE_LINK_METHOD]
     assert authoritative == ["revised-hook-parent"], "exactly one authoritative parent per child"
+    assert (
+        index.execute(
+            """SELECT COUNT(*) FROM session_links
+               WHERE src_session_id = ? AND method = ?""",
+            (child_id, HOOK_AUTHORITATIVE_LINK_METHOD),
+        ).fetchone()[0]
+        == 1
+    )
     assert links[_HOOK_PARENT]["method"] == HOOK_SUPERSEDED_LINK_METHOD
     assert links[_HOOK_PARENT]["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
     assert links[_HOOK_PARENT]["resolved_dst_session_id"] is None
