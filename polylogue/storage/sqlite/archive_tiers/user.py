@@ -25,6 +25,7 @@ USER_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
         "annotation_batches",
         "user_settings",
         "context_deliveries",
+        "session_marker_delivery",
     ),
     "cross-table durable state DDL; no concrete schema delta requires TableColumnSpec",
 )
@@ -61,6 +62,18 @@ CREATE TABLE IF NOT EXISTS assertions (
     created_at_ms       INTEGER NOT NULL,
     updated_at_ms       INTEGER NOT NULL
 ) STRICT;
+
+-- Sink-owned marker delivery position.  This is deliberately in user.db:
+-- assertion rows and the applied position commit together, so a restart can
+-- resume from a durable position without making profile validity depend on
+-- whether the last lowering attempt happened to finish.
+CREATE TABLE IF NOT EXISTS session_marker_delivery (
+    session_id       TEXT PRIMARY KEY,
+    input_binding    TEXT NOT NULL,
+    applied_at_ms    INTEGER NOT NULL CHECK(applied_at_ms >= 0)
+) STRICT;
+CREATE INDEX IF NOT EXISTS idx_session_marker_delivery_binding
+ON session_marker_delivery(input_binding);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_target_kind
 ON assertions(target_ref, kind);
