@@ -776,6 +776,13 @@ writes:
     classification: guarded_producer_refinement
     reason: "acquisition-time NULL/placeholder fill inside the raw writer itself: each statement carries its own guard in the WHERE -- file_mtime_ms IS NULL, capture_mode IS NULL, addressing_mode IS NULL, or origin = 'unknown-export' -- so a value already established by a better-informed route is never overwritten. refine_raw_origin's docstring states the rule and _assert_existing_raw_identity raises on two confident but different origins instead of picking one"
   - file: "polylogue/storage/sqlite/archive_tiers/source_write.py"
+    function: "record_raw_container_coordinate"
+    table: "raw_sessions"
+    kind: "update"
+    tier: "source"
+    classification: guarded_producer_refinement
+    reason: "acquisition-time member-identity refinement: when migration 003 has added the durable columns, the coordinate writer fills only NULL raw_sessions.addressing_mode/content_identity values and raises on a conflicting established value; pre-migration databases are left to the sidecar until the additive migration applies"
+  - file: "polylogue/storage/sqlite/archive_tiers/source_write.py"
     function: "refine_raw_origin"
     table: "raw_sessions"
     kind: "update"

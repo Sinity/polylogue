@@ -448,6 +448,9 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
         )
         stored = conn.execute("SELECT addressing_mode FROM raw_container_coordinates WHERE raw_id = 'raw-1'").fetchone()
         assert stored[0] == MemberAddressingMode.WHOLE_MEMBER.value
+        assert conn.execute(
+            "SELECT addressing_mode, content_identity FROM raw_sessions WHERE raw_id = 'raw-1'"
+        ).fetchone() == (MemberAddressingMode.WHOLE_MEMBER.value, None)
 
         identity = structural_content_identity(_session("one"))
         record_raw_container_coordinate(
@@ -464,6 +467,9 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
             conn.execute("SELECT content_identity FROM raw_container_coordinates WHERE raw_id = 'raw-1'").fetchone()[0]
             == identity
         )
+        assert conn.execute(
+            "SELECT addressing_mode, content_identity FROM raw_sessions WHERE raw_id = 'raw-1'"
+        ).fetchone() == (MemberAddressingMode.WHOLE_MEMBER.value, identity)
 
         with pytest.raises(ValueError, match="addressing_mode"):
             record_raw_container_coordinate(
