@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import get_args
 
 from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin, TelemetrySurface
@@ -11,6 +12,70 @@ from polylogue.storage.sqlite.archive_tiers.index_convergence import BenignDDLEn
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 
 OPS_SCHEMA_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class OpsTableDisposition:
+    """Recorded owner and lifecycle decision for one canonical OPS table.
+
+    This is deliberately metadata, not a second schema description.  The
+    table names remain derived from :data:`OPS_DDL`; tests cross-check that
+    every declared table has a disposition before a retirement is proposed.
+    """
+
+    owner: str
+    grain: str
+    restart_required: bool
+    replacement: str
+
+
+# Wave-4 decision record (polylogue-pnxl6): the current OPS population is not
+# a four-table telemetry cache.  Keep restart-required state and independently
+# shaped attempt records until a replacement and its reader map have landed.
+# ``schema_identity`` is bootstrap metadata and is included so the map covers
+# every CREATE TABLE in the canonical DDL.
+OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
+    "ingest_cursor": OpsTableDisposition("live ingest", "one cursor per source path", True, "retain"),
+    "ingest_attempts": OpsTableDisposition("ingest", "one row per ingest attempt", True, "retain"),
+    "convergence_debt": OpsTableDisposition("daemon converger", "one retryable debt row per target", True, "retain"),
+    "whole_archive_convergence_pledge": OpsTableDisposition(
+        "live cursor", "one open archive-wide lease", True, "retain"
+    ),
+    "cursor_lag_samples": OpsTableDisposition(
+        "daemon diagnostics", "one bounded lag sample", False, "retain pending map"
+    ),
+    "daemon_stage_events": OpsTableDisposition(
+        "daemon", "one row per stage transition", False, "retain pending event map"
+    ),
+    "daemon_events": OpsTableDisposition("daemon", "one row per SSE/event-log event", True, "retain"),
+    "judgment_scheduler_receipts": OpsTableDisposition(
+        "judgment scheduler", "one typed receipt per operation", True, "retain independently"
+    ),
+    "daemon_lifecycle": OpsTableDisposition("daemon", "one row per daemon run", True, "retain"),
+    "embedding_catchup_runs": OpsTableDisposition(
+        "embedding owner", "one row per catch-up run with counters", True, "retain independently"
+    ),
+    "secret_scan_status": OpsTableDisposition(
+        "secret scanner", "one coverage cursor per session and scanner version", True, "retain"
+    ),
+    "mcp_call_log": OpsTableDisposition("MCP", "one row per tool call", True, "retain pending audit migration"),
+    "mcp_call_session_refs": OpsTableDisposition(
+        "MCP", "session references per tool call", True, "retain pending audit migration"
+    ),
+    "route_observations": OpsTableDisposition(
+        "route diagnostics", "one bounded route observation", False, "retain pending map"
+    ),
+    "fts_drift_samples": OpsTableDisposition(
+        "FTS diagnostics", "one bounded drift sample", False, "retain pending map"
+    ),
+    "schema_drift_samples": OpsTableDisposition(
+        "schema sentinel", "one bounded drift sample", False, "retain pending map"
+    ),
+    "context_injection_ledger": OpsTableDisposition(
+        "context scheduler", "one admission decision per candidate item", True, "retain"
+    ),
+    "schema_identity": OpsTableDisposition("schema bootstrap", "one derived-schema identity", True, "retain"),
+}
 # Batch aggregation is a terminal run state distinct from both success and
 # failure: completed siblings and retryable failed siblings remain visible.
 _OPS_RUN_STATUS_CHECK = literal_check(
@@ -518,5 +583,7 @@ __all__ = [
     "OPS_BENIGN_DDL_CONVERGENCE_PLAN",
     "OPS_DDL",
     "OPS_SCHEMA_VERSION",
+    "OPS_TABLE_DISPOSITIONS",
+    "OpsTableDisposition",
     "SCHEMA_DRIFT_SAMPLES_DDL",
 ]
