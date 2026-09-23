@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -208,6 +209,31 @@ async def test_shard_building_parse_stage_produces_identical_archive_content(
     assert _canonical_snapshot(baseline_root) == _canonical_snapshot(shard_root)
     # Shards are scratch with a named end: none may outlive the pass.
     assert list(shard_directory.glob("shard-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_process_parse_stage_produces_identical_archive_content(tmp_path: Path) -> None:
+    """The ordinary GIL-safe process route keeps the same durable result."""
+    baseline_root = tmp_path / "baseline"
+    process_root = tmp_path / "process"
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=4)
+
+    await _ingest(baseline_root, paths, parse_stage=None)
+
+    stage = LiveParseStage(
+        max_workers=2,
+        max_inflight_bytes=10_000_000,
+        shard_directory=tmp_path / "parse-shards",
+        use_processes=True,
+    )
+    try:
+        assert isinstance(stage._executor, ProcessPoolExecutor)
+        await _ingest(process_root, paths, parse_stage=stage)
+    finally:
+        stage.shutdown()
+
+    assert len(stage.cache) == 0
+    assert _canonical_snapshot(baseline_root) == _canonical_snapshot(process_root)
 
 
 @pytest.mark.asyncio
