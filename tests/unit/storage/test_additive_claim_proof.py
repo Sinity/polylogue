@@ -68,4 +68,7 @@ class TestAdditiveClaimIsProven:
         """The shipped durable migration's classification is unchanged and now proven."""
         steps = _load_migrations(ArchiveTier.SOURCE)
         assert steps, "the source tier declares no numbered migration"
-        assert [(step.name, step.requires_backup) for step in steps] == [("002_excision_policy_projections.sql", False)]
+        assert [(step.name, step.requires_backup) for step in steps] == [
+            ("002_excision_policy_projections.sql", False),
+            ("003_raw_member_identity.sql", True),
+        ]
