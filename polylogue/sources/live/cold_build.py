@@ -446,7 +446,9 @@ class ColdBuildGeneration:
             finally:
                 self._release_ops_checkpoint_holder()
 
-        archive.close = types.MethodType(close_page, archive)
+        # Rebinding close on the instance (not the class) so the ops checkpoint
+        # holder is released on whichever path closes this page.
+        archive.close = types.MethodType(close_page, archive)  # type: ignore[method-assign]
         return archive
 
     def session_count(self) -> int:

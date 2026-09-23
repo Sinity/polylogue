@@ -4,8 +4,9 @@ import asyncio
 import sqlite3
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -332,7 +333,7 @@ def test_embedding_derivation_emits_intermediate_progress_before_terminal_result
         model="voyage-4",
         dimension=1024,
         reserve=lambda _actor, fn: fn(),
-        progress_callback=events.append,
+        progress_callback=cast("Callable[[Mapping[str, object]], None]", events.append),
     )
     assert adapter is not None
     quiet = captured["quiet"]

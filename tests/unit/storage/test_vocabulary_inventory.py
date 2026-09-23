@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from polylogue.storage.sqlite.archive_tiers.vocabulary_inventory import build_inventory
 
 
@@ -53,7 +55,7 @@ def test_inventory_records_lifecycle_for_every_row_and_serializes_it() -> None:
         for item in inventory.checks
     )
     payload = inventory.to_payload()
-    assert all("lifecycle" in row for row in payload["checks"])
+    assert all("lifecycle" in row for row in cast("list[dict[str, object]]", payload["checks"]))
 
 
 def test_equivalent_python_vocabularies_are_reported_as_one_owner_group() -> None:
