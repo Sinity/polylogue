@@ -13,11 +13,13 @@ import os
 import re
 import shlex
 import stat
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.pty_cli import grid_to_text, run_in_pty
 from tests.infra.storage_records import DbFactory
 
@@ -29,6 +31,7 @@ def _interactive_env(
     tmp_path: Path,
     *,
     picker_dir: Path | None = None,
+    runtime_dir: Path | None = None,
 ) -> dict[str, str]:
     """Return a process-isolated environment that keeps the CLI interactive."""
     home = tmp_path / "interactive-home"
@@ -46,7 +49,31 @@ def _interactive_env(
     }
     if picker_dir is not None:
         env["PATH"] = f"{picker_dir}{os.pathsep}{os.environ.get('PATH', '/usr/bin:/bin')}"
+    if runtime_dir is not None:
+        env["XDG_RUNTIME_DIR"] = str(runtime_dir)
     return env
+
+
+@contextmanager
+def _interactive_daemon(
+    cli_workspace: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Expose the fixture's real UDS at the deterministic child-process path."""
+    from polylogue.daemon.socket_path import daemon_socket_path
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    with cli_daemon_archive(
+        cli_workspace["archive_root"],
+        monkeypatch,
+        home=tmp_path / "interactive-home",
+    ) as stack:
+        alias = daemon_socket_path(cli_workspace["archive_root"], runtime_dir=str(runtime_dir))
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        alias.symlink_to(stack.socket_path)
+        yield runtime_dir
 
 
 def _install_first_row_fzf(
@@ -116,6 +143,7 @@ def test_click_bash_completion_protocol_runs_in_a_real_pty(
 def test_select_uses_fzf_first_ranked_candidate_in_a_real_pty(
     cli_workspace: dict[str, Path],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The real CLI hands ranked rows to fzf and prints fzf's chosen session."""
     _seed_picker_sessions(cli_workspace)
@@ -123,11 +151,11 @@ def test_select_uses_fzf_first_ranked_candidate_in_a_real_pty(
     picker_dir.mkdir()
     trace_path = tmp_path / "fzf-options.txt"
     _install_first_row_fzf(picker_dir, trace_path)
-
-    result = run_in_pty(
-        ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select"],
-        env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
-    )
+    with _interactive_daemon(cli_workspace, tmp_path, monkeypatch) as runtime_dir:
+        result = run_in_pty(
+            ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select"],
+            env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir, runtime_dir=runtime_dir),
+        )
 
     assert result.exit_code == 0
     assert grid_to_text(result.grid).splitlines()[-1] == "chatgpt-export:ext-older"
@@ -149,6 +177,7 @@ def test_select_uses_fzf_first_ranked_candidate_in_a_real_pty(
 def test_select_propagates_requested_pty_size_to_fzf(
     cli_workspace: dict[str, Path],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The PTY harness gives the real selector route the requested terminal size."""
     _seed_picker_sessions(cli_workspace)
@@ -157,16 +186,16 @@ def test_select_propagates_requested_pty_size_to_fzf(
     trace_path = tmp_path / "fzf-options.txt"
     size_path = tmp_path / "fzf-terminal-size.txt"
     _install_first_row_fzf(picker_dir, trace_path, size_path=size_path)
-
-    result = run_in_pty(
-        ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select"],
-        rows=41,
-        cols=137,
-        env={
-            **_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
-            "FZF_DEFAULT_OPTS": "",
-        },
-    )
+    with _interactive_daemon(cli_workspace, tmp_path, monkeypatch) as runtime_dir:
+        result = run_in_pty(
+            ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select"],
+            rows=41,
+            cols=137,
+            env={
+                **_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir, runtime_dir=runtime_dir),
+                "FZF_DEFAULT_OPTS": "",
+            },
+        )
 
     assert result.exit_code == 0
     assert grid_to_text(result.grid).splitlines()[-1] == "chatgpt-export:ext-older"
@@ -178,6 +207,7 @@ def test_select_propagates_requested_pty_size_to_fzf(
 def test_select_returns_fzf_choice_in_json_in_a_real_pty(
     cli_workspace: dict[str, Path],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The real selector preserves the external pick through its JSON renderer."""
     _seed_picker_sessions(cli_workspace)
@@ -185,15 +215,13 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
     picker_dir.mkdir()
     trace_path = tmp_path / "json-fzf-options.txt"
     _install_first_row_fzf(picker_dir, trace_path)
-
-    result = run_in_pty(
-        ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select", "--format", "json"],
-        # Wide enough that the enriched row JSON (#4201) never hard-wraps:
-        # a wrap boundary splits the line mid-token and the parse below
-        # would fail on the wrap control character, not on real output.
-        cols=400,
-        env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
-    )
+    with _interactive_daemon(cli_workspace, tmp_path, monkeypatch) as runtime_dir:
+        result = run_in_pty(
+            ["--sort", "date", "--reverse", "find", "title:Interactive", "then", "select", "--format", "json"],
+            # Wide enough that the enriched row JSON (#4201) never hard-wraps.
+            cols=400,
+            env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir, runtime_dir=runtime_dir),
+        )
 
     assert result.exit_code == 0
     rendered = json.loads(grid_to_text(result.grid).strip())
@@ -218,23 +246,24 @@ def test_select_returns_fzf_choice_in_json_in_a_real_pty(
 def test_select_candidate_reordering_changes_the_fzf_selected_session(
     cli_workspace: dict[str, Path],
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Mutation control: changing real query order changes the chosen first row."""
     _seed_picker_sessions(cli_workspace)
-
-    selected: set[str] = set()
-    for name, args in (
-        ("ascending", ["--sort", "date"]),
-        ("descending", ["--sort", "date", "--reverse"]),
-    ):
-        picker_dir = tmp_path / f"{name}-bin"
-        picker_dir.mkdir()
-        _install_first_row_fzf(picker_dir, tmp_path / f"{name}-fzf-options.txt")
-        result = run_in_pty(
-            [*args, "find", "title:Interactive", "then", "select"],
-            env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir),
-        )
-        assert result.exit_code == 0
-        selected.add(grid_to_text(result.grid).splitlines()[-1])
+    with _interactive_daemon(cli_workspace, tmp_path, monkeypatch) as runtime_dir:
+        selected: set[str] = set()
+        for name, args in (
+            ("ascending", ["--sort", "date"]),
+            ("descending", ["--sort", "date", "--reverse"]),
+        ):
+            picker_dir = tmp_path / f"{name}-bin"
+            picker_dir.mkdir()
+            _install_first_row_fzf(picker_dir, tmp_path / f"{name}-fzf-options.txt")
+            result = run_in_pty(
+                [*args, "find", "title:Interactive", "then", "select"],
+                env=_interactive_env(cli_workspace, tmp_path, picker_dir=picker_dir, runtime_dir=runtime_dir),
+            )
+            assert result.exit_code == 0
+            selected.add(grid_to_text(result.grid).splitlines()[-1])
 
     assert selected == {"chatgpt-export:ext-newer", "chatgpt-export:ext-older"}
