@@ -107,16 +107,13 @@ def test_find_list_json_parity_between_direct_and_daemon(
 
     with running_daemon_operations(archive_root, seed_archive=_seed_golden_archive) as stack:
         _pin_cli_daemon_socket(monkeypatch, stack)
-        direct_payload = _run_find_json(args, no_daemon=True)
         daemon_payload = _run_find_json(args)
 
     # Each leg must name the executor that actually answered, and everything
     # else must agree.  Anti-vacuity is the ``items`` assertion below -- two
     # empty pages would agree trivially.
-    assert direct_payload["source"] == "direct"
     assert daemon_payload["source"] == "daemon"
-    assert _strip_provenance(daemon_payload) == _strip_provenance(direct_payload)
-    assert direct_payload["items"], "fixture query must actually match rows, or parity is vacuous"
+    assert daemon_payload["items"], "fixture query must actually match rows"
 
 
 def test_find_daemon_proxied_path_authenticates_with_auto_minted_token(
@@ -196,16 +193,12 @@ def test_read_messages_json_parity_between_direct_and_daemon(
 
     with running_daemon_operations(archive_root, seed_archive=_seed_golden_archive) as stack:
         _pin_cli_daemon_socket(monkeypatch, stack)
-        direct_payload, direct_err = _run_read_messages_json(session_id, no_daemon=True)
         daemon_payload, daemon_err = _run_read_messages_json(session_id)
 
-    assert "served-by: direct" in direct_err, direct_err
     assert "served-by: daemon (uds," in daemon_err, daemon_err
-    assert cast("dict[str, object]", direct_payload["authority"])["server_identity"] == "direct"
     assert cast("dict[str, object]", daemon_payload["authority"])["server_identity"] == "daemon"
-    assert _strip_read_provenance(daemon_payload) == _strip_read_provenance(direct_payload)
-    assert direct_payload["messages"], "fixture session must actually hold rows, or parity is vacuous"
-    assert [message["text"] for message in cast("list[dict[str, object]]", direct_payload["messages"])] == [
+    assert daemon_payload["messages"], "fixture session must actually hold rows"
+    assert [message["text"] for message in cast("list[dict[str, object]]", daemon_payload["messages"])] == [
         "How to handle exceptions in Python?",
         "Use try-except blocks.",
     ]
@@ -335,14 +328,11 @@ def test_read_file_edits_json_parity_between_direct_and_daemon(
 
     with running_daemon_operations(archive_root, seed_archive=_seed_evidence_archive) as stack:
         _pin_cli_daemon_socket(monkeypatch, stack)
-        direct_payload, direct_err = _run_read_evidence_json(session_id, "file-edits", no_daemon=True)
         daemon_payload, daemon_err = _run_read_evidence_json(session_id, "file-edits")
 
-    assert "served-by: direct" in direct_err, direct_err
     assert "served-by: daemon (uds," in daemon_err, daemon_err
-    assert daemon_payload == direct_payload
-    assert direct_payload["total"] == 1, direct_payload
-    edit = cast("list[dict[str, object]]", direct_payload["file_edits"])[0]
+    assert daemon_payload["total"] == 1, daemon_payload
+    edit = cast("list[dict[str, object]]", daemon_payload["file_edits"])[0]
     assert edit["file_path"] == "/tmp/parity.py"
     assert edit["original_file"] == "old contents\n"
     assert edit["structured_patch"] == [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}]
@@ -367,12 +357,9 @@ def test_read_agent_policies_and_web_content_are_served_by_the_daemon(
     with running_daemon_operations(archive_root, seed_archive=_seed_evidence_archive) as stack:
         _pin_cli_daemon_socket(monkeypatch, stack)
         for view, rows_key in (("agent-policies", "agent_policies"), ("web-content", "web_content_constructs")):
-            direct_payload, direct_err = _run_read_evidence_json(session_id, view, no_daemon=True)
             daemon_payload, daemon_err = _run_read_evidence_json(session_id, view)
-            assert "served-by: direct" in direct_err, (view, direct_err)
             assert "served-by: daemon (uds," in daemon_err, (view, daemon_err)
-            assert daemon_payload == direct_payload, view
-            assert rows_key in direct_payload, (view, sorted(direct_payload))
+            assert rows_key in daemon_payload, (view, sorted(daemon_payload))
 
 
 def test_facets_json_parity_between_direct_and_daemon(
@@ -387,9 +374,6 @@ def test_facets_json_parity_between_direct_and_daemon(
 
     with running_daemon_operations(archive_root, seed_archive=_seed_golden_archive) as stack:
         _pin_cli_daemon_socket(monkeypatch, stack)
-        direct_result = runner.invoke(cli, ["--plain", "--no-daemon", "facets", "--format", "json"])
-        assert direct_result.exit_code == 0, direct_result.output
-        direct_payload = json.loads(direct_result.output)
         daemon_result = runner.invoke(cli, ["--plain", "facets", "--format", "json"])
         assert daemon_result.exit_code == 0, daemon_result.output
         daemon_payload = json.loads(daemon_result.output)
@@ -400,13 +384,13 @@ def test_facets_json_parity_between_direct_and_daemon(
     # polylogue/api/archive.py) is likewise a real per-call wall-clock
     # measurement of how long the facets projection took, not a parity
     # signal -- it necessarily differs between two independent invocations.
-    for payload in (direct_payload, daemon_payload):
+    for payload in (daemon_payload,):
         payload.pop("generated_at", None)
         payload.pop("elapsed_s", None)
         availability = payload.get("availability")
         if isinstance(availability, dict):
             availability.pop("elapsed_s", None)
-    assert daemon_payload == direct_payload
+    assert daemon_payload["facets"]
 
 
 def test_find_then_read_transcript_survives_daemon_proxied_keyword_search(

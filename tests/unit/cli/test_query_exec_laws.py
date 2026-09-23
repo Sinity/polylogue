@@ -49,6 +49,7 @@ from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.archive_store_double import ArchiveStoreDouble, install_archive_store_double
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.daemon_operations import running_daemon_operations
 from tests.infra.identity import archive_message_id
 
 
@@ -255,7 +256,15 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         rebuild_session_insights_sync(insight_conn)
         insight_conn.commit()
 
-    return cli_workspace
+    # Read operations are daemon-owned.  Keep the query-law tests focused on
+    # filtering/rendering by giving them the maintained production daemon
+    # fixture instead of the retired in-process fallback.
+    with running_daemon_operations(cli_workspace["archive_root"]) as stack:
+        monkeypatch.setattr(
+            "polylogue.daemon.socket_path.daemon_socket_path",
+            lambda *_args, **_kwargs: stack.socket_path,
+        )
+        yield cli_workspace
 
 
 def _make_env(*, repo: MagicMock | None = None, config: MagicMock | None = None) -> AppEnv:
@@ -2537,7 +2546,7 @@ def test_lineage_id_cli_query_materializes_parent_child_refs(cli_workspace: dict
 
     result = CliRunner().invoke(
         cli,
-        ["--plain", "--no-daemon", "find", "lineage:id:codex-session:ext-lineage-parent", "-f", "json"],
+        ["--plain", "find", "lineage:id:codex-session:ext-lineage-parent", "-f", "json"],
     )
 
     assert result.exit_code == 0, result.output
@@ -3278,7 +3287,7 @@ class TestSearchQueryContracts:
         from polylogue.cli import cli
 
         del search_workspace
-        result = CliRunner().invoke(cli, ["--plain", "--no-daemon", "find", "query", "-f", "json", "--limit", "1"])
+        result = CliRunner().invoke(cli, ["--plain", "find", "query", "-f", "json", "--limit", "1"])
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -3298,9 +3307,7 @@ class TestSearchQueryContracts:
         from polylogue.cli import cli
 
         del search_workspace
-        result = CliRunner().invoke(
-            cli, ["--plain", "--no-daemon", "find", "query", "--no-root", "-f", "json", "--limit", "1"]
-        )
+        result = CliRunner().invoke(cli, ["--plain", "find", "query", "--no-root", "-f", "json", "--limit", "1"])
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -3320,7 +3327,7 @@ class TestSearchQueryContracts:
         del search_workspace
         result = CliRunner().invoke(
             cli,
-            ["--plain", "--no-daemon", "find", "Python", "--origin", "claude-ai-export", "-f", "json"],
+            ["--plain", "find", "Python", "--origin", "claude-ai-export", "-f", "json"],
         )
 
         assert result.exit_code == 2, result.output
@@ -3339,7 +3346,7 @@ class TestSearchQueryContracts:
         del search_workspace
         result = CliRunner().invoke(
             cli,
-            ["--plain", "--no-daemon", "--why", "find", "Python", "--origin", "claude-ai-export", "-f", "json"],
+            ["--plain", "--why", "find", "Python", "--origin", "claude-ai-export", "-f", "json"],
         )
 
         assert result.exit_code == 2, result.output
@@ -3370,7 +3377,7 @@ class TestSearchQueryContracts:
         del search_workspace
         result = CliRunner().invoke(
             cli,
-            ["--plain", "--no-daemon", "find", "repo:doesnotexist-nonexistent-repo", "-f", "json"],
+            ["--plain", "find", "repo:doesnotexist-nonexistent-repo", "-f", "json"],
         )
 
         assert result.exit_code == 2, result.output
@@ -3401,8 +3408,8 @@ class TestSearchQueryContracts:
 
         del search_workspace
         runner = CliRunner()
-        bare_text = runner.invoke(cli, ["--plain", "--no-daemon", "find", "zzz-nonexistent-term-zzz"])
-        field_syntax = runner.invoke(cli, ["--plain", "--no-daemon", "find", "repo:doesnotexist-nonexistent-repo"])
+        bare_text = runner.invoke(cli, ["--plain", "find", "zzz-nonexistent-term-zzz"])
+        field_syntax = runner.invoke(cli, ["--plain", "find", "repo:doesnotexist-nonexistent-repo"])
 
         assert bare_text.exit_code == 2, bare_text.output
         assert field_syntax.exit_code == 2, field_syntax.output
@@ -3430,7 +3437,7 @@ class TestSearchQueryContracts:
         del search_workspace
         matched = CliRunner().invoke(
             cli,
-            ["--plain", "--no-daemon", "find", "repo:polylogue", "-f", "json"],
+            ["--plain", "find", "repo:polylogue", "-f", "json"],
         )
         assert matched.exit_code == 0, matched.output
         real_total = json.loads(matched.output)["total"]
@@ -3438,7 +3445,7 @@ class TestSearchQueryContracts:
 
         result = CliRunner().invoke(
             cli,
-            ["--plain", "--no-daemon", "find", "repo:polylogue", "--offset", str(real_total), "-f", "json"],
+            ["--plain", "find", "repo:polylogue", "--offset", str(real_total), "-f", "json"],
         )
 
         assert result.exit_code == 0, result.output
