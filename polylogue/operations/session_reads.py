@@ -109,14 +109,20 @@ async def session_query(archive_root: Path, request: SessionList | SessionSearch
     from polylogue.archive.hydration import archive_summary_to_domain
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
-    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.surfaces.payloads import session_summary_envelope_from_summary
+    from polylogue.surfaces.read_contract import ReadRequest
 
     request, tx = _transaction(request)
     if isinstance(request, SessionSearch) and not request.expression:
         raise ValueError("sessions.search requires expression or continuation")
     params = request.model_dump(mode="json", exclude={"operation", "expression", "continuation"})
-    spec = SessionQuerySpec.from_params(params, strict=True)
+    # Selection is part of the shared Selection × Projection × Render
+    # contract.  Keep this operation's summary projection, but do not build a
+    # second request vocabulary by reading SessionQuerySpec fields directly.
+    # This is the same lowering used by the CLI/API read surfaces and makes a
+    # continuation re-enter the canonical request boundary before execution.
+    read_request = ReadRequest.normalize(params, preset="summary")
+    spec = read_request.selection
     if request.expression:
         spec = compile_expression_into(request.expression, spec)
     plan = spec.to_plan()
