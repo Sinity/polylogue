@@ -57,7 +57,7 @@ payload builders as `/api/sessions/:id/messages`. Their payload fields are
 unchanged by the unification; `next_offset` and `continuation` were added
 alongside, so the consumer is additive-compatible.
 
-## Two owners that remain, deliberately
+## Storage compatibility remains below the route
 
 `session.read` (`polylogue/operations/daemon_reads.py::_session_read_payload`)
 still serves the CLI's **session document** read — the whole-session body with
@@ -66,10 +66,11 @@ is a different product from the message-row window: different rows, different
 envelope, different consumer. It keeps its own continuation because it runs
 inside the operation kernel against a pinned snapshot.
 
-`Polylogue.get_messages_paginated` remains as the **storage read** inside the
-one route. It is no longer a window owner: it never sees a continuation and it
-does not decide `next_offset`. `tests/unit/operations/test_transcript_window_route.py`
-enforces that no public surface calls it directly again.
+`Polylogue.get_messages_paginated` remains a public compatibility method, but
+it now projects the result of `read_transcript_window`; it no longer owns
+selection, window arithmetic, snapshot binding, or continuation. The shared
+route reads the repository directly. `tests/unit/operations/test_transcript_window_route.py`
+enforces that no public surface calls the facade storage method directly.
 
 ## Verification
 

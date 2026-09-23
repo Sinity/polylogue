@@ -37,8 +37,6 @@ SURFACE_PACKAGES = ("polylogue/api", "polylogue/cli", "polylogue/mcp", "polylogu
 
 #: Call sites that are not transcript windows, each with the reason it is not.
 DECLARED_NON_WINDOW_CALLS: dict[str, str] = {
-    # The async facade method itself: this *is* the storage read the route calls.
-    "polylogue/api/archive.py": "the storage read's own definition and its material-origin composition branch",
     # A mechanical sync mirror of that same facade method, not a surface window.
     "polylogue/api/sync/sessions.py": "sync mirror of the facade storage read; the bound window is read_transcript_window",
 }

@@ -5603,33 +5603,35 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         branch point / depth-limited composition (polylogue-ppkj) -- the same
         read-time signal the MCP surface already carries.
         """
-        if material_origin:
-            session = await self.get_session(session_id, content_projection=content_projection)
-            if session is None:
-                raise SessionNotFoundError(session_id)
-            messages = [
-                message
-                for message in session.messages
-                if _archive_message_matches(
-                    message,
-                    message_role=message_role,
-                    message_type=message_type,
-                    material_origin=material_origin,
-                )
-            ]
-            completeness = await self.repository.get_lineage_completeness(session_id)
-            return messages[offset : offset + limit], len(messages), completeness
+        from polylogue.operations.transcript_window import message_transcript_window, window_request
 
-        resolved_session_id = await self.repository.resolve_id(session_id) or session_id
-        messages, total, completeness = await self.repository.get_messages_paginated(
-            resolved_session_id,
-            message_role=message_role,
-            message_type=message_type,
-            limit=limit,
-            offset=offset,
+        try:
+            window = await message_transcript_window(
+                self,
+                window_request(
+                    session_id,
+                    limit=limit,
+                    offset=offset,
+                    filters={
+                        "message_role": tuple(message_role),
+                        "message_type": message_type,
+                        "material_origin": tuple(material_origin),
+                    },
+                ),
+            )
+        except ValueError as exc:
+            if str(exc).startswith("session not found:"):
+                raise SessionNotFoundError(session_id) from exc
+            raise
+        messages = list(window.rows)
+        total = window.total
+        completeness = LineageCompleteness(
+            complete=window.lineage_complete,
+            truncation_reason=cast(
+                "Literal['depth_limit', 'dangling_branch_point'] | None",
+                window.lineage_truncation_reason,
+            ),
         )
-        if total == 0 and resolved_session_id == session_id and await self.repository.resolve_id(session_id) is None:
-            raise SessionNotFoundError(session_id)
         if content_projection is not None and content_projection.filters_content():
             messages = project_message_content(messages, content_projection)
         return messages, total, completeness
