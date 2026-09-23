@@ -9,6 +9,7 @@ denominator, and these go red.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -348,6 +349,26 @@ def test_the_matrix_binds_what_decided_it() -> None:
     ):
         assert payload[field], field
     assert json_document(payload["generator_semantics"])["implementation_fingerprint"] == ["f" * 64]
+
+
+def test_matrix_publication_rejects_a_partial_subject_set() -> None:
+    """A partial regeneration cannot publish aggregate provenance.
+
+    Anti-vacuity: removing the publication guard lets this malformed matrix
+    serialize successfully, which would mis-bind the run revision to the
+    omitted denominator subject.
+    """
+
+    denominator = _denominator(_required("codex"), _required("hermes"))
+    frontier = _frontier("codex", members=1)
+    matrix = _reconcile(
+        denominator,
+        frontier,
+        [_receipt("codex", candidates=1, included=1, samples=1, statuses=("changed",))],
+    )
+
+    with pytest.raises(ValueError, match="complete denominator"):
+        replace(matrix, subjects=(matrix.subjects[0],))
 
 
 def test_append_root_growth_is_explained_drift_not_a_conservation_failure() -> None:
