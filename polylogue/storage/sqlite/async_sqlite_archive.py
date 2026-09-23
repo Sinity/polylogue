@@ -156,6 +156,17 @@ class SQLiteArchiveMixin:
         """Get attachments for multiple sessions in a single query."""
         return await self.queries.get_attachments_batch(session_ids)
 
+    async def get_attachment_library_page(
+        self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
+    ) -> list[tuple[AttachmentRecord, str, str | None]]:
+        return await self.queries.get_attachment_library_page(
+            limit=limit,
+            offset=offset,
+            mime_filter=mime_filter,
+            session_filter=session_filter,
+            state_filter=state_filter,
+        )
+
     async def get_session_events(self, session_id: str) -> list[SessionEventRecord]:
         """Get timeline events for a session."""
         return await self.queries.get_session_events(session_id)

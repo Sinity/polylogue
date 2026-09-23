@@ -277,6 +277,19 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await attachments_q.get_attachments_batch(conn, session_ids)
 
+    async def get_attachment_library_page(
+        self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
+    ) -> list[tuple[AttachmentRecord, str, str | None]]:
+        async with self._connection_factory() as conn:
+            return await attachments_q.get_attachment_library_page(
+                conn,
+                limit=limit,
+                offset=offset,
+                mime_filter=mime_filter,
+                session_filter=session_filter,
+                state_filter=state_filter,
+            )
+
     async def get_session_events(self, session_id: str) -> list[SessionEventRecord]:
         async with self._connection_factory() as conn:
             return await session_events_q.get_session_events(conn, session_id)

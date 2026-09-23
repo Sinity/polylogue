@@ -176,6 +176,64 @@ async def get_attachments_batch(
     return result
 
 
+async def get_attachment_library_page(
+    conn: aiosqlite.Connection,
+    *,
+    limit: int,
+    offset: int,
+    mime_filter: str = "",
+    session_filter: str = "",
+    state_filter: str = "",
+) -> list[tuple[AttachmentRecord, str, str | None]]:
+    """Read one bounded attachment-library page without session hydration."""
+    clauses = ["r.session_id = s.session_id"]
+    args: list[object] = []
+    if mime_filter:
+        clauses.append("instr(COALESCE(a.media_type, ''), ?) > 0")
+        args.append(mime_filter)
+    if session_filter:
+        clauses.append("r.session_id = ?")
+        args.append(session_filter)
+    if state_filter:
+        clauses.append(
+            "(CASE WHEN a.blob_hash IS NULL THEN 'missing-blob' "
+            "WHEN lower(COALESCE(a.media_type, '')) IN "
+            "('application/x-tar','application/zip','application/x-7z-compressed','application/x-rar-compressed') "
+            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-executable%' "
+            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-msdownload%' "
+            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-msdos-program%' "
+            "OR lower(COALESCE(a.media_type, '')) LIKE 'application/x-sharedlib%' THEN 'unsupported-kind' "
+            "WHEN a.byte_count > 8388608 THEN 'too-large' ELSE 'available' END) = ?"
+        )
+        args.append(state_filter)
+    cursor = await conn.execute(
+        f"""
+        SELECT a.attachment_id, a.media_type AS mime_type, a.byte_count AS size_bytes,
+               NULL AS path, a.blob_hash, a.acquisition_status, a.display_name,
+               r.source_url, r.caption, r.message_id, r.session_id,
+               r.upload_origin, r.direction, r.producer_ref,
+               s.title, s.origin,
+               {_NATIVE_ID_COLUMNS}
+        FROM attachments a
+        JOIN attachment_refs r ON a.attachment_id = r.attachment_id
+        JOIN sessions s ON s.session_id = r.session_id
+        WHERE {" AND ".join(clauses)}
+        ORDER BY r.session_id, COALESCE(r.message_id, ''), a.attachment_id
+        LIMIT ? OFFSET ?
+        """,
+        [*args, max(0, limit), max(0, offset)],
+    )
+    rows = await cursor.fetchall()
+    return [
+        (
+            _build_attachment_record(row, session_id=str(row["session_id"])),
+            str(row["title"] or row["session_id"]),
+            row["origin"],
+        )
+        for row in rows
+    ]
+
+
 def _parse_since_timestamp(since: str) -> float:
     try:
         return datetime.fromisoformat(since).timestamp()

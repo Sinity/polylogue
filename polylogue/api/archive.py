@@ -6216,6 +6216,18 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             projection="session-summary",
         )
 
+    async def _get_attachment_library_page(
+        self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
+    ) -> Sequence[tuple[object, str, str | None]]:
+        """Return a bounded attachment page from the declared archive read."""
+        return await self.repository.get_attachment_library_page(
+            limit=limit,
+            offset=offset,
+            mime_filter=mime_filter,
+            session_filter=session_filter,
+            state_filter=state_filter,
+        )
+
     async def get_session_stats(self, session_id: str) -> dict[str, int]:
         """Return message-count and word-count stats for a single session."""
 
