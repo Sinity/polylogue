@@ -352,6 +352,10 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,revision_authority_evidence TEXT
         CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))
     ,detected_provider       TEXT
+    -- Durable member identity.  ``source_index`` remains only a reacquisition
+    -- hint; these fields carry the verified reading of the member.
+    ,addressing_mode        TEXT
+    ,content_identity       TEXT CHECK(content_identity IS NULL OR length(content_identity) = 64)
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS raw_container_coordinates (
