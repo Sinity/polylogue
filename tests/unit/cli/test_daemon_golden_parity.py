@@ -1,19 +1,15 @@
-"""Golden parity: direct CLI execution vs config-matched daemon-proxied execution.
+"""Golden parity for the daemon-backed CLI operation route.
 
 polylogue-20d.1 acceptance criterion: "`--format json` output is byte-identical
-between direct and daemon-proxied execution for every read surface on the demo
-corpus." A real production UDS daemon server is started against the same
-seeded archive the direct path reads, and the same `find` invocation is run
-through :class:`click.testing.CliRunner` twice — once with no daemon socket
-present (direct path) and once with the daemon reachable (proxied path) — so
-this is an end-to-end regression test, not a mock of the daemon transport.
+between equivalent daemon-backed invocations for every read surface on the
+demo corpus." A real production UDS daemon server is started against a seeded
+archive and each invocation is run through :class:`click.testing.CliRunner`,
+so this is an end-to-end regression test, not a mock of the daemon transport.
 
-Both routes now render one declared ``cli.query`` result through one renderer,
-so every field of the two envelopes must match except ``source`` — the route's
-own provenance marker, which names the executor the result's authority reports
-(``daemon`` over UDS, ``direct`` in-process). That marker is asserted
-explicitly on each leg rather than merely stripped, so a route that silently
-answers as the other one fails here.
+The daemon route renders one declared ``cli.query`` result through the shared
+renderer, and its ``source`` provenance marker must name the UDS executor.
+That marker is asserted explicitly, so a route that silently answers through a
+retired local executor fails here.
 """
 
 from __future__ import annotations
@@ -35,7 +31,7 @@ pytestmark = pytest.mark.uses_real_clock(
 
 @pytest.fixture
 def golden_parity_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
-    """A real seeded archive, reused for both the direct and daemon-proxied runs."""
+    """A real seeded archive for daemon-backed runs."""
 
     monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(cli_workspace["archive_root"]))
@@ -78,17 +74,17 @@ def _pin_cli_daemon_socket(monkeypatch: pytest.MonkeyPatch, stack: DaemonOperati
     )
 
 
-def _run_find_json(args: list[str], *, no_daemon: bool = False) -> dict[str, object]:
+def _run_find_json(args: list[str]) -> dict[str, object]:
     from polylogue.cli import cli
 
     runner = CliRunner()
-    # `--no-daemon` and `--repo` are root options (`click_app.py::cli`), not
+    # `--repo` is a root option (`click_app.py::cli`), not
     # `find` verb options — they must precede `find` in argv. Passing `--repo`
     # here as the root option (rather than a `repo:polylogue` DSL query token,
     # which routes through a different rendering path with a distinct envelope
     # shape) is what exercises the plain `cli.query` list page this test
     # targets.
-    root_flags = ["--plain", *args, *(["--no-daemon"] if no_daemon else [])]
+    root_flags = ["--plain", *args]
     result = runner.invoke(cli, [*root_flags, "find", "--format", "json", "--limit", "10"])
     assert result.exit_code == 0, result.output
     return dict(json.loads(result.output))
@@ -98,7 +94,7 @@ def _strip_provenance(envelope: dict[str, object]) -> dict[str, object]:
     return {key: value for key, value in envelope.items() if key != "source"}
 
 
-def test_find_list_json_parity_between_direct_and_daemon(
+def test_find_list_json_is_served_by_the_daemon(
     golden_parity_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,8 +121,8 @@ def test_find_daemon_proxied_path_authenticates_with_auto_minted_token(
     configured. The CLI fast path must resolve that same auto-minted token
     (``polylogue.daemon.api_auth.resolve_api_auth_token``) rather than only
     reading the unset config value -- otherwise every unauthenticated probe
-    gets a 401, ``DaemonClient.probe`` returns ``None``, and the CLI silently
-    falls back to the direct path even though a real daemon is reachable.
+    gets a 401, ``DaemonClient.probe`` returns ``None``, and the CLI refuses
+    the reachable daemon instead of serving the request through its route.
     This test starts the real UDS server with the archive's actual
     auto-minted token (not an empty one) and asserts the daemon-proxied path
     is still reached."""
@@ -146,7 +142,7 @@ def test_find_daemon_proxied_path_authenticates_with_auto_minted_token(
     assert daemon_payload["items"], "fixture query must actually match rows, or parity is vacuous"
 
 
-def _run_read_messages_json(session_id: str, *, no_daemon: bool = False) -> tuple[dict[str, object], str]:
+def _run_read_messages_json(session_id: str) -> tuple[dict[str, object], str]:
     from polylogue.cli import cli
 
     runner = CliRunner()
@@ -158,7 +154,6 @@ def _run_read_messages_json(session_id: str, *, no_daemon: bool = False) -> tupl
         [
             "--plain",
             "--verbose",
-            *(["--no-daemon"] if no_daemon else []),
             "read",
             f"session:{session_id}",
             "--view",
@@ -171,7 +166,7 @@ def _run_read_messages_json(session_id: str, *, no_daemon: bool = False) -> tupl
     return dict(json.loads(result.stdout)), result.stderr
 
 
-def test_read_messages_json_parity_between_direct_and_daemon(
+def test_read_messages_json_is_served_by_the_daemon(
     golden_parity_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,7 +276,7 @@ def _seed_evidence_archive(root: Path) -> None:
         )
 
 
-def _run_read_evidence_json(session_id: str, view: str, *, no_daemon: bool = False) -> tuple[dict[str, object], str]:
+def _run_read_evidence_json(session_id: str, view: str) -> tuple[dict[str, object], str]:
     from polylogue.cli import cli
 
     runner = CliRunner()
@@ -290,7 +285,6 @@ def _run_read_evidence_json(session_id: str, view: str, *, no_daemon: bool = Fal
         [
             "--plain",
             "--verbose",
-            *(["--no-daemon"] if no_daemon else []),
             "read",
             f"session:{session_id}",
             "--view",
@@ -303,7 +297,7 @@ def _run_read_evidence_json(session_id: str, view: str, *, no_daemon: bool = Fal
     return dict(json.loads(result.stdout)), result.stderr
 
 
-def test_read_file_edits_json_parity_between_direct_and_daemon(
+def test_read_file_edits_json_is_served_by_the_daemon(
     golden_parity_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,16 +305,13 @@ def test_read_file_edits_json_parity_between_direct_and_daemon(
 
     ``file-edits`` was one of the ``IN_PROCESS_READ_VIEWS``: it opened the
     archive through the Python API facade in this process, so a healthy daemon
-    paid for a local archive open on every invocation.  Both legs now run one
-    declared ``session.read`` evidence kind, and the rendered document must
-    agree field for field -- the evidence body is the whole payload here, so
-    there is no provenance to strip.
+    paid for a local archive open on every invocation. The declared
+    ``session.read`` evidence kind now runs through the daemon route, and the
+    evidence body is the whole payload here.
 
     Anti-vacuity: the ``file_edits`` row assertions below -- two empty bodies
-    would agree trivially -- plus the per-leg ``served-by`` assertions, which a
-    route that silently answered as the other one fails.  Forcing
-    ``daemon_disabled`` on the second leg reds ``served-by: daemon``; returning
-    a hard-coded ``daemon`` identity reds ``served-by: direct`` on the first.
+    would agree trivially -- plus the ``served-by`` assertion, which a route
+    that silently answered through a local executor fails.
     """
 
     archive_root = golden_parity_workspace["archive_root"]
@@ -362,7 +353,7 @@ def test_read_agent_policies_and_web_content_are_served_by_the_daemon(
             assert rows_key in daemon_payload, (view, sorted(daemon_payload))
 
 
-def test_facets_json_parity_between_direct_and_daemon(
+def test_facets_json_is_served_by_the_daemon(
     golden_parity_workspace: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

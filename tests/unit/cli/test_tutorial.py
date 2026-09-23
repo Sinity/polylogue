@@ -190,15 +190,14 @@ def test_stage_first_search_no_archive(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert "ingest" in message.lower() or "archive" in message.lower()
 
 
-def test_daemon_alive_rejects_a_directly_served_status_read() -> None:
-    """A direct in-process status read never counts as a running daemon.
+def test_daemon_alive_rejects_a_non_daemon_status_read() -> None:
+    """A non-daemon status result never counts as a running daemon.
 
-    The ``status`` operation declares ``DaemonFallback.DIRECT_READ``, so it
-    answers with no daemon running at all; the probe discriminates on the
-    result's authority mode instead.
+    The probe discriminates on the result's authority mode rather than merely
+    treating a non-raising operation call as proof that a daemon is alive.
 
     Anti-vacuity: reading liveness from "the dispatch did not raise" makes
-    the ``direct`` case red, since that probe succeeds.
+    the non-daemon case red, since that probe succeeds.
     """
     from unittest.mock import patch
 
@@ -212,7 +211,7 @@ def test_daemon_alive_rejects_a_directly_served_status_read() -> None:
 
         return _call
 
-    with patch("polylogue.cli.operation_kernel.configured_read_operation", new=_served("direct")):
+    with patch("polylogue.cli.operation_kernel.configured_read_operation", new=_served("local")):
         assert _daemon_alive() is False
     with patch("polylogue.cli.operation_kernel.configured_read_operation", new=_served("daemon")):
         assert _daemon_alive() is True

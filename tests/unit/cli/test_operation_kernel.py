@@ -36,17 +36,18 @@ def test_failed_outcome_is_typed_and_never_directly_retried() -> None:
         )
 
 
-def test_daemon_and_direct_reads_share_the_result_contract() -> None:
-    request = OperationRequest("cli.query", {"params": {"query": ("needle",)}})
-    daemon = OperationKernel(lambda _request: {"result": {"items": [1]}, "authority": {"mode": "daemon"}})
-    direct = OperationKernel(lambda _request: {"result": {"items": [1]}, "authority": {"mode": "direct"}})
+def test_reads_refuse_when_the_daemon_is_unavailable() -> None:
+    """A missing daemon is a typed refusal, never a local read fallback.
 
-    daemon_result = daemon.execute(request)
-    direct_result = direct.execute(request)
-
-    assert daemon_result.value == direct_result.value
-    assert daemon_result.authority["mode"] == "daemon"
-    assert direct_result.authority["mode"] == "direct"
+    Anti-vacuity: restoring a second in-process read executor would make this
+    request return rows (or an empty envelope) instead of ``daemon_required``.
+    """
+    with pytest.raises(OperationUnavailableError) as exc_info:
+        OperationKernel(lambda _request: None).execute(
+            OperationRequest("cli.query", {"params": {"query": ("needle",)}})
+        )
+    assert exc_info.value.code == "daemon_required"
+    assert exc_info.value.operation == "cli.query"
 
 
 def test_typed_daemon_error_does_not_fall_through_to_direct_execution() -> None:
