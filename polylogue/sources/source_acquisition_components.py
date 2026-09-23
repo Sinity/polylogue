@@ -52,21 +52,19 @@ StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
 
 
-def _bounded_payload_identity(payload_bytes: bytes) -> str:
-    """Return the identity used for a serialized acquisition unit.
+def _bounded_payload_identity_info(payload_bytes: bytes) -> tuple[str, str | None]:
+    """Return the split payload identity and any declared fallback reason.
 
     ZIP splitting has already bounded the payload in memory, but the identity
     contract is still the decoded structural value (with the declared byte
-    digest fallback above the ceiling).  Keeping this helper next to the
-    producer prevents split rows from stamping a byte hash that replay would
-    incorrectly treat as a structural identity.
+    digest fallback above the ceiling). Keeping the reason alongside the
+    digest prevents a byte fallback from masquerading as structural identity.
     """
-    identity, _skipped = bounded_payload_content_identity(
+    return bounded_payload_content_identity(
         io.BytesIO(payload_bytes),
         size=len(payload_bytes),
         byte_digest=hashlib.sha256(payload_bytes).hexdigest(),
     )
-    return identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +122,7 @@ class SerializedSplitPayload:
     source_index: int | None
     addressing_mode: MemberAddressingMode = MemberAddressingMode.ELEMENT_OF_CONTAINER
     content_identity: str | None = None
+    content_identity_skipped_reason: str | None = None
 
 
 @dataclass(slots=True)
@@ -140,12 +139,14 @@ class SplitPayloadBuffer:
 
     def add(self, provider: Provider, payload_bytes: bytes) -> tuple[SerializedSplitPayload, ...]:
         if self.did_split:
+            identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
             payload = SerializedSplitPayload(
                 provider=provider,
                 payload_bytes=payload_bytes,
                 source_index=self._next_source_index,
                 addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                content_identity=_bounded_payload_identity(payload_bytes),
+                content_identity=identity,
+                content_identity_skipped_reason=skipped_reason,
             )
             self._next_source_index += 1
             return (payload,)
@@ -155,19 +156,23 @@ class SplitPayloadBuffer:
             return ()
 
         self.did_split = True
-        emitted = tuple(
-            SerializedSplitPayload(
-                provider=pending_provider,
-                payload_bytes=pending_payload_bytes,
-                source_index=index,
-                addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                content_identity=_bounded_payload_identity(pending_payload_bytes),
+        emitted_items: list[SerializedSplitPayload] = []
+        for index, (pending_provider, pending_payload_bytes) in enumerate(
+            self._pending,
+            start=self._next_source_index,
+        ):
+            identity, skipped_reason = _bounded_payload_identity_info(pending_payload_bytes)
+            emitted_items.append(
+                SerializedSplitPayload(
+                    provider=pending_provider,
+                    payload_bytes=pending_payload_bytes,
+                    source_index=index,
+                    addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+                    content_identity=identity,
+                    content_identity_skipped_reason=skipped_reason,
+                )
             )
-            for index, (pending_provider, pending_payload_bytes) in enumerate(
-                self._pending,
-                start=self._next_source_index,
-            )
-        )
+        emitted = tuple(emitted_items)
         self._next_source_index += len(emitted)
         self._pending.clear()
         return emitted
@@ -348,6 +353,10 @@ def make_split_entry_raw_data(
     blob_hash, blob_size = blob_store.write_from_bytes(split_payload.payload_bytes)
     from polylogue.storage.blob_publication import publication_receipt_id
 
+    identity = split_payload.content_identity
+    skipped_reason = split_payload.content_identity_skipped_reason
+    if identity is None:
+        identity, skipped_reason = _bounded_payload_identity_info(split_payload.payload_bytes)
     return raw_data_record(
         source_path=source_path,
         file_mtime=file_mtime,
@@ -357,7 +366,8 @@ def make_split_entry_raw_data(
         source_index=split_payload.source_index,
         blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         addressing_mode=split_payload.addressing_mode,
-        content_identity=split_payload.content_identity or _bounded_payload_identity(split_payload.payload_bytes),
+        content_identity=identity,
+        content_identity_skipped_reason=skipped_reason,
     )
 
 
@@ -689,12 +699,14 @@ def replay_zip_entry_acquisition_payloads(
     if entry_provider_hint in GROUP_PROVIDERS:
         with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
             payload_bytes = handle.read()
+            identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
             yield SerializedSplitPayload(
                 provider=entry_provider_hint,
                 payload_bytes=payload_bytes,
                 source_index=None,
                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-                content_identity=_bounded_payload_identity(payload_bytes),
+                content_identity=identity,
+                content_identity_skipped_reason=skipped_reason,
             )
         return
 
@@ -710,12 +722,14 @@ def replay_zip_entry_acquisition_payloads(
     # session document, matching the ordinary acquisition fallback.
     with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
         payload_bytes = handle.read()
+        identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
         yield SerializedSplitPayload(
             provider=state.detected_provider,
             payload_bytes=payload_bytes,
             source_index=None,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-            content_identity=_bounded_payload_identity(payload_bytes),
+            content_identity=identity,
+            content_identity_skipped_reason=skipped_reason,
         )
 
 

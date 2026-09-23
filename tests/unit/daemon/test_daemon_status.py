@@ -3409,6 +3409,30 @@ def test_pinned_only_refutations_still_reach_the_composed_verdict() -> None:
         assert operation_payload["ok"] is False
 
 
+def test_operation_status_does_not_treat_string_halted_units_as_a_unit() -> None:
+    """Malformed scalar diagnostics cannot fabricate a halted daemon unit.
+
+    Anti-vacuity: passing the raw ``str`` through as a ``Sequence`` makes the
+    shared verdict see a non-empty halted collection and incorrectly publish
+    ``ok: false`` for a runtime payload whose only malformed field is
+    ``halted_units="none"``.
+    """
+    from polylogue.operations.daemon_status import produce_operation_status
+
+    daemon_payload = _daemon_payload_for_verdict_variant("clean")
+    daemon_payload["halted_units"] = "none"
+    pinned = _clean_pinned_status_payload()
+
+    with patch("polylogue.operations.daemon_status.produce_direct_status", return_value=pinned):
+        operation_payload = produce_operation_status(
+            archive=cast(Any, _PinnedArchiveStub()),
+            now_ms=1_700_000_000_000,
+            runtime_status=daemon_payload,
+        )
+
+    assert operation_payload["ok"] is True
+
+
 # ---------------------------------------------------------------------------
 # One producer for the quick-check fact (polylogue-20d.17.2)
 # ---------------------------------------------------------------------------

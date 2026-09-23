@@ -388,6 +388,15 @@ def produce_operation_status(
     # by the same function, over the union of both surfaces' evidence.
     runtime_halted = runtime_status.get("halted_units")
     runtime_snapshot = runtime_status.get("status_snapshot")
+    # ``halted_units`` is a JSON array in the daemon contract. ``str`` and
+    # ``bytes`` are Sequences too, but accepting either here would turn a
+    # malformed diagnostic value such as ``"none"`` into a fabricated halted
+    # unit and publish a false negative verdict.
+    observed_halted = (
+        runtime_halted
+        if isinstance(runtime_halted, Sequence) and not isinstance(runtime_halted, (str, bytes, bytearray))
+        else None
+    )
     result["ok"] = overall_status_ok(
         component_readiness=cast(Mapping[str, Mapping[str, object]], pinned["component_readiness"]),
         raw_failures=cast(Mapping[str, object], pinned),
@@ -395,7 +404,7 @@ def produce_operation_status(
         tier_count_unavailable=tier_count_unavailable(
             cast(Mapping[str, Mapping[str, object]], pinned["archive_tiers"])
         ),
-        halted_units=runtime_halted if isinstance(runtime_halted, Sequence) else None,
+        halted_units=observed_halted,
         status_snapshot=runtime_snapshot if isinstance(runtime_snapshot, Mapping) else None,
     ) and bool(runtime_status.get("daemon_liveness"))
     result["status_observations"] = {

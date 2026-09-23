@@ -10,28 +10,20 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from time import perf_counter
+from typing import TYPE_CHECKING
 
 import pytest
 
-from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.daemon_operations import DaemonOperationStack
-from tests.infra.integration_profile import build_integration_archive, default_integration_selection
-from tests.infra.pilot_resources import build_pilot_provider_packages
-from tests.infra.pilot_scenarios import PilotScenario, pilot_scenarios, project_representation
-from tests.infra.source_builders import ProviderSourcePackage
-from tests.infra.sqlite_work_counter import sqlite_work_counter
-from tests.infra.workload_artifacts import (
-    SeededArchiveArtifact,
-    SeededArchiveClone,
-    SeededArchiveQueryLease,
-    clone_seeded_archive,
-    current_seeded_archive_reachability,
-    default_cache_root,
-    seeded_archive_key,
-)
+from tests.infra.pilot_scenarios import pilot_scenarios
 
-pytest_plugins = ("tests.infra.corpus_fixtures", "tests.infra.pilot_resources")
+if TYPE_CHECKING:
+    from polylogue.sources.parsers.base import ParsedSession
+    from tests.infra.daemon_operations import DaemonOperationStack
+    from tests.infra.pilot_scenarios import PilotScenario
+    from tests.infra.source_builders import ProviderSourcePackage
+    from tests.infra.workload_artifacts import SeededArchiveArtifact, SeededArchiveClone, SeededArchiveQueryLease
+
+pytest_plugins = ("tests.infra.pilot_resources",)
 
 
 def _provider_native_ids(package: ProviderSourcePackage) -> tuple[str, ...]:
@@ -74,6 +66,13 @@ def test_pilot_reuses_the_declared_shared_artifact_instead_of_rebuilding_one(
     published artifact, while the GC reachability entry protecting that
     recipe names a key nothing builds.
     """
+    from tests.infra.integration_profile import build_integration_archive, default_integration_selection
+    from tests.infra.workload_artifacts import (
+        current_seeded_archive_reachability,
+        default_cache_root,
+        seeded_archive_key,
+    )
+
     key = seeded_archive_key(default_integration_selection().corpus_specs())
     declared = {(entry.kind, entry.name): entry.key.value for entry in current_seeded_archive_reachability().entries}
     assert declared[("default", "integration")] == key.value
@@ -96,6 +95,8 @@ def test_pilot_repeated_provider_build_reports_setup_and_byte_cost(tmp_path: Pat
     above covers the separate cache/build path.  The receipt is diagnostic,
     while equal identities and byte counts make the comparison deterministic.
     """
+    from tests.infra.pilot_resources import build_pilot_provider_packages
+
     measurements: list[tuple[float, int, tuple[str, ...]]] = []
     for attempt in range(2):
         root = tmp_path / f"build-{attempt}"
@@ -124,6 +125,9 @@ def test_parser_resource_acquisition_opens_no_archive_tier(tmp_path: Path) -> No
     This measures one complete cold acquisition instead, so a generator that
     starts bootstrapping archive tiers to produce wire bytes is caught.
     """
+    from tests.infra.pilot_resources import build_pilot_provider_packages
+    from tests.infra.sqlite_work_counter import sqlite_work_counter
+
     with sqlite_work_counter() as counter:
         packages = build_pilot_provider_packages(tmp_path)
         from polylogue.sources import iter_source_sessions
@@ -151,6 +155,8 @@ def test_query_resource_reuses_one_authenticated_immutable_artifact(
     pilot_query_archive: SeededArchiveQueryLease,
 ) -> None:
     """Read-only consumers share the artifact and cannot write through it."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
     with ArchiveStore.open_existing(pilot_query_archive.root, read_only=True) as archive:
         sessions = archive.list_summaries(limit=20)
         tags = archive.list_user_tags()
@@ -167,6 +173,9 @@ def test_mutation_resource_isolated_from_artifact_and_siblings(
     tmp_path: Path,
 ) -> None:
     """A committed mutation remains in its clone, not the immutable sibling."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.workload_artifacts import clone_seeded_archive
+
     session_id = next(fact.expected_session_id for fact in pilot_artifact.facts if fact.expected_session_id)
     sibling = clone_seeded_archive(pilot_artifact, tmp_path / "pilot-sibling-archive")
     with ArchiveStore(pilot_writable_archive.root) as archive:
@@ -223,12 +232,16 @@ def test_pilot_facts_keep_provider_and_multiplicity_independent(
 def test_compact_pilot_scenarios_keep_independent_facts_across_wire_shapes(case: PilotScenario) -> None:
     """Wire-shape variation changes representation, never the authored truth."""
 
+    from tests.infra.pilot_scenarios import project_representation
+
     observed = tuple(project_representation(case, representation) for representation in case.representations)
     assert observed == (case.expected,) * len(case.representations)
 
 
 def test_multiplicity_scenario_is_not_a_set_sum() -> None:
     """The independent expectation catches the classic duplicate-collapse bug."""
+
+    from tests.infra.pilot_scenarios import pilot_scenarios, project_representation
 
     case = next(case for case in pilot_scenarios() if case.name == "multiplicity-sensitive-sum")
     collapsed = project_representation(case, {"amounts": sorted({2, 3})})
@@ -237,6 +250,8 @@ def test_multiplicity_scenario_is_not_a_set_sum() -> None:
 
 def test_payload_tail_and_revision_order_are_independent_facts() -> None:
     """Tail bytes and revision selection remain observable beyond row counts."""
+
+    from tests.infra.pilot_scenarios import pilot_scenarios, project_representation
 
     cases = {case.name: case for case in pilot_scenarios()}
     tail = cases["payload-tail-preservation"]

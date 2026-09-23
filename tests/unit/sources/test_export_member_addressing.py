@@ -276,6 +276,31 @@ def test_split_elements_persist_structural_identity_for_replay(tmp_path: Path) -
     ]
 
 
+def test_split_elements_preserve_identity_ceiling_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A byte-fallback identity remains typed through split acquisition.
+
+    Anti-vacuity: dropping this reason makes a byte digest look like a
+    structural identity and replay can incorrectly apply representation-
+    independent matching to an oversized member.
+    """
+    import polylogue.sources.source_acquisition_components as acquisition
+
+    monkeypatch.setattr(
+        acquisition,
+        "bounded_payload_content_identity",
+        lambda handle, *, size, byte_digest: (byte_digest, "payload_exceeds_structural_identity_ceiling"),
+    )
+
+    payload = b'{"id":"oversized"}'
+    buffer = acquisition.SplitPayloadBuffer()
+    assert buffer.add(Provider.CHATGPT, payload) == ()
+    records = buffer.add(Provider.CHATGPT, b'{"id":"other"}')
+    assert [record.content_identity_skipped_reason for record in records] == [
+        "payload_exceeds_structural_identity_ceiling",
+        "payload_exceeds_structural_identity_ceiling",
+    ]
+
+
 def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
     """A row recorded as whole-member reads the member, not an element.
 

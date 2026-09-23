@@ -974,10 +974,24 @@ def _archive_embedding_status_payload(
         conn = _pinned_connection
     if owns_connection:
         conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
+    # The CLI status fast path may open an active index whose filename is not
+    # the conventional ``index.db`` (for example, an active generation).
+    # ``open_readonly_connection`` only auto-attaches sibling tiers for the
+    # conventional name, so make the two status siblings explicit here.  A
+    # missing tier remains a measured absence; an existing attachment is
+    # preserved so callers may supply a pinned snapshot.
+    aliases = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall()}
+    if owns_connection:
+        for schema, filename in (("embeddings", "embeddings.db"), ("ops_tier", "ops.db")):
+            sibling = root / filename
+            if schema not in aliases and sibling.exists():
+                conn.execute(f"ATTACH DATABASE ? AS {schema}", (str(sibling),))
+                aliases.add(schema)
+    latest_catchup_run: EmbeddingCatchupRunPayload | None = None
+    latest_material_catchup_run: EmbeddingCatchupRunPayload | None = None
     try:
         if not _table_exists(conn, "sessions"):
             return None
-        embeddings_db = root / "embeddings.db"
         if _pinned_connection is not None:
             # Operation snapshots attach only tiers that were available at
             # pin time.  The embeddings tier is optional, so an absent
@@ -993,8 +1007,7 @@ def _archive_embedding_status_payload(
             failure_table = _attached_table_name(conn, _embeddings_schema, "embedding_failures")
             refs_table = _attached_table_name(conn, _embeddings_schema, "message_embedding_refs")
             vectors_table = _attached_table_name(conn, _embeddings_schema, "message_embeddings")
-        elif embeddings_db.exists():
-            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        elif "embeddings" in aliases:
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
             meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
             failure_table = _attached_table_name(conn, "embeddings", "embedding_failures")

@@ -1241,11 +1241,19 @@ def raw_membership_retired_full_revision_siblings(
             SELECT m.raw_id
             FROM raw_session_memberships AS m
             JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
+            JOIN raw_sessions AS r ON r.raw_id = m.raw_id
             WHERE m.logical_source_key = ?
-              AND c.revision_authority = ?
+              AND (
+                  c.revision_authority = ?
+                  OR r.revision_authority = ?
+              )
             ORDER BY m.raw_id
             """,
-            (logical_source_key, RawRevisionAuthority.QUARANTINED.value),
+            (
+                logical_source_key,
+                RawRevisionAuthority.QUARANTINED.value,
+                RawRevisionAuthority.QUARANTINED.value,
+            ),
         )
         .fetchall()
     )

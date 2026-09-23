@@ -417,8 +417,38 @@ class DaemonWriteCoordinator:
             try:
                 on_admit()
             except BaseException:
+                # Admission is itself an owned transition.  Even when the
+                # admission hook refuses the operation before its body starts,
+                # publish the matching terminal event so observers never see
+                # an acquired request with no settlement evidence.
+                hold_seconds = time.perf_counter() - acquired_at
                 self._active_actor = None
                 self._lock.release()
+                self._emit(
+                    DaemonWriteEvent(
+                        phase="released",
+                        actor=request.actor,
+                        sequence=request.sequence,
+                        queue_depth=len(self._queued),
+                        wait_seconds=wait_seconds,
+                        hold_seconds=hold_seconds,
+                        outcome="error",
+                        hold_budget_s=write_hold_budget_s(request.actor),
+                        hold_over_budget=False,
+                    )
+                )
+                emit(
+                    "daemon.writer.released",
+                    level=INFO,
+                    outcome="error",
+                    reason="admission_hook_failed",
+                    actor=request.actor,
+                    status="error",
+                    wait_ms=round(wait_seconds * 1000, 3),
+                    hold_ms=round(hold_seconds * 1000, 3),
+                    budget_ms=round(write_hold_budget_s(request.actor) * 1000, 3),
+                    queued=len(self._queued),
+                )
                 raise
         owner = asyncio.current_task()
         if owner is None:  # pragma: no cover - asyncio always owns created tasks
