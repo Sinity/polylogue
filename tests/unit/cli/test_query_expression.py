@@ -70,6 +70,7 @@ from polylogue.archive.query.predicate import (
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.runtime import MessageRecord
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.identity import archive_block_id, archive_message_id
 from tests.infra.live_ingest import write_index_session
 from tests.infra.query_field_laws import (
@@ -2556,6 +2557,7 @@ class TestBooleanQueryExpression:
     def test_cli_json_reports_terminal_pipeline_stages(
         self,
         workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from polylogue.cli import cli
         from tests.infra.storage_records import SessionBuilder
@@ -2571,16 +2573,17 @@ class TestBooleanQueryExpression:
             .save()
         )
 
-        result = CliRunner().invoke(
-            cli,
-            [
-                "--plain",
-                "--format",
-                "json",
-                "find",
-                "sessions where repo:polylogue | messages where role:assistant | limit 1 | offset 1",
-            ],
-        )
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "--format",
+                    "json",
+                    "find",
+                    "sessions where repo:polylogue | messages where role:assistant | limit 1 | offset 1",
+                ],
+            )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -2690,6 +2693,7 @@ class TestBooleanQueryExpression:
     def test_cli_json_reports_terminal_aggregate_counts(
         self,
         workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         from polylogue.cli import cli
         from tests.infra.storage_records import SessionBuilder
@@ -2705,16 +2709,17 @@ class TestBooleanQueryExpression:
             .save()
         )
 
-        result = CliRunner().invoke(
-            cli,
-            [
-                "--plain",
-                "--format",
-                "json",
-                "find",
-                "sessions where repo:polylogue | messages where text:aggregate | group by role | count",
-            ],
-        )
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "--format",
+                    "json",
+                    "find",
+                    "sessions where repo:polylogue | messages where text:aggregate | group by role | count",
+                ],
+            )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -3363,7 +3368,9 @@ class TestBooleanQueryExpression:
             ("polylogue/cli/archive_query.py", 1),
         ]
 
-    def test_cli_json_reports_file_unit_rows(self, workspace_env: dict[str, Path]) -> None:
+    def test_cli_json_reports_file_unit_rows(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from polylogue.cli import cli
         from tests.infra.storage_records import SessionBuilder
 
@@ -3389,23 +3396,26 @@ class TestBooleanQueryExpression:
             .save()
         )
 
-        result = CliRunner().invoke(
-            cli,
-            [
-                "--plain",
-                "--format",
-                "json",
-                "find",
-                "files where action:file_edit AND path:archive/query",
-            ],
-        )
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "--format",
+                    "json",
+                    "find",
+                    "files where action:file_edit AND path:archive/query",
+                ],
+            )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["unit"] == "file"
         assert payload["items"][0]["path"] == "polylogue/archive/query/expression.py"
 
-    def test_cli_json_attaches_evidence_units_to_session_results(self, workspace_env: dict[str, Path]) -> None:
+    def test_cli_json_attaches_evidence_units_to_session_results(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from polylogue.cli import cli
         from tests.infra.storage_records import SessionBuilder
 
@@ -3433,17 +3443,18 @@ class TestBooleanQueryExpression:
             .save()
         )
 
-        result = CliRunner().invoke(
-            cli,
-            [
-                "--plain",
-                "--format",
-                "json",
-                "find",
-                "sessions where title:attached with messages(message_id,role), "
-                "actions(tool_name,semantic_type,is_error), files(path)",
-            ],
-        )
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "--format",
+                    "json",
+                    "find",
+                    "sessions where title:attached with messages(message_id,role), "
+                    "actions(tool_name,semantic_type,is_error), files(path)",
+                ],
+            )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
@@ -3454,7 +3465,7 @@ class TestBooleanQueryExpression:
         assert attached["file"][0] == {"path": "polylogue/archive/query/expression.py"}
 
     def test_query_action_read_accepts_shell_quoted_terminal_action_source(
-        self, workspace_env: dict[str, Path]
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from polylogue.cli import cli
         from tests.infra.storage_records import SessionBuilder
@@ -3481,20 +3492,21 @@ class TestBooleanQueryExpression:
             .save()
         )
 
-        result = CliRunner().invoke(
-            cli,
-            [
-                "--plain",
-                "find",
-                "actions where action:file_edit AND path:query_verbs",
-                "then",
-                "read",
-                "--view",
-                "messages",
-                "--format",
-                "json",
-            ],
-        )
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "--plain",
+                    "find",
+                    "actions where action:file_edit AND path:query_verbs",
+                    "then",
+                    "read",
+                    "--view",
+                    "messages",
+                    "--format",
+                    "json",
+                ],
+            )
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)

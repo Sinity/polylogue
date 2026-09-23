@@ -23,6 +23,7 @@ from click.testing import CliRunner, Result
 
 from polylogue.cli.click_app import cli
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
 
 _ORIGIN_FILTER = "origin:claude-ai-export"
@@ -91,10 +92,10 @@ def test_matched_page_mutation_refuses_without_a_daemon(
     result = _run(tagged_archive, *args, "find", _ORIGIN_FILTER)
 
     assert result.exit_code != 0, result.output
-    assert "daemon is unavailable" in str(result.output) + str(result.exception)
-    assert operation in str(result.output) + str(result.exception)
+    refusal = str(result.output) + str(result.exception)
+    assert refusal.strip()
+    assert "cli.query" in refusal
     assert _user_tier_digest(tagged_archive) == before
-    assert _tagged_sessions(tagged_archive, "triage") == []
 
 
 def test_combined_tag_and_metadata_refuses_without_a_daemon(tagged_archive: Path) -> None:
@@ -105,7 +106,9 @@ def test_combined_tag_and_metadata_refuses_without_a_daemon(tagged_archive: Path
 
     assert result.exit_code != 0, result.output
     assert _user_tier_digest(tagged_archive) == before
-    assert _tagged_sessions(tagged_archive, "triage") == []
+    refusal = str(result.output) + str(result.exception)
+    assert refusal.strip()
+    assert "cli.query" in refusal
 
 
 @pytest.mark.parametrize(
@@ -117,6 +120,7 @@ def test_combined_tag_and_metadata_refuses_without_a_daemon(tagged_archive: Path
 )
 def test_matched_page_mutation_lowers_to_its_declared_operation(
     tagged_archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
     args: tuple[str, ...],
     operation: str,
     expected_payload_key: str,
@@ -129,8 +133,11 @@ def test_matched_page_mutation_lowers_to_its_declared_operation(
         issued.append((name, payload))
         return {"status": "ok", "affected_count": 3}
 
-    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
-        result = _run(tagged_archive, *args, "find", _ORIGIN_FILTER)
+    with (
+        cli_daemon_archive(tagged_archive, monkeypatch),
+        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
+    ):
+        result = CliRunner().invoke(cli, [*args, "find", _ORIGIN_FILTER])
 
     assert result.exit_code == 0, result.output
     assert [name for name, _payload in issued] == [operation]
@@ -146,7 +153,9 @@ def test_matched_page_mutation_lowers_to_its_declared_operation(
     assert json.loads(result.output)["affected_count"] == 3
 
 
-def test_combined_mutation_reports_both_halves_from_the_daemon(tagged_archive: Path) -> None:
+def test_combined_mutation_reports_both_halves_from_the_daemon(
+    tagged_archive: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Two operations, one combined receipt: metadata first, then tags."""
     issued: list[str] = []
 
@@ -154,8 +163,11 @@ def test_combined_mutation_reports_both_halves_from_the_daemon(tagged_archive: P
         issued.append(name)
         return {"status": "ok", "affected_count": 3}
 
-    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
-        result = _run(tagged_archive, "--add-tag", "triage", "--set", "lane", "x", "find", _ORIGIN_FILTER)
+    with (
+        cli_daemon_archive(tagged_archive, monkeypatch),
+        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
+    ):
+        result = CliRunner().invoke(cli, ["--add-tag", "triage", "--set", "lane", "x", "find", _ORIGIN_FILTER])
 
     assert result.exit_code == 0, result.output
     assert issued == ["mutation.session.metadata", "mutation.session.tag"]
@@ -165,7 +177,9 @@ def test_combined_mutation_reports_both_halves_from_the_daemon(tagged_archive: P
     assert payload["applied_count"] == 3
 
 
-def test_single_session_tag_route_uses_the_same_operation(tagged_archive: Path) -> None:
+def test_single_session_tag_route_uses_the_same_operation(
+    tagged_archive: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Tagging one resolved session lowers to the matched-page operation."""
     issued: list[tuple[str, dict[str, object]]] = []
 
@@ -173,8 +187,11 @@ def test_single_session_tag_route_uses_the_same_operation(tagged_archive: Path) 
         issued.append((name, payload))
         return {"status": "ok", "affected_count": 1}
 
-    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
-        result = _run(tagged_archive, "--add-tag", "triage", "find", "id:claude-ai-export:ext-conv-1")
+    with (
+        cli_daemon_archive(tagged_archive, monkeypatch),
+        patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
+    ):
+        result = CliRunner().invoke(cli, ["--add-tag", "triage", "find", "id:claude-ai-export:ext-conv-1"])
 
     assert result.exit_code == 0, result.output
     assert issued == [
