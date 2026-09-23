@@ -1,4 +1,16 @@
-"""Command-shape usage insight and shell-command normalization."""
+"""Command-shape usage insight and shell-command normalization.
+
+Design decision (``polylogue-uty2s``): this family is a *simple library
+function*, not a second query language.  The concrete user question is
+"which executable/subcommand shapes were actually run in this archive
+window?" and the real consumer is
+``ArchiveReadInsights.list_command_shape_usage``.  ``normalize_command_shapes``
+keeps the evidence query small by handling shell syntax (pipelines,
+``env``/``sh -c`` wrappers, and path-like arguments) before aggregation;
+those transformations cannot be represented by a SQL/DSL ``GROUP BY`` over
+``actions.tool_command``.  The aggregation remains read-through and has no
+materializer, worker, or freshness lifecycle of its own.
+"""
 
 from __future__ import annotations
 
