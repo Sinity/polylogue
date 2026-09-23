@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 from polylogue.daemon.derivation import DerivationFrame
@@ -19,6 +19,8 @@ __all__ = [
     "make_embedding_derivation",
     "make_embedding_frame",
 ]
+
+EmbeddingProgressCallback = Callable[[Mapping[str, object]], None]
 
 
 def select_embedding_session_window(
@@ -106,6 +108,7 @@ def make_embedding_derivation(
     dimension: int,
     reserve: EmbeddingWriteAdmission,
     quiet: Callable[[], bool] | None = None,
+    progress_callback: EmbeddingProgressCallback | None = None,
 ) -> EmbeddingDerivationAdapter | None:
     """Bind the configured provider and archive to the storage-owned adapter."""
     from polylogue.storage.search_providers import create_vector_provider
@@ -119,10 +122,49 @@ def make_embedding_derivation(
     )
     if not isinstance(provider, EmbeddingTextProvider):
         return None
+
+    # The common derivation kernel asks the adapter's quiet policy before each
+    # key.  Use that observation point to publish an intermediate, bounded
+    # progress frame while the pass is still running.  This deliberately
+    # reports intent (before provider work) rather than claiming publication;
+    # the terminal report remains the authority for committed output.
+    def observe_progress(frame: object, key: str) -> bool:
+        del frame
+        is_quiet = bool(quiet and quiet())
+        if is_quiet:
+            return True
+        if progress_callback is not None:
+            message_id = key.removeprefix("message:").removeprefix("orphan:")
+            session_id: str | None = None
+            try:
+                index_path = resolve_active_index_path(archive_root).resolve()
+                with open_readonly_connection(
+                    index_path,
+                    timeout_class="background-read",
+                    validate_schema=False,
+                ) as conn:
+                    row = conn.execute(
+                        "SELECT session_id FROM messages WHERE message_id = ?",
+                        (message_id,),
+                    ).fetchone()
+                session_id = None if row is None else str(row[0])
+            except Exception:
+                # Progress is observational; inability to resolve attribution
+                # must never fail or alter the derivation itself.
+                session_id = None
+            progress_callback(
+                {
+                    "state": "started",
+                    "message_id": message_id,
+                    "session_id": session_id,
+                }
+            )
+        return False
+
     return EmbeddingDerivationAdapter(
         index_db_path,
         provider,
         archive_root=archive_root,
         reserve=reserve,
-        quiet=(lambda _frame, _key: quiet()) if quiet is not None else None,
+        quiet=observe_progress if (quiet is not None or progress_callback is not None) else None,
     )

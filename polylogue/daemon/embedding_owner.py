@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -127,6 +127,7 @@ def compose_embedding_convergence(
     max_cost_usd: float | None = None,
     stop_after_seconds: int | None = None,
     max_errors: int | None = None,
+    progress_callback: Callable[[Mapping[str, object]], None] | None = None,
 ) -> ComposedEmbeddingConvergence:
     """Compose the common-kernel embedding owner once for a daemon process.
 
@@ -194,6 +195,23 @@ def compose_embedding_convergence(
                 )
         return admission(actor, function)
 
+    progress_count = 0
+
+    def observe_progress(event: Mapping[str, object]) -> None:
+        """Forward intermediate work without making it an output receipt."""
+
+        nonlocal progress_count
+        progress_count += 1
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    **dict(event),
+                    "sequence": progress_count,
+                    "computed": progress_count,
+                    "cost_usd": progress_count * estimated_cost_per_message,
+                }
+            )
+
     adapter = make_embedding_derivation(
         index_db_path,
         voyage_api_key=str(voyage_key),
@@ -202,6 +220,7 @@ def compose_embedding_convergence(
         archive_root=archive_root,
         reserve=reserve,
         quiet=quiet,
+        progress_callback=observe_progress,
     )
     if adapter is None:
 
@@ -216,8 +235,9 @@ def compose_embedding_convergence(
     )
 
     async def converge(scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
-        nonlocal active_receipt
+        nonlocal active_receipt, progress_count
         async with pass_lock:
+            progress_count = 0
             compute_budget = EMBEDDING_PASS_MAX_MESSAGES
             if max_messages is not None:
                 compute_budget = min(compute_budget, max_messages)
@@ -360,6 +380,7 @@ async def execute_embedding_backfill_operation(
             min_messages=min_messages,
         )
 
+    progress_sink = getattr(runtime, "emit_progress", None)
     owner = compose_embedding_convergence(
         root / "index.db",
         compute_adapter=daemon_compute_adapter(),
@@ -368,6 +389,7 @@ async def execute_embedding_backfill_operation(
         max_cost_usd=max_cost_usd,
         stop_after_seconds=stop_after_seconds,
         max_errors=max_errors,
+        progress_callback=progress_sink if callable(progress_sink) else None,
     )
     result = await owner(scope)
     from polylogue.operations.embedding_derivation import estimated_embedding_message_cost
