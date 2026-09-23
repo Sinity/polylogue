@@ -56,7 +56,40 @@ def _env(db_path: Path) -> Any:
     return env
 
 
-def _seed_archive_without_embedding_ledgers(db_path: Path, *, vec_table: bool = False) -> None:
+def _stamp_tier(path: Path, tier_name: str) -> None:
+    """Stamp a seeded tier file with the runtime's expected ``user_version``.
+
+    A derived tier whose version is 0 is schema skew, not an empty archive:
+    the reader refuses with ``SchemaSkewError`` before looking at any row.
+    ``_run_status`` already does this for the index; a seeded ops or
+    embeddings tier needs the same or it is refused rather than read.
+    """
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    version = ARCHIVE_VERSION_BY_TIER[ArchiveTier(tier_name)]
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"PRAGMA user_version = {version}")
+
+
+def _index_path(db_path: Path) -> Path:
+    """Resolve the tier the production fast path reads, as ``_run_status`` does."""
+    return db_path if db_path.name == "index.db" else db_path.with_name("index.db")
+
+
+def _seed_archive_without_embedding_ledgers(
+    db_path: Path, *, vec_table: bool = False, at_index_tier: bool = True
+) -> None:
+    # Seed the INDEX tier, which is where the production fast path looks:
+    # ``_locate_archive`` resolves ``ArchiveLocation.resolve(parent)`` and
+    # requires a ``sessions`` table in ``active_index_path``. These helpers
+    # predate the split-tier layout and wrote to ``archive.db``, so every
+    # assertion here read an archive production considered empty -- the status
+    # came back ``empty``/0 rather than the seeded 2 sessions. Resolve the same
+    # way ``_run_status`` does so the fixture and the route agree on one file.
+    # ``at_index_tier=False`` seeds the given file verbatim, for the one test
+    # that needs a non-index anchor file to exist alongside a real index.db.
+    db_path = _index_path(db_path) if at_index_tier else db_path
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
         conn.execute(
@@ -1165,7 +1198,7 @@ def test_status_json_treats_skipped_archive_catchup_as_material(tmp_path: Path) 
 
 def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
     db_anchor = tmp_path / "custom.sqlite"
-    _seed_archive_without_embedding_ledgers(db_anchor)
+    _seed_archive_without_embedding_ledgers(db_anchor, at_index_tier=False)
     _seed_archive_file_set_from_archive_tiers(tmp_path / "index.db")
 
     payload = _run_status(
@@ -1288,11 +1321,12 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
 
-    # Seed the pre-split monolith table shape directly: the split archive's
-    # only writer is the ops-tier upsert_embedding_catchup_run; this exercises
-    # the read-only legacy fallback in status_payload.py.
+    # ``embedding_catchup_runs`` lives in the OPS tier, whose sole writer is
+    # ops_write.upsert_embedding_catchup_run; the reader takes it from the
+    # attached ops schema (status_payload.py:1416-1443). Seed the production
+    # tier rather than the pre-split monolith shape.
     run_id = "legacy-run-1"
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(_index_path(db_path).with_name("ops.db")) as conn:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
@@ -1330,6 +1364,7 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
             (run_id,),
         )
         conn.commit()
+    _stamp_tier(_index_path(db_path).with_name("ops.db"), "ops")
 
     payload = _run_status(db_path)
 
@@ -1379,7 +1414,11 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
 def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
-    with sqlite3.connect(db_path) as conn:
+    # ``embedding_status``/``message_embeddings`` are read through the ATTACHED
+    # embeddings schema (status_payload.py:991-998), never from ``main``, so
+    # they belong in the embeddings tier file. Seeded into the index they were
+    # invisible and the status read back ``none`` instead of ``complete``.
+    with sqlite3.connect(_index_path(db_path).with_name("embeddings.db")) as conn:
         conn.execute(
             """
             CREATE TABLE embedding_status (
@@ -1397,6 +1436,7 @@ def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
         )
         conn.executemany("INSERT INTO message_embeddings (message_id) VALUES (?)", [("msg-1",), ("msg-2",)])
         conn.commit()
+    _stamp_tier(_index_path(db_path).with_name("embeddings.db"), "embeddings")
 
     payload = _run_status(db_path, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 

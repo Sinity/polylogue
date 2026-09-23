@@ -46,10 +46,21 @@ from polylogue.storage.sqlite.connection_profile import open_connection, open_re
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
 
-MAX_ANNOTATION_IMPORT_BYTES = 1_048_576
-MAX_ANNOTATION_IMPORT_ROWS = 10_000
-MAX_ANNOTATION_IMPORT_LINE_BYTES = 65_536
-MAX_ANNOTATION_IMPORT_REF_BYTES = 4_096
+# Re-exported from the leaf owner so existing importers keep working; see
+# polylogue/core/annotation_limits.py for why they live outside this package.
+from polylogue.core.annotation_limits import (
+    MAX_ANNOTATION_IMPORT_BYTES,
+    MAX_ANNOTATION_IMPORT_LINE_BYTES,
+    MAX_ANNOTATION_IMPORT_REF_BYTES,
+    MAX_ANNOTATION_IMPORT_ROWS,
+)
+
+__all__ = [
+    "MAX_ANNOTATION_IMPORT_BYTES",
+    "MAX_ANNOTATION_IMPORT_LINE_BYTES",
+    "MAX_ANNOTATION_IMPORT_REF_BYTES",
+    "MAX_ANNOTATION_IMPORT_ROWS",
+]
 MAX_ANNOTATION_IMPORT_METADATA_BYTES = 65_536
 
 
