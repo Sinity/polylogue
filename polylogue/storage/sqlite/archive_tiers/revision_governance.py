@@ -115,11 +115,8 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
-    BYTE_AUTHORITY_CENSUS_DETAIL,
     LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
-    RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
-    WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -129,6 +126,7 @@ from polylogue.archive.revision_authority import (
     classify_historical_full_revision_streams,
     durable_authority_logical_keys,
     parser_census_is_complete,
+    revision_authority_for_census_detail,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -1233,26 +1231,21 @@ def raw_membership_retired_full_revision_siblings(
     still be told this identity has known, unresolved ambiguous
     evidence (polylogue-52l2) instead of being evaluated alone.
 
-    Matches every literal in ``RETIRED_FULL_REVISION_GOVERNANCE_DETAILS``
-    (polylogue-hm2f), not only the current
-    ``HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL`` marker: durable
-    ``raw_membership_census`` rows written before #3234 used a different,
-    now-legacy literal at the live-watcher call site, and durable-tier
-    detail strings are never silently rewritten in place.
+    Matches the typed quarantine authority. Legacy detail strings are
+    migrated into that code while retained as display evidence.
     """
-    detail_placeholders = ", ".join("?" for _ in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS)
-    where_clause = f"c.detail IN ({detail_placeholders})"
     rows = (
         store._ensure_source_conn()
         .execute(
-            f"""
+            """
             SELECT m.raw_id
             FROM raw_session_memberships AS m
             JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
-            WHERE m.logical_source_key = ? AND {where_clause}
+            WHERE m.logical_source_key = ?
+              AND c.revision_authority = ?
             ORDER BY m.raw_id
             """,
-            (logical_source_key, *RETIRED_FULL_REVISION_GOVERNANCE_DETAILS),
+            (logical_source_key, RawRevisionAuthority.QUARANTINED.value),
         )
         .fetchall()
     )
@@ -1274,11 +1267,10 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanc
     in this module, e.g. ``classify_untyped_full_revision_groups``): a
     real re-acquisition of the same document always keeps the same path.
     """
-    detail_placeholders = ", ".join("?" for _ in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS)
     row = (
         store._ensure_source_conn()
         .execute(
-            f"""
+            """
             SELECT 1
             FROM raw_sessions AS this
             WHERE this.logical_source_key = ? AND this.revision_kind = 'full'
@@ -1297,12 +1289,12 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanc
                       JOIN raw_membership_census AS c ON c.raw_id = other.raw_id
                       WHERE other.source_path = this.source_path
                         AND other.raw_id != this.raw_id
-                        AND c.detail IN ({detail_placeholders})
+                        AND c.revision_authority = ?
                   )
               )
             LIMIT 1
             """,
-            (logical_source_key, *RETIRED_FULL_REVISION_GOVERNANCE_DETAILS),
+            (logical_source_key, RawRevisionAuthority.QUARANTINED.value),
         )
         .fetchone()
     )
@@ -2173,6 +2165,7 @@ def replace_raw_membership_census(
     parser_fingerprint: str,
     censused_at_ms: int,
     detail: str = "",
+    revision_authority: RawRevisionAuthority | None = None,
     retire_full_revision_governance: bool = False,
     projections: Sequence[SessionRevisionProjection] | None = None,
     manage_transaction: bool = True,
@@ -2205,7 +2198,8 @@ def replace_raw_membership_census(
             ).fetchone()
             if dependent is not None:
                 raise ActiveByteRevisionChainError("an active byte-revision chain cannot move to membership governance")
-            if sessions and detail not in WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS:
+            census_authority = revision_authority or revision_authority_for_census_detail(detail)
+            if sessions and census_authority is not RawRevisionAuthority.QUARANTINED:
                 # A retirement that leaves membership rows behind is only observable
                 # through its ``raw_membership_census.detail`` marker: the retired raw
                 # loses its ``logical_source_key`` and goes ``quarantined``, so
@@ -2230,14 +2224,11 @@ def replace_raw_membership_census(
                 # A census with no surviving membership row (a non-session artifact or
                 # retained-state export) has no logical identity to be ambiguous
                 # about, so its detail stays free explanatory prose.
-                legacy_note = (
-                    " (that marker is read-compatibility only and may never be written)"
-                    if detail in LEGACY_FULL_REVISION_GOVERNANCE_DETAILS
-                    else ""
-                )
+                if detail in LEGACY_FULL_REVISION_GOVERNANCE_DETAILS:
+                    raise ValueError("legacy marker is read-compatibility only and may never be written")
                 raise ValueError(
-                    "full-revision retirement with membership rows requires a recognized governance marker; "
-                    f"got {detail!r}, expected one of {WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS!r}{legacy_note}"
+                    "full-revision retirement with membership rows requires a recognized governance marker "
+                    "with quarantined revision authority"
                 )
             conn.execute(
                 """
@@ -2283,16 +2274,25 @@ def replace_raw_membership_census(
         conn.execute(
             """
             INSERT INTO raw_membership_census (
-                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(raw_id) DO UPDATE SET
                 parser_fingerprint=excluded.parser_fingerprint,
                 status=excluded.status,
                 member_count=excluded.member_count,
                 censused_at_ms=excluded.censused_at_ms,
-                detail=excluded.detail
+                detail=excluded.detail,
+                revision_authority=excluded.revision_authority
             """,
-            (raw_id, parser_fingerprint, status, len(sessions or []), censused_at_ms, detail),
+            (
+                raw_id,
+                parser_fingerprint,
+                status,
+                len(sessions or []),
+                censused_at_ms,
+                detail,
+                (revision_authority or revision_authority_for_census_detail(detail)),
+            ),
         )
         record_current_parser_source_census(conn, raw_id, parser_sessions=sessions)
 
@@ -2357,7 +2357,7 @@ def record_current_parser_source_census(
         ).fetchone()
     membership_census = conn.execute(
         """
-        SELECT status, detail FROM raw_membership_census
+        SELECT status, revision_authority FROM raw_membership_census
         WHERE raw_id = ? AND parser_fingerprint = ?
         """,
         (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
@@ -2394,7 +2394,7 @@ def record_current_parser_source_census(
         int(raw[3]) < 0
         and membership_census is not None
         and str(membership_census[0]) == "failed"
-        and str(membership_census[1]) == BYTE_AUTHORITY_CENSUS_DETAIL
+        and str(membership_census[1]) == RawRevisionAuthority.BYTE_PROVEN.value
     )
     parser_confirmed_non_session = membership_census is not None and str(membership_census[0]) == "non_session"
     observed_keys = (

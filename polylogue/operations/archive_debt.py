@@ -15,7 +15,7 @@ from polylogue.archive.raw_materialization import (
     raw_jsonl_leading_objects,
     source_path_native_id_candidates,
 )
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, RawRevisionAuthority
+from polylogue.archive.revision_authority import RawRevisionAuthority
 from polylogue.core.enums import Origin
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
@@ -339,11 +339,11 @@ def _revision_quarantine_sql(conn: sqlite3.Connection) -> tuple[str, tuple[objec
            SELECT 1 FROM raw_membership_census AS byte_census
            WHERE byte_census.raw_id = r.raw_id
              AND byte_census.status = 'failed'
-             AND byte_census.detail = ?
+             AND byte_census.revision_authority = ?
          ))
     """
     if not _table_exists(conn, "raw_session_memberships"):
-        return f"({byte_quarantined})", (BYTE_AUTHORITY_CENSUS_DETAIL,)
+        return f"({byte_quarantined})", (RawRevisionAuthority.BYTE_PROVEN.value,)
     membership_quarantined = """
         EXISTS (
           SELECT 1
@@ -355,7 +355,7 @@ def _revision_quarantine_sql(conn: sqlite3.Connection) -> tuple[str, tuple[objec
             AND member.decision = 'ambiguous'
         )
     """
-    return f"({membership_quarantined} OR {byte_quarantined})", (BYTE_AUTHORITY_CENSUS_DETAIL,)
+    return f"({membership_quarantined} OR {byte_quarantined})", (RawRevisionAuthority.BYTE_PROVEN.value,)
 
 
 def _revision_quarantined(row: sqlite3.Row) -> bool:

@@ -71,4 +71,5 @@ class TestAdditiveClaimIsProven:
         assert [(step.name, step.requires_backup) for step in steps] == [
             ("002_excision_policy_projections.sql", False),
             ("003_raw_member_identity.sql", True),
+            ("004_revision_authority_codes.sql", True),
         ]
