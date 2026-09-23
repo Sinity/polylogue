@@ -1478,6 +1478,22 @@ def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops() -> None:
         loop_thread.join(timeout=5.0)
 
 
+def test_bridge_refuses_submission_to_an_already_stopped_owner_loop() -> None:
+    """A stopped loop yields a typed pre-admission result, not a raw runtime error."""
+    from polylogue.daemon.write_coordinator import DaemonWriterOwnerLoopStopped
+
+    loop = asyncio.new_event_loop()
+    coordinator = DaemonWriteCoordinator()
+    loop.close()
+    bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
+    try:
+        with pytest.raises(DaemonWriterOwnerLoopStopped, match="did not start"):
+            bridge.run_sync_with_timeout("embedding.publish", None, lambda: "unreachable")
+    finally:
+        if not loop.is_closed():
+            loop.close()
+
+
 @pytest.mark.asyncio
 async def test_caller_cancelled_between_admission_and_start_keeps_the_admitted_write() -> None:
     """Admitted-but-not-started is settlement's problem, not the caller's.

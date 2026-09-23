@@ -943,9 +943,22 @@ class DaemonWriteThreadBridge:
         receipt here and an unbounded wait strands the caller forever
         (polylogue-8r4zq AC5).
         """
-        future = asyncio.run_coroutine_threadsafe(
-            self._coordinator.run_sync(actor, function, *args, **kwargs), self._loop
-        )
+        if self._loop.is_closed():
+            raise DaemonWriterOwnerLoopStopped(
+                f"daemon writer owner loop closed before {actor} was admitted; the write did not start"
+            )
+        operation = self._coordinator.run_sync(actor, function, *args, **kwargs)
+        try:
+            future = asyncio.run_coroutine_threadsafe(operation, self._loop)
+        except RuntimeError as exc:
+            # The loop can stop in the small gap after the liveness check. Do
+            # not expose the implementation detail or leave ``operation``
+            # unawaited; callers need the same typed outcome as the polling
+            # path below.
+            operation.close()
+            raise DaemonWriterOwnerLoopStopped(
+                f"daemon writer owner loop stopped before {actor} was admitted; the write did not start"
+            ) from exc
         if timeout is not None:
             return future.result(timeout=timeout)
         return self._await_owner_settlement(actor, future)
