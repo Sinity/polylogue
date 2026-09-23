@@ -29,6 +29,7 @@ import fcntl
 import json
 import os
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -343,7 +344,7 @@ _CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
 
 
 @contextmanager
-def _carrier_lock(root: Path, *, exclusive: bool):
+def _carrier_lock(root: Path, *, exclusive: bool) -> Iterator[None]:
     """Block producers while the legacy carrier drain owns the spool."""
     root.mkdir(parents=True, exist_ok=True)
     with (root / _CARRIER_DRAIN_LOCK).open("a+b") as lock:
