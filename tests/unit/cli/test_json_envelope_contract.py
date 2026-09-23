@@ -24,6 +24,7 @@ from polylogue.cli.shared.machine_errors import (
     success,
 )
 from polylogue.core.json import JSONDocument
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.json_contracts import envelope_result, extract_json_object, json_object_field, parse_json_object
 
 pytestmark = pytest.mark.machine_contract
@@ -271,7 +272,8 @@ def _invoke_workspace_raw_json_command(
 ) -> tuple[int, str]:
     monkeypatch.setenv("XDG_STATE_HOME", str(workspace_env["state_dir"]))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(workspace_env["archive_root"]))
-    return _invoke_raw_json_command(args, monkeypatch)
+    with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+        return _invoke_raw_json_command(args, monkeypatch)
 
 
 def _init_empty_archive(workspace_env: dict[str, Path]) -> None:
@@ -354,7 +356,8 @@ class TestAnalyzeJsonContract:
     ) -> None:
         """polylogue analyze --format json returns an empty success envelope on empty archive."""
         _init_empty_archive(workspace_env)
-        exit_code, output = _invoke_raw_json_command(["analyze", "--format", "json"], monkeypatch)
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            exit_code, output = _invoke_raw_json_command(["analyze", "--format", "json"], monkeypatch)
         assert exit_code == 0, f"analyze --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
         assert TRACEBACK_SENTINEL not in output
         parsed = json.loads(output)
@@ -369,7 +372,8 @@ class TestAnalyzeJsonContract:
     ) -> None:
         """polylogue analyze --by origin --format json returns empty envelope on empty archive."""
         _init_empty_archive(workspace_env)
-        exit_code, output = _invoke_raw_json_command(["analyze", "--by", "origin", "--format", "json"], monkeypatch)
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            exit_code, output = _invoke_raw_json_command(["analyze", "--by", "origin", "--format", "json"], monkeypatch)
         assert exit_code == 0, (
             f"analyze --by origin --format json on empty archive: expected exit 0, got {exit_code}: {output!r}"
         )
@@ -406,21 +410,15 @@ class TestStatusJsonContract:
         monkeypatch: pytest.MonkeyPatch,
         workspace_env: dict[str, Path],
     ) -> None:
-        """polylogue ops status --format json returns JSON when daemon is not running.
-
-        Uses an unreachable daemon URL so the command falls back to the
-        direct archive read path, which always returns structured JSON.
-        """
+        """Daemon absence is a typed refusal, not an in-process fallback."""
         exit_code, output = _invoke_raw_json_command(
             ["ops", "status", "--daemon-url", _unreachable_daemon_url(), "--format", "json"],
             monkeypatch,
         )
-        assert exit_code == 0, f"ops status --format json exited {exit_code}: {output!r}"
+        assert exit_code != 0
         assert TRACEBACK_SENTINEL not in output
-        parsed = json.loads(output)
-        assert isinstance(parsed, dict)
-        assert "daemon_liveness" in parsed, f"Missing 'daemon_liveness' key: {parsed.keys()}"
-        assert parsed["daemon_liveness"] is False
+        assert output.strip()
+        assert "status" in output.lower()
 
     def test_status_json_no_traceback_on_bad_url(
         self: object,
@@ -508,8 +506,20 @@ class TestAllJsonCommandsProduceValidJson:
     ) -> None:
         """Every --format json command produces parseable JSON on any exit code."""
         _init_empty_archive(workspace_env)
-        exit_code, output = _invoke_raw_json_command(args, monkeypatch)
+        invoke_args = args
+        needs_daemon = args[0] == "read" or (args[0] == "ops" and "status" in args)
+        if args[0] == "ops" and "status" in args:
+            invoke_args = ["ops", "status", "--daemon-url", "http://127.0.0.1:8766", "--format", "json"]
+        if needs_daemon:
+            monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(workspace_env["archive_root"]))
+            monkeypatch.setenv("XDG_STATE_HOME", str(workspace_env["state_dir"]))
+            with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+                exit_code, output = _invoke_raw_json_command(invoke_args, monkeypatch)
+        else:
+            exit_code, output = _invoke_raw_json_command(invoke_args, monkeypatch)
         allowed_codes = {0, 2} if allow_no_results else {0}
+        if args[0] == "ops" and "status" in args:
+            allowed_codes.add(1)
         assert exit_code in allowed_codes, (
             f"{args[0]} --format json exited {exit_code} (allowed: {allowed_codes}): {output!r}"
         )

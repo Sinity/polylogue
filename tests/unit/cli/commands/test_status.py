@@ -36,6 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.daemon_operations import cli_daemon_archive
 
 
 class _ArchiveTierResult(TypedDict):
@@ -649,24 +650,23 @@ class TestDirectArchiveCounts:
     """Canonical direct OperationResult retains archive workload counts."""
 
     @staticmethod
-    def _status_result(root: Path) -> _DirectStatusPayload:
-        from polylogue.cli.operation_kernel import configured_read_operation
-        from polylogue.config import Config
+    def _status_result(root: Path, monkeypatch: pytest.MonkeyPatch) -> _DirectStatusPayload:
+        with cli_daemon_archive(root, monkeypatch) as stack:
+            envelope = stack.client.operation("status", {}, archive_root=str(root))
+        assert envelope is not None
+        return cast(_DirectStatusPayload, envelope["result"])
 
-        config = Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
-        result = configured_read_operation(config, "status", {}, daemon_disabled=True)
-        assert result.operation == "status"
-        return cast(_DirectStatusPayload, result.value)
-
-    def test_empty_archive_returns_zeros(self, tmp_path: Path) -> None:
+    def test_empty_archive_returns_zeros(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Archive with no sessions returns zeros."""
         bootstrap_archive_root(tmp_path)
-        result = self._status_result(tmp_path)
+        result = self._status_result(tmp_path, monkeypatch)
         stats = result["archive_stats"]
         assert stats["total_sessions"] == 0
         assert stats["total_messages"] == 0
 
-    def test_session_message_counts_drive_canonical_total(self, tmp_path: Path) -> None:
+    def test_session_message_counts_drive_canonical_total(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Canonical stats retain the session message-count workload law."""
         bootstrap_archive_root(tmp_path)
         with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -678,12 +678,12 @@ class TestDirectArchiveCounts:
                 ("native-1", "raw1", b"1" * 32, "native-2", "raw2", b"2" * 32),
             )
             conn.commit()
-        result = self._status_result(tmp_path)
+        result = self._status_result(tmp_path, monkeypatch)
         stats = result["archive_stats"]
         assert stats["total_sessions"] == 2
         assert stats["total_messages"] == 8
 
-    def test_with_sessions_and_messages_table(self, tmp_path: Path) -> None:
+    def test_with_sessions_and_messages_table(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Canonical direct status counts sessions and messages from the snapshot."""
         bootstrap_archive_root(tmp_path)
         db_path = tmp_path / "index.db"
@@ -707,12 +707,14 @@ class TestDirectArchiveCounts:
                 ],
             )
             conn.commit()
-        result = self._status_result(tmp_path)
+        result = self._status_result(tmp_path, monkeypatch)
         stats = result["archive_stats"]
         assert stats["total_sessions"] == 2
         assert stats["total_messages"] == 3
 
-    def test_counts_unidentified_artifacts_from_source_tier(self, tmp_path: Path) -> None:
+    def test_counts_unidentified_artifacts_from_source_tier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The canonical status snapshot retains exact source artifact workload."""
         index_path = tmp_path / "index.db"
         source_path = tmp_path / "source.db"
@@ -750,7 +752,7 @@ class TestDirectArchiveCounts:
 
         conn = sqlite3.connect(index_path)
         try:
-            result = self._status_result(tmp_path)
+            result = self._status_result(tmp_path, monkeypatch)
             source_counts = result["archive_tiers"]["source"]["table_counts"]
             assert source_counts["raw_artifacts"] == 2
         finally:

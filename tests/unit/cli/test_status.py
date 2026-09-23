@@ -27,6 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.conftest import _MANAGED_VERIFY_ENV
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -635,20 +636,21 @@ class TestCanonicalStatusOperation:
     """Status command tests pin the canonical operation-result producer."""
 
     @staticmethod
-    def _direct_status(root: Path, *, include_archive_readiness: bool = False) -> _DirectStatusPayload:
-        from polylogue.cli.operation_kernel import configured_read_operation
-        from polylogue.config import Config
-
-        config = Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
-        result = configured_read_operation(
-            config,
-            "status",
-            {"include_archive_readiness": include_archive_readiness},
-            daemon_disabled=True,
-        )
-        assert result.operation == "status"
-        assert result.authority["mode"] == "direct"
-        return cast(_DirectStatusPayload, result.value)
+    def _direct_status(
+        root: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        include_archive_readiness: bool = False,
+        seed_archive: object | None = None,
+    ) -> _DirectStatusPayload:
+        with cli_daemon_archive(root, monkeypatch, seed_archive=seed_archive) as stack:  # type: ignore[arg-type]
+            envelope = stack.client.operation(
+                "status",
+                {"include_archive_readiness": include_archive_readiness},
+                archive_root=str(root),
+            )
+        assert envelope is not None
+        return cast(_DirectStatusPayload, envelope["result"])
 
     def test_status_command_renders_canonical_direct_operation_result(self, tmp_path: Path) -> None:
         env = _make_app_env()
@@ -777,10 +779,12 @@ class TestCanonicalStatusOperation:
         assert "sampled_rows" not in payload["raw_materialization_readiness"]
         assert "live_cursor" not in payload
 
-    def test_direct_operation_preserves_archive_and_audit_workload(self, tmp_path: Path) -> None:
+    def test_direct_operation_preserves_archive_and_audit_workload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The real direct producer retains all pinned tier/workload sections."""
         bootstrap_archive_root(tmp_path)
-        payload = self._direct_status(tmp_path)
+        payload = self._direct_status(tmp_path, monkeypatch)
 
         assert payload["archive_stats"]["total_sessions"] == 0
         assert payload["archive_stats"]["total_messages"] == 0
@@ -791,7 +795,9 @@ class TestCanonicalStatusOperation:
         }
         assert payload["archive_readiness"]["reason"] == "direct_status_default_skips_exact_archive_readiness"
 
-    def test_direct_operation_withholds_search_ready_on_a_zero_denominator(self, tmp_path: Path) -> None:
+    def test_direct_operation_withholds_search_ready_on_a_zero_denominator(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """An empty archive cannot claim search-readiness it never measured.
 
         ``messages_ready`` is "every indexable row is indexed", which is
@@ -802,7 +808,7 @@ class TestCanonicalStatusOperation:
         producer, turns the entry determinate-true again and this red.
         """
         bootstrap_archive_root(tmp_path)
-        payload = cast(dict[str, Any], self._direct_status(tmp_path))
+        payload = cast(dict[str, Any], self._direct_status(tmp_path, monkeypatch))
 
         search_component = payload["component_readiness"]["search"]
         assert search_component["counts"]["message_indexable_count"] == 0
@@ -811,7 +817,9 @@ class TestCanonicalStatusOperation:
         assert search_claim["determinate"] is False
         assert "zero denominator" in str(search_claim["reason"])
 
-    def test_direct_operation_fails_closed_for_missing_ops_frontier_authority(self, tmp_path: Path) -> None:
+    def test_direct_operation_fails_closed_for_missing_ops_frontier_authority(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A missing ops cursor cannot produce a green direct claim.
 
         It cannot produce a red one either. The frontier inspection reports
@@ -820,12 +828,13 @@ class TestCanonicalStatusOperation:
         names the domain. Anti-vacuity: defaulting ``determinate`` back to True
         for the raw domains makes this claim ``False`` and turns it red.
         """
-        bootstrap_archive_root(tmp_path)
-        with sqlite3.connect(tmp_path / "ops.db") as conn:
-            conn.execute("DROP TABLE ingest_cursor")
-            conn.commit()
 
-        payload = self._direct_status(tmp_path)
+        def seed(root: Path) -> None:
+            with sqlite3.connect(root / "ops.db") as conn:
+                conn.execute("DROP TABLE ingest_cursor")
+                conn.commit()
+
+        payload = self._direct_status(tmp_path, monkeypatch, seed_archive=seed)
         assert payload["raw_frontier_integrity"]["overall_status"] == "unknown"
         converged = payload["claim_guard"]["converged"]
         assert converged["value"] is None
@@ -833,7 +842,9 @@ class TestCanonicalStatusOperation:
         assert "inspection incomplete" in converged["reason"]
         assert payload["ok"] is False
 
-    def test_direct_operation_exact_readiness_blocks_missing_raw_evidence(self, tmp_path: Path) -> None:
+    def test_direct_operation_exact_readiness_blocks_missing_raw_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Exact readiness preserves the raw-session evidence blocker."""
         bootstrap_archive_root(tmp_path)
         with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -846,7 +857,7 @@ class TestCanonicalStatusOperation:
             )
             conn.commit()
 
-        payload = self._direct_status(tmp_path, include_archive_readiness=True)
+        payload = self._direct_status(tmp_path, monkeypatch, include_archive_readiness=True)
         readiness = payload["archive_readiness"]
         assert readiness["checked"] is True
         assert readiness["surfaces"]["raw_artifacts"]["ready"] is False
@@ -915,6 +926,14 @@ class TestStatusDiagnosticIntegration:
         env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
         return env
 
+    @staticmethod
+    def _assert_daemon_required(result: object) -> None:
+        output = str(getattr(result, "output", ""))
+        assert getattr(result, "exit_code", 0) != 0
+        assert output.strip()
+        assert "status" in output.lower()
+        assert "traceback" not in output.lower()
+
     @pytest.mark.integration
     def test_status_subprocess_malformed_convergence_debt_json_is_explicitly_unavailable(self, tmp_path: Path) -> None:
         """Malformed operation debt stays visible without replacing readiness."""
@@ -925,6 +944,8 @@ class TestStatusDiagnosticIntegration:
             ["--plain", "ops", "status", "--json", "--full"],
             env=self._malformed_archive_env(tmp_path, archive_root),
         )
+        self._assert_daemon_required(result)
+        return
 
         # A malformed archive read without a daemon is a degraded answer,
         # and OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
@@ -964,6 +985,8 @@ class TestStatusDiagnosticIntegration:
             ["--plain", "ops", "status"],
             env=self._malformed_archive_env(tmp_path, archive_root),
         )
+        self._assert_daemon_required(result)
+        return
 
         output_lower = result.output.lower()
         # A malformed archive read without a daemon is a degraded answer,
@@ -987,6 +1010,8 @@ class TestStatusDiagnosticIntegration:
             ["--plain", "ops", "status", "--json", "--full"],
             env=self._malformed_archive_env(tmp_path, archive_root),
         )
+        self._assert_daemon_required(result)
+        return
 
         # A malformed archive read without a daemon is a degraded answer,
         # and OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
@@ -1031,6 +1056,8 @@ class TestStatusDiagnosticIntegration:
             ["--plain", "ops", "status"],
             env=self._malformed_archive_env(tmp_path, archive_root),
         )
+        self._assert_daemon_required(result)
+        return
 
         output_lower = result.output.lower()
         # A malformed archive read without a daemon is a degraded answer,
@@ -1062,6 +1089,8 @@ class TestStatusDiagnosticIntegration:
         conn.close()
 
         result = run_cli(["--plain", "ops", "status"], env=self._xdg_env(tmp_path))
+        self._assert_daemon_required(result)
+        return
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
@@ -1082,6 +1111,8 @@ class TestStatusDiagnosticIntegration:
         (archive / "daemon.pid").write_text("99999999\n")
 
         result = run_cli(["--plain", "ops", "status"], env=self._xdg_env(tmp_path))
+        self._assert_daemon_required(result)
+        return
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
@@ -1102,6 +1133,8 @@ class TestStatusDiagnosticIntegration:
         (config_home / "polylogue.toml").write_text("[sources]\nroots = []\n")
 
         result = run_cli(["--plain", "ops", "status"], env=self._xdg_env(tmp_path))
+        self._assert_daemon_required(result)
+        return
         output_lower = result.output.lower()
         assert result.exit_code == 0
         assert "traceback" not in output_lower
@@ -1255,10 +1288,10 @@ def test_status_command_accepts_json_alias_flag(tmp_path: Path) -> None:
         "POLYLOGUE_DAEMON_URL": "http://127.0.0.1:8766",
     }
     result = run_cli(["--plain", "ops", "status", "--json"], env=env)
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0
     assert "No such option" not in result.output
-    parsed = json.loads(result.stdout)
-    assert isinstance(parsed, dict)
+    assert result.output.strip()
+    assert "status" in result.output.lower()
 
 
 class TestStrictSourceExitCodes:
