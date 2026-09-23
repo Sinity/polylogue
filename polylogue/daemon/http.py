@@ -3046,58 +3046,37 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         state_filter: str,
         session_filter: str,
     ) -> object:
-        # Walk all session summaries and emit one library entry per
-        # attachment. We pre-filter by session id when supplied so
-        # the walk stops early; mime/state filters apply after
-        # envelope construction (state is derived, not stored).
-        summaries = await poly.filter().list_summaries()
+        # One bounded archive read. Session/message hydration is deliberately
+        # absent here: attachment_refs already carries the owning session and
+        # message ids, so the SQL page can skip the old archive-wide walk.
+        rows = await poly._get_attachment_library_page(
+            limit=limit + 1,
+            offset=offset,
+            mime_filter=mime_filter,
+            session_filter=session_filter,
+            state_filter=state_filter,
+        )
         entries: list[LibraryEntry] = []
-        total_seen = 0
-        # polylogue-q54dt: same bound as the paste browser -- the walk breaks
-        # out once the page is full, so ``total_seen`` stops being a total.
-        page_truncated = False
-        for summary in summaries:
-            sid = str(summary.id)
-            if session_filter and session_filter != sid:
-                continue
-            conv = await poly.get_session(sid)
-            if conv is None:
-                continue
-            origin = summary.origin
-            title = summary.display_title or sid
-            for msg in conv.messages:
-                for att in msg.attachments or []:
-                    envelope = attachment_to_envelope(att, session_id=sid, message_id=msg.id)
-                    mime_value = envelope.get("mime_type")
-                    if mime_filter and mime_filter not in (mime_value if isinstance(mime_value, str) else ""):
-                        continue
-                    if state_filter and envelope.get("state") != state_filter:
-                        continue
-                    total_seen += 1
-                    if total_seen <= offset:
-                        continue
-                    if len(entries) >= limit:
-                        page_truncated = True
-                        break
-                    entries.append(
-                        LibraryEntry(
-                            envelope=envelope,
-                            session_title=title,
-                            origin=origin,
-                            message_anchor=reader_anchor("message", msg.id) if msg.id else None,
-                        )
-                    )
-                if len(entries) >= limit:
-                    page_truncated = True
-                    break
-            if len(entries) >= limit:
-                page_truncated = True
-                break
+        for att, title, origin in rows:
+            sid = str(att.session_id)
+            envelope = attachment_to_envelope(att, session_id=sid, message_id=att.message_id)
+            entries.append(
+                LibraryEntry(
+                    envelope=envelope,
+                    session_title=title,
+                    origin=origin,
+                    message_anchor=reader_anchor("message", att.message_id) if att.message_id else None,
+                )
+            )
+        page_truncated = len(entries) > limit
+        if page_truncated:
+            entries = entries[:limit]
+        matched_so_far = offset + len(entries)
         return build_library_payload(
             entries,
-            total=None if page_truncated else total_seen,
+            total=None if page_truncated else matched_so_far,
             total_is_exact=not page_truncated,
-            matched_so_far=total_seen,
+            matched_so_far=matched_so_far,
         )
 
     @daemon_safe_handler
