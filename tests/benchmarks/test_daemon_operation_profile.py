@@ -17,7 +17,7 @@ import sys
 import threading
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from resource import RUSAGE_SELF, getrusage
 from time import perf_counter, sleep
@@ -242,7 +242,11 @@ def bench_mixed_load_stack(
 
 
 @pytest.mark.benchmark
-def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_stack: DaemonOperationStack) -> None:
+def test_bench_daemon_mixed_load(
+    benchmark: BenchmarkFixture,
+    bench_mixed_load_stack: DaemonOperationStack,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Interactive reads stay served while writes and background units contend.
 
     Two contention sources run against the one daemon for the whole measured
@@ -277,6 +281,55 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     no background unit actually completed during the window, which would mean
     the reads were never contended at all.
     """
+
+    # Attribute the route in the daemon process itself.  Client wall time is
+    # not enough: it conflates admission, snapshot pinning, query compute,
+    # response encoding, and the instrumentation/transport tail.  These
+    # wrappers are deliberately benchmark-only and preserve the production
+    # route unchanged.
+    import polylogue.operations.daemon_execution as daemon_execution
+    import polylogue.operations.daemon_reads as daemon_reads
+    from polylogue.storage.search.cache import current_cache_epoch
+
+    phase_lock = threading.Lock()
+    phase_name = "quiet"
+    phase_names = (
+        "read_frame_acquisition",
+        "compute",
+        "cache_invalidation",
+        "instrumentation_tail",
+        "serialization_tail",
+    )
+    phase_samples: dict[str, dict[str, list[float]]] = {
+        "quiet": {name: [] for name in phase_names},
+        "writer": {name: [] for name in phase_names},
+    }
+    frame_started = threading.local()
+
+    real_open_operation_read = daemon_execution.open_operation_read
+
+    @contextmanager
+    def timed_open_operation_read(*args: object, **kwargs: object) -> Iterator[object]:
+        started = perf_counter()
+        with real_open_operation_read(*args, **kwargs) as snapshot:
+            elapsed_ms = (perf_counter() - started) * 1000
+            frame_started.elapsed_ms = elapsed_ms
+            yield snapshot
+
+    real_query_payload = daemon_reads._query_payload
+
+    def timed_query_payload(*args: Any, **kwargs: Any) -> Any:
+        started = perf_counter()
+        try:
+            return real_query_payload(*args, **kwargs)
+        finally:
+            elapsed_ms = (perf_counter() - started) * 1000
+            frame_started.compute_ms = elapsed_ms
+            with phase_lock:
+                phase_samples[phase_name]["compute"].append(elapsed_ms)
+
+    monkeypatch.setattr(daemon_execution, "open_operation_read", timed_open_operation_read)
+    monkeypatch.setattr(daemon_reads, "_query_payload", timed_query_payload)
 
     kernel = bench_mixed_load_stack.execution_kernel
     socket_path = bench_mixed_load_stack.client.socket_path
@@ -394,17 +447,50 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     elapsed: list[int] = []
     read_index = itertools.count()
 
+    def percentile(values: list[float], fraction: float) -> float:
+        ordered = sorted(values)
+        if not ordered:
+            return 0.0
+        return round(ordered[min(int((len(ordered) - 1) * fraction), len(ordered) - 1)], 3)
+
+    def phase_read(params: dict[str, object]) -> dict[str, object]:
+        before_epoch = current_cache_epoch()
+        client = DaemonClient(socket_path, timeout_s=5)
+        result = _operation(client, "cli.query", {"params": params})
+        client_ms = float(client.last_elapsed_ms or 0)
+        frame_started.client_ms = client_ms
+        timing = result.get("timing")
+        server_ms = float(timing.get("elapsed_ms", client_ms)) if isinstance(timing, dict) else client_ms
+        frame_ms = float(getattr(frame_started, "elapsed_ms", 0.0))
+        with phase_lock:
+            current_phase = phase_name
+            compute_ms = float(getattr(frame_started, "compute_ms", 0.0))
+            phase_samples[current_phase]["read_frame_acquisition"].append(max(0.0, frame_ms))
+            phase_samples[current_phase]["cache_invalidation"].append(
+                0.0 if current_cache_epoch() == before_epoch else max(0.0, server_ms - frame_ms - compute_ms)
+            )
+            phase_samples[current_phase]["instrumentation_tail"].append(max(0.0, server_ms - frame_ms - compute_ms))
+            phase_samples[current_phase]["serialization_tail"].append(max(0.0, client_ms - server_ms))
+        return result
+
+    # Quiet control series: same varying semantic requests, before either
+    # feeder starts.  It establishes the archive-path floor for comparison.
+    for index in range(8):
+        phase_read(mixed_load_read_params(index))
+
     def run() -> list[dict[str, object]]:
         def one(_slot: int) -> dict[str, object]:
-            client = DaemonClient(socket_path, timeout_s=5)
+            nonlocal phase_name
             # A monotonic counter, not the in-round index: the counter keeps
             # every read of every round on the archive path (see
             # ``mixed_load_read_params``), which an in-round index cannot do
             # because round 2 would repeat round 1's fingerprints exactly.
             params = mixed_load_read_params(next(read_index))
             assert params["offset"] + params["limit"] < _MIXED_LOAD_SEEDED_SESSIONS
-            result = _operation(client, "cli.query", {"params": params})
-            elapsed.append(client.last_elapsed_ms or 0)
+            with phase_lock:
+                phase_name = "writer"
+            result = phase_read(params)
+            elapsed.append(int(getattr(frame_started, "client_ms", 0.0)))
             return result
 
         with ThreadPoolExecutor(max_workers=4) as pool:
@@ -471,6 +557,22 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
     # rounds of eight reads there are forty samples to take it from.
     ordered = sorted(elapsed)
     interference_p95 = ordered[min(int(len(ordered) * 0.95), len(ordered) - 1)] if ordered else 0
+    phase_report = {
+        phase: {
+            metric: {
+                "p50_ms": percentile(values, 0.50),
+                "p95_ms": percentile(values, 0.95),
+                "p99_ms": percentile(values, 0.99),
+                "samples": len(values),
+            }
+            for metric, values in metrics.items()
+        }
+        for phase, metrics in phase_samples.items()
+    }
+    dominant_phase = max(
+        phase_report["writer"],
+        key=lambda metric: float(phase_report["writer"][metric]["p95_ms"]),
+    )
     record_metrics(
         benchmark,
         concurrent_interference_p95_ms=interference_p95,
@@ -481,6 +583,20 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_mixed_load_s
         peak_queue_units=peak_queue_units,
         peak_queue_bytes=peak_queue_bytes,
         peak_rss_kib=getrusage(RUSAGE_SELF).ru_maxrss,
+        mixed_load_phase_percentiles=phase_report,
+        mixed_load_dominant_phase=dominant_phase,
+        mixed_load_series_summary={
+            "quiet": {
+                "queue_delay_ms": 0.0,
+                "writer_hold_ms": 0.0,
+                "background_throughput": 0.0,
+            },
+            "writer": {
+                "queue_delay_ms": round(float(snapshot.background_max_wait_s) * 1000, 3),
+                "writer_hold_ms": round(float(max(write_latency_ms, default=0)), 3),
+                "background_throughput": round(background_completed / duration_s, 3),
+            },
+        },
     )
 
 
