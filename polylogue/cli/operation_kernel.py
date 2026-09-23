@@ -289,7 +289,13 @@ def dispatch(
         root = operation_archive_root(config)
 
     if daemon_disabled:
-        raise OperationUnavailableError("start polylogued run to serve this operation", operation=operation) from None
+        raise OperationUnavailableError(
+            # Name the operation in the message too: the terminal format has
+            # no envelope field to read it from, so an operator who is told
+            # only "start polylogued run" cannot tell WHICH route refused.
+            f"start polylogued run to serve this operation: {operation}",
+            operation=operation,
+        ) from None
 
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
@@ -310,7 +316,13 @@ def dispatch(
     try:
         return OperationKernel(_ask_daemon).execute(request)
     except OperationUnavailableError:
-        raise OperationUnavailableError("start polylogued run to serve this operation", operation=operation) from None
+        raise OperationUnavailableError(
+            # Name the operation in the message too: the terminal format has
+            # no envelope field to read it from, so an operator who is told
+            # only "start polylogued run" cannot tell WHICH route refused.
+            f"start polylogued run to serve this operation: {operation}",
+            operation=operation,
+        ) from None
 
 
 def configured_read_operation(
