@@ -402,16 +402,19 @@ def _write_window_session(archive_root: Path, native_id: str, count: int) -> str
         )
 
 
-def _cli_messages_json(session_id: str, *, args: list[str]) -> tuple[int, str]:
+def _cli_messages_json(archive_root: Path, session_id: str, *, args: list[str]) -> tuple[int, str]:
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
+    from tests.infra.daemon_operations import running_daemon_operations
 
-    result = CliRunner().invoke(
-        cli,
-        ["read", f"session:{session_id}", "--view", "messages", "--format", "json", *args],
-        catch_exceptions=True,
-    )
+    with running_daemon_operations(archive_root) as stack:
+        with patch("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path):
+            result = CliRunner().invoke(
+                cli,
+                ["read", f"session:{session_id}", "--view", "messages", "--format", "json", *args],
+                catch_exceptions=True,
+            )
     if result.exception is not None and not isinstance(result.exception, SystemExit):
         raise result.exception
     return result.exit_code, result.output
@@ -444,7 +447,7 @@ async def test_transcript_window_continuation_resumes_identically_across_surface
     assert api_second.offset == 2
     assert api_second.continuation is None
 
-    exit_code, output = _cli_messages_json(session_id, args=["--continuation", token])
+    exit_code, output = _cli_messages_json(archive_root, session_id, args=["--continuation", token])
     assert exit_code == 0, output
     cli_payload = cast(dict[str, object], json.loads(output))
     cli_ids = [str(cast(dict[str, object], row)["id"]) for row in cast(list[object], cli_payload["messages"])]
@@ -507,7 +510,7 @@ async def test_transcript_window_stale_continuation_rejected_identically_across_
     with pytest.raises(QueryContinuationStaleError):
         await archive.read_transcript_window(session_id, continuation=token)
 
-    exit_code, output = _cli_messages_json(session_id, args=["--continuation", token])
+    exit_code, output = _cli_messages_json(archive_root, session_id, args=["--continuation", token])
     assert exit_code != 0, output
     assert "query_continuation_stale" in output, output
 
