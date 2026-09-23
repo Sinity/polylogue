@@ -269,22 +269,43 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
 
     This is the binding the Python API, the CLI ``read --view messages`` verb,
     the MCP ``read`` tool and the HTTP database branch all reach. The storage
-    read is ``Polylogue.get_messages_paginated``; it composes the rows and is
-    no longer a window owner — it never sees a continuation, and it does not
-    decide ``next_offset``.
+    read is the repository's bounded query. The public facade's
+    ``get_messages_paginated`` method is a compatibility projection over this
+    route; calling it here would re-enter the route and leave two execution
+    owners.
     """
 
     session_id = request.ref.removeprefix("session:")
 
     async def read(limit: int, offset: int) -> tuple[list[Any], int, Any]:
-        messages, total, completeness = await api.get_messages_paginated(
-            session_id,
+        if request.material_origin:
+            from polylogue.archive.message.types import MessageType
+
+            session = await api.get_session(session_id)
+            if session is None:
+                raise ValueError(f"session not found: {session_id}")
+            messages = [
+                message
+                for message in session.messages
+                if (not request.message_role or message.role in request.message_role)
+                and (
+                    request.message_type is None or message.message_type == MessageType.normalize(request.message_type)
+                )
+                and (not request.material_origin or message.material_origin in request.material_origin)
+            ]
+            completeness = await api.repository.get_lineage_completeness(session_id)
+            return list(messages[offset : offset + limit]), len(messages), completeness
+
+        resolved_session_id = await api.repository.resolve_id(session_id) or session_id
+        messages, total, completeness = await api.repository.get_messages_paginated(
+            resolved_session_id,
             message_role=tuple(request.message_role),
             message_type=request.message_type,
-            material_origin=tuple(request.material_origin),
             limit=limit,
             offset=offset,
         )
+        if total == 0 and resolved_session_id == session_id and await api.repository.resolve_id(session_id) is None:
+            raise ValueError(f"session not found: {session_id}")
         return list(messages), total, completeness
 
     return await read_transcript_window(Path(api.archive_root), request, read=read)
