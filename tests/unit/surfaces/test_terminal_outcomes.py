@@ -276,24 +276,34 @@ class TestCliTerminalOutcomes:
         result = CliRunner().invoke(cli, ["--plain", "--no-daemon", *args])
         return result.exit_code, result.output
 
-    def test_facets_over_an_empty_archive_states_its_outcome(self, workspace_env: dict[str, Path]) -> None:
-        # The defect was a BARE empty, not exit 0: an aggregate that answered
-        # over an empty scope succeeded, and a shell pipeline may rely on that.
-        # What must never happen again is a zero-row render that says nothing.
-        exit_code, output = self._run(["facets"])
-        assert exit_code == 0, output
-        assert "outcome: empty" in output
+    def test_facets_without_a_daemon_refuses_in_words_not_in_silence(self, workspace_env: dict[str, Path]) -> None:
+        """``--no-daemon facets`` must say why it cannot answer.
 
-    def test_facets_json_carries_the_outcome(self, workspace_env: dict[str, Path]) -> None:
-        exit_code, output = self._run(["facets", "--format", "json"])
-        assert exit_code == 0, output
-        assert json.loads(output)["outcome"]["state"] == "empty"
+        These three cases used to assert ``exit 0`` and an ``outcome`` over an
+        empty and a populated archive, executed in-process. polylogue-3eexy
+        retired the CLI's direct-read execution mode, so there is no in-process
+        facets route left to produce an outcome from; the kernel refuses.
 
-    def test_facets_over_a_populated_archive_is_ok(self, workspace_env: dict[str, Path]) -> None:
-        _seed_session(workspace_env)
-        exit_code, output = self._run(["facets", "--format", "json"])
-        assert exit_code == 0, output
-        assert json.loads(output)["outcome"]["state"] == "ok"
+        The refusal was reaching Click as a bare RuntimeError, so the operator
+        got exit 1 and an EMPTY screen -- a zero-output render, which is the
+        same class of defect ("answer nothing, say nothing") these tests were
+        written to prevent, arriving through the other door.
+
+        The outcome semantics themselves are still pinned, structurally and
+        closer to the data: ``FacetsResponse`` refuses construction without an
+        outcome (see ``test_facets_response_refuses_construction_without_one``
+        above), and the daemon facets route has its own coverage in
+        tests/unit/operations/test_daemon_reads.py.
+
+        Anti-vacuity: drop the ``OperationUnavailableError`` handler in
+        cli/commands/facets.py and the output is empty again, failing the
+        message assertion.
+        """
+        for args in (["facets"], ["facets", "--format", "json"]):
+            exit_code, output = self._run(args)
+            assert exit_code != 0, output
+            assert "polylogued run" in output, output
+            assert output.strip(), "a refusal with no words is the defect this pins"
 
     def test_unknown_origin_is_rejected_not_answered_empty(self, workspace_env: dict[str, Path]) -> None:
         _seed_session(workspace_env)
