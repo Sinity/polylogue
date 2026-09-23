@@ -65,6 +65,7 @@ from click.testing import CliRunner
 
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
+from polylogue.archive.query.transaction import QueryContinuationInvalidError
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -179,6 +180,17 @@ def mcp_server() -> MCPServerUnderTest:
     return cast(MCPServerUnderTest, build_server())
 
 
+def _cli_invoke(archive_root: Path, args: list[str], *, catch_exceptions: bool = True) -> Any:
+    """Invoke the daemon-authoritative CLI against the synthetic archive."""
+
+    from polylogue.cli.click_app import cli
+    from tests.infra.daemon_operations import running_daemon_operations
+
+    with running_daemon_operations(archive_root) as stack:
+        with patch("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path):
+            return CliRunner().invoke(cli, args, catch_exceptions=catch_exceptions)
+
+
 async def _api_window(archive_root: Path, session_id: str, *, limit: int, offset: int) -> tuple[tuple[str, ...], int]:
     archive = Polylogue(archive_root=archive_root)
     try:
@@ -188,11 +200,9 @@ async def _api_window(archive_root: Path, session_id: str, *, limit: int, offset
     return tuple(str(message.id) for message in messages), total
 
 
-def _cli_window(session_id: str, *, limit: int, offset: int) -> tuple[tuple[str, ...], int]:
-    from polylogue.cli.click_app import cli
-
-    result = CliRunner().invoke(
-        cli,
+def _cli_window(archive_root: Path, session_id: str, *, limit: int, offset: int) -> tuple[tuple[str, ...], int]:
+    result = _cli_invoke(
+        archive_root,
         [
             "read",
             f"session:{session_id}",
@@ -256,7 +266,7 @@ async def test_transcript_window_is_identical_across_api_cli_mcp_http(
 
     limit, offset = 2, 2
     api_ids, api_total = await _api_window(archive_root, session_id, limit=limit, offset=offset)
-    cli_ids, cli_total = _cli_window(session_id, limit=limit, offset=offset)
+    cli_ids, cli_total = _cli_window(archive_root, session_id, limit=limit, offset=offset)
     mcp_ids, mcp_total = await _mcp_window(mcp_server, archive_root, session_id, limit=limit, offset=offset)
     with _running_http_server() as base_url:
         http_ids, http_total = _http_window(base_url, session_id, limit=limit, offset=offset)
@@ -285,8 +295,8 @@ async def test_transcript_windows_tile_the_session_without_overlap_or_gap(
     second_mcp, _ = await _mcp_window(mcp_server, archive_root, session_id, limit=half, offset=half)
     assert first_mcp + second_mcp == whole
 
-    first_cli, _ = _cli_window(session_id, limit=half, offset=0)
-    second_cli, _ = _cli_window(session_id, limit=half, offset=half)
+    first_cli, _ = _cli_window(archive_root, session_id, limit=half, offset=0)
+    second_cli, _ = _cli_window(archive_root, session_id, limit=half, offset=half)
     assert first_cli + second_cli == whole
 
     with _running_http_server() as base_url:
@@ -338,6 +348,79 @@ async def test_mcp_messages_continuation_resumes_the_window(
     assert json.dumps(bad).find("invalid_continuation") >= 0, bad
 
 
+async def test_malformed_continuation_is_typed_across_api_cli_mcp_http(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every surface refuses a malformed token instead of falling back to page one.
+
+    Anti-vacuity: decoding an invalid token as offset zero (or swallowing the
+    decoder error) makes the API return rows, the CLI exit successfully, or the
+    HTTP route return 200; the four assertions then fail on the concrete
+    transport contract rather than merely comparing an implementation detail.
+    """
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    session_id = _seed_session(archive_root)
+    invalid = "not-a-query-continuation"
+
+    archive = Polylogue(archive_root=archive_root)
+    try:
+        with pytest.raises(QueryContinuationInvalidError):
+            await archive.read_transcript_window(session_id, limit=2, continuation=invalid)
+    finally:
+        await archive.close()
+
+    cli_result = _cli_invoke(
+        archive_root,
+        [
+            "read",
+            f"session:{session_id}",
+            "--view",
+            "messages",
+            "--limit",
+            "2",
+            "--continuation",
+            invalid,
+            "--format",
+            "json",
+        ],
+        catch_exceptions=True,
+    )
+    assert cli_result.exit_code != 0, cli_result.output
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        mcp_payload = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref=f"session:{session_id}",
+                view="messages",
+                limit=2,
+                continuation=invalid,
+            )
+        )
+    assert mcp_payload.get("code") == "invalid_continuation", mcp_payload
+
+    with _running_http_server() as base_url:
+        try:
+            with urlopen(
+                Request(
+                    f"{base_url}/api/sessions/{session_id}/messages?limit=2&continuation={quote(invalid, safe='')}"
+                ),
+                timeout=10,
+            ) as response:
+                raise AssertionError(f"expected a refusal, got {response.status}")
+        except HTTPError as exc:
+            assert exc.code == HTTPStatus.BAD_REQUEST
+            payload = json.loads(exc.read())
+            assert payload["error"] == "invalid_continuation", payload
+
+
 async def _api_window_payload(archive_root: Path, session_id: str, *, limit: int, offset: int) -> dict[str, Any]:
     """The Python API's own transcript-window entry point, serialized like the rest."""
 
@@ -356,11 +439,9 @@ async def _api_window_payload(archive_root: Path, session_id: str, *, limit: int
     }
 
 
-def _cli_window_payload(session_id: str, *, limit: int, offset: int) -> dict[str, Any]:
-    from polylogue.cli.click_app import cli
-
-    result = CliRunner().invoke(
-        cli,
+def _cli_window_payload(archive_root: Path, session_id: str, *, limit: int, offset: int) -> dict[str, Any]:
+    result = _cli_invoke(
+        archive_root,
         [
             "read",
             f"session:{session_id}",
@@ -425,7 +506,7 @@ async def test_transcript_window_rank_and_provenance_are_identical_across_surfac
 
     limit, offset = 2, 2
     api = await _api_window_payload(archive_root, session_id, limit=limit, offset=offset)
-    cli = _wire_facts(_cli_window_payload(session_id, limit=limit, offset=offset))
+    cli = _wire_facts(_cli_window_payload(archive_root, session_id, limit=limit, offset=offset))
     mcp = _wire_facts(await _mcp_window_payload(mcp_server, archive_root, session_id, limit=limit, offset=offset))
     with _running_http_server() as base_url:
         http = _wire_facts(
@@ -462,7 +543,7 @@ async def test_every_surface_mints_a_snapshot_bound_continuation(
 
     half = _MESSAGE_COUNT // 2
     api = await _api_window_payload(archive_root, session_id, limit=half, offset=0)
-    cli = _cli_window_payload(session_id, limit=half, offset=0)
+    cli = _cli_window_payload(archive_root, session_id, limit=half, offset=0)
     mcp = await _mcp_window_payload(mcp_server, archive_root, session_id, limit=half, offset=0)
     with _running_http_server() as base_url:
         http = _get_json(base_url, f"/api/sessions/{session_id}/messages?limit={half}&offset=0")
@@ -533,11 +614,11 @@ async def _api_anchor_window(
     return tuple(str(message.id) for message in window.rows), window.offset, window.total
 
 
-def _cli_anchor_window(session_id: str, *, limit: int, around: str) -> tuple[tuple[str, ...], int, int]:
-    from polylogue.cli.click_app import cli
-
-    result = CliRunner().invoke(
-        cli,
+def _cli_anchor_window(
+    archive_root: Path, session_id: str, *, limit: int, around: str
+) -> tuple[tuple[str, ...], int, int]:
+    result = _cli_invoke(
+        archive_root,
         [
             "read",
             f"session:{session_id}",
@@ -627,7 +708,7 @@ async def test_anchored_window_is_identical_across_api_cli_mcp_http(
     )
 
     api = await _api_anchor_window(archive_root, session_id, limit=limit, around=around)
-    cli = _cli_anchor_window(session_id, limit=limit, around=around)
+    cli = _cli_anchor_window(archive_root, session_id, limit=limit, around=around)
     mcp = await _mcp_anchor_window(mcp_server, archive_root, session_id, limit=limit, around=around)
     with _running_http_server() as base_url:
         http = _http_anchor_window(base_url, session_id, limit=limit, around=around)
@@ -662,7 +743,6 @@ async def test_anchored_window_is_refused_the_same_way_on_every_surface(
     session_id = _seed_session(archive_root)
     missing = "not-a-message-in-this-session"
 
-    from polylogue.cli.click_app import cli
     from polylogue.operations.message_locator import MessageNotInSessionError
 
     archive = Polylogue(archive_root=archive_root)
@@ -673,10 +753,9 @@ async def test_anchored_window_is_refused_the_same_way_on_every_surface(
         await archive.close()
     assert raised.value.code == "message_not_found"
 
-    result = CliRunner().invoke(
-        cli,
+    result = _cli_invoke(
+        archive_root,
         ["read", f"session:{session_id}", "--view", "messages", "--limit", "2", "--around", missing],
-        catch_exceptions=True,
     )
     assert result.exit_code != 0, result.output
 
