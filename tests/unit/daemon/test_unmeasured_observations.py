@@ -60,11 +60,10 @@ def test_uninspected_fts_triggers_do_not_report_all_present(tmp_path: Path, monk
     the ``1`` reappears and the unmeasured marker does not.
     """
     from polylogue.daemon import metrics as metrics_module
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     index_db = tmp_path / "index.db"
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    bootstrap_archive_root(tmp_path)
     monkeypatch.setattr(metrics_module, "_fts_trigger_presence", lambda _conn: {})
 
     body = metrics_module.format_metrics(index_db, now_monotonic=0.0)
@@ -189,3 +188,104 @@ def test_status_route_etag_changes_when_the_liveness_probe_fails(monkeypatch: py
     final_payload = captured[-1][1]
     assert isinstance(final_payload, dict)
     assert final_payload["daemon_liveness_state"] == "unmeasured"
+
+
+def test_build_identity_failure_does_not_attest_clean(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A build-info probe failure publishes ``dirty=unknown``, never false.
+
+    Anti-vacuity: restoring the exception branch's ``build_dirty = False``
+    makes the emitted label ``dirty=\"false\"`` and fails this assertion.
+    """
+    import polylogue.version as version_module
+    from polylogue.daemon import metrics as metrics_module
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    index_db = tmp_path / "index.db"
+    bootstrap_archive_root(tmp_path)
+
+    class _BrokenVersion:
+        version = "test"
+        commit = "revision"
+
+        @property
+        def dirty(self) -> bool:
+            raise RuntimeError("build identity unavailable")
+
+    monkeypatch.setattr(version_module, "VERSION_INFO", _BrokenVersion())
+    build_samples: list[object] = []
+    real_emit_metric = metrics_module._emit_metric
+
+    def _capture_emit(
+        lines: list[str],
+        *,
+        name: str,
+        help_text: str,
+        metric_type: str,
+        samples: list[tuple[dict[str, str] | None, float | int]],
+        omit_when_empty: bool = False,
+    ) -> None:
+        if name == "polylogue_daemon_build_info":
+            build_samples.extend(samples)
+        real_emit_metric(
+            lines,
+            name=name,
+            help_text=help_text,
+            metric_type=metric_type,
+            samples=samples,
+            omit_when_empty=omit_when_empty,
+        )
+
+    monkeypatch.setattr(metrics_module, "_emit_metric", _capture_emit)
+    body = metrics_module.format_metrics(index_db, now_monotonic=0.0)
+
+    assert build_samples == [({"version": "unknown", "revision": "unknown", "dirty": "unknown"}, 1)]
+    assert 'dirty="false"' not in body
+
+
+def test_unreadable_status_fingerprint_invalidates_cached_frame(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stat failure gets a changing discriminator, not a stable question mark.
+
+    Anti-vacuity: restoring the constant ``name:?`` token makes the two calls
+    equal and this cache-invalidation assertion fails.
+    """
+    from polylogue.daemon import status as status_module
+
+    active = tmp_path / "index.db"
+    ops = tmp_path / "ops.db"
+    active.touch()
+    ops.touch()
+    monkeypatch.setattr(status_module, "_active_status_db_path", lambda: active)
+    monkeypatch.setattr(status_module, "archive_root", lambda: tmp_path)
+    original_stat = type(active).stat
+
+    def _stat(path: Path, *args: object, **kwargs: object) -> Any:
+        if path == active:
+            raise OSError("stat refused")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(type(active), "stat", _stat)
+    first = status_module._daemon_status_fingerprint(active)
+    second = status_module._daemon_status_fingerprint(active)
+
+    assert "index.db:unreadable-" in first
+    assert "index.db:unreadable-" in second
+    assert first != second
+
+
+def test_missing_progress_classification_is_rendered_as_unknown() -> None:
+    """An attempt without classification is visibly unmeasured."""
+    from polylogue.daemon.status import format_daemon_status_lines
+
+    lines = format_daemon_status_lines(
+        {
+            "live_ingest_attempts": {
+                "running_count": 1,
+                "recent": [{"status": "running", "phase": "parse"}],
+            }
+        }
+    )
+
+    assert "  latest: running progress-unknown parse 0/0 files" in lines
+    assert all("healthy" not in line for line in lines)
