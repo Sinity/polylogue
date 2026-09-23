@@ -3,7 +3,8 @@
 Anti-vacuity for every test here: re-derive the subject list from the committed
 package tree, the schema registry, the frontier, or the run receipts -- any of
 the artefacts a generation pass produces -- and these go red, because each one
-asserts a subject the denominator holds *and* those artefacts do not.
+asserts a subject the denominator holds *and* those artefacts do not. This file
+does not claim to test the module's transitive import closure.
 """
 
 from __future__ import annotations

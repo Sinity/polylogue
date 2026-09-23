@@ -97,6 +97,15 @@ class SubjectDenominatorCounts:
     def conservation_detail(self) -> str:
         if self.candidates_inventoried is None:
             return "the run recorded no candidate inventory"
+        if self.candidates_inventoried < 0:
+            return f"the run recorded a negative candidate inventory ({self.candidates_inventoried})"
+        if self.candidates_included is not None and not 0 <= self.candidates_included <= self.candidates_inventoried:
+            return (
+                f"{self.candidates_included} included candidate(s) fall outside the inventoried range "
+                f"0..{self.candidates_inventoried}"
+            )
+        if any(value < 0 for value in self.candidate_terminal_outcomes.values()):
+            return "the run recorded a negative terminal-outcome count"
         if sum(self.candidate_terminal_outcomes.values()) != self.candidates_inventoried:
             return (
                 f"{sum(self.candidate_terminal_outcomes.values())} terminal outcome(s) do not account for "
@@ -138,6 +147,12 @@ class SubjectDenominatorCounts:
         """
 
         if self.candidates_inventoried is None:
+            return False
+        if self.candidates_inventoried < 0:
+            return False
+        if self.candidates_included is not None and not 0 <= self.candidates_included <= self.candidates_inventoried:
+            return False
+        if any(value < 0 for value in self.candidate_terminal_outcomes.values()):
             return False
         if sum(self.candidate_terminal_outcomes.values()) != self.candidates_inventoried:
             return False

@@ -434,6 +434,38 @@ def test_an_unaccounted_terminal_outcome_breaks_conservation() -> None:
     assert "do not account for" in matrix.subjects[0].counts.conservation_detail
 
 
+@pytest.mark.parametrize(
+    ("candidates", "included", "terminal"),
+    [
+        (4, 5, {"included": 4}),
+        (4, 3, {"included": 5, "intentionally_excluded": -1}),
+    ],
+)
+def test_negative_or_out_of_range_counts_break_conservation(
+    candidates: int,
+    included: int,
+    terminal: dict[str, int],
+) -> None:
+    """Malformed arithmetic must not manufacture a conserved denominator.
+
+    Anti-vacuity: accepting either an included count above the inventory or a
+    negative terminal bucket lets a malformed receipt sum to the inventory and
+    incorrectly produce a successful provider outcome.
+    """
+
+    denominator = _denominator(_required("codex"))
+    frontier = _frontier("codex", members=4)
+    receipt = _receipt("codex", candidates=candidates, included=included, samples=40, statuses=("unchanged",))
+    source = json_document(json_document(json_document(receipt["result"])["phase_receipt"])["source"])
+    source["source_candidate_terminal_outcomes"] = terminal
+
+    matrix = _reconcile(denominator, frontier, [receipt])
+    entry = matrix.subjects[0]
+    assert entry.outcome == "failed"
+    assert entry.counts is not None
+    assert not entry.counts.conserves
+
+
 def test_a_generated_subject_also_needs_a_reconciled_denominator() -> None:
     """An incomplete pass is a failure whether or not a version changed.
 
