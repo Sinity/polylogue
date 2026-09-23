@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,7 +28,10 @@ from polylogue.daemon.route_contracts import (
     route_contract_for_pattern,
     stable_route_contracts,
 )
+from polylogue.operations.daemon_reads import execute_read_operation
+from polylogue.operations.operation_context import open_operation_read
 from tests.infra.daemon_http_harness import capture_responses
+from tests.infra.storage_records import SessionBuilder
 from tests.unit.daemon.test_daemon_http_security import (
     ENDPOINTS_DELETE,
     ENDPOINTS_GET,
@@ -209,6 +213,57 @@ def test_find_openapi_operation_carries_declaration_contract() -> None:
         "auth_policy": "credential_if_configured",
         "domain_operation": "sessions.find",
         "owner_path": "polylogue/daemon/http.py",
+    }
+
+
+def test_query_units_http_route_matches_declared_operation_on_seeded_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The migrated HTTP adapter preserves the direct operation's page contract.
+
+    The route and operation use independent request adapters and transaction
+    readers.  A change to either the request lowering or one serialized page
+    field (including outcome, continuation, gaps/coverage, or totals) must
+    make this differential fail; only authority is excluded because it
+    intentionally identifies the serving surface.
+    """
+
+    archive_root = tmp_path / "archive"
+    SessionBuilder(archive_root / "index.db", "route-differential-0").provider("codex").title(
+        "Route differential"
+    ).add_message(text="seeded terminal query unit").save()
+
+    handler = _make_handler("GET", "/api/query-units")
+    send_error = MagicMock()
+    send_json = MagicMock()
+    handler._send_error = send_error  # type: ignore[method-assign]
+    handler._send_json = send_json  # type: ignore[method-assign]
+    monkeypatch.setattr("polylogue.daemon.http._web_reader_archive_root", lambda: archive_root)
+
+    params = {"expression": ["messages where role:user"], "limit": ["1"]}
+    handler._handle_query_units(params)
+
+    send_error.assert_not_called()
+    send_json.assert_called_once()
+    status, http_payload = send_json.call_args.args[:2]
+    assert status == HTTPStatus.OK
+    assert isinstance(http_payload, dict)
+
+    with open_operation_read(archive_root) as pinned:
+        direct_payload = execute_read_operation(
+            "query.units",
+            {"params": {"expression": "messages where role:user", "limit": 1}},
+            archive=pinned.archive,
+            serving_identity="direct",
+        )
+
+    declaration = daemon_route_declaration("GET", "/api/query-units")
+    assert declaration.domain_operation == "query.units"
+    # Compare every serialized field the operation owns (including any future
+    # coverage/gap fields); authority is the one intentional surface-specific
+    # projection and therefore is the only excluded key.
+    assert {key: value for key, value in http_payload.items() if key != "authority"} == {
+        key: value for key, value in direct_payload.items() if key != "authority"
     }
 
 
