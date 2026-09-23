@@ -171,12 +171,15 @@ def test_failed_candidate_open_releases_the_ops_holder(
     Anti-vacuity: removing the exception cleanup in ``open_writer`` leaves the
     holder populated after this deliberate open failure.
     """
-    from polylogue.sources.live import cold_build as cold_build_module
 
     def fail_open(*args: object, **kwargs: object) -> object:
         raise sqlite3.OperationalError("candidate open failed")
 
-    monkeypatch.setattr(cold_build_module.ArchiveStore, "open_cold_build_generation", classmethod(fail_open))
+    # ArchiveStore is imported into cold_build for use, not re-exported, so
+    # patch it at its owning module and let cold_build resolve the same object.
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    monkeypatch.setattr(ArchiveStore, "open_cold_build_generation", classmethod(fail_open))
     with pytest.raises(sqlite3.OperationalError, match="candidate open failed"):
         cold_build.open_writer()
     assert cold_build._ops_checkpoint_holder is None

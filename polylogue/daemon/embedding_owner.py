@@ -27,12 +27,14 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, TypeVar
+from typing import TYPE_CHECKING, TypedDict, TypeVar, cast
 
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
 if TYPE_CHECKING:
+    from typing import SupportsFloat, SupportsInt
+
     from polylogue.daemon.derivation import DerivationReport
     from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
     from polylogue.operations.operation_context import OperationContext
@@ -259,6 +261,11 @@ def compose_embedding_convergence(
                 )
                 computed = report.work.computed
                 run_id = receipt["run_id"]
+                # Hoisted out of the ``run_id is not None`` branch below: the
+                # max_errors deferral reads it unconditionally, so leaving it
+                # bound only on the receipt path raised NameError whenever a
+                # pass ran without a receipt run id.
+                failures = report.count(Outcome.FAILED)
                 if run_id is not None:
                     # Attempt rows are telemetry only.  This final estimate is
                     # deliberately conservative: a failed provider call can
@@ -267,7 +274,6 @@ def compose_embedding_convergence(
                     from polylogue.core.enums import OperationStatus
                     from polylogue.daemon.embedding_backlog import _upsert_archive_embedding_catchup_run
 
-                    failures = report.count(Outcome.FAILED)
                     await write_bridge.run_async(
                         "embedding.catchup_receipt",
                         partial(
@@ -321,12 +327,20 @@ async def execute_embedding_backfill_operation(
         raise PermissionError("daemon_required")
     root = context.archive_root
     payload = request.payload
-    max_sessions = payload.get("max_sessions")
-    max_messages = payload.get("max_messages")
-    max_cost_usd = payload.get("max_cost_usd")
-    min_messages = payload.get("min_messages")
-    stop_after_seconds = payload.get("stop_after_seconds")
-    max_errors = payload.get("max_errors")
+
+    # The request payload is dict[str, object]; narrow each bound once here so
+    # the int()/float() call sites below are typed rather than each casting.
+    def _bound(key: str) -> int | None:
+        value = payload.get(key)
+        return None if value is None else int(cast("SupportsInt", value))
+
+    max_sessions = _bound("max_sessions")
+    max_messages = _bound("max_messages")
+    min_messages = _bound("min_messages")
+    stop_after_seconds = _bound("stop_after_seconds")
+    max_errors = _bound("max_errors")
+    _raw_cost = payload.get("max_cost_usd")
+    max_cost_usd = None if _raw_cost is None else float(cast("SupportsFloat", _raw_cost))
 
     # Resolve the bounded session window on the daemon's read side.  The
     # resulting ids are only intent; all embedding writes still go through the
@@ -341,19 +355,19 @@ async def execute_embedding_backfill_operation(
             root / "index.db",
             archive_root=root,
             rebuild=bool(payload.get("rebuild")),
-            max_sessions=int(max_sessions) if max_sessions is not None else None,
-            max_messages=int(max_messages) if max_messages is not None else None,
-            min_messages=int(min_messages) if min_messages is not None else None,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+            min_messages=min_messages,
         )
 
     owner = compose_embedding_convergence(
         root / "index.db",
         compute_adapter=daemon_compute_adapter(),
         write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
-        max_messages=int(max_messages) if max_messages is not None else None,
-        max_cost_usd=float(max_cost_usd) if max_cost_usd is not None else None,
-        stop_after_seconds=int(stop_after_seconds) if stop_after_seconds is not None else None,
-        max_errors=int(max_errors) if max_errors is not None else None,
+        max_messages=max_messages,
+        max_cost_usd=max_cost_usd,
+        stop_after_seconds=stop_after_seconds,
+        max_errors=max_errors,
     )
     result = await owner(scope)
     from polylogue.operations.embedding_derivation import estimated_embedding_message_cost
