@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -50,6 +52,85 @@ def test_periodic_embedding_backlog_waits_for_watcher_registration(monkeypatch: 
 
     asyncio.run(exercise())
     assert calls == [None]
+
+
+def test_embedding_admission_bounds_no_timeout_wait_on_owner_loop_liveness() -> None:
+    """The surviving embedding bridge call cannot strand its caller forever.
+
+    The embedding owner deliberately passes ``None`` as its wait budget: an
+    admitted publication must settle rather than be cancelled by a caller
+    timeout.  The owner loop stopping is the only bounded failure, and must
+    report an indeterminate typed outcome while the admitted body still
+    settles on its own thread.
+
+    Anti-vacuity: changing ``DaemonEmbeddingAdmission`` back to a raw
+    ``future.result(timeout=None)`` leaves ``caller`` alive after the loop
+    stops and makes this test fail.
+    """
+    from polylogue.daemon.write_coordinator import DaemonWriterOwnerLoopStopped
+
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    admission_holder: list[embedding_owner.DaemonEmbeddingAdmission] = []
+
+    def run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        coordinator = DaemonWriteCoordinator()
+        bridge = DaemonWriteThreadBridge(coordinator, loop, timeout=0.05)
+
+        async def compose() -> None:
+            admission_holder.append(embedding_owner.DaemonEmbeddingAdmission(bridge, loop))
+            ready.set()
+
+        loop.run_until_complete(compose())
+        loop.run_forever()
+
+    loop_thread = threading.Thread(target=run_loop, daemon=True)
+    loop_thread.start()
+    assert ready.wait(timeout=5.0)
+
+    started = threading.Event()
+    allow_settle = threading.Event()
+    settled: list[str] = []
+    raised: list[BaseException] = []
+
+    def publish() -> str:
+        started.set()
+        assert allow_settle.wait(timeout=5.0)
+        settled.append("published")
+        return "receipt"
+
+    def caller_body() -> None:
+        try:
+            admission_holder[0]("embedding.publish", publish)
+        except BaseException as exc:
+            raised.append(exc)
+
+    caller = threading.Thread(target=caller_body, daemon=True)
+    caller.start()
+    try:
+        assert started.wait(timeout=5.0)
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5.0)
+        assert not loop_thread.is_alive()
+
+        caller.join(timeout=5.0)
+        assert not caller.is_alive(), "embedding admission outlived its owner loop"
+        assert len(raised) == 1
+        assert isinstance(raised[0], DaemonWriterOwnerLoopStopped)
+        assert "may still be in flight" in str(raised[0])
+
+        allow_settle.set()
+        for _ in range(500):
+            if settled:
+                break
+            time.sleep(0.01)
+        assert settled == ["published"]
+    finally:
+        allow_settle.set()
+        caller.join(timeout=5.0)
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5.0)
 
 
 def test_embedding_composition_defers_disabled_without_constructing_provider(
