@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Executor, Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -333,7 +333,7 @@ class LiveParsePrefetchCache:
 
 
 class LiveParseStage:
-    """Owns the watcher's bounded off-writer-hold pre-parse ``ThreadPoolExecutor`` + cache.
+    """Owns the watcher's bounded off-writer-hold parse executor + cache.
 
     One instance lives for the ``LiveWatcher``'s lifetime, created on
     construction. ``warm`` is synchronous/blocking -- callers run it off the
@@ -349,6 +349,7 @@ class LiveParseStage:
         max_inflight_bytes: int | None = None,
         warm_timeout_seconds: float | None = None,
         shard_directory: Path | None = None,
+        use_processes: bool = False,
     ) -> None:
         # polylogue-bp12n.6. Where a worker's sealed shard goes, or ``None``
         # to keep row binding on the writer thread. The stage owns the
@@ -367,10 +368,20 @@ class LiveParseStage:
             # is no other owner to consult.
             for residue in shard_directory.glob("shard-*"):
                 discard_session_shard(residue)
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_workers if max_workers is not None else live_watcher_parse_stage_worker_count(),
-            thread_name_prefix="polylogue-live-parse-stage",
-        )
+        worker_count = max_workers if max_workers is not None else live_watcher_parse_stage_worker_count()
+        if use_processes:
+            # The ordinary watcher route runs on the supported GIL build too.
+            # A process pool is the only way for its CPU-bound parser to make
+            # genuine progress in parallel there; free-threaded callers and
+            # test-owned stages retain the lighter thread executor.
+            from polylogue.pipeline.services.process_pool import process_pool_executor
+
+            self._executor: Executor = process_pool_executor(max_workers=worker_count)
+        else:
+            self._executor = ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="polylogue-live-parse-stage",
+            )
         self.cache = LiveParsePrefetchCache(
             max_inflight_bytes=(
                 max_inflight_bytes if max_inflight_bytes is not None else live_watcher_parse_stage_max_inflight_bytes()
