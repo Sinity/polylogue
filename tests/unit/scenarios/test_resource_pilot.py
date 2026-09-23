@@ -196,3 +196,14 @@ def test_multiplicity_scenario_is_not_a_set_sum() -> None:
     case = next(case for case in pilot_scenarios() if case.name == "multiplicity-sensitive-sum")
     collapsed = project_representation(case, {"amounts": sorted({2, 3})})
     assert collapsed.weighted_total != case.expected.weighted_total
+
+
+def test_payload_tail_and_revision_order_are_independent_facts() -> None:
+    """Tail bytes and revision selection remain observable beyond row counts."""
+
+    cases = {case.name: case for case in pilot_scenarios()}
+    tail = cases["payload-tail-preservation"]
+    revisions = cases["ordering-revision-relations"]
+
+    assert project_representation(tail, tail.representations[0]) == tail.expected
+    assert project_representation(revisions, revisions.representations[0]) == revisions.expected
