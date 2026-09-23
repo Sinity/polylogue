@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from time import perf_counter
 
 import pytest
 
@@ -24,6 +25,7 @@ from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
     SeededArchiveQueryLease,
+    clone_seeded_archive,
     current_seeded_archive_reachability,
     default_cache_root,
     seeded_archive_key,
@@ -86,6 +88,34 @@ def test_pilot_reuses_the_declared_shared_artifact_instead_of_rebuilding_one(
     assert reacquired.manifest.manifest_id == pilot_artifact.manifest.manifest_id
 
 
+def test_pilot_repeated_provider_build_reports_setup_and_byte_cost(tmp_path: Path) -> None:
+    """Keep a small, reproducible cost receipt for the demand-driven pilot.
+
+    This deliberately measures provider-byte construction only: parser tests
+    must not pay for archive tiers, and the immutable archive reuse assertion
+    above covers the separate cache/build path.  The receipt is diagnostic,
+    while equal identities and byte counts make the comparison deterministic.
+    """
+    measurements: list[tuple[float, int, tuple[str, ...]]] = []
+    for attempt in range(2):
+        root = tmp_path / f"build-{attempt}"
+        started = perf_counter()
+        packages = build_pilot_provider_packages(root)
+        elapsed = perf_counter() - started
+        bytes_written = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+        measurements.append((elapsed, bytes_written, tuple(package.identity for package in packages)))
+
+    first, second = measurements
+    assert first[1] > 0
+    assert second[1] == first[1]
+    assert second[2] == first[2]
+    print(
+        "pilot-provider-build-cost="
+        f"{{'builds': 2, 'bytes': {first[1]}, 'setup_seconds': "
+        f"[{first[0]:.6f}, {second[0]:.6f}], 'identities_equal': true}}"
+    )
+
+
 def test_parser_resource_acquisition_opens_no_archive_tier(tmp_path: Path) -> None:
     """Acquiring AND parsing the pilot's bytes opens no SQLite tier at all.
 
@@ -134,15 +164,22 @@ def test_query_resource_reuses_one_authenticated_immutable_artifact(
 def test_mutation_resource_isolated_from_artifact_and_siblings(
     pilot_artifact: SeededArchiveArtifact,
     pilot_writable_archive: SeededArchiveClone,
+    tmp_path: Path,
 ) -> None:
     """A committed mutation remains in its clone, not the immutable sibling."""
     session_id = next(fact.expected_session_id for fact in pilot_artifact.facts if fact.expected_session_id)
+    sibling = clone_seeded_archive(pilot_artifact, tmp_path / "pilot-sibling-archive")
     with ArchiveStore(pilot_writable_archive.root) as archive:
         assert archive.add_user_tags((session_id,), ("pilot-isolated",)) == 1
         assert archive.list_user_tags() == {"pilot-isolated": 1}
 
     with ArchiveStore.open_existing(pilot_artifact.root, read_only=True) as archive:
         assert archive.list_user_tags() == {}
+    try:
+        with ArchiveStore.open_existing(sibling.root, read_only=True) as archive:
+            assert archive.list_user_tags() == {}
+    finally:
+        sibling.close()
 
 
 def test_transport_resource_uses_the_real_daemon_operation_route(
