@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -127,7 +128,7 @@ def _semantic_path_action(*, action_id: str, message_id: str, affected_path: str
 
 
 @pytest.fixture
-def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Path]]:
     """CLI workspace seeded with searchable sessions in the archive store.
 
     The query path the root CLI reads resolves to
