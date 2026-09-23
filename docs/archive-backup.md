@@ -108,18 +108,18 @@ sqlite3 "file:$(readlink -f "$POLYLOGUE_ARCHIVE_ROOT/index.db")?mode=ro" 'PRAGMA
 The candidate is the newest first-parent `master` commit whose
 `ARCHIVE_VERSION_BY_TIER` in
 `polylogue/storage/sqlite/archive_tiers/__init__.py` maps every tier to those
-numbers. Tiers migrate on independent schedules, so an archive whose durable
-tiers were migrated at different times may have no commit that matches every
-tier. Pin on
-the tiers the restore has to read, and record which tier is left unopenable and
-what that costs.
+numbers. This is the single version authority; the durable tier modules do not
+declare parallel `SOURCE_SCHEMA_VERSION`, `USER_SCHEMA_VERSION`, or
+`AUDIT_SCHEMA_VERSION` constants. Tiers migrate on independent schedules, so
+an archive whose durable tiers were migrated at different times may have no
+commit that matches every tier. Pin on the tiers the restore has to read, and
+record which tier is left unopenable and what that costs.
 
 **This rule searches history, and history has a discontinuity.** The durable
-tier version chain was reset to a floor: `ARCHIVE_FORMAT_FLOOR_VERSION = 1`, and
-the durable tier modules deliberately declare no `*_SCHEMA_VERSION` of their
-own. `ARCHIVE_VERSION_BY_TIER` now reads `SOURCE_TIER_VERSION` and
-`USER_TIER_VERSION` — both currently `2` — and maps audit to the floor. An
-archive carrying pre-reset numbers therefore has **no post-reset commit that
+tier lineage was reset to `ARCHIVE_FORMAT_FLOOR_VERSION = 1`, while the
+current authority maps source to `SOURCE_TIER_VERSION = 4`, user to
+`USER_TIER_VERSION = 2`, and audit to `AUDIT_TIER_VERSION = 2`.
+An archive carrying pre-reset numbers therefore has **no post-reset commit that
 matches it**, and the rule above resolves only into pre-reset history. Read the
 numbers out of the archive first and check which side of the reset they are on
 before searching; a search that returns nothing is the expected answer for a
@@ -168,17 +168,25 @@ Three facts about that pin, each rechecked 2026-09-22:
 * **The audit tier is outside the four-tier match.** The pin's window is source 30, user 10, index 67, embeddings 4, ops 1. Audit is not in that list: the pin declares audit version 1 while a live archive at that window carries `user_version = 2`. A rollback checkout at this pin therefore faces audit-tier skew, and what it costs must be reported rather than assumed away.
 * **Reproducing the pin from a live pre-reset archive no longer works**, for the floor-reset reason recorded above. Take the pin as recorded here; do not expect to re-derive it.
 
+The prior rollback drill also exported 107 user assertions (18 columns) and
+verified a canonical row-list SHA-256 round trip. That export is private
+operator evidence, not a Git artifact and not a substitute for retaining
+`user.db`; recheck its count and digest against the aside snapshot before
+authorizing a restore.
+
 Before a wipe, the operator must recheck the private packet and record its exact archive-root path, commit, executable version, and a size/mtime/ctime/sha256 manifest outside Git. The packet is ready only when all six files are present: `source.db`, `index.db`, `embeddings.db`, `user.db`, `audit.db`, and `ops.db`, together with the referenced blobs. The independently exported user assertions file is additional evidence, not a replacement for `user.db`.
 
 ### Assembling a packet is not the only route
 
 The 2026-09-20 operator simplification: for the fresh restart the operation is
-**stop the daemon, move the archive root aside, start the daemon, let it
-converge**. Everything in the root moves together, inbox symlinks included, and
-nothing durable is written to obtain the rollback — so it cannot fail halfway,
-and no packet has to be assembled or copied first. The packet procedure above
-remains the route for a rollback that must live somewhere other than the
-original path.
+**stop the daemon, move `/realm/state/polylogue` aside as one intact root,
+start the daemon, and let it converge into the recreated root**. Everything in
+the root moves together, inbox symlinks and referenced blob material included,
+and nothing durable is written to obtain the rollback. It therefore cannot fail
+halfway by migrating the only copy, and no packet has to be assembled or copied
+first. Keep the aside path and the pinned checkout together. The packet
+procedure above remains the route for a rollback that must live somewhere other
+than the original path.
 
 Two mechanical notes for whoever runs the move:
 
