@@ -250,6 +250,32 @@ def test_publication_refuses_a_binding_that_moved_under_the_computation(
         )
 
 
+def test_excess_publication_removes_the_complete_profile_family(
+    archive: tuple[Path, str],
+) -> None:
+    """An absent session retires profile and latency rows together.
+
+    Anti-vacuity: deleting only ``session_profiles`` leaves the sibling
+    ``session_latency_profiles`` row behind, so the retained family is not
+    actually retired and a later family census can observe orphan state.
+    """
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+
+    with write_lease("test.delete-session"), closing(_write_connection(index_db)) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+
+    with write_lease("test.publish-excess"), closing(_write_connection(index_db)) as conn:
+        assert publish_session_profile(conn, session_id, input_binding="obsolete") is True
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        for table in ("session_profiles", "session_latency_profiles"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+
+
 def test_a_profile_with_no_stored_binding_is_stale_not_valid(archive: tuple[Path, str]) -> None:
     """A row that cannot say what it was computed from cannot certify itself."""
     index_db, session_id = archive
