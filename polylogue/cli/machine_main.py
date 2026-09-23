@@ -82,6 +82,7 @@ def run_machine_entry(
     argv: list[str],
 ) -> None:
     """Run the CLI, emitting JSON machine errors when requested."""
+    from polylogue.cli.operation_kernel import OperationUnavailableError
     from polylogue.cli.shared.helper_support import DaemonRequiredError
     from polylogue.cli.shared.machine_errors import (
         error_archive_writer_ownership,
@@ -157,6 +158,20 @@ def run_machine_entry(
             operation=exc.operation,
             archive_root=exc.archive_root,
         ).emit(exit_code=exc.exit_code)
+    except OperationUnavailableError as exc:
+        # The kernel's own daemon-absent refusal. It is a RuntimeError rather
+        # than a ClickException, so without this branch it reached the generic
+        # handler and emitted ``runtime_error`` -- the precise flattening the
+        # DaemonRequiredError branch above exists to prevent, arriving by the
+        # other door once the CLI stopped executing operations in-process
+        # (polylogue-3eexy). ``operation`` is carried as a field so the client
+        # need not parse it back out of the message (polylogue-re6s3 AC4).
+        error_daemon_required(
+            str(exc),
+            command=command,
+            operation=exc.operation,
+            archive_root=None,
+        ).emit(exit_code=2)
     except click.ClickException as exc:
         error_runtime(
             exc.format_message(),
