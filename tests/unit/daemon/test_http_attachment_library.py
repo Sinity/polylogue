@@ -19,8 +19,8 @@ class _PagedArchive:
 
     async def _get_attachment_library_page(self, **kwargs: object) -> list[tuple[object, str, str | None]]:
         self.calls.append(kwargs)
-        limit = int(kwargs["limit"])
-        offset = int(kwargs["offset"])
+        limit = cast(int, kwargs["limit"])
+        offset = cast(int, kwargs["offset"])
         return self.rows[offset : offset + limit]
 
     def filter(self, *_args: object, **_kwargs: object) -> object:

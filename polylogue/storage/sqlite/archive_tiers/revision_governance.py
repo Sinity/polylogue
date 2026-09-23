@@ -115,6 +115,7 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
+    LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
@@ -2201,6 +2202,16 @@ def replace_raw_membership_census(
             # text.  Keep the detail-only bridge for older producers, but do
             # not make explicitly typed writes depend on a prose spelling.
             census_authority = revision_authority or revision_authority_for_census_detail(detail)
+            if sessions and detail in LEGACY_FULL_REVISION_GOVERNANCE_DETAILS:
+                # Unconditional, and deliberately ahead of the authority check.
+                # Typing the authority is what frees the *wording* of a recognized
+                # marker (see the test for that); it does not make the retired
+                # spelling writable again. Keyed off the authority alone, a
+                # producer passing QUARANTINED explicitly would mint the legacy
+                # detail afresh and no query could then tell a pre-#3234 row from
+                # a new one -- the compat branch this bead exists to make
+                # retirable (polylogue-sze30 AC1).
+                raise ValueError("legacy marker is read-compatibility only and may never be written")
             if sessions and census_authority is not RawRevisionAuthority.QUARANTINED:
                 # A retirement that leaves membership rows behind is only observable
                 # through its ``raw_membership_census.detail`` marker: the retired raw
