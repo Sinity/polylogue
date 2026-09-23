@@ -607,7 +607,11 @@ def stream_preserved_zip_entry_raw_data(
         provider_hint=provider_hint,
         blob_hash=blob_hash,
         blob_size=blob_size,
-        source_index=source_index,
+        # A preserved member is addressed as the document itself.  Callers
+        # may still carry a ZIP-coordinate hint for their own raw-row keying,
+        # but publishing it on ``RawSessionData`` would make a whole member
+        # look like element ``N`` and invite positional replay.
+        source_index=None,
         blob_publication_receipt_id=publication_id,
         addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
         content_identity=content_identity,
