@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 import pytest
 
@@ -94,6 +94,34 @@ def test_direct_status_uses_the_pinned_archive_and_retains_legacy_sections(tmp_p
         "operation_attempts": 0,
     }
     assert {"archive_tiers", "convergence", "schema_drift", "raw_frontier_integrity"} <= set(payload)
+
+
+def test_compact_status_missing_index_is_not_ok_and_skips_exact_readiness(tmp_path: Path) -> None:
+    """Cheap tier evidence can refute compact status without certifying readiness."""
+    from unittest.mock import patch
+
+    from polylogue.operations import daemon_status as daemon_status_module
+    from polylogue.operations.daemon_status import produce_direct_status
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore(tmp_path) as archive:
+        real_archive_tiers = daemon_status_module._archive_tiers
+
+        def _tiers(archive_store: Any, conn: sqlite3.Connection) -> dict[str, dict[str, object]]:
+            tiers = real_archive_tiers(archive_store, conn)
+            tiers["index"]["exists"] = False
+            tiers["index"]["version_status"] = "missing"
+            return tiers
+
+        with patch("polylogue.operations.daemon_status._archive_tiers", side_effect=_tiers):
+            payload = produce_direct_status(archive=archive, now_ms=1_700_000_000_000)
+
+    assert payload["ok"] is False
+    readiness = payload["archive_readiness"]
+    assert isinstance(readiness, dict)
+    assert readiness["checked"] is False
 
 
 def test_direct_status_marks_missing_declared_relation_unavailable(tmp_path: Path) -> None:
