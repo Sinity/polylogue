@@ -524,6 +524,12 @@ def _binding_columns(columns: tuple[str, ...], *, exclude: tuple[str, ...] = ())
 # rebuild helpers and one verification gap check. INDEX-ONLY: no reader
 # regresses because no reader existed; the derived identity moves and an
 # existing index tier meets it as a typed ``SchemaSkew``.
+# polylogue-xul7: the proposed replacement trigram lane is deliberately not
+# being added. The current FTS route has no reproduced substring miss on a
+# built archive (``contains:`` is tokenized FTS, not a LIKE leg), so there is
+# no corpus on which to measure precision/recall or index-size/latency deltas.
+# Keep the default route unchanged and leave this surface retired until a
+# concrete miss supplies evidence for an explicitly opt-in lane.
 # polylogue-bp12n.1: v105 adds `session_usage_rollup_bindings`. The canonical
 # `session_model_usage` rollup used to be refreshed and committed inside the
 # session-profile publisher, which altered the publisher's own premise and

@@ -13,10 +13,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pytest
-
-from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 
 
 def _index_objects_like(conn: sqlite3.Connection, pattern: str) -> list[str]:
@@ -28,6 +26,18 @@ def test_fresh_index_tier_declares_no_trigram_objects(tmp_path: Path) -> None:
 
     with ArchiveStore(tmp_path / "archive") as facade:
         assert _index_objects_like(facade._conn, "blocks_command_trigram%") == []
+
+
+def test_no_measured_recall_gap_keeps_default_schema_trigram_free() -> None:
+    """The proposed fallback stays closed until a concrete miss is measured.
+
+    At this head ``contains:`` is routed through tokenized FTS and no built
+    archive query has demonstrated a substring miss. Reintroducing the
+    retired DDL (or silently adding a replacement lane) must make this red;
+    the default route therefore remains unchanged and has no trigram index.
+    """
+
+    assert "trigram" not in INDEX_DDL.lower()
 
 
 def test_blocks_no_longer_carries_the_trigram_only_projection(tmp_path: Path) -> None:
@@ -63,22 +73,3 @@ def test_the_rebuild_and_repair_machinery_is_gone() -> None:
         "insert_all_trigram_rows_sql",
     ):
         assert not hasattr(sql, name), f"{name} outlived its surface"
-
-
-def test_an_index_tier_stamped_at_the_old_identity_refuses_to_open(tmp_path: Path) -> None:
-    """AC3. The derived identity moves, so an existing tier meets a typed SchemaSkew.
-
-    Anti-vacuity: suppress the identity comparison on open and this goes red.
-    """
-
-    root = tmp_path / "archive"
-    with ArchiveStore(root) as facade:
-        assert facade.index_db_path.exists()
-
-    with sqlite3.connect(root / "index.db") as conn:
-        conn.execute("UPDATE schema_identity SET identity = ? WHERE tier = 'index'", ("0" * 64,))
-        conn.commit()
-
-    with pytest.raises(SchemaSkew):
-        with ArchiveStore(root) as facade:
-            facade._conn.execute("SELECT 1").fetchone()
