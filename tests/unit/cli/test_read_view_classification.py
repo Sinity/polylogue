@@ -76,9 +76,11 @@ def test_the_decided_classification_partitions_every_view() -> None:
 
     assert read_views_by_execution_kind("session-read-projection") == (
         "agent-policies",
+        "events",
         "file-edits",
         "hooks",
         "messages",
+        "raw",
         "web-content",
     )
     assert read_views_by_execution_kind("query-units-projection") == ()
@@ -94,9 +96,7 @@ def test_the_decided_classification_partitions_every_view() -> None:
         "correlation",
         "dialogue",
         "effective_context",
-        "events",
         "neighbors",
-        "raw",
         "temporal",
     )
     assert sum(

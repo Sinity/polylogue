@@ -563,7 +563,11 @@ class TestUnparseableDateBound:
     def test_valid_iso_date_is_accepted(self, cli_workspace: dict[str, Path]) -> None:
         exit_code, output = self._run("--since", "2026-01-15")
         assert "Cannot parse date" not in output, output
-        assert exit_code in (0, 2), output
+        # Direct read execution is retired: with ``--no-daemon`` the parsed
+        # request reaches the typed transport refusal rather than a local
+        # archive fallback.  The date must still be accepted before dispatch.
+        assert "start polylogued run to serve this operation: cli.query" in output, output
+        assert exit_code == 1, output
 
     def test_invalid_date_reaches_the_terminal_as_a_refusal(self, cli_workspace: dict[str, Path]) -> None:
         exit_code, output = self._run("--since", "not-a-date")
