@@ -353,7 +353,8 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
                 validation_status TEXT, parse_error TEXT, parsed_at_ms INTEGER
             );
             CREATE TABLE raw_membership_census (
-                raw_id TEXT PRIMARY KEY, status TEXT, member_count INTEGER, detail TEXT
+                raw_id TEXT PRIMARY KEY, status TEXT, member_count INTEGER, detail TEXT,
+                revision_authority TEXT
             );
             CREATE TABLE raw_session_memberships (raw_id TEXT, decision TEXT);
             """
@@ -379,18 +380,19 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
             "UPDATE raw_sessions SET parse_error = 'database locked' WHERE raw_id = 'terminal-application-error'"
         )
         conn.executemany(
-            "INSERT INTO raw_membership_census VALUES (?, ?, ?, ?)",
+            "INSERT INTO raw_membership_census VALUES (?, ?, ?, ?, ?)",
             [
                 (
                     "append-quarantine",
                     "failed",
                     0,
                     BYTE_AUTHORITY_CENSUS_DETAIL,
+                    "byte_proven",
                 ),
-                ("membership-quarantine", "complete", 1, None),
-                ("membership-settled", "complete", 2, None),
-                ("membership-incomplete", "complete", 2, None),
-                ("membership-null", "complete", 1, None),
+                ("membership-quarantine", "complete", 1, None, None),
+                ("membership-settled", "complete", 2, None, None),
+                ("membership-incomplete", "complete", 2, None, None),
+                ("membership-null", "complete", 1, None, None),
             ],
         )
         conn.executemany(

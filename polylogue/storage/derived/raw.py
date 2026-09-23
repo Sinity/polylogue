@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from polylogue.archive.revision_authority import (
-    BYTE_AUTHORITY_CENSUS_DETAIL,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
+    RawRevisionAuthority,
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
@@ -355,7 +355,7 @@ class RawObservationDerivation:
             and membership["parser_fingerprint"] == self.recipe_version,
             byte_governed_fragment=raw["source_index"] < 0
             and membership is not None
-            and membership["detail"] == BYTE_AUTHORITY_CENSUS_DETAIL,
+            and membership["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value,
         ):
             return "stale"
         if membership is not None and membership["status"] == "complete" and membership["member_count"] != len(members):

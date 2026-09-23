@@ -16,7 +16,7 @@ from polylogue.archive.raw_materialization import (
     source_path_native_id_candidates,
 )
 from polylogue.archive.revision_authority import (
-    BYTE_AUTHORITY_CENSUS_DETAIL,
+    RawRevisionAuthority,
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
@@ -252,14 +252,15 @@ def _pinned_parser_census_projection(
                EXISTS(
                    SELECT 1 FROM {source_schema}.raw_membership_census mc
                    WHERE mc.raw_id = r.raw_id AND r.source_index < 0
-                     AND mc.parser_fingerprint = ? AND mc.status = 'failed' AND mc.detail = ?
+                     AND mc.parser_fingerprint = ? AND mc.status = 'failed'
+                     AND mc.revision_authority = ?
                )
         FROM {source_schema}.raw_sessions r
         LEFT JOIN {source_schema}.raw_authority_parser_census p ON p.raw_id = r.raw_id
         LEFT JOIN {source_schema}.raw_session_memberships m ON m.raw_id = r.raw_id
         ORDER BY r.raw_id, m.logical_source_key
         """,
-        (RAW_AUTHORITY_PARSER_FINGERPRINT, RAW_AUTHORITY_PARSER_FINGERPRINT, BYTE_AUTHORITY_CENSUS_DETAIL),
+        (RAW_AUTHORITY_PARSER_FINGERPRINT, RAW_AUTHORITY_PARSER_FINGERPRINT, RawRevisionAuthority.BYTE_PROVEN.value),
     )
     complete_count = incomplete_count = incomplete_blob_bytes = missing_receipt_count = non_complete_receipt_count = 0
     incomplete_origins: Counter[str] = Counter()
@@ -780,7 +781,7 @@ def raw_materialization_readiness_snapshot(
                                  AND r.source_index < 0
                                  AND mc.parser_fingerprint = ?
                                  AND mc.status = 'failed'
-                                 AND mc.detail = ?
+                                 AND mc.revision_authority = ?
                            )
                     FROM source.raw_sessions AS r
                     LEFT JOIN source.raw_authority_parser_census AS p ON p.raw_id = r.raw_id
@@ -790,7 +791,7 @@ def raw_materialization_readiness_snapshot(
                     (
                         RAW_AUTHORITY_PARSER_FINGERPRINT,
                         RAW_AUTHORITY_PARSER_FINGERPRINT,
-                        BYTE_AUTHORITY_CENSUS_DETAIL,
+                        RawRevisionAuthority.BYTE_PROVEN.value,
                     ),
                 )
                 incomplete_origins: Counter[str] = Counter()
@@ -1301,10 +1302,10 @@ def _raw_gap_authority_category(
             quarantined = conn.execute(
                 f"""
                 SELECT 1 FROM {source_schema}.raw_membership_census
-                WHERE raw_id = ? AND status = 'failed' AND detail = ?
+                WHERE raw_id = ? AND status = 'failed' AND revision_authority = ?
                 LIMIT 1
                 """,
-                (raw_id, BYTE_AUTHORITY_CENSUS_DETAIL),
+                (raw_id, RawRevisionAuthority.BYTE_PROVEN.value),
             ).fetchone()
             if quarantined is not None:
                 return "append-authority-quarantined"

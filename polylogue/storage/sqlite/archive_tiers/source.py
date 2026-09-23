@@ -463,7 +463,8 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
     status             TEXT NOT NULL CHECK(status IN ('complete', 'failed', 'non_session')),
     member_count       INTEGER NOT NULL CHECK(member_count >= 0),
     censused_at_ms     INTEGER NOT NULL CHECK(censused_at_ms >= 0),
-    detail             TEXT NOT NULL DEFAULT ''
+    detail             TEXT NOT NULL DEFAULT '',
+    revision_authority TEXT
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS raw_legacy_append_resynthesis_receipts (

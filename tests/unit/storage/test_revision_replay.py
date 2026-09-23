@@ -391,8 +391,8 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
             conn.execute(
                 """
                 INSERT INTO raw_membership_census (
-                    raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
-                ) VALUES (?, ?, 'failed', 1, 1, ?)
+                    raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority
+                ) VALUES (?, ?, 'failed', 1, 1, ?, 'byte_proven')
                 """,
                 (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, BYTE_AUTHORITY_CENSUS_DETAIL),
             )
@@ -1604,9 +1604,10 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
                 "UPDATE raw_membership_census SET detail = ? WHERE raw_id = ?",
                 [(unrecognized, raw_id) for raw_id in retired],
             )
+        # Changing display wording cannot change the typed governance result.
         promoted = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
 
-    assert promoted.accepted_raw_ids == (raw_c,)
+    assert promoted.accepted_raw_ids == ()
 
 
 def test_legacy_governance_marker_is_never_writable(

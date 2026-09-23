@@ -1002,7 +1002,9 @@ def _install_revision_governance(source_db: Path) -> None:
     """Give the fixture archive the source-tier tables revision governance writes."""
     with sqlite3.connect(source_db) as conn:
         conn.execute("ALTER TABLE raw_sessions ADD COLUMN revision_authority TEXT NOT NULL DEFAULT 'quarantined'")
-        conn.execute("CREATE TABLE raw_membership_census (raw_id TEXT, status TEXT, detail TEXT)")
+        conn.execute(
+            "CREATE TABLE raw_membership_census (raw_id TEXT, status TEXT, detail TEXT, revision_authority TEXT)"
+        )
         conn.execute("CREATE TABLE raw_session_memberships (raw_id TEXT, decision TEXT)")
 
 
@@ -1011,7 +1013,7 @@ def test_archive_debt_reports_ambiguous_membership_quarantine_as_blocked(tmp_pat
     _install_revision_governance(source_db)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
-            "INSERT INTO raw_membership_census (raw_id, status, detail) VALUES (?, 'complete', NULL)",
+            "INSERT INTO raw_membership_census (raw_id, status, detail, revision_authority) VALUES (?, 'complete', NULL, NULL)",
             ("raw-parse-pending",),
         )
         conn.execute(
@@ -1049,7 +1051,7 @@ def test_archive_debt_reports_byte_authority_quarantine_for_parsed_raws(tmp_path
             ("raw-parsed-no-session",),
         )
         conn.execute(
-            "INSERT INTO raw_membership_census (raw_id, status, detail) VALUES (?, 'failed', ?)",
+            "INSERT INTO raw_membership_census (raw_id, status, detail, revision_authority) VALUES (?, 'failed', ?, 'byte_proven')",
             ("raw-parsed-no-session", BYTE_AUTHORITY_CENSUS_DETAIL),
         )
 

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from polylogue.archive.revision_authority import (
-    BYTE_AUTHORITY_CENSUS_DETAIL,
+    RawRevisionAuthority,
     canonical_authority_logical_key,
     durable_authority_logical_keys,
     parser_census_is_complete,
@@ -466,7 +466,7 @@ def _parser_census_state(
     ).fetchone()[0]
     membership_census = source_conn.execute(
         """
-        SELECT parser_fingerprint, status, member_count, detail
+        SELECT parser_fingerprint, status, member_count, revision_authority
         FROM main.raw_membership_census WHERE raw_id = ?
         """,
         (raw_id,),
@@ -486,7 +486,7 @@ def _parser_census_state(
         and str(membership_census[0]) == RAW_AUTHORITY_PARSER_FINGERPRINT
         and str(membership_census[1]) == "failed"
         and membership_count == 0
-        and str(membership_census[3]) == BYTE_AUTHORITY_CENSUS_DETAIL
+        and str(membership_census[3]) == RawRevisionAuthority.BYTE_PROVEN.value
     )
     expected_membership_census = (
         parser_confirmed_non_session

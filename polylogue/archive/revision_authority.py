@@ -37,6 +37,20 @@ class RawRevisionAuthority(PolylogueStrEnum):
     QUARANTINED = "quarantined"
 
 
+def revision_authority_for_census_detail(detail: str) -> RawRevisionAuthority | None:
+    """Translate legacy census markers at the write boundary.
+
+    ``detail`` remains display text; durable readers must use the typed
+    ``raw_membership_census.revision_authority`` column.  This narrow bridge
+    exists only while older callers still supply the explanatory marker.
+    """
+    if detail == BYTE_AUTHORITY_CENSUS_DETAIL:
+        return RawRevisionAuthority.BYTE_PROVEN
+    if detail == HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL:
+        return RawRevisionAuthority.QUARANTINED
+    return None
+
+
 BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"
 
 #: Current parser semantics for source-tier membership and parser receipts.

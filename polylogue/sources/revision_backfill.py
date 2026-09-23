@@ -1129,7 +1129,7 @@ def uncensused_historical_revision_raw_ids(
                                 AND r.source_index < 0
                                 AND mc.parser_fingerprint = ?
                                 AND mc.status = 'failed'
-                                AND mc.detail = ?),
+                                AND mc.revision_authority = ?),
                        m.logical_source_key
                 FROM raw_sessions AS r
                 JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
@@ -1143,7 +1143,7 @@ def uncensused_historical_revision_raw_ids(
                 (
                     RAW_AUTHORITY_PARSER_FINGERPRINT,
                     RAW_AUTHORITY_PARSER_FINGERPRINT,
-                    BYTE_AUTHORITY_CENSUS_DETAIL,
+                    RawRevisionAuthority.BYTE_PROVEN.value,
                     *raw_id_chunk,
                     RAW_AUTHORITY_PARSER_FINGERPRINT,
                 ),
@@ -1805,7 +1805,7 @@ def require_current_parser_source_census(
             params = (
                 RAW_AUTHORITY_PARSER_FINGERPRINT,
                 RAW_AUTHORITY_PARSER_FINGERPRINT,
-                BYTE_AUTHORITY_CENSUS_DETAIL,
+                RawRevisionAuthority.BYTE_PROVEN.value,
                 *(() if selection is None else selection),
             )
             rows = source_conn.execute(
@@ -1824,7 +1824,7 @@ def require_current_parser_source_census(
                              AND r.source_index < 0
                              AND mc.parser_fingerprint = ?
                              AND mc.status = 'failed'
-                             AND mc.detail = ?
+                             AND mc.revision_authority = ?
                        )
                 FROM raw_sessions AS r
                 LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
