@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from polylogue.storage.derived.session.derivation import SESSION_PROFILE_DOMAIN
+from polylogue.storage.sqlite.archive_tiers.user_write import advance_session_marker_delivery
 
 if TYPE_CHECKING:
     from polylogue.markers import MarkerCandidate
@@ -270,15 +271,14 @@ class SessionMarkerDerivation:
                     conn.rollback()
                     return True
             lower_markers(conn, replacement.payload)
-            conn.execute(
-                """
-                INSERT INTO session_marker_delivery(session_id, input_binding, applied_at_ms)
-                VALUES (?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    input_binding = excluded.input_binding,
-                    applied_at_ms = excluded.applied_at_ms
-                """,
-                (replacement.key, replacement.input_binding, _now_ms()),
+            # The durable user tier owns this row; the statement lives with its
+            # writer (user_write.advance_session_marker_delivery) so a derived
+            # module does not mutate user.db directly.
+            advance_session_marker_delivery(
+                conn,
+                session_id=replacement.key,
+                input_binding=replacement.input_binding,
+                applied_at_ms=_now_ms(),
             )
             conn.commit()
         except BaseException:

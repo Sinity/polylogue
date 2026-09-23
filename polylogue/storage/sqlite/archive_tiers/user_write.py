@@ -2759,6 +2759,38 @@ def count_assertion_claims(
     return int(row[0]) if row is not None else 0
 
 
+def advance_session_marker_delivery(
+    conn: sqlite3.Connection, *, session_id: str, input_binding: str, applied_at_ms: int
+) -> None:
+    """Advance one session's marker delivery position, monotonically.
+
+    The durable user tier owns this row, so the statement lives here rather
+    than in the derived marker domain that calls it: a derived module writing
+    user.db directly is what ``devtools gate layering``'s writer-module census
+    exists to catch (polylogue-bp12n.1).
+
+    The conflict clause carries its own prior state --
+    ``excluded.applied_at_ms >= session_marker_delivery.applied_at_ms`` -- so a
+    late or replayed delivery cannot rewind a position that has already moved
+    forward. The caller commits this in the same transaction as the assertion
+    rows it describes, which is why the position is durable rather than derived:
+    after a crash a rebuildable cursor could disagree with the rows it claims
+    to have delivered.
+    """
+
+    conn.execute(
+        """
+        INSERT INTO session_marker_delivery(session_id, input_binding, applied_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            input_binding = excluded.input_binding,
+            applied_at_ms = excluded.applied_at_ms
+        WHERE excluded.applied_at_ms >= session_marker_delivery.applied_at_ms
+        """,
+        (session_id, input_binding, applied_at_ms),
+    )
+
+
 __all__ = [
     "ASSERTION_CLAIM_KINDS",
     "ASSERTION_CANDIDATE_JUDGMENT_KINDS",
@@ -2833,6 +2865,7 @@ __all__ = [
     "read_archive_workspace_envelope",
     "read_assertion_envelope",
     "read_latest_candidate_judgment",
+    "advance_session_marker_delivery",
     "upsert_annotation",
     "upsert_assertion",
     "upsert_judgment_automation_receipt_outbox",
