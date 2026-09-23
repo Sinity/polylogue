@@ -1262,10 +1262,33 @@ def _apply_single_session_excision(
             if existing_receipt is None:
                 refs = _target_refs(target)
                 removed_assertions = 0
+                tombstoned_assertions = 0
                 for ref in refs:
+                    # Marker assertions are replay products keyed by a stable
+                    # ``marker-*`` id.  Keep a content-free terminal tombstone
+                    # for them: otherwise the next marker convergence pass
+                    # sees the deterministic id as absent and lowers the
+                    # excised content again.  All other assertions retain the
+                    # existing hard-delete policy.
+                    marker_cursor = conn.execute(
+                        """
+                        UPDATE assertions
+                        SET target_ref = ?, value_json = '{}', body_text = NULL,
+                            evidence_refs_json = '[]', status = ?, updated_at_ms = ?
+                        WHERE target_ref = ? AND assertion_id LIKE 'marker-%'
+                        """,
+                        (
+                            f"excision-marker:{session_id}",
+                            AssertionStatus.DELETED.value,
+                            timestamp,
+                            ref,
+                        ),
+                    )
+                    tombstoned_assertions += max(marker_cursor.rowcount, 0)
                     cursor = conn.execute("DELETE FROM assertions WHERE target_ref = ?", (ref,))
                     removed_assertions += max(cursor.rowcount, 0)
                 counts["user_assertions_removed"] = removed_assertions
+                counts["user_assertions_tombstoned"] = tombstoned_assertions
 
                 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 
