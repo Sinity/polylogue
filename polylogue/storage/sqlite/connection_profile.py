@@ -485,6 +485,11 @@ TIMEOUT_CLASSES: Mapping[str, float] = {
     "background-read": TIMEOUT_CLASS_BACKGROUND_READ_S,
     "publication": TIMEOUT_CLASS_PUBLICATION_S,
     "offline-bulk": TIMEOUT_CLASS_OFFLINE_BULK_S,
+    # The active cold-build writer runs under the daemon's normal publication
+    # hold budget and therefore uses the same declared lock-wait class.  Keep
+    # it in the shared vocabulary so every named writer profile is validated
+    # against an explicit timeout class.
+    "active-cold-build": TIMEOUT_CLASS_PUBLICATION_S,
 }
 READ_PROFILES: Mapping[str, SQLiteConnectionProfile] = {
     "interactive-read": READ_CONNECTION_PROFILE,
