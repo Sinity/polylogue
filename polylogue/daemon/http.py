@@ -50,6 +50,8 @@ from polylogue.daemon.execution import (
 from polylogue.daemon.route_contracts import (
     DAEMON_ROUTE_DECLARATIONS,
     RouteContract,
+    RouteSpec,
+    declared_route_keys,
     route_contract_for_pattern,
     route_contract_from_declaration,
 )
@@ -83,6 +85,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
     register_write_coordinator,
 )
+from polylogue.declarations import HandlerBinding
 from polylogue.logging import DEBUG, ERROR, WARNING, emit, propagate
 from polylogue.logging import span as log_span
 from polylogue.operations.authority import authority_for_config, authority_for_reader
@@ -369,12 +372,8 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
 def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
     """Build a production GET adapter from the shared route declaration."""
 
-    declaration = next(
-        declaration
-        for declaration in DAEMON_ROUTE_DECLARATIONS
-        if declaration.method == method.upper() and declaration.path == path
-    )
-    binding = next(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
+    declaration = _declaration_for_route(method, path)
+    binding = _daemon_http_binding(declaration)
     try:
         contract = route_contract_for_pattern(method, path)
     except KeyError:
@@ -390,12 +389,8 @@ def _declared_static_get_route(method: str, path: str) -> _StaticGetRoute:
 def _declared_parameterized_get_route(method: str, path: str) -> _ParameterizedGetRoute:
     """Build a parameterized adapter entirely from a declared route spec."""
 
-    declaration = next(
-        declaration
-        for declaration in DAEMON_ROUTE_DECLARATIONS
-        if declaration.method == method.upper() and declaration.path == path
-    )
-    binding = next(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
+    declaration = _declaration_for_route(method, path)
+    binding = _daemon_http_binding(declaration)
     parts = _route_segments(declaration.path)
     parameter_index = next(index for index, part in enumerate(parts) if part.startswith(":"))
     try:
@@ -409,6 +404,26 @@ def _declared_parameterized_get_route(method: str, path: str) -> _ParameterizedG
         handler_name=binding.symbol,
         passes_params=True,
     )
+
+
+def _declaration_for_route(method: str, path: str) -> RouteSpec:
+    """Resolve one declaration or raise an actionable generation error."""
+
+    normalized_method = method.upper()
+    for declaration in DAEMON_ROUTE_DECLARATIONS:
+        if declaration.method == normalized_method and declaration.path == path:
+            return declaration
+    raise RuntimeError(f"daemon route declaration missing: {normalized_method} {path}")
+
+
+def _daemon_http_binding(declaration: RouteSpec) -> HandlerBinding:
+    """Return the sole daemon-http binding for a route declaration."""
+
+    bindings = tuple(binding for binding in declaration.kernel.handlers if binding.surface == "daemon-http")
+    if len(bindings) != 1:
+        declaration_id = declaration.kernel.declaration_id
+        raise RuntimeError(f"daemon route declaration must have one daemon-http binding: {declaration_id}")
+    return bindings[0]
 
 
 def _declared_get_routes() -> tuple[_StaticGetRoute | _ParameterizedGetRoute, ...]:
@@ -432,6 +447,11 @@ def validate_declared_route_reachability(handler_class: type[BaseHTTPRequestHand
     declared = tuple((item.method, item.path) for item in DAEMON_ROUTE_DECLARATIONS)
     if len(declared) != len(set(declared)):
         raise RuntimeError("duplicate daemon route declaration method/path")
+    expected = declared_route_keys()
+    if not expected.issubset(set(declared)):
+        missing = sorted(expected - set(declared))
+        extra = sorted(set(declared) - expected)
+        raise RuntimeError(f"daemon declaration generation mismatch: missing={missing}, extra={extra}")
     generated_routes = _declared_get_routes()
     generated = tuple((route.contract.method, route.pattern) for route in generated_routes)
     installed_routes: tuple[_StaticGetRoute | _ParameterizedGetRoute, ...] = (
@@ -442,18 +462,18 @@ def validate_declared_route_reachability(handler_class: type[BaseHTTPRequestHand
         for route in installed_routes
         if (route.contract.method, route.pattern) in set(declared)
     )
+    for route in generated_routes:
+        if not callable(getattr(handler_class, route.handler_name, None)):
+            raise RuntimeError(f"daemon route adapter is unreachable: {route.handler_name}")
     if (
-        len(generated) != len(declared)
-        or len(installed) != len(declared)
-        or set(generated) != set(declared)
-        or set(installed) != set(declared)
+        len(generated) != len(set(generated))
+        or len(installed) != len(set(installed))
+        or not expected.issubset(set(generated))
+        or not expected.issubset(set(installed))
     ):
         missing = sorted(set(declared) - set(installed))
         extra = sorted(set(installed) - set(declared))
         raise RuntimeError(f"daemon declaration generation mismatch: missing={missing}, extra={extra}")
-    for route in generated_routes:
-        if not callable(getattr(handler_class, route.handler_name, None)):
-            raise RuntimeError(f"daemon route adapter is unreachable: {route.handler_name}")
 
 
 def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
