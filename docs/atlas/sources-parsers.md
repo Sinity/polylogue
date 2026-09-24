@@ -77,7 +77,7 @@ provider (`docs/provider-origin-identity.md:15-30`;
   batch opens one read-only `source.db` handle for `raw_session_memberships`
   reads, while index publication and the later blob-publication receipt
   consumption each open their own archive-root-bound write connection
-  (`polylogue/pipeline/services/ingest_batch/_core.py:2837-2847`;
+  (`polylogue/pipeline/services/ingest_batch/_core.py:2837-2852`;
   `polylogue/pipeline/services/ingest_batch/_core.py:202-212`;
   `polylogue/pipeline/services/ingest_batch/_core.py:2960-2977`).
 
