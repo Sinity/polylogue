@@ -11,6 +11,9 @@ column. It is computed from structural inputs already present in the index:
 - the elapsed session duration,
 - the session date.
 
+Internal action-family identifiers are deliberately omitted: values such as
+``file_edit`` are useful for analysis but are not human-facing label text.
+
 The label is never written to
 ``sessions.title``: doing so would collide with genuine provider titles and
 freeze mid-session ("340 msgs" becomes wrong the moment message 341 lands).
@@ -31,7 +34,6 @@ __all__ = [
     "SessionRepoRootPath",
     "compute_session_structural_label",
     "distinct_repo_relative_file_count_for_session",
-    "dominant_action_family_for_session",
     "dominant_repo_relative_path_for_session",
     "session_structural_label_for_session",
 ]
@@ -70,15 +72,6 @@ class SessionLabelInputs:
     additional_file_count: int
     """Retained for compatibility with the earlier path-based projection."""
     message_count: int
-    dominant_action_family: str | None = None
-    """Most frequent ``action_pairs.semantic_type`` for the session.
-
-    Read from the same relation as the file count rather than from
-    ``session_profiles.workflow_shape``: the profile tier is materialized by
-    its own convergence stage, so a label sourced from it would change with
-    how far derivation has progressed rather than with the session's
-    evidence.
-    """
     distinct_file_count: int | None = None
     distinct_file_count_capped: bool = False
     """``True`` when ``distinct_file_count`` is a floor that hit
@@ -114,9 +107,6 @@ def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
         suffix = "+" if inputs.distinct_file_count_capped else ""
         parts.append(f"{distinct_file_count}{suffix} {noun}")
 
-    if inputs.dominant_action_family:
-        parts.append(inputs.dominant_action_family)
-
     parts.append(f"{inputs.message_count} msgs")
     if inputs.duration_ms is not None and inputs.duration_ms >= 0:
         duration_ms = inputs.duration_ms
@@ -137,28 +127,6 @@ class SessionRepoRootPath:
     repo_name: str | None
     root_path: str
     is_directory: bool
-
-
-def dominant_action_family_for_session(conn: sqlite3.Connection, session_id: str) -> str | None:
-    """Return the session's most frequent action family, or ``None``.
-
-    Ties break on the family name so the label is deterministic for a given
-    archive state. ``None`` means the session performed no classified action,
-    which is a real distinction from "performed actions of no dominant kind" —
-    the caller drops the component rather than printing a placeholder.
-    """
-    row = conn.execute(
-        """
-        SELECT semantic_type
-        FROM action_pairs
-        WHERE session_id = ? AND semantic_type IS NOT NULL AND semantic_type != ''
-        GROUP BY semantic_type
-        ORDER BY COUNT(*) DESC, semantic_type
-        LIMIT 1
-        """,
-        (session_id,),
-    ).fetchone()
-    return str(row[0]) if row and row[0] else None
 
 
 def _session_repo_root(conn: sqlite3.Connection, session_id: str) -> SessionRepoRootPath | None:
@@ -313,7 +281,6 @@ def session_structural_label_for_session(
         dominant_path=None,
         additional_file_count=0,
         message_count=message_count,
-        dominant_action_family=dominant_action_family_for_session(conn, session_id),
         distinct_file_count=distinct_files.count,
         distinct_file_count_capped=distinct_files.capped,
         duration_ms=duration_ms,

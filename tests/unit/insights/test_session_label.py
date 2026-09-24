@@ -243,6 +243,7 @@ def test_dominant_path_picks_most_touched_file_and_counts_the_rest(tmp_path: Pat
 
 
 def test_session_structural_label_for_session_end_to_end(tmp_path: Path) -> None:
+    """A parsed file edit contributes to the file count, not enum text."""
     conn = _connect(tmp_path / "index.db")
     repo_root = tmp_path / "myrepo"
     (repo_root / ".git").mkdir(parents=True)
