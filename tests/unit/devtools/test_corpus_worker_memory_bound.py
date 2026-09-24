@@ -74,6 +74,7 @@ import pytest
 from devtools.worker_memory import (
     ANONYMOUS_MEMORY_MODEL,
     CORPUS_MAX_WORKERS,
+    CORPUS_TEST_COUNT,
     MEASURED_CHARGE,
     PYTEST_SLICE_MEMORY_HIGH_MIB,
     ChargeProfile,
@@ -788,10 +789,10 @@ _OBSERVED_CORPUS_RUN: Mapping[str, object] = {
 _OBSERVED_SIZING: Mapping[str, object] = {
     "workers": 2,
     "available_mib": 11478,
-    # The sampler's largest worker executed this many tests.  Keeping it on
-    # the synthetic receipt proves corroboration uses the observed width
-    # distribution rather than silently substituting a width-2 constant.
-    "tests_per_worker": 15_416,
+    # This is the production sizing payload: the admission projection is the
+    # corpus share, not a post-run sampler observation.
+    "tests_per_worker": CORPUS_TEST_COUNT / 2,
+    "tests_per_worker_source": "admission_estimate",
 }
 
 #: The profile that sized that run, before 2026-09-21. ``worker_cache_mib``
@@ -824,9 +825,11 @@ def test_the_superseded_profile_understates_the_run_it_admitted() -> None:
 
     shipped = corroborate_profile(_OBSERVED_CORPUS_RUN, _OBSERVED_SIZING)
     assert shipped is not None
-    assert shipped["verdict"] == "corroborated"
-    assert shipped["worker_anon_headroom_mib"] >= 0
-    assert shipped["group_headroom_mib"] >= 0
+    assert shipped["verdict"] == "understated"
+    assert shipped["tests_per_worker_source"] == "admission_estimate"
+    assert shipped["worker_anon_drift_mib"] == pytest.approx(524.8, abs=0.2)
+    assert shipped["worker_anon_headroom_mib"] == pytest.approx(-524.8, abs=0.2)
+    assert shipped["group_headroom_mib"] == pytest.approx(-187.2, abs=0.2)
 
     # The two terms, as measured, against what each profile declared.
     assert shipped["observed_worker_anon_mib"] == pytest.approx(4723.8, abs=0.5)
@@ -928,15 +931,22 @@ def test_the_anonymous_model_records_both_fit_points_and_residuals() -> None:
 
 
 def test_the_width_aware_model_records_the_20260921_group_margin() -> None:
-    """MEM-2: the historical width-2 group prediction has an explicit margin."""
+    """MEM-2: projected admission predicts the group within its explicit margin.
+
+    The sizing payload is production-shaped: it only has the projected
+    23,526/2 tests-per-worker value.  The 2026-09-21 run's largest worker then
+    exposes a 524.8 MiB anonymous drift, while the signed group error remains
+    within the prior 862.4 MiB prediction margin.
+    """
     corroboration = corroborate_profile(_OBSERVED_CORPUS_RUN, _OBSERVED_SIZING)
 
     assert corroboration is not None
-    assert corroboration["tests_per_worker_source"] == "receipt"
-    assert corroboration["tests_per_worker"] == pytest.approx(15_416.0)
-    assert corroboration["prediction_margin_mib"] == pytest.approx(862.4, abs=0.2)
+    assert corroboration["tests_per_worker_source"] == "admission_estimate"
+    assert corroboration["tests_per_worker"] == pytest.approx(11_763.0)
+    assert corroboration["prediction_margin_mib"] == pytest.approx(-187.2, abs=0.2)
     assert corroboration["group_headroom_mib"] == corroboration["prediction_margin_mib"]
-    assert corroboration["prediction_margin_mib"] > 0
+    assert abs(corroboration["prediction_margin_mib"]) < 862.4
+    assert corroboration["worker_anon_drift_mib"] == pytest.approx(524.8, abs=0.2)
     assert corroboration["file_term_is_a_mapped_floor"] is True
 
 
@@ -968,12 +978,16 @@ def test_corroboration_reports_width_one_model_drift_not_the_width_two_constant(
             },
         ],
     }
-    sizing = {"workers": 1, "tests_per_worker": tests_per_worker}
+    sizing = {
+        "workers": 1,
+        "tests_per_worker": tests_per_worker,
+        "tests_per_worker_source": "admission_estimate",
+    }
 
     corroboration = corroborate_profile(memory, sizing)
 
     assert corroboration is not None
-    assert corroboration["tests_per_worker_source"] == "receipt"
+    assert corroboration["tests_per_worker_source"] == "admission_estimate"
     assert corroboration["declared_worker_anon_mib"] == pytest.approx(worker_anon, abs=0.1)
     assert corroboration["worker_anon_drift_mib"] == pytest.approx(0.0, abs=0.1)
     assert corroboration["verdict"] == "corroborated"

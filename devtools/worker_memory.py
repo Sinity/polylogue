@@ -328,6 +328,7 @@ class ChargeProfile:
             "margin_mib": round(budget_mib - predicted, 1),
             "margin_fraction": round((budget_mib - predicted) / budget_mib, 4) if budget_mib else 0.0,
             "tests_per_worker": round(tests_per_worker, 1) if tests_per_worker is not None else None,
+            "tests_per_worker_source": "admission_estimate" if tests_per_worker is not None else None,
             "anon_model": self.anon_model.as_dict() if self.anon_model is not None else None,
         }
 
@@ -413,14 +414,21 @@ def corroborate_profile(
     worker_anon_mib = round(int(heaviest["peak_private_kib"]) / 1024, 1)
     worker_file_mib = round(max(0, int(heaviest["peak_rss_kib"]) - int(heaviest["peak_private_kib"])) / 1024, 1)
     group_peak_mib = round(int(peak["rss_kib"]) / 1024, 1)
-    # A receipt may carry the largest worker's actual executed count from the
-    # suite-cost sampler.  Older receipts do not, so use the projected corpus
-    # share and label that estimate explicitly instead of pretending it was
-    # observed.  Evaluating the same width-aware model here is what exposes
-    # drift when a future run has a different width or an imbalanced split.
-    observed_tests = sizing.get("tests_per_worker")
+    # A receipt may carry the largest worker's actual executed count in the
+    # explicit ``observed_tests_per_worker`` field.  The sizing payload's
+    # ``tests_per_worker`` is only the admission projection emitted before the
+    # run starts; treating that projection as observed evidence would erase the
+    # very drift this corroborator exists to report.
+    observed_tests = sizing.get("observed_tests_per_worker")
+    if observed_tests is None and sizing.get("tests_per_worker_source") == "observed_run":
+        observed_tests = sizing.get("tests_per_worker")
+    projected_tests = sizing.get("tests_per_worker") if observed_tests is None else None
     try:
-        tests_per_worker = float(observed_tests) if observed_tests is not None else profile.tests_per_worker(workers)
+        tests_per_worker = (
+            float(observed_tests)
+            if observed_tests is not None
+            else (float(projected_tests) if projected_tests is not None else profile.tests_per_worker(workers))
+        )
     except (TypeError, ValueError):
         return None
     if tests_per_worker is not None and tests_per_worker < 0:
@@ -437,7 +445,13 @@ def corroborate_profile(
         "observed_worker_file_mib": worker_file_mib,
         "observed_group_peak_mib": group_peak_mib,
         "tests_per_worker": round(tests_per_worker, 1) if tests_per_worker is not None else None,
-        "tests_per_worker_source": "receipt" if observed_tests is not None else "projected_corpus_share",
+        "tests_per_worker_source": (
+            "observed_run"
+            if observed_tests is not None
+            else "admission_estimate"
+            if projected_tests is not None
+            else "projected_corpus_share"
+        ),
         "declared_worker_anon_mib": estimated_worker_anon_mib,
         "declared_worker_cache_mib": float(profile.worker_cache_mib),
         "predicted_charge_mib": predicted_mib,
