@@ -36,19 +36,10 @@ _ATTACHMENT_DISPOSITIONS = get_args(AttachmentDisposition)
 
 #: Dispositions that state a settled outcome for a reference. ``pending`` is
 #: the only non-terminal one, so ``pending`` -> terminal is the single allowed
-#: progress transition (polylogue-8v4rm).
+#: progress transition (polylogue-8v4rm). Derive this subset from the owner so
+#: extending the durable vocabulary cannot silently omit a terminal state.
 TERMINAL_DISPOSITIONS: frozenset[str] = frozenset(
-    {
-        "acquired",
-        "duplicate",
-        "expired",
-        "access_denied",
-        "source_missing",
-        "malformed",
-        "policy_rejected",
-        "partial",
-        "interrupted",
-    }
+    disposition for disposition in _ATTACHMENT_DISPOSITIONS if disposition != "pending"
 )
 
 #: Declared facts compared when the same reference is recorded twice. A replay
@@ -150,6 +141,9 @@ def record_source_attachments(
                 raise ValueError("acquired attachment byte count does not match its bytes")
         elif not attachment.reason:
             raise ValueError("unavailable attachment requires an evidence-backed reason")
+        # Reachability is deliberately storage-local and derived from the
+        # disposition, so there is no second independently extendable list:
+        # acquired is current; every other owned disposition is unavailable.
         offered: dict[str, object] = {
             "origin": origin,
             "source_class": attachment.source_class,

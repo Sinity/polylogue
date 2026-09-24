@@ -230,6 +230,98 @@ def test_hook_writer_refuses_invalid_storage_carrier_role_before_persistence(tmp
     conn.close()
 
 
+@pytest.mark.parametrize(
+    ("column", "reader_field"),
+    [
+        ("origin", "origin"),
+        ("capture_mode", "capture_mode"),
+        ("validation_status", "validation_status"),
+        ("validation_mode", "validation_mode"),
+    ],
+)
+def test_raw_session_hydration_refuses_unowned_membership_values(
+    tmp_path: Path, column: str, reader_field: str
+) -> None:
+    """A SQL bypass cannot leak an unowned durable token through a typed reader."""
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+        )
+        conn.execute(f"UPDATE raw_sessions SET {column}=? WHERE raw_id=?", ("not-a-vocabulary-member", raw_id))
+
+        with pytest.raises(ValueError, match=reader_field):
+            read_archive_raw_session_envelope(conn, raw_id)
+    finally:
+        conn.close()
+
+
+def test_raw_session_hydration_refuses_unowned_blob_ref_type(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+        )
+        # Model corrupt legacy bytes by disabling SQLite CHECK enforcement for
+        # this one fixture; production opens retain normal constraint checks.
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute("UPDATE blob_refs SET ref_type='not-a-vocabulary-member' WHERE ref_id=?", (raw_id,))
+
+        with pytest.raises(ValueError, match="ref_type"):
+            read_archive_raw_session_envelope(conn, raw_id)
+    finally:
+        conn.close()
+
+
+def test_artifact_and_hook_hydration_refuse_unowned_domain_values(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+            artifact=ArchiveSourceArtifact(
+                artifact_id="artifact-1",
+                origin=Origin.CLAUDE_CODE_SESSION,
+                source_path="/tmp/record.jsonl",
+                source_index=0,
+                artifact_kind="session_export",
+                classification_reason="fixture",
+                support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+            ),
+            hook_event=ArchiveHookEvent(
+                hook_event_id="hook-1",
+                origin=Origin.CLAUDE_CODE_SESSION,
+                source_path="/tmp/record.jsonl",
+                event_type="source_opened",
+                payload={},
+                observed_at_ms=1,
+            ),
+        )
+        conn.execute("UPDATE raw_artifacts SET support_status='invalid' WHERE artifact_id='artifact-1'")
+        conn.execute("UPDATE raw_hook_events SET origin='invalid' WHERE hook_event_id='hook-1'")
+
+        with pytest.raises(ValueError, match="artifact.support_status"):
+            read_raw_artifact(conn, "artifact-1")
+        with pytest.raises(ValueError, match="hook_event.origin"):
+            read_hook_event(conn, "hook-1")
+    finally:
+        conn.close()
+
+
 def test_source_artifact_upsert_keeps_coordinate_deduplication_and_raw_failure_fanout(
     tmp_path: Path,
 ) -> None:

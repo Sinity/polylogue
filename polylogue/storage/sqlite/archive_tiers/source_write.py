@@ -1286,11 +1286,31 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     if row is None:
         raise KeyError(raw_id)
 
+    # Source DDL deliberately leaves durable membership out of its CHECKs.
+    # Refuse malformed historical/direct-SQL rows at the typed hydration
+    # boundary before exposing the envelope to callers.
+    origin = require_vocabulary(row["origin"], Origin, field="origin")
+    capture_mode = (
+        require_vocabulary(row["capture_mode"], Provider, field="capture_mode")
+        if row["capture_mode"] is not None
+        else None
+    )
+    validation_status = (
+        require_vocabulary(row["validation_status"], ValidationStatus, field="validation_status")
+        if row["validation_status"] is not None
+        else None
+    )
+    validation_mode = (
+        require_vocabulary(row["validation_mode"], ValidationMode, field="validation_mode")
+        if row["validation_mode"] is not None
+        else None
+    )
+
     blob_refs = tuple(
         ArchiveSourceBlobRef(
             blob_hash=row["blob_hash"],
             raw_id=row["raw_id"],
-            ref_type=row["ref_type"],
+            ref_type=require_vocabulary(row["ref_type"], _BLOB_REF_TYPES, field="ref_type"),
             source_path=row["source_path"],
             size_bytes=row["size_bytes"],
             acquired_at_ms=row["acquired_at_ms"],
@@ -1328,8 +1348,8 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     )
     return ArchiveRawSessionEnvelope(
         raw_id=row["raw_id"],
-        origin=row["origin"],
-        capture_mode=row["capture_mode"],
+        origin=origin,
+        capture_mode=capture_mode,
         native_id=row["native_id"],
         source_path=row["source_path"],
         source_index=row["source_index"],
@@ -1340,10 +1360,10 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
         parsed_at_ms=row["parsed_at_ms"],
         parse_error=row["parse_error"],
         validated_at_ms=row["validated_at_ms"],
-        validation_status=row["validation_status"],
+        validation_status=validation_status,
         validation_error=row["validation_error"],
         validation_drift_count=row["validation_drift_count"],
-        validation_mode=row["validation_mode"],
+        validation_mode=validation_mode,
         detection_warnings=tuple(json.loads(row["detection_warnings_json"] or "[]")),
         blob_refs=blob_refs,
         artifact_ids=artifact_ids,
@@ -1697,11 +1717,13 @@ def _raw_artifact_from_row(row: sqlite3.Row) -> ArchiveRawArtifactEnvelope:
     return ArchiveRawArtifactEnvelope(
         artifact_id=row["artifact_id"],
         raw_id=row["raw_id"],
-        origin=row["origin"],
+        origin=require_vocabulary(row["origin"], Origin, field="artifact.origin"),
         source_path=row["source_path"],
         source_index=row["source_index"],
         artifact_kind=row["artifact_kind"],
-        support_status=row["support_status"],
+        support_status=require_vocabulary(
+            row["support_status"], ArtifactSupportStatus, field="artifact.support_status"
+        ),
         classification_reason=row["classification_reason"],
         parse_as_session=bool(row["parse_as_session"]),
         schema_eligible=bool(row["schema_eligible"]),
@@ -1718,7 +1740,7 @@ def _raw_artifact_from_row(row: sqlite3.Row) -> ArchiveRawArtifactEnvelope:
 def _hook_event_from_row(row: sqlite3.Row) -> ArchiveHookEvent:
     return ArchiveHookEvent(
         hook_event_id=row["hook_event_id"],
-        origin=row["origin"],
+        origin=require_vocabulary(row["origin"], Origin, field="hook_event.origin"),
         source_path=row["source_path"],
         event_type=row["event_type"],
         payload=_json_loads(row["payload_json"]),

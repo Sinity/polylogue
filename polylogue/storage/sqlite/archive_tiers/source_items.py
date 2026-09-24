@@ -21,6 +21,13 @@ from .source_attachments import SourceAttachment, record_source_attachments, sou
 
 
 class AcquisitionDisposition(StrEnum):
+    """Storage-owned source-item state machine, checked by its writer.
+
+    Durable source DDL intentionally does not mirror this vocabulary. Add a
+    state only with its transition, retryability, reconciliation, and reader
+    behavior reviewed together.
+    """
+
     PENDING = "pending"
     ADMITTED = "admitted"
     NON_SESSION = "non_session"
@@ -31,7 +38,13 @@ class AcquisitionDisposition(StrEnum):
 
 
 class SourceItemMemberDisposition(StrEnum):
-    """A central-directory member that was not admitted as raw evidence."""
+    """Why a central-directory member was not admitted as raw evidence.
+
+    This storage-local audit vocabulary is validated at
+    ``record_source_item_member_disposition``. Extend it only when the ZIP
+    admission policy and enumeration/reconciliation reader understand the new
+    outcome; durable source DDL remains vocabulary-free.
+    """
 
     REFUSED = "refused"
     UNSELECTED = "unselected"
