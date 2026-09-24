@@ -32,6 +32,7 @@ from polylogue.surfaces.payloads import (
 
 if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
+    from polylogue.config import Config
 
 logger = get_logger(__name__)
 
@@ -76,8 +77,15 @@ def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> Non
     archive_root = getattr(config, "archive_root", None)
     if not isinstance(archive_root, (str, Path)):
         return
+    config = cast("Config", config)
     ops_db = Path(archive_root) / "ops.db"
     try:
+        # This context surface is an embedded API route too.  Check archive
+        # ownership before bootstrap/open so a preamble cannot create or write
+        # the disposable ledger beside a resident daemon.
+        from polylogue.api.archive import _require_archive_write_authority
+
+        _require_archive_write_authority(config, "context.preamble_ledger")
         if not ops_db.exists():
             from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
             from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

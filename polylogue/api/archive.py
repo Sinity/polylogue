@@ -181,11 +181,54 @@ if TYPE_CHECKING:
 
 
 def _require_archive_write_authority(config: Config, purpose: str) -> None:
-    """Require the current caller to hold the lease for this archive."""
+    """Require this route to own the archive before opening a writable tier.
+
+    Embedded callers do not arm the process-wide write boundary used by the
+    daemon, so ``require_write_lease`` alone is intentionally insufficient:
+    an embedded API call would otherwise open a tier beside a resident daemon.
+    The residency probe is the per-route boundary.  The daemon's own
+    coordinator is the one exception; its active lease is checked before the
+    normal storage-side lease assertion so online API calls keep their
+    existing behavior.
+    """
 
     from polylogue.core.write_lease import require_write_lease
+    from polylogue.maintenance.offline_guard import (
+        ArchiveWriterOwnershipError,
+        ArchiveWriterOwnershipUndecidableError,
+        DaemonResidencyUndecidableError,
+        offline_writer_block_reason,
+        resident_daemon_pid,
+    )
 
-    require_write_lease(purpose, archive_root=_active_archive_root(config))
+    root = _active_archive_root(config)
+    try:
+        block_reason = offline_writer_block_reason(config)
+    except DaemonResidencyUndecidableError as exc:
+        raise ArchiveWriterOwnershipUndecidableError(
+            f"{purpose} cannot prove whether a resident daemon owns {root}: {exc}. "
+            "Refusing rather than opening a writable archive tier beside an unseen writer",
+            archive_root=root,
+        ) from exc
+
+    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+
+    if block_reason is not None and not daemon_write_lease_active():
+        # ``offline_writer_block_reason`` answers the ownership question; the
+        # PID is fetched separately only to name the resident writer. Never
+        # infer ownership from PID text, which may be stale or malformed.
+        daemon_pid = resident_daemon_pid(root)
+        resident_writer = (
+            f"polylogued PID {daemon_pid} is running for this archive" if daemon_pid is not None else block_reason
+        )
+        raise ArchiveWriterOwnershipError(
+            f"{purpose} may not write {root}: {resident_writer}. Route the mutation through the "
+            "resident daemon, or stop it and run this operation as the archive's exclusive offline owner",
+            archive_root=root,
+            resident_writer=resident_writer,
+        )
+
+    require_write_lease(purpose, archive_root=root)
 
 
 _BOUNDED_MESSAGES_FALLBACK_READ_VIEWS = frozenset({"raw", "context", "neighbors", "correlation", "chronicle"})
@@ -2394,6 +2437,7 @@ def _archive_capture_assertion_candidate(
         ).hexdigest()
         assertion_id = f"assertion-terminal-note:{identity}"
     resolved_refs: list[str] = []
+    _require_archive_write_authority(config, "api.capture_assertion_candidate")
     with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
         for ref in refs:
             if ref == "last":
@@ -2925,6 +2969,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+        _require_archive_write_authority(self.config, "api.facade_mutation")
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             root = _active_archive_root(self.config)
             executor = OperationExecutor.for_archive_root(root)
@@ -5935,6 +5980,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """Record one typed live-agent event through the archive writer."""
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+        _require_archive_write_authority(self.config, "api.record_work_event")
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             return archive.append_work_event(
                 session_id=session_id,
@@ -6499,6 +6545,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
         from polylogue.surfaces.payloads import DeleteSessionResult
 
+        _require_archive_write_authority(self.config, "api.delete_session")
         with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
             try:
                 resolved = archive.resolve_session_id(session_id)
