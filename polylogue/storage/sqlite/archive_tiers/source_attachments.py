@@ -108,39 +108,9 @@ def record_source_attachments(
     same request is a no-op; changing a terminal fact requires an explicit new
     generation, which prevents a late retry from rewriting a sealed census.
     """
-    # Validate every membership token before the first SELECT/INSERT. An
-    # invalid vocabulary later in the batch must not follow earlier writes.
-    normalized: list[tuple[SourceAttachment, str, str]] = []
-    for attachment in attachments:
-        origin = require_vocabulary(attachment.origin, Origin, field="origin")
-        disposition = require_vocabulary(attachment.disposition, _ATTACHMENT_DISPOSITIONS, field="disposition")
-        # source_class is an open, nonempty grouping label: new providers and
-        # attachment kinds can add labels without a code/schema registry.
-        if not attachment.source_class.strip():
-            raise ValueError("source_class must be nonempty")
-        normalized.append((attachment, origin, disposition))
+    normalized = _preflight_source_attachments(attachments)
 
     for attachment, origin, disposition in normalized:
-        if attachment.reference_count <= 0:
-            raise ValueError("reference_count must be positive")
-        if attachment.disposition == "acquired":
-            if (
-                attachment.blob_hash is None
-                or attachment.byte_count is None
-                or attachment.payload_identity is None
-                or attachment.payload_bytes is None
-            ):
-                raise ValueError("acquired attachment requires hash, bytes, and payload identity")
-            if attachment.reason is not None:
-                raise ValueError("acquired attachment cannot have an unavailability reason")
-            if len(attachment.blob_hash) != 32:
-                raise ValueError("attachment blob hash must be SHA-256")
-            if hashlib.sha256(attachment.payload_bytes).digest() != attachment.blob_hash:
-                raise ValueError("acquired attachment hash does not match its bytes")
-            if len(attachment.payload_bytes) != attachment.byte_count:
-                raise ValueError("acquired attachment byte count does not match its bytes")
-        elif not attachment.reason:
-            raise ValueError("unavailable attachment requires an evidence-backed reason")
         # Reachability is deliberately storage-local and derived from the
         # disposition, so there is no second independently extendable list:
         # acquired is current; every other owned disposition is unavailable.
@@ -203,6 +173,43 @@ def record_source_attachments(
         )
     if commit:
         conn.commit()
+
+
+def _preflight_source_attachments(
+    attachments: tuple[SourceAttachment, ...],
+) -> list[tuple[SourceAttachment, str, str]]:
+    """Validate all attachment facts before a transaction starts writing."""
+    # An invalid vocabulary or later attachment must not follow earlier writes.
+    normalized: list[tuple[SourceAttachment, str, str]] = []
+    for attachment in attachments:
+        origin = require_vocabulary(attachment.origin, Origin, field="origin")
+        disposition = require_vocabulary(attachment.disposition, _ATTACHMENT_DISPOSITIONS, field="disposition")
+        # source_class is an open, nonempty grouping label: new providers and
+        # attachment kinds can add labels without a code/schema registry.
+        if not attachment.source_class.strip():
+            raise ValueError("source_class must be nonempty")
+        if attachment.reference_count <= 0:
+            raise ValueError("reference_count must be positive")
+        if attachment.disposition == "acquired":
+            if (
+                attachment.blob_hash is None
+                or attachment.byte_count is None
+                or attachment.payload_identity is None
+                or attachment.payload_bytes is None
+            ):
+                raise ValueError("acquired attachment requires hash, bytes, and payload identity")
+            if attachment.reason is not None:
+                raise ValueError("acquired attachment cannot have an unavailability reason")
+            if len(attachment.blob_hash) != 32:
+                raise ValueError("attachment blob hash must be SHA-256")
+            if hashlib.sha256(attachment.payload_bytes).digest() != attachment.blob_hash:
+                raise ValueError("acquired attachment hash does not match its bytes")
+            if len(attachment.payload_bytes) != attachment.byte_count:
+                raise ValueError("acquired attachment byte count does not match its bytes")
+        elif not attachment.reason:
+            raise ValueError("unavailable attachment requires an evidence-backed reason")
+        normalized.append((attachment, origin, disposition))
+    return normalized
 
 
 def _apply_replay(

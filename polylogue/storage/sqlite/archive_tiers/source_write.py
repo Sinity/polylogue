@@ -434,7 +434,7 @@ def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> Captu
         """,
         (raw_id,),
     ).fetchall()
-    modes = tuple(Provider.from_string(row["capture_mode"]) for row in rows)
+    modes = tuple(require_vocabulary(row["capture_mode"], Provider, field="capture_mode") for row in rows)
     status: CaptureModeResolutionStatus
     if not modes:
         status = "unknown"
@@ -968,6 +968,10 @@ def write_source_hook_event_batch(
     """
 
     carrier_role_value = require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
+    # Validate the complete batch before its first event write; callers may
+    # already own a transaction and catch the refusal locally.
+    for carried in events:
+        require_vocabulary(carried.event.origin, Origin, field="hook_event.origin")
     conn.execute("PRAGMA foreign_keys = ON")
     _assert_excision_policy(carrier_blob_hash, source_path=carrier_source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, carrier_blob_hash):
@@ -975,7 +979,6 @@ def write_source_hook_event_batch(
     written = 0
     with conn if manage_transaction else nullcontext():
         for carried in events:
-            require_vocabulary(carried.event.origin, Origin, field="hook_event.origin")
             coordinate = hook_carrier_coordinate(carrier_relative_path, carried.byte_offset)
             # A carrier grows, so a later revision retains a superset of an
             # earlier one's bytes under a different blob hash. The event is the

@@ -8,6 +8,7 @@ import pytest
 
 from polylogue.core.enums import IngestOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     AcquisitionDisposition,
     SourceItemMemberDisposition,
@@ -105,6 +106,21 @@ def test_transition_refuses_invalid_domain_vocabularies_before_idempotency_looku
         "interrupted",
         0,
     )
+
+
+def test_manifest_preflights_attachment_vocabulary_before_publishing_generation() -> None:
+    conn = _source()
+    with pytest.raises(ValueError, match="origin"):
+        publish_source_generation(
+            conn,
+            source_generation_id="invalid-attachments",
+            manifest_digest="c" * 64,
+            addressing_mode="physical-file-v1",
+            coordinates=("export.json",),
+            observed_at_ms=2,
+            attachments=(SourceAttachment("attachment", "not-an-origin", "drive"),),
+        )
+    assert conn.execute("SELECT COUNT(*) FROM source_generations").fetchone()[0] == 0
 
 
 def test_sql_bypass_can_store_an_unowned_source_item_origin() -> None:

@@ -14,6 +14,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveRawSessionEnvelope,
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
+    CarrierHookEvent,
     deterministic_blob_hash,
     deterministic_raw_session_id,
     list_hook_events,
@@ -25,6 +26,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     record_raw_container_coordinate,
     upsert_raw_artifact,
     write_source_hook_event,
+    write_source_hook_event_batch,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -318,6 +320,75 @@ def test_artifact_and_hook_hydration_refuse_unowned_domain_values(tmp_path: Path
             read_raw_artifact(conn, "artifact-1")
         with pytest.raises(ValueError, match="hook_event.origin"):
             read_hook_event(conn, "hook-1")
+    finally:
+        conn.close()
+
+
+def test_capture_mode_resolution_refuses_unowned_persisted_value(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+            capture_mode=Provider.CLAUDE_CODE,
+        )
+        conn.execute(
+            "UPDATE raw_capture_observations SET capture_mode='not-a-provider' WHERE raw_id=?",
+            (raw_id,),
+        )
+        with pytest.raises(ValueError, match="capture_mode"):
+            read_capture_mode_resolution(conn, raw_id)
+    finally:
+        conn.close()
+
+
+def test_hook_batch_preflights_all_event_origins_before_persistence(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        events = (
+            CarrierHookEvent(
+                byte_offset=0,
+                line_bytes=10,
+                event=ArchiveHookEvent(
+                    hook_event_id="valid-first",
+                    origin=Origin.CLAUDE_CODE_SESSION,
+                    source_path="/tmp/hooks.ndjson",
+                    event_type="source_opened",
+                    payload={},
+                    observed_at_ms=1,
+                ),
+            ),
+            CarrierHookEvent(
+                byte_offset=10,
+                line_bytes=10,
+                event=ArchiveHookEvent(
+                    hook_event_id="invalid-second",
+                    origin="not-an-origin",
+                    source_path="/tmp/hooks.ndjson",
+                    event_type="source_opened",
+                    payload={},
+                    observed_at_ms=1,
+                ),
+            ),
+        )
+        with pytest.raises(ValueError, match="hook_event.origin"):
+            write_source_hook_event_batch(
+                conn,
+                carrier_source_id="fixture",
+                carrier_relative_path="hooks.ndjson",
+                carrier_role="primary-writable",
+                carrier_blob_hash=b"h" * 32,
+                carrier_source_path="/tmp/hooks.ndjson",
+                events=events,
+                acquired_at_ms=1,
+                manage_transaction=False,
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 0
     finally:
         conn.close()
 

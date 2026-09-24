@@ -17,7 +17,12 @@ from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
 from .common import require_vocabulary
-from .source_attachments import SourceAttachment, record_source_attachments, source_attachment_census
+from .source_attachments import (
+    SourceAttachment,
+    _preflight_source_attachments,
+    record_source_attachments,
+    source_attachment_census,
+)
 
 
 class AcquisitionDisposition(StrEnum):
@@ -292,6 +297,7 @@ def publish_source_generation(
     ):
         raise ValueError("input_blob_hashes must bind every coordinate to a SHA-256 blob")
     origin_value = require_vocabulary(origin, Origin, field="origin") if origin is not None else None
+    _preflight_source_attachments(attachments)
     ids = tuple(
         source_item_id(source_generation_id=source_generation_id, logical_coordinate=c, addressing_mode=addressing_mode)
         for c in coordinates
@@ -664,6 +670,7 @@ def record_source_item_member_disposition(
     observed_at_ms: int,
 ) -> None:
     """Persist one refused/unselected central-directory member idempotently."""
+    value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     if entry_ordinal < 0:
         raise ValueError("source member ordinal must be non-negative")
     if not member_name.strip():
@@ -684,7 +691,6 @@ def record_source_item_member_disposition(
     ).fetchone()
     if admitted is not None:
         raise ValueError("source member already has an admitted raw record")
-    value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     # Central-directory names and admission explanations are attacker
     # controlled. Keep both bounded before they reach the durable source
     # tier; the diagnostic budget leaves room for the truncation marker used

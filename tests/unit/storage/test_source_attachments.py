@@ -73,8 +73,8 @@ def test_attachment_writer_validates_domain_origin_and_storage_disposition_befor
             source_generation_id="g",
             observed_at_ms=2,
             attachments=(
-                SourceAttachment("valid", "aistudio-drive", "drive", disposition="pending"),
-                SourceAttachment("invalid", "not-an-origin", "drive", disposition="pending"),
+                SourceAttachment("valid", "aistudio-drive", "drive", disposition="pending", reason="queued"),
+                SourceAttachment("invalid", "not-an-origin", "drive", disposition="pending", reason="queued"),
             ),
         )
     assert conn.execute("SELECT COUNT(*) FROM source_attachments").fetchone()[0] == 0
