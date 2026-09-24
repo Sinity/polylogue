@@ -22,13 +22,17 @@ from typing import Literal, get_args
 # Index-tier relations whose contents can change which terminal rows a
 # query-unit page returns, or in what order.
 IndexFrameRelation = Literal[
+    "action_pairs",
     "blocks",
     "delegation_facts",
     "messages",
+    "repos",
     "session_links",
     "session_profiles",
+    "session_repos",
     "session_tags",
     "sessions",
+    "session_working_dirs",
 ]
 
 # User-tier relations with the same property. The user tier is durable and
