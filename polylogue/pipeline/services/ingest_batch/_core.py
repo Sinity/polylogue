@@ -11,12 +11,15 @@ Architecture:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import io
+import json
 import pickle
 import sqlite3
 import time
 import unicodedata
+import uuid
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
@@ -31,7 +34,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
-from polylogue.core.enums import BlockType, IngestOutcome, Provider
+from polylogue.core.enums import BlockType, IngestOutcome, Origin, Provider
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
@@ -42,6 +45,7 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import get_logger
+from polylogue.markers.preparation import marker_candidates_for_prepared_write, marker_recipe_fingerprint
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
@@ -68,7 +72,14 @@ from polylogue.sinex.models import PublicationMode, PublicationPayload
 from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
+from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.accepted_marker_inputs import (
+    AcceptedMarkerInputRefusedError,
+    PreparedAcceptedMarkerInput,
+    finalize_pending_accepted_marker_input,
+    prepare_accepted_marker_input,
+)
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
@@ -91,11 +102,13 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlo
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     LineageSignatureCache,
+    PreparedSessionWrite,
     _composed_db_signatures,
     _message_content_hash,
     _normalized_message_native_id,
     _parsed_message_signature,
     _repair_stale_session_observations,
+    prepare_session_write,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -1115,6 +1128,7 @@ def _write_session(
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
     drive_cohort_cache: DriveRevisionCohortCache | None = None,
     manage_transaction: bool = True,
+    prepared_writes: list[PreparedSessionWrite] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -1403,6 +1417,18 @@ def _write_session(
         hash_hex, size = attachment.precomputed_blob
         preacquired_attachment_blobs[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
 
+    prepared_write = (
+        prepare_session_write(
+            conn,
+            session_to_write,
+            merge_append=merge_append,
+            fallback_timestamp=payload.fallback_timestamp,
+            source_conn=source_conn,
+            signature_cache=signature_cache,
+        )
+        if prepared_writes is not None
+        else None
+    )
     writer_outcomes: list[ArchiveWriteOutcome] = []
     write_parsed_session_to_archive(
         conn,
@@ -1414,7 +1440,12 @@ def _write_session(
         # separately names what this call publishes -- the delta -- which is
         # the digest a prepared identity carrier must match (polylogue-3hfl7).
         content_hash=payload.content_hash,
-        pending_input_content_hash=(bound_session_content_hash(session_to_write) if merge_append else None),
+        pending_input_content_hash=(
+            prepared_write.input_content_hash.hex()
+            if prepared_write is not None
+            else (bound_session_content_hash(session_to_write) if merge_append else None)
+        ),
+        prepared_write=prepared_write,
         raw_id=payload.raw_id,
         fallback_timestamp=payload.fallback_timestamp,
         source_conn=source_conn,
@@ -1452,6 +1483,8 @@ def _write_session(
         return False, counts
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
+    if prepared_writes is not None and prepared_write is not None:
+        prepared_writes.append(prepared_write)
     if attachment_owner_resolutions is not None and writer_outcomes:
         for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
             attachment_owner_resolutions.append(
@@ -1501,6 +1534,20 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         remediation=ir.remediation,
         diagnostic=ir.diagnostic,
     )
+    summary.expected_marker_session_counts[ir.raw_id] = len(ir.sessions)
+    if ir.sessions:
+        summary.marker_request_sessions_by_raw_id[ir.raw_id] = [
+            {
+                "session_id": cdata.session_id,
+                "input_content_hash": cdata.content_hash,
+                "parser_fingerprint": parser_fingerprint_for_origin(
+                    origin_from_provider(cdata.parsed_session.source_name)
+                ),
+                "lowering_fingerprint": lowering_fingerprint(),
+                "marker_recipe_fingerprint": marker_recipe_fingerprint(),
+            }
+            for cdata in ir.sessions
+        ]
     if ir.serialized_size_bytes is not None:
         summary.total_result_bytes += ir.serialized_size_bytes
         if ir.serialized_size_bytes > summary.max_result_bytes:
@@ -1508,6 +1555,43 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
             summary.max_result_raw_id = ir.raw_id
     if ir.schema_drift is not None:
         summary.schema_drift_observations.append(ir.schema_drift)
+
+
+def _marker_request_facts(record: RawSessionRecord, *, validation_mode: str) -> dict[str, object]:
+    """Bind marker identity to immutable acquisition facts, not parse projections.
+
+    ``payload_provider`` is a read projection of ``detected_provider``. The
+    ordinary acceptance transaction updates it, so using it here would make a
+    replay's request key change after the first successful parse. Parser
+    identity for the actual interpretation is separately carried per session.
+    """
+    acquisition_provider = Provider.from_string(record.source_name or "unknown")
+    acquisition_origin = origin_from_provider(acquisition_provider)
+    # Drive lineage governance refines the raw row's revision envelope after
+    # parsing. That envelope is a mutable derived projection, not an
+    # acquisition fact, so including it would give the same retained bytes a
+    # new marker request key on retry. The immutable raw_id/blob/path/index
+    # facts below distinguish Drive acquisitions; parsed session bindings add
+    # the normalized session identity. Other providers retain their supplied
+    # revision evidence in the request key.
+    drive_revision_projection = acquisition_origin is Origin.AISTUDIO_DRIVE
+    revision = None if drive_revision_projection else record.revision
+    return {
+        "blob_digest": record.blob_hash,
+        "origin": acquisition_origin.value,
+        "source_path": record.source_path,
+        "source_index": record.source_index,
+        "native_id": revision.logical_source_key if revision is not None else None,
+        "revision": dataclasses.asdict(revision) if revision is not None else None,
+        "source_name": record.source_name,
+        "capture_mode": record.capture_mode.value if record.capture_mode is not None else None,
+        "acquired_at": record.acquired_at,
+        "file_mtime": record.file_mtime,
+        "validation_mode": validation_mode,
+        "marker_recipe_fingerprint": marker_recipe_fingerprint(),
+        "lowering_fingerprint": lowering_fingerprint(),
+        "parser_fingerprint": parser_fingerprint_for_origin(acquisition_origin),
+    }
 
 
 def _observe_current_rss(summary: _IngestBatchSummary) -> None:
@@ -1551,6 +1635,73 @@ def _record_write_result(
             summary.counts[key] += value
 
 
+def _reuse_current_accepted_marker_carrier(
+    index_conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection | None,
+    ir: IngestRecordResult,
+    *,
+    summary: _IngestBatchSummary,
+) -> bool:
+    """Reuse an accepted carrier before the ordinary session writer runs.
+
+    A matching current-incarnation witness proves this exact accepted request
+    already crossed the index commit boundary. In that one case replay must
+    keep the carrier and skip session preparation, whose no-op disposition
+    could otherwise look like a different marker interpretation. A missing
+    current witness (for example after index replacement) falls through to
+    the normal writer and exact-byte re-witness checks.
+    """
+    if source_conn is None or not ir.sessions:
+        return False
+    facts = summary.marker_request_facts_by_raw_id.get(ir.raw_id)
+    request_sessions = summary.marker_request_sessions_by_raw_id.get(ir.raw_id)
+    if facts is None or request_sessions is None:
+        return False
+
+    from polylogue.storage.accepted_marker_inputs import prepare_accepted_marker_input, retained_marker_input_sync
+
+    probe = prepare_accepted_marker_input(
+        ir.raw_id,
+        (),
+        request_facts=facts,
+        request_sessions=request_sessions,
+    )
+    retained = retained_marker_input_sync(source_conn, probe.identity)
+    if retained is None:
+        return False
+    state, batch, retained_incarnation = retained
+    if state not in ("accepted", "pending"):
+        return False
+
+    filename = str(index_conn.execute("PRAGMA database_list").fetchone()[2])
+    index_stat = Path(filename).stat()
+    incarnation = index_conn.execute(
+        "SELECT incarnation_id, device, inode FROM ingest_index_incarnation WHERE singleton = 1"
+    ).fetchone()
+    if incarnation is None or (int(incarnation[1]), int(incarnation[2])) != (index_stat.st_dev, index_stat.st_ino):
+        raise AcceptedMarkerInputRefusedError("index incarnation changed during marker retry classification")
+    current_incarnation_id = str(incarnation[0])
+    if state == "pending" and retained_incarnation != current_incarnation_id:
+        return False
+    value = json.loads(batch.payload)
+    dispositions = [
+        {
+            "session_id": str(session.get("session_id", "")),
+            "disposition": str(session.get("disposition", "no-op")),
+        }
+        for session in value["sessions"]
+    ]
+    encoded = json.dumps(dispositions, sort_keys=True, separators=(",", ":"))
+    witness = index_conn.execute(
+        "SELECT carrier_digest, dispositions_json, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
+        (probe.identity,),
+    ).fetchone()
+    if witness is None or tuple(witness) != (batch.payload_sha256, encoded, current_incarnation_id):
+        return False
+    summary.marker_batches_by_raw_id[ir.raw_id] = batch
+    return True
+
+
 class FtsTriggerRestorationError(RuntimeError):
     """Raised when the bulk-ingest FTS trigger suspension cannot be undone.
 
@@ -1592,6 +1743,7 @@ def _write_session_entry(
     try:
         t_write = time.perf_counter()
         write_stage_timings: dict[str, float] = {}
+        prepared_writes: list[PreparedSessionWrite] = []
         content_changed, counts = _write_session(
             conn,
             cdata,
@@ -1607,7 +1759,9 @@ def _write_session_entry(
             attachment_owner_resolutions=summary.attachment_owner_resolutions,
             drive_plans=drive_plans,
             drive_cohort_cache=drive_cohort_cache,
+            prepared_writes=prepared_writes,
         )
+        marker_write = prepared_writes[0] if prepared_writes else None
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
         write_elapsed = time.perf_counter() - t_write
@@ -1619,6 +1773,18 @@ def _write_session_entry(
             cdata,
             content_changed=content_changed,
             counts=counts,
+        )
+        summary.marker_session_dispositions_by_raw_id.setdefault(raw_id, []).append(
+            {
+                "session_id": cdata.session_id,
+                "disposition": (
+                    "append"
+                    if marker_write is not None and marker_write.merge_append
+                    else "replace"
+                    if marker_write is not None
+                    else "no-op"
+                ),
+            }
         )
         if write_elapsed >= 1.0:
             logger.info(
@@ -1634,6 +1800,19 @@ def _write_session_entry(
             )
         if batch_owns_transaction:
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
+        if marker_write is not None:
+            marker_session: dict[str, object] = {
+                "session_id": marker_write.session_id,
+                "input_content_hash": marker_write.input_content_hash.hex(),
+                "disposition": "append" if marker_write.merge_append else "replace",
+                "parser_fingerprint": parser_fingerprint_for_origin(
+                    origin_from_provider(cdata.parsed_session.source_name)
+                ),
+                "lowering_fingerprint": lowering_fingerprint(),
+                "marker_recipe_fingerprint": marker_recipe_fingerprint(),
+                "candidates": marker_candidates_for_prepared_write(marker_write),
+            }
+            summary.marker_sessions_by_raw_id.setdefault(raw_id, []).append(marker_session)
         return True
     except Exception as exc:
         if batch_owns_transaction:
@@ -2071,6 +2250,7 @@ def _drain_ingest_result(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
+    marker_acceptance_enabled: bool = False,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -2082,6 +2262,13 @@ def _drain_ingest_result(
     if not ir.sessions:
         summary.skipped_raw_ids.add(ir.raw_id)
         return
+
+    if marker_acceptance_enabled:
+        session_ids = [cdata.session_id for cdata in ir.sessions]
+        if len(session_ids) != len(set(session_ids)):
+            raise AcceptedMarkerInputRefusedError(
+                f"raw revision {ir.raw_id!r} contains duplicate normalized session IDs"
+            )
 
     try:
         publication_payloads = _prepare_publication_payloads(
@@ -2115,23 +2302,36 @@ def _drain_ingest_result(
             )
             return
 
+    reuse_marker_carrier = (
+        marker_acceptance_enabled
+        and not force_write
+        and _reuse_current_accepted_marker_carrier(conn, source_conn, ir, summary=summary)
+    )
+
     if ensure_index_transaction is not None:
         ensure_index_transaction()
 
     drain_started = time.perf_counter()
-    written_count = _drain_ready_session_entries(
-        conn,
-        [(ir.raw_id, cdata) for cdata in ir.sessions],
-        summary=summary,
-        materialized_ids=materialized_ids,
-        force_write=force_write,
-        blob_publisher=blob_publisher,
-        pending_attachment_receipts=pending_attachment_receipts,
-        source_conn=source_conn,
-        fresh_build=fresh_build,
-        fresh_build_batch=fresh_build_batch,
-        drive_plans=drive_plans,
-    )
+    if reuse_marker_carrier:
+        # Publication encoding/staging/admission above still runs in MIRROR
+        # and PRIMARY. Only the state-dependent index session write is skipped;
+        # the exact current-witness carrier continues through common
+        # witness-check and source-finalization paths below.
+        written_count = 0
+    else:
+        written_count = _drain_ready_session_entries(
+            conn,
+            [(ir.raw_id, cdata) for cdata in ir.sessions],
+            summary=summary,
+            materialized_ids=materialized_ids,
+            force_write=force_write,
+            blob_publisher=blob_publisher,
+            pending_attachment_receipts=pending_attachment_receipts,
+            source_conn=source_conn,
+            fresh_build=fresh_build,
+            fresh_build_batch=fresh_build_batch,
+            drive_plans=drive_plans,
+        )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
     # Keep the reconciled payload for both changed and duplicate revisions.
@@ -2165,6 +2365,7 @@ def _consume_ingest_results(
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
+    marker_acceptance_enabled: bool = False,
 ) -> bool:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -2217,6 +2418,7 @@ def _consume_ingest_results(
                 source_conn=source_conn,
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
+                marker_acceptance_enabled=marker_acceptance_enabled,
             )
         finally:
             discard_ingest_result_payload(ir)
@@ -2267,6 +2469,166 @@ def _commit_sync_ingest_side_effects(
             **({"deferred_scheduler": settle_effect} if settle_deferred_effects else {}),
         },
     )
+
+
+def _publish_marker_witnesses_before_index_commit(
+    index_conn: sqlite3.Connection,
+    *,
+    archive_root: Path,
+    summary: _IngestBatchSummary,
+) -> None:
+    """Persist pending source bytes, then witness them in the open index txn."""
+    from polylogue.storage.accepted_marker_inputs import (
+        persist_pending_marker_input_sync,
+        prepare_accepted_marker_input,
+        retained_marker_input_sync,
+    )
+
+    requests: dict[str, PreparedAcceptedMarkerInput] = {}
+    for raw_id, facts in summary.marker_request_facts_by_raw_id.items():
+        if raw_id in summary.failed_raw_ids or raw_id in summary.publication_deferred_raw_ids:
+            continue
+        reused = summary.marker_batches_by_raw_id.get(raw_id)
+        if reused is not None:
+            requests[raw_id] = reused
+            continue
+        selected = summary.marker_sessions_by_raw_id.get(raw_id, [])
+        selected_by_id = {str(session.get("session_id", "")): session for session in selected}
+        dispositions = {
+            str(session.get("session_id", "")): str(session.get("disposition", "no-op"))
+            for session in summary.marker_session_dispositions_by_raw_id.get(raw_id, [])
+        }
+        request_sessions = summary.marker_request_sessions_by_raw_id.get(raw_id, [])
+        carrier_sessions: list[dict[str, object]] = []
+        for binding in request_sessions:
+            session_id = str(binding.get("session_id", ""))
+            session = dict(selected_by_id.get(session_id, binding))
+            session["disposition"] = dispositions.get(session_id, "no-op")
+            session.setdefault("candidates", [])
+            carrier_sessions.append(session)
+        # Defensive fallback for adapters that produced a write entry without
+        # its outcome frame. Preserve every prepared carrier in that case.
+        request_ids = {str(session.get("session_id", "")) for session in carrier_sessions}
+        carrier_sessions.extend(
+            session for session in selected if str(session.get("session_id", "")) not in request_ids
+        )
+        requests[raw_id] = prepare_accepted_marker_input(
+            raw_id,
+            carrier_sessions,
+            request_facts=facts,
+            request_sessions=request_sessions,
+        )
+    if not requests:
+        return
+    index_filename = str(index_conn.execute("PRAGMA database_list").fetchone()[2])
+    index_stat = Path(index_filename).stat()
+    incarnation = index_conn.execute(
+        "SELECT incarnation_id, device, inode FROM ingest_index_incarnation WHERE singleton = 1"
+    ).fetchone()
+    if incarnation is None or (int(incarnation[1]), int(incarnation[2])) != (index_stat.st_dev, index_stat.st_ino):
+        raise AcceptedMarkerInputRefusedError("index incarnation changed during marker publication")
+    incarnation_id = str(incarnation[0])
+
+    source_path = archive_root / "source.db"
+    source_states: dict[str, str] = {}
+    retained_batches: dict[str, PreparedAcceptedMarkerInput] = {}
+    retained_incarnations: dict[str, str | None] = {}
+    with (
+        closing(
+            open_isolated_write_connection(
+                source_path,
+                purpose="pending accepted marker carrier",
+                timeout=DB_TIMEOUT,
+                archive_root=archive_root,
+            )
+        ) as source_conn,
+        source_conn,
+    ):
+        source_conn.execute("BEGIN IMMEDIATE")
+        for batch in requests.values():
+            retained = retained_marker_input_sync(source_conn, batch.identity)
+            if retained is None:
+                source_states[batch.identity] = persist_pending_marker_input_sync(
+                    source_conn, batch, expected_incarnation_id=incarnation_id
+                )
+                retained_batches[batch.identity] = batch
+                retained_incarnations[batch.identity] = incarnation_id
+            else:
+                (
+                    source_states[batch.identity],
+                    retained_batches[batch.identity],
+                    retained_incarnations[batch.identity],
+                ) = retained
+    for request in requests.values():
+        batch = retained_batches[request.identity]
+        retained_state = source_states[batch.identity]
+        retained_incarnation = retained_incarnations[batch.identity]
+        # Pending carriers belong to the index transaction they were prepared
+        # for and cannot cross a physical index replacement. An accepted
+        # carrier is different: its immutable source bytes and sequence remain
+        # authoritative across rebuilds. Recompute the complete request and
+        # require byte equality before publishing a witness for this
+        # incarnation. A witness proves that the retained carrier was
+        # published previously; it cannot authorize a newly prepared
+        # interpretation after the session writer has changed index state.
+        if retained_state != "accepted" and retained_incarnation != incarnation_id:
+            raise AcceptedMarkerInputRefusedError("pending marker carrier belongs to a replaced index incarnation")
+        if retained_state == "accepted" and retained_incarnation is None:
+            raise AcceptedMarkerInputRefusedError("accepted marker carrier has no recorded index incarnation")
+        if batch.payload != request.payload and retained_state != "pending-new":
+            raise AcceptedMarkerInputRefusedError(
+                "retry interpretation differs from the immutable retained marker carrier"
+            )
+        value = json.loads(batch.payload)
+        carrier_sessions = value["sessions"]
+        witness_dispositions = [
+            {
+                "session_id": str(session.get("session_id", "")),
+                "disposition": str(session.get("disposition", "no-op")),
+            }
+            for session in carrier_sessions
+        ]
+        encoded = json.dumps(witness_dispositions, sort_keys=True, separators=(",", ":"))
+        prior = index_conn.execute(
+            "SELECT carrier_digest, dispositions_json, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
+            (batch.identity,),
+        ).fetchone()
+        if prior is None and batch.payload != request.payload:
+            raise AcceptedMarkerInputRefusedError("retained marker carrier has no matching index publication witness")
+        if prior is None and retained_state not in ("pending-new", "pending", "pending-existing", "accepted"):
+            raise AcceptedMarkerInputRefusedError(
+                f"retained marker carrier state {retained_state!r} has no matching index publication witness"
+            )
+        expected = (batch.payload_sha256, encoded, incarnation_id)
+        if prior is not None and tuple(prior) != expected:
+            raise AcceptedMarkerInputRefusedError("index marker witness conflicts with pending carrier")
+        index_conn.execute(
+            "INSERT OR IGNORE INTO ingest_marker_witnesses(request_key, carrier_digest, dispositions_json, incarnation_id) "
+            "VALUES (?, ?, ?, ?)",
+            (batch.identity, *expected),
+        )
+        summary.marker_batches_by_raw_id[batch.raw_id] = batch
+
+
+def _ensure_ingest_index_incarnation(conn: sqlite3.Connection) -> None:
+    """Commit a physical index identity before any retryable ingest writes."""
+    filename = str(conn.execute("PRAGMA database_list").fetchone()[2])
+    index_stat = Path(filename).stat()
+    conn.execute("BEGIN IMMEDIATE")
+    incarnation = conn.execute(
+        "SELECT incarnation_id, device, inode FROM ingest_index_incarnation WHERE singleton = 1"
+    ).fetchone()
+    if incarnation is None:
+        conn.execute(
+            "INSERT INTO ingest_index_incarnation(singleton, incarnation_id, device, inode) VALUES (1, ?, ?, ?)",
+            (str(uuid.uuid4()), index_stat.st_dev, index_stat.st_ino),
+        )
+    elif (int(incarnation[1]), int(incarnation[2])) != (index_stat.st_dev, index_stat.st_ino):
+        conn.execute(
+            "UPDATE ingest_index_incarnation SET incarnation_id = ?, device = ?, inode = ? WHERE singleton = 1",
+            (str(uuid.uuid4()), index_stat.st_dev, index_stat.st_ino),
+        )
+    conn.commit()
 
 
 def _resolve_codex_sidecar_snapshots(
@@ -2517,10 +2879,16 @@ def _process_ingest_batch_sync(
     force_process_pool: bool = False,
     fresh_build: bool = False,
     prepared_unit: _PreparedIngestUnit | None = None,
+    marker_acceptance_enabled: bool = False,
 ) -> _IngestBatchSummary:
     if progress is None:
         progress = _WorkerProgress()
     summary = _new_ingest_batch_summary(raw_artifacts, ingest_workers=ingest_workers)
+    if marker_acceptance_enabled:
+        for record in raw_artifacts:
+            summary.marker_request_facts_by_raw_id[record.raw_id] = _marker_request_facts(
+                record, validation_mode=validation_mode
+            )
     worker_request = _make_ingest_worker_request(
         archive_root_str=archive_root_str,
         blob_root_str=blob_root_str,
@@ -2576,6 +2944,8 @@ def _process_ingest_batch_sync(
     _observe_current_rss(summary)
     transaction_started = False
     try:
+        if marker_acceptance_enabled:
+            _ensure_ingest_index_incarnation(conn)
         if prepared_unit is not None:
 
             def begin_prepared_transaction() -> None:
@@ -2599,6 +2969,7 @@ def _process_ingest_batch_sync(
                     source_conn=source_conn,
                     fresh_build=fresh_build,
                     drive_plans=prepared_unit.drive_plans,
+                    marker_acceptance_enabled=marker_acceptance_enabled,
                 )
             finally:
                 discard_ingest_result_payload(prepared_unit.result)
@@ -2622,11 +2993,17 @@ def _process_ingest_batch_sync(
                 pending_attachment_receipts=pending_attachment_receipts,
                 source_conn=source_conn,
                 fresh_build=fresh_build,
+                marker_acceptance_enabled=marker_acceptance_enabled,
             )
         _flush_ingest_results(
             conn,
             summary=summary,
         )
+        if marker_acceptance_enabled and not transaction_started:
+            # Empty parse batches have no session write to start the index
+            # transaction, but their empty disposition still needs a witness.
+            conn.execute("BEGIN IMMEDIATE")
+            transaction_started = True
         if transaction_started:
             if suspend_fts_triggers:
                 fk_violations = _foreign_key_violations_for_sessions(conn, materialized_ids)
@@ -2634,6 +3011,29 @@ def _process_ingest_batch_sync(
                     detail = _format_foreign_key_violations(fk_violations)
                     raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {detail}")
             fts_repair_ids = set(summary.fts_repair_session_ids)
+            if marker_acceptance_enabled:
+                partial_raw_ids = sorted(
+                    raw_id for raw_id in summary.failed_raw_ids if summary.marker_sessions_by_raw_id.get(raw_id)
+                )
+                if partial_raw_ids:
+                    raise AcceptedMarkerInputRefusedError(
+                        "ordinary batch has a partially written raw marker input; refusing the full index transaction: "
+                        + ", ".join(partial_raw_ids)
+                    )
+                for raw_id, expected_count in summary.expected_marker_session_counts.items():
+                    if raw_id in summary.failed_raw_ids or expected_count == 0:
+                        continue
+                    actual_count = len(summary.marker_request_sessions_by_raw_id.get(raw_id, ()))
+                    if actual_count != expected_count:
+                        raise AcceptedMarkerInputRefusedError(
+                            f"accepted raw revision {raw_id!r} has {actual_count} prepared marker sessions; "
+                            f"expected {expected_count}"
+                        )
+                _publish_marker_witnesses_before_index_commit(
+                    conn,
+                    archive_root=archive_root,
+                    summary=summary,
+                )
             # Side effects run before releasing the connection so data and post-
             # write effects share one transaction. The previous arrangement
             # ran side effects in a `finally` block — they fired even after
@@ -2827,6 +3227,11 @@ async def process_ingest_batch(
     _resolved_settings = load_polylogue_config()
     validation_mode = _resolved_settings.schema_validation
     publication_mode = PublicationMode.from_string(_resolved_settings.sinex_mode)
+    configured_source_backend = getattr(service.repository, "source_backend", None)
+    if publication_mode is not PublicationMode.OFF and configured_source_backend is None:
+        raise PublicationEncodingError(
+            "mirror/primary acceptance requires the durable source-tier backend; refusing before index publication"
+        )
 
     sync_kwargs: dict[str, object] = {
         "db_path": backend.db_path,
@@ -2841,6 +3246,10 @@ async def process_ingest_batch(
         "ingest_result_chunk_size": ingest_result_chunk_size,
         "suspend_fts_triggers": suspend_fts_triggers,
     }
+    # OFF without a source backend is a supported index-only mode. Marker
+    # acceptance is enabled only when its durable owner is available.
+    if configured_source_backend is not None:
+        sync_kwargs["marker_acceptance_enabled"] = True
     if fresh_build:
         sync_kwargs["fresh_build"] = True
     if prepared_unit is not None:
@@ -2908,6 +3317,18 @@ async def process_ingest_batch(
         validation_mode=validation_mode,
         publication_mode=publication_mode,
         publication_payloads_by_raw_id=batch_summary.publication_payloads_by_raw_id,
+        marker_sessions_by_raw_id=(
+            batch_summary.marker_sessions_by_raw_id if configured_source_backend is not None else None
+        ),
+        marker_request_facts_by_raw_id=(
+            batch_summary.marker_request_facts_by_raw_id if configured_source_backend is not None else None
+        ),
+        marker_request_sessions_by_raw_id=(
+            batch_summary.marker_request_sessions_by_raw_id if configured_source_backend is not None else None
+        ),
+        marker_batches_by_raw_id=(
+            batch_summary.marker_batches_by_raw_id if configured_source_backend is not None else None
+        ),
     )
     batch_summary.publication_payloads_by_raw_id.clear()
     batch_summary.publication_payload_bytes = 0
@@ -3015,6 +3436,10 @@ async def _persist_batch_raw_state_updates(
     validation_mode: str,
     publication_mode: PublicationMode = PublicationMode.OFF,
     publication_payloads_by_raw_id: Mapping[str, Sequence[PublicationPayload]] | None = None,
+    marker_sessions_by_raw_id: Mapping[str, Sequence[dict[str, object]]] | None = None,
+    marker_request_facts_by_raw_id: Mapping[str, dict[str, object]] | None = None,
+    marker_request_sessions_by_raw_id: Mapping[str, Sequence[dict[str, object]]] | None = None,
+    marker_batches_by_raw_id: Mapping[str, PreparedAcceptedMarkerInput] | None = None,
 ) -> float:
     now_iso = datetime.now(timezone.utc).isoformat()
     raw_state_update_started = time.perf_counter()
@@ -3026,6 +3451,23 @@ async def _persist_batch_raw_state_updates(
         )
 
     now_ms = 0
+
+    if marker_sessions_by_raw_id is not None and source_backend is None:
+        raise AcceptedMarkerInputRefusedError("accepted marker inputs require the durable source-tier backend")
+
+    async def retain_marker_input(raw_state_conn: AsyncSqlConnection, rid: str) -> None:
+        if marker_sessions_by_raw_id is None:
+            return
+        sessions = marker_sessions_by_raw_id.get(rid, ())
+        request_sessions = (marker_request_sessions_by_raw_id or {}).get(rid, ())
+        if outcomes.get(rid) is not None and outcomes[rid].had_sessions and not request_sessions:
+            raise AcceptedMarkerInputRefusedError(f"accepted raw revision {rid!r} has no prepared marker coverage")
+        facts = (marker_request_facts_by_raw_id or {}).get(rid, {})
+        batch = (marker_batches_by_raw_id or {}).get(rid)
+        if batch is None:
+            batch = prepare_accepted_marker_input(rid, sessions, request_facts=facts, request_sessions=request_sessions)
+        assert isinstance(batch, PreparedAcceptedMarkerInput)
+        await finalize_pending_accepted_marker_input(raw_state_conn, batch)
 
     async def stage_accepted_payloads(
         raw_state_conn: AsyncSqlConnection,
@@ -3053,7 +3495,7 @@ async def _persist_batch_raw_state_updates(
         await stack.enter_async_context(raw_state_backend.bulk_connection())
         now_ms = int(time.time() * 1000)
         raw_state_conn: AsyncSqlConnection | None = None
-        if publication_mode is not PublicationMode.OFF:
+        if publication_mode is not PublicationMode.OFF or marker_sessions_by_raw_id is not None:
             assert source_backend is not None
             raw_state_conn = cast(
                 AsyncSqlConnection,
@@ -3076,6 +3518,7 @@ async def _persist_batch_raw_state_updates(
             # staging on the yielded connection therefore shares its BEGIN
             # IMMEDIATE/commit/rollback boundary.
             if raw_state_conn is not None:
+                await retain_marker_input(raw_state_conn, rid)
                 await stage_accepted_payloads(raw_state_conn, rid, required=True)
         for rid in skipped_raw_ids:
             if rid in failed_raw_ids:
@@ -3093,6 +3536,7 @@ async def _persist_batch_raw_state_updates(
             # Empty parse results have no payload.  Content-identical duplicate
             # revisions do, and are restaged idempotently in this transaction.
             if raw_state_conn is not None:
+                await retain_marker_input(raw_state_conn, rid)
                 await stage_accepted_payloads(raw_state_conn, rid, required=False)
         for rid, error in failed_raw_ids.items():
             await service.repository.update_raw_state(

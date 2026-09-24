@@ -16,6 +16,8 @@ from polylogue.storage.raw.models import RawSessionStateUpdate
 if TYPE_CHECKING:
     import aiosqlite
 
+    from polylogue.storage.accepted_marker_inputs import PreparedAcceptedMarkerInput
+
 _DEFAULT_INGEST_WORKER_LIMIT = 16
 _INGEST_SOFT_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
 _INGEST_HIGH_BLOB_LIMIT_BYTES = 512 * 1024 * 1024
@@ -93,6 +95,12 @@ class _IngestBatchSummary:
     changed_session_ids: list[str] = field(default_factory=list)
     fts_repair_session_ids: list[str] = field(default_factory=list)
     publication_payloads_by_raw_id: dict[str, list[PublicationPayload]] = field(default_factory=dict)
+    marker_sessions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    marker_request_facts_by_raw_id: dict[str, dict[str, object]] = field(default_factory=dict)
+    marker_request_sessions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    marker_session_dispositions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    marker_batches_by_raw_id: dict[str, PreparedAcceptedMarkerInput] = field(default_factory=dict)
+    expected_marker_session_counts: dict[str, int] = field(default_factory=dict)
     publication_payload_bytes: int = 0
     publication_deferred_raw_ids: set[str] = field(default_factory=set)
     schema_drift_observations: list[SchemaDriftObservation] = field(default_factory=list)

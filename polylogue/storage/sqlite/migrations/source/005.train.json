@@ -1,0 +1,85 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "backup-plan:polylogue-bp12n.1.6.2:accepted-marker-inputs",
+  "current_version": 4,
+  "declared_at_ms": 1790000000000,
+  "drop_constraints": [
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-bp12n.1.7:replace-marker-delete-trigger",
+      "copy_forward_proof_ref": "proof:accepted-marker-inputs:excision-trigger-replacement",
+      "object_ref": "trigger:accepted_marker_inputs_no_delete"
+    }
+  ],
+  "failure": null,
+  "fresh_ddl_parity": null,
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "manifest_sha256": "714d1257848e510a4979b1623066e875faf0a5636b31466e471237779dac75c7",
+  "migration": {
+    "owner_ref": "polylogue-bp12n.1.6.2",
+    "path": "005_accepted_marker_inputs.sql",
+    "requires_backup": true,
+    "slot": 5,
+    "sql_sha256": "2fbf4c3affbefd4921dabdbef1d785040ca2dde05aa2ccde85261fe2ff3188ee",
+    "target_version": 5,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "polylogue-bp12n.1.6.2",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:accepted-marker-inputs:atomic-replay"
+      ],
+      "owner_ref": "polylogue-bp12n.1.6.2",
+      "rider_id": "accepted-marker-inputs",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:accepted-marker-inputs:atomic-replay",
+          "consumer_id": "accepted-marker-input-writer",
+          "production_ref": "polylogue/storage/accepted_marker_inputs.py:append_accepted_marker_input",
+          "roles": [
+            "writer"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:accepted-marker-inputs:atomic-replay",
+          "consumer_id": "accepted-marker-input-reader",
+          "production_ref": "polylogue/storage/accepted_marker_inputs.py:read_accepted_marker_inputs",
+          "roles": [
+            "reader"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:pending_accepted_marker_inputs",
+        "table:accepted_marker_stream",
+        "table:accepted_marker_inputs",
+        "table:excised_marker_inputs",
+        "trigger:accepted_marker_stream_no_update",
+        "trigger:accepted_marker_stream_no_delete",
+        "trigger:accepted_marker_inputs_no_update",
+        "trigger:accepted_marker_inputs_no_delete"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "slot": 5,
+  "source_continuity_evidence": null,
+  "state": "declared",
+  "target_version": 5,
+  "tier": "source",
+  "train_id": "train:source:v5"
+}

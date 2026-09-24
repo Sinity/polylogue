@@ -69,6 +69,9 @@ class CarrierReach(StrEnum):
     #: not acquired payload. Where a migrated tier does carry it,
     #: ``apply_session_excision`` still deletes its rows by name.
     RETIRED = "retired"
+    #: Content-free terminal evidence deliberately retained after carrier
+    #: bytes are erased, so a retry cannot recreate them.
+    TOMBSTONE = "tombstone"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +97,21 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
         "raw_sessions",
         CarrierReach.EXCISED,
         "the acquisition itself; deleted with its blob_refs and an excised_content marker",
+    ),
+    SessionCarrier(
+        "pending_accepted_marker_inputs",
+        CarrierReach.EXCISED,
+        "sealed pending marker bytes are explicitly erased by session excision",
+    ),
+    SessionCarrier(
+        "accepted_marker_inputs",
+        CarrierReach.EXCISED,
+        "sealed accepted marker bytes are explicitly erased by session excision",
+    ),
+    SessionCarrier(
+        "excised_marker_inputs",
+        CarrierReach.TOMBSTONE,
+        "content-free terminal marker-carrier evidence is deliberately retained",
     ),
     SessionCarrier(
         "raw_hook_events",

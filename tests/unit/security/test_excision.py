@@ -25,7 +25,10 @@ because the parent session would be silently deleted instead of raising.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import sqlite3
+import uuid
 from pathlib import Path
 
 import pytest
@@ -39,6 +42,14 @@ from polylogue.security.excision import (
     plan_session_excision,
     resolve_session_excision_target,
 )
+from polylogue.storage.accepted_marker_inputs import (
+    AcceptedMarkerInputExcisedError,
+    MixedAcceptedMarkerInputError,
+    PreparedAcceptedMarkerInput,
+    append_accepted_marker_input,
+    persist_pending_marker_input_sync,
+    prepare_accepted_marker_input,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ContentExcisedError,
@@ -48,6 +59,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 
 def _seed_session(
@@ -151,6 +163,33 @@ def _seed_session(
             emb_conn.close()
 
     return str(session_id)
+
+
+def _seed_marker_carriers(
+    archive_root: Path, session_id: str
+) -> tuple[PreparedAcceptedMarkerInput, PreparedAcceptedMarkerInput]:
+    """Seed real pending/accepted carrier bytes plus their rebuildable witnesses."""
+    raw_id = resolve_session_excision_target(archive_root, session_id).raw_targets[0].raw_id
+    pending = prepare_accepted_marker_input(
+        raw_id, [{"session_id": session_id, "candidates": [{"body": "pending secret"}]}]
+    )
+    accepted = prepare_accepted_marker_input(
+        raw_id,
+        [{"session_id": session_id, "candidates": [{"body": "accepted secret"}]}],
+        request_facts={"revision": "accepted"},
+    )
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
+        asyncio.run(append_accepted_marker_input(_AsyncConnection(conn), accepted))
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        for batch in (pending, accepted):
+            conn.execute(
+                "INSERT INTO ingest_marker_witnesses(request_key, carrier_digest, dispositions_json, incarnation_id) "
+                "VALUES (?, ?, '[]', ?)",
+                (batch.identity, batch.payload_sha256, str(uuid.uuid4())),
+            )
+    return pending, accepted
 
 
 class TestPlanSessionExcision:
@@ -322,6 +361,54 @@ class TestApplySessionExcision:
         second = apply_session_excision(tmp_path, session_id, reason="r-again", actor="user:local")
         assert second.found is False  # already gone; nothing left to touch
 
+    def test_unindexed_pending_marker_excision_tombstones_its_raw_revision(self, tmp_path: Path) -> None:
+        """Pending carrier is the durable session-to-raw link before index commit.
+
+        Anti-vacuity: omitting carrier raw ids from excision's durable closure
+        leaves this raw replayable; checking tombstones by request key alone
+        then permits a changed recipe to persist the same excised material.
+        """
+        session_id = _seed_session(tmp_path, native_id="pending-before-index")
+        raw_id = resolve_session_excision_target(tmp_path, session_id).raw_targets[0].raw_id
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        pending = prepare_accepted_marker_input(
+            raw_id,
+            [{"session_id": session_id, "candidates": [{"body": "excised pending material"}]}],
+            request_facts={"recipe": "before"},
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
+
+        target = resolve_session_excision_target(tmp_path, session_id)
+        assert target.session_exists is False
+        assert tuple(raw.raw_id for raw in target.raw_targets) == (raw_id,)
+        assert tuple(marker.identity for marker in target.marker_input_targets) == (pending.identity,)
+
+        receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:test", now_ms=20)
+        assert receipt.found is True
+        assert receipt.counts["source_raw_rows"] == 1
+        assert receipt.counts["source_marker_inputs_pending"] == 1
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM pending_accepted_marker_inputs WHERE raw_id = ?", (raw_id,)
+            ).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM excised_marker_inputs WHERE raw_id = ?", (raw_id,)
+            ).fetchone() == (1,)
+
+            changed_request = prepare_accepted_marker_input(
+                raw_id,
+                [{"session_id": session_id, "candidates": [{"body": "excised pending material"}]}],
+                request_facts={"recipe": "after"},
+            )
+            assert changed_request.identity != pending.identity
+            with pytest.raises(AcceptedMarkerInputExcisedError, match="was excised"):
+                persist_pending_marker_input_sync(conn, changed_request, expected_incarnation_id=str(uuid.uuid4()))
+            assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+
     def test_retry_after_source_commit_before_index_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -353,10 +440,75 @@ class TestApplySessionExcision:
         assert receipt.receipt_assertion_id is not None
         assert resolve_session_excision_target(tmp_path, session_id).found is False
 
+    def test_source_first_retry_cleans_marker_witnesses_from_terminal_evidence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retry uses content-free marker tombstones after source erasure.
+
+        Anti-vacuity: resolve marker witnesses only through still-live carrier
+        bytes and the retry leaves both rebuildable witnesses behind.
+        """
+        session_id = _seed_session(tmp_path, native_id="crash-marker-source-index")
+        pending, accepted = _seed_marker_carriers(tmp_path, session_id)
+        original_connect = excision_module._connect_rw
+        failed = False
+
+        def fail_user_open(path: Path) -> sqlite3.Connection:
+            nonlocal failed
+            if path.name == "user.db" and not failed:
+                failed = True
+                raise RuntimeError("simulated source-first crash")
+            return original_connect(path)
+
+        monkeypatch.setattr(excision_module, "_connect_rw", fail_user_open)
+        with pytest.raises(RuntimeError, match="source-first crash"):
+            apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
+
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+            assert conn.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+            assert conn.execute("SELECT COUNT(*) FROM excised_marker_inputs").fetchone() == (2,)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
+                (pending.identity, accepted.identity),
+            ).fetchone() == (2,)
+
+        recovery_plan = plan_session_excision(tmp_path, session_id)
+        assert recovery_plan.source_marker_inputs_pending == 1
+        assert recovery_plan.source_marker_inputs_accepted == 1
+        assert recovery_plan.marker_input_digests == (pending.payload_sha256, accepted.payload_sha256)
+        from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
+
+        prepared = SessionExcisionActuator().prepare(
+            SessionExcisionArgs(
+                archive_root=tmp_path,
+                session_id=session_id,
+                reason="crash",
+                actor="user:test",
+                cascade_lineage=False,
+            )
+        )
+        assert prepared.context["source_marker_inputs_pending"] == recovery_plan.source_marker_inputs_pending
+        assert prepared.context["source_marker_inputs_accepted"] == recovery_plan.source_marker_inputs_accepted
+        assert prepared.context["marker_input_digests"] == list(recovery_plan.marker_input_digests)
+
+        receipt = apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
+        assert receipt.counts["source_marker_inputs_pending"] == 1
+        assert receipt.counts["source_marker_inputs_accepted"] == 1
+        assert receipt.counts["index_marker_witnesses"] == 2
+        assert receipt.marker_input_digests == (pending.payload_sha256, accepted.payload_sha256)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
+                (pending.identity, accepted.identity),
+            ).fetchone() == (0,)
+
     def test_retry_after_receipt_commit_before_index_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         session_id = _seed_session(tmp_path, native_id="crash-receipt-index")
+        pending, accepted = _seed_marker_carriers(tmp_path, session_id)
         original_connect = excision_module._connect_rw
         failed = False
 
@@ -371,10 +523,25 @@ class TestApplySessionExcision:
         with pytest.raises(RuntimeError, match="simulated crash"):
             apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=20)
 
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            stored = conn.execute(
+                "SELECT value_json FROM assertions WHERE target_ref = ? AND kind = ?",
+                (f"session:{session_id}", AssertionKind.EXCISION_RECORD.value),
+            ).fetchone()
+            assert stored is not None
+            stored_value = json.loads(stored[0])
+            assert stored_value["counts"]["index_marker_witnesses"] == 2
+
         receipt = apply_session_excision(tmp_path, session_id, reason="different", actor="other", now_ms=21)
         assert receipt.found is True
         assert receipt.reason == "crash"
         assert receipt.actor == "user:test"
+        assert receipt.counts["index_marker_witnesses"] == 2
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
+                (pending.identity, accepted.identity),
+            ).fetchone() == (0,)
         assert resolve_session_excision_target(tmp_path, session_id).found is False
 
     def test_reingest_does_not_resurrect_excised_content(self, tmp_path: Path) -> None:
@@ -654,8 +821,52 @@ class TestLineageSafety:
 
     def test_plan_surfaces_lineage_dependents(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
-        plan = plan_session_excision(tmp_path, parent_id)
-        assert plan.lineage_dependent_session_ids == (child_id,)
+        with pytest.raises(LineageDependentsError) as excinfo:
+            plan_session_excision(tmp_path, parent_id)
+        assert excinfo.value.dependent_session_ids == (child_id,)
+
+    def test_cascade_plan_and_apply_share_one_marker_carrier(self, tmp_path: Path) -> None:
+        parent_id, child_id = self._seed_lineage(tmp_path)
+        raw_id = resolve_session_excision_target(tmp_path, parent_id).raw_targets[0].raw_id
+        shared = prepare_accepted_marker_input(
+            raw_id,
+            [
+                {"session_id": parent_id, "candidates": [{"body": "parent"}]},
+                {"session_id": child_id, "candidates": [{"body": "child"}]},
+            ],
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            persist_pending_marker_input_sync(conn, shared, expected_incarnation_id=str(uuid.uuid4()))
+
+        plan = plan_session_excision(tmp_path, parent_id, cascade_lineage=True)
+        assert plan.source_marker_inputs_pending == 1
+        assert plan.source_marker_inputs_accepted == 0
+        assert plan.marker_input_digests == (shared.payload_sha256,)
+        receipt = apply_session_excision(tmp_path, parent_id, reason="r", actor="user:local", cascade_lineage=True)
+        assert receipt.counts["source_marker_inputs_pending"] == 1
+        assert receipt.marker_input_digests == (shared.payload_sha256,)
+
+    def test_cascade_plan_refuses_marker_carrier_shared_outside_the_lineage(self, tmp_path: Path) -> None:
+        parent_id, child_id = self._seed_lineage(tmp_path)
+        outsider_id = _seed_session(tmp_path, native_id="lineage-outsider")
+        raw_id = resolve_session_excision_target(tmp_path, parent_id).raw_targets[0].raw_id
+        shared = prepare_accepted_marker_input(
+            raw_id,
+            [
+                {"session_id": parent_id, "candidates": [{"body": "parent"}]},
+                {"session_id": child_id, "candidates": [{"body": "child"}]},
+                {"session_id": outsider_id, "candidates": [{"body": "retain"}]},
+            ],
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            persist_pending_marker_input_sync(conn, shared, expected_incarnation_id=str(uuid.uuid4()))
+
+        with pytest.raises(MixedAcceptedMarkerInputError, match="retained sessions"):
+            plan_session_excision(tmp_path, parent_id, cascade_lineage=True)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (3,)
 
     def test_apply_without_cascade_refuses_and_does_not_mutate(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)

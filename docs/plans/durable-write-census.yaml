@@ -1027,6 +1027,27 @@ writes:
     tier: "user"
     classification: lifecycle_transition
     reason: "query_names is the declared MUTABLE human alias over immutable query hashes, and watched_query_baselines is an explicitly advancing pointer; both writes move that pointer and record its predecessor (supersedes_query_hash) or validate the new target first (the baseline must be that query's own watch result set). the watch-clearing UPDATE lives in clear_query_watch and is additionally guarded WHERE watch = 1"
+  - file: "polylogue/storage/accepted_marker_inputs.py"
+    function: "excise_marker_input_targets_sync"
+    table: "accepted_marker_inputs"
+    kind: "delete"
+    tier: "source"
+    classification: deliberate_redaction
+    reason: "operator-invoked session excision first writes a content-free excised_marker_inputs tombstone for this exact identity, digest, stream and sequence, then deletes only that sealed accepted payload carrier; the tombstone-gated delete and every normal ingestion path prevent restoration"
+  - file: "polylogue/storage/accepted_marker_inputs.py"
+    function: "excise_marker_input_targets_sync"
+    table: "pending_accepted_marker_inputs"
+    kind: "delete"
+    tier: "source"
+    classification: deliberate_redaction
+    reason: "operator-invoked session excision first writes a content-free excised_marker_inputs tombstone for this exact identity and digest, then deletes only that sealed pending payload carrier; every normal ingestion path rejects the tombstoned identity so replay cannot restore it"
+  - file: "polylogue/storage/accepted_marker_inputs.py"
+    function: "finalize_pending_accepted_marker_input"
+    table: "pending_accepted_marker_inputs"
+    kind: "delete"
+    tier: "source"
+    classification: lifecycle_transition
+    reason: "finalization inserts or verifies the immutable accepted marker input and deletes only the pending row for that exact request_key in the same caller-owned source transaction; a rollback therefore retains the pending carrier and cannot split accepted bytes from obligation removal"
 caller_supplied_sql:
   - file: "polylogue/api/archive.py"
     function: "_archive_aggregate_facet_families.scoped_rows"
