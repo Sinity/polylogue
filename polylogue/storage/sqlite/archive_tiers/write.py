@@ -3918,6 +3918,8 @@ _PROVIDER_USAGE_EVENT_COLUMNS = (
     "source_message_provider_id",
     "source_message_resolution",
     "finish_reason",
+    "api_block_index",
+    "quota_limits_json",
 )
 
 
@@ -3952,7 +3954,7 @@ def _merge_provider_usage_event_rows(
     # Nullable text/timestamp lanes: an acquisition that simply did not report
     # one keeps the older observation. ``source_message_resolution`` is NOT
     # NULL and states how *this* write resolved the id, so it is never merged.
-    for index in (1, 4, 17, 18, 19, 21):
+    for index in (1, 4, 17, 18, 19, 21, 22, 23):
         if merged[index] is None:
             merged[index] = existing[index]
     # Zero is a measured/omitted value in the wire shapes that reach this
@@ -6722,8 +6724,9 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
         total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
         occurred_at_ms, request_id,
-        source_message_provider_id, source_message_resolution, finish_reason
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_message_provider_id, source_message_resolution, finish_reason,
+        api_block_index, quota_limits_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -6803,6 +6806,8 @@ def _provider_usage_event_row(
         _sqlite_text(source_message_provider_id),
         source_message_resolution,
         _sqlite_text(_payload_string(event.payload, "finish_reason", "stop_reason")),
+        _payload_optional_int(event.payload, "api_block_index"),
+        (_json_dumps(quota_limits) if (quota_limits := _payload_mapping(event.payload, "quota_limits")) else None),
     )
 
 
@@ -6846,8 +6851,11 @@ def _provider_usage_event_has_evidence(event: ParsedSessionEvent, row: tuple[obj
     """
     if any(isinstance(value, int) and value for value in row[5:17]):
         return True
-    return bool(_payload_string(event.payload, "request_id")) or bool(
-        _payload_string(event.payload, "finish_reason", "stop_reason")
+    return (
+        bool(_payload_string(event.payload, "request_id"))
+        or bool(_payload_string(event.payload, "finish_reason", "stop_reason"))
+        or _payload_optional_int(event.payload, "api_block_index") is not None
+        or bool(_payload_mapping(event.payload, "quota_limits"))
     )
 
 

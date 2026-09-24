@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.claude import parse_code
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
@@ -107,6 +109,67 @@ def test_stop_reason_survives_an_all_zero_usage_report(tmp_path: Path) -> None:
         rows = _usage_rows(conn, session_id)
         assert len(rows) == 1
         assert rows[0]["finish_reason"] == "max_tokens"
+    finally:
+        conn.close()
+
+
+def test_claude_billing_fields_round_trip_through_archive_usage_row(tmp_path: Path) -> None:
+    """Claude billing and quota evidence survives the production write/read path.
+
+    Anti-vacuity: dropping either parser extraction, either typed column, its
+    write lowering, or the SELECT * read projection makes this fail.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "billing-assistant-1",
+                "sessionId": "billing-round-trip",
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "apiBlockIndex": 7,
+                "message": {
+                    "id": "msg_billing_1",
+                    "role": "assistant",
+                    "model": "claude-opus-4",
+                    "content": [{"type": "text", "text": "try again later"}],
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                },
+            },
+            {
+                "type": "assistant",
+                "uuid": "billing-assistant-2",
+                "sessionId": "billing-round-trip",
+                "timestamp": "2026-01-01T00:00:01.000Z",
+                "quotaLimits": {
+                    "status": "rejected",
+                    "resetsAt": 1787464800,
+                    "rateLimitType": "seven_day",
+                },
+                "message": {
+                    "id": "msg_billing_2",
+                    "role": "assistant",
+                    "model": "claude-opus-4",
+                    "content": [{"type": "text", "text": "try again later"}],
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                },
+            },
+        ],
+        "billing-round-trip",
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = _write(conn, parsed)
+        rows = _usage_rows(conn, session_id)
+        assert len(rows) == 2
+        assert [row["api_block_index"] for row in rows] == [7, None]
+        assert [json.loads(row["quota_limits_json"]) if row["quota_limits_json"] else None for row in rows] == [
+            None,
+            {
+                "rate_limit_type": "seven_day",
+                "resets_at": 1787464800,
+                "status": "rejected",
+            },
+        ]
     finally:
         conn.close()
 
