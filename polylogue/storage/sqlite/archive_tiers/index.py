@@ -566,7 +566,17 @@ def _binding_columns(columns: tuple[str, ...], *, exclude: tuple[str, ...] = ())
 # INDEX-ONLY: the index tier is derived and rebuildable, no durable migration
 # is involved, and no reader regresses because the only consumer of the value
 # was the value itself.
-INDEX_SCHEMA_VERSION = 108
+# polylogue-wnn0n: v109 tracks the four index relations read by terminal query
+# filters but previously absent from the relation-scoped continuation frame.
+# Repository filters join ``session_repos`` to ``repos``; cwd filters read
+# ``session_working_dirs``; tool/action filters read ``action_pairs`` through
+# the ``actions`` view. Their writes are independent derivation mutations, so
+# transitive coverage through the seven existing frame relations is not safe.
+# Each relation gets its own epoch row and insert/update/delete triggers. This
+# is ADDITIVE_DERIVED: existing index rows remain valid data, but the changed
+# DDL/schema identity requires the normal daemon reconvergence before a
+# generation is served.
+INDEX_SCHEMA_VERSION = 109
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
@@ -1452,6 +1462,55 @@ END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_tags_delete
 AFTER DELETE ON session_tags BEGIN
     {index_frame_bump_sql("session_tags")}
+END;
+
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_action_pairs_insert
+AFTER INSERT ON action_pairs BEGIN
+    {index_frame_bump_sql("action_pairs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_action_pairs_update
+AFTER UPDATE ON action_pairs BEGIN
+    {index_frame_bump_sql("action_pairs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_action_pairs_delete
+AFTER DELETE ON action_pairs BEGIN
+    {index_frame_bump_sql("action_pairs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_working_dirs_insert
+AFTER INSERT ON session_working_dirs BEGIN
+    {index_frame_bump_sql("session_working_dirs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_working_dirs_update
+AFTER UPDATE ON session_working_dirs BEGIN
+    {index_frame_bump_sql("session_working_dirs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_working_dirs_delete
+AFTER DELETE ON session_working_dirs BEGIN
+    {index_frame_bump_sql("session_working_dirs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_repos_insert
+AFTER INSERT ON repos BEGIN
+    {index_frame_bump_sql("repos")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_repos_update
+AFTER UPDATE ON repos BEGIN
+    {index_frame_bump_sql("repos")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_repos_delete
+AFTER DELETE ON repos BEGIN
+    {index_frame_bump_sql("repos")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_repos_insert
+AFTER INSERT ON session_repos BEGIN
+    {index_frame_bump_sql("session_repos")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_repos_update
+AFTER UPDATE ON session_repos BEGIN
+    {index_frame_bump_sql("session_repos")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_session_repos_delete
+AFTER DELETE ON session_repos BEGIN
+    {index_frame_bump_sql("session_repos")}
 END;
 
 CREATE TABLE IF NOT EXISTS session_latency_profiles (

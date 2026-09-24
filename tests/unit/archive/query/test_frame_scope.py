@@ -48,6 +48,23 @@ from polylogue.storage.sqlite.archive_tiers.query_unit_frame import (
 
 _UNSCOPED_EXPRESSION = "messages where role:user"
 _TAG_SCOPED_EXPRESSION = "messages where role:user and session.tag:pinned"
+_FILTER_RELATION_CASES = (
+    ("repo_names", ("polylogue",), "repos", "UPDATE repos SET last_seen_at_ms = last_seen_at_ms + 1"),
+    (
+        "repo_names",
+        ("polylogue",),
+        "session_repos",
+        "UPDATE session_repos SET observed_at_ms = observed_at_ms + 1",
+    ),
+    (
+        "cwd_prefix",
+        "/workspace",
+        "session_working_dirs",
+        "UPDATE session_working_dirs SET path = '/other' WHERE session_id = 'codex-session:s2'",
+    ),
+    ("tool_terms", ("bash",), "action_pairs", "UPDATE action_pairs SET tool_name = 'Zsh'"),
+    ("action_terms", ("shell",), "action_pairs", "UPDATE action_pairs SET semantic_type = 'editor'"),
+)
 
 
 def _seed(root: Path) -> None:
@@ -79,6 +96,37 @@ def _seed(root: Path) -> None:
             conn.execute(
                 "INSERT INTO session_profiles(session_id, first_message_at) VALUES (?, '1')",
                 (session_id,),
+            )
+
+
+def _seed_filter_relations(root: Path) -> None:
+    """Populate every relation behind the four newly scoped filters."""
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO repos(repo_id, origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms) "
+            "VALUES ('repo-0', 'https://example.test/polylogue', '/workspace', 'polylogue', 1, 1)"
+        )
+        for index in range(3):
+            session_id = f"codex-session:s{index}"
+            conn.execute(
+                "INSERT INTO session_repos(session_id, repo_id, root_path, branch_name, observed_at_ms) "
+                "VALUES (?, 'repo-0', '/workspace', 'main', 1)",
+                (session_id,),
+            )
+            conn.execute(
+                "INSERT INTO session_working_dirs(session_id, path, position) VALUES (?, '/workspace', 0)",
+                (session_id,),
+            )
+            message_id = f"{session_id}:n:tool{index}"
+            conn.execute(
+                "INSERT INTO messages(session_id, native_id, position, role, content_hash) "
+                "VALUES (?, ?, 1, 'assistant', zeroblob(32))",
+                (session_id, f"tool{index}"),
+            )
+            conn.execute(
+                "INSERT INTO blocks(message_id, session_id, position, block_type, tool_name, tool_id, semantic_type) "
+                "VALUES (?, ?, 0, 'tool_use', 'Bash', ?, 'shell')",
+                (message_id, session_id, f"tool-id-{index}"),
             )
 
 
@@ -205,6 +253,59 @@ def test_tag_write_keeps_untagged_read_valid(tmp_path: Path) -> None:
     assert len(second.items) == 1  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize(
+    "filter_name, filter_value, relation, mutation",
+    _FILTER_RELATION_CASES,
+)
+def test_filter_relation_write_invalidates_continuation(
+    tmp_path: Path,
+    filter_name: str,
+    filter_value: object,
+    relation: str,
+    mutation: str,
+) -> None:
+    """A committed write to each filter's own relation rejects its resume."""
+    _seed(tmp_path)
+    _seed_filter_relations(tmp_path)
+    first = _page(tmp_path, _UNSCOPED_EXPRESSION, session_filters={filter_name: filter_value})
+    token = first.continuation  # type: ignore[attr-defined]
+    assert token
+    source = parse_unit_source_expression(_UNSCOPED_EXPRESSION)
+    assert source is not None
+    assert relation in query_unit_frame_relations(source, {filter_name: filter_value})
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(mutation)
+
+    with pytest.raises(QueryContinuationStaleError):
+        _resume(tmp_path, _UNSCOPED_EXPRESSION, token)
+
+
+@pytest.mark.parametrize("filter_name, filter_value, _relation, _mutation", _FILTER_RELATION_CASES)
+def test_unrelated_profile_write_keeps_filter_continuation_valid(
+    tmp_path: Path,
+    filter_name: str,
+    filter_value: object,
+    _relation: str,
+    _mutation: str,
+) -> None:
+    """Profile churn is unrelated to the four normalized filter relations."""
+    _seed(tmp_path)
+    _seed_filter_relations(tmp_path)
+    first = _page(tmp_path, _UNSCOPED_EXPRESSION, session_filters={filter_name: filter_value})
+    token = first.continuation  # type: ignore[attr-defined]
+    assert token
+
+    _write_session_profile(tmp_path, "codex-session:s2")
+
+    second = _resume(
+        tmp_path,
+        _UNSCOPED_EXPRESSION,
+        token,
+    )
+    assert len(second.items) == 1  # type: ignore[attr-defined]
+
+
 def _trigger_bodies() -> dict[str, list[str]]:
     """Map each ``query_unit_frame_*`` trigger name to its statement lines."""
     bodies: dict[str, list[str]] = {}
@@ -276,7 +377,10 @@ def _view_relations(root: Path) -> dict[str, frozenset[str]]:
 
 
 def _traced_relations(statements: list[str], views: Mapping[str, frozenset[str]]) -> frozenset[str]:
-    sql = "\n".join(statements)
+    # SQLite reports the original statement text, including explanatory CTE
+    # comments in production SQL. Comments are not reads; strip them before
+    # matching newly tracked relation names.
+    sql = re.sub(r"--[^\n]*", "", "\n".join(statements))
     observed = {relation for relation in ALL_FRAME_RELATIONS if re.search(rf"\b{relation}\b", sql)}
     for view, relations in views.items():
         if re.search(rf"\b{view}\b", sql):

@@ -44,10 +44,12 @@ _BASE_RELATIONS: frozenset[str] = frozenset({"sessions", "messages", "blocks"})
 # The unit-specific relation each terminal row source adds on top of the base.
 # A unit absent here is unknown to this module and yields the full set.
 _UNIT_RELATIONS: dict[str, frozenset[str]] = {
-    "message": frozenset(),
+    # ``ArchiveMessageQueryRow.repo`` is rendered from the normalized
+    # session_repos -> repos join in the production message projection.
+    "message": frozenset({"session_repos", "repos"}),
     "block": frozenset(),
-    "action": frozenset(),
-    "file": frozenset(),
+    "action": frozenset({"action_pairs"}),
+    "file": frozenset({"action_pairs"}),
     "run": frozenset(),
     "observed-event": frozenset(),
     "context-snapshot": frozenset(),
@@ -55,31 +57,31 @@ _UNIT_RELATIONS: dict[str, frozenset[str]] = {
     "delegation": frozenset({"delegation_facts"}),
 }
 
-# Tracked relations each ``_session_filter_clause`` keyword can read.
-# ``session_repos``/``repos``/``session_working_dirs``/``action_pairs`` are
-# read by some of these and carry no frame trigger at all; that predates this
-# module and is recorded in the bead rather than silently widened here.
+# Tracked relations each ``_session_filter_clause`` keyword can read. The
+# relation names mirror the production SQL, including the base relations
+# behind the ``actions`` view. A continuation must carry every relation whose
+# committed rows can change the filter result.
 _SESSION_FILTER_RELATIONS: dict[str, frozenset[str]] = {
     "origin": frozenset({"sessions"}),
     "origins": frozenset({"sessions"}),
     "excluded_origins": frozenset({"sessions"}),
     "tags": frozenset({"sessions", "session_tags"}),
     "excluded_tags": frozenset({"sessions", "session_tags"}),
-    "repo_names": frozenset({"sessions"}),
+    "repo_names": frozenset({"session_repos", "repos"}),
     "project_refs": frozenset({"sessions"}),
     "has_types": frozenset({"sessions", "blocks"}),
     "has_tool_use": frozenset({"sessions"}),
     "has_thinking": frozenset({"sessions"}),
     "has_paste": frozenset({"sessions"}),
     "typed_only": frozenset({"sessions"}),
-    "tool_terms": frozenset({"sessions", "blocks"}),
-    "excluded_tool_terms": frozenset({"sessions", "blocks"}),
-    "action_terms": frozenset({"sessions", "blocks"}),
-    "excluded_action_terms": frozenset({"sessions", "blocks"}),
-    "action_sequence": frozenset({"sessions", "blocks"}),
-    "action_text_terms": frozenset({"sessions", "blocks"}),
-    "referenced_paths": frozenset({"sessions", "blocks"}),
-    "cwd_prefix": frozenset({"sessions"}),
+    "tool_terms": frozenset({"sessions", "blocks", "action_pairs"}),
+    "excluded_tool_terms": frozenset({"sessions", "blocks", "action_pairs"}),
+    "action_terms": frozenset({"sessions", "blocks", "action_pairs"}),
+    "excluded_action_terms": frozenset({"sessions", "blocks", "action_pairs"}),
+    "action_sequence": frozenset({"sessions", "blocks", "action_pairs"}),
+    "action_text_terms": frozenset({"sessions", "blocks", "action_pairs"}),
+    "referenced_paths": frozenset({"sessions", "blocks", "action_pairs"}),
+    "cwd_prefix": frozenset({"session_working_dirs"}),
     "message_type": frozenset({"sessions", "messages"}),
     "title": frozenset({"sessions"}),
     "min_messages": frozenset({"sessions"}),
@@ -158,12 +160,21 @@ def _predicate_relations(predicate: QueryPredicate | None) -> frozenset[str] | N
         ref = predicate.field_ref
         field = ref.name if ref is not None and ref.scope == "session" else predicate.field
         if ref is not None and ref.scope != "session":
-            # A unit-scoped field reads the unit's own row relation, already
-            # covered by the request's base set.
+            # Message-grain action/tool/path/command/output predicates are
+            # EXISTS subqueries over the ``actions`` view, not reads of the
+            # message row alone. The action-pair relation is the materialized
+            # base that can change those results.
+            if ref.unit == "message" and field in {"tool", "action", "command", "path", "output"}:
+                return frozenset({"action_pairs"})
             return frozenset()
         return _session_field_relations(field)
     if isinstance(predicate, QueryExistsPredicate):
-        return _EXISTS_UNIT_RELATIONS.get(predicate.unit)
+        relations = _EXISTS_UNIT_RELATIONS.get(predicate.unit)
+        if relations is None:
+            return None
+        if predicate.unit in {"action", "file"}:
+            return relations | frozenset({"action_pairs"})
+        return relations
     if isinstance(predicate, QueryLineagePredicate):
         # ``logical:`` resolves the materialized logical family through
         # ``session_profiles``; plain lineage reads ``sessions.root_session_id``.
@@ -171,7 +182,7 @@ def _predicate_relations(predicate: QueryPredicate | None) -> frozenset[str] | N
     if isinstance(predicate, QueryTextPredicate):
         return frozenset({"sessions", "messages", "blocks"})
     if isinstance(predicate, QuerySequencePredicate):
-        return frozenset({"sessions", "blocks"})
+        return frozenset({"sessions", "blocks", "action_pairs"})
     if isinstance(predicate, QueryNotPredicate):
         return _predicate_relations(predicate.child)
     if isinstance(predicate, QueryBoolPredicate):
