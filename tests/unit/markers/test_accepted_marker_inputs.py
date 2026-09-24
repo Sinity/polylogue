@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -279,9 +280,22 @@ def test_marker_migration_train_has_runtime_proof_and_refuses_without_backup(tmp
     assert train.migration.requires_backup
     assert all(result.passed for result in _runtime_consumer_results(train, tmp_path))
     migration = next(step.sql for step in steps if step.version == 5)
+    # Build a genuine v4 fixture: SOURCE_DDL is the current fresh schema and
+    # includes v5's additive objects. MigrationStep.sql includes its safety
+    # metadata comment, so strip that metadata before removing the SQL body.
+    migration_body = migration.split("\n", 1)[1]
     with sqlite3.connect(tmp_path / "source.db") as source:
-        source.executescript(SOURCE_DDL.replace(migration.strip(), ""))
+        v4_ddl, replacements = re.subn(re.escape(migration_body), "", SOURCE_DDL, count=1)
+        assert replacements == 1
+        source.executescript(v4_ddl)
         source.execute("PRAGMA user_version = 4")
+        v5_objects = source.execute(
+            "SELECT name FROM sqlite_master WHERE name IN ("
+            "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
+            "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
+            "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete')"
+        ).fetchall()
+        assert v5_objects == []
         source.commit()
         with pytest.raises(migration_runner.MigrationError, match="requires a verified backup manifest"):
             migration_runner.migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None)
@@ -596,46 +610,30 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
 
 
 @pytest.mark.asyncio
-async def test_public_batch_rebuild_refuses_changed_accepted_carrier_without_mutation(
+async def test_public_batch_rebuild_reingests_and_rewitnesses_exact_accepted_carrier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The public route preserves accepted history when its rebuilt carrier differs."""
-    from polylogue.pipeline.ids import session_content_hash
-
+    """Real retained-raw parsing can republish the exact carrier after index replacement."""
     bootstrap_archive_root(tmp_path)
     config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
     service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
-    payload_bytes = b"accepted-marker-rebuild-replay"
+    payload_bytes = (
+        b'{"type":"session_meta","payload":{"id":"rebuild-replay","timestamp":"2026-01-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"assistant",'
+        b'"timestamp":"2026-01-01T00:00:01Z","id":"m1","content":'
+        b'[{"type":"output_text","text":"::note: durable marker"}]}}\n'
+    )
     BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
     with sqlite3.connect(tmp_path / "source.db") as source:
         raw_id = write_source_raw_session(
             source,
             origin=Origin.CODEX_SESSION,
-            source_path="rebuild-replay.jsonl",
+            source_path=".codex/sessions/rebuild-replay.jsonl",
             source_index=0,
             payload=payload_bytes,
             acquired_at_ms=1,
         )
-    parsed = _session("::note: durable marker")
-    session = SessionWritePayload(
-        session_id="codex-session:session",
-        content_hash=str(session_content_hash(parsed)),
-        parsed_session=parsed,
-        message_count=len(parsed.messages),
-        raw_id=raw_id,
-    )
-
-    def fake_ingest(record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
-        return IngestRecordResult(
-            raw_id=record.raw_id,
-            payload_provider=Provider.CODEX.value,
-            validation_status="passed",
-            outcome_code="success",
-            sessions=[session],
-        )
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
         lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
@@ -650,6 +648,9 @@ async def test_public_batch_rebuild_refuses_changed_accepted_carrier_without_mut
                 (raw_id,),
             ).fetchone()
         assert original is not None and original[0] == 1
+        original_payload = bytes(original[1])
+        original_candidates = json.loads(original_payload)["sessions"][0]["candidates"]
+        assert [item["match"]["body"] for item in original_candidates] == ["durable marker"]
         await repository.close()
 
         # Model a new derived index generation while leaving durable source
@@ -660,19 +661,20 @@ async def test_public_batch_rebuild_refuses_changed_accepted_carrier_without_mut
 
         with open_connection(tmp_path / "index.db"):
             pass
+        await repository.close()
         repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
         service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
-        with pytest.raises(AcceptedMarkerInputRefusedError, match="without its exact index witness"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
         with sqlite3.connect(tmp_path / "index.db") as index:
-            assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-            assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
-        with pytest.raises(AcceptedMarkerInputRefusedError, match="without its exact index witness"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+            assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+            witness = index.execute("SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses").fetchone()
+            assert witness is not None
+            rebuilt_incarnation = witness[1]
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
     finally:
         await repository.close()
 
@@ -686,8 +688,11 @@ async def test_public_batch_rebuild_refuses_changed_accepted_carrier_without_mut
         )
         assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "index.db") as index:
-        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+        assert index.execute("SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses").fetchone() == (
+            hashlib.sha256(original_payload).hexdigest(),
+            rebuilt_incarnation,
+        )
 
 
 @pytest.mark.asyncio
