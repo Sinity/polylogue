@@ -178,6 +178,8 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
         assert terminal is not None
         assert terminal["outcome"] == "completed"
         assert terminal["accepted_reference"]["request_id"] == request_id
+        exchange = stack.runtime._exchanges[request_id]
+        assert exchange.progress_sequence == 1
         assert progress and progress[0]["state"] == "started"
         assert progress[0]["sequence"] == 1
         assert "estimated_cost_usd" in progress[0]
@@ -202,9 +204,12 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
 ) -> None:
     """Accepted cancellation is observed between work items and preserves counts."""
     import asyncio
+    from threading import Event
     from types import SimpleNamespace
 
     from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
+
+    started = Event()
 
     def compose(_index: Path, **kwargs: object) -> object:
         emit = kwargs["progress_callback"]
@@ -212,10 +217,9 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
 
         async def converge(_scope: object) -> EmbeddingConvergenceResult:
             assert callable(emit) and callable(quiet)
-            for ordinal in range(20):
-                if cast(Any, quiet)():
-                    break
-                cast(Any, emit)({"state": "started", "ordinal": ordinal, "estimated_cost_usd": 0.001})
+            cast(Any, emit)({"state": "started", "ordinal": 0, "estimated_cost_usd": 0.001})
+            started.set()
+            while not cast(Any, quiet)():
                 await asyncio.sleep(0.01)
             cancelled = bool(cast(Any, quiet)())
             report = SimpleNamespace(
@@ -236,6 +240,7 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
         )
         assert accepted is not None and accepted["outcome"] == "accepted"
         assert accepted["accepted_reference"]["request_id"] == request_id
+        assert started.wait(timeout=2)
         cancellation = stack.client.cancel(request_id, archive_root=str(stack.archive_root))
         assert cancellation is not None
         terminal = stack.client.operation_to_completion(

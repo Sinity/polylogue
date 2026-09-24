@@ -514,8 +514,7 @@ class DaemonOperationRuntime:
                         for key, item in self._exchanges.items()
                         if item.future is not None
                         and item.future.done()
-                        and (target := daemon_operation_spec(item.request.operation)) is not None
-                        and target.progress
+                        and item.request.operation == "maintenance.embeddings.backfill"
                     )
                     for _settled_at, key in settled_progress:
                         self._exchanges.pop(key, None)
@@ -608,7 +607,8 @@ class DaemonOperationRuntime:
                 def settled(_future: Future[DaemonOperationEnvelope]) -> None:
                     with self._condition:
                         exchange.settled_at = monotonic()
-                        if self._exchanges.get(request_id) is exchange and not spec.progress:
+                        retain_progress = request.operation == "maintenance.embeddings.backfill"
+                        if self._exchanges.get(request_id) is exchange and not retain_progress:
                             self._exchanges.pop(request_id)
                         self._condition.notify_all()
 
