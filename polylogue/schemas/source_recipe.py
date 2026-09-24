@@ -66,7 +66,20 @@ def contracts_match_except_key_limit(previous: JSONDocument, current: JSONDocume
         current_revision = current_without_limit.get(revision_key, 1)
         if previous_revision == current_revision:
             continue
-        if previous_revision == 1 and current_revision == 2:
+        # Identity revisions change how contributions are grouped, but a
+        # matching logical source id and revision still identify the same
+        # source evidence. Provider-specific legacy fallbacks and ZIP member
+        # transitions are rejected by the caller when their evidence cannot
+        # safely be reused. Preserve cache reuse across the known identity
+        # migrations (1→2→3); later revisions require a new compatibility
+        # decision here.
+        if revision_key == "identity_revision" and previous_revision < current_revision <= 3:
+            previous_without_limit = {
+                key: value for key, value in previous_without_limit.items() if key != revision_key
+            }
+            current_without_limit = {key: value for key, value in current_without_limit.items() if key != revision_key}
+            continue
+        if revision_key == "zip_member_revision" and previous_revision == 1 and current_revision == 2:
             previous_without_limit = {
                 key: value for key, value in previous_without_limit.items() if key != revision_key
             }

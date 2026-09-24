@@ -742,8 +742,8 @@ def test_implementation_provenance_does_not_invalidate_semantically_unchanged_ev
     [
         (SourceEvidenceRecipe(statistics_revision=2), {"structure": 1}, {"statistics": 1}),
         (SourceEvidenceRecipe(structure_revision=3), {"statistics": 1}, {"structure": 1}),
-        (SourceEvidenceRecipe(admission_revision=2), {}, {"structure": 1, "statistics": 1}),
-        (SourceEvidenceRecipe(identity_revision=3), {}, {"structure": 1, "statistics": 1}),
+        (SourceEvidenceRecipe(admission_revision=3), {}, {"structure": 1, "statistics": 1}),
+        (SourceEvidenceRecipe(identity_revision=4), {}, {"structure": 1, "statistics": 1}),
     ],
 )
 def test_semantic_revision_invalidates_only_the_dependent_phase(
