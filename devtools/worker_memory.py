@@ -24,6 +24,10 @@ __all__ = [
     "CGROUP_ROOT",
     "CONTROLLER_PEAK_MIB",
     "CORPUS_MAX_WORKERS",
+    "CORPUS_TEST_COUNT",
+    "ANONYMOUS_MEMORY_MODEL",
+    "AnonymousMemoryModel",
+    "AnonymousMemoryObservation",
     "MEASURED_CHARGE",
     "PYTEST_SLICE_MEMORY_HIGH_MIB",
     "WORKER_PEAK_ANON_MIB",
@@ -39,7 +43,9 @@ __all__ = [
 ]
 
 #: A worker's own allocations at peak, in MiB -- ANONYMOUS memory only, which
-#: is what a process-level RSS/PSS sampler reports.
+#: is what a process-level RSS/PSS sampler reports.  The old constant was a
+#: width-2 observation; keep it as the largest measured value for callers that
+#: still need a scalar, but use :data:`ANONYMOUS_MEMORY_MODEL` for sizing.
 #:
 #: Measured 2026-09-21 by reading the slot sampler back against the complete
 #: corpus run it sized (receipt
@@ -65,6 +71,88 @@ __all__ = [
 #: overestimates at width 3+ -- in the safe direction, which is the direction
 #: ``width_within`` must err.
 WORKER_PEAK_ANON_MIB = 4750
+
+#: The closed-world corpus represented by the two historical receipts below.
+#: At width three, 23,526 collected tests gave 7,842 tests per worker.  At
+#: width two the heaviest worker executed 15,416 tests.  A launch does not yet
+#: have the completed distribution, so admission projects this corpus count
+#: evenly; corroboration accepts a run's observed ``tests_per_worker`` when a
+#: receipt has it.
+CORPUS_TEST_COUNT: Final = 23_526
+
+
+@dataclass(frozen=True)
+class AnonymousMemoryObservation:
+    """One measured worker peak used to fit the anonymous-memory model."""
+
+    run: str
+    tests_per_worker: int
+    observed_anon_mib: float
+
+
+@dataclass(frozen=True)
+class AnonymousMemoryModel:
+    """Linear anonymous-memory estimate, in MiB, over tests a worker runs.
+
+    The fit is intentionally small and inspectable: the two available corpus
+    receipts are the evidence, not a claim that every future selection is
+    linear.  The mapped-file term remains separate because smaps_rollup only
+    sees pages a process still maps and therefore gives a measured floor for
+    the cgroup's complete file charge.
+    """
+
+    slope_mib_per_test: float
+    intercept_mib: float
+    observations: tuple[AnonymousMemoryObservation, ...]
+
+    def estimate(self, tests_per_worker: float) -> float:
+        """Estimate one worker's anonymous peak for ``tests_per_worker``."""
+        return self.intercept_mib + self.slope_mib_per_test * float(tests_per_worker)
+
+    @property
+    def residuals_mib(self) -> dict[str, float]:
+        """Observed minus fitted MiB for each historical receipt."""
+        return {
+            observation.run: round(observation.observed_anon_mib - self.estimate(observation.tests_per_worker), 3)
+            for observation in self.observations
+        }
+
+    def as_dict(self) -> dict[str, object]:
+        """A stable receipt-shaped description of the fit and its residuals."""
+        return {
+            "slope_mib_per_test": round(self.slope_mib_per_test, 6),
+            "intercept_mib": round(self.intercept_mib, 3),
+            "residuals_mib": self.residuals_mib,
+            "observations": [
+                {
+                    "run": observation.run,
+                    "tests_per_worker": observation.tests_per_worker,
+                    "observed_anon_mib": observation.observed_anon_mib,
+                }
+                for observation in self.observations
+            ],
+        }
+
+
+# The 2026-09-17 receipt's group peak was ~11,776 MiB, with an 869 MiB
+# controller and width 3: (11,776 - 869) / 3 = 3,635.7 MiB per worker at
+# 7,842 tests.  The 2026-09-21 receipt's largest worker was 4,723.8 MiB at
+# 15,416 tests.  These are the two points currently available; retaining the
+# arithmetic here makes the fit and its provenance reviewable instead of
+# turning another width-specific constant into an unexplained coefficient.
+_ANON_OBSERVATIONS: Final = (
+    AnonymousMemoryObservation("2026-09-17", 7_842, round((11_776 - 869) / 3, 1)),
+    AnonymousMemoryObservation("2026-09-21", 15_416, 4_723.8),
+)
+_ANON_SLOPE: Final = (_ANON_OBSERVATIONS[1].observed_anon_mib - _ANON_OBSERVATIONS[0].observed_anon_mib) / (
+    _ANON_OBSERVATIONS[1].tests_per_worker - _ANON_OBSERVATIONS[0].tests_per_worker
+)
+_ANON_INTERCEPT: Final = _ANON_OBSERVATIONS[0].observed_anon_mib - _ANON_SLOPE * _ANON_OBSERVATIONS[0].tests_per_worker
+ANONYMOUS_MEMORY_MODEL: Final = AnonymousMemoryModel(
+    slope_mib_per_test=_ANON_SLOPE,
+    intercept_mib=_ANON_INTERCEPT,
+    observations=_ANON_OBSERVATIONS,
+)
 #: What the same worker charges the cgroup BESIDES its anonymous memory, in
 #: MiB: mapped page cache and slab. It stays in the model because
 #: ``memory.high`` charges it -- see :class:`ChargeProfile` -- but it is a
@@ -155,7 +243,10 @@ class ChargeProfile:
     Every field here is a charge against the same ceiling, so the comparison
     in :func:`width_within` is between compatible quantities. Anon is kept as
     its own field rather than folded in because it is the term a sampler can
-    re-measure directly, so drift in either component stays detectable.
+    re-measure directly, so drift in either component stays detectable.  The
+    measured profile evaluates that field through ``anon_model`` at the
+    projected tests-per-worker share; ``worker_anon_mib`` remains the largest
+    historical scalar for compatibility and comparison.
     """
 
     #: One worker's anonymous peak.
@@ -165,16 +256,52 @@ class ChargeProfile:
     #: The controller's whole charge.
     controller_mib: float
 
+    #: Width-independent corpus size used when a sizing call has no observed
+    #: test distribution yet.  ``None`` keeps hand-built legacy profiles on
+    #: their scalar anonymous term.
+    anon_model: AnonymousMemoryModel | None = None
+    corpus_test_count: int | None = None
+
+    def worker_anon_for_tests(self, tests_per_worker: float | None = None) -> float:
+        """Return the anonymous estimate at a worker's test count.
+
+        A legacy ``ChargeProfile`` without ``anon_model`` remains valid for
+        focused callers and tests.  The measured profile is width-aware: its
+        scalar ``worker_anon_mib`` is only the historical maximum, not the
+        term used for a projected width.
+        """
+        if self.anon_model is None or tests_per_worker is None:
+            return float(self.worker_anon_mib)
+        return max(0.0, self.anon_model.estimate(tests_per_worker))
+
+    def tests_per_worker(self, workers: int) -> float | None:
+        """Project the closed-world corpus share for a planned width."""
+        if workers <= 0 or self.corpus_test_count is None:
+            return None
+        return self.corpus_test_count / workers
+
+    def worker_charge_for_workers(self, workers: int) -> float:
+        """Projected whole charge for one worker at a planned width."""
+        return self.worker_anon_for_tests(self.tests_per_worker(workers)) + self.worker_cache_mib
+
     @property
     def worker_charge_mib(self) -> float:
         """One worker's whole charge against ``memory.high``."""
         return self.worker_anon_mib + self.worker_cache_mib
 
-    def charge_mib(self, workers: int) -> float:
-        """What a run of ``workers`` charges the slice at peak, controller included."""
-        return self.controller_mib + workers * self.worker_charge_mib
+    def charge_mib(self, workers: int, *, tests_per_worker: float | None = None) -> float:
+        """What a run of ``workers`` charges the slice at peak.
 
-    def admission_estimate(self, workers: int, budget_mib: float) -> dict[str, float]:
+        When no distribution is known, the model evaluates each worker at its
+        projected share of the closed-world corpus.  A corroboration receipt
+        can pass the observed heaviest-worker count explicitly, which keeps
+        the comparison conservative in the face of xdist imbalance.
+        """
+        projected = tests_per_worker if tests_per_worker is not None else self.tests_per_worker(workers)
+        worker_anon = self.worker_anon_for_tests(projected)
+        return self.controller_mib + workers * (worker_anon + self.worker_cache_mib)
+
+    def admission_estimate(self, workers: int, budget_mib: float) -> dict[str, Any]:
         """The predicted peak charge and what it leaves under ``budget_mib``.
 
         polylogue-k1o3t asks for the estimate a run is admitted on and the
@@ -194,11 +321,15 @@ class ChargeProfile:
         the slice budget, not an arithmetic change here.
         """
         predicted = self.charge_mib(workers)
+        tests_per_worker = self.tests_per_worker(workers)
         return {
             "predicted_charge_mib": round(predicted, 1),
             "budget_mib": round(float(budget_mib), 1),
             "margin_mib": round(budget_mib - predicted, 1),
             "margin_fraction": round((budget_mib - predicted) / budget_mib, 4) if budget_mib else 0.0,
+            "tests_per_worker": round(tests_per_worker, 1) if tests_per_worker is not None else None,
+            "tests_per_worker_source": "admission_estimate" if tests_per_worker is not None else None,
+            "anon_model": self.anon_model.as_dict() if self.anon_model is not None else None,
         }
 
 
@@ -207,6 +338,8 @@ MEASURED_CHARGE: Final = ChargeProfile(
     worker_anon_mib=WORKER_PEAK_ANON_MIB,
     worker_cache_mib=WORKER_PEAK_CACHE_MIB,
     controller_mib=CONTROLLER_PEAK_MIB,
+    anon_model=ANONYMOUS_MEMORY_MODEL,
+    corpus_test_count=CORPUS_TEST_COUNT,
 )
 
 
@@ -221,7 +354,14 @@ def width_within(budget_mib: float, *, profile: ChargeProfile = MEASURED_CHARGE)
 
     Never zero: a slow run beats a run that does not start.
     """
-    return max(1, int((budget_mib - profile.controller_mib) // profile.worker_charge_mib))
+    # Evaluate the width-dependent term at each candidate's projected corpus
+    # share.  A negative margin at width 1 still returns one: slow work is
+    # preferable to refusing to start, and the negative admission margin is
+    # retained in the receipt for the owner to act on.
+    workers = 1
+    while profile.charge_mib(workers + 1) <= budget_mib:
+        workers += 1
+    return workers
 
 
 #: The corpus width, and the ceiling any configured width is reduced to. It is
@@ -252,9 +392,9 @@ def corroborate_profile(
     silently absorbed: ``smaps_rollup`` reports only cache a process still
     maps, so ``observed_worker_file_mib`` is a floor for the cgroup's file
     charge, not its total. ``observed_worker_anon_mib`` has no such caveat --
-    it is exactly the quantity :attr:`ChargeProfile.worker_anon_mib` claims to
-    bound, taken at the largest single process so one over-large worker cannot
-    be averaged away.
+    it is exactly the quantity the width-aware anonymous model claims to
+    bound, taken at the largest single process so one over-large worker
+    cannot be averaged away.
 
     ``None`` when there is nothing to compare: no sampler document, a run too
     short to observe the group, or no width on record.
@@ -274,9 +414,29 @@ def corroborate_profile(
     worker_anon_mib = round(int(heaviest["peak_private_kib"]) / 1024, 1)
     worker_file_mib = round(max(0, int(heaviest["peak_rss_kib"]) - int(heaviest["peak_private_kib"])) / 1024, 1)
     group_peak_mib = round(int(peak["rss_kib"]) / 1024, 1)
-    predicted_mib = round(profile.charge_mib(workers), 1)
+    # A receipt may carry the largest worker's actual executed count in the
+    # explicit ``observed_tests_per_worker`` field.  The sizing payload's
+    # ``tests_per_worker`` is only the admission projection emitted before the
+    # run starts; treating that projection as observed evidence would erase the
+    # very drift this corroborator exists to report.
+    observed_tests = sizing.get("observed_tests_per_worker")
+    if observed_tests is None and sizing.get("tests_per_worker_source") == "observed_run":
+        observed_tests = sizing.get("tests_per_worker")
+    projected_tests = sizing.get("tests_per_worker") if observed_tests is None else None
+    try:
+        tests_per_worker = (
+            float(observed_tests)
+            if observed_tests is not None
+            else (float(projected_tests) if projected_tests is not None else profile.tests_per_worker(workers))
+        )
+    except (TypeError, ValueError):
+        return None
+    if tests_per_worker is not None and tests_per_worker < 0:
+        return None
+    estimated_worker_anon_mib = round(profile.worker_anon_for_tests(tests_per_worker), 1)
+    predicted_mib = round(profile.charge_mib(workers, tests_per_worker=tests_per_worker), 1)
 
-    understated = worker_anon_mib > profile.worker_anon_mib or group_peak_mib > predicted_mib
+    understated = worker_anon_mib > estimated_worker_anon_mib or group_peak_mib > predicted_mib
     return {
         "verdict": "understated" if understated else "corroborated",
         "workers": workers,
@@ -284,11 +444,22 @@ def corroborate_profile(
         "observed_worker_anon_mib": worker_anon_mib,
         "observed_worker_file_mib": worker_file_mib,
         "observed_group_peak_mib": group_peak_mib,
-        "declared_worker_anon_mib": float(profile.worker_anon_mib),
+        "tests_per_worker": round(tests_per_worker, 1) if tests_per_worker is not None else None,
+        "tests_per_worker_source": (
+            "observed_run"
+            if observed_tests is not None
+            else "admission_estimate"
+            if projected_tests is not None
+            else "projected_corpus_share"
+        ),
+        "declared_worker_anon_mib": estimated_worker_anon_mib,
         "declared_worker_cache_mib": float(profile.worker_cache_mib),
         "predicted_charge_mib": predicted_mib,
-        "worker_anon_headroom_mib": round(profile.worker_anon_mib - worker_anon_mib, 1),
+        "worker_anon_headroom_mib": round(estimated_worker_anon_mib - worker_anon_mib, 1),
+        "worker_anon_drift_mib": round(worker_anon_mib - estimated_worker_anon_mib, 1),
         "group_headroom_mib": round(predicted_mib - group_peak_mib, 1),
+        "prediction_margin_mib": round(predicted_mib - group_peak_mib, 1),
+        "anon_model": profile.anon_model.as_dict() if profile.anon_model is not None else None,
         "file_term_is_a_mapped_floor": True,
     }
 
@@ -459,9 +630,11 @@ def memory_bounded_worker_cap(
             "cgroup_available_mib": None,
             "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
             "controller_peak_mib": CONTROLLER_PEAK_MIB,
-            "worker_peak_anon_mib": WORKER_PEAK_ANON_MIB,
+            "worker_peak_anon_mib": round(
+                MEASURED_CHARGE.worker_anon_for_tests(MEASURED_CHARGE.tests_per_worker(workers)), 1
+            ),
             "worker_peak_cache_mib": WORKER_PEAK_CACHE_MIB,
-            "worker_peak_charge_mib": MEASURED_CHARGE.worker_charge_mib,
+            "worker_peak_charge_mib": round(MEASURED_CHARGE.worker_charge_for_workers(workers), 1),
             "workers": workers,
             "requested_workers": requested,
             "narrowed": workers < requested,
@@ -475,9 +648,11 @@ def memory_bounded_worker_cap(
         "cgroup_available_mib": cgroup,
         "headroom_owner": "sinnix agentctl-pytest.slice MemoryHigh",
         "controller_peak_mib": CONTROLLER_PEAK_MIB,
-        "worker_peak_anon_mib": WORKER_PEAK_ANON_MIB,
+        "worker_peak_anon_mib": round(
+            MEASURED_CHARGE.worker_anon_for_tests(MEASURED_CHARGE.tests_per_worker(workers)), 1
+        ),
         "worker_peak_cache_mib": WORKER_PEAK_CACHE_MIB,
-        "worker_peak_charge_mib": MEASURED_CHARGE.worker_charge_mib,
+        "worker_peak_charge_mib": round(MEASURED_CHARGE.worker_charge_for_workers(workers), 1),
         "workers": workers,
         "requested_workers": requested,
         "narrowed": workers < requested,
