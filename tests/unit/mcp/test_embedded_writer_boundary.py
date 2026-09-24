@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -15,6 +16,7 @@ import polylogue.api.archive as archive_module
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
@@ -61,6 +63,22 @@ def _user_archive(root: Path) -> None:
     initialize_archive_database(root / "user.db", ArchiveTier.USER)
 
 
+def _seed_candidate(root: Path, assertion_id: str) -> None:
+    with sqlite3.connect(root / "user.db") as conn:
+        upsert_assertion(
+            conn,
+            assertion_id=assertion_id,
+            target_ref="session:embedded-boundary",
+            kind=AssertionKind.LESSON,
+            body_text="A synthetic candidate for the embedded MCP writer boundary.",
+            author_ref="agent:test",
+            author_kind="agent",
+            evidence_refs=["session:embedded-boundary"],
+            status="candidate",
+            now_ms=1_700_000_000_000,
+        )
+
+
 @pytest.mark.asyncio
 async def test_judge_only_mcp_refuses_a_resident_daemon_before_user_write(
     tmp_path: Path,
@@ -72,6 +90,7 @@ async def test_judge_only_mcp_refuses_a_resident_daemon_before_user_write(
 
     archive_root = tmp_path / "archive"
     _user_archive(archive_root)
+    _seed_candidate(archive_root, "resident-boundary-candidate")
     resident_pid = resident_daemon(archive_root / "daemon.pid")
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
     judge_fn = server._tool_manager._tools["judge"].fn
@@ -98,6 +117,7 @@ async def test_judge_only_mcp_remains_functional_without_a_daemon(tmp_path: Path
 
     archive_root = tmp_path / "archive"
     _user_archive(archive_root)
+    _seed_candidate(archive_root, "offline-boundary-candidate")
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
     judge_fn = server._tool_manager._tools["judge"].fn
 
@@ -125,6 +145,7 @@ async def test_judge_only_mcp_anti_vacuity_restores_the_write_when_boundary_is_d
 
     archive_root = tmp_path / "archive"
     _user_archive(archive_root)
+    _seed_candidate(archive_root, "anti-vacuity-candidate")
     resident_daemon(archive_root / "daemon.pid")
     monkeypatch.setattr(archive_module, "_require_archive_write_authority", lambda *_args: None)
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
@@ -140,15 +161,34 @@ async def test_judge_only_mcp_anti_vacuity_restores_the_write_when_boundary_is_d
         )
 
     assert result.get("is_error") is not True, result
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        status = conn.execute(
+            "SELECT status FROM assertions WHERE assertion_id = ?",
+            ("anti-vacuity-candidate",),
+        ).fetchone()
+    assert status == ("accepted",)
 
 
 def test_mcp_capability_inventory_is_declaration_derived() -> None:
-    """All privileged declarations remain visible to the shared route tests."""
+    """Every capability whose handlers can write is enumerated with its tools.
+
+    ``write`` routes through facade mutations, ``judge`` reaches the direct
+    user-tier judgment route, and ``maintenance`` dispatches daemon-owned
+    maintenance operations. Keeping the declared tool mapping here makes a
+    newly added capability or privileged handler fail until its route is
+    audited against the shared ownership boundary.
+    """
 
     from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS
 
-    assert {
-        declaration.required_capability
-        for declaration in MCP_TOOL_DECLARATIONS
-        if declaration.required_capability is not None
-    } == {"write", "judge", "maintenance"}
+    tools_by_capability = {
+        capability: {
+            declaration.name for declaration in MCP_TOOL_DECLARATIONS if declaration.required_capability == capability
+        }
+        for capability in ("write", "judge", "maintenance")
+    }
+    assert tools_by_capability == {
+        "write": {"write", "record_work_event", "emit_decision", "run"},
+        "judge": {"judge"},
+        "maintenance": {"maintenance"},
+    }
