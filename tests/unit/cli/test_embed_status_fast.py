@@ -1338,7 +1338,22 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     # no runs rather than as an error.
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     with sqlite3.connect(ops_db) as conn:
-        conn.commit()
+        from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+
+        upsert_embedding_catchup_run(
+            conn,
+            run_id=run_id,
+            status="interrupted",
+            started_at_ms=1_767_225_700_000,
+            finished_at_ms=1_767_225_705_000,
+            scanned_sessions=2,
+            embedded_sessions=1,
+            skipped_sessions=1,
+            error_count=0,
+            embedded_messages=3,
+            estimated_cost_usd=0.001,
+            error_message="keyboard interrupt",
+        )
 
     payload = _run_status(db_path)
 

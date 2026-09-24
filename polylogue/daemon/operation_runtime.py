@@ -83,6 +83,7 @@ class _Exchange:
     progress_events: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=64))
     progress_sequence: int = 0
     progress_gap_until: int = 0
+    settled_at: float | None = None
 
 
 class DaemonOperationRuntime:
@@ -494,6 +495,32 @@ class DaemonOperationRuntime:
                         error={"code": "request_identity_conflict", "retryable": False},
                     ).to_dict()
             else:
+                # Completed progress exchanges are short-lived replay buffers,
+                # not active work. Keep them long enough for a CLI whose first
+                # await races a fast completion, while bounding total memory.
+                stale = [
+                    key
+                    for key, item in self._exchanges.items()
+                    if item.future is not None
+                    and item.future.done()
+                    and item.settled_at is not None
+                    and monotonic() - item.settled_at > 300.0
+                ]
+                for key in stale:
+                    self._exchanges.pop(key, None)
+                if len(self._exchanges) >= 64:
+                    settled_progress = sorted(
+                        (item.settled_at or item.started_at, key)
+                        for key, item in self._exchanges.items()
+                        if item.future is not None
+                        and item.future.done()
+                        and (target := daemon_operation_spec(item.request.operation)) is not None
+                        and target.progress
+                    )
+                    for _settled_at, key in settled_progress:
+                        self._exchanges.pop(key, None)
+                        if len(self._exchanges) < 64:
+                            break
                 if len(self._exchanges) >= 64:
                     return operation_envelope(
                         request,
@@ -580,7 +607,8 @@ class DaemonOperationRuntime:
 
                 def settled(_future: Future[DaemonOperationEnvelope]) -> None:
                     with self._condition:
-                        if self._exchanges.get(request_id) is exchange:
+                        exchange.settled_at = monotonic()
+                        if self._exchanges.get(request_id) is exchange and not spec.progress:
                             self._exchanges.pop(request_id)
                         self._condition.notify_all()
 
