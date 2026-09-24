@@ -42,9 +42,17 @@ def marker_candidates_for_prepared_write(prepared: PreparedSessionWrite) -> list
 
 def marker_recipe_fingerprint() -> str:
     """Identify candidate extraction, grammar, registry, and carrier semantics."""
+    grammar = {
+        name: {
+            "pattern": getattr(marker_parser, name).pattern,
+            "flags": getattr(marker_parser, name).flags,
+        }
+        for name in ("_LINE", "_INLINE", "_INLINE_OPEN", "_MALFORMED")
+    }
     recipe = {
-        "format": 2,
+        "format": 3,
         "sources": [
+            inspect.getsource(marker_candidates_for_prepared_write),
             inspect.getsource(candidates_for_block),
             inspect.getsource(marker_parser.parse_markers),
             inspect.getsource(marker_parser._args),
@@ -53,6 +61,12 @@ def marker_recipe_fingerprint() -> str:
             inspect.getsource(MarkerMatch),
             inspect.getsource(MarkerProvenance),
         ],
+        # These regexes are mutable module-level grammar inputs. Function
+        # source alone does not change when a grammar constant is replaced.
+        "grammar": grammar,
+        # The prepared adapter zips values using this exact insert-column
+        # order, so a change can move marker text/provenance to another field.
+        "prepared_block_columns": [column.name for column in BLOCKS_SPEC.insert_columns],
         "registry": [
             {
                 "kind": spec.kind,

@@ -113,6 +113,45 @@ def test_marker_recipe_fingerprint_tracks_parser_dependency(monkeypatch: pytest.
     assert marker_recipe_fingerprint() != before
 
 
+@pytest.mark.parametrize("name", ["_LINE", "_INLINE", "_INLINE_OPEN", "_MALFORMED"])
+def test_marker_recipe_fingerprint_tracks_each_grammar_constant(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    from polylogue.markers import parser
+
+    before = marker_recipe_fingerprint()
+    original = getattr(parser, name)
+    monkeypatch.setattr(parser, name, re.compile(original.pattern + "|(?!)", original.flags))
+    assert marker_recipe_fingerprint() != before
+
+
+def test_marker_recipe_fingerprint_tracks_prepared_write_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.markers import preparation
+
+    before = marker_recipe_fingerprint()
+
+    def changed_adapter(prepared: object) -> list[dict[str, object]]:
+        del prepared
+        return []
+
+    monkeypatch.setattr(preparation, "marker_candidates_for_prepared_write", changed_adapter)
+    assert marker_recipe_fingerprint() != before
+
+
+def test_marker_recipe_fingerprint_tracks_block_insert_column_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace as dataclass_replace
+
+    from polylogue.markers import preparation
+
+    before = marker_recipe_fingerprint()
+    columns = preparation.BLOCKS_SPEC.writable_columns
+    altered_first = dataclass_replace(columns[0], name=f"{columns[0].name}_changed")
+    monkeypatch.setattr(
+        preparation,
+        "BLOCKS_SPEC",
+        dataclass_replace(preparation.BLOCKS_SPEC, writable_columns=(altered_first, *columns[1:])),
+    )
+    assert marker_recipe_fingerprint() != before
+
+
 def test_batch_acceptance_conflict_rolls_back_raw_state(workspace_env: dict[str, Path]) -> None:
     """Changed carrier bytes under one request key refuse before index publication."""
     path = workspace_env["archive_root"] / "source.db"
