@@ -63,6 +63,7 @@ Anti-vacuity:
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -71,7 +72,9 @@ from typing import TypedDict
 import pytest
 
 from devtools.worker_memory import (
+    ANONYMOUS_MEMORY_MODEL,
     CORPUS_MAX_WORKERS,
+    CORPUS_TEST_COUNT,
     MEASURED_CHARGE,
     PYTEST_SLICE_MEMORY_HIGH_MIB,
     ChargeProfile,
@@ -193,7 +196,10 @@ def _peak_mib(workers: int) -> int:
     cache and slab too, and every budget these fixtures build is a cgroup
     ceiling, so the two sides of every comparison below are the same quantity.
     """
-    return int(MEASURED_CHARGE.charge_mib(workers))
+    # The fitted term is fractional; fixtures use a whole-MiB ceiling, so
+    # rounding down would build a budget that is a fraction below its own
+    # measured peak and make the width boundary depend on truncation.
+    return math.ceil(MEASURED_CHARGE.charge_mib(workers))
 
 
 def _budget_for_width(workers: int) -> int:
@@ -780,7 +786,14 @@ _OBSERVED_CORPUS_RUN: Mapping[str, object] = {
         {"pid": 1003, "command": "python", "peak_rss_kib": 890344, "peak_private_kib": 872068},
     ],
 }
-_OBSERVED_SIZING: Mapping[str, object] = {"workers": 2, "available_mib": 11478}
+_OBSERVED_SIZING: Mapping[str, object] = {
+    "workers": 2,
+    "available_mib": 11478,
+    # This is the production sizing payload: the admission projection is the
+    # corpus share, not a post-run sampler observation.
+    "tests_per_worker": CORPUS_TEST_COUNT / 2,
+    "tests_per_worker_source": "admission_estimate",
+}
 
 #: The profile that sized that run, before 2026-09-21. ``worker_cache_mib``
 #: was back-solved as the residual of ``11776 - 1075 - 3 * 700`` from one
@@ -812,9 +825,11 @@ def test_the_superseded_profile_understates_the_run_it_admitted() -> None:
 
     shipped = corroborate_profile(_OBSERVED_CORPUS_RUN, _OBSERVED_SIZING)
     assert shipped is not None
-    assert shipped["verdict"] == "corroborated"
-    assert shipped["worker_anon_headroom_mib"] >= 0
-    assert shipped["group_headroom_mib"] >= 0
+    assert shipped["verdict"] == "understated"
+    assert shipped["tests_per_worker_source"] == "admission_estimate"
+    assert shipped["worker_anon_drift_mib"] == pytest.approx(524.8, abs=0.2)
+    assert shipped["worker_anon_headroom_mib"] == pytest.approx(-524.8, abs=0.2)
+    assert shipped["group_headroom_mib"] == pytest.approx(-187.2, abs=0.2)
 
     # The two terms, as measured, against what each profile declared.
     assert shipped["observed_worker_anon_mib"] == pytest.approx(4723.8, abs=0.5)
@@ -881,12 +896,12 @@ def test_an_unmeasured_run_reports_no_verdict_rather_than_a_false_one() -> None:
 def test_the_shipped_profile_is_the_charge_the_slice_accounts() -> None:
     """The default width leaves margin under the declared ceiling, at the charge.
 
-    Anti-vacuity: restore ``WORKER_PEAK_ANON_MIB = 700`` -- the collection
-    floor that stood here as the peak until 2026-09-21 -- and the declared
-    width rises to a number whose charge exceeds
-    ``PYTEST_SLICE_MEMORY_HIGH_MIB``, which the third assertion catches. The
-    cache term no longer carries that weight: it is now a measured ~25 MiB, so
-    zeroing it does not move the width, and the anon term is what does.
+    Anti-vacuity: replace the width-aware ``charge_mib`` projection with the
+    historical width-2 constant and the declared width rises to a number whose
+    charge exceeds ``PYTEST_SLICE_MEMORY_HIGH_MIB``, which the third assertion
+    catches. The cache term no longer carries that weight: it is now a measured
+    ~25 MiB, so zeroing it does not move the width, and the anon model is what
+    does.
     """
     assert MEASURED_CHARGE.worker_cache_mib > 0, "page cache is part of what memory.high accounts"
     assert MEASURED_CHARGE.worker_anon_mib > MEASURED_CHARGE.worker_cache_mib, (
@@ -894,6 +909,96 @@ def test_the_shipped_profile_is_the_charge_the_slice_accounts() -> None:
     )
     assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS) <= PYTEST_SLICE_MEMORY_HIGH_MIB
     assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS + 1) > PYTEST_SLICE_MEMORY_HIGH_MIB
+
+
+def test_the_anonymous_model_records_both_fit_points_and_residuals() -> None:
+    """MEM-1: the per-worker term is fitted over tests, not width.
+
+    Anti-vacuity: replacing ``worker_anon_for_tests`` with the historical
+    width-2 constant makes the two distinct predictions equal and fails the
+    final assertion.  The residuals are deliberately carried in the model
+    description so a future receipt can show whether this two-point fit has
+    drifted rather than silently replacing its coefficients.
+    """
+    fit = ANONYMOUS_MEMORY_MODEL
+
+    assert fit.slope_mib_per_test > 0
+    assert fit.estimate(7_842) == pytest.approx(3_635.7, abs=0.1)
+    assert fit.estimate(15_416) == pytest.approx(4_723.8, abs=0.1)
+    assert fit.residuals_mib == {"2026-09-17": 0.0, "2026-09-21": 0.0}
+    assert fit.estimate(7_842) != MEASURED_CHARGE.worker_anon_mib
+    assert fit.as_dict()["residuals_mib"] == fit.residuals_mib
+
+
+def test_the_width_aware_model_records_the_20260921_group_margin() -> None:
+    """MEM-2: projected admission predicts the group within its explicit margin.
+
+    The sizing payload is production-shaped: it only has the projected
+    23,526/2 tests-per-worker value.  The 2026-09-21 run's largest worker then
+    exposes a 524.8 MiB anonymous drift, while the signed group error remains
+    within the prior 862.4 MiB prediction margin.
+    """
+    corroboration = corroborate_profile(_OBSERVED_CORPUS_RUN, _OBSERVED_SIZING)
+
+    assert corroboration is not None
+    assert corroboration["tests_per_worker_source"] == "admission_estimate"
+    assert corroboration["tests_per_worker"] == pytest.approx(11_763.0)
+    assert corroboration["prediction_margin_mib"] == pytest.approx(-187.2, abs=0.2)
+    assert corroboration["group_headroom_mib"] == corroboration["prediction_margin_mib"]
+    assert abs(corroboration["prediction_margin_mib"]) < 862.4
+    assert corroboration["worker_anon_drift_mib"] == pytest.approx(524.8, abs=0.2)
+    assert corroboration["file_term_is_a_mapped_floor"] is True
+
+
+def test_corroboration_reports_width_one_model_drift_not_the_width_two_constant() -> None:
+    """MEM-3/MEM-4: a width-1 receipt uses the model off its fit points.
+
+    Anti-vacuity: replacing the width-aware estimate with
+    ``MEASURED_CHARGE.worker_anon_mib`` makes the declared anonymous estimate
+    disagree with the width-1 observation and this named assertion red. A
+    width-2-only test would not catch that mutation because 4,750 MiB is the
+    old width-2 constant's construction.
+    """
+    # Widths 2 and 3 supplied the fit; width 1 is deliberately held out.
+    tests_per_worker = 23_526
+    worker_anon = ANONYMOUS_MEMORY_MODEL.estimate(tests_per_worker)
+    group_peak = MEASURED_CHARGE.controller_mib + worker_anon + MEASURED_CHARGE.worker_cache_mib
+    memory = {
+        "peak": {"rss_kib": round(group_peak * 1024)},
+        "processes": [
+            {
+                "pid": 31,
+                "peak_rss_kib": round((worker_anon + 20) * 1024),
+                "peak_private_kib": round(worker_anon * 1024),
+            },
+            {
+                "pid": 32,
+                "peak_rss_kib": round((worker_anon + 19) * 1024),
+                "peak_private_kib": round((worker_anon - 1) * 1024),
+            },
+        ],
+    }
+    sizing = {
+        "workers": 1,
+        "tests_per_worker": tests_per_worker,
+        "tests_per_worker_source": "admission_estimate",
+    }
+
+    corroboration = corroborate_profile(memory, sizing)
+
+    assert corroboration is not None
+    assert corroboration["tests_per_worker_source"] == "admission_estimate"
+    assert corroboration["declared_worker_anon_mib"] == pytest.approx(worker_anon, abs=0.1)
+    assert corroboration["worker_anon_drift_mib"] == pytest.approx(0.0, abs=0.1)
+    assert corroboration["verdict"] == "corroborated"
+
+
+def test_width_one_survives_a_negative_admission_margin() -> None:
+    """MEM-4: negative margin records pressure but never refuses all work."""
+    assert width_within(100) == 1
+    estimate = MEASURED_CHARGE.admission_estimate(1, 100)
+    assert estimate["margin_mib"] < 0
+    assert estimate["margin_fraction"] < 0
 
 
 def test_the_sizing_receipt_records_the_estimate_a_run_was_admitted_on() -> None:
