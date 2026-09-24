@@ -122,6 +122,15 @@ CLASSIFICATION_VOCABULARY: dict[str, str] = {
         "the durable row is replaced wholesale by a re-acquisition of the same "
         "evidence, keyed by content, so no stored judgement is corrected"
     ),
+    "no_effect_lock_upgrade": (
+        "the exact zero-row UPDATE used only to acquire SQLite's RESERVED lock before a caller-owned read/decision"
+    ),
+    "rebuildable_dynamic_target": (
+        "a dynamic-table helper whose currently reachable literal table targets are all canonical rebuildable tiers"
+    ),
+    "index_foreign_key_cleanup": (
+        "a bounded foreign-key cleanup over the active index connection while bulk ingest temporarily disables FKs"
+    ),
     "test_or_fixture_construct": "a controlled mutant or fixture seeding a throwaway archive, not a route over an operator archive",
     "unclassified": (
         "observed and pinned by the census, not yet adjudicated. This token is the "
@@ -146,6 +155,18 @@ _CREATE_TABLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Runtime DDL needs a second population.  ``durable_table_tiers`` intentionally
+# remains a map of *canonical* archive ownership: treating every ``CREATE
+# TABLE`` encountered in product code as a source/user/audit table would invent
+# a tier for private shards and external registries.  The narrower check below
+# instead notices a persistent relation whose creator and rewrite both live in
+# one runtime path, and asks the gate to reject that unowned relation.
+_RUNTIME_CREATE_RE = re.compile(
+    r"\bCREATE\s+(?P<temporary>TEMP(?:ORARY)?\s+)?(?:VIRTUAL\s+)?TABLE\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?[`\"\[]?(?P<table>[A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
 #: Rewrite verbs. ``INSERT INTO`` is matched so that an ``ON CONFLICT ... DO
 #: UPDATE`` tail can promote it; on its own it is dropped.
 #:
@@ -162,6 +183,10 @@ _REWRITE_RE = re.compile(
     re.IGNORECASE,
 )
 _DO_UPDATE_RE = re.compile(r"ON\s+CONFLICT\b.*?\bDO\s+UPDATE\b", re.IGNORECASE | re.DOTALL)
+_NO_EFFECT_LOCK_UPGRADE_RE = re.compile(
+    r"^\s*UPDATE\s+assertions\s+SET\s+updated_at_ms\s*=\s+updated_at_ms\s+WHERE\s+0\s*;?\s*$",
+    re.IGNORECASE,
+)
 
 #: An interpolation hole is rendered as this token so a verb can still resolve.
 _HOLE = "{}"
@@ -184,6 +209,50 @@ class WriteSite:
 
 
 @dataclass(frozen=True)
+class RuntimeTableCreation:
+    """A relation created directly by runtime code rather than canonical DDL.
+
+    ``disposition`` deliberately describes the creation context, not a storage
+    tier.  ``temporary`` and ``scratch`` are bounded non-archive relations;
+    only ``persistent`` can be a missing durable schema declaration.
+    """
+
+    file: str
+    function: str
+    table: str
+    disposition: str
+    line: int
+
+    @property
+    def key(self) -> str:
+        return f"{self.file}::{self.function}::{self.table}::{self.disposition}"
+
+
+@dataclass(frozen=True)
+class DynamicTableTarget:
+    """One statically resolved caller target of a ``table``-parameter helper."""
+
+    helper_file: str
+    helper_function: str
+    table: str
+    caller_file: str
+    line: int
+
+    @property
+    def helper_key(self) -> str:
+        return f"{self.helper_file}::{self.helper_function}"
+
+
+@dataclass(frozen=True)
+class RuntimeTableDeclaration:
+    """An explicitly non-durable runtime relation outside canonical tier DDL."""
+
+    key: str
+    disposition: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class HelperSite:
     """A function that executes SQL handed to it by its caller."""
 
@@ -201,6 +270,9 @@ class HelperSite:
 class CensusObservation:
     sites: tuple[WriteSite, ...]
     helpers: tuple[HelperSite, ...]
+    runtime_creations: tuple[RuntimeTableCreation, ...]
+    dynamic_targets: tuple[DynamicTableTarget, ...]
+    index_foreign_key_cleanup_helpers: frozenset[str]
 
 
 def durable_table_tiers() -> dict[str, str]:
@@ -402,15 +474,26 @@ def _is_string_annotation(annotation: ast.AST) -> bool:
     return False
 
 
-def _classify_statement(sql: str, table_tiers: Mapping[str, str]) -> list[tuple[str, str, str]]:
-    """Return ``(table, kind, tier)`` for every durable rewrite in one statement."""
+def _classify_statement(
+    sql: str,
+    table_tiers: Mapping[str, str],
+    *,
+    runtime_persistent_tables: frozenset[str] = frozenset(),
+) -> list[tuple[str, str, str]]:
+    """Return ``(table, kind, tier)`` for every durable or runtime rewrite.
+
+    ``runtime`` is not an archive tier.  It is a deliberately separate marker
+    for a relation created by product code but absent from canonical tier DDL.
+    It lets the caller emit a precise missing-schema finding without claiming
+    the relation belongs to source, user, or audit.
+    """
     found: list[tuple[str, str, str]] = []
     has_do_update = bool(_DO_UPDATE_RE.search(sql))
     for match in _REWRITE_RE.finditer(sql):
         verb = re.sub(r"\s+", " ", match.group("verb").upper())
         table = match.group("table")
         if verb.startswith("UPDATE"):
-            kind = "update"
+            kind = "no_effect_update" if _NO_EFFECT_LOCK_UPGRADE_RE.fullmatch(sql) else "update"
         elif verb == "DELETE FROM":
             kind = "delete"
         elif verb in {"INSERT OR REPLACE INTO", "REPLACE INTO"}:
@@ -427,7 +510,192 @@ def _classify_statement(sql: str, table_tiers: Mapping[str, str]) -> list[tuple[
         tier = table_tiers.get(table)
         if tier in DURABLE_TIERS:
             found.append((table, kind, str(tier)))
+        elif table in runtime_persistent_tables:
+            found.append((table, kind, "runtime"))
     return found
+
+
+def _memory_connection_names(tree: ast.Module) -> frozenset[str]:
+    """Return local connection names constructed as private in-memory SQLite."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and value.func.attr == "connect"
+            and isinstance(value.func.value, ast.Name)
+            and value.func.value.id == "sqlite3"
+            and value.args
+            and isinstance(value.args[0], ast.Constant)
+            and value.args[0].value == ":memory:"
+        ):
+            names.add(node.targets[0].id)
+    return frozenset(names)
+
+
+def _runtime_table_creation(
+    *,
+    relative: str,
+    function: str,
+    receiver: ast.AST,
+    statement: str,
+    line: int,
+    memory_connections: frozenset[str],
+    canonical_tables: Mapping[str, str],
+) -> RuntimeTableCreation | None:
+    """Classify one directly executed CREATE TABLE without assigning a tier."""
+    match = _RUNTIME_CREATE_RE.search(statement)
+    if match is None:
+        return None
+    table = match.group("table")
+    if table in canonical_tables:
+        return None
+    if match.group("temporary") is not None:
+        disposition = "temporary"
+    elif isinstance(receiver, ast.Name) and receiver.id in memory_connections:
+        disposition = "scratch"
+    else:
+        disposition = "persistent"
+    return RuntimeTableCreation(
+        file=relative,
+        function=function,
+        table=table,
+        disposition=disposition,
+        line=line,
+    )
+
+
+def _is_archive_tier_runtime_module(relative: str) -> bool:
+    """Whether direct runtime DDL can create one of the six archive tiers.
+
+    Browser-capture registries and schema-observation journals intentionally
+    use SQLite too, but their tables are not archive tiers.  The census is not
+    a universal SQLite inventory; its bounded subject is runtime DDL in the
+    archive-tier implementation where a missing canonical source/user/audit
+    relation would otherwise be hidden.
+    """
+    return relative.startswith("polylogue/storage/sqlite/archive_tiers/")
+
+
+def _function_table_parameters(
+    parsed_modules: Iterable[
+        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
+    ],
+    dynamic_sites: Iterable[WriteSite],
+) -> dict[str, tuple[str, int | None]]:
+    """Locate dynamic write helpers that explicitly accept a ``table`` argument.
+
+    The result is keyed by the fully qualified helper identity used by
+    ``WriteSite``.  A call site can then be checked against the same canonical
+    DDL map as a non-dynamic statement, rather than trusting a prose claim
+    that its target happens to be rebuildable.
+    """
+    wanted = {(site.file, site.function) for site in dynamic_sites if site.table == UNRESOLVED_TABLE}
+    parameters: dict[str, tuple[str, int | None]] = {}
+    for _path, tree, relative, _values, _scopes in parsed_modules:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            matching_functions = [
+                function for file, function in wanted if file == relative and function.split(".")[-1] == node.name
+            ]
+            if len(matching_functions) != 1:
+                continue
+            qualified = matching_functions[0]
+            positional = [*node.args.posonlyargs, *node.args.args]
+            for index, parameter in enumerate(positional):
+                if parameter.arg == "table":
+                    parameters[f"{relative}::{qualified}"] = (node.name, index)
+                    break
+            else:
+                if any(parameter.arg == "table" for parameter in node.args.kwonlyargs):
+                    parameters[f"{relative}::{qualified}"] = (node.name, None)
+    return parameters
+
+
+def _dynamic_table_targets(
+    parsed_modules: Iterable[
+        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
+    ],
+    dynamic_sites: Iterable[WriteSite],
+) -> tuple[DynamicTableTarget, ...]:
+    """Resolve literal table arguments supplied to dynamic-table helpers."""
+    parameters = _function_table_parameters(parsed_modules, dynamic_sites)
+    by_name: dict[str, list[tuple[str, int | None]]] = {}
+    for helper_key, descriptor in parameters.items():
+        by_name.setdefault(descriptor[0], []).append((helper_key, descriptor[1]))
+    targets: dict[tuple[str, str, str, int], DynamicTableTarget] = {}
+    for _path, tree, relative, values, _scopes in parsed_modules:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name):
+                name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                name = node.func.attr
+            else:
+                continue
+            for helper_key, position in by_name.get(name, []):
+                argument: ast.AST | None = None
+                for keyword in node.keywords:
+                    if keyword.arg == "table":
+                        argument = keyword.value
+                        break
+                if argument is None and position is not None and len(node.args) > position:
+                    argument = node.args[position]
+                if argument is None:
+                    continue
+                helper_file, helper_function = helper_key.split("::", 1)
+                for table in _fragments(argument, values):
+                    if table == _HOLE or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+                        continue
+                    target = DynamicTableTarget(
+                        helper_file=helper_file,
+                        helper_function=helper_function,
+                        table=table,
+                        caller_file=relative,
+                        line=node.lineno,
+                    )
+                    targets[(helper_key, table, relative, node.lineno)] = target
+    return tuple(sorted(targets.values(), key=lambda item: (item.helper_key, item.caller_file, item.line, item.table)))
+
+
+def _index_foreign_key_cleanup_helpers(
+    parsed_modules: Iterable[
+        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
+    ],
+) -> frozenset[str]:
+    """Find helpers that derive both dynamic actions from current FK metadata."""
+    helpers: set[str] = set()
+    for _path, tree, relative, values, _scopes in parsed_modules:
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            statements = [
+                statement
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr in _SQL_EXECUTION_METHODS
+                and call.args
+                for statement in _fragments(call.args[0], values)
+            ]
+            has_fk_actions = any(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_session_foreign_key_actions"
+                for call in ast.walk(node)
+            )
+            if (
+                has_fk_actions
+                and any("DELETE FROM {}" in item for item in statements)
+                and any("UPDATE {}" in item for item in statements)
+            ):
+                helpers.add(f"{relative}::{node.name}")
+    return frozenset(helpers)
 
 
 def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
@@ -435,6 +703,10 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
     table_tiers = durable_table_tiers()
     sites: dict[str, WriteSite] = {}
     helpers: dict[str, HelperSite] = {}
+    runtime_creations: dict[str, RuntimeTableCreation] = {}
+    parsed_modules: list[
+        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
+    ] = []
 
     for path in sorted(package_root.rglob("*.py")):
         try:
@@ -444,6 +716,39 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         relative = path.relative_to(repo_root).as_posix()
         values = _string_values(tree)
         scopes = _scopes(tree)
+        parsed_modules.append((path, tree, relative, values, scopes))
+        if not _is_archive_tier_runtime_module(relative):
+            continue
+        memory_connections = _memory_connection_names(tree)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
+                continue
+            if not node.args:
+                continue
+            scope, function = scopes.get(node, ("<module>", None))
+            qualified = scope if scope != "<module>" else "<module>"
+            argument = node.args[0]
+            statements = _fragments(argument, values)
+            receiver = node.func.value
+            for statement in statements:
+                creation = _runtime_table_creation(
+                    relative=relative,
+                    function=qualified,
+                    receiver=receiver,
+                    statement=statement,
+                    line=node.lineno,
+                    memory_connections=memory_connections,
+                    canonical_tables=table_tiers,
+                )
+                if creation is not None:
+                    runtime_creations.setdefault(creation.key, creation)
+
+    runtime_persistent_tables = frozenset(
+        creation.table for creation in runtime_creations.values() if creation.disposition == "persistent"
+    )
+    for _path, tree, relative, values, scopes in parsed_modules:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -465,7 +770,15 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                     )
                     helpers.setdefault(helper.key, helper)
                 continue
-            resolved = [item for statement in statements for item in _classify_statement(statement, table_tiers)]
+            resolved = [
+                item
+                for statement in statements
+                for item in _classify_statement(
+                    statement,
+                    table_tiers,
+                    runtime_persistent_tables=runtime_persistent_tables,
+                )
+            ]
             for table, kind, tier in dict.fromkeys(resolved):
                 site = WriteSite(
                     file=relative,
@@ -477,9 +790,13 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                 )
                 sites.setdefault(site.key, site)
 
+    dynamic_targets = _dynamic_table_targets(parsed_modules, sites.values())
     return CensusObservation(
         sites=tuple(sorted(sites.values(), key=lambda item: item.key)),
         helpers=tuple(sorted(helpers.values(), key=lambda item: item.key)),
+        runtime_creations=tuple(sorted(runtime_creations.values(), key=lambda item: item.key)),
+        dynamic_targets=dynamic_targets,
+        index_foreign_key_cleanup_helpers=_index_foreign_key_cleanup_helpers(parsed_modules),
     )
 
 
@@ -506,6 +823,7 @@ class CensusDeclaration:
     package: str
     entries: dict[str, CensusEntry]
     helpers: dict[str, str]
+    runtime_tables: dict[str, RuntimeTableDeclaration]
     malformed: tuple[str, ...]
 
 
@@ -555,10 +873,33 @@ def load_declaration(path: Path) -> CensusDeclaration:
             continue
         helpers[f"{file}::{function}::{parameter}"] = str(item.get("reason") or "").strip()
 
+    runtime_tables: dict[str, RuntimeTableDeclaration] = {}
+    runtime_rows = data.get("runtime_tables")
+    for index, item in enumerate(list(runtime_rows) if isinstance(runtime_rows, list) else []):
+        if not isinstance(item, dict):
+            malformed.append(f"runtime_tables[{index}]")
+            continue
+        file = item.get("file")
+        function = item.get("function")
+        table = item.get("table")
+        disposition = item.get("disposition")
+        reason = str(item.get("reason") or "").strip()
+        if not (
+            isinstance(file, str)
+            and isinstance(function, str)
+            and isinstance(table, str)
+            and isinstance(disposition, str)
+        ):
+            malformed.append(f"runtime_tables[{index}]")
+            continue
+        key = f"{file}::{function}::{table}::persistent"
+        runtime_tables[key] = RuntimeTableDeclaration(key=key, disposition=disposition, reason=reason)
+
     return CensusDeclaration(
         package=str(data.get("package") or "polylogue"),
         entries=entries,
         helpers=helpers,
+        runtime_tables=runtime_tables,
         malformed=tuple(malformed),
     )
 
@@ -575,9 +916,53 @@ def collect_violations(*, repo_root: Path, declaration_path: Path | None = None)
     for name in declaration.malformed:
         violations.append({"rule": "durable_write_census_row_malformed", "key": name})
 
+    runtime_creations = {creation.key: creation for creation in observation.runtime_creations}
+    for key in sorted(declaration.runtime_tables.keys() - runtime_creations.keys()):
+        violations.append(
+            {
+                "rule": "runtime_table_census_stale",
+                "key": key,
+                "detail": "declared non-durable runtime relation is no longer created -- drop the entry",
+            }
+        )
+    for key, runtime_entry in declaration.runtime_tables.items():
+        creation = runtime_creations.get(key)
+        if creation is None:
+            continue
+        if (
+            runtime_entry.disposition != "disposable_ops"
+            or not creation.file.endswith("/ops_write.py")
+            or not runtime_entry.reason
+        ):
+            violations.append(
+                {
+                    "rule": "runtime_table_disposition_invalid",
+                    "key": key,
+                    "file": creation.file,
+                    "detail": "only an explained runtime relation in ops_write.py may be declared disposable_ops",
+                }
+            )
+
     observed = {site.key: site for site in observation.sites}
     for key in sorted(observed.keys() - declaration.entries.keys()):
         site = observed[key]
+        if site.tier == "runtime":
+            creation_key = f"{site.file}::{site.function}::{site.table}::persistent"
+            if creation_key in declaration.runtime_tables:
+                continue
+            violations.append(
+                {
+                    "rule": "runtime_persistent_table_rewrite_undeclared",
+                    "key": key,
+                    "file": site.file,
+                    "line": site.line,
+                    "detail": (
+                        f"{site.kind} on runtime-created persistent table {site.table}; add it to canonical tier DDL "
+                        "or remove the runtime rewrite"
+                    ),
+                }
+            )
+            continue
         violations.append(
             {
                 "rule": "durable_write_undeclared",
@@ -636,6 +1021,57 @@ def collect_violations(*, repo_root: Path, declaration_path: Path | None = None)
         if not entry.reason:
             violations.append({"rule": "durable_write_reason_missing", "key": key, "file": site.file})
 
+    for key in sorted(declaration.entries.keys() & observed.keys()):
+        entry = declaration.entries[key]
+        if entry.classification != "index_foreign_key_cleanup":
+            continue
+        helper_key = f"{entry.file}::{entry.function}"
+        if helper_key not in observation.index_foreign_key_cleanup_helpers:
+            violations.append(
+                {
+                    "rule": "index_foreign_key_cleanup_shape_invalid",
+                    "key": key,
+                    "file": entry.file,
+                    "detail": "classification requires current FK action discovery plus dynamic UPDATE and DELETE actions",
+                }
+            )
+
+    targets_by_helper: dict[str, tuple[DynamicTableTarget, ...]] = {}
+    for target in observation.dynamic_targets:
+        targets_by_helper[target.helper_key] = (*targets_by_helper.get(target.helper_key, ()), target)
+    canonical_tiers = durable_table_tiers()
+    for key in sorted(declaration.entries.keys() & observed.keys()):
+        entry = declaration.entries[key]
+        if entry.classification != "rebuildable_dynamic_target":
+            continue
+        targets = targets_by_helper.get(f"{entry.file}::{entry.function}", ())
+        if not targets:
+            violations.append(
+                {
+                    "rule": "dynamic_table_targets_missing",
+                    "key": key,
+                    "file": entry.file,
+                    "detail": "the dynamic-table helper has no statically resolved table caller to validate",
+                }
+            )
+            continue
+        for target in targets:
+            tier = canonical_tiers.get(target.table)
+            if tier == "index":
+                continue
+            violations.append(
+                {
+                    "rule": "dynamic_table_target_not_index",
+                    "key": key,
+                    "file": target.caller_file,
+                    "line": target.line,
+                    "detail": (
+                        f"dynamic helper target {target.table!r} resolves to {tier or 'no canonical tier'}; "
+                        "only index-tier callers satisfy rebuildable_dynamic_target"
+                    ),
+                }
+            )
+
     observed_helpers = {helper.key: helper for helper in observation.helpers}
     for key in sorted(observed_helpers.keys() - declaration.helpers.keys()):
         helper = observed_helpers[key]
@@ -676,6 +1112,7 @@ def summarize(observation: CensusObservation) -> dict[str, object]:
     return {
         "durable_write_sites": len(observation.sites),
         "caller_supplied_sql_helpers": len(observation.helpers),
+        "runtime_table_creations": len(observation.runtime_creations),
         "by_tier": dict(sorted(by_tier.items())),
         "by_kind": dict(sorted(by_kind.items())),
     }

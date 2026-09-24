@@ -6,6 +6,12 @@
 # Every entry below carries an adjudicated verdict except the ones whose reason
 # says why no permitted member fits -- those are findings, not pending work.
 package: polylogue
+runtime_tables:
+  - file: "polylogue/storage/sqlite/archive_tiers/ops_write.py"
+    function: "_record_ops_schema_state"
+    table: "polylogue_ops_schema_state"
+    disposition: disposable_ops
+    reason: "The relation records only the current DDL digest of disposable ops.db. It is created by the OPS writer itself, is neither source/user/audit state nor an archive authority, and is deliberately excluded from canonical durable-tier ownership."
 writes:
   - file: "polylogue/analysis/claude_workflow_materializer.py"
     function: "_ensure_current_artifact_inventory"
@@ -215,15 +221,15 @@ writes:
     table: "?"
     kind: "delete"
     tier: "unresolved"
-    classification: unclassified
-    reason: "VOCABULARY GAP (polylogue-1or21 adjudication): the statement provably cannot rewrite a durable row, and the vocabulary has no member for that. The table is a parameter or a loop variable, and every caller in this tree supplies an index-tier name: _delete_sessions_without_fk_cascade walks PRAGMA foreign_key_list over the index.db ingest connection's referrers of the index-tier `sessions` table, _delete_where_in is called only from storage/derived/session/storage.py's bulk profile replacements, and replace_insight_rows only from the derived insight write queries. A durable rewrite would require a new caller passing a durable table name, so the entry must stay declared -- but asserting any legitimacy member would claim a durable rewrite that does not happen"
+    classification: index_foreign_key_cleanup
+    reason: "The helper gets table names only from PRAGMA foreign_key_list over the active index.db connection while bulk ingest has foreign keys disabled; its two statements apply the index relation's declared ON DELETE action to the same selected session ids. A durable target would require a new caller or a different connection owner, both of which remain census-visible rather than being inferred from prose."
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_delete_sessions_without_fk_cascade"
     table: "?"
     kind: "update"
     tier: "unresolved"
-    classification: unclassified
-    reason: "VOCABULARY GAP (polylogue-1or21 adjudication): the statement provably cannot rewrite a durable row, and the vocabulary has no member for that. The table is a parameter or a loop variable, and every caller in this tree supplies an index-tier name: _delete_sessions_without_fk_cascade walks PRAGMA foreign_key_list over the index.db ingest connection's referrers of the index-tier `sessions` table, _delete_where_in is called only from storage/derived/session/storage.py's bulk profile replacements, and replace_insight_rows only from the derived insight write queries. A durable rewrite would require a new caller passing a durable table name, so the entry must stay declared -- but asserting any legitimacy member would claim a durable rewrite that does not happen"
+    classification: index_foreign_key_cleanup
+    reason: "The helper gets table names only from PRAGMA foreign_key_list over the active index.db connection while bulk ingest has foreign keys disabled; its two statements apply the index relation's declared ON DELETE action to the same selected session ids. A durable target would require a new caller or a different connection owner, both of which remain census-visible rather than being inferred from prose."
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_publish_drive_revision_updates"
     table: "raw_sessions"
@@ -537,8 +543,8 @@ writes:
     table: "?"
     kind: "delete"
     tier: "unresolved"
-    classification: unclassified
-    reason: "VOCABULARY GAP (polylogue-1or21 adjudication): the statement provably cannot rewrite a durable row, and the vocabulary has no member for that. The table is a parameter or a loop variable, and every caller in this tree supplies an index-tier name: _delete_sessions_without_fk_cascade walks PRAGMA foreign_key_list over the index.db ingest connection's referrers of the index-tier `sessions` table, _delete_where_in is called only from storage/derived/session/storage.py's bulk profile replacements, and replace_insight_rows only from the derived insight write queries. A durable rewrite would require a new caller passing a durable table name, so the entry must stay declared -- but asserting any legitimacy member would claim a durable rewrite that does not happen"
+    classification: rebuildable_dynamic_target
+    reason: "Every current call supplies one of the canonical index-tier session profile relations; the census verifies literal dynamic-helper targets against ARCHIVE_DDL_BY_TIER, so a durable-target caller is rejected rather than inheriting this disposition."
   - file: "polylogue/storage/materials.py"
     function: "admit_material"
     table: "material_observations"
@@ -827,10 +833,10 @@ writes:
   - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
     function: "_immediate_user_write_transaction"
     table: "assertions"
-    kind: "update"
+    kind: "no_effect_update"
     tier: "user"
-    classification: unclassified
-    reason: "VOCABULARY GAP (polylogue-1or21 adjudication): the statement is `UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 0`, which SQLite can never apply to a row. It exists only to force the RESERVED write lock inside a caller-owned deferred transaction before a preserve/read decision runs (polylogue-41ow). The vocabulary has no member for a provably rowless statement, and every legitimacy member would assert a durable rewrite that cannot occur"
+    classification: no_effect_lock_upgrade
+    reason: "The exact statement is `UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 0`: SQLite can never apply it to a row, and it exists only to acquire the RESERVED lock before a caller-owned preserve/read decision. The census keys this exact predicate separately, so changing it to a row-producing predicate is an undeclared durable update."
   - file: "polylogue/storage/sqlite/archive_tiers/user_write.py"
     function: "mark_assertion_status"
     table: "assertions"
@@ -892,8 +898,8 @@ writes:
     table: "?"
     kind: "delete"
     tier: "unresolved"
-    classification: unclassified
-    reason: "VOCABULARY GAP (polylogue-1or21 adjudication): the statement provably cannot rewrite a durable row, and the vocabulary has no member for that. The table is a parameter or a loop variable, and every caller in this tree supplies an index-tier name: _delete_sessions_without_fk_cascade walks PRAGMA foreign_key_list over the index.db ingest connection's referrers of the index-tier `sessions` table, _delete_where_in is called only from storage/derived/session/storage.py's bulk profile replacements, and replace_insight_rows only from the derived insight write queries. A durable rewrite would require a new caller passing a durable table name, so the entry must stay declared -- but asserting any legitimacy member would claim a durable rewrite that does not happen"
+    classification: rebuildable_dynamic_target
+    reason: "Every current call supplies a canonical index-tier relation. The census verifies the literal table arguments at callers against ARCHIVE_DDL_BY_TIER, so a durable-target caller fails rather than inheriting this disposition."
   - file: "polylogue/storage/sqlite/queries/artifacts.py"
     function: "_materialize_hook_events"
     table: "raw_hook_events"
