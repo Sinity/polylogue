@@ -31,6 +31,8 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.revision_backfill import _parse_one, backfill_historical_revision_evidence
+from polylogue.sources.sqlite_export import read_export_header
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.agent_thread_state import read_spawn_edges, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -67,6 +69,26 @@ def _write_hermes_state_db(path: Path) -> None:
                 (1, "hermes-session-1", "user", "first user turn", 2.0),
                 (2, "hermes-session-1", "assistant", "first assistant turn", 3.0),
             ],
+        )
+        conn.commit()
+
+
+def _add_hermes_verification_tables(path: Path) -> None:
+    """Give the noncanonical database both declared Hermes SQLite signatures."""
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE verification_events (
+                id TEXT PRIMARY KEY, session_id TEXT, created_at REAL, event_type TEXT, payload TEXT
+            );
+            CREATE TABLE verification_state (
+                session_id TEXT PRIMARY KEY, state TEXT, updated_at REAL
+            );
+            INSERT INTO meta VALUES ('schema_version', '1');
+            INSERT INTO verification_events VALUES ('verification-1', 'hermes-session-1', 4.0, 'check', '{}');
+            INSERT INTO verification_state VALUES ('hermes-session-1', 'passed', 5.0);
+            """
         )
         conn.commit()
 
@@ -167,6 +189,37 @@ async def test_hermes_state_export_replays_into_the_same_sessions(workspace_env:
     live = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
     assert live["sessions"], "sanity: live ingest produced a session"
     assert live["messages"], "sanity: live ingest produced messages"
+
+    _replay_from_source_tier(archive_root)
+    replayed = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
+
+    assert replayed == live
+
+
+@pytest.mark.asyncio
+async def test_hermes_backup_db_export_replays_into_the_same_sessions(workspace_env: dict[str, Path]) -> None:
+    archive_root = workspace_env["archive_root"]
+    root = workspace_env["data_root"] / "hermes-backup"
+    backup_db = root / "backup.db"
+    _write_hermes_state_db(backup_db)
+    _add_hermes_verification_tables(backup_db)
+    source = WatchSource(name="hermes", root=root, suffixes=(".db", ".sqlite", ".json", ".jsonl"))
+
+    await _ingest(archive_root, workspace_env["data_root"], source, [backup_db])
+    live = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
+    assert live["sessions"], "sanity: schema detection recognized Hermes in backup.db"
+
+    with sqlite3.connect(archive_root / "source.db") as source_conn:
+        row = source_conn.execute(
+            "SELECT blob_hash FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at_ms DESC LIMIT 1",
+            (str(backup_db),),
+        ).fetchone()
+    assert row is not None, "sanity: live ingest retained the backup.db source"
+    retained_path = BlobStore(archive_root / "blob").blob_path(bytes(row[0]).hex())
+    assert retained_path.is_file()
+    header = read_export_header(retained_path)
+    assert header.tables
+    assert header.member is None, "an undeclared filename must not create a member binding"
 
     _replay_from_source_tier(archive_root)
     replayed = _derived_rows(archive_root / "index.db", _HERMES_ROWS)
