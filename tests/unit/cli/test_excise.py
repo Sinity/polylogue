@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import sqlite3
+import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
+from polylogue.storage.accepted_marker_inputs import persist_pending_marker_input_sync, prepare_accepted_marker_input
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
@@ -184,6 +186,24 @@ class TestExciseStandalone:
         finally:
             index_conn.close()
         assert count == 1
+
+    def test_plain_dry_run_exposes_marker_carrier_counts_and_digest(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session(archive_root, native_id="dry-run-marker-carrier")
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            raw_id = str(conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0])
+        marker = prepare_accepted_marker_input(
+            raw_id, [{"session_id": session_id, "candidates": [{"body": "marker secret"}]}]
+        )
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            persist_pending_marker_input_sync(conn, marker, expected_incarnation_id=str(uuid.uuid4()))
+
+        with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
+            result = CliRunner().invoke(cli, ["ops", "excise", "--session", session_id, "--reason", "r", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "source.db marker carriers: 1 pending, 0 accepted" in result.output
+        assert marker.payload_sha256 in result.output
 
     def test_dry_run_does_not_construct_a_mutating_audit_executor(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
@@ -481,7 +501,7 @@ class TestExciseMirrorPrimary:
 class TestExciseLineageSafety:
     """CLI coverage for the polylogue-27m fix-round lineage-safety guard."""
 
-    def test_dry_run_surfaces_lineage_dependents(self, tmp_path: Path) -> None:
+    def test_dry_run_without_cascade_refuses_lineage_parent(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         parent_id, child_id = _seed_lineage_pair(archive_root)
         with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
@@ -492,7 +512,8 @@ class TestExciseLineageSafety:
             )
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload["plan"]["lineage_dependent_session_ids"] == [child_id]
+        assert payload["status"] == "aborted"
+        assert child_id in payload["detail"]
 
     def test_without_cascade_flag_refuses_and_does_not_mutate(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

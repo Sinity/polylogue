@@ -566,10 +566,26 @@ def _binding_columns(columns: tuple[str, ...], *, exclude: tuple[str, ...] = ())
 # INDEX-ONLY: the index tier is derived and rebuildable, no durable migration
 # is involved, and no reader regresses because the only consumer of the value
 # was the value itself.
-INDEX_SCHEMA_VERSION = 107
+INDEX_SCHEMA_VERSION = 108
 
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
+
+-- A publication witness is committed in the same SQLite transaction as the
+-- session rows. The incarnation token belongs to this physical index file,
+-- so a replacement generation cannot claim a witness from its predecessor.
+CREATE TABLE IF NOT EXISTS ingest_index_incarnation (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    incarnation_id TEXT NOT NULL UNIQUE CHECK(length(incarnation_id) = 36),
+    device INTEGER NOT NULL CHECK(device >= 0),
+    inode INTEGER NOT NULL CHECK(inode >= 0)
+) STRICT;
+CREATE TABLE IF NOT EXISTS ingest_marker_witnesses (
+    request_key TEXT PRIMARY KEY CHECK(length(request_key) = 64),
+    carrier_digest TEXT NOT NULL CHECK(length(carrier_digest) = 64),
+    dispositions_json TEXT NOT NULL,
+    incarnation_id TEXT NOT NULL CHECK(length(incarnation_id) = 36)
+) STRICT;
 
 -- Continuation frames are deliberately tier-local AND relation-scoped: one
 -- row per tracked relation, each advanced only by its own triggers. A

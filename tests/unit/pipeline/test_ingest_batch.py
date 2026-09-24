@@ -73,6 +73,7 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     upsert_raw_artifact,
@@ -4352,6 +4353,112 @@ async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution
             "unknown",
         )
     assert parse_result.processed_ids
+
+
+@pytest.mark.asyncio
+async def test_process_ingest_batch_off_mode_supports_repository_without_source_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OFF publication keeps the public index-only repository route usable."""
+    initialize_active_archive_root(tmp_path)
+    raw_id = "raw-off-index-only"
+    blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(b"index-only ingest payload")
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))
+    assert repository.source_backend is None
+    assert await repository.save_raw_session(
+        RawSessionRecord(
+            raw_id=raw_id,
+            blob_hash=blob_hash,
+            source_name=Provider.CODEX,
+            source_path="/sources/index-only.jsonl",
+            blob_size=blob_size,
+            acquired_at="2026-04-02T00:00:00Z",
+        )
+    )
+
+    session_id = "codex-session:off-index-only"
+    session = _session_data(
+        session_id,
+        content_hash="off-index-only",
+        raw_id=raw_id,
+        message_tuples=[
+            _message_tuple(
+                "message-off-index-only",
+                session_id,
+                role="user",
+                text="index-only session persisted",
+                content_hash="message-off-index-only",
+                sort_key=1.0,
+            )
+        ],
+    )
+
+    def fake_ingest_record(
+        record: RawSessionRecord,
+        _archive_root_str: str,
+        _validation_mode: str,
+        _measure_ingest_result_size: bool,
+        *,
+        blob_root_str: str | None,
+    ) -> IngestRecordResult:
+        assert record.raw_id == raw_id
+        assert blob_root_str == str(tmp_path / "blob")
+        return IngestRecordResult(raw_id=raw_id, sessions=[session])
+
+    marker_carrier_attempts: list[str] = []
+
+    def reject_sync_marker_carrier(*_args: object, **_kwargs: object) -> NoReturn:
+        marker_carrier_attempts.append("index-to-source marker publication")
+        raise AssertionError("OFF mode must not attempt source-tier marker publication")
+
+    def reject_async_marker_carrier(*_args: object, **_kwargs: object) -> NoReturn:
+        marker_carrier_attempts.append("accepted marker carrier preparation")
+        raise AssertionError("OFF mode must not prepare a source-tier marker carrier")
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "_publish_marker_witnesses_before_index_commit",
+        reject_sync_marker_carrier,
+    )
+    monkeypatch.setattr(ingest_batch_core, "prepare_accepted_marker_input", reject_async_marker_carrier)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(schema_validation="advisory", sinex_mode="off"),
+    )
+    service = ParsingService(
+        repository=repository,
+        archive_root=tmp_path,
+        config=Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
+        ingest_workers=1,
+    )
+    parse_result = ParseResult()
+    try:
+        await ingest_batch_core.process_ingest_batch(
+            service,
+            repository.backend,
+            [raw_id],
+            parse_result,
+            None,
+            repair_message_fts=False,
+        )
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone() == (1,)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1, None)
+        assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+    assert parse_result.processed_ids == {session_id}
+    assert parse_result.parse_failures == 0
+    assert marker_carrier_attempts == []
 
 
 @pytest.mark.asyncio
