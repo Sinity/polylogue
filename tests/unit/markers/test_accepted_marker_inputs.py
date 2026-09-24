@@ -26,7 +26,8 @@ from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.pipeline.services.parsing_models import ParseResult
-from polylogue.sinex.models import PublicationPayload
+from polylogue.sinex.models import PublicationMode, PublicationPayload
+from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputRefusedError,
@@ -64,23 +65,34 @@ def _nested(candidate: Mapping[str, object], section: str, field: str) -> object
     return value[field]
 
 
-def _index_message_state(path: Path) -> tuple[tuple[object, ...], ...]:
+_SqlRows = tuple[tuple[object, ...], ...]
+
+
+def _index_message_state(path: Path) -> tuple[_SqlRows, _SqlRows, _SqlRows]:
     """Snapshot materialized rows so a refused replay proves rollback."""
     with sqlite3.connect(path) as index:
-        sessions = tuple(index.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-        messages = tuple(
-            index.execute("SELECT session_id, message_id, content_hash FROM messages ORDER BY session_id, message_id")
+        sessions = cast(_SqlRows, tuple(index.execute("SELECT session_id FROM sessions ORDER BY session_id")))
+        messages = cast(
+            _SqlRows,
+            tuple(
+                index.execute(
+                    "SELECT session_id, message_id, content_hash FROM messages ORDER BY session_id, message_id"
+                )
+            ),
         )
-        blocks = tuple(index.execute("SELECT block_id, search_text FROM blocks ORDER BY block_id"))
+        blocks = cast(_SqlRows, tuple(index.execute("SELECT block_id, search_text FROM blocks ORDER BY block_id")))
     return sessions, messages, blocks
 
 
 def _accepted_marker_state(path: Path, raw_id: str) -> tuple[object, ...] | None:
     with sqlite3.connect(path) as source:
-        return source.execute(
-            "SELECT sequence, payload, index_incarnation_id FROM accepted_marker_inputs WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone()
+        return cast(
+            tuple[object, ...] | None,
+            source.execute(
+                "SELECT sequence, payload, index_incarnation_id FROM accepted_marker_inputs WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone(),
+        )
 
 
 def test_batch_route_retains_r1_and_r2_empty_and_identical_replay(workspace_env: dict[str, Path]) -> None:
@@ -768,7 +780,7 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
                 (raw_ids[1],),
             ).fetchone()
             assert pending is not None
-            original_payload = bytes(pending[2])
+            original_payload = bytes(cast(bytes, pending[2]))
             original = json.loads(original_payload)
             assert [item["match"]["body"] for item in original["sessions"][0]["candidates"]] == ["repeated lesson"]
             provenance = original["sessions"][0]["candidates"][0]["provenance"]
@@ -816,7 +828,7 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
         assert _index_message_state(tmp_path / "index.db") == original_index
         original_accepted = _accepted_marker_state(tmp_path / "source.db", raw_ids[1])
         assert original_accepted is not None and original_accepted[0] == 2
-        assert bytes(original_accepted[1]) == original_payload
+        assert bytes(cast(bytes, original_accepted[1])) == original_payload
 
         with pytest.raises(AcceptedMarkerInputRefusedError, match="immutable retained marker carrier"):
             await ingest_batch_core.process_ingest_batch(
@@ -982,7 +994,7 @@ async def test_public_drive_marker_retry_keeps_identity_across_revision_binding_
         "polylogue.config.load_polylogue_config",
         lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
     )
-    real_commit = ingest_batch_core._commit_sync_ingest_side_effects
+    real_commit = cast(Callable[..., None], ingest_batch_core._commit_sync_ingest_side_effects)
     commit_calls = 0
 
     def fail_first_index_commit(*args: object, **kwargs: object) -> None:
@@ -1027,7 +1039,7 @@ async def test_public_drive_marker_retry_keeps_identity_across_revision_binding_
         state_after_retry = _index_message_state(tmp_path / "index.db")
         accepted_after_retry = _accepted_marker_state(tmp_path / "source.db", raw_id)
         assert accepted_after_retry is not None and accepted_after_retry[0] == 1
-        accepted_payload = bytes(accepted_after_retry[1])
+        accepted_payload = bytes(cast(bytes, accepted_after_retry[1]))
         candidates = json.loads(accepted_payload)["sessions"][0]["candidates"]
         assert [item["match"]["body"] for item in candidates] == ["drive marker"]
 
@@ -1099,12 +1111,13 @@ async def test_public_mirror_replay_restages_without_rewriting_witnessed_session
         "polylogue.config.load_polylogue_config",
         lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "mirror"})(),
     )
-    real_stage_payload = ingest_batch_core.stage_payload_async
     staged_object_ids: list[str] = []
 
-    async def observe_stage_payload(conn: object, *, payload: PublicationPayload, mode: object, now_ms: int) -> object:
+    async def observe_stage_payload(
+        conn: object, *, payload: PublicationPayload, mode: PublicationMode, now_ms: int
+    ) -> None:
         staged_object_ids.append(payload.object_id)
-        return await real_stage_payload(conn, payload=payload, mode=mode, now_ms=now_ms)  # type: ignore[arg-type]
+        await stage_payload_async(cast(AsyncSqlConnection, conn), payload=payload, mode=mode, now_ms=now_ms)
 
     monkeypatch.setattr(ingest_batch_core, "stage_payload_async", observe_stage_payload)
     try:
@@ -1242,7 +1255,8 @@ async def test_public_primary_pending_witness_retry_preserves_defer_then_finaliz
             service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
         )
         accepted = _accepted_marker_state(tmp_path / "source.db", raw_id)
-        assert accepted is not None and accepted[0] == 1 and bytes(accepted[1]) == bytes(pending[2])
+        assert accepted is not None and accepted[0] == 1
+        assert bytes(cast(bytes, accepted[1])) == bytes(cast(bytes, pending[2]))
         assert _index_message_state(tmp_path / "index.db") == first_index_state
         assert parse_calls == 3
         assert [event[0] for event in publication_events] == ["stage", "drain"] * 3
