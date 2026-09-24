@@ -249,18 +249,36 @@ class TypeScriptRenderer:
                 page.get("initial_required_parameters", []),
                 f"{operation.operation_id}.x-polylogue-page.initial_required_parameters",
             )
+            initial_optional = _string_list(
+                page.get("initial_optional_parameters", []),
+                f"{operation.operation_id}.x-polylogue-page.initial_optional_parameters",
+            )
             parameter_names = {parameter.name for parameter in operation.parameters}
-            missing = sorted(set(initial_required) - parameter_names)
+            missing = sorted((set(initial_required) | set(initial_optional)) - parameter_names)
             if missing:
                 raise ContractGenerationError(
                     f"{operation.operation_id}: iterator requires undeclared parameters: {', '.join(missing)}"
+                )
+            duplicate_initial = sorted(set(initial_required) & set(initial_optional))
+            if duplicate_initial:
+                raise ContractGenerationError(
+                    f"{operation.operation_id}: initial parameters cannot be both required and optional: "
+                    f"{', '.join(duplicate_initial)}"
+                )
+            if any(
+                operation_parameter.required
+                for operation_parameter in operation.parameters
+                if operation_parameter.name in initial_optional
+            ):
+                raise ContractGenerationError(
+                    f"{operation.operation_id}: optional initial parameters must be optional operation parameters"
                 )
             initial_name = f"{_pascal_case(iterator)}Parameters"
             required_properties = " & ".join(
                 f"{{ readonly {_property_name(name)}: {self._parameter_type(operation, name)} }}"
                 for name in initial_required
             )
-            omitted = sorted(set(initial_required) | {str(page.get("cursor_parameter", ""))})
+            omitted = sorted((set(initial_required) | {str(page.get("cursor_parameter", ""))}) - set(initial_optional))
             omitted = [name for name in omitted if name]
             omit_literal = " | ".join(_literal(name) for name in omitted)
             base = f"Omit<{parameters_name}, {omit_literal}>" if omitted else parameters_name
