@@ -53,21 +53,60 @@ class AcceptedMarkerInput:
     batch: PreparedAcceptedMarkerInput
 
 
+def retained_marker_input_sync(
+    conn: sqlite3.Connection, request_key: str
+) -> tuple[str, PreparedAcceptedMarkerInput] | None:
+    """Return exact source-owned pending/accepted bytes for one request."""
+    row = conn.execute(
+        "SELECT 'pending', raw_id, carrier_digest, payload FROM pending_accepted_marker_inputs "
+        "WHERE request_key = ? UNION ALL "
+        "SELECT 'accepted', raw_id, payload_sha256, payload FROM accepted_marker_inputs WHERE identity = ?",
+        (request_key, request_key),
+    ).fetchone()
+    if row is None:
+        return None
+    state, raw_id, digest, payload_value = cast(tuple[str, str, str, object], row)
+    payload = _stored_payload(payload_value)
+    try:
+        value = json.loads(payload)
+        batch = PreparedAcceptedMarkerInput(raw_id, request_key, payload, digest)
+        _validate(batch)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise AcceptedMarkerInputRefusedError("retained accepted marker carrier is malformed") from exc
+    if not isinstance(value, dict) or value.get("identity") != request_key:
+        raise AcceptedMarkerInputRefusedError("retained accepted marker request key disagrees with payload")
+    return state, batch
+
+
 def prepare_accepted_marker_input(
     raw_id: str,
     sessions: Sequence[dict[str, object]],
     *,
     request_facts: dict[str, object] | None = None,
+    request_sessions: Sequence[dict[str, object]] | None = None,
 ) -> PreparedAcceptedMarkerInput:
-    """Seal one interpreted raw input, retaining empty candidate batches too."""
+    """Seal one interpreted raw input, retaining empty candidate batches too.
+
+    ``request_sessions`` is the complete normalized parse before append or
+    lineage slicing. It defines replay identity; ``sessions`` contains the
+    exact selected write carriers and may legitimately differ after a retry.
+    """
     ordered = list(sessions)
     bindings = [{key: value for key, value in session.items() if key != "candidates"} for session in ordered]
+    request_bindings = list(request_sessions if request_sessions is not None else bindings)
     facts = dict(request_facts or {})
     identity = hashlib.sha256(
-        _encode({"format": 2, "raw_id": raw_id, "request_facts": facts, "sessions": bindings})
+        _encode({"format": 3, "raw_id": raw_id, "request_facts": facts, "sessions": request_bindings})
     ).hexdigest()
     payload = _encode(
-        {"format": 2, "raw_id": raw_id, "identity": identity, "request_facts": facts, "sessions": ordered}
+        {
+            "format": 3,
+            "raw_id": raw_id,
+            "identity": identity,
+            "request_facts": facts,
+            "request_sessions": request_bindings,
+            "sessions": ordered,
+        }
     )
     return PreparedAcceptedMarkerInput(raw_id, identity, payload, hashlib.sha256(payload).hexdigest())
 
@@ -84,9 +123,14 @@ def _validate(batch: PreparedAcceptedMarkerInput) -> None:
         if any(not isinstance(session, dict) for session in sessions):
             raise TypeError("carrier session must be an object")
         request_facts = value.get("request_facts")
+        request_sessions = value.get("request_sessions")
         if not isinstance(request_facts, dict):
             raise TypeError("carrier request facts are invalid")
-        rebuilt = prepare_accepted_marker_input(raw_id, sessions, request_facts=request_facts)
+        if not isinstance(request_sessions, list) or any(not isinstance(session, dict) for session in request_sessions):
+            raise TypeError("carrier request sessions are invalid")
+        rebuilt = prepare_accepted_marker_input(
+            raw_id, sessions, request_facts=request_facts, request_sessions=request_sessions
+        )
     except (ValueError, TypeError, KeyError) as exc:
         raise AcceptedMarkerInputRefusedError("invalid accepted marker carrier") from exc
     if not batch.raw_id or rebuilt != batch:

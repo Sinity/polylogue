@@ -197,3 +197,17 @@ sites:
     scope: "writing_module"
     classification: producer_scoped_transaction
     reason: "raw admission reusing an existing raw_id when every identity field of the legacy row matches the request exactly; an identity decision inside the admitting write, not a correction of a stored one"
+  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
+    function: "_publish_marker_witnesses_before_index_commit"
+    subject: "ingest_index_incarnation"
+    kind: "state_selected_subject"
+    scope: "state_predicate"
+    classification: producer_scoped_transaction
+    reason: "the SELECT reads only the singleton physical-index identity row, whose CHECK constraint permits exactly one row. It is not a content subject or archive sweep; the ingest publisher compares the recorded device/inode with the connection's actual index file before binding new witnesses to that file instance"
+  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
+    function: "_publish_marker_witnesses_before_index_commit"
+    subject: "ingest_index_incarnation"
+    kind: "unbound_rewrite"
+    scope: "state_predicate"
+    classification: producer_scoped_transaction
+    reason: "the singleton incarnation row is inserted on first use or replaced only when the currently open index file's device/inode differs from the recorded physical instance. This is producer-owned witness scoping metadata; it does not correct session content or select archive rows for a sweep"

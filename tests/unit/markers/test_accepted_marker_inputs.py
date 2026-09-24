@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import replace
@@ -12,12 +13,16 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.enums import Provider, Role
+from polylogue.config import Config
+from polylogue.core.enums import Origin, Provider, Role
 from polylogue.markers.preparation import marker_candidates_for_prepared_write
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.services.ingest_batch import _core as ingest_batch_core
 from polylogue.pipeline.services.ingest_batch._core import _write_session_entry
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
+from polylogue.pipeline.services.parsing import ParsingService
+from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputRefusedError,
@@ -25,11 +30,17 @@ from polylogue.storage.accepted_marker_inputs import (
     finalize_pending_accepted_marker_input,
     prepare_accepted_marker_input,
 )
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite import migration_runner
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
+from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, write_parsed_session_to_archive
+from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.durable_change_train import _runtime_consumer_results, validate_durable_migration_sidecars
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 
@@ -267,3 +278,148 @@ def test_marker_migration_train_has_runtime_proof_and_refuses_without_backup(tmp
         with pytest.raises(migration_runner.MigrationError, match="requires a verified backup manifest"):
             migration_runner.migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None)
         assert source.execute("PRAGMA user_version").fetchone() == (4,)
+
+
+def test_request_identity_uses_full_parse_while_carrier_keeps_selected_delta() -> None:
+    """A no-op retry has the same request identity but cannot replace delta bytes."""
+    parsed = [{"session_id": "child", "input_content_hash": "full-hash"}]
+    original = prepare_accepted_marker_input(
+        "raw",
+        [{**parsed[0], "disposition": "append", "candidates": [{"block_id": "tail:1"}]}],
+        request_facts={"recipe": "r1"},
+        request_sessions=parsed,
+    )
+    retry = prepare_accepted_marker_input(
+        "raw",
+        [{**parsed[0], "disposition": "no-op", "candidates": []}],
+        request_facts={"recipe": "r1"},
+        request_sessions=parsed,
+    )
+    changed_recipe = prepare_accepted_marker_input(
+        "raw",
+        [{**parsed[0], "disposition": "no-op", "candidates": []}],
+        request_facts={"recipe": "r2"},
+        request_sessions=parsed,
+    )
+    assert original.identity == retry.identity
+    assert original.payload != retry.payload
+    assert changed_recipe.identity != original.identity
+
+
+def test_index_witness_recovers_original_carrier_after_noop_retry(tmp_path: Path) -> None:
+    """A committed index witness selects the retained append bytes on replay."""
+    from polylogue.pipeline.services.ingest_batch._core import _publish_marker_witnesses_before_index_commit
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with sqlite3.connect(root / "source.db") as source:
+        source.executescript(SOURCE_DDL)
+    with sqlite3.connect(root / "index.db") as index:
+        index.executescript(INDEX_DDL)
+        full = [{"session_id": "child", "input_content_hash": "full-hash"}]
+        original = {**full[0], "disposition": "append", "candidates": [{"block_id": "tail:1"}]}
+        summary = _IngestBatchSummary(
+            marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
+            marker_request_sessions_by_raw_id={"raw": full},
+            marker_session_dispositions_by_raw_id={"raw": [{"session_id": "child", "disposition": "append"}]},
+            marker_sessions_by_raw_id={"raw": [original]},
+        )
+        index.execute("BEGIN IMMEDIATE")
+        _publish_marker_witnesses_before_index_commit(index, archive_root=root, summary=summary)
+        index.commit()
+        first_batch = summary.marker_batches_by_raw_id["raw"]
+
+        retry = _IngestBatchSummary(
+            marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
+            marker_request_sessions_by_raw_id={"raw": full},
+            marker_session_dispositions_by_raw_id={"raw": [{"session_id": "child", "disposition": "no-op"}]},
+        )
+        index.execute("BEGIN IMMEDIATE")
+        _publish_marker_witnesses_before_index_commit(index, archive_root=root, summary=retry)
+        index.rollback()
+        assert retry.marker_batches_by_raw_id["raw"] == first_batch
+
+        with sqlite3.connect(root / "source.db") as source:
+            assert asyncio.run(finalize_pending_accepted_marker_input(_AsyncConnection(source), first_batch)) == 1
+        witness = index.execute("SELECT carrier_digest, dispositions_json FROM ingest_marker_witnesses").fetchone()
+        assert witness == (
+            first_batch.payload_sha256,
+            '[{"disposition":"append","session_id":"child"}]',
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_boundary", ["before-index-commit", "after-index-commit"])
+async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_boundary: str
+) -> None:
+    """The public route recovers exact empty-marker bytes across tier commits."""
+    bootstrap_archive_root(tmp_path)
+    payload = (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
+    BlobStore(tmp_path / "blob").write_from_bytes(payload)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.CHATGPT_EXPORT,
+            source_path="accepted-marker-empty.json",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+        )
+        source.commit()
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+    )
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    try:
+        if failure_boundary == "before-index-commit":
+            original_boundary = ingest_batch_core._commit_sync_ingest_side_effects
+
+            def interrupt_before_index_commit(*_args: object, **_kwargs: object) -> None:
+                raise RuntimeError("simulated loss before index commit")
+
+            monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", interrupt_before_index_commit)
+        else:
+            original_boundary = ingest_batch_core._persist_batch_raw_state_updates
+
+            async def interrupt_after_index_commit(*_args: object, **_kwargs: object) -> float:
+                raise RuntimeError("simulated loss after index commit")
+
+            monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", interrupt_after_index_commit)
+        with pytest.raises(RuntimeError, match="simulated loss"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+        monkeypatch.setattr(
+            ingest_batch_core,
+            "_commit_sync_ingest_side_effects"
+            if failure_boundary == "before-index-commit"
+            else "_persist_batch_raw_state_updates",
+            original_boundary,
+        )
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (1,)
+            assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (
+                0 if failure_boundary == "before-index-commit" else 1,
+            )
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        row = source.execute(
+            "SELECT sequence, payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        assert row is not None and row[0] == 1
+        carrier = json.loads(row[1])
+        assert carrier["raw_id"] == raw_id
+        assert all(not session["candidates"] for session in carrier["sessions"])
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (1,)

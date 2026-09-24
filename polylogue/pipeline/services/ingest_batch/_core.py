@@ -1535,6 +1535,19 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         diagnostic=ir.diagnostic,
     )
     summary.expected_marker_session_counts[ir.raw_id] = len(ir.sessions)
+    if ir.sessions:
+        summary.marker_request_sessions_by_raw_id[ir.raw_id] = [
+            {
+                "session_id": cdata.session_id,
+                "input_content_hash": cdata.content_hash,
+                "parser_fingerprint": parser_fingerprint_for_origin(
+                    origin_from_provider(cdata.parsed_session.source_name)
+                ),
+                "lowering_fingerprint": lowering_fingerprint(),
+                "marker_recipe_fingerprint": marker_recipe_fingerprint(),
+            }
+            for cdata in ir.sessions
+        ]
     if ir.serialized_size_bytes is not None:
         summary.total_result_bytes += ir.serialized_size_bytes
         if ir.serialized_size_bytes > summary.max_result_bytes:
@@ -1657,6 +1670,18 @@ def _write_session_entry(
             content_changed=content_changed,
             counts=counts,
         )
+        summary.marker_session_dispositions_by_raw_id.setdefault(raw_id, []).append(
+            {
+                "session_id": cdata.session_id,
+                "disposition": (
+                    "append"
+                    if marker_write is not None and marker_write.merge_append
+                    else "replace"
+                    if marker_write is not None
+                    else "no-op"
+                ),
+            }
+        )
         if write_elapsed >= 1.0:
             logger.info(
                 "slow_write",
@@ -1675,6 +1700,7 @@ def _write_session_entry(
             marker_session: dict[str, object] = {
                 "session_id": marker_write.session_id,
                 "input_content_hash": marker_write.input_content_hash.hex(),
+                "disposition": "append" if marker_write.merge_append else "replace",
                 "parser_fingerprint": parser_fingerprint_for_origin(
                     origin_from_provider(cdata.parsed_session.source_name)
                 ),
@@ -2328,26 +2354,44 @@ def _publish_marker_witnesses_before_index_commit(
     from polylogue.storage.accepted_marker_inputs import (
         persist_pending_marker_input_sync,
         prepare_accepted_marker_input,
+        retained_marker_input_sync,
     )
 
-    requests = {
-        raw_id: prepare_accepted_marker_input(
-            raw_id,
-            sessions,
-            request_facts=summary.marker_request_facts_by_raw_id.get(raw_id, {}),
-        )
-        for raw_id, sessions in summary.marker_sessions_by_raw_id.items()
-    }
-    # Empty parses still get a durable request and an index publication
-    # witness. A session with no marker candidates is represented by its
-    # session binding and an empty candidates list.
+    requests: dict[str, PreparedAcceptedMarkerInput] = {}
     for raw_id, facts in summary.marker_request_facts_by_raw_id.items():
-        requests.setdefault(raw_id, prepare_accepted_marker_input(raw_id, [], request_facts=facts))
-    summary.marker_batches_by_raw_id.update(requests)
+        if raw_id in summary.failed_raw_ids:
+            continue
+        selected = summary.marker_sessions_by_raw_id.get(raw_id, [])
+        selected_by_id = {str(session.get("session_id", "")): session for session in selected}
+        dispositions = {
+            str(session.get("session_id", "")): str(session.get("disposition", "no-op"))
+            for session in summary.marker_session_dispositions_by_raw_id.get(raw_id, [])
+        }
+        request_sessions = summary.marker_request_sessions_by_raw_id.get(raw_id, [])
+        carrier_sessions: list[dict[str, object]] = []
+        for binding in request_sessions:
+            session_id = str(binding.get("session_id", ""))
+            session = dict(selected_by_id.get(session_id, binding))
+            session["disposition"] = dispositions.get(session_id, "no-op")
+            session.setdefault("candidates", [])
+            carrier_sessions.append(session)
+        # Defensive fallback for adapters that produced a write entry without
+        # its outcome frame. Preserve every prepared carrier in that case.
+        request_ids = {str(session.get("session_id", "")) for session in carrier_sessions}
+        carrier_sessions.extend(
+            session for session in selected if str(session.get("session_id", "")) not in request_ids
+        )
+        requests[raw_id] = prepare_accepted_marker_input(
+            raw_id,
+            carrier_sessions,
+            request_facts=facts,
+            request_sessions=request_sessions,
+        )
     if not requests:
         return
     source_path = archive_root / "source.db"
     source_states: dict[str, str] = {}
+    retained_batches: dict[str, PreparedAcceptedMarkerInput] = {}
     with (
         closing(
             open_isolated_write_connection(
@@ -2361,7 +2405,12 @@ def _publish_marker_witnesses_before_index_commit(
     ):
         source_conn.execute("BEGIN IMMEDIATE")
         for batch in requests.values():
-            source_states[batch.identity] = persist_pending_marker_input_sync(source_conn, batch)
+            retained = retained_marker_input_sync(source_conn, batch.identity)
+            if retained is None:
+                source_states[batch.identity] = persist_pending_marker_input_sync(source_conn, batch)
+                retained_batches[batch.identity] = batch
+            else:
+                source_states[batch.identity], retained_batches[batch.identity] = retained
 
     index_filename = str(index_conn.execute("PRAGMA database_list").fetchone()[2])
     index_stat = Path(index_filename).stat()
@@ -2382,17 +2431,34 @@ def _publish_marker_witnesses_before_index_commit(
         )
     else:
         incarnation_id = str(incarnation[0])
-    for batch in requests.values():
-        sessions = summary.marker_sessions_by_raw_id.get(batch.raw_id, [])
+    for request in requests.values():
+        batch = retained_batches[request.identity]
+        if batch.payload != request.payload and source_states[batch.identity] not in ("pending-new",):
+            prior = index_conn.execute(
+                "SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
+                (batch.identity,),
+            ).fetchone()
+            if prior is None or tuple(prior) != (batch.payload_sha256, incarnation_id):
+                raise AcceptedMarkerInputRefusedError(
+                    "retry interpretation differs from retained carrier without its exact index witness"
+                )
+        value = json.loads(batch.payload)
+        carrier_sessions = value["sessions"]
         dispositions = [
-            {"session_id": str(session.get("session_id", "")), "disposition": "written"} for session in sessions
+            {
+                "session_id": str(session.get("session_id", "")),
+                "disposition": str(session.get("disposition", "no-op")),
+            }
+            for session in carrier_sessions
         ]
         encoded = json.dumps(dispositions, sort_keys=True, separators=(",", ":"))
         prior = index_conn.execute(
             "SELECT carrier_digest, dispositions_json, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
             (batch.identity,),
         ).fetchone()
-        if prior is None and source_states[batch.identity] != "pending-new":
+        if prior is None and batch.payload != request.payload:
+            raise AcceptedMarkerInputRefusedError("retained marker carrier has no matching index publication witness")
+        if prior is None and source_states[batch.identity] not in ("pending-new", "pending"):
             raise AcceptedMarkerInputRefusedError(
                 "retained accepted marker carrier has no matching index publication witness"
             )
@@ -2404,6 +2470,7 @@ def _publish_marker_witnesses_before_index_commit(
             "VALUES (?, ?, ?, ?)",
             (batch.identity, *expected),
         )
+        summary.marker_batches_by_raw_id[batch.raw_id] = batch
 
 
 def _resolve_codex_sidecar_snapshots(
@@ -2674,6 +2741,11 @@ def _process_ingest_batch_sync(
                 "acquired_at": record.acquired_at,
                 "file_mtime": record.file_mtime,
                 "validation_mode": record.validation_mode.value if record.validation_mode is not None else None,
+                "marker_recipe_fingerprint": marker_recipe_fingerprint(),
+                "lowering_fingerprint": lowering_fingerprint(),
+                "parser_fingerprint": (
+                    parser_fingerprint_for_origin(origin_from_provider(provider)) if provider is not None else None
+                ),
             }
     worker_request = _make_ingest_worker_request(
         archive_root_str=archive_root_str,
@@ -2797,7 +2869,7 @@ def _process_ingest_batch_sync(
                 for raw_id, expected_count in summary.expected_marker_session_counts.items():
                     if raw_id in summary.failed_raw_ids or expected_count == 0:
                         continue
-                    actual_count = len(summary.marker_sessions_by_raw_id.get(raw_id, ()))
+                    actual_count = len(summary.marker_request_sessions_by_raw_id.get(raw_id, ()))
                     if actual_count != expected_count:
                         raise AcceptedMarkerInputRefusedError(
                             f"accepted raw revision {raw_id!r} has {actual_count} prepared marker sessions; "
@@ -3093,6 +3165,9 @@ async def process_ingest_batch(
         marker_request_facts_by_raw_id=(
             batch_summary.marker_request_facts_by_raw_id if configured_source_backend is not None else None
         ),
+        marker_request_sessions_by_raw_id=(
+            batch_summary.marker_request_sessions_by_raw_id if configured_source_backend is not None else None
+        ),
         marker_batches_by_raw_id=(
             batch_summary.marker_batches_by_raw_id if configured_source_backend is not None else None
         ),
@@ -3205,6 +3280,7 @@ async def _persist_batch_raw_state_updates(
     publication_payloads_by_raw_id: Mapping[str, Sequence[PublicationPayload]] | None = None,
     marker_sessions_by_raw_id: Mapping[str, Sequence[dict[str, object]]] | None = None,
     marker_request_facts_by_raw_id: Mapping[str, dict[str, object]] | None = None,
+    marker_request_sessions_by_raw_id: Mapping[str, Sequence[dict[str, object]]] | None = None,
     marker_batches_by_raw_id: Mapping[str, PreparedAcceptedMarkerInput] | None = None,
 ) -> float:
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -3225,12 +3301,13 @@ async def _persist_batch_raw_state_updates(
         if marker_sessions_by_raw_id is None:
             return
         sessions = marker_sessions_by_raw_id.get(rid, ())
-        if outcomes.get(rid) is not None and outcomes[rid].had_sessions and not sessions:
+        request_sessions = (marker_request_sessions_by_raw_id or {}).get(rid, ())
+        if outcomes.get(rid) is not None and outcomes[rid].had_sessions and not request_sessions:
             raise AcceptedMarkerInputRefusedError(f"accepted raw revision {rid!r} has no prepared marker coverage")
         facts = (marker_request_facts_by_raw_id or {}).get(rid, {})
         batch = (marker_batches_by_raw_id or {}).get(rid)
         if batch is None:
-            batch = prepare_accepted_marker_input(rid, sessions, request_facts=facts)
+            batch = prepare_accepted_marker_input(rid, sessions, request_facts=facts, request_sessions=request_sessions)
         assert isinstance(batch, PreparedAcceptedMarkerInput)
         await finalize_pending_accepted_marker_input(raw_state_conn, batch)
 

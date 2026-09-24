@@ -97,6 +97,8 @@ class _IngestBatchSummary:
     publication_payloads_by_raw_id: dict[str, list[PublicationPayload]] = field(default_factory=dict)
     marker_sessions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     marker_request_facts_by_raw_id: dict[str, dict[str, object]] = field(default_factory=dict)
+    marker_request_sessions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    marker_session_dispositions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     marker_batches_by_raw_id: dict[str, PreparedAcceptedMarkerInput] = field(default_factory=dict)
     expected_marker_session_counts: dict[str, int] = field(default_factory=dict)
     publication_payload_bytes: int = 0
