@@ -11,7 +11,6 @@ import {
   type SessionMessagePage,
   type SessionMessageWindow,
 } from '../contracts/session-read';
-import { SEARCH_RESULT_LIMIT, parseSearchResult, type SearchResult } from '../contracts/search';
 
 const WEB_CLIENT_HEADERS = Object.freeze({
   'X-Polylogue-Web-Client': '1',
@@ -136,12 +135,4 @@ export async function fetchSessionMessagesPage(
   return parseSessionMessagePage(
     await requestJson(`/api/sessions/${encodeURIComponent(sessionId)}/read?${params.toString()}`),
   );
-}
-
-export async function fetchSearchPage(query: string, cursor: string): Promise<SearchResult> {
-  const params = new URLSearchParams();
-  params.set('query', query);
-  params.set('cursor', cursor);
-  params.set('limit', String(SEARCH_RESULT_LIMIT));
-  return parseSearchResult(await requestJson(`/api/sessions?${params.toString()}`));
 }

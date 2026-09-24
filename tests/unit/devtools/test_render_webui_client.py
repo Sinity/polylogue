@@ -22,6 +22,19 @@ def test_webui_client_generator_matches_golden_fixture() -> None:
     assert 'qualification: "page" as const' in rendered
 
 
+def test_iterator_can_declare_an_optional_initial_cursor(tmp_path: Path) -> None:
+    document = yaml.safe_load(FIXTURE_SCHEMA.read_text(encoding="utf-8"))
+    page = document["paths"]["/api/items/{bucket}"]["get"]["x-polylogue-page"]
+    page["initial_optional_parameters"] = ["continuation"]
+    schema = tmp_path / "optional-cursor.yaml"
+    schema.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+
+    rendered = generate(schema)
+
+    assert 'export type QueryParameters = Omit<QueryItemsParameters, "bucket" | "expression">' in rendered
+    assert "readonly continuation?: string;" in rendered
+
+
 def test_webui_client_check_mode_detects_drift(tmp_path: Path) -> None:
     output = tmp_path / "generated.ts"
     output.write_text(generate(FIXTURE_SCHEMA), encoding="utf-8")
@@ -34,6 +47,8 @@ def test_webui_client_check_mode_detects_drift(tmp_path: Path) -> None:
 
 def test_committed_webui_client_matches_generated_openapi() -> None:
     assert render(COMMITTED_SCHEMA, COMMITTED_CLIENT, check=True) == 0
+    generated = COMMITTED_CLIENT.read_text(encoding="utf-8")
+    assert 'export type SearchParameters = Omit<SearchSessionsParameters, "query">' in generated
 
 
 def test_webui_client_generator_fails_closed_for_unknown_page_schema(tmp_path: Path) -> None:

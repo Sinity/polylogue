@@ -44,10 +44,12 @@ only the opaque `continuation`. Query-unit `total` is the number of rows in
 that page, so its coverage is always `qualified/page`. The daemon-supplied
 `query_ref` and `result_ref` are preserved.
 
-`client.search()` follows the ranked-search `next_cursor`. It retains the
-original server filters, removes the unstable `offset`, and adds the opaque
-cursor. A numeric total is exact only when `exactness` is absent or `exact`;
-`capped`, `sampled`, and `estimate` remain qualified.
+`client.search()` follows the ranked-search `next_cursor`. Its initial
+parameters may include an opaque `cursor` when continuing a server-rendered
+search; subsequent requests retain the original server filters, remove the
+unstable `offset`, and add the returned cursor. A numeric total is exact only
+when `exactness` is absent or `exact`; `capped`, `sampled`, and `estimate`
+remain qualified.
 
 `FetchTransport` rejects absolute and protocol-relative paths, pins requests
 to the browser origin (or an explicit SSR/test origin), uses same-origin

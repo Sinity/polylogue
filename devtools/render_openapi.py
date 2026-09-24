@@ -551,6 +551,7 @@ def _build_openapi_document() -> dict[str, Any]:
                     "x-polylogue-page": {
                         "iterator": "search",
                         "initial_required_parameters": ["query"],
+                        "initial_optional_parameters": ["cursor"],
                         "response_schemas": ["SearchEnvelope"],
                         "items_property": "hits",
                         "cursor_property": "next_cursor",
