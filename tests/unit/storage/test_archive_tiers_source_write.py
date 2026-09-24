@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -20,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     read_capture_mode_resolution,
     read_hook_event,
     read_raw_artifact,
+    record_raw_container_coordinate,
     upsert_raw_artifact,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
@@ -146,6 +149,58 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
         session_native_id="session-1",
     )
     assert list_hook_events(conn, origin=Origin.CLAUDE_CODE_SESSION, session_native_id="session-1") == (hook_event,)
+
+
+def test_raw_writer_refuses_invalid_storage_blob_category_before_commit(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        with pytest.raises(ValueError, match="ref_type"):
+            write_source_raw_session(
+                conn,
+                origin=Origin.CLAUDE_CODE_SESSION,
+                source_path="/tmp/record.jsonl",
+                source_index=0,
+                payload=b"payload",
+                acquired_at_ms=1,
+                additional_blob_refs=(
+                    ArchiveSourceBlobRef(
+                        blob_hash=deterministic_blob_hash(b"attachment"),
+                        ref_type="not-a-blob-category",
+                        source_path="/tmp/record.jsonl",
+                        size_bytes=10,
+                        acquired_at_ms=1,
+                    ),
+                ),
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_container_coordinate_writer_refuses_invalid_format_before_persistence(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+        )
+        with pytest.raises(ValueError, match="coordinate_format"):
+            record_raw_container_coordinate(
+                conn,
+                raw_id,
+                coordinate_format="not-a-format",  # type: ignore[arg-type]
+                entry_ordinal=0,
+                split_index=0,
+                addressing_mode=None,
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_container_coordinates").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_source_artifact_upsert_keeps_coordinate_deduplication_and_raw_failure_fanout(

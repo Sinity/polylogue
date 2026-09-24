@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
@@ -64,6 +64,14 @@ class HookEventConflictError(RuntimeError):
 
 
 PENDING_RAW_LOGICAL_SOURCE_PREFIX = "pending-raw:"
+
+# Storage-local blob ownership categories. These values identify the durable
+# relation that keeps bytes live; adding one requires reviewing blob liveness
+# ownership and the source DDL migration together.
+BlobRefType = Literal["raw_payload", "attachment", "sidecar", "hook_payload"]
+ContainerCoordinateFormat = Literal["zip-v2"]
+_BLOB_REF_TYPES = get_args(BlobRefType)
+_CONTAINER_COORDINATE_FORMATS = get_args(ContainerCoordinateFormat)
 
 
 def _is_raw_failure_artifact_kind(artifact_kind: object) -> bool:
@@ -318,6 +326,9 @@ def record_raw_container_coordinate(
     """
     if entry_ordinal < 0 or split_index < 0:
         raise ValueError("container entry ordinal and split index must be non-negative")
+    coordinate_format_value = require_vocabulary(
+        coordinate_format, _CONTAINER_COORDINATE_FORMATS, field="coordinate_format"
+    )
     if content_identity is not None:
         if len(content_identity) != 64:
             raise ValueError("content_identity must be a 64-character digest")
@@ -337,7 +348,7 @@ def record_raw_container_coordinate(
                 raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (raw_id, coordinate_format, entry_ordinal, split_index, mode, content_identity),
+            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity),
         )
         if mode is not None:
             # A row written before the mode existed carries the same
@@ -637,6 +648,10 @@ def write_source_blob_refs(
     """
     if not refs:
         return
+    # Preflight the complete batch so invalid storage-local categories cannot
+    # leave earlier refs written in a caller-owned transaction.
+    for ref in refs:
+        require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
     with conn:
         for ref in refs:
             if is_blob_hash_excised(conn, ref.blob_hash):
@@ -1423,9 +1438,10 @@ def list_hook_events(
 
 
 def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> None:
+    ref_type = require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
     if ref.raw_id is None or ref.size_bytes is None or ref.acquired_at_ms is None:
         raise ValueError("raw_id, size_bytes, and acquired_at_ms are required for blob refs")
-    if ref.ref_type == "hook_payload":
+    if ref_type == "hook_payload":
         # The logical hook row and its first-observed coordinate are immutable;
         # replaying the same event through another carrier must not rewrite
         # this representative blob-ref coordinate either.
@@ -1435,7 +1451,7 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(blob_hash, ref_type, ref_id) DO NOTHING
             """,
-            (ref.blob_hash, ref.raw_id, ref.ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
+            (ref.blob_hash, ref.raw_id, ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
         )
     else:
         conn.execute(
@@ -1444,7 +1460,7 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
                 blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (ref.blob_hash, ref.raw_id, ref.ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
+            (ref.blob_hash, ref.raw_id, ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
         )
     from polylogue.storage.blob_publication import consume_blob_publication_receipt
 

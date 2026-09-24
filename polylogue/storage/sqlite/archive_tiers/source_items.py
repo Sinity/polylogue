@@ -431,6 +431,11 @@ def transition_source_item(
     a domain publication transaction use ``commit=False`` and can reject stale
     competing item updates with ``expected_revision``.
     """
+    # These vocabularies are owned by the source-item state machine and
+    # IngestOutcome. SQLite intentionally carries no enum registry; normalize
+    # and reject at this public write boundary before even the idempotent path.
+    disposition_value = require_vocabulary(disposition, AcquisitionDisposition, field="disposition")
+    outcome_value = require_vocabulary(outcome_code, IngestOutcome, field="outcome_code")
     row = conn.execute(
         "SELECT revision, request_id, blob_hash, enumeration_fingerprint FROM source_items "
         "WHERE source_generation_id=? AND source_item_id=?",
@@ -453,8 +458,8 @@ def transition_source_item(
            blob_hash=COALESCE(?,blob_hash), revision=?, request_id=?, observed_at_ms=?, updated_at_ms=?
            WHERE source_generation_id=? AND source_item_id=?""",
         (
-            disposition.value,
-            outcome_code.value,
+            disposition_value,
+            outcome_value,
             stage,
             None if retryable is None else int(retryable),
             bounded_diagnostic(diagnostic, max_len=4096),

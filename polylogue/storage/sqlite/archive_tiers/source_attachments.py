@@ -8,9 +8,12 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, get_args
 
+from polylogue.core.enums import Origin
 from polylogue.core.errors import PolylogueError
+
+from .common import require_vocabulary
 
 AttachmentDisposition = Literal[
     "pending",
@@ -24,6 +27,11 @@ AttachmentDisposition = Literal[
     "partial",
     "interrupted",
 ]
+
+# Source-local vocabulary: these are attachment acquisition outcomes, not
+# provider statuses. Extend this Literal and its matching source DDL together
+# only through the durable migration process.
+_ATTACHMENT_DISPOSITIONS = get_args(AttachmentDisposition)
 
 
 #: Dispositions that state a settled outcome for a reference. ``pending`` is
@@ -109,7 +117,19 @@ def record_source_attachments(
     same request is a no-op; changing a terminal fact requires an explicit new
     generation, which prevents a late retry from rewriting a sealed census.
     """
+    # Validate every membership token before the first SELECT/INSERT. An
+    # invalid vocabulary later in the batch must not follow earlier writes.
+    normalized: list[tuple[SourceAttachment, str, str]] = []
     for attachment in attachments:
+        origin = require_vocabulary(attachment.origin, Origin, field="origin")
+        disposition = require_vocabulary(attachment.disposition, _ATTACHMENT_DISPOSITIONS, field="disposition")
+        # source_class is an open, nonempty grouping label: new providers and
+        # attachment kinds can add labels without a code/schema registry.
+        if not attachment.source_class.strip():
+            raise ValueError("source_class must be nonempty")
+        normalized.append((attachment, origin, disposition))
+
+    for attachment, origin, disposition in normalized:
         if attachment.reference_count <= 0:
             raise ValueError("reference_count must be positive")
         if attachment.disposition == "acquired":
@@ -131,14 +151,14 @@ def record_source_attachments(
         elif not attachment.reason:
             raise ValueError("unavailable attachment requires an evidence-backed reason")
         offered: dict[str, object] = {
-            "origin": attachment.origin,
+            "origin": origin,
             "source_class": attachment.source_class,
             "reachability": "current" if attachment.disposition == "acquired" else "unavailable",
             "reference_count": attachment.reference_count,
             "payload_identity": attachment.payload_identity,
             "blob_hash": attachment.blob_hash,
             "byte_count": attachment.byte_count,
-            "disposition": attachment.disposition,
+            "disposition": disposition,
             "reason": attachment.reason,
             "evidence_ref": attachment.evidence_ref,
         }
