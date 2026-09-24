@@ -477,6 +477,23 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   Existing derived rows are regenerated from source evidence through ordinary
   convergence, so provider-usage and session insight changes share one
   freshness route.
+- **Session derivation transaction boundaries** (`daemon/session_profile_composition.py`)
+  are ordered usage-rollup → profile → user-marker publication. The usage
+  rollup owns its own index transaction and is a prerequisite; profile
+  publication refuses an unsettled usage binding instead of reconciling usage
+  as a side effect (`storage/derived/session/usage_rollup.py`,
+  `storage/derived/session/derivation.py`). Profile and latency rows are one
+  index-owned output family: on the prepared route their replacement and
+  binding stamp commit together or roll back together
+  (`storage/derived/session/rebuild.py`). User-marker assertions and their
+  delivery cursor are a separate user-tier transaction, after profile
+  publication; a user-tier failure leaves marker work pending without making
+  the valid index profile stale (`storage/derived/session/marker_domain.py`,
+  `storage/sqlite/archive_tiers/user_write.py`). These tier boundaries are not
+  one cross-database atomic transaction. Ordinary ingest marker acceptance has
+  its own recoverable source/index protocol: pending source bytes precede the
+  index witness, and source acceptance finalizes only after the matching index
+  commit (`pipeline/services/ingest_batch/_core.py`).
 - Index schema version 30 makes `session_events` the lossless generic relation
   for every parsed non-message event. It retains open event types and structured
   payloads in original positions while policy and usage tables remain typed
