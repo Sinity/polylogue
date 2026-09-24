@@ -17,10 +17,22 @@ from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
 from .common import require_vocabulary
-from .source_attachments import SourceAttachment, record_source_attachments, source_attachment_census
+from .source_attachments import (
+    SourceAttachment,
+    _preflight_source_attachments,
+    record_source_attachments,
+    source_attachment_census,
+)
 
 
 class AcquisitionDisposition(StrEnum):
+    """Storage-owned source-item state machine, checked by its writer.
+
+    Durable source DDL intentionally does not mirror this vocabulary. Add a
+    state only with its transition, retryability, reconciliation, and reader
+    behavior reviewed together.
+    """
+
     PENDING = "pending"
     ADMITTED = "admitted"
     NON_SESSION = "non_session"
@@ -31,7 +43,13 @@ class AcquisitionDisposition(StrEnum):
 
 
 class SourceItemMemberDisposition(StrEnum):
-    """A central-directory member that was not admitted as raw evidence."""
+    """Why a central-directory member was not admitted as raw evidence.
+
+    This storage-local audit vocabulary is validated at
+    ``record_source_item_member_disposition``. Extend it only when the ZIP
+    admission policy and enumeration/reconciliation reader understand the new
+    outcome; durable source DDL remains vocabulary-free.
+    """
 
     REFUSED = "refused"
     UNSELECTED = "unselected"
@@ -279,6 +297,7 @@ def publish_source_generation(
     ):
         raise ValueError("input_blob_hashes must bind every coordinate to a SHA-256 blob")
     origin_value = require_vocabulary(origin, Origin, field="origin") if origin is not None else None
+    _preflight_source_attachments(attachments)
     ids = tuple(
         source_item_id(source_generation_id=source_generation_id, logical_coordinate=c, addressing_mode=addressing_mode)
         for c in coordinates
@@ -431,6 +450,11 @@ def transition_source_item(
     a domain publication transaction use ``commit=False`` and can reject stale
     competing item updates with ``expected_revision``.
     """
+    # These vocabularies are owned by the source-item state machine and
+    # IngestOutcome. SQLite intentionally carries no enum registry; normalize
+    # and reject at this public write boundary before even the idempotent path.
+    disposition_value = require_vocabulary(disposition, AcquisitionDisposition, field="disposition")
+    outcome_value = require_vocabulary(outcome_code, IngestOutcome, field="outcome_code")
     row = conn.execute(
         "SELECT revision, request_id, blob_hash, enumeration_fingerprint FROM source_items "
         "WHERE source_generation_id=? AND source_item_id=?",
@@ -453,8 +477,8 @@ def transition_source_item(
            blob_hash=COALESCE(?,blob_hash), revision=?, request_id=?, observed_at_ms=?, updated_at_ms=?
            WHERE source_generation_id=? AND source_item_id=?""",
         (
-            disposition.value,
-            outcome_code.value,
+            disposition_value,
+            outcome_value,
             stage,
             None if retryable is None else int(retryable),
             bounded_diagnostic(diagnostic, max_len=4096),
@@ -646,6 +670,7 @@ def record_source_item_member_disposition(
     observed_at_ms: int,
 ) -> None:
     """Persist one refused/unselected central-directory member idempotently."""
+    value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     if entry_ordinal < 0:
         raise ValueError("source member ordinal must be non-negative")
     if not member_name.strip():
@@ -666,7 +691,6 @@ def record_source_item_member_disposition(
     ).fetchone()
     if admitted is not None:
         raise ValueError("source member already has an admitted raw record")
-    value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     # Central-directory names and admission explanations are attacker
     # controlled. Keep both bounded before they reach the durable source
     # tier; the diagnostic budget leaves room for the truncation marker used

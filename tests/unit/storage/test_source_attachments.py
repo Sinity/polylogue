@@ -2,6 +2,7 @@
 
 import hashlib
 import sqlite3
+from typing import Any, cast
 
 import pytest
 
@@ -54,15 +55,69 @@ def test_acquired_without_true_identity_and_unavailable_without_reason_are_rejec
             conn,
             source_generation_id="g",
             observed_at_ms=2,
-            attachments=(SourceAttachment("a", "o", "c", disposition="acquired"),),
+            attachments=(SourceAttachment("a", "aistudio-drive", "c", disposition="acquired"),),
         )
     with pytest.raises(ValueError, match="evidence-backed reason"):
         record_source_attachments(
             conn,
             source_generation_id="g",
             observed_at_ms=2,
-            attachments=(SourceAttachment("a", "o", "c", disposition="expired"),),
+            attachments=(SourceAttachment("a", "aistudio-drive", "c", disposition="expired"),),
         )
+
+
+def test_attachment_writer_validates_domain_origin_and_storage_disposition_before_batch_writes() -> None:
+    conn = _conn()
+    with pytest.raises(ValueError, match="origin"):
+        record_source_attachments(
+            conn,
+            source_generation_id="g",
+            observed_at_ms=2,
+            attachments=(
+                SourceAttachment("valid", "aistudio-drive", "drive", disposition="pending", reason="queued"),
+                SourceAttachment("invalid", "not-an-origin", "drive", disposition="pending", reason="queued"),
+            ),
+        )
+    assert conn.execute("SELECT COUNT(*) FROM source_attachments").fetchone()[0] == 0
+
+    with pytest.raises(ValueError, match="disposition"):
+        record_source_attachments(
+            conn,
+            source_generation_id="g",
+            observed_at_ms=2,
+            attachments=(
+                SourceAttachment(
+                    "invalid-disposition", "aistudio-drive", "drive", disposition=cast(Any, "not-a-state")
+                ),
+            ),
+        )
+    assert conn.execute("SELECT COUNT(*) FROM source_attachments").fetchone()[0] == 0
+
+    # source_class deliberately remains an open, nonempty grouping label.
+    record_source_attachments(
+        conn,
+        source_generation_id="g",
+        observed_at_ms=2,
+        attachments=(
+            SourceAttachment("valid", "aistudio-drive", "future-provider-kind", disposition="pending", reason="queued"),
+        ),
+    )
+    assert tuple(conn.execute("SELECT origin, source_class, disposition FROM source_attachments").fetchone()) == (
+        "aistudio-drive",
+        "future-provider-kind",
+        "pending",
+    )
+
+
+def test_sql_bypass_can_store_an_unowned_attachment_origin() -> None:
+    """Origin is domain-owned even though source DDL intentionally allows any nonempty token."""
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO source_attachments(source_generation_id, reference_id, origin, source_class, reachability, "
+        "reference_count, disposition, reason, observed_at_ms, updated_at_ms) "
+        "VALUES ('g', 'direct', 'not-an-origin', 'drive', 'unavailable', 1, 'pending', 'queued', 1, 1)"
+    )
+    assert conn.execute("SELECT origin FROM source_attachments").fetchone()[0] == "not-an-origin"
 
 
 def test_identical_replay_is_a_noop() -> None:
