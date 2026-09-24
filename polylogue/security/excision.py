@@ -118,6 +118,11 @@ from polylogue.security.excision_policy import (
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.todos import session_and_agent_id_from_filename
+from polylogue.storage.accepted_marker_inputs import (
+    MarkerInputExcisionTarget,
+    excise_marker_input_targets_sync,
+    marker_input_excision_targets_sync,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     delete_source_hook_event,
@@ -259,6 +264,10 @@ class ExcisionTarget:
     #: Blob hashes those materials own, read with them so the apply can mark
     #: each one excised before the rows that name it are gone.
     material_blob_hashes: tuple[bytes, ...] = ()
+    #: Source-owned marker carriers whose sealed payloads are wholly within
+    #: this excision. Their terminal evidence remains content-free in
+    #: ``excised_marker_inputs`` after the source bytes are erased.
+    marker_input_targets: tuple[MarkerInputExcisionTarget, ...] = ()
 
     @property
     def found(self) -> bool:
@@ -269,11 +278,20 @@ class ExcisionTarget:
             or self.hook_event_ids
             or self.otlp_span_ids
             or self.material_ids
+            or self.marker_input_targets
         )
 
 
 def resolve_session_excision_target(archive_root: Path, session_id: str) -> ExcisionTarget:
     """Resolve the exact rows an excision of ``session_id`` would touch."""
+
+    return _resolve_session_excision_target(archive_root, session_id, target_session_ids=frozenset({session_id}))
+
+
+def _resolve_session_excision_target(
+    archive_root: Path, session_id: str, *, target_session_ids: frozenset[str]
+) -> ExcisionTarget:
+    """Resolve one target against the full preflight cascade set."""
 
     index_db = archive_root / "index.db"
     source_db = archive_root / "source.db"
@@ -333,6 +351,7 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
     containers = ContainerDisposition()
     material_ids: tuple[str, ...] = ()
     material_blob_hashes: tuple[bytes, ...] = ()
+    marker_input_targets: tuple[MarkerInputExcisionTarget, ...] = ()
     if source_db.exists():
         conn = _connect_ro(source_db)
         try:
@@ -357,6 +376,12 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
                     ExcisionRawTarget(raw_id=str(r[0]), blob_hash=bytes(r[1]), source_path=str(r[2])) for r in rows
                 )
                 containers = _resolve_container_disposition(conn, tuple(t.raw_id for t in raw_targets))
+            if _table_exists(conn, "pending_accepted_marker_inputs") and _table_exists(conn, "accepted_marker_inputs"):
+                marker_input_targets = marker_input_excision_targets_sync(
+                    conn,
+                    target_session_ids=target_session_ids,
+                    target_raw_ids=frozenset(t.raw_id for t in raw_targets),
+                )
             hook_event_ids = _session_hook_event_ids(conn, session_id)
             otlp_span_ids = _session_otlp_span_ids(conn, session_id)
             material_ids, material_blob_hashes = _session_material_targets(conn, session_id)
@@ -375,6 +400,7 @@ def resolve_session_excision_target(archive_root: Path, session_id: str) -> Exci
         containers=containers,
         material_ids=material_ids,
         material_blob_hashes=material_blob_hashes,
+        marker_input_targets=marker_input_targets,
     )
 
 
@@ -762,6 +788,9 @@ class ExcisionPlan:
     #: apply will remove, marking every blob they own excised
     #: (polylogue-xrba4).
     source_materials: int = 0
+    #: Sealed source marker carriers whose payloads the apply will erase.
+    source_marker_inputs_pending: int = 0
+    source_marker_inputs_accepted: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -783,6 +812,8 @@ class ExcisionPlan:
             "source_container_items": self.source_container_items,
             "retained_source_containers": list(self.retained_source_containers),
             "source_materials": self.source_materials,
+            "source_marker_inputs_pending": self.source_marker_inputs_pending,
+            "source_marker_inputs_accepted": self.source_marker_inputs_accepted,
         }
 
 
@@ -869,6 +900,8 @@ def plan_session_excision(archive_root: Path, session_id: str) -> ExcisionPlan:
         source_container_items=len(target.containers.removable_items),
         retained_source_containers=tuple(item.label for item in target.containers.retained_items),
         source_materials=len(target.material_ids),
+        source_marker_inputs_pending=sum(target.state == "pending" for target in target.marker_input_targets),
+        source_marker_inputs_accepted=sum(target.state == "accepted" for target in target.marker_input_targets),
     )
 
 
@@ -941,6 +974,7 @@ def _apply_single_session_excision(
     reason: str,
     actor: str = "user:local",
     now_ms: int | None = None,
+    resolved_target: ExcisionTarget | None = None,
 ) -> ExcisionReceipt:
     """Apply excision to exactly one session: mutate its tiers, write a receipt.
 
@@ -956,7 +990,9 @@ def _apply_single_session_excision(
     """
 
     timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
-    target = resolve_session_excision_target(archive_root, session_id)
+    target = (
+        resolved_target if resolved_target is not None else resolve_session_excision_target(archive_root, session_id)
+    )
     if not target.found:
         return ExcisionReceipt(session_id=session_id, found=False)
 
@@ -977,6 +1013,9 @@ def _apply_single_session_excision(
         "source_container_items": 0,
         "source_publication_reservations": 0,
         "source_materials": 0,
+        "source_marker_inputs_pending": 0,
+        "source_marker_inputs_accepted": 0,
+        "index_marker_witnesses": 0,
         "user_assertions_removed": 0,
     }
 
@@ -1041,12 +1080,21 @@ def _apply_single_session_excision(
     retained_hook_events: tuple[str, ...] = ()
     retained_source_containers = tuple(item.label for item in target.containers.retained_items)
     if source_db.exists() and (
-        target.raw_targets or target.hook_event_ids or target.otlp_span_ids or target.material_ids
+        target.raw_targets
+        or target.hook_event_ids
+        or target.otlp_span_ids
+        or target.material_ids
+        or target.marker_input_targets
     ):
         conn = _connect_rw(source_db)
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             with conn:
+                marker_counts = excise_marker_input_targets_sync(
+                    conn, target.marker_input_targets, excised_at_ms=timestamp
+                )
+                counts["source_marker_inputs_pending"] = marker_counts["pending"]
+                counts["source_marker_inputs_accepted"] = marker_counts["accepted"]
                 # Containers first: deleting raw_sessions fires the
                 # ON DELETE SET NULL foreign key that erases the raw_id this
                 # disposition is keyed on, and source_items is a blob-liveness
@@ -1321,6 +1369,14 @@ def _apply_single_session_excision(
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             with conn:
+                if target.marker_input_targets and _table_exists(conn, "ingest_marker_witnesses"):
+                    placeholders = ",".join("?" for _ in target.marker_input_targets)
+                    cursor = conn.execute(
+                        f"DELETE FROM ingest_marker_witnesses WHERE request_key IN ({placeholders})",
+                        tuple(marker.identity for marker in target.marker_input_targets),
+                    )
+                    if existing_receipt is None:
+                        counts["index_marker_witnesses"] = max(cursor.rowcount, 0)
                 cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
                 if existing_receipt is None:
                     counts["index_sessions"] = max(cursor.rowcount, 0)
@@ -1390,20 +1446,40 @@ def apply_session_excision(
     none, or when ``session_id`` itself was already excised/not found).
     """
 
-    target = resolve_session_excision_target(archive_root, session_id)
-    if not target.found:
-        return ExcisionReceipt(session_id=session_id, found=False)
-
     dependent_ids = find_lineage_dependents(archive_root, session_id)
     if dependent_ids and not cascade_lineage:
         raise LineageDependentsError(session_id=session_id, dependent_session_ids=dependent_ids)
 
+    # Resolve every cascade member before touching any tier.  A sealed marker
+    # carrier may mention a later dependent; discovering that it mixes a
+    # retained session after an earlier member was already deleted would make
+    # a refusal mutate the archive.  The complete cascade set makes a shared
+    # parent/child carrier wholly targeted while still refusing any outsider.
+    session_ids = (*dependent_ids, session_id)
+    target_session_ids = frozenset(session_ids)
+    targets = tuple(
+        _resolve_session_excision_target(archive_root, candidate, target_session_ids=target_session_ids)
+        for candidate in session_ids
+    )
+    target = targets[-1]
+    if not target.found:
+        return ExcisionReceipt(session_id=session_id, found=False)
+
     timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
     cascaded_receipts = tuple(
-        _apply_single_session_excision(archive_root, dependent_id, reason=reason, actor=actor, now_ms=timestamp)
-        for dependent_id in dependent_ids
+        _apply_single_session_excision(
+            archive_root,
+            dependent_id,
+            reason=reason,
+            actor=actor,
+            now_ms=timestamp,
+            resolved_target=resolved_target,
+        )
+        for dependent_id, resolved_target in zip(dependent_ids, targets[:-1], strict=True)
     )
-    primary = _apply_single_session_excision(archive_root, session_id, reason=reason, actor=actor, now_ms=timestamp)
+    primary = _apply_single_session_excision(
+        archive_root, session_id, reason=reason, actor=actor, now_ms=timestamp, resolved_target=target
+    )
 
     actually_cascaded = tuple(receipt.session_id for receipt in cascaded_receipts if receipt.found)
     if not actually_cascaded:

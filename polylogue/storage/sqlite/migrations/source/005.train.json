@@ -6,17 +6,24 @@
   "backup_plan_ref": "backup-plan:polylogue-bp12n.1.6.2:accepted-marker-inputs",
   "current_version": 4,
   "declared_at_ms": 1790000000000,
-  "drop_constraints": [],
+  "drop_constraints": [
+    {
+      "after_rider_ids": [],
+      "consent_ref": "consent:polylogue-bp12n.1.7:replace-marker-delete-trigger",
+      "copy_forward_proof_ref": "proof:accepted-marker-inputs:excision-trigger-replacement",
+      "object_ref": "trigger:accepted_marker_inputs_no_delete"
+    }
+  ],
   "failure": null,
   "fresh_ddl_parity": null,
   "manifest_format": "polylogue.durable-change-train.v1",
-  "manifest_sha256": "b93b28a1396e0911066f3e8f78ed9666b2126515676ff2bc647dbbc3444f6773",
+  "manifest_sha256": "714d1257848e510a4979b1623066e875faf0a5636b31466e471237779dac75c7",
   "migration": {
     "owner_ref": "polylogue-bp12n.1.6.2",
     "path": "005_accepted_marker_inputs.sql",
     "requires_backup": true,
     "slot": 5,
-    "sql_sha256": "83d7a9c6d725fc44373d3076a805dbcc281d4ce9095c3a83a47508485d4738b6",
+    "sql_sha256": "2fbf4c3affbefd4921dabdbef1d785040ca2dde05aa2ccde85261fe2ff3188ee",
     "target_version": 5,
     "tier": "source"
   },
@@ -59,6 +66,7 @@
         "table:pending_accepted_marker_inputs",
         "table:accepted_marker_stream",
         "table:accepted_marker_inputs",
+        "table:excised_marker_inputs",
         "trigger:accepted_marker_stream_no_update",
         "trigger:accepted_marker_stream_no_delete",
         "trigger:accepted_marker_inputs_no_update",

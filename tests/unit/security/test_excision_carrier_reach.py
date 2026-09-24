@@ -11,8 +11,10 @@ excision refuse, and the declared reach must match the live schema.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
+import uuid
 from pathlib import Path
 
 import pytest
@@ -28,12 +30,20 @@ from polylogue.security.excision_carriers import (
     UnclassifiedSessionCarrierError,
     audit_session_carriers,
 )
+from polylogue.storage.accepted_marker_inputs import (
+    AcceptedMarkerInputExcisedError,
+    MixedAcceptedMarkerInputError,
+    append_accepted_marker_input,
+    persist_pending_marker_input_sync,
+    prepare_accepted_marker_input,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import canonical_schema_objects
 from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 _NATIVE_ID = "session-under-excision"
 _OTHER_NATIVE_ID = "session-sharing-the-container"
@@ -173,7 +183,14 @@ def test_every_session_keyed_relation_in_the_live_schema_is_declared(tmp_path: P
     assert audit.undeclared == ()
     assert audit.misdeclared == ()
     # The detection actually found the known carriers, so "ok" is not vacuous.
-    assert {"raw_sessions", "raw_hook_events", "source_items"} <= set(audit.declared)
+    assert {
+        "raw_sessions",
+        "raw_hook_events",
+        "source_items",
+        "pending_accepted_marker_inputs",
+        "accepted_marker_inputs",
+        "excised_marker_inputs",
+    } <= set(audit.declared)
     # ``otlp_spans`` is retired from fresh DDL (polylogue-enrpa), so a fresh
     # tier has nothing to classify under that name.
     assert "otlp_spans" not in set(audit.declared)
@@ -208,6 +225,119 @@ def test_fresh_source_tier_omits_the_retired_inbound_span_storage(tmp_path: Path
     assert "otlp_spans" not in live
     assert "idx_otlp_spans_trace" not in live
     assert "idx_otlp_spans_session" not in live
+
+
+def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_path: Path) -> None:
+    """The public excision path cannot leave or replay sealed marker bytes.
+
+    Anti-vacuity: remove the terminal insert, the carrier deletion, or the
+    retry guard and this test respectively finds payload-bearing source rows,
+    an empty terminal table, or accepts a replay after index replacement.
+    """
+    session_id, other_session_id = _seed_archive(tmp_path)
+    target = prepare_accepted_marker_input(
+        "raw-target", [{"session_id": session_id, "candidates": [{"body": "secret marker"}]}]
+    )
+    accepted_target = prepare_accepted_marker_input(
+        "raw-target",
+        [{"session_id": session_id, "candidates": [{"body": "accepted secret marker"}]}],
+        request_facts={"revision": "accepted"},
+    )
+    other = prepare_accepted_marker_input(
+        "raw-other", [{"session_id": other_session_id, "candidates": [{"body": "keep marker"}]}]
+    )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("BEGIN IMMEDIATE")
+        persist_pending_marker_input_sync(source, target, expected_incarnation_id=str(uuid.uuid4()))
+        asyncio.run(append_accepted_marker_input(_AsyncConnection(source), accepted_target))
+        asyncio.run(append_accepted_marker_input(_AsyncConnection(source), other))
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        index.execute(
+            "INSERT INTO ingest_marker_witnesses(request_key, carrier_digest, dispositions_json, incarnation_id) "
+            "VALUES (?, ?, '[]', ?)",
+            (target.identity, target.payload_sha256, str(uuid.uuid4())),
+        )
+        index.execute(
+            "INSERT INTO ingest_marker_witnesses(request_key, carrier_digest, dispositions_json, incarnation_id) "
+            "VALUES (?, ?, '[]', ?)",
+            (accepted_target.identity, accepted_target.payload_sha256, str(uuid.uuid4())),
+        )
+
+    plan = plan_session_excision(tmp_path, session_id)
+    assert plan.source_marker_inputs_pending == 1
+    assert plan.source_marker_inputs_accepted == 1
+    receipt = apply_session_excision(tmp_path, session_id, reason="marker secret", actor="user:local", now_ms=7)
+    assert receipt.counts["source_marker_inputs_pending"] == 1
+    assert receipt.counts["source_marker_inputs_accepted"] == 1
+    assert receipt.counts["index_marker_witnesses"] == 2
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (1,)
+        assert source.execute(
+            "SELECT raw_id, carrier_digest, state, stream_id, accepted_sequence, excised_at_ms "
+            "FROM excised_marker_inputs WHERE identity = ?",
+            (target.identity,),
+        ).fetchone() == ("raw-target", target.payload_sha256, "pending", None, None, 7)
+        accepted_tombstone = source.execute(
+            "SELECT raw_id, carrier_digest, state, stream_id, accepted_sequence, excised_at_ms "
+            "FROM excised_marker_inputs WHERE identity = ?",
+            (accepted_target.identity,),
+        ).fetchone()
+        assert accepted_tombstone is not None
+        assert accepted_tombstone[:3] == ("raw-target", accepted_target.payload_sha256, "accepted")
+        assert accepted_tombstone[3] and accepted_tombstone[4] and accepted_tombstone[5] == 7
+        columns = {str(row[1]) for row in source.execute("PRAGMA table_info(excised_marker_inputs)")}
+        assert columns.isdisjoint({"payload", "request_facts", "sessions", "candidates", "provenance"})
+        source.execute("BEGIN IMMEDIATE")
+        with pytest.raises(AcceptedMarkerInputExcisedError):
+            persist_pending_marker_input_sync(source, target, expected_incarnation_id=str(uuid.uuid4()))
+        with pytest.raises(AcceptedMarkerInputExcisedError):
+            asyncio.run(append_accepted_marker_input(_AsyncConnection(source), accepted_target))
+        source.rollback()
+        replacement = prepare_accepted_marker_input(
+            "raw-other",
+            [{"session_id": other_session_id, "candidates": [{"body": "new marker"}]}],
+            request_facts={"revision": "after-excision"},
+        )
+        source.execute("BEGIN IMMEDIATE")
+        replacement_sequence = asyncio.run(append_accepted_marker_input(_AsyncConnection(source), replacement))
+        source.commit()
+        assert replacement_sequence > int(accepted_tombstone[4])
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
+            (target.identity, accepted_target.identity),
+        ).fetchone() == (0,)
+
+
+def test_mixed_marker_carrier_refuses_before_any_session_tier_mutates(tmp_path: Path) -> None:
+    """A sealed shared request must not be partially redacted in an excision.
+
+    Anti-vacuity: move marker resolution after source/index mutation, or omit
+    the retained-session check, and the raw/index assertions observe a partial
+    apply or a silently erased carrier.
+    """
+    session_id, other_session_id = _seed_archive(tmp_path)
+    mixed = prepare_accepted_marker_input(
+        "raw-target",
+        [
+            {"session_id": session_id, "candidates": [{"body": "target"}]},
+            {"session_id": other_session_id, "candidates": [{"body": "retain"}]},
+        ],
+    )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("BEGIN IMMEDIATE")
+        persist_pending_marker_input_sync(source, mixed, expected_incarnation_id=str(uuid.uuid4()))
+    with pytest.raises(MixedAcceptedMarkerInputError, match="retained sessions"):
+        apply_session_excision(tmp_path, session_id, reason="mixed", actor="user:local")
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = 'raw-target'").fetchone() == (1,)
+        assert source.execute(
+            "SELECT COUNT(*) FROM pending_accepted_marker_inputs WHERE request_key = ?", (mixed.identity,)
+        ).fetchone() == (1,)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (1,)
 
 
 def test_an_undeclared_session_keyed_table_makes_excision_refuse(tmp_path: Path) -> None:

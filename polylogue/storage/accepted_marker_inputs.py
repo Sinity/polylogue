@@ -15,6 +15,14 @@ class AcceptedMarkerInputRefusedError(ValueError):
     """A prepared carrier is invalid or conflicts with an accepted identity."""
 
 
+class AcceptedMarkerInputExcisedError(AcceptedMarkerInputRefusedError):
+    """A durable excision tombstone forbids restoring one marker carrier."""
+
+
+class MixedAcceptedMarkerInputError(AcceptedMarkerInputRefusedError):
+    """One sealed carrier would mix excised and retained sessions."""
+
+
 class _Cursor(Protocol):
     async def fetchone(self) -> object: ...
 
@@ -53,10 +61,128 @@ class AcceptedMarkerInput:
     batch: PreparedAcceptedMarkerInput
 
 
+@dataclass(frozen=True, slots=True)
+class MarkerInputExcisionTarget:
+    """Content-free identity needed to tombstone one source marker carrier."""
+
+    identity: str
+    raw_id: str
+    carrier_digest: str
+    state: str
+    stream_id: str | None = None
+    accepted_sequence: int | None = None
+
+
+def marker_input_session_ids(batch: PreparedAcceptedMarkerInput) -> frozenset[str]:
+    """Return complete request and selected session membership of one carrier."""
+    _validate(batch)
+    value = json.loads(batch.payload)
+    assert isinstance(value, dict)  # established by _validate
+    session_ids: set[str] = set()
+    for collection_name in ("request_sessions", "sessions"):
+        collection = value[collection_name]
+        assert isinstance(collection, list)  # established by _validate
+        for session in collection:
+            assert isinstance(session, dict)  # established by _validate
+            session_id = session.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise AcceptedMarkerInputRefusedError("marker carrier has an invalid session membership")
+            session_ids.add(session_id)
+    return frozenset(session_ids)
+
+
+def marker_input_excision_targets_sync(
+    conn: sqlite3.Connection,
+    *,
+    target_session_ids: frozenset[str],
+    target_raw_ids: frozenset[str],
+) -> tuple[MarkerInputExcisionTarget, ...]:
+    """Resolve wholly-targeted carriers and fail closed for sealed mixed bytes."""
+    rows = conn.execute(
+        "SELECT 'pending', request_key, raw_id, carrier_digest, payload, NULL, NULL "
+        "FROM pending_accepted_marker_inputs UNION ALL "
+        "SELECT 'accepted', identity, raw_id, payload_sha256, payload, sequence, "
+        "(SELECT stream_id FROM accepted_marker_stream WHERE singleton = 1) "
+        "FROM accepted_marker_inputs"
+    ).fetchall()
+    targets: list[MarkerInputExcisionTarget] = []
+    for state, identity, raw_id, digest, payload_value, sequence, stream_id in rows:
+        batch = PreparedAcceptedMarkerInput(str(raw_id), str(identity), _stored_payload(payload_value), str(digest))
+        session_ids = marker_input_session_ids(batch)
+        if not (session_ids & target_session_ids) and batch.raw_id not in target_raw_ids:
+            continue
+        retained_session_ids = session_ids - target_session_ids
+        if retained_session_ids:
+            raise MixedAcceptedMarkerInputError(
+                "accepted marker carrier mixes excised and retained sessions: "
+                + ", ".join(sorted(retained_session_ids))
+            )
+        targets.append(
+            MarkerInputExcisionTarget(
+                identity=batch.identity,
+                raw_id=batch.raw_id,
+                carrier_digest=batch.payload_sha256,
+                state=str(state),
+                stream_id=None if stream_id is None else str(stream_id),
+                accepted_sequence=None if sequence is None else int(sequence),
+            )
+        )
+    return tuple(targets)
+
+
+def excise_marker_input_targets_sync(
+    conn: sqlite3.Connection, targets: Iterable[MarkerInputExcisionTarget], *, excised_at_ms: int
+) -> dict[str, int]:
+    """Tombstone first, then erase source payloads through the explicit path."""
+    counts = {"pending": 0, "accepted": 0}
+    for target in targets:
+        conn.execute(
+            "INSERT INTO excised_marker_inputs("
+            "identity, raw_id, carrier_digest, state, stream_id, accepted_sequence, excised_at_ms"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(identity) DO NOTHING",
+            (
+                target.identity,
+                target.raw_id,
+                target.carrier_digest,
+                target.state,
+                target.stream_id,
+                target.accepted_sequence,
+                excised_at_ms,
+            ),
+        )
+        if target.state == "pending":
+            cursor = conn.execute(
+                "DELETE FROM pending_accepted_marker_inputs "
+                "WHERE request_key = ? AND raw_id = ? AND carrier_digest = ?",
+                (target.identity, target.raw_id, target.carrier_digest),
+            )
+        elif target.state == "accepted":
+            cursor = conn.execute(
+                "DELETE FROM accepted_marker_inputs WHERE identity = ? AND raw_id = ? AND payload_sha256 = ?",
+                (target.identity, target.raw_id, target.carrier_digest),
+            )
+        else:
+            raise AcceptedMarkerInputRefusedError(f"unknown marker carrier state: {target.state}")
+        counts[target.state] += max(cursor.rowcount, 0)
+    return counts
+
+
+def _assert_marker_input_not_excised_sync(conn: sqlite3.Connection, identity: str) -> None:
+    if conn.execute("SELECT 1 FROM excised_marker_inputs WHERE identity = ?", (identity,)).fetchone() is not None:
+        raise AcceptedMarkerInputExcisedError("accepted marker carrier was excised and cannot be restored")
+
+
+async def _assert_marker_input_not_excised(conn: _Connection, identity: str) -> None:
+    cursor = await conn.execute("SELECT 1 FROM excised_marker_inputs WHERE identity = ?", (identity,))
+    if await cursor.fetchone() is not None:
+        raise AcceptedMarkerInputExcisedError("accepted marker carrier was excised and cannot be restored")
+
+
 def retained_marker_input_sync(
     conn: sqlite3.Connection, request_key: str
 ) -> tuple[str, PreparedAcceptedMarkerInput, str | None] | None:
     """Return exact source-owned pending/accepted bytes for one request."""
+    _assert_marker_input_not_excised_sync(conn, request_key)
     row = conn.execute(
         "SELECT 'pending', raw_id, carrier_digest, payload, expected_incarnation_id "
         "FROM pending_accepted_marker_inputs "
@@ -147,6 +273,7 @@ def persist_pending_marker_input_sync(
 ) -> str:
     """Insert or verify a pending carrier in the caller's source transaction."""
     _validate(batch)
+    _assert_marker_input_not_excised_sync(conn, batch.identity)
     if len(expected_incarnation_id) != 36:
         raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
     accepted = conn.execute(
@@ -187,6 +314,7 @@ async def append_accepted_marker_input(
     allocation is SQLite-owned and survives restart independently of index.db.
     """
     _validate(batch)
+    await _assert_marker_input_not_excised(conn, batch.identity)
     if index_incarnation_id is not None and len(index_incarnation_id) != 36:
         raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid index incarnation")
     cursor = await conn.execute(
@@ -225,6 +353,7 @@ async def persist_pending_accepted_marker_input(
 ) -> None:
     """Durably retain exact carrier bytes before the index transaction commits."""
     _validate(batch)
+    await _assert_marker_input_not_excised(conn, batch.identity)
     if len(expected_incarnation_id) != 36:
         raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
     cursor = await conn.execute(
@@ -262,6 +391,7 @@ async def persist_pending_accepted_marker_input(
 async def finalize_pending_accepted_marker_input(conn: _Connection, batch: PreparedAcceptedMarkerInput) -> int:
     """Append accepted bytes and remove their pending copy in the caller's transaction."""
     _validate(batch)
+    await _assert_marker_input_not_excised(conn, batch.identity)
     cursor = await conn.execute(
         "SELECT carrier_digest, expected_incarnation_id, payload FROM pending_accepted_marker_inputs "
         "WHERE request_key = ?",

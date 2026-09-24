@@ -18,11 +18,27 @@ CREATE TABLE IF NOT EXISTS accepted_marker_inputs (
     index_incarnation_id TEXT CHECK(index_incarnation_id IS NULL OR length(index_incarnation_id) = 36),
     payload_sha256 TEXT NOT NULL CHECK(length(payload_sha256) = 64)
 ) STRICT;
+-- Terminal evidence is intentionally content-free.  It is written before an
+-- explicit excision removes a sealed carrier, and makes ordinary retry paths
+-- refuse rather than regenerate marker provenance after an index rebuild.
+CREATE TABLE IF NOT EXISTS excised_marker_inputs (
+    identity TEXT PRIMARY KEY CHECK(length(identity) = 64),
+    raw_id TEXT NOT NULL CHECK(raw_id != ''),
+    carrier_digest TEXT NOT NULL CHECK(length(carrier_digest) = 64),
+    state TEXT NOT NULL CHECK(state IN ('pending', 'accepted')),
+    stream_id TEXT,
+    accepted_sequence INTEGER,
+    excised_at_ms INTEGER NOT NULL CHECK(excised_at_ms >= 0),
+    CHECK((state = 'pending' AND stream_id IS NULL AND accepted_sequence IS NULL)
+       OR (state = 'accepted' AND stream_id IS NOT NULL AND accepted_sequence IS NOT NULL))
+) STRICT;
 CREATE TRIGGER IF NOT EXISTS accepted_marker_stream_no_update BEFORE UPDATE ON accepted_marker_stream
 BEGIN SELECT RAISE(ABORT, 'accepted marker stream is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS accepted_marker_stream_no_delete BEFORE DELETE ON accepted_marker_stream
 BEGIN SELECT RAISE(ABORT, 'accepted marker stream is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS accepted_marker_inputs_no_update BEFORE UPDATE ON accepted_marker_inputs
 BEGIN SELECT RAISE(ABORT, 'accepted marker inputs are immutable'); END;
+DROP TRIGGER IF EXISTS accepted_marker_inputs_no_delete;
 CREATE TRIGGER IF NOT EXISTS accepted_marker_inputs_no_delete BEFORE DELETE ON accepted_marker_inputs
+WHEN NOT EXISTS (SELECT 1 FROM excised_marker_inputs WHERE identity = OLD.identity)
 BEGIN SELECT RAISE(ABORT, 'accepted marker inputs are immutable'); END;
