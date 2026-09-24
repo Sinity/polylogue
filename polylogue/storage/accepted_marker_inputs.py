@@ -55,17 +55,19 @@ class AcceptedMarkerInput:
 
 def retained_marker_input_sync(
     conn: sqlite3.Connection, request_key: str
-) -> tuple[str, PreparedAcceptedMarkerInput] | None:
+) -> tuple[str, PreparedAcceptedMarkerInput, str | None] | None:
     """Return exact source-owned pending/accepted bytes for one request."""
     row = conn.execute(
-        "SELECT 'pending', raw_id, carrier_digest, payload FROM pending_accepted_marker_inputs "
+        "SELECT 'pending', raw_id, carrier_digest, payload, expected_incarnation_id "
+        "FROM pending_accepted_marker_inputs "
         "WHERE request_key = ? UNION ALL "
-        "SELECT 'accepted', raw_id, payload_sha256, payload FROM accepted_marker_inputs WHERE identity = ?",
+        "SELECT 'accepted', raw_id, payload_sha256, payload, index_incarnation_id "
+        "FROM accepted_marker_inputs WHERE identity = ?",
         (request_key, request_key),
     ).fetchone()
     if row is None:
         return None
-    state, raw_id, digest, payload_value = cast(tuple[str, str, str, object], row)
+    state, raw_id, digest, payload_value, expected_incarnation_id = cast(tuple[str, str, str, object, str | None], row)
     payload = _stored_payload(payload_value)
     try:
         value = json.loads(payload)
@@ -75,7 +77,7 @@ def retained_marker_input_sync(
         raise AcceptedMarkerInputRefusedError("retained accepted marker carrier is malformed") from exc
     if not isinstance(value, dict) or value.get("identity") != request_key:
         raise AcceptedMarkerInputRefusedError("retained accepted marker request key disagrees with payload")
-    return state, batch
+    return state, batch, expected_incarnation_id
 
 
 def prepare_accepted_marker_input(
@@ -137,9 +139,16 @@ def _validate(batch: PreparedAcceptedMarkerInput) -> None:
         raise AcceptedMarkerInputRefusedError("accepted marker carrier identity or bytes disagree")
 
 
-def persist_pending_marker_input_sync(conn: sqlite3.Connection, batch: PreparedAcceptedMarkerInput) -> str:
+def persist_pending_marker_input_sync(
+    conn: sqlite3.Connection,
+    batch: PreparedAcceptedMarkerInput,
+    *,
+    expected_incarnation_id: str,
+) -> str:
     """Insert or verify a pending carrier in the caller's source transaction."""
     _validate(batch)
+    if len(expected_incarnation_id) != 36:
+        raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
     accepted = conn.execute(
         "SELECT payload_sha256, payload FROM accepted_marker_inputs WHERE identity = ?",
         (batch.identity,),
@@ -150,35 +159,48 @@ def persist_pending_marker_input_sync(conn: sqlite3.Connection, batch: PreparedA
             raise AcceptedMarkerInputRefusedError("accepted marker request conflicts with retained carrier")
         return "accepted"
     row = conn.execute(
-        "SELECT carrier_digest, payload FROM pending_accepted_marker_inputs WHERE request_key = ?",
+        "SELECT carrier_digest, expected_incarnation_id, payload FROM pending_accepted_marker_inputs "
+        "WHERE request_key = ?",
         (batch.identity,),
     ).fetchone()
     if row is not None:
-        if tuple(row) != (batch.payload_sha256, batch.payload):
+        if tuple(row) != (batch.payload_sha256, expected_incarnation_id, batch.payload):
             raise AcceptedMarkerInputRefusedError("pending marker request conflicts with retained carrier")
         return "pending-existing"
     conn.execute(
-        "INSERT INTO pending_accepted_marker_inputs(request_key, raw_id, carrier_digest, payload) VALUES (?, ?, ?, ?)",
-        (batch.identity, batch.raw_id, batch.payload_sha256, batch.payload),
+        "INSERT INTO pending_accepted_marker_inputs(request_key, raw_id, carrier_digest, "
+        "expected_incarnation_id, payload) VALUES (?, ?, ?, ?, ?)",
+        (batch.identity, batch.raw_id, batch.payload_sha256, expected_incarnation_id, batch.payload),
     )
     return "pending-new"
 
 
-async def append_accepted_marker_input(conn: _Connection, batch: PreparedAcceptedMarkerInput) -> int:
+async def append_accepted_marker_input(
+    conn: _Connection,
+    batch: PreparedAcceptedMarkerInput,
+    *,
+    index_incarnation_id: str | None = None,
+) -> int:
     """Append within the caller's source acceptance transaction; never commit.
 
     The unique interpretation identity makes identical replay a no-op. Sequence
     allocation is SQLite-owned and survives restart independently of index.db.
     """
     _validate(batch)
+    if index_incarnation_id is not None and len(index_incarnation_id) != 36:
+        raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid index incarnation")
     cursor = await conn.execute(
-        "SELECT sequence, payload, payload_sha256 FROM accepted_marker_inputs WHERE identity = ?",
+        "SELECT sequence, payload, payload_sha256, index_incarnation_id FROM accepted_marker_inputs WHERE identity = ?",
         (batch.identity,),
     )
     existing = await cursor.fetchone()
     if existing is not None:
-        sequence, payload, digest = cast(tuple[int, object, str], existing)
-        if _stored_payload(payload) != batch.payload or digest != batch.payload_sha256:
+        sequence, payload, digest, retained_incarnation = cast(tuple[int, object, str, str | None], existing)
+        if (
+            _stored_payload(payload) != batch.payload
+            or digest != batch.payload_sha256
+            or retained_incarnation != index_incarnation_id
+        ):
             raise AcceptedMarkerInputRefusedError("conflicting replay of accepted marker input")
         return int(sequence)
     await conn.execute(
@@ -186,18 +208,25 @@ async def append_accepted_marker_input(conn: _Connection, batch: PreparedAccepte
         (str(uuid.uuid4()),),
     )
     cursor = await conn.execute(
-        "INSERT INTO accepted_marker_inputs(identity, raw_id, payload, payload_sha256) "
-        "VALUES (?, ?, ?, ?) RETURNING sequence",
-        (batch.identity, batch.raw_id, batch.payload, batch.payload_sha256),
+        "INSERT INTO accepted_marker_inputs(identity, raw_id, payload, index_incarnation_id, payload_sha256) "
+        "VALUES (?, ?, ?, ?, ?) RETURNING sequence",
+        (batch.identity, batch.raw_id, batch.payload, index_incarnation_id, batch.payload_sha256),
     )
     row = await cursor.fetchone()
     assert row is not None
     return int(cast(tuple[int], row)[0])
 
 
-async def persist_pending_accepted_marker_input(conn: _Connection, batch: PreparedAcceptedMarkerInput) -> None:
+async def persist_pending_accepted_marker_input(
+    conn: _Connection,
+    batch: PreparedAcceptedMarkerInput,
+    *,
+    expected_incarnation_id: str,
+) -> None:
     """Durably retain exact carrier bytes before the index transaction commits."""
     _validate(batch)
+    if len(expected_incarnation_id) != 36:
+        raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
     cursor = await conn.execute(
         "SELECT payload_sha256, payload FROM accepted_marker_inputs WHERE identity = ?",
         (batch.identity,),
@@ -209,18 +238,24 @@ async def persist_pending_accepted_marker_input(conn: _Connection, batch: Prepar
             raise AcceptedMarkerInputRefusedError("accepted marker request conflicts with retained carrier")
         return
     cursor = await conn.execute(
-        "SELECT carrier_digest, payload FROM pending_accepted_marker_inputs WHERE request_key = ?",
+        "SELECT carrier_digest, expected_incarnation_id, payload FROM pending_accepted_marker_inputs "
+        "WHERE request_key = ?",
         (batch.identity,),
     )
     row = await cursor.fetchone()
     if row is not None:
-        digest, payload = cast(tuple[str, object], row)
-        if digest != batch.payload_sha256 or _stored_payload(payload) != batch.payload:
+        digest, retained_incarnation, payload = cast(tuple[str, str, object], row)
+        if (
+            digest != batch.payload_sha256
+            or retained_incarnation != expected_incarnation_id
+            or _stored_payload(payload) != batch.payload
+        ):
             raise AcceptedMarkerInputRefusedError("pending marker request conflicts with retained carrier")
         return
     await conn.execute(
-        "INSERT INTO pending_accepted_marker_inputs(request_key, raw_id, carrier_digest, payload) VALUES (?, ?, ?, ?)",
-        (batch.identity, batch.raw_id, batch.payload_sha256, batch.payload),
+        "INSERT INTO pending_accepted_marker_inputs(request_key, raw_id, carrier_digest, "
+        "expected_incarnation_id, payload) VALUES (?, ?, ?, ?, ?)",
+        (batch.identity, batch.raw_id, batch.payload_sha256, expected_incarnation_id, batch.payload),
     )
 
 
@@ -228,25 +263,27 @@ async def finalize_pending_accepted_marker_input(conn: _Connection, batch: Prepa
     """Append accepted bytes and remove their pending copy in the caller's transaction."""
     _validate(batch)
     cursor = await conn.execute(
-        "SELECT carrier_digest, payload FROM pending_accepted_marker_inputs WHERE request_key = ?",
+        "SELECT carrier_digest, expected_incarnation_id, payload FROM pending_accepted_marker_inputs "
+        "WHERE request_key = ?",
         (batch.identity,),
     )
     row = await cursor.fetchone()
     if row is None:
         accepted_cursor = await conn.execute(
-            "SELECT sequence, payload_sha256, payload FROM accepted_marker_inputs WHERE identity = ?",
+            "SELECT sequence, payload_sha256, payload, index_incarnation_id "
+            "FROM accepted_marker_inputs WHERE identity = ?",
             (batch.identity,),
         )
         accepted = await accepted_cursor.fetchone()
         if accepted is not None:
-            sequence, digest, payload = cast(tuple[int, str, object], accepted)
+            sequence, digest, payload, _incarnation_id = cast(tuple[int, str, object, str | None], accepted)
             if digest == batch.payload_sha256 and _stored_payload(payload) == batch.payload:
                 return int(sequence)
         raise AcceptedMarkerInputRefusedError("pending marker carrier is absent for this request")
-    digest, payload = cast(tuple[str, object], row)
+    digest, expected_incarnation_id, payload = cast(tuple[str, str, object], row)
     if digest != batch.payload_sha256 or _stored_payload(payload) != batch.payload:
         raise AcceptedMarkerInputRefusedError("pending marker carrier differs from this request")
-    sequence = await append_accepted_marker_input(conn, batch)
+    sequence = await append_accepted_marker_input(conn, batch, index_incarnation_id=expected_incarnation_id)
     await conn.execute("DELETE FROM pending_accepted_marker_inputs WHERE request_key = ?", (batch.identity,))
     return sequence
 

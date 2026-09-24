@@ -2389,9 +2389,19 @@ def _publish_marker_witnesses_before_index_commit(
         )
     if not requests:
         return
+    index_filename = str(index_conn.execute("PRAGMA database_list").fetchone()[2])
+    index_stat = Path(index_filename).stat()
+    incarnation = index_conn.execute(
+        "SELECT incarnation_id, device, inode FROM ingest_index_incarnation WHERE singleton = 1"
+    ).fetchone()
+    if incarnation is None or (int(incarnation[1]), int(incarnation[2])) != (index_stat.st_dev, index_stat.st_ino):
+        raise AcceptedMarkerInputRefusedError("index incarnation changed during marker publication")
+    incarnation_id = str(incarnation[0])
+
     source_path = archive_root / "source.db"
     source_states: dict[str, str] = {}
     retained_batches: dict[str, PreparedAcceptedMarkerInput] = {}
+    retained_incarnations: dict[str, str | None] = {}
     with (
         closing(
             open_isolated_write_connection(
@@ -2407,32 +2417,21 @@ def _publish_marker_witnesses_before_index_commit(
         for batch in requests.values():
             retained = retained_marker_input_sync(source_conn, batch.identity)
             if retained is None:
-                source_states[batch.identity] = persist_pending_marker_input_sync(source_conn, batch)
+                source_states[batch.identity] = persist_pending_marker_input_sync(
+                    source_conn, batch, expected_incarnation_id=incarnation_id
+                )
                 retained_batches[batch.identity] = batch
+                retained_incarnations[batch.identity] = incarnation_id
             else:
-                source_states[batch.identity], retained_batches[batch.identity] = retained
-
-    index_filename = str(index_conn.execute("PRAGMA database_list").fetchone()[2])
-    index_stat = Path(index_filename).stat()
-    incarnation = index_conn.execute(
-        "SELECT incarnation_id, device, inode FROM ingest_index_incarnation WHERE singleton = 1"
-    ).fetchone()
-    if incarnation is None:
-        incarnation_id = str(uuid.uuid4())
-        index_conn.execute(
-            "INSERT INTO ingest_index_incarnation(singleton, incarnation_id, device, inode) VALUES (1, ?, ?, ?)",
-            (incarnation_id, index_stat.st_dev, index_stat.st_ino),
-        )
-    elif (int(incarnation[1]), int(incarnation[2])) != (index_stat.st_dev, index_stat.st_ino):
-        incarnation_id = str(uuid.uuid4())
-        index_conn.execute(
-            "UPDATE ingest_index_incarnation SET incarnation_id = ?, device = ?, inode = ? WHERE singleton = 1",
-            (incarnation_id, index_stat.st_dev, index_stat.st_ino),
-        )
-    else:
-        incarnation_id = str(incarnation[0])
+                (
+                    source_states[batch.identity],
+                    retained_batches[batch.identity],
+                    retained_incarnations[batch.identity],
+                ) = retained
     for request in requests.values():
         batch = retained_batches[request.identity]
+        if retained_incarnations[batch.identity] != incarnation_id:
+            raise AcceptedMarkerInputRefusedError("pending marker carrier belongs to a replaced index incarnation")
         if batch.payload != request.payload and source_states[batch.identity] not in ("pending-new",):
             prior = index_conn.execute(
                 "SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
@@ -2471,6 +2470,27 @@ def _publish_marker_witnesses_before_index_commit(
             (batch.identity, *expected),
         )
         summary.marker_batches_by_raw_id[batch.raw_id] = batch
+
+
+def _ensure_ingest_index_incarnation(conn: sqlite3.Connection) -> None:
+    """Commit a physical index identity before any retryable ingest writes."""
+    filename = str(conn.execute("PRAGMA database_list").fetchone()[2])
+    index_stat = Path(filename).stat()
+    conn.execute("BEGIN IMMEDIATE")
+    incarnation = conn.execute(
+        "SELECT incarnation_id, device, inode FROM ingest_index_incarnation WHERE singleton = 1"
+    ).fetchone()
+    if incarnation is None:
+        conn.execute(
+            "INSERT INTO ingest_index_incarnation(singleton, incarnation_id, device, inode) VALUES (1, ?, ?, ?)",
+            (str(uuid.uuid4()), index_stat.st_dev, index_stat.st_ino),
+        )
+    elif (int(incarnation[1]), int(incarnation[2])) != (index_stat.st_dev, index_stat.st_ino):
+        conn.execute(
+            "UPDATE ingest_index_incarnation SET incarnation_id = ?, device = ?, inode = ? WHERE singleton = 1",
+            (str(uuid.uuid4()), index_stat.st_dev, index_stat.st_ino),
+        )
+    conn.commit()
 
 
 def _resolve_codex_sidecar_snapshots(
@@ -2740,7 +2760,11 @@ def _process_ingest_batch_sync(
                 "payload_provider": provider.value if provider is not None else None,
                 "acquired_at": record.acquired_at,
                 "file_mtime": record.file_mtime,
-                "validation_mode": record.validation_mode.value if record.validation_mode is not None else None,
+                # Raw validation metadata is updated on successful acceptance.
+                # Bind the mode this worker actually used, not that mutable
+                # pre-acceptance field, so a post-finalization retry has the
+                # same request identity.
+                "validation_mode": validation_mode,
                 "marker_recipe_fingerprint": marker_recipe_fingerprint(),
                 "lowering_fingerprint": lowering_fingerprint(),
                 "parser_fingerprint": (
@@ -2802,6 +2826,8 @@ def _process_ingest_batch_sync(
     _observe_current_rss(summary)
     transaction_started = False
     try:
+        if marker_acceptance_enabled:
+            _ensure_ingest_index_incarnation(conn)
         if prepared_unit is not None:
 
             def begin_prepared_transaction() -> None:
@@ -3074,6 +3100,10 @@ async def process_ingest_batch(
     validation_mode = _resolved_settings.schema_validation
     publication_mode = PublicationMode.from_string(_resolved_settings.sinex_mode)
     configured_source_backend = getattr(service.repository, "source_backend", None)
+    if publication_mode is not PublicationMode.OFF and configured_source_backend is None:
+        raise PublicationEncodingError(
+            "mirror/primary acceptance requires the durable source-tier backend; refusing before index publication"
+        )
 
     sync_kwargs: dict[str, object] = {
         "db_path": backend.db_path,
