@@ -1656,6 +1656,11 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
         # alongside all-zero token fields used to make the row look like "no
         # evidence" and vanish with the reason inside it.
         _raw_column("finish_reason", """finish_reason                  TEXT"""),
+        # Claude Code reports these alongside message usage. Keep the stable
+        # billing block index and selected quota/refusal evidence in the
+        # typed row because message_usage is omitted from generic events.
+        _raw_column("api_block_index", """api_block_index               INTEGER"""),
+        _raw_column("quota_limits_json", """quota_limits_json             TEXT"""),
     ),
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
 )
