@@ -590,161 +590,30 @@ def test_prepared_partition_refuses_related_input_that_moved_before_publish(
 def test_marker_recovery_is_its_own_domain_and_never_rewrites_the_profile(
     archive: tuple[Path, str],
 ) -> None:
-    """polylogue-ylh7v: markers converge separately; the profile stays valid.
+    """An index block marker is not durable marker-delivery input by itself.
 
-    Before this, ``SessionProfileDerivation.inspect`` downgraded a valid index
-    family to ``stale`` when a user-tier marker assertion was absent, so a
-    user-tier outage re-derived index profiles that were never wrong -- and
-    publication lowered markers in a second, non-atomic transaction behind an
-    already-committed index write.
-
-    Anti-vacuity: restore the marker read to ``SessionProfileDerivation.inspect``
-    and the first ``valid`` assertion below goes red; delete the marker
-    domain's own ``inspect`` marker check and the deleted assertion is never
-    rediscovered, so the ``missing`` assertion goes red instead. One direction
-    alone would admit either a permanently-stale profile or a marker that is
-    never recovered.
+    The source carrier consumer is covered in ``test_accepted_marker_consumer``.
+    This profile-level regression keeps the original boundary: index validity
+    cannot depend on a marker appearing, disappearing, or failing to deliver.
     """
-    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
-    from polylogue.storage.derived.session.marker_domain import SessionMarkerDerivation
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
     index_db, session_id = archive
-    user_db = index_db.with_name("user.db")
-    initialize_archive_database(user_db, ArchiveTier.USER)
     with write_lease("test.seed-marker"), closing(_write_connection(index_db)) as conn:
         conn.execute(
             "UPDATE blocks SET text = ? WHERE message_id = (SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1)",
-            ("::finding: recover from the separate user tier", session_id),
+            ("::finding: current index text is not an accepted input", session_id),
         )
         conn.commit()
-
-    def index_reader() -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-
-    adapter = SessionProfileDerivation(
-        index_reader,
-        lambda: _write_connection(index_db),
-        materializer_version=_MATERIALIZER_VERSION,
-        session_scope=lambda _frame: [session_id],
-    )
-    markers = SessionMarkerDerivation(
-        index_reader,
-        lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
-        lambda: sqlite3.connect(user_db),
-        session_scope=lambda _frame: [session_id],
-    )
-    frame = type("Frame", (), {"scope": (session_id,)})()
-
-    first = adapter.compute(frame, session_id)
-    assert adapter.publish(frame, first) is True
-    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
-    with closing(index_reader()) as conn:
-        materialized_at = conn.execute(
-            "SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)
-        ).fetchone()[0]
-
-    # Publication wrote no user-tier row: that is the marker domain's job.
-    assert markers.inspect(frame, (session_id,))[session_id] == "missing"
-    assert markers.publish(frame, markers.compute(frame, session_id)) is True
-    assert markers.inspect(frame, (session_id,))[session_id] == "valid"
-    with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as conn:
-        assert conn.execute(
-            "SELECT input_binding FROM session_marker_delivery WHERE session_id = ?", (session_id,)
-        ).fetchone()[0]
-
-    with closing(sqlite3.connect(user_db)) as conn:
-        assertion_id = conn.execute("SELECT assertion_id FROM assertions").fetchone()[0]
-        conn.execute("DELETE FROM assertions WHERE assertion_id = ?", (assertion_id,))
-        conn.commit()
-
-    # The index family is untouched by a user-tier loss.
-    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
-    assert markers.inspect(frame, (session_id,))[session_id] == "missing"
-    assert markers.publish(frame, markers.compute(frame, session_id)) is True
-    assert markers.inspect(frame, (session_id,))[session_id] == "valid"
-    with closing(index_reader()) as conn:
-        assert (
-            conn.execute("SELECT materialized_at FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[
-                0
-            ]
-            == materialized_at
-        )
-
-    # A human judgment at the same deterministic id is still never replaced.
-    with closing(sqlite3.connect(user_db)) as conn:
-        conn.execute(
-            "UPDATE assertions SET author_kind = ?, body_text = ? WHERE assertion_id = ?",
-            ("user", "keep", assertion_id),
-        )
-        conn.commit()
-    assert markers.publish(frame, markers.compute(frame, session_id)) is True
-    with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)) as conn:
-        assert conn.execute(
-            "SELECT author_kind, body_text FROM assertions WHERE assertion_id = ?", (assertion_id,)
-        ).fetchone() == ("user", "keep")
+    assert _materialize(index_db, session_id) is True
+    assert _status(index_db, session_id) == "valid"
 
 
 def test_marker_domain_publish_failure_leaves_the_profile_valid(
     archive: tuple[Path, str],
 ) -> None:
-    """A user-tier failure is this domain's failure and nothing else's.
-
-    The retired shape raised ``SessionProfileMarkerLoweringError`` *after* the
-    index family had committed, and the daemon owner carried a whole
-    partial-commit branch to describe that state. With markers as their own
-    domain there is no committed index write waiting on a second transaction.
-
-    Anti-vacuity (executed): restore the marker read to
-    ``SessionProfileDerivation.inspect`` and the final ``valid`` assertion
-    reports ``stale`` -- a user-tier outage once again rewrites index profiles
-    that were never wrong.
-    """
-    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
-    from polylogue.storage.derived.session.marker_domain import SessionMarkerDerivation
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
+    """Profile validity is independent of the separate marker sink."""
     index_db, session_id = archive
-    user_db = index_db.with_name("user.db")
-    initialize_archive_database(user_db, ArchiveTier.USER)
-    with write_lease("test.seed-marker"), closing(_write_connection(index_db)) as conn:
-        conn.execute(
-            "UPDATE blocks SET text = ? WHERE message_id = (SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1)",
-            ("::finding: the user tier is down", session_id),
-        )
-        conn.commit()
-
-    def index_reader() -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-
-    def broken_user_writer() -> sqlite3.Connection:
-        raise sqlite3.OperationalError("user tier unavailable")
-
-    adapter = SessionProfileDerivation(
-        index_reader,
-        lambda: _write_connection(index_db),
-        materializer_version=_MATERIALIZER_VERSION,
-        session_scope=lambda _frame: [session_id],
-    )
-    markers = SessionMarkerDerivation(
-        index_reader,
-        lambda: sqlite3.connect(f"file:{user_db}?mode=ro", uri=True),
-        broken_user_writer,
-        session_scope=lambda _frame: [session_id],
-    )
-    frame = type("Frame", (), {"scope": (session_id,)})()
-
-    assert adapter.publish(frame, adapter.compute(frame, session_id)) is True
-    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
-
-    with pytest.raises(sqlite3.OperationalError):
-        markers.publish(frame, markers.compute(frame, session_id))
-
-    # The failure belongs to the marker domain alone.
-    assert adapter.inspect(frame, (session_id,))[session_id] == "valid"
-    assert markers.inspect(frame, (session_id,))[session_id] == "missing"
+    assert _materialize(index_db, session_id) is True
+    assert _status(index_db, session_id) == "valid"
 
 
 def test_marker_assertion_presence_deduplicates_identical_marker_ids() -> None:
@@ -954,25 +823,13 @@ def _converge_session_profile(
 def test_a_repeated_marker_converges_to_valid_readiness_through_the_production_route(
     marker_archive: tuple[Path, Path, str],
 ) -> None:
-    """A complete marker import must leave readiness valid, not permanently stale.
+    """Current index marker-looking text cannot make profile readiness stale.
 
-    The mechanism (``dict.fromkeys`` over the requested assertion ids in
-    ``_marker_assertions_present``) was only ever observed by a helper-level
-    test against a one-column in-memory ``assertions`` table. What actually
-    goes wrong is the readiness *outcome*: a session whose markers are fully
-    committed reporting ``stale`` forever, so the daemon re-derives it on every
-    pass and never converges.
-
-    Anti-vacuity: delete ``assertion_ids = tuple(dict.fromkeys(assertion_ids))``
-    from ``_marker_assertions_present``. Presence then compares ``COUNT(*) == 2``
-    against the one row two identical markers share, and this goes red three
-    times over -- the convergence pass reports FAILED ("publish reported success
-    but the output relation reports stale, not valid"), ``inspect`` reports
-    ``stale``, and ``selected_part_facts`` reports ``stale``.
+    Accepted input delivery has its own source stream and user cursor. This
+    fixture writes only an index session, so it must not synthesize a user
+    assertion from its current block text.
     """
     from polylogue.daemon.derivation import Outcome
-    from polylogue.markers import candidates_for_block
-    from polylogue.markers.lowering import assertion_id_for_marker
 
     root, index_db, session_id = marker_archive
     adapter, frame, report = _converge_session_profile(root, index_db, session_id)
@@ -987,42 +844,14 @@ def test_a_repeated_marker_converges_to_valid_readiness_through_the_production_r
     assert facts.status == "valid"
     assert facts.profiles == 1
 
-    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
-        message_id, block_id, text = conn.execute(
-            "SELECT message_id, block_id, text FROM blocks WHERE session_id = ?", (session_id,)
-        ).fetchone()
-    assert text == _DUPLICATE_MARKER_BLOCK
-    # Marker identity is provenance-bound, so the ids are recomputed from the
-    # stored block exactly as the lowering side computes them.
-    candidate_ids = tuple(
-        assertion_id_for_marker(candidate)
-        for candidate in candidates_for_block(str(message_id), str(block_id), str(text))
-    )
-    assert len(candidate_ids) == 2, "the fixture must present two marker candidates"
-    assert len(set(candidate_ids)) == 1, "identical markers in one block share one identity"
-
     with closing(sqlite3.connect(f"file:{root / 'user.db'}?mode=ro", uri=True)) as conn:
-        stored = conn.execute(
-            "SELECT assertion_id, author_kind FROM assertions WHERE assertion_id = ?",
-            (candidate_ids[0],),
-        ).fetchall()
-        # Reading the durable columns proves this is the shipped user tier and
-        # not a one-column stand-in; a stand-in raises "no such column" here.
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(assertions)")}
-    assert len(stored) == 1, "two identical markers must store exactly one assertion row"
-    assert stored[0][1] == "agent"
-    assert {"target_ref", "kind", "status", "author_kind", "visibility"} <= columns
+        assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone() == (0,)
 
 
 def test_a_second_pass_over_the_repeated_marker_publishes_nothing_new(
     marker_archive: tuple[Path, Path, str],
 ) -> None:
-    """Converged readiness must stay converged; that is what "not stale" buys.
-
-    The defect this guards is an endless re-derivation loop, which a single
-    pass cannot show. Anti-vacuity: the same ``dict.fromkeys`` deletion makes
-    the second pass republish and still report stale.
-    """
+    """An index-only marker-looking block does not trigger a profile rewrite."""
     from polylogue.daemon.derivation import Outcome
 
     root, index_db, session_id = marker_archive

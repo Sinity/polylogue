@@ -2791,6 +2791,52 @@ def advance_session_marker_delivery(
     )
 
 
+def accepted_marker_delivery_cursor(conn: sqlite3.Connection) -> tuple[str, int] | None:
+    """Return the durable source-stream position applied to the user sink."""
+
+    row = conn.execute(
+        "SELECT stream_id, applied_sequence FROM accepted_marker_delivery_cursor WHERE singleton = 1"
+    ).fetchone()
+    return None if row is None else (str(row[0]), int(row[1]))
+
+
+def advance_accepted_marker_delivery_cursor(
+    conn: sqlite3.Connection,
+    *,
+    stream_id: str,
+    applied_sequence: int,
+    applied_at_ms: int,
+    expected_prior_sequence: int,
+) -> None:
+    """Advance the one user-owned marker stream cursor without a hidden commit.
+
+    The caller owns the transaction containing this write and canonical marker
+    assertion lowering. Requiring the exact prior sequence prevents an older
+    worker from acknowledging past a concurrently committed source batch.
+    """
+
+    if not stream_id or applied_sequence < 1 or expected_prior_sequence < 0 or applied_at_ms < 0:
+        raise ValueError("accepted marker delivery cursor values are invalid")
+    current = accepted_marker_delivery_cursor(conn)
+    if current is None:
+        if expected_prior_sequence != 0:
+            raise ValueError("accepted marker delivery cursor is absent at a nonzero position")
+        conn.execute(
+            "INSERT INTO accepted_marker_delivery_cursor(singleton, stream_id, applied_sequence, applied_at_ms) "
+            "VALUES (1, ?, ?, ?)",
+            (stream_id, applied_sequence, applied_at_ms),
+        )
+        return
+    if current != (stream_id, expected_prior_sequence):
+        raise ValueError("accepted marker delivery cursor changed before advancement")
+    if applied_sequence != expected_prior_sequence + 1:
+        raise ValueError("accepted marker delivery cursor must advance by one sequence")
+    conn.execute(
+        "UPDATE accepted_marker_delivery_cursor SET applied_sequence = ?, applied_at_ms = ? WHERE singleton = 1",
+        (applied_sequence, applied_at_ms),
+    )
+
+
 __all__ = [
     "ASSERTION_CLAIM_KINDS",
     "ASSERTION_CANDIDATE_JUDGMENT_KINDS",
@@ -2866,6 +2912,8 @@ __all__ = [
     "read_assertion_envelope",
     "read_latest_candidate_judgment",
     "advance_session_marker_delivery",
+    "accepted_marker_delivery_cursor",
+    "advance_accepted_marker_delivery_cursor",
     "upsert_annotation",
     "upsert_assertion",
     "upsert_judgment_automation_receipt_outbox",

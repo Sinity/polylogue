@@ -26,6 +26,7 @@ USER_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
         "user_settings",
         "context_deliveries",
         "session_marker_delivery",
+        "accepted_marker_delivery_cursor",
     ),
     "cross-table durable state DDL; no concrete schema delta requires TableColumnSpec",
 )
@@ -74,6 +75,16 @@ CREATE TABLE IF NOT EXISTS session_marker_delivery (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_session_marker_delivery_binding
 ON session_marker_delivery(input_binding);
+
+-- Accepted marker input is a source-owned immutable stream. This singleton
+-- records the user sink's committed position, so assertion lowering and
+-- restart resumption share one durable transaction boundary.
+CREATE TABLE IF NOT EXISTS accepted_marker_delivery_cursor (
+    singleton         INTEGER PRIMARY KEY CHECK(singleton = 1),
+    stream_id         TEXT NOT NULL CHECK(stream_id != ''),
+    applied_sequence  INTEGER NOT NULL CHECK(applied_sequence >= 0),
+    applied_at_ms     INTEGER NOT NULL CHECK(applied_at_ms >= 0)
+) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_assertions_target_kind
 ON assertions(target_ref, kind);

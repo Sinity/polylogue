@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from dataclasses import asdict
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from polylogue.daemon.derivation import Outcome
@@ -97,28 +99,43 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
 
 @pytest.mark.asyncio
 async def test_marker_lowering_sees_a_user_db_created_after_composition(tmp_path: Path) -> None:
-    """A ``user.db`` that appears after composition still receives markers.
+    """A ``user.db`` that appears after composition consumes retained inputs.
 
     Anti-vacuity: binding marker availability at construction time (the
     ``user_db.exists()`` check this replaces) leaves both marker connections
     ``None`` for the owner's lifetime, so no assertion is ever lowered and the
     final assertion count stays zero.
     """
+    from polylogue.markers import candidates_for_block
+    from polylogue.storage.accepted_marker_inputs import append_accepted_marker_input, prepare_accepted_marker_input
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     with sqlite3.connect(recovered.index_db) as conn:
-        block_id = conn.execute(
-            "SELECT block_id FROM blocks WHERE session_id = ? ORDER BY block_id LIMIT 1",
+        message_id, block_id = conn.execute(
+            "SELECT message_id, block_id FROM blocks WHERE session_id = ? ORDER BY block_id LIMIT 1",
             (recovered.target_session_id,),
         ).fetchone()
-        assert block_id is not None
+        assert message_id is not None and block_id is not None
         conn.execute(
             "UPDATE blocks SET text = ? WHERE block_id = ?",
-            ("::finding: marker survives a late user tier\n", block_id[0]),
+            ("current index text cannot become marker input\n", block_id),
         )
         conn.commit()
+
+    candidate = candidates_for_block(str(message_id), str(block_id), "::finding: marker survives a late user tier\n")[0]
+    candidate_record = asdict(candidate)
+    candidate_record["assertion_kind"] = (
+        candidate.assertion_kind.value if candidate.assertion_kind is not None else None
+    )
+    async with aiosqlite.connect(recovered.root / "source.db") as source:
+        batch = prepare_accepted_marker_input(
+            "late-user-tier-marker",
+            [{"session_id": recovered.target_session_id, "candidates": [candidate_record]}],
+        )
+        await append_accepted_marker_input(source, batch)
+        await source.commit()
 
     user_db = recovered.root / "user.db"
     user_db.unlink()
@@ -140,7 +157,7 @@ async def test_marker_lowering_sees_a_user_db_created_after_composition(tmp_path
 
         report = await composed.callback((recovered.target_session_id,))
         assert report.outcomes
-        assert all(item.outcome is Outcome.DONE for item in report.outcomes)
+        assert all(item.outcome is Outcome.DONE for item in report.outcomes), report.outcomes
 
         with sqlite3.connect(user_db) as conn:
             lowered = conn.execute("SELECT COUNT(*) FROM assertions").fetchone()
