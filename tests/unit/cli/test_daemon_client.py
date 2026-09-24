@@ -509,7 +509,9 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
                     "outcome": "running",
                     "reference": reference,
                     "progress_sequence": 1,
-                    "progress_events": [{"sequence": 1, "session_id": "s1", "cost_usd": 0.01}],
+                    "progress_events": [
+                        {"sequence": 1, "session_id": "s1", "state": "started", "estimated_cost_usd": 0.01}
+                    ],
                 },
             },
             {
@@ -532,11 +534,11 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
             },
         ]
     )
-    after_sequences: list[int] = []
+    after_sequences: list[tuple[int, int]] = []
     monkeypatch.setattr(DaemonClient, "operation", lambda self, *args, **kwargs: accepted)
 
     def await_operation(self: DaemonClient, _request_id: str, **kwargs: object) -> dict[str, object]:
-        after_sequences.append(cast(int, kwargs["after_sequence"]))
+        after_sequences.append((cast(int, kwargs["after_sequence"]), cast(int, kwargs["after_progress_sequence"])))
         return next(states)
 
     monkeypatch.setattr(DaemonClient, "await_operation", await_operation)
@@ -553,7 +555,7 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
         progress_callback=broken_renderer,
     )
 
-    assert after_sequences == [0, 1]
+    assert after_sequences == [(1, 0), (1, 1)]
     assert len(seen) == 1
     assert result is not None and result["outcome"] == "completed"
     assert result["result"] == {"affected_count": 1, "outcome": "completed", "sequence": 1}

@@ -126,6 +126,71 @@ def test_repeated_daemon_query_uses_revision_scoped_result_cache(
     assert calls == 1
 
 
+def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Embedding progress is pre-terminal and its final counts survive runtime restart.
+
+    Anti-vacuity: routing backfill around the accepted lifecycle loses the
+    durable reference, while returning only generic operation counters loses
+    the domain receipt after restart.
+    """
+    import asyncio
+    from types import SimpleNamespace
+
+    from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
+
+    def compose(_index: Path, **kwargs: object) -> object:
+        emit = kwargs["progress_callback"]
+
+        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+            assert callable(emit)
+            emit({"state": "started", "session_id": "codex:synthetic", "estimated_cost_usd": 0.0001})
+            await asyncio.sleep(0.05)
+            report = SimpleNamespace(
+                done=1,
+                pending=2,
+                failed=0,
+                work=SimpleNamespace(computed=1),
+            )
+            return EmbeddingConvergenceResult(report, None)
+
+        return converge
+
+    monkeypatch.setattr("polylogue.daemon.embedding_owner.compose_embedding_convergence", compose)
+    request_id = "embedding-accepted-progress"
+    payload = {"max_messages": 1}
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        progress: list[dict[str, object]] = []
+        terminal = stack.client.operation_to_completion(
+            "maintenance.embeddings.backfill",
+            payload,
+            archive_root=str(stack.archive_root),
+            request_id=request_id,
+            progress_callback=progress.append,
+        )
+        assert terminal is not None
+        assert terminal["outcome"] == "completed"
+        assert terminal["accepted_reference"]["request_id"] == request_id
+        assert progress and progress[0]["state"] == "started"
+        assert progress[0]["sequence"] == 1
+        assert "estimated_cost_usd" in progress[0]
+        assert terminal["result"]["result"] == {"done": 1, "pending": 2, "failed": 0}
+        accepted_reference = terminal["accepted_reference"]
+
+    with running_daemon_operations(tmp_path / "archive") as restarted:
+        recovered = restarted.client.operation(
+            "maintenance.embeddings.backfill",
+            payload,
+            archive_root=str(restarted.archive_root),
+            request_id=request_id,
+        )
+        assert recovered is not None
+        assert recovered["outcome"] == "completed"
+        assert recovered["accepted_reference"] == accepted_reference
+        assert recovered["result"]["result"] == {"done": 1, "pending": 2, "failed": 0}
+
+
 def test_machine_listener_uses_the_independent_operation_handler(tmp_path: Path) -> None:
     """Mutation: delegate machine requests through the browser handler and this fails."""
 
