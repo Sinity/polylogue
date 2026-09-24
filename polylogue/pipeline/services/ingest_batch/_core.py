@@ -1557,6 +1557,33 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
         summary.schema_drift_observations.append(ir.schema_drift)
 
 
+def _marker_request_facts(record: RawSessionRecord, *, validation_mode: str) -> dict[str, object]:
+    """Bind marker identity to immutable acquisition facts, not parse projections.
+
+    ``payload_provider`` is a read projection of ``detected_provider``. The
+    ordinary acceptance transaction updates it, so using it here would make a
+    replay's request key change after the first successful parse. Parser
+    identity for the actual interpretation is separately carried per session.
+    """
+    acquisition_provider = Provider.from_string(record.source_name or "unknown")
+    return {
+        "blob_digest": record.blob_hash,
+        "origin": origin_from_provider(acquisition_provider).value,
+        "source_path": record.source_path,
+        "source_index": record.source_index,
+        "native_id": record.revision.logical_source_key if record.revision is not None else None,
+        "revision": dataclasses.asdict(record.revision) if record.revision is not None else None,
+        "source_name": record.source_name,
+        "capture_mode": record.capture_mode.value if record.capture_mode is not None else None,
+        "acquired_at": record.acquired_at,
+        "file_mtime": record.file_mtime,
+        "validation_mode": validation_mode,
+        "marker_recipe_fingerprint": marker_recipe_fingerprint(),
+        "lowering_fingerprint": lowering_fingerprint(),
+        "parser_fingerprint": parser_fingerprint_for_origin(origin_from_provider(acquisition_provider)),
+    }
+
+
 def _observe_current_rss(summary: _IngestBatchSummary) -> None:
     current_rss_mb = read_current_rss_mb()
     if current_rss_mb is None:
@@ -2758,29 +2785,9 @@ def _process_ingest_batch_sync(
     summary = _new_ingest_batch_summary(raw_artifacts, ingest_workers=ingest_workers)
     if marker_acceptance_enabled:
         for record in raw_artifacts:
-            provider = record.payload_provider or record.capture_mode
-            summary.marker_request_facts_by_raw_id[record.raw_id] = {
-                "blob_digest": record.blob_hash,
-                "origin": origin_from_provider(provider).value if provider is not None else None,
-                "source_path": record.source_path,
-                "source_index": record.source_index,
-                "native_id": record.revision.logical_source_key if record.revision is not None else None,
-                "revision": dataclasses.asdict(record.revision) if record.revision is not None else None,
-                "source_name": record.source_name,
-                "payload_provider": provider.value if provider is not None else None,
-                "acquired_at": record.acquired_at,
-                "file_mtime": record.file_mtime,
-                # Raw validation metadata is updated on successful acceptance.
-                # Bind the mode this worker actually used, not that mutable
-                # pre-acceptance field, so a post-finalization retry has the
-                # same request identity.
-                "validation_mode": validation_mode,
-                "marker_recipe_fingerprint": marker_recipe_fingerprint(),
-                "lowering_fingerprint": lowering_fingerprint(),
-                "parser_fingerprint": (
-                    parser_fingerprint_for_origin(origin_from_provider(provider)) if provider is not None else None
-                ),
-            }
+            summary.marker_request_facts_by_raw_id[record.raw_id] = _marker_request_facts(
+                record, validation_mode=validation_mode
+            )
     worker_request = _make_ingest_worker_request(
         archive_root_str=archive_root_str,
         blob_root_str=blob_root_str,
@@ -2902,6 +2909,14 @@ def _process_ingest_batch_sync(
                     raise sqlite3.IntegrityError(f"foreign key check failed during bulk ingest: {detail}")
             fts_repair_ids = set(summary.fts_repair_session_ids)
             if marker_acceptance_enabled:
+                partial_raw_ids = sorted(
+                    raw_id for raw_id in summary.failed_raw_ids if summary.marker_sessions_by_raw_id.get(raw_id)
+                )
+                if partial_raw_ids:
+                    raise AcceptedMarkerInputRefusedError(
+                        "ordinary batch has a partially written raw marker input; refusing the full index transaction: "
+                        + ", ".join(partial_raw_ids)
+                    )
                 for raw_id, expected_count in summary.expected_marker_session_counts.items():
                     if raw_id in summary.failed_raw_ids or expected_count == 0:
                         continue

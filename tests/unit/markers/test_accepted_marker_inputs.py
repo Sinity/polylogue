@@ -17,10 +17,10 @@ import pytest
 
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider, Role
-from polylogue.markers.preparation import marker_candidates_for_prepared_write
+from polylogue.markers.preparation import marker_candidates_for_prepared_write, marker_recipe_fingerprint
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.services.ingest_batch import _core as ingest_batch_core
-from polylogue.pipeline.services.ingest_batch._core import _write_session_entry
+from polylogue.pipeline.services.ingest_batch._core import _marker_request_facts, _write_session_entry
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
 from polylogue.pipeline.services.parsing import ParsingService
@@ -79,6 +79,38 @@ def test_batch_route_retains_r1_and_r2_empty_and_identical_replay(workspace_env:
         assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone()[0] == 1
         assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone()[0] == 0
     assert first == retry == 1
+
+
+def test_request_facts_ignore_mutable_detected_provider_projection() -> None:
+    raw = RawSessionRecord(
+        raw_id="raw-provider-projection",
+        source_name="unknown-export",
+        source_path="capture.jsonl",
+        source_index=0,
+        blob_hash="a" * 64,
+        blob_size=1,
+        acquired_at="2026-01-01T00:00:00Z",
+    )
+    before = _marker_request_facts(raw, validation_mode="advisory")
+    after_parse = _marker_request_facts(
+        raw.model_copy(update={"payload_provider": Provider.CODEX}), validation_mode="advisory"
+    )
+
+    assert before == after_parse
+    assert "payload_provider" not in before
+
+
+def test_marker_recipe_fingerprint_tracks_parser_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.markers import parser
+
+    before = marker_recipe_fingerprint()
+
+    def changed_parse_markers(text: str, *, registry: object = None) -> tuple[object, ...]:
+        del text, registry
+        return ()
+
+    monkeypatch.setattr(parser, "parse_markers", changed_parse_markers)
+    assert marker_recipe_fingerprint() != before
 
 
 def test_batch_acceptance_conflict_rolls_back_raw_state(workspace_env: dict[str, Path]) -> None:
@@ -811,6 +843,77 @@ async def test_public_child_before_parent_retry_keeps_its_accepted_carrier(
         assert source.execute(
             "SELECT sequence, payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids["child"],)
         ).fetchone() == (1, original_payload)
+
+
+@pytest.mark.asyncio
+async def test_public_partial_multi_session_raw_rolls_back_before_marker_witness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful sibling session cannot commit without its raw's complete carrier."""
+    bootstrap_archive_root(tmp_path)
+    payload_bytes = b"one acquired raw producing two sessions"
+    BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.CODEX_SESSION,
+            source_path="partial-raw.jsonl",
+            source_index=0,
+            payload=payload_bytes,
+            acquired_at_ms=1,
+        )
+    parsed_sessions = [_session("::note: first", native_id="a"), _session("::note: second", native_id="z")]
+    payloads = [
+        SessionWritePayload(
+            session_id=f"codex-session:{parsed.provider_session_id}",
+            content_hash=str(session_content_hash(parsed)),
+            parsed_session=parsed,
+            message_count=len(parsed.messages),
+            raw_id=raw_id,
+        )
+        for parsed in parsed_sessions
+    ]
+
+    def fake_ingest(_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        return IngestRecordResult(
+            raw_id=raw_id,
+            payload_provider=Provider.CODEX.value,
+            outcome_code="success",
+            sessions=payloads,
+        )
+
+    real_write = ingest_batch_core.write_parsed_session_to_archive
+
+    def fail_second_session(
+        conn: sqlite3.Connection, session: ParsedSession, *args: object, **kwargs: object
+    ) -> object:
+        if session.provider_session_id == "z":
+            raise RuntimeError("injected second-session failure")
+        return real_write(conn, session, *args, **kwargs)
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
+    monkeypatch.setattr(ingest_batch_core, "write_parsed_session_to_archive", fail_second_session)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+    )
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    try:
+        with pytest.raises(AcceptedMarkerInputRefusedError, match="partially written raw marker input"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
 
 
 @pytest.mark.asyncio

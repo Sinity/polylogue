@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
+from polylogue.markers import parser as marker_parser
 from polylogue.markers.lowering import candidates_for_block
+from polylogue.markers.models import MarkerCandidate, MarkerMatch, MarkerProvenance, marker_provenance
+from polylogue.markers.registry import MARKER_REGISTRY
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
 
 if TYPE_CHECKING:
@@ -37,6 +41,28 @@ def marker_candidates_for_prepared_write(prepared: PreparedSessionWrite) -> list
 
 
 def marker_recipe_fingerprint() -> str:
-    """Identify the parser that selects marker candidates from canonical blocks."""
-    source = inspect.getsource(candidates_for_block)
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+    """Identify candidate extraction, grammar, registry, and carrier semantics."""
+    recipe = {
+        "format": 2,
+        "sources": [
+            inspect.getsource(candidates_for_block),
+            inspect.getsource(marker_parser.parse_markers),
+            inspect.getsource(marker_parser._args),
+            inspect.getsource(marker_provenance),
+            inspect.getsource(MarkerCandidate),
+            inspect.getsource(MarkerMatch),
+            inspect.getsource(MarkerProvenance),
+        ],
+        "registry": [
+            {
+                "kind": spec.kind,
+                "payload": spec.payload,
+                "lowering_target": spec.lowering_target.value if spec.lowering_target is not None else None,
+                "description": spec.description,
+                "authority": spec.authority,
+            }
+            for spec in MARKER_REGISTRY
+        ],
+    }
+    encoded = json.dumps(recipe, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
