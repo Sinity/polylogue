@@ -2263,20 +2263,6 @@ def _drain_ingest_result(
         summary.skipped_raw_ids.add(ir.raw_id)
         return
 
-    if (
-        marker_acceptance_enabled
-        and not force_write
-        and publication_mode is PublicationMode.OFF
-        and _reuse_current_accepted_marker_carrier(conn, source_conn, ir, summary=summary)
-    ):
-        # This exact accepted interpretation already has a witness in the
-        # current physical index. Reuse its source bytes and sequence without
-        # allowing a state-dependent no-op/append/lineage preparation to
-        # invent a different carrier. Forced publication always takes the
-        # normal writer path.
-        summary.skipped_raw_ids.add(ir.raw_id)
-        return
-
     if marker_acceptance_enabled:
         session_ids = [cdata.session_id for cdata in ir.sessions]
         if len(session_ids) != len(set(session_ids)):
@@ -2316,23 +2302,36 @@ def _drain_ingest_result(
             )
             return
 
+    reuse_marker_carrier = (
+        marker_acceptance_enabled
+        and not force_write
+        and _reuse_current_accepted_marker_carrier(conn, source_conn, ir, summary=summary)
+    )
+
     if ensure_index_transaction is not None:
         ensure_index_transaction()
 
     drain_started = time.perf_counter()
-    written_count = _drain_ready_session_entries(
-        conn,
-        [(ir.raw_id, cdata) for cdata in ir.sessions],
-        summary=summary,
-        materialized_ids=materialized_ids,
-        force_write=force_write,
-        blob_publisher=blob_publisher,
-        pending_attachment_receipts=pending_attachment_receipts,
-        source_conn=source_conn,
-        fresh_build=fresh_build,
-        fresh_build_batch=fresh_build_batch,
-        drive_plans=drive_plans,
-    )
+    if reuse_marker_carrier:
+        # Publication encoding/staging/admission above still runs in MIRROR
+        # and PRIMARY. Only the state-dependent index session write is skipped;
+        # the exact current-witness carrier continues through common
+        # witness-check and source-finalization paths below.
+        written_count = 0
+    else:
+        written_count = _drain_ready_session_entries(
+            conn,
+            [(ir.raw_id, cdata) for cdata in ir.sessions],
+            summary=summary,
+            materialized_ids=materialized_ids,
+            force_write=force_write,
+            blob_publisher=blob_publisher,
+            pending_attachment_receipts=pending_attachment_receipts,
+            source_conn=source_conn,
+            fresh_build=fresh_build,
+            fresh_build_batch=fresh_build_batch,
+            drive_plans=drive_plans,
+        )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
     # Keep the reconciled payload for both changed and duplicate revisions.
@@ -2576,19 +2575,10 @@ def _publish_marker_witnesses_before_index_commit(
             raise AcceptedMarkerInputRefusedError("pending marker carrier belongs to a replaced index incarnation")
         if retained_state == "accepted" and retained_incarnation is None:
             raise AcceptedMarkerInputRefusedError("accepted marker carrier has no recorded index incarnation")
-        if retained_state == "accepted" and batch.payload != request.payload:
+        if batch.payload != request.payload and retained_state != "pending-new":
             raise AcceptedMarkerInputRefusedError(
-                "retry interpretation differs from the immutable accepted marker carrier"
+                "retry interpretation differs from the immutable retained marker carrier"
             )
-        if batch.payload != request.payload and source_states[batch.identity] not in ("pending-new",):
-            prior = index_conn.execute(
-                "SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
-                (batch.identity,),
-            ).fetchone()
-            if prior is None or tuple(prior) != (batch.payload_sha256, incarnation_id):
-                raise AcceptedMarkerInputRefusedError(
-                    "retry interpretation differs from retained carrier without its exact index witness"
-                )
         value = json.loads(batch.payload)
         carrier_sessions = value["sessions"]
         witness_dispositions = [

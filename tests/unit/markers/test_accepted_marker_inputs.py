@@ -26,6 +26,7 @@ from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.pipeline.services.parsing_models import ParseResult
+from polylogue.sinex.models import PublicationPayload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.accepted_marker_inputs import (
     AcceptedMarkerInputRefusedError,
@@ -494,6 +495,9 @@ def test_index_witness_recovers_and_refreshes_exact_accepted_carrier(tmp_path: P
             marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
             marker_request_sessions_by_raw_id={"raw": full},
             marker_session_dispositions_by_raw_id={"raw": [{"session_id": "child", "disposition": "no-op"}]},
+            # The public ingest route classifies this exact current-witness
+            # retry before the session drain and reuses the retained carrier.
+            marker_batches_by_raw_id={"raw": first_batch},
         )
         index.execute("BEGIN IMMEDIATE")
         _publish_marker_witnesses_before_index_commit(index, archive_root=root, summary=retry)
@@ -746,37 +750,75 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
         await ingest_batch_core.process_ingest_batch(
             service, repository.backend, [raw_ids[0]], ParseResult(), None, repair_message_fts=False
         )
-        await ingest_batch_core.process_ingest_batch(
-            service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
-        )
+        raw_state_boundary = ingest_batch_core._persist_batch_raw_state_updates
+
+        async def interrupt_after_index_commit(*_args: object, **_kwargs: object) -> float:
+            raise RuntimeError("simulated loss after append index commit")
+
+        monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", interrupt_after_index_commit)
+        with pytest.raises(RuntimeError, match="after append index commit"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
+            )
+        monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", raw_state_boundary)
         with sqlite3.connect(tmp_path / "source.db") as source:
-            accepted = source.execute(
-                "SELECT sequence, payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids[1],)
+            pending = source.execute(
+                "SELECT request_key, carrier_digest, payload, expected_incarnation_id "
+                "FROM pending_accepted_marker_inputs WHERE raw_id = ?",
+                (raw_ids[1],),
             ).fetchone()
-            assert accepted is not None
-            original_payload = bytes(accepted[1])
+            assert pending is not None
+            original_payload = bytes(pending[2])
             original = json.loads(original_payload)
-            assert accepted[0] == 2
             assert [item["match"]["body"] for item in original["sessions"][0]["candidates"]] == ["repeated lesson"]
             provenance = original["sessions"][0]["candidates"][0]["provenance"]
             assert provenance["block_id"].endswith(".1:0")
-        original_accepted = _accepted_marker_state(tmp_path / "source.db", raw_ids[1])
         original_index = _index_message_state(tmp_path / "index.db")
         assert original_index[0] == (("codex-session:session",),)
         assert len(original_index[1]) == 2
         assert any("repeated lesson" in str(row[1]) for row in original_index[2])
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute(
+                "SELECT carrier_digest FROM ingest_marker_witnesses WHERE request_key = ?", (pending[0],)
+            ).fetchone() == (pending[1],)
+        assert _accepted_marker_state(tmp_path / "source.db", raw_ids[1]) is None
 
-        # An exact ordinary replay is classified before append preparation
-        # and reuses the accepted carrier without changing index rows.
+        # Force publication bypasses the ordinary exact-witness shortcut. A
+        # changed append/replacement carrier must refuse despite the committed
+        # historical witness, leaving both index rows and pending source bytes
+        # intact.
+        with pytest.raises(AcceptedMarkerInputRefusedError, match="immutable retained marker carrier"):
+            await ingest_batch_core.process_ingest_batch(
+                service,
+                repository.backend,
+                [raw_ids[1]],
+                ParseResult(),
+                None,
+                force_write=True,
+                repair_message_fts=False,
+            )
+        assert _index_message_state(tmp_path / "index.db") == original_index
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert (
+                source.execute(
+                    "SELECT request_key, carrier_digest, payload, expected_incarnation_id "
+                    "FROM pending_accepted_marker_inputs WHERE raw_id = ?",
+                    (raw_ids[1],),
+                ).fetchone()
+                == pending
+            )
+
+        # Ordinary retry reuses the exact current-witness carrier and completes
+        # source acceptance without rewriting the already committed append.
         await ingest_batch_core.process_ingest_batch(
             service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
         )
         assert _index_message_state(tmp_path / "index.db") == original_index
-        assert _accepted_marker_state(tmp_path / "source.db", raw_ids[1]) == original_accepted
+        original_accepted = _accepted_marker_state(tmp_path / "source.db", raw_ids[1])
+        assert original_accepted is not None and original_accepted[0] == 2
+        assert bytes(original_accepted[1]) == original_payload
 
-        # Force publication must make the same refusal before committing any
-        # rewritten rows when its newly prepared disposition differs.
-        with pytest.raises(AcceptedMarkerInputRefusedError, match="immutable accepted marker carrier"):
+        with pytest.raises(AcceptedMarkerInputRefusedError, match="immutable retained marker carrier"):
             await ingest_batch_core.process_ingest_batch(
                 service,
                 repository.backend,
@@ -789,6 +831,7 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
         assert _index_message_state(tmp_path / "index.db") == original_index
         assert _accepted_marker_state(tmp_path / "source.db", raw_ids[1]) == original_accepted
         assert [texts for raw_id, texts in parse_calls if raw_id == raw_ids[1]] == [
+            ("::note: repeated lesson", "::note: repeated lesson"),
             ("::note: repeated lesson", "::note: repeated lesson"),
             ("::note: repeated lesson", "::note: repeated lesson"),
             ("::note: repeated lesson", "::note: repeated lesson"),
@@ -1006,6 +1049,211 @@ async def test_public_drive_marker_retry_keeps_identity_across_revision_binding_
         witness = index.execute("SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses").fetchone()
         assert witness is not None
         assert witness[0] == hashlib.sha256(accepted_payload).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_public_mirror_replay_restages_without_rewriting_witnessed_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MIRROR exact retries preserve the carrier while restaging publication payloads."""
+    from polylogue.pipeline.ids import session_content_hash
+
+    bootstrap_archive_root(tmp_path)
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    payload_bytes = b"mirror accepted marker raw"
+    BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.CODEX_SESSION,
+            source_path="mirror-marker.jsonl",
+            source_index=0,
+            payload=payload_bytes,
+            acquired_at_ms=1,
+        )
+    parsed = _session("::note: mirror marker")
+    template = SessionWritePayload(
+        session_id="codex-session:session",
+        content_hash=str(session_content_hash(parsed)),
+        parsed_session=parsed,
+        message_count=len(parsed.messages),
+        raw_id=raw_id,
+    )
+    parse_calls = 0
+
+    def fake_ingest(_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        nonlocal parse_calls
+        parse_calls += 1
+        return IngestRecordResult(
+            raw_id=raw_id,
+            payload_provider=Provider.CODEX.value,
+            validation_status="passed",
+            outcome_code="success",
+            sessions=[copy.deepcopy(template)],
+        )
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "mirror"})(),
+    )
+    real_stage_payload = ingest_batch_core.stage_payload_async
+    staged_object_ids: list[str] = []
+
+    async def observe_stage_payload(conn: object, *, payload: PublicationPayload, mode: object, now_ms: int) -> object:
+        staged_object_ids.append(payload.object_id)
+        return await real_stage_payload(conn, payload=payload, mode=mode, now_ms=now_ms)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ingest_batch_core, "stage_payload_async", observe_stage_payload)
+    try:
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        state_after_first = _index_message_state(tmp_path / "index.db")
+        accepted_after_first = _accepted_marker_state(tmp_path / "source.db", raw_id)
+        assert accepted_after_first is not None and accepted_after_first[0] == 1
+
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        assert _index_message_state(tmp_path / "index.db") == state_after_first
+        assert _accepted_marker_state(tmp_path / "source.db", raw_id) == accepted_after_first
+        assert parse_calls == 2
+        assert len(staged_object_ids) >= 2
+        assert set(staged_object_ids) == {"codex-session:session"}
+    finally:
+        await repository.close()
+
+
+@pytest.mark.asyncio
+async def test_public_primary_pending_witness_retry_preserves_defer_then_finalizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PRIMARY admission runs before exact-witness reuse and source finalization."""
+    from polylogue.pipeline.ids import session_content_hash
+
+    bootstrap_archive_root(tmp_path)
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    payload_bytes = b"primary accepted marker raw"
+    BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.CODEX_SESSION,
+            source_path="primary-marker.jsonl",
+            source_index=0,
+            payload=payload_bytes,
+            acquired_at_ms=1,
+        )
+    parsed = _session("::note: primary marker")
+    template = SessionWritePayload(
+        session_id="codex-session:session",
+        content_hash=str(session_content_hash(parsed)),
+        parsed_session=parsed,
+        message_count=len(parsed.messages),
+        raw_id=raw_id,
+    )
+    parse_calls = 0
+
+    def fake_ingest(_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        nonlocal parse_calls
+        parse_calls += 1
+        return IngestRecordResult(
+            raw_id=raw_id,
+            payload_provider=Provider.CODEX.value,
+            validation_status="passed",
+            outcome_code="success",
+            sessions=[copy.deepcopy(template)],
+        )
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "primary"})(),
+    )
+    projection_results = iter((False, True, False))
+    publication_events: list[tuple[str, object]] = []
+
+    class _PublicationProbe:
+        def __init__(self, _db_path: Path, _mode: object, _transport: object) -> None:
+            pass
+
+        def stage_payload(self, payload: PublicationPayload) -> None:
+            publication_events.append(("stage", payload.object_id))
+
+        def drain_once(self, *, object_ids: list[str], limit: int) -> None:
+            publication_events.append(("drain", (tuple(object_ids), limit)))
+
+        def projection_blocked(self, _object_ids: list[str]) -> bool:
+            return next(projection_results)
+
+    monkeypatch.setattr(ingest_batch_core, "resolve_configured_transport", lambda: object())
+    monkeypatch.setattr(ingest_batch_core, "PublicationService", _PublicationProbe)
+    raw_state_boundary = ingest_batch_core._persist_batch_raw_state_updates
+
+    async def interrupt_source_finalization(*_args: object, **_kwargs: object) -> float:
+        raise RuntimeError("simulated loss after PRIMARY index commit")
+
+    monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", interrupt_source_finalization)
+    try:
+        with pytest.raises(RuntimeError, match="after PRIMARY index commit"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+        monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", raw_state_boundary)
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            pending = source.execute(
+                "SELECT request_key, carrier_digest, payload, expected_incarnation_id "
+                "FROM pending_accepted_marker_inputs WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+            assert pending is not None
+            assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+        first_index_state = _index_message_state(tmp_path / "index.db")
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute(
+                "SELECT carrier_digest FROM ingest_marker_witnesses WHERE request_key = ?", (pending[0],)
+            ).fetchone() == (pending[1],)
+
+        # PRIMARY remains authoritative: an unconfirmed duplicate is deferred
+        # before the marker reuse shortcut and leaves pending source state.
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        assert _index_message_state(tmp_path / "index.db") == first_index_state
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert (
+                source.execute(
+                    "SELECT request_key, carrier_digest, payload, expected_incarnation_id "
+                    "FROM pending_accepted_marker_inputs WHERE raw_id = ?",
+                    (raw_id,),
+                ).fetchone()
+                == pending
+            )
+            assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+
+        # Once PRIMARY admission succeeds, current-witness reuse skips only
+        # the session write; source finalization and Sinex restaging proceed.
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        accepted = _accepted_marker_state(tmp_path / "source.db", raw_id)
+        assert accepted is not None and accepted[0] == 1 and bytes(accepted[1]) == bytes(pending[2])
+        assert _index_message_state(tmp_path / "index.db") == first_index_state
+        assert parse_calls == 3
+        assert [event[0] for event in publication_events] == ["stage", "drain"] * 3
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert source.execute(
+            "SELECT sequence, payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1, bytes(pending[2]))
 
 
 @pytest.mark.asyncio
