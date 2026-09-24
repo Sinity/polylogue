@@ -2443,14 +2443,14 @@ def _publish_marker_witnesses_before_index_commit(
                 )
         value = json.loads(batch.payload)
         carrier_sessions = value["sessions"]
-        dispositions = [
+        witness_dispositions = [
             {
                 "session_id": str(session.get("session_id", "")),
                 "disposition": str(session.get("disposition", "no-op")),
             }
             for session in carrier_sessions
         ]
-        encoded = json.dumps(dispositions, sort_keys=True, separators=(",", ":"))
+        encoded = json.dumps(witness_dispositions, sort_keys=True, separators=(",", ":"))
         prior = index_conn.execute(
             "SELECT carrier_digest, dispositions_json, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
             (batch.identity,),

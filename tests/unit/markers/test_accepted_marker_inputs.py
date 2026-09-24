@@ -7,7 +7,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -284,7 +284,7 @@ def test_marker_migration_train_has_runtime_proof_and_refuses_without_backup(tmp
 
 def test_request_identity_uses_full_parse_while_carrier_keeps_selected_delta() -> None:
     """A no-op retry has the same request identity but cannot replace delta bytes."""
-    parsed = [{"session_id": "child", "input_content_hash": "full-hash"}]
+    parsed: list[dict[str, object]] = [{"session_id": "child", "input_content_hash": "full-hash"}]
     original = prepare_accepted_marker_input(
         "raw",
         [{**parsed[0], "disposition": "append", "candidates": [{"block_id": "tail:1"}]}],
@@ -319,8 +319,12 @@ def test_index_witness_recovers_original_carrier_after_noop_retry(tmp_path: Path
     with sqlite3.connect(root / "index.db") as index:
         index.executescript(INDEX_DDL)
         ingest_batch_core._ensure_ingest_index_incarnation(index)
-        full = [{"session_id": "child", "input_content_hash": "full-hash"}]
-        original = {**full[0], "disposition": "append", "candidates": [{"block_id": "tail:1"}]}
+        full: list[dict[str, object]] = [{"session_id": "child", "input_content_hash": "full-hash"}]
+        original: dict[str, object] = {
+            **full[0],
+            "disposition": "append",
+            "candidates": [{"block_id": "tail:1"}],
+        }
         summary = _IngestBatchSummary(
             marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
             marker_request_sessions_by_raw_id={"raw": full},
@@ -385,20 +389,20 @@ async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
     config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
     service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    original_commit_boundary = ingest_batch_core._commit_sync_ingest_side_effects
+    original_raw_state_boundary = ingest_batch_core._persist_batch_raw_state_updates
     try:
         if failure_boundary == "before-index-commit":
-            original_boundary = ingest_batch_core._commit_sync_ingest_side_effects
 
             def interrupt_before_index_commit(*_args: object, **_kwargs: object) -> None:
                 raise RuntimeError("simulated loss before index commit")
 
             monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", interrupt_before_index_commit)
         else:
-            original_boundary = ingest_batch_core._persist_batch_raw_state_updates
 
             async def interrupt_after_index_commit(*args: object, **kwargs: object) -> float:
                 if failure_boundary == "after-source-finalization":
-                    await original_boundary(*args, **kwargs)
+                    await cast(Callable[..., Awaitable[float]], original_raw_state_boundary)(*args, **kwargs)
                     raise RuntimeError("simulated loss after source finalization")
                 raise RuntimeError("simulated loss after index commit")
 
@@ -407,13 +411,10 @@ async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
             await ingest_batch_core.process_ingest_batch(
                 service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
             )
-        monkeypatch.setattr(
-            ingest_batch_core,
-            "_commit_sync_ingest_side_effects"
-            if failure_boundary == "before-index-commit"
-            else "_persist_batch_raw_state_updates",
-            original_boundary,
-        )
+        if failure_boundary == "before-index-commit":
+            monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", original_commit_boundary)
+        else:
+            monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", original_raw_state_boundary)
         with sqlite3.connect(tmp_path / "source.db") as source:
             if failure_boundary == "after-source-finalization":
                 assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
@@ -654,9 +655,8 @@ async def test_source_required_mode_refuses_before_index_processing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A required durable acceptance cannot begin as an index-only write."""
-    from types import SimpleNamespace
-
-    from polylogue.pipeline.services.ingest_batch._core import PublicationEncodingError
+    from polylogue.sinex.material_adapter import PublicationEncodingError
+    from polylogue.storage.repository import SessionRepository
 
     async def raw_records(_batch_ids: list[str]) -> list[RawSessionRecord]:
         return [
@@ -669,13 +669,13 @@ async def test_source_required_mode_refuses_before_index_processing(
             )
         ]
 
-    repository = SimpleNamespace(source_backend=None, get_raw_sessions_batch=raw_records)
-    service = SimpleNamespace(
-        execution=None,
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))
+    monkeypatch.setattr(repository, "get_raw_sessions_batch", raw_records)
+    service = ParsingService(
         repository=repository,
         archive_root=tmp_path,
+        config=Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
         ingest_workers=1,
-        measure_ingest_result_size=False,
     )
     backend = SQLiteBackend(db_path=tmp_path / "index.db")
     monkeypatch.setattr(
