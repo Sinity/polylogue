@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
@@ -64,6 +64,20 @@ class HookEventConflictError(RuntimeError):
 
 
 PENDING_RAW_LOGICAL_SOURCE_PREFIX = "pending-raw:"
+
+# Storage-local blob ownership categories. These values identify the durable
+# relation that keeps bytes live; adding one requires reviewing blob liveness
+# ownership and the source DDL migration together.
+BlobRefType = Literal["raw_payload", "attachment", "sidecar", "hook_payload"]
+# Coordinate format is a durable encoding contract. A new format needs a
+# reviewed reader/reacquisition path and source migration, not just a new tag.
+ContainerCoordinateFormat = Literal["zip-v2"]
+# Carrier role controls which source is eligible to publish hook-carrier
+# authority; extend only with a reviewed source selection policy.
+HookCarrierRole = Literal["primary-writable", "legacy-read-only"]
+_BLOB_REF_TYPES = get_args(BlobRefType)
+_CONTAINER_COORDINATE_FORMATS = get_args(ContainerCoordinateFormat)
+_HOOK_CARRIER_ROLES = get_args(HookCarrierRole)
 
 
 def _is_raw_failure_artifact_kind(artifact_kind: object) -> bool:
@@ -146,7 +160,7 @@ class ArchiveSourceBlobRef:
 
     blob_hash: bytes
     raw_id: str | None = None
-    ref_type: str = "raw_payload"
+    ref_type: BlobRefType = "raw_payload"
     source_path: str | None = None
     size_bytes: int | None = None
     acquired_at_ms: int | None = None
@@ -301,7 +315,7 @@ def record_raw_container_coordinate(
     conn: sqlite3.Connection,
     raw_id: str,
     *,
-    coordinate_format: Literal["zip-v2"],
+    coordinate_format: ContainerCoordinateFormat,
     entry_ordinal: int,
     split_index: int,
     addressing_mode: MemberAddressingMode | str | None,
@@ -318,6 +332,9 @@ def record_raw_container_coordinate(
     """
     if entry_ordinal < 0 or split_index < 0:
         raise ValueError("container entry ordinal and split index must be non-negative")
+    coordinate_format_value = require_vocabulary(
+        coordinate_format, _CONTAINER_COORDINATE_FORMATS, field="coordinate_format"
+    )
     if content_identity is not None:
         if len(content_identity) != 64:
             raise ValueError("content_identity must be a 64-character digest")
@@ -337,7 +354,7 @@ def record_raw_container_coordinate(
                 raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode, content_identity
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (raw_id, coordinate_format, entry_ordinal, split_index, mode, content_identity),
+            (raw_id, coordinate_format_value, entry_ordinal, split_index, mode, content_identity),
         )
         if mode is not None:
             # A row written before the mode existed carries the same
@@ -417,7 +434,7 @@ def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> Captu
         """,
         (raw_id,),
     ).fetchall()
-    modes = tuple(Provider.from_string(row["capture_mode"]) for row in rows)
+    modes = tuple(require_vocabulary(row["capture_mode"], Provider, field="capture_mode") for row in rows)
     status: CaptureModeResolutionStatus
     if not modes:
         status = "unknown"
@@ -637,6 +654,10 @@ def write_source_blob_refs(
     """
     if not refs:
         return
+    # Preflight the complete batch so invalid storage-local categories cannot
+    # leave earlier refs written in a caller-owned transaction.
+    for ref in refs:
+        require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
     with conn:
         for ref in refs:
             if is_blob_hash_excised(conn, ref.blob_hash):
@@ -835,7 +856,7 @@ def write_source_hook_event(
     blob_publication_receipt_id: str | None = None,
     carrier_source_id: str = "representative-hook-source",
     carrier_relative_path: str | None = None,
-    carrier_role: str = "primary-writable",
+    carrier_role: HookCarrierRole = "primary-writable",
     manage_transaction: bool = True,
     policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> str:
@@ -859,6 +880,7 @@ def write_source_hook_event(
     ``ref_type='hook_payload'`` / ``ref_id=hook_event.hook_event_id`` instead,
     which really is this row's primary key in ``raw_hook_events``.
     """
+    carrier_role_value = require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
     conn.execute("PRAGMA foreign_keys = ON")
     if require_vocabulary(origin, Origin, field="origin") is None:
         raise ValueError("origin is required for hook events")
@@ -888,7 +910,7 @@ def write_source_hook_event(
             relative_path=relative_path,
             hook_event=hook_event,
             blob_hash=blob_hash,
-            role=carrier_role,
+            role=carrier_role_value,
             admitted_at_ms=acquired_at_ms,
         )
     return raw_id
@@ -922,7 +944,7 @@ def write_source_hook_event_batch(
     *,
     carrier_source_id: str,
     carrier_relative_path: str,
-    carrier_role: str,
+    carrier_role: HookCarrierRole,
     carrier_blob_hash: bytes,
     carrier_source_path: str,
     events: Sequence[CarrierHookEvent],
@@ -945,6 +967,11 @@ def write_source_hook_event_batch(
     a raw row, because the carrier is an acquired artifact.
     """
 
+    carrier_role_value = require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
+    # Validate the complete batch before its first event write; callers may
+    # already own a transaction and catch the refusal locally.
+    for carried in events:
+        require_vocabulary(carried.event.origin, Origin, field="hook_event.origin")
     conn.execute("PRAGMA foreign_keys = ON")
     _assert_excision_policy(carrier_blob_hash, source_path=carrier_source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, carrier_blob_hash):
@@ -952,7 +979,6 @@ def write_source_hook_event_batch(
     written = 0
     with conn if manage_transaction else nullcontext():
         for carried in events:
-            require_vocabulary(carried.event.origin, Origin, field="hook_event.origin")
             coordinate = hook_carrier_coordinate(carrier_relative_path, carried.byte_offset)
             # A carrier grows, so a later revision retains a superset of an
             # earlier one's bytes under a different blob hash. The event is the
@@ -988,7 +1014,7 @@ def write_source_hook_event_batch(
                 relative_path=coordinate,
                 hook_event=carried.event,
                 blob_hash=blob_hash,
-                role=carrier_role,
+                role=carrier_role_value,
                 admitted_at_ms=acquired_at_ms,
             )
             written += 1
@@ -1263,11 +1289,31 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     if row is None:
         raise KeyError(raw_id)
 
+    # Source DDL deliberately leaves durable membership out of its CHECKs.
+    # Refuse malformed historical/direct-SQL rows at the typed hydration
+    # boundary before exposing the envelope to callers.
+    origin = require_vocabulary(row["origin"], Origin, field="origin")
+    capture_mode = (
+        require_vocabulary(row["capture_mode"], Provider, field="capture_mode")
+        if row["capture_mode"] is not None
+        else None
+    )
+    validation_status = (
+        require_vocabulary(row["validation_status"], ValidationStatus, field="validation_status")
+        if row["validation_status"] is not None
+        else None
+    )
+    validation_mode = (
+        require_vocabulary(row["validation_mode"], ValidationMode, field="validation_mode")
+        if row["validation_mode"] is not None
+        else None
+    )
+
     blob_refs = tuple(
         ArchiveSourceBlobRef(
             blob_hash=row["blob_hash"],
             raw_id=row["raw_id"],
-            ref_type=row["ref_type"],
+            ref_type=require_vocabulary(row["ref_type"], _BLOB_REF_TYPES, field="ref_type"),
             source_path=row["source_path"],
             size_bytes=row["size_bytes"],
             acquired_at_ms=row["acquired_at_ms"],
@@ -1305,8 +1351,8 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
     )
     return ArchiveRawSessionEnvelope(
         raw_id=row["raw_id"],
-        origin=row["origin"],
-        capture_mode=row["capture_mode"],
+        origin=origin,
+        capture_mode=capture_mode,
         native_id=row["native_id"],
         source_path=row["source_path"],
         source_index=row["source_index"],
@@ -1317,10 +1363,10 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
         parsed_at_ms=row["parsed_at_ms"],
         parse_error=row["parse_error"],
         validated_at_ms=row["validated_at_ms"],
-        validation_status=row["validation_status"],
+        validation_status=validation_status,
         validation_error=row["validation_error"],
         validation_drift_count=row["validation_drift_count"],
-        validation_mode=row["validation_mode"],
+        validation_mode=validation_mode,
         detection_warnings=tuple(json.loads(row["detection_warnings_json"] or "[]")),
         blob_refs=blob_refs,
         artifact_ids=artifact_ids,
@@ -1423,9 +1469,10 @@ def list_hook_events(
 
 
 def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> None:
+    ref_type = require_vocabulary(ref.ref_type, _BLOB_REF_TYPES, field="ref_type")
     if ref.raw_id is None or ref.size_bytes is None or ref.acquired_at_ms is None:
         raise ValueError("raw_id, size_bytes, and acquired_at_ms are required for blob refs")
-    if ref.ref_type == "hook_payload":
+    if ref_type == "hook_payload":
         # The logical hook row and its first-observed coordinate are immutable;
         # replaying the same event through another carrier must not rewrite
         # this representative blob-ref coordinate either.
@@ -1435,7 +1482,7 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(blob_hash, ref_type, ref_id) DO NOTHING
             """,
-            (ref.blob_hash, ref.raw_id, ref.ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
+            (ref.blob_hash, ref.raw_id, ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
         )
     else:
         conn.execute(
@@ -1444,7 +1491,7 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
                 blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (ref.blob_hash, ref.raw_id, ref.ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
+            (ref.blob_hash, ref.raw_id, ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
         )
     from polylogue.storage.blob_publication import consume_blob_publication_receipt
 
@@ -1673,11 +1720,13 @@ def _raw_artifact_from_row(row: sqlite3.Row) -> ArchiveRawArtifactEnvelope:
     return ArchiveRawArtifactEnvelope(
         artifact_id=row["artifact_id"],
         raw_id=row["raw_id"],
-        origin=row["origin"],
+        origin=require_vocabulary(row["origin"], Origin, field="artifact.origin"),
         source_path=row["source_path"],
         source_index=row["source_index"],
         artifact_kind=row["artifact_kind"],
-        support_status=row["support_status"],
+        support_status=require_vocabulary(
+            row["support_status"], ArtifactSupportStatus, field="artifact.support_status"
+        ),
         classification_reason=row["classification_reason"],
         parse_as_session=bool(row["parse_as_session"]),
         schema_eligible=bool(row["schema_eligible"]),
@@ -1694,7 +1743,7 @@ def _raw_artifact_from_row(row: sqlite3.Row) -> ArchiveRawArtifactEnvelope:
 def _hook_event_from_row(row: sqlite3.Row) -> ArchiveHookEvent:
     return ArchiveHookEvent(
         hook_event_id=row["hook_event_id"],
-        origin=row["origin"],
+        origin=require_vocabulary(row["origin"], Origin, field="hook_event.origin"),
         source_path=row["source_path"],
         event_type=row["event_type"],
         payload=_json_loads(row["payload_json"]),

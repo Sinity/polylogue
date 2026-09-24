@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -12,6 +14,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveRawSessionEnvelope,
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
+    CarrierHookEvent,
     deterministic_blob_hash,
     deterministic_raw_session_id,
     list_hook_events,
@@ -20,7 +23,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     read_capture_mode_resolution,
     read_hook_event,
     read_raw_artifact,
+    record_raw_container_coordinate,
     upsert_raw_artifact,
+    write_source_hook_event,
+    write_source_hook_event_batch,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -146,6 +152,245 @@ def test_archive_tiers_source_writer_materializes_raw_session_with_blob_ref(tmp_
         session_native_id="session-1",
     )
     assert list_hook_events(conn, origin=Origin.CLAUDE_CODE_SESSION, session_native_id="session-1") == (hook_event,)
+
+
+def test_raw_writer_refuses_invalid_storage_blob_category_before_commit(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        with pytest.raises(ValueError, match="ref_type"):
+            write_source_raw_session(
+                conn,
+                origin=Origin.CLAUDE_CODE_SESSION,
+                source_path="/tmp/record.jsonl",
+                source_index=0,
+                payload=b"payload",
+                acquired_at_ms=1,
+                additional_blob_refs=(
+                    ArchiveSourceBlobRef(
+                        blob_hash=deterministic_blob_hash(b"attachment"),
+                        ref_type="not-a-blob-category",  # type: ignore[arg-type]
+                        source_path="/tmp/record.jsonl",
+                        size_bytes=10,
+                        acquired_at_ms=1,
+                    ),
+                ),
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_container_coordinate_writer_refuses_invalid_format_before_persistence(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+        )
+        with pytest.raises(ValueError, match="coordinate_format"):
+            record_raw_container_coordinate(
+                conn,
+                raw_id,
+                coordinate_format="not-a-format",  # type: ignore[arg-type]
+                entry_ordinal=0,
+                split_index=0,
+                addressing_mode=None,
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_container_coordinates").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_hook_writer_refuses_invalid_storage_carrier_role_before_persistence(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    hook_event = ArchiveHookEvent(
+        hook_event_id="hook-invalid-role",
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="/tmp/hook.jsonl",
+        event_type="source_opened",
+        payload={},
+        observed_at_ms=1,
+    )
+    with pytest.raises(ValueError, match="carrier_role"):
+        write_source_hook_event(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/hook.jsonl",
+            payload=b"{}",
+            acquired_at_ms=1,
+            raw_id="raw-hook",
+            hook_event=hook_event,
+            carrier_role="not-a-carrier-role",  # type: ignore[arg-type]
+        )
+    assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 0
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "reader_field"),
+    [
+        ("origin", "origin"),
+        ("capture_mode", "capture_mode"),
+        ("validation_status", "validation_status"),
+        ("validation_mode", "validation_mode"),
+    ],
+)
+def test_raw_session_hydration_refuses_unowned_membership_values(
+    tmp_path: Path, column: str, reader_field: str
+) -> None:
+    """A SQL bypass cannot leak an unowned durable token through a typed reader."""
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+        )
+        conn.execute(f"UPDATE raw_sessions SET {column}=? WHERE raw_id=?", ("not-a-vocabulary-member", raw_id))
+
+        with pytest.raises(ValueError, match=reader_field):
+            read_archive_raw_session_envelope(conn, raw_id)
+    finally:
+        conn.close()
+
+
+def test_raw_session_hydration_refuses_unowned_blob_ref_type(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+        )
+        # Model corrupt legacy bytes by disabling SQLite CHECK enforcement for
+        # this one fixture; production opens retain normal constraint checks.
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute("UPDATE blob_refs SET ref_type='not-a-vocabulary-member' WHERE ref_id=?", (raw_id,))
+
+        with pytest.raises(ValueError, match="ref_type"):
+            read_archive_raw_session_envelope(conn, raw_id)
+    finally:
+        conn.close()
+
+
+def test_artifact_and_hook_hydration_refuse_unowned_domain_values(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+            artifact=ArchiveSourceArtifact(
+                artifact_id="artifact-1",
+                origin=Origin.CLAUDE_CODE_SESSION,
+                source_path="/tmp/record.jsonl",
+                source_index=0,
+                artifact_kind="session_export",
+                classification_reason="fixture",
+                support_status=ArtifactSupportStatus.SUPPORTED_PARSEABLE,
+            ),
+            hook_event=ArchiveHookEvent(
+                hook_event_id="hook-1",
+                origin=Origin.CLAUDE_CODE_SESSION,
+                source_path="/tmp/record.jsonl",
+                event_type="source_opened",
+                payload={},
+                observed_at_ms=1,
+            ),
+        )
+        conn.execute("UPDATE raw_artifacts SET support_status='invalid' WHERE artifact_id='artifact-1'")
+        conn.execute("UPDATE raw_hook_events SET origin='invalid' WHERE hook_event_id='hook-1'")
+
+        with pytest.raises(ValueError, match="artifact.support_status"):
+            read_raw_artifact(conn, "artifact-1")
+        with pytest.raises(ValueError, match="hook_event.origin"):
+            read_hook_event(conn, "hook-1")
+    finally:
+        conn.close()
+
+
+def test_capture_mode_resolution_refuses_unowned_persisted_value(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/record.jsonl",
+            source_index=0,
+            payload=b"payload",
+            acquired_at_ms=1,
+            capture_mode=Provider.CLAUDE_CODE,
+        )
+        conn.execute(
+            "UPDATE raw_capture_observations SET capture_mode='not-a-provider' WHERE raw_id=?",
+            (raw_id,),
+        )
+        with pytest.raises(ValueError, match="capture_mode"):
+            read_capture_mode_resolution(conn, raw_id)
+    finally:
+        conn.close()
+
+
+def test_hook_batch_preflights_all_event_origins_before_persistence(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    try:
+        events = (
+            CarrierHookEvent(
+                byte_offset=0,
+                line_bytes=10,
+                event=ArchiveHookEvent(
+                    hook_event_id="valid-first",
+                    origin=Origin.CLAUDE_CODE_SESSION,
+                    source_path="/tmp/hooks.ndjson",
+                    event_type="source_opened",
+                    payload={},
+                    observed_at_ms=1,
+                ),
+            ),
+            CarrierHookEvent(
+                byte_offset=10,
+                line_bytes=10,
+                event=ArchiveHookEvent(
+                    hook_event_id="invalid-second",
+                    origin="not-an-origin",
+                    source_path="/tmp/hooks.ndjson",
+                    event_type="source_opened",
+                    payload={},
+                    observed_at_ms=1,
+                ),
+            ),
+        )
+        with pytest.raises(ValueError, match="hook_event.origin"):
+            write_source_hook_event_batch(
+                conn,
+                carrier_source_id="fixture",
+                carrier_relative_path="hooks.ndjson",
+                carrier_role="primary-writable",
+                carrier_blob_hash=b"h" * 32,
+                carrier_source_path="/tmp/hooks.ndjson",
+                events=events,
+                acquired_at_ms=1,
+                manage_transaction=False,
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 0
+    finally:
+        conn.close()
 
 
 def test_source_artifact_upsert_keeps_coordinate_deduplication_and_raw_failure_fanout(

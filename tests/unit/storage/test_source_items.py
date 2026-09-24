@@ -8,6 +8,7 @@ import pytest
 
 from polylogue.core.enums import IngestOutcome
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     AcquisitionDisposition,
     SourceItemMemberDisposition,
@@ -82,6 +83,57 @@ def test_raw_and_membership_rollback_together_including_deduplicated_records() -
     conn.rollback()
     assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone()[0] == 0
     assert source_generation_census(conn, "frozen")["enumeration_pending"] == 1
+
+
+def test_transition_refuses_invalid_domain_vocabularies_before_idempotency_lookup() -> None:
+    conn = _source()
+    item = _frozen_item(conn)
+    for field, value in (("disposition", "not-a-disposition"), ("outcome_code", "not-an-outcome")):
+        args = {
+            "source_generation_id": "frozen",
+            "source_item_id": item,
+            "request_id": field,
+            "disposition": AcquisitionDisposition.ADMITTED,
+            "outcome_code": IngestOutcome.SUCCESS,
+            "stage": "test",
+            "observed_at_ms": 2,
+        }
+        args[field] = value
+        with pytest.raises(ValueError, match=field):
+            transition_source_item(conn, **args)  # type: ignore[arg-type]
+    assert tuple(conn.execute("SELECT disposition, outcome_code, revision FROM source_items").fetchone()) == (
+        "pending",
+        "interrupted",
+        0,
+    )
+
+
+def test_manifest_preflights_attachment_vocabulary_before_publishing_generation() -> None:
+    conn = _source()
+    with pytest.raises(ValueError, match="origin"):
+        publish_source_generation(
+            conn,
+            source_generation_id="invalid-attachments",
+            manifest_digest="c" * 64,
+            addressing_mode="physical-file-v1",
+            coordinates=("export.json",),
+            observed_at_ms=2,
+            attachments=(SourceAttachment("attachment", "not-an-origin", "drive"),),
+        )
+    assert conn.execute("SELECT COUNT(*) FROM source_generations").fetchone()[0] == 0
+
+
+def test_sql_bypass_can_store_an_unowned_source_item_origin() -> None:
+    """The nullable origin column has no membership CHECK by design."""
+    conn = _source()
+    item = _frozen_item(conn)
+    conn.execute(
+        "UPDATE source_items SET origin = 'not-an-origin' WHERE source_generation_id='frozen' AND source_item_id=?",
+        (item,),
+    )
+    assert (
+        conn.execute("SELECT origin FROM source_items WHERE source_item_id=?", (item,)).fetchone()[0] == "not-an-origin"
+    )
 
 
 def test_interrupted_enumeration_cannot_claim_empty_or_complete() -> None:
