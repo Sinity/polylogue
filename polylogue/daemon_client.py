@@ -22,7 +22,7 @@ import os
 import socket
 import struct
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
 from time import perf_counter
@@ -393,12 +393,18 @@ class DaemonClient:
         *,
         archive_root: str,
         after_sequence: int = 0,
+        after_progress_sequence: int = 0,
         timeout_ms: int = 30_000,
     ) -> dict[str, Any] | None:
-        """Wait on the durable event sequence using the same bounded POST endpoint."""
+        """Wait on durable state and, when requested, an independent progress cursor."""
         return self.operation(
             "operation.await",
-            {"request_id": request_id, "after_sequence": after_sequence, "timeout_ms": timeout_ms},
+            {
+                "request_id": request_id,
+                "after_sequence": after_sequence,
+                "after_progress_sequence": after_progress_sequence,
+                "timeout_ms": timeout_ms,
+            },
             archive_root=archive_root,
         )
 
@@ -409,8 +415,14 @@ class DaemonClient:
         *,
         archive_root: str,
         request_id: str | None = None,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None:
-        """Follow accepted work with event-driven waits, never mutation retries."""
+        """Follow accepted work with event-driven waits, never mutation retries.
+
+        Progress is observational and best-effort.  A renderer callback is
+        isolated from the operation so a broken terminal/UI cannot abort the
+        daemon-owned work or hide its terminal receipt.
+        """
         spec = daemon_operation_spec(operation)
         if spec is None:
             raise DaemonOperationProtocolError(f"operation is not declared: {operation}")
@@ -431,7 +443,9 @@ class DaemonClient:
             return envelope
         target = str(envelope["request_id"])
         state = envelope.get("result")
+        progress_operation = spec.progress
         sequence = int(state.get("sequence", 0)) if isinstance(state, dict) else 0
+        progress_sequence = int(state.get("progress_sequence", 0)) if isinstance(state, dict) else 0
         # One receipt read is always owed.  The submit above can consume the
         # whole completion budget on its own -- its own socket timeout is the
         # operation deadline plus a second -- and a plain ``while`` then
@@ -445,7 +459,11 @@ class DaemonClient:
             timeout_ms = max(1, min(30_000, int((deadline - perf_counter()) * 1000)))
             try:
                 waited = self.await_operation(
-                    target, archive_root=archive_root, after_sequence=sequence, timeout_ms=timeout_ms
+                    target,
+                    archive_root=archive_root,
+                    after_sequence=sequence,
+                    after_progress_sequence=progress_sequence if progress_operation else 0,
+                    timeout_ms=timeout_ms,
                 )
             except DaemonMutationIndeterminateError as exc:
                 if isinstance(exc.__cause__, KeyboardInterrupt):
@@ -483,6 +501,17 @@ class DaemonClient:
             ):
                 raise DaemonOperationProtocolError("operation await returned a different durable request")
             sequence = int(state["sequence"])
+            progress_sequence = int(state.get("progress_sequence", progress_sequence))
+            frames = state.get("progress_events")
+            if progress_callback is not None and isinstance(frames, list):
+                for frame in frames:
+                    if isinstance(frame, Mapping):
+                        try:
+                            progress_callback(frame)
+                        except Exception:
+                            # Rendering is explicitly non-authoritative.  The
+                            # provider and its terminal audit receipt continue.
+                            continue
             if state["outcome"] not in {"accepted", "running"}:
                 result = state.get("result", state)
                 if state["outcome"] == "completed":
@@ -511,7 +540,11 @@ class DaemonClient:
                     "outcome": state["outcome"],
                     "result": result,
                     "accepted_reference": reference,
-                    "progress": {"state": state["outcome"]},
+                    "progress": {
+                        "state": state["outcome"],
+                        "sequence": progress_sequence,
+                        "gap": state.get("progress_gap"),
+                    },
                 }
         return {**envelope, "outcome": "indeterminate", "result": state}
 

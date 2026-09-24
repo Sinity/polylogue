@@ -10,6 +10,7 @@ import tempfile
 import threading
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -471,3 +472,88 @@ def test_an_accepted_write_is_never_called_indeterminate_without_one_receipt_rea
     assert awaited == [("accepted-write", 1)]
     assert envelope is not None
     assert envelope["outcome"] == "completed"
+
+
+def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are_isolated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Long-running operation progress is observational, not a terminal gate."""
+    from polylogue.daemon_client import DaemonClient
+
+    reference = {
+        "request_id": "embedding-progress",
+        "archive_identity": "archive-identity",
+        "principal_ref": "principal",
+        "fingerprint": "fingerprint",
+        "operation_name": "maintenance.embeddings.backfill",
+    }
+    accepted = {
+        "request_id": "embedding-progress",
+        "outcome": "accepted",
+        "result": {"sequence": 1, "outcome": "accepted", "reference": reference},
+        "accepted_reference": reference,
+    }
+    states: Iterator[dict[str, object]] = iter(
+        [
+            {
+                "archive": {},
+                "generation": {},
+                "readiness": {},
+                "served_by": {},
+                "timing": {},
+                "schema_versions": {},
+                "authority_snapshot": {},
+                "degraded_components": [],
+                "result": {
+                    "sequence": 1,
+                    "outcome": "running",
+                    "reference": reference,
+                    "progress_sequence": 1,
+                    "progress_events": [{"sequence": 1, "session_id": "s1", "cost_usd": 0.01}],
+                },
+            },
+            {
+                "archive": {},
+                "generation": {},
+                "readiness": {},
+                "served_by": {},
+                "timing": {},
+                "schema_versions": {},
+                "authority_snapshot": {},
+                "degraded_components": [],
+                "result": {
+                    "sequence": 2,
+                    "outcome": "completed",
+                    "reference": reference,
+                    "progress_sequence": 1,
+                    "progress_events": [],
+                    "result": {"affected_count": 1, "outcome": "completed", "sequence": 1},
+                },
+            },
+        ]
+    )
+    after_sequences: list[int] = []
+    monkeypatch.setattr(DaemonClient, "operation", lambda self, *args, **kwargs: accepted)
+
+    def await_operation(self: DaemonClient, _request_id: str, **kwargs: object) -> dict[str, object]:
+        after_sequences.append(cast(int, kwargs["after_sequence"]))
+        return next(states)
+
+    monkeypatch.setattr(DaemonClient, "await_operation", await_operation)
+    seen: list[object] = []
+
+    def broken_renderer(frame: object) -> None:
+        seen.append(frame)
+        raise RuntimeError("terminal renderer broke")
+
+    result = DaemonClient(tmp_path / "daemon.sock").operation_to_completion(
+        "maintenance.embeddings.backfill",
+        {},
+        archive_root=str(tmp_path),
+        progress_callback=broken_renderer,
+    )
+
+    assert after_sequences == [0, 1]
+    assert len(seen) == 1
+    assert result is not None and result["outcome"] == "completed"
+    assert result["result"] == {"affected_count": 1, "outcome": "completed", "sequence": 1}

@@ -443,6 +443,7 @@ class OperationStatusRequest(_OperationPayload):
 
 class OperationAwaitRequest(OperationStatusRequest):
     after_sequence: int = Field(default=0, ge=0)
+    after_progress_sequence: int = Field(default=0, ge=0)
     timeout_ms: int = Field(default=30_000, ge=1, le=30_000)
 
 
@@ -651,6 +652,9 @@ class MutationResult(_OperationPayload):
     result: dict[str, object] | None = None
     cancellation_requested: bool | None = None
     accepted: bool | None = None
+    progress_sequence: int | None = Field(default=None, ge=0)
+    progress_events: list[dict[str, object]] | None = None
+    progress_gap: dict[str, int] | None = None
     # polylogue-oil1q: ``machine_request_state`` reports the accepted frozen
     # source generation for a ``source-generation`` artifact (every ingest).
     # Declaring it keeps ``extra="forbid"`` meaningful instead of making a

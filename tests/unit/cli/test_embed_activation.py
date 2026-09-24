@@ -16,13 +16,11 @@ retrieval is covered below (#1743).
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 from click.testing import CliRunner
 
@@ -401,21 +399,36 @@ class TestBackfillCommand:
     def _daemon_submission(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen: dict[str, Any] = {}
 
-        def submit(_config: Any, operation: str, params: dict[str, Any]) -> dict[str, Any]:
-            if not os.environ.get("VOYAGE_API_KEY"):
-                raise click.ClickException("Voyage API key not configured")
+        def submit(
+            _config: Any,
+            operation: str,
+            params: dict[str, Any],
+            *,
+            progress_callback: Any = None,
+        ) -> dict[str, Any]:
             seen.update(operation=operation, params=params)
-            return {"operation": operation, "outcome": "accepted", "result": {"request": params}}
+            if progress_callback is not None:
+                progress_callback({"session_id": "fixture-session", "cost_usd": 0.0})
+            return {"operation": operation, "outcome": "completed", "result": {"request": params}}
 
-        monkeypatch.setattr("polylogue.cli.operation_kernel.configured_accepted_operation", submit)
+        monkeypatch.setattr("polylogue.cli.operation_kernel.configured_operation_to_completion", submit)
         return seen
 
-    def test_backfill_requires_key(self, cli_runner: CliRunner, stub_env: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    def test_backfill_requires_daemon(
+        self, cli_runner: CliRunner, stub_env: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from polylogue.cli.operation_kernel import OperationUnavailableError
+
+        def unavailable(*_args: Any, **_kwargs: Any) -> Any:
+            raise OperationUnavailableError("start polylogued run to serve this operation")
+
+        monkeypatch.setattr("polylogue.cli.operation_kernel.configured_operation_to_completion", unavailable)
         report = _make_report()
         with _patch_preflight(report):
             result = cli_runner.invoke(embed_command, ["backfill", "--yes"], obj=stub_env)
         assert result.exit_code != 0
+        assert result.exception is not None
+        assert "polylogued run" in str(result.exception)
 
     def test_backfill_runs_against_stub_provider(
         self,
@@ -464,7 +477,7 @@ class TestBackfillCommand:
         ):
             result = cli_runner.invoke(embed_command, ["backfill", "--yes"], obj=stub_env)
         assert result.exit_code == 0, result.output
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output
 
     def test_backfill_passes_bounded_window_options(
         self,
@@ -502,7 +515,7 @@ class TestBackfillCommand:
         assert fake_preflight.call_args.kwargs["max_sessions"] == 3
         assert fake_preflight.call_args.kwargs["max_messages"] == 7000
         assert fake_preflight.call_args.kwargs["max_cost_usd"] == 0.10
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output
         assert _daemon_submission["params"] == {
             "max_sessions": 3,
             "max_messages": 7000,
@@ -554,7 +567,7 @@ class TestBackfillCommand:
             result = cli_runner.invoke(embed_command, ["backfill", "--yes"], obj=stub_env)
 
         assert result.exit_code == 0, result.output
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output
 
     def test_backfill_json_outputs_structured_result(
         self,
@@ -595,7 +608,7 @@ class TestBackfillCommand:
             result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--format", "json"], obj=stub_env)
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
+        payload = json.loads(result.stdout)
         assert payload["operation"] == "maintenance.embeddings.backfill"
         assert payload["result"]["request"]["max_messages"] is None
 
@@ -662,7 +675,6 @@ class TestBackfillCommand:
                 return_value=pending,
             ),
             patch("polylogue.storage.embeddings.materialization.embed_archive_session_sync", fake_embed),
-            patch("polylogue.cli.commands.embed.time.monotonic", side_effect=lambda: clock["now"]),
         ):
             result = cli_runner.invoke(
                 embed_command,
@@ -671,7 +683,7 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output
         assert _daemon_submission["params"]["stop_after_seconds"] == 1
 
     def test_backfill_max_errors_stops_after_provider_error(
@@ -720,7 +732,7 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output
         assert _daemon_submission["params"]["max_errors"] == 1
 
     def test_backfill_run_cost_cap_stops_before_provider_call(
@@ -769,7 +781,7 @@ class TestBackfillCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output
         assert _daemon_submission["params"]["max_cost_usd"] == 0.00005
 
 
@@ -977,8 +989,12 @@ class TestBackfillRebuildOrdering:
     def _daemon_submission(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("VOYAGE_API_KEY", "pa-test")
         monkeypatch.setattr(
-            "polylogue.cli.operation_kernel.configured_accepted_operation",
-            lambda _config, operation, params: {"operation": operation, "outcome": "accepted", "result": params},
+            "polylogue.cli.operation_kernel.configured_operation_to_completion",
+            lambda _config, operation, params, **_kwargs: {
+                "operation": operation,
+                "outcome": "completed",
+                "result": params,
+            },
         )
 
     def test_rebuild_does_not_mark_when_the_provider_cannot_be_built(
@@ -1025,7 +1041,7 @@ class TestBackfillRebuildOrdering:
             result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--rebuild"], obj=stub_env)
 
         assert result.exit_code == 0, result.output
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output
         marked.assert_not_called()
 
     def test_rebuild_marks_once_the_write_path_is_established(
@@ -1049,4 +1065,4 @@ class TestBackfillRebuildOrdering:
             result = cli_runner.invoke(embed_command, ["backfill", "--yes", "--rebuild"], obj=stub_env)
 
         assert result.exit_code == 0, result.output
-        assert "submitted to polylogued run" in result.output
+        assert "maintenance.embeddings.backfill" in result.output

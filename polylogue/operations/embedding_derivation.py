@@ -18,9 +18,17 @@ __all__ = [
     "estimated_embedding_message_cost",
     "make_embedding_derivation",
     "make_embedding_frame",
+    "mark_embedding_sessions_needs_reindex",
 ]
 
 EmbeddingProgressCallback = Callable[[Mapping[str, object]], None]
+
+
+def mark_embedding_sessions_needs_reindex(index_db_path: Path, *, embeddings_db_path: Path) -> None:
+    """Mark rebuild work through the operations seam owned by the daemon."""
+    from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
+
+    mark_all_archive_sessions_needs_reindex(index_db_path, embeddings_db_path=embeddings_db_path)
 
 
 def select_embedding_session_window(

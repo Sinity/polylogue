@@ -20,8 +20,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import time
-from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
@@ -29,7 +27,6 @@ import click
 
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.enums import OperationStatus
 
 if TYPE_CHECKING:
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -178,12 +175,6 @@ class BackfillResultPayload(TypedDict):
     processed_sessions: int
     preflight: dict[str, object]
     sessions: list[BackfillSessionPayload]
-
-
-_ARCHIVE_BACKFILL_STATUS_MAP: dict[Literal["complete", "stopped"], OperationStatus] = {
-    "complete": OperationStatus.COMPLETED,
-    "stopped": OperationStatus.INTERRUPTED,
-}
 
 
 def _render_backfill_json(payload: BackfillResultPayload) -> None:
@@ -591,13 +582,12 @@ def backfill_subcommand(
     min_messages: int | None,
     output_format: str,
 ) -> None:
-    """Run the first embedding batch with per-session cost feedback.
+    """Submit an embedding batch and stream bounded progress to stderr.
 
-    Prints the cost preflight, confirms, then iterates pending sessions
-    (or all sessions if ``--rebuild``) and emits running totals so the
-    user can interrupt before the soft monthly cap kicks in.
+    The daemon owns provider work and the terminal receipt; stdout remains a
+    machine-readable receipt while the progress renderer is best effort.
     """
-    from polylogue.cli.operation_kernel import configured_accepted_operation
+    from polylogue.cli.operation_kernel import configured_operation_to_completion
 
     if output_format == "json" and not yes:
         raise click.UsageError("backfill --format json requires --yes so stdout stays machine-readable.")
@@ -615,7 +605,16 @@ def backfill_subcommand(
     if not yes and not click.confirm("\nProceed with backfill?", default=False):
         click.echo("Cancelled.")
         return
-    result = configured_accepted_operation(
+
+    def render_progress(frame: dict[str, object] | object) -> None:
+        if not isinstance(frame, dict):
+            return
+        session_id = frame.get("session_id") or frame.get("message_id") or "embedding work"
+        estimated = frame.get("estimated_cost_usd")
+        estimate = f" estimated cost ${float(estimated):.6f}" if isinstance(estimated, (int, float)) else ""
+        click.echo(f"Embedding {session_id} started (provider spend pending;{estimate})", err=True)
+
+    result = configured_operation_to_completion(
         env.config,
         "maintenance.embeddings.backfill",
         {
@@ -627,60 +626,12 @@ def backfill_subcommand(
             "max_errors": max_errors,
             "rebuild": rebuild,
         },
+        progress_callback=render_progress,
     )
     if output_format == "json":
         click.echo(json.dumps(result, indent=2, sort_keys=True))
     else:
-        click.echo("Embedding backfill submitted to polylogued run.")
-
-
-def _record_archive_backfill_run(
-    index_db: Path,
-    *,
-    started_at_ms: int,
-    status: Literal["complete", "stopped"],
-    processed_sessions: int,
-    embedded_sessions: int,
-    skipped_sessions: int,
-    error_count: int,
-    embedded_messages: int,
-    estimated_cost_usd: float,
-    stop_reason: str | None,
-    configured_root: Path | None = None,
-) -> None:
-    """Persist archive backfill outcome in the ops-tier run ledger.
-
-    ``configured_root`` names the durable-tier archive root explicitly (an
-    index-only external generation's ``index_db`` can live outside it, same
-    rationale as the daemon-owned embedding backfill operation); it
-    defaults to ``index_db.with_name("ops.db")`` for callers that never
-    diverge from the plain convention.
-    """
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    ops_db = (configured_root / "ops.db") if configured_root is not None else index_db.with_name("ops.db")
-    initialize_archive_database(ops_db, ArchiveTier.OPS)
-    try:
-        terminal_status = _ARCHIVE_BACKFILL_STATUS_MAP[status]
-    except KeyError as exc:
-        choices = ", ".join(_ARCHIVE_BACKFILL_STATUS_MAP)
-        raise ValueError(f"unknown archive backfill status {status!r}; expected one of: {choices}") from exc
-    with closing(sqlite3.connect(ops_db, timeout=30.0)) as conn:
-        upsert_embedding_catchup_run(
-            conn,
-            started_at_ms=started_at_ms,
-            finished_at_ms=int(time.time() * 1000),
-            status=terminal_status,
-            scanned_sessions=processed_sessions,
-            embedded_sessions=embedded_sessions,
-            skipped_sessions=skipped_sessions,
-            error_count=error_count,
-            embedded_messages=embedded_messages,
-            estimated_cost_usd=estimated_cost_usd,
-            error_message=stop_reason,
-        )
+        click.echo(json.dumps(result, indent=2, sort_keys=True))
 
 
 @embed_command.command("status")

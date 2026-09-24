@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
@@ -79,6 +80,9 @@ class _Exchange:
     binding: MachineRequestBinding | None = None
     queue_ms: int = 0
     started_at: float = field(default_factory=monotonic)
+    progress_events: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=64))
+    progress_sequence: int = 0
+    progress_gap_until: int = 0
 
 
 class DaemonOperationRuntime:
@@ -229,6 +233,48 @@ class DaemonOperationRuntime:
     def _notify(self) -> None:
         with self._condition:
             self._condition.notify_all()
+
+    def emit_progress(self, request: DaemonOperationRequest, event: Mapping[str, object]) -> None:
+        """Publish one bounded, request-scoped observation for ``operation.await``.
+
+        Progress is deliberately in-memory.  Audit remains the authority for
+        terminal state; a slow waiter may observe a visible gap and must then
+        use the terminal receipt rather than infer missing work from frames.
+        """
+        request_id = str(request.request_id)
+        with self._condition:
+            exchange = self._exchanges.get(request_id)
+            if exchange is None or exchange.request.operation != request.operation:
+                return
+            exchange.progress_sequence += 1
+            frame = {**dict(event), "sequence": exchange.progress_sequence}
+            if len(exchange.progress_events) == exchange.progress_events.maxlen:
+                oldest = exchange.progress_events[0]
+                exchange.progress_gap_until = max(
+                    exchange.progress_gap_until,
+                    _operation_int(oldest["sequence"], field="progress sequence"),
+                )
+            exchange.progress_events.append(frame)
+            self._condition.notify_all()
+
+    @staticmethod
+    def _progress_state(exchange: _Exchange, after_sequence: int) -> dict[str, object]:
+        frames = [
+            frame
+            for frame in exchange.progress_events
+            if _operation_int(frame["sequence"], field="progress sequence") > after_sequence
+        ]
+        gap: dict[str, int] | None = None
+        if exchange.progress_gap_until > after_sequence:
+            gap = {
+                "from_sequence": after_sequence + 1,
+                "to_sequence": exchange.progress_gap_until,
+            }
+        return {
+            "progress_sequence": exchange.progress_sequence,
+            "progress_events": frames,
+            "progress_gap": gap,
+        }
 
     def audit_for_request(self, request: DaemonOperationRequest, context: OperationContext) -> AuditRepository:
         exchange = self._exchanges[str(request.request_id)]
@@ -645,6 +691,9 @@ class DaemonOperationRuntime:
         if execution_context is not None and execution_context.deadline_monotonic is not None:
             deadline = min(deadline, execution_context.deadline_monotonic)
         after = _operation_int(request.payload.get("after_sequence", 0), field="after sequence")
+        after_progress = _operation_int(
+            request.payload.get("after_progress_sequence", 0), field="after progress sequence"
+        )
         audit = AuditRepository.for_archive_root(self.archive_root)
         if execution_context is not None:
             if execution_context.cancelled:
@@ -750,7 +799,19 @@ class DaemonOperationRuntime:
                 if request.operation != "operation.await":
                     return OperationControlResult(state, snapshot)
                 sequence = _operation_int(state["sequence"], field="state sequence")
-                if not pending and (sequence > after or state["outcome"] not in {"running", "accepted"}):
+                progress_exchange = (
+                    exchange is not None
+                    and (target_spec := daemon_operation_spec(exchange.request.operation)) is not None
+                    and target_spec.progress
+                )
+                if request.operation == "operation.await" and progress_exchange:
+                    assert exchange is not None
+                    progress = self._progress_state(exchange, after_progress)
+                    if progress["progress_events"] or progress["progress_gap"] is not None:
+                        return OperationControlResult({**state, **progress}, snapshot)
+                    if not pending and state["outcome"] not in {"running", "accepted"}:
+                        return OperationControlResult({**state, **progress}, snapshot)
+                elif not pending and (sequence > after or state["outcome"] not in {"running", "accepted"}):
                     return OperationControlResult(state, snapshot)
                 remaining = deadline - monotonic()
                 if remaining <= 0:

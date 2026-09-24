@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -82,6 +82,8 @@ class OperationRuntime(Protocol):
     def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int: ...
 
     def stop_reason(self, request: DaemonOperationRequest) -> str | None: ...
+
+    def emit_progress(self, request: DaemonOperationRequest, event: Mapping[str, object]) -> None: ...
 
 
 def operation_envelope(
