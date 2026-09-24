@@ -142,6 +142,27 @@ def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
     return session_id
 
 
+def _seed_prefix_lineage(archive_root: Path) -> tuple[str, str]:
+    parent_id = _seed_archive_session(archive_root, native_id="excision-parent")
+    child_id = _seed_archive_session(archive_root, native_id="excision-child")
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO messages (session_id, native_id, position, role, content_hash) "
+            "VALUES (?, 'm1', 0, 'user', zeroblob(32))",
+            (parent_id,),
+        )
+        branch_point = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (parent_id,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO session_links (src_session_id, dst_origin, dst_native_id, link_type, "
+            "resolved_dst_session_id, branch_point_message_id, inheritance, status, method, confidence, "
+            "evidence_json, observed_at_ms, resolved_at_ms) "
+            "VALUES (?, 'codex-session', 'excision-parent', 'branch', ?, ?, 'prefix-sharing', "
+            "NULL, NULL, 1.0, '[]', 1000, NULL)",
+            (child_id, parent_id, branch_point),
+        )
+    return parent_id, child_id
+
+
 class TestSessionExcisionActuator:
     def test_prepare_and_apply_expose_marker_carrier_terminal_evidence(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
@@ -173,6 +194,24 @@ class TestSessionExcisionActuator:
         counts = cast("dict[str, int]", domain_receipt["counts"])
         assert counts["source_marker_inputs_pending"] == 1
         assert domain_receipt["marker_input_digests"] == [marker.payload_sha256]
+
+    def test_prepare_without_cascade_refuses_a_lineage_parent(self, tmp_path: Path) -> None:
+        from polylogue.security.excision import LineageDependentsError
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        parent_id, child_id = _seed_prefix_lineage(archive_root)
+        with pytest.raises(LineageDependentsError) as excinfo:
+            SessionExcisionActuator().prepare(
+                SessionExcisionArgs(
+                    archive_root=archive_root,
+                    session_id=parent_id,
+                    reason="r",
+                    actor="user:test",
+                    cascade_lineage=False,
+                )
+            )
+        assert excinfo.value.dependent_session_ids == (child_id,)
 
 
 class TestSessionDeleteActuator:

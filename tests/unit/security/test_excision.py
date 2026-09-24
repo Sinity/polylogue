@@ -424,6 +424,25 @@ class TestApplySessionExcision:
                 (pending.identity, accepted.identity),
             ).fetchone() == (2,)
 
+        recovery_plan = plan_session_excision(tmp_path, session_id)
+        assert recovery_plan.source_marker_inputs_pending == 1
+        assert recovery_plan.source_marker_inputs_accepted == 1
+        assert recovery_plan.marker_input_digests == (pending.payload_sha256, accepted.payload_sha256)
+        from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
+
+        prepared = SessionExcisionActuator().prepare(
+            SessionExcisionArgs(
+                archive_root=tmp_path,
+                session_id=session_id,
+                reason="crash",
+                actor="user:test",
+                cascade_lineage=False,
+            )
+        )
+        assert prepared.context["source_marker_inputs_pending"] == recovery_plan.source_marker_inputs_pending
+        assert prepared.context["source_marker_inputs_accepted"] == recovery_plan.source_marker_inputs_accepted
+        assert prepared.context["marker_input_digests"] == list(recovery_plan.marker_input_digests)
+
         receipt = apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
         assert receipt.counts["source_marker_inputs_pending"] == 1
         assert receipt.counts["source_marker_inputs_accepted"] == 1
@@ -736,8 +755,9 @@ class TestLineageSafety:
 
     def test_plan_surfaces_lineage_dependents(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)
-        plan = plan_session_excision(tmp_path, parent_id)
-        assert plan.lineage_dependent_session_ids == (child_id,)
+        with pytest.raises(LineageDependentsError) as excinfo:
+            plan_session_excision(tmp_path, parent_id)
+        assert excinfo.value.dependent_session_ids == (child_id,)
 
     def test_cascade_plan_and_apply_share_one_marker_carrier(self, tmp_path: Path) -> None:
         parent_id, child_id = self._seed_lineage(tmp_path)

@@ -188,10 +188,22 @@ def excise_command(
         )
         return
 
-    from polylogue.security.excision import plan_session_excision
+    from polylogue.security.excision import LineageDependentsError, plan_session_excision
 
     if dry_run:
-        plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
+        try:
+            plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
+        except LineageDependentsError as exc:
+            _emit(
+                env,
+                status="aborted",
+                session_id=session_id,
+                affected_count=0,
+                output_format=output_format,
+                plain_message=f"Refusing to excise {session_id!r}: {exc}",
+                detail=str(exc),
+            )
+            return
         if not plan.found:
             _emit(
                 env,
@@ -257,7 +269,19 @@ def excise_command(
         )
         return
 
-    plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
+    try:
+        plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
+    except LineageDependentsError as exc:
+        _emit(
+            env,
+            status="aborted",
+            session_id=session_id,
+            affected_count=0,
+            output_format=output_format,
+            plain_message=f"Refusing to excise {session_id!r}: {exc}",
+            detail=str(exc),
+        )
+        return
     if not plan.found:
         _emit(
             env,
@@ -266,23 +290,6 @@ def excise_command(
             affected_count=0,
             output_format=output_format,
             plain_message=f"No session found for {session_id!r}.",
-        )
-        return
-
-    if plan.lineage_dependent_session_ids and not cascade_lineage:
-        dependents = ", ".join(plan.lineage_dependent_session_ids)
-        _emit(
-            env,
-            status="aborted",
-            session_id=session_id,
-            affected_count=0,
-            output_format=output_format,
-            plain_message=(
-                f"Refusing to excise {session_id!r}: it is a lineage parent for "
-                f"{len(plan.lineage_dependent_session_ids)} prefix-sharing session(s) ({dependents}) "
-                "that would lose composed content. Pass --cascade-lineage to excise the entire "
-                "lineage together, or exclude this session."
-            ),
         )
         return
 

@@ -501,7 +501,7 @@ class TestExciseMirrorPrimary:
 class TestExciseLineageSafety:
     """CLI coverage for the polylogue-27m fix-round lineage-safety guard."""
 
-    def test_dry_run_surfaces_lineage_dependents(self, tmp_path: Path) -> None:
+    def test_dry_run_without_cascade_refuses_lineage_parent(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         parent_id, child_id = _seed_lineage_pair(archive_root)
         with patch("polylogue.cli.commands.excise.archive_root", return_value=archive_root):
@@ -512,7 +512,8 @@ class TestExciseLineageSafety:
             )
         assert result.exit_code == 0
         payload = json.loads(result.output)
-        assert payload["plan"]["lineage_dependent_session_ids"] == [child_id]
+        assert payload["status"] == "aborted"
+        assert child_id in payload["detail"]
 
     def test_without_cascade_flag_refuses_and_does_not_mutate(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

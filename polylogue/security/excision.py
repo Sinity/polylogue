@@ -826,7 +826,9 @@ def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineag
     """Enumerate exactly what an apply would remove, without mutating anything."""
 
     dependent_ids = find_lineage_dependents(archive_root, session_id)
-    target_session_ids = frozenset((*dependent_ids, session_id))
+    if dependent_ids and not cascade_lineage:
+        raise LineageDependentsError(session_id=session_id, dependent_session_ids=dependent_ids)
+    target_session_ids = frozenset((*dependent_ids, session_id)) if cascade_lineage else frozenset({session_id})
     session_ids = (*dependent_ids, session_id) if cascade_lineage else (session_id,)
     targets = tuple(
         _resolve_session_excision_target(archive_root, candidate, target_session_ids=target_session_ids)
@@ -935,12 +937,11 @@ def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineag
             dict.fromkeys(item.label for current in targets for item in current.containers.retained_items)
         ),
         source_materials=len(material_ids),
-        source_marker_inputs_pending=sum(
-            marker.state == "pending" and not marker.tombstoned for marker in marker_targets
-        ),
-        source_marker_inputs_accepted=sum(
-            marker.state == "accepted" and not marker.tombstoned for marker in marker_targets
-        ),
+        # A source-first interruption retains only terminal marker evidence.
+        # Count it so recovery preview/prepare matches the retry receipt that
+        # removes its rebuildable witness.
+        source_marker_inputs_pending=sum(marker.state == "pending" for marker in marker_targets),
+        source_marker_inputs_accepted=sum(marker.state == "accepted" for marker in marker_targets),
         marker_input_digests=tuple(dict.fromkeys(marker.carrier_digest for marker in marker_targets)),
     )
 
