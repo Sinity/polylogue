@@ -187,7 +187,7 @@ class SessionExcisionActuator(_FailClosedRecovery):
     def prepare(self, args: SessionExcisionArgs) -> MutationPlan:
         from polylogue.security.excision import plan_session_excision
 
-        plan = plan_session_excision(args.archive_root, args.session_id)
+        plan = plan_session_excision(args.archive_root, args.session_id, cascade_lineage=args.cascade_lineage)
         target_refs = ((make_target_ref("session", args.session_id),) if plan.found else ()) + tuple(
             make_target_ref("session", sid) for sid in plan.lineage_dependent_session_ids
         )
@@ -202,6 +202,9 @@ class SessionExcisionActuator(_FailClosedRecovery):
                 "reason": args.reason,
                 "cascade_lineage": args.cascade_lineage,
                 "lineage_dependent_session_ids": list(plan.lineage_dependent_session_ids),
+                "source_marker_inputs_pending": plan.source_marker_inputs_pending,
+                "source_marker_inputs_accepted": plan.source_marker_inputs_accepted,
+                "marker_input_digests": list(plan.marker_input_digests),
             },
         )
 

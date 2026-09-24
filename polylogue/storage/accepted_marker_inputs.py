@@ -71,6 +71,9 @@ class MarkerInputExcisionTarget:
     state: str
     stream_id: str | None = None
     accepted_sequence: int | None = None
+    #: The carrier was erased during an interrupted earlier source phase; its
+    #: terminal evidence still owns index-witness cleanup on retry.
+    tombstoned: bool = False
 
 
 def marker_input_session_ids(batch: PreparedAcceptedMarkerInput) -> frozenset[str]:
@@ -127,6 +130,26 @@ def marker_input_excision_targets_sync(
                 accepted_sequence=None if sequence is None else int(sequence),
             )
         )
+    if target_raw_ids:
+        placeholders = ",".join("?" for _ in target_raw_ids)
+        for identity, raw_id, digest, state, stream_id, sequence in conn.execute(
+            f"SELECT identity, raw_id, carrier_digest, state, stream_id, accepted_sequence "
+            f"FROM excised_marker_inputs WHERE raw_id IN ({placeholders})",
+            tuple(sorted(target_raw_ids)),
+        ).fetchall():
+            if any(target.identity == str(identity) for target in targets):
+                continue
+            targets.append(
+                MarkerInputExcisionTarget(
+                    identity=str(identity),
+                    raw_id=str(raw_id),
+                    carrier_digest=str(digest),
+                    state=str(state),
+                    stream_id=None if stream_id is None else str(stream_id),
+                    accepted_sequence=None if sequence is None else int(sequence),
+                    tombstoned=True,
+                )
+            )
     return tuple(targets)
 
 
@@ -136,6 +159,12 @@ def excise_marker_input_targets_sync(
     """Tombstone first, then erase source payloads through the explicit path."""
     counts = {"pending": 0, "accepted": 0}
     for target in targets:
+        if target.tombstoned:
+            # A source-first crash erased the payload but not its rebuildable
+            # witness. Preserve the original carrier count in the first
+            # durable receipt written by the retry.
+            counts[target.state] += 1
+            continue
         conn.execute(
             "INSERT INTO excised_marker_inputs("
             "identity, raw_id, carrier_digest, state, stream_id, accepted_sequence, excised_at_ms"

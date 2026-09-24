@@ -191,7 +191,7 @@ def excise_command(
     from polylogue.security.excision import plan_session_excision
 
     if dry_run:
-        plan = plan_session_excision(root, session_id)
+        plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
         if not plan.found:
             _emit(
                 env,
@@ -219,6 +219,13 @@ def excise_command(
                     else ""
                 ),
                 f"  source.db blob refs: {plan.source_blob_refs}",
+                f"  source.db marker carriers: {plan.source_marker_inputs_pending} pending, "
+                f"{plan.source_marker_inputs_accepted} accepted",
+                *(
+                    [f"  marker carrier digests: {', '.join(plan.marker_input_digests)}"]
+                    if plan.marker_input_digests
+                    else []
+                ),
                 f"  index.db sessions: {plan.index_sessions}",
                 f"  index.db messages: {plan.index_messages}",
                 f"  index.db blocks: {plan.index_blocks}",
@@ -250,7 +257,7 @@ def excise_command(
         )
         return
 
-    plan = plan_session_excision(root, session_id)
+    plan = plan_session_excision(root, session_id, cascade_lineage=cascade_lineage)
     if not plan.found:
         _emit(
             env,

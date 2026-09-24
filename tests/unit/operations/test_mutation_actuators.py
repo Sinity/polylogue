@@ -25,6 +25,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import Context
 from pathlib import Path
@@ -78,6 +79,8 @@ from polylogue.operations.mutation_actuators import (
     SavedViewSaveArgs,
     SessionDeleteActuator,
     SessionDeleteArgs,
+    SessionExcisionActuator,
+    SessionExcisionArgs,
     TagAddActuator,
     TagAddArgs,
     TagRemoveActuator,
@@ -99,6 +102,7 @@ from polylogue.operations.mutation_transaction import (
     PlanStaleError,
     recover_interrupted_operations,
 )
+from polylogue.storage.accepted_marker_inputs import persist_pending_marker_input_sync, prepare_accepted_marker_input
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.user_write import (
@@ -136,6 +140,39 @@ def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
             (native_id, raw_id, f"Session {native_id}"),
         )
     return session_id
+
+
+class TestSessionExcisionActuator:
+    def test_prepare_and_apply_expose_marker_carrier_terminal_evidence(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="excision-marker")
+        raw_id = "raw-excision-marker"
+        marker = prepare_accepted_marker_input(
+            raw_id, [{"session_id": session_id, "candidates": [{"body": "marker secret"}]}]
+        )
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            persist_pending_marker_input_sync(conn, marker, expected_incarnation_id=str(uuid.uuid4()))
+
+        actuator = SessionExcisionActuator()
+        args = SessionExcisionArgs(
+            archive_root=archive_root,
+            session_id=session_id,
+            reason="r",
+            actor="user:test",
+            cascade_lineage=False,
+        )
+        plan = actuator.prepare(args)
+        assert plan.context["source_marker_inputs_pending"] == 1
+        assert plan.context["source_marker_inputs_accepted"] == 0
+        assert plan.context["marker_input_digests"] == [marker.payload_sha256]
+
+        receipt = actuator.apply(plan, args)
+        domain_receipt = cast("dict[str, object]", receipt.domain_receipt)
+        counts = cast("dict[str, int]", domain_receipt["counts"])
+        assert counts["source_marker_inputs_pending"] == 1
+        assert domain_receipt["marker_input_digests"] == [marker.payload_sha256]
 
 
 class TestSessionDeleteActuator:
