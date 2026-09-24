@@ -1388,6 +1388,84 @@ def test_legacy_codex_page_image_does_not_abort_frozen_validation(tmp_path: Path
     assert LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(detail[0])
 
 
+def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tmp_path: Path) -> None:
+    """A retained Antigravity trajectory page image is not replay authority.
+
+    The SQLite bytes deliberately carry a valid trajectory schema and message,
+    so removing the Antigravity page-image refusal parses a session and fails
+    both the zero-membership assertion and frozen validation.
+    """
+    bootstrap_archive_root(tmp_path)
+    trajectory_path = tmp_path / "antigravity" / "conversations" / "page-image.sqlite"
+    trajectory_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(trajectory_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (
+                idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT,
+                status TEXT, error_details TEXT
+            );
+            CREATE TABLE conversation_summaries (cascade_id TEXT, title TEXT, last_modified_time TEXT);
+            CREATE TABLE parent_references (cascade_id TEXT, parent_id TEXT);
+            INSERT INTO trajectory_meta VALUES ('page-image-trajectory', 'page-image-cascade');
+            INSERT INTO conversation_summaries VALUES ('page-image-cascade', 'Page image', NULL);
+            INSERT INTO steps VALUES (0, 'message', 'v1', '{"role":"user","text":"must not replay"}', NULL, NULL);
+            """
+        )
+    page_image = trajectory_path.read_bytes()
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        page_image_raw_id = archive.write_raw_payload(
+            provider=Provider.ANTIGRAVITY,
+            payload=page_image,
+            source_path=str(trajectory_path),
+            acquired_at_ms=1,
+        )
+        valid_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"after-page-image"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"still processable"}]}}\n'
+            ),
+            source_path="after-page-image.jsonl",
+            acquired_at_ms=2,
+        )
+
+    result = backfill_historical_revision_evidence(tmp_path)
+    validate_frozen_source_authority(tmp_path)
+
+    assert result.scanned == 2
+    assert result.replayed_logical_sources == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        membership = conn.execute(
+            "SELECT status, member_count, detail FROM raw_membership_census WHERE raw_id = ?",
+            (page_image_raw_id,),
+        ).fetchone()
+        parser = conn.execute(
+            "SELECT status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?",
+            (page_image_raw_id,),
+        ).fetchone()
+        later_parser = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?",
+            (valid_raw_id,),
+        ).fetchone()
+    assert membership is not None
+    assert membership[0:2] == ("non_session", 0)
+    assert LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(membership[2])
+    assert parser is not None
+    assert parser[0] == "complete"
+    assert parser_census_logical_keys(parser[1]) == ()
+    assert str(parser[2]).startswith("parser-observed:")
+    assert later_parser is not None
+    assert later_parser[0] == "complete"
+    assert parser_census_logical_keys(later_parser[1]) == ("codex-session:after-page-image",)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        sessions = conn.execute("SELECT origin, native_id FROM sessions ORDER BY origin, native_id").fetchall()
+    assert sessions == [("codex-session", "after-page-image")]
+
+
 def test_codex_state_replay_applies_payload_budget_before_sqlite_parse(tmp_path: Path) -> None:
     """A bounded census defers a state snapshot before it can write evidence."""
     bootstrap_archive_root(tmp_path)
