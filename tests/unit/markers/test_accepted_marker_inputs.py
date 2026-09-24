@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -882,11 +882,9 @@ async def test_public_partial_multi_session_raw_rolls_back_before_marker_witness
             sessions=payloads,
         )
 
-    real_write = ingest_batch_core.write_parsed_session_to_archive
+    real_write = write_parsed_session_to_archive
 
-    def fail_second_session(
-        conn: sqlite3.Connection, session: ParsedSession, *args: object, **kwargs: object
-    ) -> object:
+    def fail_second_session(conn: sqlite3.Connection, session: ParsedSession, *args: Any, **kwargs: Any) -> Any:
         if session.provider_session_id == "z":
             raise RuntimeError("injected second-session failure")
         return real_write(conn, session, *args, **kwargs)
