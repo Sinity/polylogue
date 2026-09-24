@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import aiosqlite
 import pytest
@@ -28,7 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.schema_identity import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
-from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
+from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew, stamp_derived_schema_identity
 from polylogue.storage.sqlite.schema_manifest import SchemaManifest, assert_schema_manifest
 
 
@@ -47,7 +48,7 @@ def _row_and_public_identities() -> tuple[str, str, tuple[str, ...]]:
     )
 
 
-def _load_ids_source(path: Path, module_name: str):
+def _load_ids_source(path: Path, module_name: str) -> ModuleType:
     """Load an isolated pipeline.ids source copy while keeping normal imports."""
     spec = importlib.util.spec_from_file_location(module_name, path)
     assert spec is not None and spec.loader is not None
@@ -129,18 +130,17 @@ def test_performance_only_closure_edit_moves_combined_identity_but_not_row_ids(
     """A behavior-neutral closure edit still requires derived-index reconvergence."""
     import polylogue.sources.origin_specs as origin_specs
 
-    repo_root = Path(__file__).resolve().parents[3]
-    production_ids = repo_root / "polylogue/pipeline/ids.py"
-    isolated_ids = tmp_path / "polylogue/pipeline/ids.py"
-    isolated_ids.parent.mkdir(parents=True)
-    shutil.copyfile(production_ids, isolated_ids)
-
-    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", tmp_path)
-    # pipeline/ids.py is a declared lowering input. Restrict the fixture to
-    # that real closure member so the source edit is the only moved input.
-    monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/pipeline/ids.py",))
-    monkeypatch.setattr(origin_specs, "_MATERIALIZER_FINGERPRINT_PATHS", ())
-    monkeypatch.setattr(origin_specs, "_REPLAY_ROUTING_FINGERPRINT_PATHS", ())
+    isolated_root = tmp_path / "source-tree"
+    shutil.copytree("polylogue", isolated_root / "polylogue", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    isolated_ids = isolated_root / "polylogue/pipeline/ids.py"
+    declared_paths = origin_specs._LOWERING_FINGERPRINT_PATHS
+    assert "polylogue/pipeline/ids.py" in declared_paths
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", isolated_root)
+    assert declared_paths == origin_specs._LOWERING_FINGERPRINT_PATHS
+    origin_specs._semantic_source_closure.cache_clear()
+    origin_specs._local_import_paths.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._SOURCE_DIGESTS.clear()
 
     original_ids = _load_ids_source(isolated_ids, "polylogue.pipeline._identity_fixture_ids_before")
     row_and_public_ids_before = _row_and_public_identities()
@@ -179,22 +179,67 @@ def test_performance_only_closure_edit_moves_combined_identity_but_not_row_ids(
 def test_semantic_recipe_input_edit_moves_combined_identity_without_row_id_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A semantic recipe revision invalidates the stamp while row IDs stay stable."""
-    row_and_public_ids_before = _row_and_public_identities()
-    before = derived_schema_identity(DerivedTier.INDEX)
-    path = tmp_path / "index.db"
-    initialize_archive_database(path, ArchiveTier.INDEX)
-
+    """A real production-declared semantic input edit rejects a stamped index."""
     import polylogue.sources.origin_specs as origin_specs
 
-    old_recipe = origin_specs.lowering_fingerprint()
-    monkeypatch.setattr(origin_specs, "lowering_fingerprint", lambda: f"{old_recipe}:recipe-v2")
+    isolated_root = tmp_path / "source-tree"
+    shutil.copytree("polylogue", isolated_root / "polylogue", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    recipe_path = isolated_root / "polylogue/sources/dispatch.py"
+    declared_paths = origin_specs._LOWERING_FINGERPRINT_PATHS
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", isolated_root)
+    assert declared_paths == origin_specs._LOWERING_FINGERPRINT_PATHS
+    origin_specs._semantic_source_closure.cache_clear()
+    origin_specs._local_import_paths.cache_clear()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._SOURCE_DIGESTS.clear()
+
+    before = derived_schema_identity(DerivedTier.INDEX)
+    path = tmp_path / "index.db"
+    with sqlite3.connect(path) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
+            ("seed-session", "codex-session", "Seed", b"s" * 32),
+        )
+        session_id = str(conn.execute("SELECT session_id FROM sessions").fetchone()[0])
+        conn.execute(
+            """INSERT INTO messages (
+                session_id, native_id, position, role, material_origin, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (session_id, "seed-message", 0, "user", "human_authored", b"m" * 32),
+        )
+        message_id = str(conn.execute("SELECT message_id FROM messages").fetchone()[0])
+        conn.execute(
+            """INSERT INTO blocks (
+                session_id, message_id, position, block_type, text, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (session_id, message_id, 0, "text", "seed content", b"b" * 32),
+        )
+        stamp_derived_schema_identity(conn, "index")
+        conn.commit()
+    with sqlite3.connect(path) as conn:
+        before_rows = conn.execute("SELECT rowid, tier, identity FROM schema_identity").fetchall()
+        before_content = (
+            conn.execute("SELECT session_id, native_id, title, content_hash FROM sessions").fetchall(),
+            conn.execute("SELECT session_id, message_id, native_id, content_hash FROM messages").fetchall(),
+            conn.execute("SELECT block_id, message_id, position, text, content_hash FROM blocks").fetchall(),
+        )
+
+    source = recipe_path.read_text(encoding="utf-8")
+    assert source.count("_MAX_PARSE_DEPTH = 10") == 1
+    recipe_path.write_text(source.replace("_MAX_PARSE_DEPTH = 10", "_MAX_PARSE_DEPTH = 11"), encoding="utf-8")
     after = derived_schema_identity(DerivedTier.INDEX)
 
     assert after != before
-    assert _row_and_public_identities() == row_and_public_ids_before
     with pytest.raises(SchemaSkew, match="stale derived tier"):
         initialize_archive_database(path, ArchiveTier.INDEX)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT rowid, tier, identity FROM schema_identity").fetchall() == before_rows
+        assert (
+            conn.execute("SELECT session_id, native_id, title, content_hash FROM sessions").fetchall(),
+            conn.execute("SELECT session_id, message_id, native_id, content_hash FROM messages").fetchall(),
+            conn.execute("SELECT block_id, message_id, position, text, content_hash FROM blocks").fetchall(),
+        ) == before_content
 
 
 def test_index_identity_uses_semantic_manifest_not_ddl_comments(monkeypatch: pytest.MonkeyPatch) -> None:
