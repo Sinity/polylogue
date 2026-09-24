@@ -2173,6 +2173,7 @@ def _drain_ingest_result(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
+    marker_acceptance_enabled: bool = False,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -2184,6 +2185,13 @@ def _drain_ingest_result(
     if not ir.sessions:
         summary.skipped_raw_ids.add(ir.raw_id)
         return
+
+    if marker_acceptance_enabled:
+        session_ids = [cdata.session_id for cdata in ir.sessions]
+        if len(session_ids) != len(set(session_ids)):
+            raise AcceptedMarkerInputRefusedError(
+                f"raw revision {ir.raw_id!r} contains duplicate normalized session IDs"
+            )
 
     try:
         publication_payloads = _prepare_publication_payloads(
@@ -2267,6 +2275,7 @@ def _consume_ingest_results(
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
     fresh_build: bool = False,
+    marker_acceptance_enabled: bool = False,
 ) -> bool:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -2319,6 +2328,7 @@ def _consume_ingest_results(
                 source_conn=source_conn,
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
+                marker_acceptance_enabled=marker_acceptance_enabled,
             )
         finally:
             discard_ingest_result_payload(ir)
@@ -2868,6 +2878,7 @@ def _process_ingest_batch_sync(
                     source_conn=source_conn,
                     fresh_build=fresh_build,
                     drive_plans=prepared_unit.drive_plans,
+                    marker_acceptance_enabled=marker_acceptance_enabled,
                 )
             finally:
                 discard_ingest_result_payload(prepared_unit.result)
@@ -2891,6 +2902,7 @@ def _process_ingest_batch_sync(
                 pending_attachment_receipts=pending_attachment_receipts,
                 source_conn=source_conn,
                 fresh_build=fresh_build,
+                marker_acceptance_enabled=marker_acceptance_enabled,
             )
         _flush_ingest_results(
             conn,

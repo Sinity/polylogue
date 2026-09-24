@@ -915,6 +915,65 @@ async def test_public_partial_multi_session_raw_rolls_back_before_marker_witness
 
 
 @pytest.mark.asyncio
+async def test_public_duplicate_normalized_session_ids_refuse_before_index_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The carrier map cannot collapse two interpreted sessions onto one ID."""
+    bootstrap_archive_root(tmp_path)
+    payload_bytes = b"one acquired raw with duplicate normalized session IDs"
+    BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.CODEX_SESSION,
+            source_path="duplicate-sessions.jsonl",
+            source_index=0,
+            payload=payload_bytes,
+            acquired_at_ms=1,
+        )
+    parsed_sessions = [
+        _session("::note: first", native_id="duplicate"),
+        _session("::note: second", native_id="duplicate"),
+    ]
+    payloads = [
+        SessionWritePayload(
+            session_id=f"codex-session:{parsed.provider_session_id}",
+            content_hash=str(session_content_hash(parsed)),
+            parsed_session=parsed,
+            message_count=len(parsed.messages),
+            raw_id=raw_id,
+        )
+        for parsed in parsed_sessions
+    ]
+
+    def fake_ingest(_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        return IngestRecordResult(raw_id=raw_id, outcome_code="success", sessions=payloads)
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+    )
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    try:
+        with pytest.raises(AcceptedMarkerInputRefusedError, match="duplicate normalized session IDs"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
 async def test_source_required_mode_refuses_before_index_processing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
