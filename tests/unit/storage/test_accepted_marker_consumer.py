@@ -10,6 +10,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from polylogue.daemon.backup import backup_archive
 from polylogue.markers import candidates_for_block
 from polylogue.storage.accepted_marker_inputs import (
     append_accepted_marker_input,
@@ -19,11 +20,13 @@ from polylogue.storage.accepted_marker_inputs import (
 )
 from polylogue.storage.derived.session.marker_domain import SessionMarkerDerivation
 from polylogue.storage.sqlite import migration_runner
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 from polylogue.storage.sqlite.archive_tiers.user_write import advance_session_marker_delivery, upsert_assertion
 from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
+from tests.infra.durable_tier_fixtures import refresh_archive_format_marker, refresh_fresh_bootstrap_marker
 
 
 def _candidate_record(text: str, *, message_id: str) -> dict[str, object]:
@@ -286,6 +289,54 @@ def test_v2_and_v3_marker_routes_preserve_user_state_before_v4(
             "durable user state",
             "user",
         )
+        assert user.execute("SELECT COUNT(*) FROM accepted_marker_delivery_cursor").fetchone() == (0,)
+        legacy_cursor = user.execute(
+            "SELECT input_binding, applied_at_ms FROM session_marker_delivery WHERE session_id = ?",
+            ("session:legacy-cursor",),
+        ).fetchone()
+        assert legacy_cursor == (("legacy-binding", 2) if start_version == 3 else None)
+
+
+@pytest.mark.parametrize(("start_version", "expected_steps"), ((2, (3, 4)), (3, (4,))))
+def test_v2_and_v3_marker_routes_preserve_user_state_with_verified_backup(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    start_version: int,
+    expected_steps: tuple[int, ...],
+) -> None:
+    """The ordinary durable runner accepts a scratch-verified WAL backup.
+
+    Anti-vacuity: replacing ``backup_archive(..., verify=True)`` with an
+    unverified manifest leaves the verification receipt absent, and the
+    production migration runner refuses before it can alter the live tier.
+    Applying the discovered SQL directly would also leave ``backup_receipt``
+    absent, so it cannot satisfy this route's backup binding.
+    """
+    archive = workspace_env["archive_root"]
+    initialize_active_archive_root(archive)
+    user_path = archive / "user.db"
+    user_path.unlink()
+    _user_tier_at_marker_migration_version(user_path, version=start_version)
+    refresh_archive_format_marker(archive)
+    refresh_fresh_bootstrap_marker(archive)
+
+    backup = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+    assert backup.ok is True, backup.error
+    assert backup.verified is True
+    assert backup.output_path is not None
+
+    with sqlite3.connect(user_path) as user:
+        result = migration_runner.migrate_archive_tier(
+            user,
+            ArchiveTier.USER,
+            backup_manifest=Path(backup.output_path) / "manifest.json",
+        )
+        assert result.applied_versions == expected_steps
+        assert result.backup_receipt is not None
+        assert user.execute("PRAGMA user_version").fetchone() == (4,)
+        assert user.execute(
+            "SELECT body_text, author_kind FROM assertions WHERE assertion_id = ?", ("preserved-user-assertion",)
+        ).fetchone() == ("durable user state", "user")
         assert user.execute("SELECT COUNT(*) FROM accepted_marker_delivery_cursor").fetchone() == (0,)
         legacy_cursor = user.execute(
             "SELECT input_binding, applied_at_ms FROM session_marker_delivery WHERE session_id = ?",
