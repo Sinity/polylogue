@@ -4,8 +4,9 @@
 #
 # `unclassified` means the census SAW the site, not that the site is legitimate.
 # It is the ratchet's floor: a NEW archive-wide derived sweep, or a NEW read-path
-# substitution, cannot appear undeclared. Replacing it with a real classification
-# is the adjudication pass, and until then this file is not a proof of absence.
+# substitution, cannot appear undeclared, and a new one arrives at that floor.
+# Every entry below has been adjudicated; a reason that says no permitted member
+# fits is a finding, not pending work.
 package: polylogue
 sites:
   - file: "polylogue/coordination/envelope.py"
@@ -50,6 +51,20 @@ sites:
     scope: "read_only_module"
     classification: presentation_projection
     reason: "verified at this head: overall_status is composed here from the component snapshot states this call just read, and the only substitution is fail-closed -- a collected HealthSeverity.OK is ESCALATED to WARNING/ERROR when its own snapshot is unavailable/timed_out/degraded/refreshing, with a named status_component_observation alert appended. It can never report clean for a collector that did not complete, and it is not a read of a stored producer output"
+  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
+    function: "_ensure_ingest_index_incarnation"
+    subject: "ingest_index_incarnation"
+    kind: "state_selected_subject"
+    scope: "state_predicate"
+    classification: producer_scoped_transaction
+    reason: "the SELECT reads only the singleton physical-index identity row, whose CHECK constraint permits exactly one row. It is not a content subject or archive sweep; the ingest publisher compares the recorded device/inode with the connection's actual index file before binding new witnesses to that file instance"
+  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
+    function: "_ensure_ingest_index_incarnation"
+    subject: "ingest_index_incarnation"
+    kind: "unbound_rewrite"
+    scope: "state_predicate"
+    classification: producer_scoped_transaction
+    reason: "the singleton incarnation row is inserted on first use or replaced only when the currently open index file's device/inode differs from the recorded physical instance. This is producer-owned witness scoping metadata; it does not correct session content or select archive rows for a sweep"
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_preacquire_sidecar_blobs"
     subject: "payload"
@@ -197,17 +212,3 @@ sites:
     scope: "writing_module"
     classification: producer_scoped_transaction
     reason: "raw admission reusing an existing raw_id when every identity field of the legacy row matches the request exactly; an identity decision inside the admitting write, not a correction of a stored one"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_ensure_ingest_index_incarnation"
-    subject: "ingest_index_incarnation"
-    kind: "state_selected_subject"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "the SELECT reads only the singleton physical-index identity row, whose CHECK constraint permits exactly one row. It is not a content subject or archive sweep; the ingest publisher compares the recorded device/inode with the connection's actual index file before binding new witnesses to that file instance"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_ensure_ingest_index_incarnation"
-    subject: "ingest_index_incarnation"
-    kind: "unbound_rewrite"
-    scope: "state_predicate"
-    classification: producer_scoped_transaction
-    reason: "the singleton incarnation row is inserted on first use or replaced only when the currently open index file's device/inode differs from the recorded physical instance. This is producer-owned witness scoping metadata; it does not correct session content or select archive rows for a sweep"
