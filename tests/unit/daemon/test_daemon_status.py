@@ -969,6 +969,7 @@ def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.Monkey
             "available": True,
             "classification": "cheap_projection",
             "precision": "raw_id_join_gap",
+            "raw_artifact_count": 1,
             "total": 0,
             "lost_source_evidence_count": 1,
             "lost_source_evidence_samples": [sample],
@@ -1592,14 +1593,12 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
     )
     raw_readiness = status_module.RawMaterializationReadiness(
         available=True,
+        raw_artifact_count=1,
         total=1,
         warning=1,
         actionable=1,
         affected_total=4,
         affected_actionable=4,
-        # Readiness now short-circuits to UNKNOWN "source parser census
-        # unavailable" whenever the census key is present but unavailable
-        # (#3903), which would shadow the specific condition under test.
         raw_authority_parser_census={"available": True},
     )
 
@@ -1638,6 +1637,25 @@ def test_build_daemon_status_downgrades_archive_ready_for_raw_materialization_de
     assert raw_component["state"] == "stale"
 
 
+def test_archive_storage_component_preserves_unmeasured_materialization() -> None:
+    storage = status_module.ArchiveStorageStatus(
+        active_store="archive_file_set",
+        archive_ready=False,
+        archive_materialization_ready=False,
+        archive_materialization_assessment={
+            "state": "unmeasured",
+            "reason": "zero_denominator",
+        },
+        final_shape_ready=True,
+        archive_schema_ready=True,
+    )
+
+    component = status_module._component_from_archive_storage(storage)
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert "materialization_pending" not in component.caveats
+
+
 def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_path: Path) -> None:
     """polylogue-avg: an archive with matching schema but open raw-materialization
     debt is openable but must not claim convergence, with the exact
@@ -1655,6 +1673,7 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
     )
     raw_readiness = status_module.RawMaterializationReadiness(
         available=True,
+        raw_artifact_count=1,
         total=1,
         warning=1,
         actionable=1,
