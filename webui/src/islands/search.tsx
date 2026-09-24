@@ -85,6 +85,9 @@ export function SearchIsland({ query, initialCursor, loadPage = loadSearchPage }
           : `Loaded ${page.items.length.toLocaleString()} additional ${page.items.length === 1 ? 'result' : 'results'}.`,
       );
     } catch (error) {
+      // A failed request did not consume this continuation. Keep it retryable;
+      // only successfully observed cursors belong in the replay guard.
+      requestedCursors.current.delete(cursor);
       setStatus(error instanceof Error ? error.message : 'Search results could not be loaded.');
     } finally {
       setLoading(false);

@@ -126,6 +126,23 @@ describe('SearchIsland', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Search request failed.');
   });
 
+  it('allows retrying a continuation after a transient loader failure', async () => {
+    const loadPage = vi
+      .fn<(_query: string, cursor: string) => Promise<SearchPage>>()
+      .mockRejectedValueOnce(new Error('Search request failed.'))
+      .mockResolvedValueOnce(page([hit], null));
+    render(<SearchIsland query="continuation" initialCursor="c1" loadPage={loadPage} />);
+    const button = screen.getByRole('button', { name: 'Load more results' });
+
+    fireEvent.click(button);
+    expect(await screen.findByRole('status')).toHaveTextContent('Search request failed.');
+    fireEvent.click(button);
+
+    expect(await screen.findByRole('link', { name: 'Continuation contract wiring' })).toBeInTheDocument();
+    expect(loadPage).toHaveBeenCalledTimes(2);
+    expect(loadPage).toHaveBeenLastCalledWith('continuation', 'c1');
+  });
+
   it('renders no-more-pages state without a loader call when no cursor is set', () => {
     const loadPage = vi.fn();
     render(<SearchIsland query="anything" initialCursor={null} loadPage={loadPage} />);
