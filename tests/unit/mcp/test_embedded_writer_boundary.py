@@ -181,6 +181,12 @@ def test_mcp_capability_inventory_is_declaration_derived() -> None:
 
     from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS
 
+    declared_capabilities = {
+        declaration.required_capability
+        for declaration in MCP_TOOL_DECLARATIONS
+        if declaration.required_capability is not None
+    }
+    assert declared_capabilities == {"write", "judge", "maintenance"}
     tools_by_capability = {
         capability: {
             declaration.name for declaration in MCP_TOOL_DECLARATIONS if declaration.required_capability == capability
