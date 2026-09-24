@@ -282,6 +282,8 @@ paths:
         iterator: search
         initial_required_parameters:
         - query
+        initial_optional_parameters:
+        - cursor
         response_schemas:
         - SearchEnvelope
         items_property: hits

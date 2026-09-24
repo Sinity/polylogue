@@ -909,7 +909,7 @@ export type SearchSessionsParameters = {
 };
 export type SearchSessionsResponse = SearchEnvelope | SessionListResponse;
 export type SearchSessionsError = QueryErrorPayload | WebCredentialFailurePayload;
-export type SearchParameters = Omit<SearchSessionsParameters, "cursor" | "query"> & { readonly query: string };
+export type SearchParameters = Omit<SearchSessionsParameters, "query"> & { readonly query: string };
 export type SearchPage = Page<SessionSearchHitPayload, SearchEnvelope>;
 
 function isQueryUnitEnvelope(value: unknown): value is QueryUnitEnvelope {
