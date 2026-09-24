@@ -26,6 +26,7 @@ because the parent session would be silently deleted instead of raising.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import uuid
 from pathlib import Path
@@ -42,6 +43,7 @@ from polylogue.security.excision import (
     resolve_session_excision_target,
 )
 from polylogue.storage.accepted_marker_inputs import (
+    AcceptedMarkerInputExcisedError,
     MixedAcceptedMarkerInputError,
     PreparedAcceptedMarkerInput,
     append_accepted_marker_input,
@@ -359,6 +361,54 @@ class TestApplySessionExcision:
         second = apply_session_excision(tmp_path, session_id, reason="r-again", actor="user:local")
         assert second.found is False  # already gone; nothing left to touch
 
+    def test_unindexed_pending_marker_excision_tombstones_its_raw_revision(self, tmp_path: Path) -> None:
+        """Pending carrier is the durable session-to-raw link before index commit.
+
+        Anti-vacuity: omitting carrier raw ids from excision's durable closure
+        leaves this raw replayable; checking tombstones by request key alone
+        then permits a changed recipe to persist the same excised material.
+        """
+        session_id = _seed_session(tmp_path, native_id="pending-before-index")
+        raw_id = resolve_session_excision_target(tmp_path, session_id).raw_targets[0].raw_id
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        pending = prepare_accepted_marker_input(
+            raw_id,
+            [{"session_id": session_id, "candidates": [{"body": "excised pending material"}]}],
+            request_facts={"recipe": "before"},
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
+
+        target = resolve_session_excision_target(tmp_path, session_id)
+        assert target.session_exists is False
+        assert tuple(raw.raw_id for raw in target.raw_targets) == (raw_id,)
+        assert tuple(marker.identity for marker in target.marker_input_targets) == (pending.identity,)
+
+        receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:test", now_ms=20)
+        assert receipt.found is True
+        assert receipt.counts["source_raw_rows"] == 1
+        assert receipt.counts["source_marker_inputs_pending"] == 1
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM pending_accepted_marker_inputs WHERE raw_id = ?", (raw_id,)
+            ).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM excised_marker_inputs WHERE raw_id = ?", (raw_id,)
+            ).fetchone() == (1,)
+
+            changed_request = prepare_accepted_marker_input(
+                raw_id,
+                [{"session_id": session_id, "candidates": [{"body": "excised pending material"}]}],
+                request_facts={"recipe": "after"},
+            )
+            assert changed_request.identity != pending.identity
+            with pytest.raises(AcceptedMarkerInputExcisedError, match="was excised"):
+                persist_pending_marker_input_sync(conn, changed_request, expected_incarnation_id=str(uuid.uuid4()))
+            assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+
     def test_retry_after_source_commit_before_index_commit(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -458,6 +508,7 @@ class TestApplySessionExcision:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         session_id = _seed_session(tmp_path, native_id="crash-receipt-index")
+        pending, accepted = _seed_marker_carriers(tmp_path, session_id)
         original_connect = excision_module._connect_rw
         failed = False
 
@@ -472,10 +523,25 @@ class TestApplySessionExcision:
         with pytest.raises(RuntimeError, match="simulated crash"):
             apply_session_excision(tmp_path, session_id, reason="crash", actor="user:test", now_ms=20)
 
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            stored = conn.execute(
+                "SELECT value_json FROM assertions WHERE target_ref = ? AND kind = ?",
+                (f"session:{session_id}", AssertionKind.EXCISION_RECORD.value),
+            ).fetchone()
+            assert stored is not None
+            stored_value = json.loads(stored[0])
+            assert stored_value["counts"]["index_marker_witnesses"] == 2
+
         receipt = apply_session_excision(tmp_path, session_id, reason="different", actor="other", now_ms=21)
         assert receipt.found is True
         assert receipt.reason == "crash"
         assert receipt.actor == "user:test"
+        assert receipt.counts["index_marker_witnesses"] == 2
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
+                (pending.identity, accepted.identity),
+            ).fetchone() == (0,)
         assert resolve_session_excision_target(tmp_path, session_id).found is False
 
     def test_reingest_does_not_resurrect_excised_content(self, tmp_path: Path) -> None:

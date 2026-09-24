@@ -366,9 +366,27 @@ def _resolve_session_excision_target(
             fact_raw_ids = _session_fact_raw_ids(conn, session_id)
             raw_ids.extend(fact_raw_ids)
             marker_target_raw_ids = frozenset(raw_ids)
-            if raw_ids:
-                resolved = _durable_revision_closure(conn, raw_ids)
+            resolved = _durable_revision_closure(conn, raw_ids) if raw_ids else ()
+            marker_target_raw_ids = frozenset(resolved)
+            has_marker_inputs = _table_exists(conn, "pending_accepted_marker_inputs") and _table_exists(
+                conn, "accepted_marker_inputs"
+            )
+            if has_marker_inputs:
+                # A carrier is persisted before its index transaction. It can
+                # therefore be the only surviving link from a requested
+                # session to its durable raw revision. Resolve by session as
+                # well as the current raw closure, then include those carrier
+                # raw ids in the same durable revision closure before deleting
+                # source bytes or writing their excision markers.
+                marker_input_targets = marker_input_excision_targets_sync(
+                    conn,
+                    target_session_ids=target_session_ids,
+                    target_raw_ids=marker_target_raw_ids,
+                )
+                raw_ids.extend(marker.raw_id for marker in marker_input_targets)
+                resolved = _durable_revision_closure(conn, raw_ids) if raw_ids else ()
                 marker_target_raw_ids = frozenset(resolved)
+            if raw_ids:
                 placeholders = ",".join("?" for _ in resolved)
                 rows = conn.execute(
                     f"SELECT raw_id, blob_hash, source_path FROM raw_sessions WHERE raw_id IN ({placeholders})",
@@ -378,7 +396,7 @@ def _resolve_session_excision_target(
                     ExcisionRawTarget(raw_id=str(r[0]), blob_hash=bytes(r[1]), source_path=str(r[2])) for r in rows
                 )
                 containers = _resolve_container_disposition(conn, tuple(t.raw_id for t in raw_targets))
-            if _table_exists(conn, "pending_accepted_marker_inputs") and _table_exists(conn, "accepted_marker_inputs"):
+            if has_marker_inputs:
                 marker_input_targets = marker_input_excision_targets_sync(
                     conn,
                     target_session_ids=target_session_ids,
@@ -1119,6 +1137,7 @@ def _apply_single_session_excision(
             conn.close()
 
     source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
     removed_hashes: list[str] = []
     marker_input_digests = tuple(dict.fromkeys(marker.carrier_digest for marker in target.marker_input_targets))
     retained_hook_events: tuple[str, ...] = ()
@@ -1332,6 +1351,23 @@ def _apply_single_session_excision(
         finally:
             conn.close()
 
+    # The receipt commits before index cleanup. Record the exact witness
+    # target count now, so a crash after the receipt does not leave a durable
+    # zero that later retries can never correct. Like index_sessions above,
+    # this field records resolved rows in scope for deletion.
+    if index_db.exists() and target.marker_input_targets:
+        conn = _connect_ro(index_db)
+        try:
+            if _table_exists(conn, "ingest_marker_witnesses"):
+                placeholders = ",".join("?" for _ in target.marker_input_targets)
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN ({placeholders})",
+                    tuple(marker.identity for marker in target.marker_input_targets),
+                ).fetchone()
+                counts["index_marker_witnesses"] = int(row[0]) if row else 0
+        finally:
+            conn.close()
+
     # Durable source authority must commit before the rebuildable index loses
     # the key needed to retry an interrupted excision. The receipt is written
     # before index cleanup so a crash after the receipt remains attributable.
@@ -1408,7 +1444,6 @@ def _apply_single_session_excision(
     finally:
         conn.close()
 
-    index_db = archive_root / "index.db"
     if index_db.exists():
         conn = _connect_rw(index_db)
         conn.execute("PRAGMA foreign_keys = ON")
@@ -1416,12 +1451,13 @@ def _apply_single_session_excision(
             with conn:
                 if target.marker_input_targets and _table_exists(conn, "ingest_marker_witnesses"):
                     placeholders = ",".join("?" for _ in target.marker_input_targets)
-                    cursor = conn.execute(
+                    conn.execute(
                         f"DELETE FROM ingest_marker_witnesses WHERE request_key IN ({placeholders})",
                         tuple(marker.identity for marker in target.marker_input_targets),
                     )
-                    if existing_receipt is None:
-                        counts["index_marker_witnesses"] = max(cursor.rowcount, 0)
+                    # Keep the preflight target count in the receipt; retries
+                    # return that same persisted value after this idempotent
+                    # deletion has completed.
                 cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
                 if existing_receipt is None:
                     counts["index_sessions"] = max(cursor.rowcount, 0)

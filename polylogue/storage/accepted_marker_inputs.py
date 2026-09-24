@@ -196,13 +196,26 @@ def excise_marker_input_targets_sync(
     return counts
 
 
-def _assert_marker_input_not_excised_sync(conn: sqlite3.Connection, identity: str) -> None:
-    if conn.execute("SELECT 1 FROM excised_marker_inputs WHERE identity = ?", (identity,)).fetchone() is not None:
+def _assert_marker_input_not_excised_sync(conn: sqlite3.Connection, identity: str, raw_id: str | None = None) -> None:
+    if raw_id is None:
+        row = conn.execute("SELECT 1 FROM excised_marker_inputs WHERE identity = ?", (identity,)).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT 1 FROM excised_marker_inputs WHERE identity = ? OR raw_id = ? LIMIT 1",
+            (identity, raw_id),
+        ).fetchone()
+    if row is not None:
         raise AcceptedMarkerInputExcisedError("accepted marker carrier was excised and cannot be restored")
 
 
-async def _assert_marker_input_not_excised(conn: _Connection, identity: str) -> None:
-    cursor = await conn.execute("SELECT 1 FROM excised_marker_inputs WHERE identity = ?", (identity,))
+async def _assert_marker_input_not_excised(conn: _Connection, identity: str, raw_id: str | None = None) -> None:
+    if raw_id is None:
+        cursor = await conn.execute("SELECT 1 FROM excised_marker_inputs WHERE identity = ?", (identity,))
+    else:
+        cursor = await conn.execute(
+            "SELECT 1 FROM excised_marker_inputs WHERE identity = ? OR raw_id = ? LIMIT 1",
+            (identity, raw_id),
+        )
     if await cursor.fetchone() is not None:
         raise AcceptedMarkerInputExcisedError("accepted marker carrier was excised and cannot be restored")
 
@@ -302,7 +315,7 @@ def persist_pending_marker_input_sync(
 ) -> str:
     """Insert or verify a pending carrier in the caller's source transaction."""
     _validate(batch)
-    _assert_marker_input_not_excised_sync(conn, batch.identity)
+    _assert_marker_input_not_excised_sync(conn, batch.identity, batch.raw_id)
     if len(expected_incarnation_id) != 36:
         raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
     accepted = conn.execute(
@@ -343,7 +356,7 @@ async def append_accepted_marker_input(
     allocation is SQLite-owned and survives restart independently of index.db.
     """
     _validate(batch)
-    await _assert_marker_input_not_excised(conn, batch.identity)
+    await _assert_marker_input_not_excised(conn, batch.identity, batch.raw_id)
     if index_incarnation_id is not None and len(index_incarnation_id) != 36:
         raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid index incarnation")
     cursor = await conn.execute(
@@ -382,7 +395,7 @@ async def persist_pending_accepted_marker_input(
 ) -> None:
     """Durably retain exact carrier bytes before the index transaction commits."""
     _validate(batch)
-    await _assert_marker_input_not_excised(conn, batch.identity)
+    await _assert_marker_input_not_excised(conn, batch.identity, batch.raw_id)
     if len(expected_incarnation_id) != 36:
         raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
     cursor = await conn.execute(
@@ -420,7 +433,7 @@ async def persist_pending_accepted_marker_input(
 async def finalize_pending_accepted_marker_input(conn: _Connection, batch: PreparedAcceptedMarkerInput) -> int:
     """Append accepted bytes and remove their pending copy in the caller's transaction."""
     _validate(batch)
-    await _assert_marker_input_not_excised(conn, batch.identity)
+    await _assert_marker_input_not_excised(conn, batch.identity, batch.raw_id)
     cursor = await conn.execute(
         "SELECT carrier_digest, expected_incarnation_id, payload FROM pending_accepted_marker_inputs "
         "WHERE request_key = ?",
