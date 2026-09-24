@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 
 from polylogue.markers import parser as marker_parser
 from polylogue.markers.lowering import candidates_for_block
-from polylogue.markers.models import MarkerCandidate, MarkerMatch, MarkerProvenance, marker_provenance
-from polylogue.markers.registry import MARKER_REGISTRY
+from polylogue.markers.models import MarkerCandidate, MarkerKindSpec, MarkerMatch, MarkerProvenance, marker_provenance
+from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
 
 if TYPE_CHECKING:
@@ -56,8 +56,12 @@ def marker_recipe_fingerprint() -> str:
             inspect.getsource(candidates_for_block),
             inspect.getsource(marker_parser.parse_markers),
             inspect.getsource(marker_parser._args),
+            inspect.getsource(marker_parser.marker_spec),
+            inspect.getsource(MarkerRegistry.get),
+            inspect.getsource(MarkerRegistry.__contains__),
             inspect.getsource(marker_provenance),
             inspect.getsource(MarkerCandidate),
+            inspect.getsource(MarkerKindSpec),
             inspect.getsource(MarkerMatch),
             inspect.getsource(MarkerProvenance),
         ],

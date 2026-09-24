@@ -113,6 +113,45 @@ def test_marker_recipe_fingerprint_tracks_parser_dependency(monkeypatch: pytest.
     assert marker_recipe_fingerprint() != before
 
 
+def test_marker_recipe_fingerprint_tracks_marker_spec_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.markers import parser
+
+    before = marker_recipe_fingerprint()
+
+    def changed_marker_spec(registry: object, kind: str) -> None:
+        del registry, kind
+        return None
+
+    monkeypatch.setattr(parser, "marker_spec", changed_marker_spec)
+    assert marker_recipe_fingerprint() != before
+
+
+def test_marker_recipe_fingerprint_tracks_registry_get(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.markers.registry import MarkerRegistry
+
+    before = marker_recipe_fingerprint()
+
+    def changed_get(self: object, kind: str) -> None:
+        del self, kind
+        return None
+
+    monkeypatch.setattr(MarkerRegistry, "get", changed_get)
+    assert marker_recipe_fingerprint() != before
+
+
+def test_marker_recipe_fingerprint_tracks_registry_contains(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.markers.registry import MarkerRegistry
+
+    before = marker_recipe_fingerprint()
+
+    def changed_contains(self: object, kind: str) -> bool:
+        del self, kind
+        return False
+
+    monkeypatch.setattr(MarkerRegistry, "__contains__", changed_contains)
+    assert marker_recipe_fingerprint() != before
+
+
 @pytest.mark.parametrize("name", ["_LINE", "_INLINE", "_INLINE_OPEN", "_MALFORMED"])
 def test_marker_recipe_fingerprint_tracks_each_grammar_constant(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     from polylogue.markers import parser
