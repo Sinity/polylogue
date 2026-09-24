@@ -22,15 +22,22 @@ def convergence_warning_line(active_archive: Path | None = None) -> str | None:
     try:
         from polylogue.paths import archive_root
         from polylogue.storage.archive_readiness import (
+            RawMaterializationAssessmentState,
+            assess_raw_materialization,
             raw_materialization_readiness_snapshot,
-            raw_materialization_ready,
         )
 
         root = active_archive or archive_root()
         raw_readiness = raw_materialization_readiness_snapshot(root)
-        if raw_materialization_ready(raw_readiness):
+        assessment = assess_raw_materialization(raw_readiness)
+        if assessment.state is RawMaterializationAssessmentState.POPULATED_CONVERGED:
             return None
-        return _raw_materialization_warning(raw_readiness)
+        return _raw_materialization_warning(
+            raw_readiness,
+            is_unmeasured=assessment.state is RawMaterializationAssessmentState.UNMEASURED,
+            assessment_reason=assessment.reason,
+            assessment_detail=assessment.detail,
+        )
     except Exception:
         logger.warning("convergence warning probe failed; reporting readiness as undetermined", exc_info=True)
         return _UNDETERMINED
@@ -41,14 +48,22 @@ def convergence_warning_line(active_archive: Path | None = None) -> str | None:
 _UNDETERMINED = "Archive convergence state could not be determined; results may be partial."
 
 
-def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:
-    if not readiness.get("available", False):
+def _raw_materialization_warning(
+    readiness: dict[str, object],
+    *,
+    is_unmeasured: bool,
+    assessment_reason: str,
+    assessment_detail: str | None,
+) -> str | None:
+    if is_unmeasured:
         # An unavailable snapshot returns NORMALLY (a missing source/index
         # tier, an unreadable ops tier, a schema drift), so the caller's
         # ``except`` arm never fires for it. Returning ``None`` here claimed
         # "checked, and results are complete" for a check that never ran, and
         # discarded the reason the snapshot carried.
-        detail = readiness.get("error") or readiness.get("reason")
+        detail = assessment_detail or readiness.get("error") or readiness.get("reason")
+        if not detail and assessment_reason == "zero_denominator":
+            detail = "no raw artifacts: raw materialization is undefined at a zero denominator, not converged"
         if detail:
             return f"{_UNDETERMINED} ({detail})"
         return _UNDETERMINED

@@ -8,6 +8,7 @@ from collections import Counter
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -160,6 +161,189 @@ def _read_int(readiness: Mapping[str, Any], key: str) -> int:
         return 0
 
 
+class RawMaterializationAssessmentState(str, Enum):
+    """Whether the raw-materialization denominator supports a verdict."""
+
+    UNMEASURED = "unmeasured"
+    POPULATED_CONVERGED = "populated_converged"
+    POPULATED_UNCONVERGED = "populated_unconverged"
+
+
+@dataclass(frozen=True, slots=True)
+class RawMaterializationAssessment:
+    """Immutable verdict over one raw-materialization readiness payload.
+
+    The old boolean projection made an empty or unavailable denominator
+    indistinguishable from a populated archive whose raw rows had converged.
+    Keep its count evidence with the verdict so status surfaces do not each
+    classify the payload differently. ``raw_artifact_count`` is the verdict's
+    required denominator; ``materialized_raw_artifact_count`` is a progress
+    projection and may be absent on compatibility snapshots. The authoritative
+    convergence evidence remains the complete blocker set plus parser census.
+    """
+
+    state: RawMaterializationAssessmentState
+    reason: str
+    raw_artifact_count: int | None
+    materialized_raw_artifact_count: int | None
+    blocking_counts: tuple[tuple[str, int], ...] = ()
+    detail: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        """Strict compatibility projection for boolean consumers."""
+
+        return self.state is RawMaterializationAssessmentState.POPULATED_CONVERGED
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "state": self.state.value,
+            "reason": self.reason,
+            "raw_artifact_count": self.raw_artifact_count,
+            "materialized_raw_artifact_count": self.materialized_raw_artifact_count,
+            "blocking_counts": dict(self.blocking_counts),
+            "detail": self.detail,
+        }
+
+
+_RAW_MATERIALIZATION_BLOCKING_KEYS: tuple[str, ...] = (
+    "critical",
+    "warning",
+    "actionable",
+    "blocked",
+    "affected_actionable",
+    "affected_blocked",
+    "affected_open",
+    "lost_source_evidence_count",
+    "unchecked",
+    "affected_unchecked",
+    "raw_authority_blocker_count",
+    "raw_authority_parser_census_incomplete_count",
+)
+
+
+def _readiness_mapping(readiness: Mapping[str, Any] | object | None) -> Mapping[str, Any] | None:
+    if readiness is None:
+        return None
+    if isinstance(readiness, Mapping):
+        return readiness
+    model_dump = getattr(readiness, "model_dump", None)
+    dumped = model_dump() if callable(model_dump) else None
+    return dumped if isinstance(dumped, Mapping) else None
+
+
+def _exact_nonnegative_int(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def assess_raw_materialization(readiness: Mapping[str, Any] | object | None) -> RawMaterializationAssessment:
+    """Classify raw materialization from its one authoritative snapshot.
+
+    Zero raw artifacts is not a vacuous convergence proof: no raw artifact was
+    measured. Unavailable snapshots, invalid parser censuses, and a missing raw
+    denominator likewise withhold a verdict. Only a populated snapshot with
+    every existing blocking counter at zero is converged.
+    """
+
+    payload = _readiness_mapping(readiness)
+    if payload is None:
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "readiness_unavailable",
+            None,
+            None,
+            detail="raw-materialization readiness was not inspected",
+        )
+    if payload.get("available") is not True:
+        detail = payload.get("error") or payload.get("reason")
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "readiness_unavailable",
+            None,
+            None,
+            detail=str(detail) if detail else None,
+        )
+    raw_artifact_count = _exact_nonnegative_int(payload.get("raw_artifact_count"))
+    materialized_raw_artifact_count = _exact_nonnegative_int(payload.get("materialized_raw_artifact_count"))
+    blocking_counts: list[tuple[str, int]] = []
+    for key in _RAW_MATERIALIZATION_BLOCKING_KEYS:
+        value = payload.get(key, 0)
+        count = _exact_nonnegative_int(value)
+        if count is None:
+            return RawMaterializationAssessment(
+                RawMaterializationAssessmentState.UNMEASURED,
+                "blocking_count_invalid",
+                raw_artifact_count,
+                materialized_raw_artifact_count,
+                detail=f"{key} is not a non-negative integer",
+            )
+        blocking_counts.append((key, count))
+    frozen_blocking_counts = tuple(blocking_counts)
+    if raw_artifact_count is None:
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "raw_artifact_count_unavailable",
+            None,
+            materialized_raw_artifact_count,
+            frozen_blocking_counts,
+        )
+    if raw_artifact_count == 0:
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "zero_denominator",
+            0,
+            materialized_raw_artifact_count,
+            frozen_blocking_counts,
+        )
+    # An already-observed blocker remains a refutation when a separate debt
+    # classifier or census is unavailable. Unknown auxiliary evidence must
+    # never erase a measured reason this archive is not converged.
+    if any(count > 0 for _, count in frozen_blocking_counts):
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.POPULATED_UNCONVERGED,
+            "blocking_materialization_debt",
+            raw_artifact_count,
+            materialized_raw_artifact_count,
+            frozen_blocking_counts,
+            detail=str(payload.get("debt_classifier_error")) if payload.get("debt_classifier_error") else None,
+        )
+    if payload.get("debt_classifier_error"):
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "debt_classifier_unavailable",
+            raw_artifact_count,
+            materialized_raw_artifact_count,
+            frozen_blocking_counts,
+            detail=str(payload["debt_classifier_error"]),
+        )
+    parser_census = payload.get("raw_authority_parser_census")
+    if not isinstance(parser_census, Mapping):
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "parser_census_unavailable",
+            None,
+            None,
+        )
+    if parser_census.get("available") is not True:
+        return RawMaterializationAssessment(
+            RawMaterializationAssessmentState.UNMEASURED,
+            "parser_census_invalid",
+            None,
+            None,
+            detail=str(parser_census.get("error") or parser_census.get("reason") or "parser census unavailable"),
+        )
+
+    return RawMaterializationAssessment(
+        RawMaterializationAssessmentState.POPULATED_CONVERGED,
+        "all_blocking_counts_zero",
+        raw_artifact_count,
+        materialized_raw_artifact_count,
+        frozen_blocking_counts,
+    )
+
+
 def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> bool:
     """Return whether raw acquisition and index materialization are converged.
 
@@ -167,48 +351,7 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     row has been explained. Actionable/open/blocking debt is not acceptable for
     product archive readiness.
     """
-    if readiness is None:
-        return False
-    if not isinstance(readiness, Mapping):
-        model_dump = getattr(readiness, "model_dump", None)
-        if callable(model_dump):
-            dumped = model_dump()
-            if not isinstance(dumped, Mapping):
-                return False
-            readiness = dumped
-        else:
-            return False
-    if not bool(readiness.get("available", False)):
-        return False
-    # A surface that composes the archive-debt classifier records a failure to
-    # run it here (see paths._merge_raw_materialization_debt). Readiness that
-    # required the classifier cannot be claimed when the classifier failed.
-    if readiness.get("debt_classifier_error"):
-        return False
-    parser_census = readiness.get("raw_authority_parser_census")
-    if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
-        return False
-    # The retired census ledger used to contribute a "was a frontier pass ever
-    # completed" precondition plus its own per-pass residual counts. The
-    # durable successor is the unresolved-blocker set below: every frontier
-    # inspection publishes one blocker per blocking item and tombstones the
-    # ones current evidence disproves, so a non-zero count is the refutation
-    # those census counts stood in for.
-    blocking_keys = (
-        "critical",
-        "warning",
-        "actionable",
-        "blocked",
-        "affected_actionable",
-        "affected_blocked",
-        "affected_open",
-        "lost_source_evidence_count",
-        "unchecked",
-        "affected_unchecked",
-        "raw_authority_blocker_count",
-        "raw_authority_parser_census_incomplete_count",
-    )
-    return all(_read_int(readiness, key) == 0 for key in blocking_keys)
+    return assess_raw_materialization(readiness).ready
 
 
 def _pinned_parser_census_projection(
@@ -618,8 +761,12 @@ def raw_materialization_readiness_snapshot(
     counters and durable authority state but marks all unclassified gaps as
     unchecked, which is the bounded periodic-status contract.
     """
-    source_db = active_archive / "source.db"
-    index_db = active_archive / "index.db"
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    location = ArchiveLocation.resolve(active_archive)
+    active_archive = location.configured_root
+    source_db = location.active_tier("source").resolved_path
+    index_db = location.active_tier("index").resolved_path
     if not source_db.exists() or not index_db.exists():
         return {"available": False, "error": "source.db or index.db missing"}
     try:
@@ -1841,6 +1988,9 @@ def _archive_readiness_status_from_connections(
 
 
 __all__ = [
+    "RawMaterializationAssessment",
+    "RawMaterializationAssessmentState",
+    "assess_raw_materialization",
     "archive_readiness_status",
     "archive_readiness_status_from_connections",
     "missing_source_raw_session_evidence",

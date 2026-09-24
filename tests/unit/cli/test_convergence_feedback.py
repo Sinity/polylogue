@@ -14,6 +14,8 @@ def test_convergence_warning_line_reports_actionable_raw_debt(monkeypatch: pytes
         "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
         lambda _root: {
             "available": True,
+            "raw_artifact_count": 4,
+            "raw_authority_parser_census": {"available": True},
             "actionable": 1,
             "blocked": 0,
             "affected_actionable": 4,
@@ -37,6 +39,8 @@ def test_convergence_warning_line_omits_classified_raw_gaps(monkeypatch: pytest.
         "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
         lambda _root: {
             "available": True,
+            "raw_artifact_count": 1,
+            "raw_authority_parser_census": {"available": True},
             "total": 1,
             "classified": 1,
             "affected_classified": 372,
@@ -60,6 +64,7 @@ def test_convergence_warning_line_reports_unclassified_join_gaps(monkeypatch: py
             "classification": "not_run",
             "raw_artifact_count": 10,
             "materialized_raw_artifact_count": 7,
+            "raw_authority_parser_census": {"available": True},
             "unchecked": 3,
             "affected_unchecked": 3,
             "actionable": 0,
@@ -77,6 +82,48 @@ def test_convergence_warning_line_reports_unclassified_join_gaps(monkeypatch: py
         "3 raw/index join gap(s) found; "
         "results may be partial until daemon convergence classifies them."
     )
+
+
+def test_convergence_warning_line_reports_zero_denominator_as_undetermined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
+    monkeypatch.setattr(
+        "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+        lambda _root: {
+            "available": True,
+            "raw_artifact_count": 0,
+            "materialized_raw_artifact_count": 0,
+            "raw_authority_parser_census": {"available": True},
+        },
+    )
+
+    assert convergence_warning_line() == (
+        "Archive convergence state could not be determined; results may be partial. "
+        "(no raw artifacts: raw materialization is undefined at a zero denominator, not converged)"
+    )
+
+
+def test_convergence_warning_line_reports_invalid_counter_as_undetermined(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
+    monkeypatch.setattr(
+        "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+        lambda _root: {
+            "available": True,
+            "raw_artifact_count": 1,
+            "materialized_raw_artifact_count": 1,
+            "raw_authority_parser_census": {"available": True},
+            "critical": "not-an-int",
+        },
+    )
+
+    warning = convergence_warning_line()
+
+    assert warning is not None
+    assert warning.startswith("Archive convergence state could not be determined; results may be partial.")
+    assert "critical" in warning
 
 
 def test_convergence_warning_line_reports_undetermined_when_probe_raises(

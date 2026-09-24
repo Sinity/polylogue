@@ -19,6 +19,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.operations.operation_status import OperationStatus
+from polylogue.storage.archive_readiness import RawMaterializationAssessmentState, assess_raw_materialization
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths, RawFrontierIntegrityProjection
@@ -141,52 +142,49 @@ def component_from_derived_model(status: DerivedModelStatus, *, scope: str = "de
 
 def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | None) -> ComponentReadiness:
     payload = readiness or {}
-    available = bool(payload.get("available", False))
-    total = int(payload.get("total") or 0)
-    critical = int(payload.get("critical") or 0)
-    warning = int(payload.get("warning") or 0)
-    actionable = int(payload.get("actionable") or 0)
-    blocked = int(payload.get("blocked") or 0)
-    classified = int(payload.get("classified") or 0)
-    affected_total = int(payload.get("affected_total") or 0)
-    affected_actionable = int(payload.get("affected_actionable") or 0)
-    affected_open = int(payload.get("affected_open") or 0)
-    affected_classified = int(payload.get("affected_classified") or 0)
-    unchecked = int(payload.get("unchecked") or 0)
-    affected_unchecked = int(payload.get("affected_unchecked") or 0)
-    lost_source_evidence_count = int(payload.get("lost_source_evidence_count") or 0)
-    parser_census_incomplete_count = int(payload.get("raw_authority_parser_census_incomplete_count") or 0)
-    parser_census_incomplete_blob_bytes = int(payload.get("raw_authority_parser_census_incomplete_blob_bytes") or 0)
+    assessment = assess_raw_materialization(payload)
+    total = _nonnegative_count(payload.get("total"))
+    critical = _nonnegative_count(payload.get("critical"))
+    warning = _nonnegative_count(payload.get("warning"))
+    actionable = _nonnegative_count(payload.get("actionable"))
+    blocked = _nonnegative_count(payload.get("blocked"))
+    classified = _nonnegative_count(payload.get("classified"))
+    affected_total = _nonnegative_count(payload.get("affected_total"))
+    affected_actionable = _nonnegative_count(payload.get("affected_actionable"))
+    affected_open = _nonnegative_count(payload.get("affected_open"))
+    affected_classified = _nonnegative_count(payload.get("affected_classified"))
+    unchecked = _nonnegative_count(payload.get("unchecked"))
+    affected_unchecked = _nonnegative_count(payload.get("affected_unchecked"))
+    lost_source_evidence_count = _nonnegative_count(payload.get("lost_source_evidence_count"))
+    parser_census_incomplete_count = _nonnegative_count(payload.get("raw_authority_parser_census_incomplete_count"))
+    parser_census_incomplete_blob_bytes = _nonnegative_count(
+        payload.get("raw_authority_parser_census_incomplete_blob_bytes")
+    )
     parser_census = payload.get("raw_authority_parser_census")
-    # Presence means a census mapping actually arrived -- not merely that the
-    # key exists. RawMaterializationReadiness declares
-    # raw_authority_parser_census with a None default and always serialises it,
-    # so a key-existence test is unconditionally true and made EVERY payload
-    # without an explicit census resolve to UNKNOWN "source parser census
-    # unavailable", shadowing known blocked/degraded states (#3903 intended to
-    # block on a census that reports unavailable, not on the absence of census
-    # information).
-    parser_census_present = isinstance(parser_census, Mapping)
-    parser_census_available = isinstance(parser_census, Mapping) and parser_census.get("available") is True
-    raw_artifact_count = int(payload.get("raw_artifact_count") or 0)
-    materialized_raw_artifact_count = int(payload.get("materialized_raw_artifact_count") or 0)
-    archive_session_count = int(payload.get("archive_session_count") or 0)
-    join_gap_count = int(payload.get("join_gap_count") or total)
-    if not available:
+    raw_artifact_count = _nonnegative_count(payload.get("raw_artifact_count"))
+    materialized_raw_artifact_count = _nonnegative_count(payload.get("materialized_raw_artifact_count"))
+    archive_session_count = _nonnegative_count(payload.get("archive_session_count"))
+    join_gap_count = _nonnegative_count(payload.get("join_gap_count", total))
+    if assessment.state is RawMaterializationAssessmentState.UNMEASURED:
         state = CapabilityReadinessState.UNKNOWN
-        summary = "unknown"
-    elif parser_census_present and not parser_census_available:
-        state = CapabilityReadinessState.UNKNOWN
-        summary = "source parser census unavailable"
+        summary = {
+            "zero_denominator": "raw materialization unmeasured: no raw artifacts",
+            "raw_artifact_count_unavailable": "raw artifact census unavailable",
+            "parser_census_unavailable": "source parser census unavailable",
+            "parser_census_invalid": "source parser census unavailable",
+            "debt_classifier_unavailable": "raw debt classifier unavailable",
+        }.get(assessment.reason, "raw materialization unavailable")
+    elif assessment.state is RawMaterializationAssessmentState.POPULATED_CONVERGED:
+        state = CapabilityReadinessState.READY
+        summary = (
+            "raw evidence classified; no materialization debt" if classified > 0 or affected_classified > 0 else "ready"
+        )
     elif parser_census_incomplete_count > 0:
         state = CapabilityReadinessState.BLOCKED
         summary = "source parser census incomplete"
     elif lost_source_evidence_count > 0:
         state = CapabilityReadinessState.BLOCKED
         summary = "source evidence missing"
-    elif total == 0:
-        state = CapabilityReadinessState.READY
-        summary = "ready"
     elif blocked > 0:
         state = CapabilityReadinessState.BLOCKED
         summary = "raw evidence blocked"
@@ -206,7 +204,9 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
         state = CapabilityReadinessState.DEGRADED
         summary = "raw evidence classified as non-actionable"
     caveats: tuple[str, ...]
-    if state is CapabilityReadinessState.READY and (classified > 0 or affected_classified > 0):
+    if state is CapabilityReadinessState.UNKNOWN:
+        caveats = (f"raw_materialization_unmeasured:{assessment.reason}",)
+    elif state is CapabilityReadinessState.READY and (classified > 0 or affected_classified > 0):
         caveats = ("raw_index_join_gaps_classified_not_materialization_debt",)
     elif state is CapabilityReadinessState.DEGRADED and (unchecked > 0 or affected_unchecked > 0):
         caveats = ("raw_index_join_gaps_unclassified_by_fast_readiness",)
@@ -250,6 +250,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             "source_family_counts": dict(payload.get("source_family_counts") or {}),
             "lost_source_evidence_samples": list(payload.get("lost_source_evidence_samples") or []),
             "raw_authority_parser_census": dict(parser_census) if isinstance(parser_census, Mapping) else None,
+            "assessment": assessment.to_dict(),
         },
         repair_hint=(
             None
@@ -259,6 +260,10 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
             else "polylogued run"
         ),
     )
+
+
+def _nonnegative_count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
 
 
 def component_from_raw_frontier_integrity(payload: Mapping[str, Any] | None) -> ComponentReadiness:

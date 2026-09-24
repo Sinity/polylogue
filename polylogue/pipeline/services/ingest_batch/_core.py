@@ -42,6 +42,7 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import get_logger
+from polylogue.markers.preparation import marker_candidates_for_prepared_write
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
@@ -68,7 +69,13 @@ from polylogue.sinex.models import PublicationMode, PublicationPayload
 from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
+from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.accepted_marker_inputs import (
+    AcceptedMarkerInputRefusedError,
+    append_accepted_marker_input,
+    prepare_accepted_marker_input,
+)
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
@@ -91,11 +98,13 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlo
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     LineageSignatureCache,
+    PreparedSessionWrite,
     _composed_db_signatures,
     _message_content_hash,
     _normalized_message_native_id,
     _parsed_message_signature,
     _repair_stale_session_observations,
+    prepare_session_write,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -1115,6 +1124,7 @@ def _write_session(
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
     drive_cohort_cache: DriveRevisionCohortCache | None = None,
     manage_transaction: bool = True,
+    prepared_writes: list[PreparedSessionWrite] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -1403,6 +1413,18 @@ def _write_session(
         hash_hex, size = attachment.precomputed_blob
         preacquired_attachment_blobs[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
 
+    prepared_write = (
+        prepare_session_write(
+            conn,
+            session_to_write,
+            merge_append=merge_append,
+            fallback_timestamp=payload.fallback_timestamp,
+            source_conn=source_conn,
+            signature_cache=signature_cache,
+        )
+        if prepared_writes is not None
+        else None
+    )
     writer_outcomes: list[ArchiveWriteOutcome] = []
     write_parsed_session_to_archive(
         conn,
@@ -1414,7 +1436,12 @@ def _write_session(
         # separately names what this call publishes -- the delta -- which is
         # the digest a prepared identity carrier must match (polylogue-3hfl7).
         content_hash=payload.content_hash,
-        pending_input_content_hash=(bound_session_content_hash(session_to_write) if merge_append else None),
+        pending_input_content_hash=(
+            prepared_write.input_content_hash.hex()
+            if prepared_write is not None
+            else (bound_session_content_hash(session_to_write) if merge_append else None)
+        ),
+        prepared_write=prepared_write,
         raw_id=payload.raw_id,
         fallback_timestamp=payload.fallback_timestamp,
         source_conn=source_conn,
@@ -1452,6 +1479,8 @@ def _write_session(
         return False, counts
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
+    if prepared_writes is not None and prepared_write is not None:
+        prepared_writes.append(prepared_write)
     if attachment_owner_resolutions is not None and writer_outcomes:
         for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
             attachment_owner_resolutions.append(
@@ -1592,6 +1621,7 @@ def _write_session_entry(
     try:
         t_write = time.perf_counter()
         write_stage_timings: dict[str, float] = {}
+        prepared_writes: list[PreparedSessionWrite] = []
         content_changed, counts = _write_session(
             conn,
             cdata,
@@ -1607,7 +1637,27 @@ def _write_session_entry(
             attachment_owner_resolutions=summary.attachment_owner_resolutions,
             drive_plans=drive_plans,
             drive_cohort_cache=drive_cohort_cache,
+            prepared_writes=prepared_writes,
         )
+        marker_write = (
+            prepared_writes[0]
+            if prepared_writes
+            else prepare_session_write(
+                conn,
+                cdata.parsed_session,
+                merge_append=False,
+                fallback_timestamp=cdata.fallback_timestamp,
+                source_conn=source_conn,
+                signature_cache=signature_cache,
+            )
+        )
+        marker_session: dict[str, object] = {
+            "session_id": marker_write.session_id,
+            "input_content_hash": marker_write.input_content_hash.hex(),
+            "parser_fingerprint": parser_fingerprint_for_origin(origin_from_provider(cdata.parsed_session.source_name)),
+            "lowering_fingerprint": lowering_fingerprint(),
+            "candidates": marker_candidates_for_prepared_write(marker_write),
+        }
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
         write_elapsed = time.perf_counter() - t_write
@@ -1634,6 +1684,7 @@ def _write_session_entry(
             )
         if batch_owns_transaction:
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
+        summary.marker_sessions_by_raw_id.setdefault(raw_id, []).append(marker_session)
         return True
     except Exception as exc:
         if batch_owns_transaction:
@@ -2908,6 +2959,7 @@ async def process_ingest_batch(
         validation_mode=validation_mode,
         publication_mode=publication_mode,
         publication_payloads_by_raw_id=batch_summary.publication_payloads_by_raw_id,
+        marker_sessions_by_raw_id=batch_summary.marker_sessions_by_raw_id,
     )
     batch_summary.publication_payloads_by_raw_id.clear()
     batch_summary.publication_payload_bytes = 0
@@ -3015,6 +3067,7 @@ async def _persist_batch_raw_state_updates(
     validation_mode: str,
     publication_mode: PublicationMode = PublicationMode.OFF,
     publication_payloads_by_raw_id: Mapping[str, Sequence[PublicationPayload]] | None = None,
+    marker_sessions_by_raw_id: Mapping[str, Sequence[dict[str, object]]] | None = None,
 ) -> float:
     now_iso = datetime.now(timezone.utc).isoformat()
     raw_state_update_started = time.perf_counter()
@@ -3026,6 +3079,17 @@ async def _persist_batch_raw_state_updates(
         )
 
     now_ms = 0
+
+    if marker_sessions_by_raw_id is not None and source_backend is None:
+        raise AcceptedMarkerInputRefusedError("accepted marker inputs require the durable source-tier backend")
+
+    async def retain_marker_input(raw_state_conn: AsyncSqlConnection, rid: str) -> None:
+        if marker_sessions_by_raw_id is None:
+            return
+        sessions = marker_sessions_by_raw_id.get(rid, ())
+        if outcomes.get(rid) is not None and outcomes[rid].had_sessions and not sessions:
+            raise AcceptedMarkerInputRefusedError(f"accepted raw revision {rid!r} has no prepared marker coverage")
+        await append_accepted_marker_input(raw_state_conn, prepare_accepted_marker_input(rid, sessions))
 
     async def stage_accepted_payloads(
         raw_state_conn: AsyncSqlConnection,
@@ -3053,7 +3117,7 @@ async def _persist_batch_raw_state_updates(
         await stack.enter_async_context(raw_state_backend.bulk_connection())
         now_ms = int(time.time() * 1000)
         raw_state_conn: AsyncSqlConnection | None = None
-        if publication_mode is not PublicationMode.OFF:
+        if publication_mode is not PublicationMode.OFF or marker_sessions_by_raw_id is not None:
             assert source_backend is not None
             raw_state_conn = cast(
                 AsyncSqlConnection,
@@ -3076,6 +3140,7 @@ async def _persist_batch_raw_state_updates(
             # staging on the yielded connection therefore shares its BEGIN
             # IMMEDIATE/commit/rollback boundary.
             if raw_state_conn is not None:
+                await retain_marker_input(raw_state_conn, rid)
                 await stage_accepted_payloads(raw_state_conn, rid, required=True)
         for rid in skipped_raw_ids:
             if rid in failed_raw_ids:
@@ -3093,6 +3158,7 @@ async def _persist_batch_raw_state_updates(
             # Empty parse results have no payload.  Content-identical duplicate
             # revisions do, and are restaged idempotently in this transaction.
             if raw_state_conn is not None:
+                await retain_marker_input(raw_state_conn, rid)
                 await stage_accepted_payloads(raw_state_conn, rid, required=False)
         for rid, error in failed_raw_ids.items():
             await service.repository.update_raw_state(

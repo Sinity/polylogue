@@ -94,6 +94,7 @@ class _IngestBatchSummary:
     fts_repair_session_ids: list[str] = field(default_factory=list)
     publication_payloads_by_raw_id: dict[str, list[PublicationPayload]] = field(default_factory=dict)
     publication_payload_bytes: int = 0
+    marker_sessions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     publication_deferred_raw_ids: set[str] = field(default_factory=set)
     schema_drift_observations: list[SchemaDriftObservation] = field(default_factory=list)
     # Keep the exact production-writer disposition visible through the batch

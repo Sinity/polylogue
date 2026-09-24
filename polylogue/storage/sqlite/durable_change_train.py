@@ -1190,6 +1190,10 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_state_update_compile(cast(Callable[..., object], value))
+                elif reference.endswith((":append_accepted_marker_input", ":read_accepted_marker_inputs")):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("accepted marker input writer requires source tier")
+                    detail = _probe_accepted_marker_input_writer()
                 elif reference.endswith(":AuditContinuityCoordinator"):
                     from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
 
@@ -1413,6 +1417,51 @@ def _probe_raw_artifact_upsert(upsert: Callable[..., object], target_version: in
     if row != expected:
         raise DurableChangeTrainError("raw-artifact upsert probe did not persist the expected artifact contract")
     return "wrote and read back one raw artifact in the projected source tier"
+
+
+def _probe_accepted_marker_input_writer() -> str:
+    import asyncio
+
+    import aiosqlite
+
+    from polylogue.storage.accepted_marker_inputs import (
+        AcceptedMarkerInputRefusedError,
+        append_accepted_marker_input,
+        prepare_accepted_marker_input,
+        read_accepted_marker_inputs,
+    )
+    from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
+
+    async def exercise() -> None:
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.executescript(SOURCE_DDL)
+            batch = prepare_accepted_marker_input("synthetic-marker-input", [{"session_id": "s", "candidates": []}])
+            first = await append_accepted_marker_input(conn, batch)
+            replay = await append_accepted_marker_input(conn, batch)
+            if first != 1 or replay != first:
+                raise DurableChangeTrainError("marker input replay advanced the stream")
+            page = await read_accepted_marker_inputs(conn, limit=1)
+            if len(page) != 1 or page[0].batch != batch or page[0].sequence != first:
+                raise DurableChangeTrainError("marker input reader lost retained bytes or sequence")
+            if await read_accepted_marker_inputs(conn, after_sequence=first):
+                raise DurableChangeTrainError("marker input pagination repeated its cursor")
+            conflict = prepare_accepted_marker_input(
+                "synthetic-marker-input", [{"session_id": "s", "candidates": [{"body": "changed"}]}]
+            )
+            try:
+                await append_accepted_marker_input(conn, conflict)
+            except AcceptedMarkerInputRefusedError:
+                pass
+            else:
+                raise DurableChangeTrainError("marker input writer accepted conflicting replay")
+            await conn.rollback()
+            cursor = await conn.execute("SELECT COUNT(*) FROM accepted_marker_inputs")
+            count = await cursor.fetchone()
+            if count is None or count[0] != 0:
+                raise DurableChangeTrainError("marker input survived source rollback")
+
+    asyncio.run(exercise())
+    return "accepted marker replay is immutable and source rollback removes the batch"
 
 
 def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
