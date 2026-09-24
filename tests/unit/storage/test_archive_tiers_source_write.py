@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     read_raw_artifact,
     record_raw_container_coordinate,
     upsert_raw_artifact,
+    write_source_hook_event,
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
@@ -165,7 +166,7 @@ def test_raw_writer_refuses_invalid_storage_blob_category_before_commit(tmp_path
                 additional_blob_refs=(
                     ArchiveSourceBlobRef(
                         blob_hash=deterministic_blob_hash(b"attachment"),
-                        ref_type="not-a-blob-category",
+                        ref_type="not-a-blob-category",  # type: ignore[arg-type]
                         source_path="/tmp/record.jsonl",
                         size_bytes=10,
                         acquired_at_ms=1,
@@ -201,6 +202,32 @@ def test_container_coordinate_writer_refuses_invalid_format_before_persistence(t
         assert conn.execute("SELECT COUNT(*) FROM raw_container_coordinates").fetchone()[0] == 0
     finally:
         conn.close()
+
+
+def test_hook_writer_refuses_invalid_storage_carrier_role_before_persistence(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    hook_event = ArchiveHookEvent(
+        hook_event_id="hook-invalid-role",
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="/tmp/hook.jsonl",
+        event_type="source_opened",
+        payload={},
+        observed_at_ms=1,
+    )
+    with pytest.raises(ValueError, match="carrier_role"):
+        write_source_hook_event(
+            conn,
+            origin=Origin.CLAUDE_CODE_SESSION,
+            source_path="/tmp/hook.jsonl",
+            payload=b"{}",
+            acquired_at_ms=1,
+            raw_id="raw-hook",
+            hook_event=hook_event,
+            carrier_role="not-a-carrier-role",  # type: ignore[arg-type]
+        )
+    assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 0
+    conn.close()
 
 
 def test_source_artifact_upsert_keeps_coordinate_deduplication_and_raw_failure_fanout(

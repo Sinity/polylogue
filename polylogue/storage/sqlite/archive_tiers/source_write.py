@@ -69,9 +69,15 @@ PENDING_RAW_LOGICAL_SOURCE_PREFIX = "pending-raw:"
 # relation that keeps bytes live; adding one requires reviewing blob liveness
 # ownership and the source DDL migration together.
 BlobRefType = Literal["raw_payload", "attachment", "sidecar", "hook_payload"]
+# Coordinate format is a durable encoding contract. A new format needs a
+# reviewed reader/reacquisition path and source migration, not just a new tag.
 ContainerCoordinateFormat = Literal["zip-v2"]
+# Carrier role controls which source is eligible to publish hook-carrier
+# authority; extend only with a reviewed source selection policy.
+HookCarrierRole = Literal["primary-writable", "legacy-read-only"]
 _BLOB_REF_TYPES = get_args(BlobRefType)
 _CONTAINER_COORDINATE_FORMATS = get_args(ContainerCoordinateFormat)
+_HOOK_CARRIER_ROLES = get_args(HookCarrierRole)
 
 
 def _is_raw_failure_artifact_kind(artifact_kind: object) -> bool:
@@ -154,7 +160,7 @@ class ArchiveSourceBlobRef:
 
     blob_hash: bytes
     raw_id: str | None = None
-    ref_type: str = "raw_payload"
+    ref_type: BlobRefType = "raw_payload"
     source_path: str | None = None
     size_bytes: int | None = None
     acquired_at_ms: int | None = None
@@ -309,7 +315,7 @@ def record_raw_container_coordinate(
     conn: sqlite3.Connection,
     raw_id: str,
     *,
-    coordinate_format: Literal["zip-v2"],
+    coordinate_format: ContainerCoordinateFormat,
     entry_ordinal: int,
     split_index: int,
     addressing_mode: MemberAddressingMode | str | None,
@@ -850,7 +856,7 @@ def write_source_hook_event(
     blob_publication_receipt_id: str | None = None,
     carrier_source_id: str = "representative-hook-source",
     carrier_relative_path: str | None = None,
-    carrier_role: str = "primary-writable",
+    carrier_role: HookCarrierRole = "primary-writable",
     manage_transaction: bool = True,
     policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> str:
@@ -874,6 +880,7 @@ def write_source_hook_event(
     ``ref_type='hook_payload'`` / ``ref_id=hook_event.hook_event_id`` instead,
     which really is this row's primary key in ``raw_hook_events``.
     """
+    carrier_role_value = require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
     conn.execute("PRAGMA foreign_keys = ON")
     if require_vocabulary(origin, Origin, field="origin") is None:
         raise ValueError("origin is required for hook events")
@@ -903,7 +910,7 @@ def write_source_hook_event(
             relative_path=relative_path,
             hook_event=hook_event,
             blob_hash=blob_hash,
-            role=carrier_role,
+            role=carrier_role_value,
             admitted_at_ms=acquired_at_ms,
         )
     return raw_id
@@ -937,7 +944,7 @@ def write_source_hook_event_batch(
     *,
     carrier_source_id: str,
     carrier_relative_path: str,
-    carrier_role: str,
+    carrier_role: HookCarrierRole,
     carrier_blob_hash: bytes,
     carrier_source_path: str,
     events: Sequence[CarrierHookEvent],
@@ -960,6 +967,7 @@ def write_source_hook_event_batch(
     a raw row, because the carrier is an acquired artifact.
     """
 
+    carrier_role_value = require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
     conn.execute("PRAGMA foreign_keys = ON")
     _assert_excision_policy(carrier_blob_hash, source_path=carrier_source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, carrier_blob_hash):
@@ -1003,7 +1011,7 @@ def write_source_hook_event_batch(
                 relative_path=coordinate,
                 hook_event=carried.event,
                 blob_hash=blob_hash,
-                role=carrier_role,
+                role=carrier_role_value,
                 admitted_at_ms=acquired_at_ms,
             )
             written += 1
