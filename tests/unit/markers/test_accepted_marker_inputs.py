@@ -406,6 +406,32 @@ def test_index_witness_recovers_and_refreshes_exact_accepted_carrier(tmp_path: P
         )
 
 
+def test_deferred_raw_does_not_publish_marker_witness_or_pending_carrier(tmp_path: Path) -> None:
+    """A raw deferred before index publication is not marker-accepted."""
+    from polylogue.pipeline.services.ingest_batch._core import _publish_marker_witnesses_before_index_commit
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with sqlite3.connect(root / "source.db") as source:
+        source.executescript(SOURCE_DDL)
+    with sqlite3.connect(root / "index.db") as index:
+        index.executescript(INDEX_DDL)
+        ingest_batch_core._ensure_ingest_index_incarnation(index)
+        index.execute("BEGIN IMMEDIATE")
+        summary = _IngestBatchSummary(
+            marker_request_facts_by_raw_id={"deferred-raw": {"recipe": "r1"}},
+            marker_request_sessions_by_raw_id={"deferred-raw": [{"session_id": "s"}]},
+            publication_deferred_raw_ids={"deferred-raw"},
+        )
+        _publish_marker_witnesses_before_index_commit(index, archive_root=root, summary=summary)
+        assert summary.marker_batches_by_raw_id == {}
+        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+
+    with sqlite3.connect(root / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "failure_boundary",

@@ -2359,7 +2359,7 @@ def _publish_marker_witnesses_before_index_commit(
 
     requests: dict[str, PreparedAcceptedMarkerInput] = {}
     for raw_id, facts in summary.marker_request_facts_by_raw_id.items():
-        if raw_id in summary.failed_raw_ids:
+        if raw_id in summary.failed_raw_ids or raw_id in summary.publication_deferred_raw_ids:
             continue
         selected = summary.marker_sessions_by_raw_id.get(raw_id, [])
         selected_by_id = {str(session.get("session_id", "")): session for session in selected}
