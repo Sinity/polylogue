@@ -74,6 +74,16 @@ class SessionMarkerReplacement:
     def key(self) -> str:
         return f"{self.stream_id}:{self.sequence}"
 
+    @property
+    def input_binding(self) -> str:
+        """The sealed accepted payload identity this lowering consumed."""
+        return self.identity
+
+    @property
+    def empty(self) -> bool:
+        """An accepted batch with no markers still advances the source cursor."""
+        return not self.payload
+
 
 def _key(stream_id: str, sequence: int) -> str:
     return f"{stream_id}:{sequence}"

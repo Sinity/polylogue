@@ -22,6 +22,7 @@ from polylogue.storage.sqlite import migration_runner
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
+from polylogue.storage.sqlite.archive_tiers.user_write import advance_session_marker_delivery, upsert_assertion
 from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
 
 
@@ -217,3 +218,77 @@ def test_delivery_cursor_migration_is_additive_and_matches_fresh_user_ddl(tmp_pa
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accepted_marker_delivery_cursor'"
         ).fetchone()
     assert migrated_cursor_ddl == fresh_cursor_ddl
+
+
+def _user_tier_at_marker_migration_version(path: Path, *, version: int) -> None:
+    """Create a file-backed v2/v3 tier retaining real user-owned state."""
+    assert version in {2, 3}
+    with sqlite3.connect(path) as user:
+        user.executescript(USER_DDL)
+        user.execute("DROP TABLE accepted_marker_delivery_cursor")
+        if version == 2:
+            user.execute("DROP TABLE session_marker_delivery")
+        upsert_assertion(
+            user,
+            assertion_id="preserved-user-assertion",
+            target_ref="session:preserved",
+            kind="note",
+            body_text="durable user state",
+            author_kind="user",
+            now_ms=1,
+        )
+        if version == 3:
+            advance_session_marker_delivery(
+                user,
+                session_id="session:legacy-cursor",
+                input_binding="legacy-binding",
+                applied_at_ms=2,
+            )
+        user.execute(f"PRAGMA user_version = {version}")
+        user.commit()
+
+
+@pytest.mark.parametrize(("start_version", "expected_steps"), ((2, (3, 4)), (3, (4,))))
+def test_v2_and_v3_marker_routes_preserve_user_state_before_v4(
+    tmp_path: Path, start_version: int, expected_steps: tuple[int, ...]
+) -> None:
+    """Discovery applies the exact v2/v3 successor slots without data loss.
+
+    The ordinary ``migrate_archive_tier`` route remains backup-gated; its
+    refusal below proves this test cannot silently become an unbacked live
+    migration. The same production migration discovery supplies the exact SQL
+    applied to this real file-backed tier to establish ordered preservation.
+
+    Anti-vacuity: omit 003 from discovery and the v2 route cannot produce its
+    legacy cursor; omit 004 and the new sink table is absent after migration.
+    """
+    path = tmp_path / f"user-v{start_version}.db"
+    _user_tier_at_marker_migration_version(path, version=start_version)
+    with sqlite3.connect(path) as user:
+        with pytest.raises(migration_runner.MigrationError, match="requires a verified backup manifest"):
+            migration_runner.migrate_archive_tier(user, ArchiveTier.USER, backup_manifest=None)
+        assert user.execute("PRAGMA user_version").fetchone() == (start_version,)
+
+        steps = migration_runner._load_migrations(ArchiveTier.USER)
+        applied: list[int] = []
+        for step in steps:
+            if step.version > start_version:
+                user.executescript(step.sql)
+                user.execute(f"PRAGMA user_version = {step.version}")
+                applied.append(step.version)
+        user.commit()
+
+        assert tuple(applied) == expected_steps
+        assert user.execute("PRAGMA user_version").fetchone() == (4,)
+        assert user.execute(
+            "SELECT body_text, author_kind FROM assertions WHERE assertion_id = ?", ("preserved-user-assertion",)
+        ).fetchone() == (
+            "durable user state",
+            "user",
+        )
+        assert user.execute("SELECT COUNT(*) FROM accepted_marker_delivery_cursor").fetchone() == (0,)
+        legacy_cursor = user.execute(
+            "SELECT input_binding, applied_at_ms FROM session_marker_delivery WHERE session_id = ?",
+            ("session:legacy-cursor",),
+        ).fetchone()
+        assert legacy_cursor == (("legacy-binding", 2) if start_version == 3 else None)

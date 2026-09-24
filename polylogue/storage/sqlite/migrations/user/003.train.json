@@ -10,7 +10,7 @@
   "failure": null,
   "fresh_ddl_parity": null,
   "manifest_format": "polylogue.durable-change-train.v1",
-  "manifest_sha256": "0829b8f13fa569641bbc1180d3f755d134873ddfd6fafd2b6eb04c3c02ce5e31",
+  "manifest_sha256": "a792437d17f7e940cd909067623797d57a4f0522b2364c0e6ea3d8ebc79abe3f",
   "migration": {
     "owner_ref": "polylogue/storage/sqlite/migrations/user/003_session_marker_delivery.sql",
     "path": "003_session_marker_delivery.sql",
@@ -29,7 +29,31 @@
   "released_at_ms": null,
   "reservation": null,
   "revision": 0,
-  "riders": [],
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:session-marker-delivery:monotonic-user-cursor"
+      ],
+      "owner_ref": "polylogue-bp12n.1",
+      "rider_id": "session-marker-delivery",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:session-marker-delivery:monotonic-user-cursor",
+          "consumer_id": "session-marker-delivery-writer",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/user_write.py:advance_session_marker_delivery",
+          "roles": [
+            "writer"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:session_marker_delivery",
+        "index:idx_session_marker_delivery_binding"
+      ],
+      "trust_floor_exception_ref": "exception:polylogue-ylh7v:legacy-per-session-cursor-has-one-production-writer"
+    }
+  ],
   "row_change_allowances": [],
   "slot": 3,
   "source_continuity_evidence": null,

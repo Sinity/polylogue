@@ -10,7 +10,7 @@
   "failure": null,
   "fresh_ddl_parity": null,
   "manifest_format": "polylogue.durable-change-train.v1",
-  "manifest_sha256": "4158cec82daf447f69ddf5e0118a03bc28cb32871ee3ebc820e5070fb5855dc4",
+  "manifest_sha256": "7f8f33347dc1ff2a9663b358f6d4bd8e6dc9b193ecb2a04d7f74418086f4885c",
   "migration": {
     "owner_ref": "polylogue-ylh7v.1",
     "path": "004_accepted_marker_delivery_cursor.sql",
@@ -29,7 +29,38 @@
   "released_at_ms": null,
   "reservation": null,
   "revision": 0,
-  "riders": [],
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:accepted-marker-delivery-cursor:contiguous-source-position"
+      ],
+      "owner_ref": "polylogue-ylh7v.1",
+      "rider_id": "accepted-marker-delivery-cursor",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:accepted-marker-delivery-cursor:contiguous-source-position",
+          "consumer_id": "accepted-marker-delivery-cursor-reader",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/user_write.py:accepted_marker_delivery_cursor",
+          "roles": [
+            "reader"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:accepted-marker-delivery-cursor:contiguous-source-position",
+          "consumer_id": "accepted-marker-delivery-cursor-writer",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/user_write.py:advance_accepted_marker_delivery_cursor",
+          "roles": [
+            "writer"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:accepted_marker_delivery_cursor"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
   "row_change_allowances": [],
   "slot": 4,
   "source_continuity_evidence": null,
