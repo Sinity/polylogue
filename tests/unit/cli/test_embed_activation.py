@@ -408,7 +408,7 @@ class TestBackfillCommand:
         ) -> dict[str, Any]:
             seen.update(operation=operation, params=params)
             if progress_callback is not None:
-                progress_callback({"session_id": "fixture-session", "cost_usd": 0.0})
+                progress_callback({"session_id": "fixture-session", "estimated_cost_usd": 0.0})
             return {"operation": operation, "outcome": "completed", "result": {"request": params}}
 
         monkeypatch.setattr("polylogue.cli.operation_kernel.configured_operation_to_completion", submit)
@@ -609,6 +609,9 @@ class TestBackfillCommand:
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
+        assert "fixture-session started" in result.stderr
+        assert "provider spend pending" in result.stderr
+        assert "estimated cost $0.000000" in result.stderr
         assert payload["operation"] == "maintenance.embeddings.backfill"
         assert payload["result"]["request"]["max_messages"] is None
 

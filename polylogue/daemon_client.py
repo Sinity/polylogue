@@ -502,6 +502,10 @@ class DaemonClient:
                 raise DaemonOperationProtocolError("operation await returned a different durable request")
             sequence = int(state["sequence"])
             progress_sequence = int(state.get("progress_sequence", progress_sequence))
+            gap = state.get("progress_gap")
+            if progress_callback is not None and isinstance(gap, Mapping):
+                with suppress(Exception):
+                    progress_callback({"state": "gap", "gap": gap})
             frames = state.get("progress_events")
             if progress_callback is not None and isinstance(frames, list):
                 for frame in frames:

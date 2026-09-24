@@ -648,6 +648,11 @@ class DaemonOperationRuntime:
                         ),
                         record=record,
                     )
+                if spec.progress and record is not None:
+                    # Progress-enabled requests always hand the CLI its durable
+                    # reference first. Even a very fast owner must leave the
+                    # first operation.await exchange available to drain frames.
+                    return self._pending_envelope(exchange, outcome="accepted", record=record)
                 if exchange.future.done():
                     try:
                         envelope = exchange.future.result().to_dict()

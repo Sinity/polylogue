@@ -609,6 +609,11 @@ def backfill_subcommand(
     def render_progress(frame: dict[str, object] | object) -> None:
         if not isinstance(frame, dict):
             return
+        if frame.get("state") == "gap":
+            click.echo(
+                "Embedding progress updates were coalesced; the final receipt has authoritative totals.", err=True
+            )
+            return
         session_id = frame.get("session_id") or frame.get("message_id") or "embedding work"
         estimated = frame.get("estimated_cost_usd")
         estimate = f" estimated cost ${float(estimated):.6f}" if isinstance(estimated, (int, float)) else ""

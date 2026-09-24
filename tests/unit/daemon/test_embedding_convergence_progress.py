@@ -363,6 +363,7 @@ def test_embedding_progress_ring_is_request_scoped_monotone_and_signals_overflow
     second_state = runtime._progress_state(runtime._exchanges[str(second.request_id)], 0)
     assert first_state["progress_sequence"] == 70
     assert first_state["progress_gap"] == {"from_sequence": 1, "to_sequence": 6}
-    assert [frame["sequence"] for frame in first_state["progress_events"]] == list(range(7, 71))
+    first_events = cast(list[dict[str, object]], first_state["progress_events"])
+    assert [frame["sequence"] for frame in first_events] == list(range(7, 71))
     assert second_state["progress_sequence"] == 1
     assert second_state["progress_gap"] is None

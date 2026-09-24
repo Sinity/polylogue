@@ -55,7 +55,9 @@ def _embedding_terminal_receipt(raw: object) -> dict[str, object] | None:
         if type(container.get(field)) is not int or container[field] < 0:
             return None
     cost = progress.get("cost_usd")
-    if type(cost) not in {int, float} or not math.isfinite(float(cost)) or cost < 0:
+    if not isinstance(cost, (int, float)) or isinstance(cost, bool):
+        return None
+    if not math.isfinite(float(cost)) or cost < 0:
         return None
     return value
 

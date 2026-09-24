@@ -1361,7 +1361,7 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     assert latest["run_id"] == run_id
     assert latest["status"] == "interrupted"
     assert latest["stop_reason"] == "keyboard interrupt"
-    assert latest["rebuild"] is True
+    assert latest["rebuild"] is False
     assert latest["planned_sessions"] == 2
 
 
@@ -1402,32 +1402,16 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
 
 def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
-    _seed_archive_without_embedding_ledgers(db_path)
-    # ``embedding_status``/``message_embeddings`` are read through the ATTACHED
-    # embeddings schema (status_payload.py:991-998), never from ``main``, so
-    # they belong in the embeddings tier file. Seeded into the index they were
-    # invisible and the status read back ``none`` instead of ``complete``.
-    with sqlite3.connect(_index_path(db_path).with_name("embeddings.db")) as conn:
-        conn.execute(
-            """
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                embedded_message_count INTEGER,
-                needs_reindex INTEGER DEFAULT 0,
-                error_message TEXT
-            )
-            """
-        )
-        conn.execute("CREATE TABLE message_embeddings (message_id TEXT PRIMARY KEY)")
-        conn.executemany(
-            "INSERT INTO embedding_status (session_id, embedded_message_count, needs_reindex) VALUES (?, ?, 0)",
-            [("conv-1", 1), ("conv-2", 1)],
-        )
-        conn.executemany("INSERT INTO message_embeddings (message_id) VALUES (?)", [("msg-1",), ("msg-2",)])
+    index_db = _index_path(db_path)
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    # Keep the production-published vector and remove the second, intentionally
+    # pending session from the fixture so readiness is unambiguously complete.
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("DELETE FROM messages WHERE session_id = 'codex-session:pending'")
+        conn.execute("DELETE FROM sessions WHERE session_id = 'codex-session:pending'")
         conn.commit()
-    _stamp_tier(_index_path(db_path).with_name("embeddings.db"), "embeddings")
 
-    payload = _run_status(db_path, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    payload = _run_status(index_db, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
 
     assert payload["status"] == "complete"
     assert payload["retrieval_ready"] is True

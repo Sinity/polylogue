@@ -11,6 +11,7 @@ import threading
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -145,7 +146,7 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
 
         async def converge(_scope: object) -> EmbeddingConvergenceResult:
             assert callable(emit)
-            emit({"state": "started", "session_id": "codex:synthetic", "estimated_cost_usd": 0.0001})
+            cast(Any, emit)({"state": "started", "session_id": "codex:synthetic", "estimated_cost_usd": 0.0001})
             await asyncio.sleep(0.05)
             report = SimpleNamespace(
                 done=1,
@@ -153,21 +154,26 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
                 failed=0,
                 work=SimpleNamespace(computed=1),
             )
-            return EmbeddingConvergenceResult(report, None)
+            return EmbeddingConvergenceResult(cast(Any, report), None)
 
         return converge
 
     monkeypatch.setattr("polylogue.daemon.embedding_owner.compose_embedding_convergence", compose)
     request_id = "embedding-accepted-progress"
-    payload = {"max_messages": 1}
+    payload: dict[str, object] = {"max_messages": 1}
     with running_daemon_operations(tmp_path / "archive") as stack:
         progress: list[dict[str, object]] = []
+
+        def receive_progress(frame: object) -> None:
+            if isinstance(frame, dict):
+                progress.append(frame)
+
         terminal = stack.client.operation_to_completion(
             "maintenance.embeddings.backfill",
             payload,
             archive_root=str(stack.archive_root),
             request_id=request_id,
-            progress_callback=progress.append,
+            progress_callback=receive_progress,
         )
         assert terminal is not None
         assert terminal["outcome"] == "completed"
@@ -189,6 +195,60 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
         assert recovered["outcome"] == "completed"
         assert recovered["accepted_reference"] == accepted_reference
         assert recovered["result"]["result"] == {"done": 1, "pending": 2, "failed": 0}
+
+
+def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepted cancellation is observed between work items and preserves counts."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
+
+    def compose(_index: Path, **kwargs: object) -> object:
+        emit = kwargs["progress_callback"]
+        quiet = kwargs["quiet"]
+
+        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+            assert callable(emit) and callable(quiet)
+            for ordinal in range(20):
+                if cast(Any, quiet)():
+                    break
+                cast(Any, emit)({"state": "started", "ordinal": ordinal, "estimated_cost_usd": 0.001})
+                await asyncio.sleep(0.01)
+            cancelled = bool(cast(Any, quiet)())
+            report = SimpleNamespace(
+                done=1,
+                pending=4,
+                failed=0,
+                work=SimpleNamespace(computed=1),
+            )
+            return EmbeddingConvergenceResult(cast(Any, report), "cancelled" if cancelled else None)
+
+        return converge
+
+    monkeypatch.setattr("polylogue.daemon.embedding_owner.compose_embedding_convergence", compose)
+    request_id = "embedding-cancel-partial"
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        accepted = stack.client.operation(
+            "maintenance.embeddings.backfill", {}, archive_root=str(stack.archive_root), request_id=request_id
+        )
+        assert accepted is not None and accepted["outcome"] == "accepted"
+        assert accepted["accepted_reference"]["request_id"] == request_id
+        cancellation = stack.client.cancel(request_id, archive_root=str(stack.archive_root))
+        assert cancellation is not None
+        terminal = stack.client.operation_to_completion(
+            "maintenance.embeddings.backfill",
+            {},
+            archive_root=str(stack.archive_root),
+            request_id=request_id,
+        )
+        assert terminal is not None
+        assert terminal["outcome"] == "cancelled"
+        assert terminal["accepted_reference"] == accepted["accepted_reference"]
+        assert terminal["result"]["outcome"] == "cancelled"
+        assert terminal["result"]["result"] == {"done": 1, "pending": 4, "failed": 0}
 
 
 def test_machine_listener_uses_the_independent_operation_handler(tmp_path: Path) -> None:
@@ -966,7 +1026,7 @@ def test_client_refuses_incoherent_authority_from_a_real_operation(
         elif field == "degraded":
             changed["readiness"]["degraded_components"] = ["missing-source"]
         elif field == "fallback":
-            changed["authority"]["fallback"] = "never"
+            changed["authority"]["fallback"] = "local"
         with pytest.raises(DaemonOperationProtocolError, match="incoherent"):
             DaemonClient._validate_operation_response(request, 200, changed)
 
