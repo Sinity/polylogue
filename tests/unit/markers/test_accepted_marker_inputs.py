@@ -140,14 +140,15 @@ def test_marker_recipe_fingerprint_tracks_block_insert_column_mapping(monkeypatc
     from dataclasses import replace as dataclass_replace
 
     from polylogue.markers import preparation
+    from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
 
     before = marker_recipe_fingerprint()
-    columns = preparation.BLOCKS_SPEC.writable_columns
+    columns = BLOCKS_SPEC.writable_columns
     altered_first = dataclass_replace(columns[0], name=f"{columns[0].name}_changed")
     monkeypatch.setattr(
         preparation,
         "BLOCKS_SPEC",
-        dataclass_replace(preparation.BLOCKS_SPEC, writable_columns=(altered_first, *columns[1:])),
+        dataclass_replace(BLOCKS_SPEC, writable_columns=(altered_first, *columns[1:])),
     )
     assert marker_recipe_fingerprint() != before
 
