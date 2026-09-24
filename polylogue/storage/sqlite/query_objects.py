@@ -6,7 +6,7 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from polylogue.core.hashing import hash_payload
 from polylogue.core.query_identity import (
@@ -17,6 +17,7 @@ from polylogue.core.query_identity import (
     query_ref,
     require_supported_definition_protocol_version,
 )
+from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 
 QueryEdgeKind = Literal["operand-of", "refines", "supersedes", "derived-from", "same-as"]
 ResultSetExactness = Literal["exact", "capped", "sampled", "estimate"]
@@ -215,6 +216,14 @@ def put_result_set(
     created_at_ms: int,
 ) -> ResultSetManifest:
     """Persist a promoted result manifest and, where permitted, exact members."""
+    exactness = cast(
+        ResultSetExactness,
+        require_vocabulary(exactness, get_args(ResultSetExactness), field="exactness"),
+    )
+    persistence_class = cast(
+        ResultSetPersistence,
+        require_vocabulary(persistence_class, get_args(ResultSetPersistence), field="persistence_class"),
+    )
     if persistence_class not in _DURABLE_MEMBER_PERSISTENCE and member_refs:
         raise ValueError("routine result sets cannot persist exact member refs")
     if len(member_refs) != len(set(member_refs)):
@@ -547,6 +556,7 @@ def put_query_edge(
     created_at_ms: int,
 ) -> None:
     """Persist one planner-emitted query edge, rejecting semantic DAG cycles."""
+    edge_kind = cast(QueryEdgeKind, require_vocabulary(edge_kind, get_args(QueryEdgeKind), field="edge_kind"))
     if src_query_hash == dst_query_hash and edge_kind in _ACYCLIC_EDGE_KINDS:
         raise ValueError(f"{edge_kind} query edge cannot self-reference")
     if edge_kind in _ACYCLIC_EDGE_KINDS:

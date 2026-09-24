@@ -84,6 +84,136 @@ def test_result_sets_distinguish_membership_from_rank_and_reject_routine_members
         )
 
 
+def test_result_set_writers_persist_each_declared_vocabulary_value() -> None:
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "codex-session"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    exactness_values = ("exact", "capped", "sampled", "estimate")
+    persistence_values = ("routine", "watch", "pinned", "finding", "cohort")
+
+    for index, exactness in enumerate(exactness_values):
+        manifest = put_result_set(
+            conn,
+            result_set_id=f"rs-exactness-{index}",
+            query_hash=query.query_hash,
+            grain="session",
+            corpus_epoch="epoch-1",
+            member_refs=(),
+            exactness=exactness,  # type: ignore[arg-type]
+            persistence_class="routine",
+            created_at_ms=index + 2,
+        )
+        assert manifest.exactness == exactness
+
+    for index, persistence_class in enumerate(persistence_values):
+        manifest = put_result_set(
+            conn,
+            result_set_id=f"rs-persistence-{index}",
+            query_hash=query.query_hash,
+            grain="session",
+            corpus_epoch="epoch-1",
+            member_refs=(),
+            exactness="exact",
+            persistence_class=persistence_class,  # type: ignore[arg-type]
+            created_at_ms=index + 10,
+        )
+        assert manifest.persistence_class == persistence_class
+
+    stored = conn.execute("SELECT exactness, persistence_class FROM result_sets").fetchall()
+    assert len(stored) == len(exactness_values) + len(persistence_values)
+    assert {row[0] for row in stored} == set(exactness_values)
+    assert {row[1] for row in stored} == set(persistence_values)
+
+
+def test_query_edge_writer_persists_each_declared_edge_kind() -> None:
+    conn = _conn()
+    first = put_query(
+        conn, {"field": "title", "value": "one"}, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=1
+    )
+    second = put_query(
+        conn, {"field": "title", "value": "two"}, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=2
+    )
+    edge_kinds = ("operand-of", "refines", "supersedes", "derived-from", "same-as")
+
+    for index, edge_kind in enumerate(edge_kinds):
+        put_query_edge(
+            conn,
+            src_query_hash=first.query_hash,
+            dst_query_hash=second.query_hash,
+            edge_kind=edge_kind,  # type: ignore[arg-type]
+            created_at_ms=index + 3,
+        )
+
+    stored = conn.execute("SELECT edge_kind FROM query_edges ORDER BY edge_kind").fetchall()
+    assert {row[0] for row in stored} == set(edge_kinds)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("exactness", "invalid"), ("persistence_class", "invalid")],
+)
+def test_result_set_writer_rejects_invalid_vocabulary_before_persistence(field: str, value: str) -> None:
+    conn = _conn()
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "codex-session"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=1,
+    )
+    before_sets = conn.execute("SELECT COUNT(*) FROM result_sets").fetchone()[0]
+    before_members = conn.execute("SELECT COUNT(*) FROM result_set_members").fetchone()[0]
+    arguments = {
+        "exactness": "exact",
+        "persistence_class": "pinned",
+    }
+    arguments[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        put_result_set(
+            conn,
+            result_set_id="invalid-result-set",
+            query_hash=query.query_hash,
+            grain="session",
+            corpus_epoch="epoch-1",
+            member_refs=("session:one",),
+            exactness=arguments["exactness"],  # type: ignore[arg-type]
+            persistence_class=arguments["persistence_class"],  # type: ignore[arg-type]
+            created_at_ms=2,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM result_sets").fetchone()[0] == before_sets
+    assert conn.execute("SELECT COUNT(*) FROM result_set_members").fetchone()[0] == before_members
+
+
+def test_query_edge_writer_rejects_invalid_vocabulary_before_persistence() -> None:
+    conn = _conn()
+    first = put_query(
+        conn, {"field": "title", "value": "one"}, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=1
+    )
+    second = put_query(
+        conn, {"field": "title", "value": "two"}, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=2
+    )
+
+    with pytest.raises(ValueError, match="edge_kind"):
+        put_query_edge(
+            conn,
+            src_query_hash=first.query_hash,
+            dst_query_hash=second.query_hash,
+            edge_kind="invalid",  # type: ignore[arg-type]
+            created_at_ms=3,
+        )
+
+    assert conn.execute("SELECT COUNT(*) FROM query_edges").fetchone()[0] == 0
+
+
 def test_query_edge_rejects_derived_from_cycle() -> None:
     conn = _conn()
     first = put_query(
