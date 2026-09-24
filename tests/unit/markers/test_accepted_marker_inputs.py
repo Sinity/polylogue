@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import re
@@ -60,6 +61,25 @@ def _nested(candidate: Mapping[str, object], section: str, field: str) -> object
     value = candidate[section]
     assert isinstance(value, Mapping)
     return value[field]
+
+
+def _index_message_state(path: Path) -> tuple[tuple[object, ...], ...]:
+    """Snapshot materialized rows so a refused replay proves rollback."""
+    with sqlite3.connect(path) as index:
+        sessions = tuple(index.execute("SELECT session_id FROM sessions ORDER BY session_id"))
+        messages = tuple(
+            index.execute("SELECT session_id, message_id, content_hash FROM messages ORDER BY session_id, message_id")
+        )
+        blocks = tuple(index.execute("SELECT block_id, search_text FROM blocks ORDER BY block_id"))
+    return sessions, messages, blocks
+
+
+def _accepted_marker_state(path: Path, raw_id: str) -> tuple[object, ...] | None:
+    with sqlite3.connect(path) as source:
+        return source.execute(
+            "SELECT sequence, payload, index_incarnation_id FROM accepted_marker_inputs WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
 
 
 def test_batch_route_retains_r1_and_r2_empty_and_identical_replay(workspace_env: dict[str, Path]) -> None:
@@ -361,6 +381,7 @@ def test_source_migration_matches_fresh_ddl_and_preserves_restart_sequence(tmp_p
         objects = source.execute(
             "SELECT type, name, sql FROM sqlite_master WHERE name IN ("
             "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
+            "'excised_marker_inputs', "
             "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
             "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete') ORDER BY name"
         ).fetchall()
@@ -370,6 +391,7 @@ def test_source_migration_matches_fresh_ddl_and_preserves_restart_sequence(tmp_p
             fresh.execute(
                 "SELECT type, name, sql FROM sqlite_master WHERE name IN ("
                 "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
+                "'excised_marker_inputs', "
                 "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
                 "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete') ORDER BY name"
             ).fetchall()
@@ -403,6 +425,7 @@ def test_marker_migration_train_has_runtime_proof_and_refuses_without_backup(tmp
         v5_objects = source.execute(
             "SELECT name FROM sqlite_master WHERE name IN ("
             "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
+            "'excised_marker_inputs', "
             "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
             "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete')"
         ).fetchall()
@@ -701,14 +724,18 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
                 append_only=append_only,
             )
 
+        parse_calls: list[tuple[str, tuple[str | None, ...]]] = []
+
         def fake_ingest(record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
             raw_id = record.raw_id
+            payload = copy.deepcopy(sessions[raw_id])
+            parse_calls.append((raw_id, tuple(message.text for message in payload.parsed_session.messages)))
             return IngestRecordResult(
                 raw_id=raw_id,
                 payload_provider=Provider.CODEX.value,
                 validation_status="passed",
                 outcome_code="success",
-                sessions=[sessions[raw_id]],
+                sessions=[payload],
             )
 
         monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
@@ -733,10 +760,39 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
             assert [item["match"]["body"] for item in original["sessions"][0]["candidates"]] == ["repeated lesson"]
             provenance = original["sessions"][0]["candidates"][0]["provenance"]
             assert provenance["block_id"].endswith(".1:0")
+        original_accepted = _accepted_marker_state(tmp_path / "source.db", raw_ids[1])
+        original_index = _index_message_state(tmp_path / "index.db")
+        assert original_index[0] == (("codex-session:session",),)
+        assert len(original_index[1]) == 2
+        assert any("repeated lesson" in str(row[1]) for row in original_index[2])
 
+        # An exact ordinary replay is classified before append preparation
+        # and reuses the accepted carrier without changing index rows.
         await ingest_batch_core.process_ingest_batch(
             service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
         )
+        assert _index_message_state(tmp_path / "index.db") == original_index
+        assert _accepted_marker_state(tmp_path / "source.db", raw_ids[1]) == original_accepted
+
+        # Force publication must make the same refusal before committing any
+        # rewritten rows when its newly prepared disposition differs.
+        with pytest.raises(AcceptedMarkerInputRefusedError, match="immutable accepted marker carrier"):
+            await ingest_batch_core.process_ingest_batch(
+                service,
+                repository.backend,
+                [raw_ids[1]],
+                ParseResult(),
+                None,
+                force_write=True,
+                repair_message_fts=False,
+            )
+        assert _index_message_state(tmp_path / "index.db") == original_index
+        assert _accepted_marker_state(tmp_path / "source.db", raw_ids[1]) == original_accepted
+        assert [texts for raw_id, texts in parse_calls if raw_id == raw_ids[1]] == [
+            ("::note: repeated lesson", "::note: repeated lesson"),
+            ("::note: repeated lesson", "::note: repeated lesson"),
+            ("::note: repeated lesson", "::note: repeated lesson"),
+        ]
     finally:
         await repository.close()
 
@@ -833,6 +889,126 @@ async def test_public_batch_rebuild_reingests_and_rewitnesses_exact_accepted_car
 
 
 @pytest.mark.asyncio
+async def test_public_drive_marker_retry_keeps_identity_across_revision_binding_and_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drive lineage refinement cannot strand a pending marker carrier after index rollback."""
+    from polylogue.pipeline.ids import session_content_hash
+
+    bootstrap_archive_root(tmp_path)
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    payload_bytes = b'{"id":"drive-replay","messages":["::note: drive marker"]}'
+    BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.AISTUDIO_DRIVE,
+            capture_mode=Provider.GEMINI,
+            source_path="Drive/replay.json",
+            source_index=0,
+            payload=payload_bytes,
+            acquired_at_ms=1,
+        )
+    parsed = _session("::note: drive marker", native_id="drive-replay").model_copy(
+        update={"source_name": Provider.GEMINI}
+    )
+    template = SessionWritePayload(
+        session_id="aistudio-drive:drive-replay",
+        content_hash=str(session_content_hash(parsed)),
+        parsed_session=parsed,
+        message_count=len(parsed.messages),
+        raw_id=raw_id,
+    )
+    parse_calls: list[tuple[str | None, ...]] = []
+
+    def fake_ingest(_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        payload = copy.deepcopy(template)
+        parse_calls.append(tuple(message.text for message in payload.parsed_session.messages))
+        return IngestRecordResult(
+            raw_id=raw_id,
+            payload_provider=Provider.GEMINI.value,
+            validation_status="passed",
+            outcome_code="success",
+            sessions=[payload],
+        )
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+    )
+    real_commit = ingest_batch_core._commit_sync_ingest_side_effects
+    commit_calls = 0
+
+    def fail_first_index_commit(*args: object, **kwargs: object) -> None:
+        nonlocal commit_calls
+        commit_calls += 1
+        if commit_calls == 1:
+            raise RuntimeError("injected crash before Drive index commit")
+        real_commit(*args, **kwargs)
+
+    monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", fail_first_index_commit)
+    try:
+        with pytest.raises(RuntimeError, match="injected crash before Drive index commit"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            pending = source.execute(
+                "SELECT request_key, carrier_digest, payload FROM pending_accepted_marker_inputs"
+            ).fetchone()
+            assert pending is not None
+            bound_revision = source.execute(
+                "SELECT logical_source_key, revision_kind, source_revision, acquisition_generation "
+                "FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+            assert bound_revision is not None and bound_revision[0] == "aistudio-drive:drive-replay"
+            assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+        assert _index_message_state(tmp_path / "index.db")[0] == ()
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+
+        records = await repository.get_raw_sessions_batch([raw_id])
+        retry_facts = _marker_request_facts(records[0], validation_mode="off")
+        assert retry_facts["origin"] == Origin.AISTUDIO_DRIVE.value
+        # The durable Drive envelope changed during the failed first attempt,
+        # but the request identity uses only immutable acquisition evidence.
+        assert retry_facts["revision"] is None
+        assert retry_facts["native_id"] is None
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        state_after_retry = _index_message_state(tmp_path / "index.db")
+        accepted_after_retry = _accepted_marker_state(tmp_path / "source.db", raw_id)
+        assert accepted_after_retry is not None and accepted_after_retry[0] == 1
+        accepted_payload = bytes(accepted_after_retry[1])
+        candidates = json.loads(accepted_payload)["sessions"][0]["candidates"]
+        assert [item["match"]["body"] for item in candidates] == ["drive marker"]
+
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        assert _index_message_state(tmp_path / "index.db") == state_after_retry
+        assert _accepted_marker_state(tmp_path / "source.db", raw_id) == accepted_after_retry
+        assert parse_calls == [("::note: drive marker",)] * 3
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert source.execute(
+            "SELECT sequence, payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1, accepted_payload)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        witness = index.execute("SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses").fetchone()
+        assert witness is not None
+        assert witness[0] == hashlib.sha256(accepted_payload).hexdigest()
+
+
+@pytest.mark.asyncio
 async def test_public_child_before_parent_retry_keeps_its_accepted_carrier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -882,14 +1058,18 @@ async def test_public_child_before_parent_retry_keeps_its_accepted_carrier(
                 raw_id=raw_id,
             )
 
+        parse_calls: list[tuple[str, tuple[str | None, ...]]] = []
+
         def fake_ingest(record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
             raw_id = record.raw_id
+            payload = copy.deepcopy(inputs[raw_id])
+            parse_calls.append((raw_id, tuple(message.text for message in payload.parsed_session.messages)))
             return IngestRecordResult(
                 raw_id=raw_id,
                 payload_provider=Provider.CODEX.value,
                 validation_status="passed",
                 outcome_code="success",
-                sessions=[inputs[raw_id]],
+                sessions=[payload],
             )
 
         monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
@@ -908,20 +1088,42 @@ async def test_public_child_before_parent_retry_keeps_its_accepted_carrier(
             original_payload = bytes(first[1])
             original_candidates = json.loads(original_payload)["sessions"][0]["candidates"]
             assert [item["match"]["body"] for item in original_candidates] == ["parent marker", "child marker"]
+        child_accepted = _accepted_marker_state(tmp_path / "source.db", raw_ids["child"])
 
         await ingest_batch_core.process_ingest_batch(
             service, repository.backend, [raw_ids["parent"]], ParseResult(), None, repair_message_fts=False
         )
+        index_after_parent = _index_message_state(tmp_path / "index.db")
+        assert index_after_parent[0] == (("codex-session:child",), ("codex-session:parent",))
+        assert len(index_after_parent[1]) == 2
+        child_messages = {str(row[1]) for row in index_after_parent[1] if row[0] == "codex-session:child"}
+        assert child_messages == {"codex-session:child:n:child-message"}
+        assert any("parent marker" in str(row[1]) for row in index_after_parent[2])
+        assert any("child marker" in str(row[1]) for row in index_after_parent[2])
+
+        # Reparse into fresh nested objects. A current exact witness classifies
+        # this as an ordinary retry before lineage preparation, preserving the
+        # accepted bytes and existing physical child rows.
         await ingest_batch_core.process_ingest_batch(
             service, repository.backend, [raw_ids["child"]], ParseResult(), None, repair_message_fts=False
         )
+        assert _index_message_state(tmp_path / "index.db") == index_after_parent
+        assert _accepted_marker_state(tmp_path / "source.db", raw_ids["child"]) == child_accepted
+        assert [texts for raw_id, texts in parse_calls if raw_id == raw_ids["child"]] == [
+            ("::note: parent marker", "::note: child marker"),
+            ("::note: parent marker", "::note: child marker"),
+        ]
     finally:
         await repository.close()
 
     with sqlite3.connect(tmp_path / "source.db") as source:
-        assert source.execute(
-            "SELECT sequence, payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids["child"],)
-        ).fetchone() == (1, original_payload)
+        assert (
+            source.execute(
+                "SELECT sequence, payload, index_incarnation_id FROM accepted_marker_inputs WHERE raw_id = ?",
+                (raw_ids["child"],),
+            ).fetchone()
+            == child_accepted
+        )
 
 
 @pytest.mark.asyncio

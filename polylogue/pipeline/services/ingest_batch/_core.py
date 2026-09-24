@@ -34,7 +34,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
-from polylogue.core.enums import BlockType, IngestOutcome, Provider
+from polylogue.core.enums import BlockType, IngestOutcome, Origin, Provider
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
@@ -1566,13 +1566,23 @@ def _marker_request_facts(record: RawSessionRecord, *, validation_mode: str) -> 
     identity for the actual interpretation is separately carried per session.
     """
     acquisition_provider = Provider.from_string(record.source_name or "unknown")
+    acquisition_origin = origin_from_provider(acquisition_provider)
+    # Drive lineage governance refines the raw row's revision envelope after
+    # parsing. That envelope is a mutable derived projection, not an
+    # acquisition fact, so including it would give the same retained bytes a
+    # new marker request key on retry. The immutable raw_id/blob/path/index
+    # facts below distinguish Drive acquisitions; parsed session bindings add
+    # the normalized session identity. Other providers retain their supplied
+    # revision evidence in the request key.
+    drive_revision_projection = acquisition_origin is Origin.AISTUDIO_DRIVE
+    revision = None if drive_revision_projection else record.revision
     return {
         "blob_digest": record.blob_hash,
-        "origin": origin_from_provider(acquisition_provider).value,
+        "origin": acquisition_origin.value,
         "source_path": record.source_path,
         "source_index": record.source_index,
-        "native_id": record.revision.logical_source_key if record.revision is not None else None,
-        "revision": dataclasses.asdict(record.revision) if record.revision is not None else None,
+        "native_id": revision.logical_source_key if revision is not None else None,
+        "revision": dataclasses.asdict(revision) if revision is not None else None,
         "source_name": record.source_name,
         "capture_mode": record.capture_mode.value if record.capture_mode is not None else None,
         "acquired_at": record.acquired_at,
@@ -1580,7 +1590,7 @@ def _marker_request_facts(record: RawSessionRecord, *, validation_mode: str) -> 
         "validation_mode": validation_mode,
         "marker_recipe_fingerprint": marker_recipe_fingerprint(),
         "lowering_fingerprint": lowering_fingerprint(),
-        "parser_fingerprint": parser_fingerprint_for_origin(origin_from_provider(acquisition_provider)),
+        "parser_fingerprint": parser_fingerprint_for_origin(acquisition_origin),
     }
 
 
@@ -1623,6 +1633,73 @@ def _record_write_result(
     for key, value in counts.items():
         if key in summary.counts:
             summary.counts[key] += value
+
+
+def _reuse_current_accepted_marker_carrier(
+    index_conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection | None,
+    ir: IngestRecordResult,
+    *,
+    summary: _IngestBatchSummary,
+) -> bool:
+    """Reuse an accepted carrier before the ordinary session writer runs.
+
+    A matching current-incarnation witness proves this exact accepted request
+    already crossed the index commit boundary. In that one case replay must
+    keep the carrier and skip session preparation, whose no-op disposition
+    could otherwise look like a different marker interpretation. A missing
+    current witness (for example after index replacement) falls through to
+    the normal writer and exact-byte re-witness checks.
+    """
+    if source_conn is None or not ir.sessions:
+        return False
+    facts = summary.marker_request_facts_by_raw_id.get(ir.raw_id)
+    request_sessions = summary.marker_request_sessions_by_raw_id.get(ir.raw_id)
+    if facts is None or request_sessions is None:
+        return False
+
+    from polylogue.storage.accepted_marker_inputs import prepare_accepted_marker_input, retained_marker_input_sync
+
+    probe = prepare_accepted_marker_input(
+        ir.raw_id,
+        (),
+        request_facts=facts,
+        request_sessions=request_sessions,
+    )
+    retained = retained_marker_input_sync(source_conn, probe.identity)
+    if retained is None:
+        return False
+    state, batch, retained_incarnation = retained
+    if state not in ("accepted", "pending"):
+        return False
+
+    filename = str(index_conn.execute("PRAGMA database_list").fetchone()[2])
+    index_stat = Path(filename).stat()
+    incarnation = index_conn.execute(
+        "SELECT incarnation_id, device, inode FROM ingest_index_incarnation WHERE singleton = 1"
+    ).fetchone()
+    if incarnation is None or (int(incarnation[1]), int(incarnation[2])) != (index_stat.st_dev, index_stat.st_ino):
+        raise AcceptedMarkerInputRefusedError("index incarnation changed during marker retry classification")
+    current_incarnation_id = str(incarnation[0])
+    if state == "pending" and retained_incarnation != current_incarnation_id:
+        return False
+    value = json.loads(batch.payload)
+    dispositions = [
+        {
+            "session_id": str(session.get("session_id", "")),
+            "disposition": str(session.get("disposition", "no-op")),
+        }
+        for session in value["sessions"]
+    ]
+    encoded = json.dumps(dispositions, sort_keys=True, separators=(",", ":"))
+    witness = index_conn.execute(
+        "SELECT carrier_digest, dispositions_json, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
+        (probe.identity,),
+    ).fetchone()
+    if witness is None or tuple(witness) != (batch.payload_sha256, encoded, current_incarnation_id):
+        return False
+    summary.marker_batches_by_raw_id[ir.raw_id] = batch
+    return True
 
 
 class FtsTriggerRestorationError(RuntimeError):
@@ -2186,6 +2263,20 @@ def _drain_ingest_result(
         summary.skipped_raw_ids.add(ir.raw_id)
         return
 
+    if (
+        marker_acceptance_enabled
+        and not force_write
+        and publication_mode is PublicationMode.OFF
+        and _reuse_current_accepted_marker_carrier(conn, source_conn, ir, summary=summary)
+    ):
+        # This exact accepted interpretation already has a witness in the
+        # current physical index. Reuse its source bytes and sequence without
+        # allowing a state-dependent no-op/append/lineage preparation to
+        # invent a different carrier. Forced publication always takes the
+        # normal writer path.
+        summary.skipped_raw_ids.add(ir.raw_id)
+        return
+
     if marker_acceptance_enabled:
         session_ids = [cdata.session_id for cdata in ir.sessions]
         if len(session_ids) != len(set(session_ids)):
@@ -2398,6 +2489,10 @@ def _publish_marker_witnesses_before_index_commit(
     for raw_id, facts in summary.marker_request_facts_by_raw_id.items():
         if raw_id in summary.failed_raw_ids or raw_id in summary.publication_deferred_raw_ids:
             continue
+        reused = summary.marker_batches_by_raw_id.get(raw_id)
+        if reused is not None:
+            requests[raw_id] = reused
+            continue
         selected = summary.marker_sessions_by_raw_id.get(raw_id, [])
         selected_by_id = {str(session.get("session_id", "")): session for session in selected}
         dispositions = {
@@ -2473,12 +2568,18 @@ def _publish_marker_witnesses_before_index_commit(
         # for and cannot cross a physical index replacement. An accepted
         # carrier is different: its immutable source bytes and sequence remain
         # authoritative across rebuilds. Recompute the complete request and
-        # require byte equality, or an exact current witness for a prior
-        # disposition, before publishing a witness for this incarnation.
+        # require byte equality before publishing a witness for this
+        # incarnation. A witness proves that the retained carrier was
+        # published previously; it cannot authorize a newly prepared
+        # interpretation after the session writer has changed index state.
         if retained_state != "accepted" and retained_incarnation != incarnation_id:
             raise AcceptedMarkerInputRefusedError("pending marker carrier belongs to a replaced index incarnation")
         if retained_state == "accepted" and retained_incarnation is None:
             raise AcceptedMarkerInputRefusedError("accepted marker carrier has no recorded index incarnation")
+        if retained_state == "accepted" and batch.payload != request.payload:
+            raise AcceptedMarkerInputRefusedError(
+                "retry interpretation differs from the immutable accepted marker carrier"
+            )
         if batch.payload != request.payload and source_states[batch.identity] not in ("pending-new",):
             prior = index_conn.execute(
                 "SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
