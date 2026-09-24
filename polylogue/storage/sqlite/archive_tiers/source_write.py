@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Literal, get_args
+from typing import Literal, cast, get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
@@ -434,7 +434,9 @@ def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> Captu
         """,
         (raw_id,),
     ).fetchall()
-    modes = tuple(require_vocabulary(row["capture_mode"], Provider, field="capture_mode") for row in rows)
+    modes = tuple(
+        cast(Provider, require_vocabulary(row["capture_mode"], Provider, field="capture_mode")) for row in rows
+    )
     status: CaptureModeResolutionStatus
     if not modes:
         status = "unknown"
@@ -856,7 +858,7 @@ def write_source_hook_event(
     blob_publication_receipt_id: str | None = None,
     carrier_source_id: str = "representative-hook-source",
     carrier_relative_path: str | None = None,
-    carrier_role: HookCarrierRole = "primary-writable",
+    carrier_role: str = "primary-writable",
     manage_transaction: bool = True,
     policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> str:
@@ -880,7 +882,9 @@ def write_source_hook_event(
     ``ref_type='hook_payload'`` / ``ref_id=hook_event.hook_event_id`` instead,
     which really is this row's primary key in ``raw_hook_events``.
     """
-    carrier_role_value = require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
+    carrier_role_value = cast(
+        HookCarrierRole, require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
+    )
     conn.execute("PRAGMA foreign_keys = ON")
     if require_vocabulary(origin, Origin, field="origin") is None:
         raise ValueError("origin is required for hook events")
@@ -944,7 +948,7 @@ def write_source_hook_event_batch(
     *,
     carrier_source_id: str,
     carrier_relative_path: str,
-    carrier_role: HookCarrierRole,
+    carrier_role: str,
     carrier_blob_hash: bytes,
     carrier_source_path: str,
     events: Sequence[CarrierHookEvent],
@@ -967,7 +971,9 @@ def write_source_hook_event_batch(
     a raw row, because the carrier is an acquired artifact.
     """
 
-    carrier_role_value = require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
+    carrier_role_value = cast(
+        HookCarrierRole, require_vocabulary(carrier_role, _HOOK_CARRIER_ROLES, field="carrier_role")
+    )
     # Validate the complete batch before its first event write; callers may
     # already own a transaction and catch the refusal locally.
     for carried in events:
@@ -1313,7 +1319,7 @@ def read_archive_raw_session_envelope(conn: sqlite3.Connection, raw_id: str) -> 
         ArchiveSourceBlobRef(
             blob_hash=row["blob_hash"],
             raw_id=row["raw_id"],
-            ref_type=require_vocabulary(row["ref_type"], _BLOB_REF_TYPES, field="ref_type"),
+            ref_type=cast(BlobRefType, require_vocabulary(row["ref_type"], _BLOB_REF_TYPES, field="ref_type")),
             source_path=row["source_path"],
             size_bytes=row["size_bytes"],
             acquired_at_ms=row["acquired_at_ms"],

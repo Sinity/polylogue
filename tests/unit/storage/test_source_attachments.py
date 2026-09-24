@@ -2,6 +2,7 @@
 
 import hashlib
 import sqlite3
+from typing import Any, cast
 
 import pytest
 
@@ -85,7 +86,9 @@ def test_attachment_writer_validates_domain_origin_and_storage_disposition_befor
             source_generation_id="g",
             observed_at_ms=2,
             attachments=(
-                SourceAttachment("invalid-disposition", "aistudio-drive", "drive", disposition="not-a-state"),
+                SourceAttachment(
+                    "invalid-disposition", "aistudio-drive", "drive", disposition=cast(Any, "not-a-state")
+                ),
             ),
         )
     assert conn.execute("SELECT COUNT(*) FROM source_attachments").fetchone()[0] == 0

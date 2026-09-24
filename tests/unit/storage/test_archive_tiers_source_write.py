@@ -225,7 +225,7 @@ def test_hook_writer_refuses_invalid_storage_carrier_role_before_persistence(tmp
             acquired_at_ms=1,
             raw_id="raw-hook",
             hook_event=hook_event,
-            carrier_role="not-a-carrier-role",  # type: ignore[arg-type]
+            carrier_role="not-a-carrier-role",
         )
     assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 0
