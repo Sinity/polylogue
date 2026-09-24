@@ -296,8 +296,8 @@ def _apply_numbered_user_migrations(conn: sqlite3.Connection) -> tuple[int, ...]
     return tuple(applied)
 
 
-def test_slot_002_is_the_only_user_migration_and_requires_a_backup() -> None:
-    """The shipped chain is one contiguous backup-gated slot above the floor.
+def test_user_migration_slots_are_contiguous_and_require_a_backup() -> None:
+    """The shipped chain is contiguous and every durable slot is backup-gated.
 
     Anti-vacuity: adding ``-- migration-safety: additive-no-backup`` to the SQL
     flips ``requires_backup`` and makes both this and the sidecar's own binding
@@ -306,16 +306,20 @@ def test_slot_002_is_the_only_user_migration_and_requires_a_backup() -> None:
     """
     steps = migration_runner._load_migrations(ArchiveTier.USER)
     assert [(step.version, step.name, step.requires_backup) for step in steps] == [
-        (2, "002_assertions_status_not_null.sql", True)
+        (2, "002_assertions_status_not_null.sql", True),
+        (3, "003_session_marker_delivery.sql", True),
+        (4, "004_accepted_marker_delivery_cursor.sql", True),
     ]
     sidecars = validate_durable_migration_sidecars(ArchiveTier.USER, tuple((step.name, step.sql) for step in steps))
-    assert [sidecar.slot for sidecar in sidecars] == [2]
-    train = sidecars[0].train
-    assert train.tier is ArchiveTier.USER
-    assert (train.current_version, train.target_version) == (1, 2)
-    assert train.migration.requires_backup is True
-    assert train.backup_plan_ref
-    assert {constraint.object_ref for constraint in train.drop_constraints} == {
+    assert [sidecar.slot for sidecar in sidecars] == [2, 3, 4]
+    status_train, session_marker_train, accepted_marker_train = (sidecar.train for sidecar in sidecars)
+    assert status_train.tier is ArchiveTier.USER
+    assert (status_train.current_version, status_train.target_version) == (1, 2)
+    assert all(
+        train.migration.requires_backup and train.backup_plan_ref
+        for train in (status_train, session_marker_train, accepted_marker_train)
+    )
+    assert {constraint.object_ref for constraint in status_train.drop_constraints} == {
         "table:assertions",
         "index:idx_assertions_target_kind",
         "index:idx_assertions_kind_status_updated",
@@ -327,7 +331,7 @@ def test_slot_002_is_the_only_user_migration_and_requires_a_backup() -> None:
     }
 
 
-def test_every_rider_consumer_has_a_working_probe(tmp_path: Path) -> None:
+def test_every_user_rider_consumer_has_a_working_probe(tmp_path: Path) -> None:
     """The train's declared runtime consumers resolve and behave.
 
     ``_runtime_consumer_results`` is the production prove-step dispatch. Without
@@ -342,10 +346,13 @@ def test_every_rider_consumer_has_a_working_probe(tmp_path: Path) -> None:
     """
     steps = migration_runner._load_migrations(ArchiveTier.USER)
     sidecars = validate_durable_migration_sidecars(ArchiveTier.USER, tuple((step.name, step.sql) for step in steps))
-    results = _runtime_consumer_results(sidecars[0].train, tmp_path)
+    results = tuple(result for sidecar in sidecars for result in _runtime_consumer_results(sidecar.train, tmp_path))
     assert {result.consumer_id for result in results} == {
         "assertion-upsert-writer",
         "assertion-status-marker",
+        "session-marker-delivery-writer",
+        "accepted-marker-delivery-cursor-reader",
+        "accepted-marker-delivery-cursor-writer",
     }
     assert all(result.passed for result in results)
 
@@ -373,7 +380,7 @@ def test_copy_forward_preserves_every_row(tmp_path: Path) -> None:
         before_rows = conn.execute("SELECT count(*) FROM assertions").fetchone()
         before_epoch = conn.execute("SELECT epoch FROM query_unit_frame_state").fetchone()
 
-        assert _apply_numbered_user_migrations(conn) == (2,)
+        assert _apply_numbered_user_migrations(conn) == (2, 3, 4)
 
         assert conn.execute("SELECT count(*) FROM assertions").fetchone() == before_rows
         assert conn.execute("SELECT epoch FROM query_unit_frame_state").fetchone() == before_epoch

@@ -1,36 +1,26 @@
-"""Marker lowering as its own convergence domain.
+"""Consume immutable source marker inputs into the durable user tier.
 
-polylogue-ylh7v.  Lowering user-tier markers used to be a tail on session-
-profile publication: ``SessionProfileDerivation.publish`` committed the index
-family and then opened a second, non-atomic ``user.db`` transaction, raising
-``SessionProfileMarkerLoweringError`` when it failed *after* the index write had
-already landed.  The other half of the same coupling ran in the opposite
-direction -- ``inspect`` downgraded a perfectly valid index family to ``stale``
-because a user assertion was absent, so a user-tier outage re-derived index
-profiles that were never wrong.
-
-The two tiers cannot share SQLite atomicity, and pretending otherwise is what
-produced both defects.  Markers are therefore a domain: it declares its own
-required space, inspects its own output relation (``assertions`` in the durable
-user tier), computes its own replacement and publishes it under its own
-transaction.  A user-tier failure now leaves *marker* work pending and leaves
-the profile exactly as valid as the index says it is.
-
-The candidates are read from ``blocks`` -- index-tier evidence -- so restart
-inspection rediscovers them deterministically without an ingest hint or an
-index-side success receipt.
+Accepted marker inputs are source-owned history. The consumer does not look
+at the current index session because a later interpretation may replace that
+projection before this durable user effect is delivered. The user tier owns
+one applied source-stream position; lowering one contiguous batch and
+advancing that position commit in the same transaction.
 """
 
 from __future__ import annotations
 
-import bisect
+import asyncio
+import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from polylogue.storage.derived.session.derivation import SESSION_PROFILE_DOMAIN
-from polylogue.storage.sqlite.archive_tiers.user_write import advance_session_marker_delivery
+from polylogue.storage.accepted_marker_inputs import AcceptedMarkerInput, AcceptedMarkerInputRefusedError
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    accepted_marker_delivery_cursor,
+    advance_accepted_marker_delivery_cursor,
+)
 
 if TYPE_CHECKING:
     from polylogue.markers import MarkerCandidate
@@ -40,212 +30,270 @@ __all__ = [
     "SESSION_MARKER_RECIPE_VERSION",
     "SessionMarkerDerivation",
     "SessionMarkerReplacement",
-    "marker_assertion_ids",
     "marker_assertions_present",
-    "marker_delivery_binding",
 ]
 
 SESSION_MARKER_DOMAIN = "session_markers"
-SESSION_MARKER_RECIPE_VERSION = "1"
+SESSION_MARKER_RECIPE_VERSION = "2"
 
 _VALID = "valid"
 _MISSING = "missing"
 
 
-def marker_assertion_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
-    """Deterministic assertion ids this session's marker evidence lowers to."""
-    from polylogue.markers.lowering import assertion_id_for_marker
-    from polylogue.storage.derived.session.rebuild import marker_candidates_for_session_sync
+class _SyncSourceCursor:
+    def __init__(self, cursor: sqlite3.Cursor) -> None:
+        self._cursor = cursor
 
-    return tuple(
-        assertion_id
-        for candidate in marker_candidates_for_session_sync(conn, session_id)
-        if (assertion_id := assertion_id_for_marker(candidate)) is not None
-    )
+    async def fetchone(self) -> object:
+        return self._cursor.fetchone()
 
-
-def marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[str]) -> bool:
-    """Whether every requested marker assertion exists in the user tier."""
-    # Marker identity intentionally coalesces identical markers in one block.
-    # Compare unique requested IDs with SQL set membership, not occurrence count.
-    unique_ids = tuple(dict.fromkeys(assertion_ids))
-    if not unique_ids:
-        return True
-    placeholders = ",".join("?" * len(unique_ids))
-    found = conn.execute(
-        f"SELECT COUNT(*) FROM assertions WHERE assertion_id IN ({placeholders})",
-        unique_ids,
-    ).fetchone()
-    return found is not None and int(found[0]) == len(unique_ids)
+    async def fetchall(self) -> list[object]:
+        return list(self._cursor.fetchall())
 
 
-def marker_delivery_binding(conn: sqlite3.Connection, session_id: str) -> str | None:
-    """Return the user sink's last applied marker input for ``session_id``.
+class _SyncSourceConnection:
+    """Adapt a profiled synchronous source read to the shared async reader."""
 
-    The cursor is application history, not profile validity.  In particular,
-    a missing or rejected assertion must never cause an index profile to be
-    re-derived; callers use this only to make a marker delivery idempotent.
-    """
-    row = conn.execute(
-        "SELECT input_binding FROM session_marker_delivery WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
-    return None if row is None else str(row[0])
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
 
-
-def _ensure_delivery_cursor(conn: sqlite3.Connection) -> None:
-    """Admit pre-cursor user tiers without a separate destructive migration.
-
-    The relation is additive and is also part of fresh USER_DDL.  Creating it
-    lazily lets an already-open archive adopt the sink cursor on its first
-    marker delivery while keeping the assertion/cursor write transactional.
-    """
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS session_marker_delivery (
-            session_id TEXT PRIMARY KEY,
-            input_binding TEXT NOT NULL,
-            applied_at_ms INTEGER NOT NULL CHECK(applied_at_ms >= 0)
-        ) STRICT
-        """
-    )
+    async def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> _SyncSourceCursor:
+        return _SyncSourceCursor(self._conn.execute(sql, parameters))
 
 
 @dataclass(frozen=True, slots=True)
 class SessionMarkerReplacement:
-    """One session's marker candidates, prepared lease-free for publication."""
+    """One immutable accepted batch, bound to its source stream position."""
 
-    key: str
-    input_binding: str
+    stream_id: str
+    sequence: int
+    identity: str
     payload: tuple[MarkerCandidate, ...]
-    generation_binding: str | None = None
-    empty: bool = False
+
+    @property
+    def key(self) -> str:
+        return f"{self.stream_id}:{self.sequence}"
+
+    @property
+    def input_binding(self) -> str:
+        """The sealed accepted payload identity this lowering consumed."""
+        return self.identity
+
+    @property
+    def empty(self) -> bool:
+        """An accepted batch with no markers still advances the source cursor."""
+        return not self.payload
+
+
+def _key(stream_id: str, sequence: int) -> str:
+    return f"{stream_id}:{sequence}"
+
+
+def _parse_key(value: str) -> tuple[str, int]:
+    stream_id, separator, raw_sequence = value.rpartition(":")
+    if not separator or not stream_id:
+        raise AcceptedMarkerInputRefusedError("marker delivery key is malformed")
+    try:
+        sequence = int(raw_sequence)
+    except ValueError as exc:
+        raise AcceptedMarkerInputRefusedError("marker delivery key has an invalid sequence") from exc
+    if sequence < 1:
+        raise AcceptedMarkerInputRefusedError("marker delivery key has an invalid sequence")
+    return stream_id, sequence
+
+
+def marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[str]) -> bool:
+    """Return assertion set membership for the retained legacy unit contract.
+
+    Delivery no longer uses assertion presence as its completion authority. The
+    helper remains for callers that need the stable-ID set query itself.
+    """
+    unique_ids = tuple(dict.fromkeys(assertion_ids))
+    if not unique_ids:
+        return True
+    placeholders = ",".join("?" * len(unique_ids))
+    row = conn.execute(
+        f"SELECT COUNT(*) FROM assertions WHERE assertion_id IN ({placeholders})",
+        unique_ids,
+    ).fetchone()
+    return row is not None and int(row[0]) == len(unique_ids)
+
+
+def _candidates(batch: AcceptedMarkerInput) -> tuple[MarkerCandidate, ...]:
+    """Decode sealed prepared-write candidates without reparsing current text."""
+    from polylogue.core.enums import AssertionKind
+    from polylogue.markers.models import MarkerCandidate, MarkerMatch, MarkerProvenance
+
+    def string(value: object, *, field: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError(f"{field} is not text")
+        return value
+
+    def integer(value: object, *, field: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{field} is not an integer")
+        return value
+
+    def boolean(value: object, *, field: str) -> bool:
+        if not isinstance(value, bool):
+            raise TypeError(f"{field} is not a boolean")
+        return value
+
+    try:
+        value = json.loads(batch.batch.payload)
+        sessions = value["sessions"]
+        if not isinstance(sessions, list):
+            raise TypeError("sessions are not a list")
+        result: list[MarkerCandidate] = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                raise TypeError("session is not an object")
+            raw_candidates = session.get("candidates", [])
+            if not isinstance(raw_candidates, list):
+                raise TypeError("candidates are not a list")
+            for raw_candidate in raw_candidates:
+                if not isinstance(raw_candidate, dict):
+                    raise TypeError("candidate is not an object")
+                raw_match = raw_candidate["match"]
+                raw_provenance = raw_candidate["provenance"]
+                if not isinstance(raw_match, dict) or not isinstance(raw_provenance, dict):
+                    raise TypeError("candidate coordinates are not objects")
+                arguments = raw_match["arguments"]
+                if not isinstance(arguments, dict) or not all(
+                    isinstance(key, str) and isinstance(item, str) for key, item in arguments.items()
+                ):
+                    raise TypeError("candidate arguments are invalid")
+                assertion_kind = raw_candidate.get("assertion_kind")
+                result.append(
+                    MarkerCandidate(
+                        MarkerMatch(
+                            kind=string(raw_match["kind"], field="candidate kind"),
+                            body=string(raw_match["body"], field="candidate body"),
+                            arguments=cast(dict[str, str], arguments),
+                            raw_text=string(raw_match["raw_text"], field="candidate raw text"),
+                            start=integer(raw_match["start"], field="candidate start"),
+                            end=integer(raw_match["end"], field="candidate end"),
+                            inline=boolean(raw_match.get("inline", False), field="candidate inline flag"),
+                            malformed=boolean(raw_match.get("malformed", False), field="candidate malformed flag"),
+                        ),
+                        MarkerProvenance(
+                            message_id=string(raw_provenance["message_id"], field="candidate message id"),
+                            block_id=string(raw_provenance["block_id"], field="candidate block id"),
+                        ),
+                        None
+                        if assertion_kind is None
+                        else AssertionKind(string(assertion_kind, field="candidate assertion kind")),
+                        authority=string(raw_candidate.get("authority", "agent-declared"), field="candidate authority"),
+                    )
+                )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid candidate payload") from exc
+    return tuple(result)
 
 
 class SessionMarkerDerivation:
-    """Lower one session's markers into the durable user tier.
-
-    Structurally a daemon ``DerivationAdapter`` without importing the daemon
-    ring, exactly like the FTS and session-profile adapters beside it.
-    """
+    """Lower accepted source-marker history in source sequence order."""
 
     domain = SESSION_MARKER_DOMAIN
     name = domain
-    # Markers are lowered from the same session evidence the profile reads, so
-    # they follow it in the declared order. The edge is deliberately one-way:
-    # nothing about the profile's validity depends on this domain's output.
-    prerequisites: tuple[str, ...] = (SESSION_PROFILE_DOMAIN,)
+    prerequisites: tuple[str, ...] = ()
     recipe_version = SESSION_MARKER_RECIPE_VERSION
 
     def __init__(
         self,
-        read_connection: Callable[[], sqlite3.Connection],
+        source_read_connection: Callable[[], sqlite3.Connection],
         marker_read_connection: Callable[[], sqlite3.Connection],
         marker_write_connection: Callable[[], sqlite3.Connection],
         *,
-        session_scope: Callable[[object], Sequence[str] | None],
         page_size: int = 200,
-        generation_binding: Callable[[], str] | None = None,
     ) -> None:
-        self._read_connection = read_connection
+        if page_size < 1:
+            raise ValueError("marker stream page size must be positive")
+        self._source_read_connection = source_read_connection
         self._marker_read_connection = marker_read_connection
         self._marker_write_connection = marker_write_connection
-        self._session_scope = session_scope
         self._page_size = page_size
-        self._generation_binding = generation_binding
+
+    def _cursor(self) -> tuple[str, int] | None:
+        conn = self._marker_read_connection()
+        try:
+            return accepted_marker_delivery_cursor(conn)
+        finally:
+            conn.close()
+
+    def _accepted_page(self, *, after_sequence: int, limit: int) -> tuple[AcceptedMarkerInput, ...]:
+        from polylogue.storage.accepted_marker_inputs import read_accepted_marker_inputs
+
+        conn = self._source_read_connection()
+        try:
+            return asyncio.run(
+                read_accepted_marker_inputs(
+                    _SyncSourceConnection(conn), after_sequence=after_sequence, limit=min(limit, self._page_size)
+                )
+            )
+        finally:
+            conn.close()
 
     def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
-        """Keyset-page the session space, or the frame's bounded scope."""
-        from polylogue.storage.derived.session.derivation import _session_id_page
-
-        scope = self._session_scope(frame)
-        if scope is None:
-            conn = self._read_connection()
-            try:
-                return _session_id_page(conn, cursor=cursor, limit=limit)
-            finally:
-                conn.close()
-        keys = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
-        start = bisect.bisect(keys, cursor) if cursor is not None else 0
-        page = keys[start : start + limit]
-        return page, (page[-1] if start + len(page) < len(keys) and page else None)
+        """Expose the next source batch only; the durable cursor owns resumption."""
+        del frame, cursor
+        applied = self._cursor()
+        after_sequence = 0 if applied is None else applied[1]
+        # The orchestration protocol commits one source batch with its cursor.
+        # Reading only that head avoids observing an unbounded tail we cannot
+        # yet atomically acknowledge.
+        page = self._accepted_page(after_sequence=after_sequence, limit=min(limit, 1))
+        if not page:
+            return (), None
+        first = page[0]
+        if applied is not None and first.stream_id != applied[0]:
+            raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
+        if first.sequence != after_sequence + 1:
+            raise AcceptedMarkerInputRefusedError("accepted marker stream has a missing unconsumed sequence")
+        return (_key(first.stream_id, first.sequence),), None
 
     def excess_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
-        """No excess space: ``user.db`` is durable and irreplaceable.
-
-        A marker assertion may carry a human judgment, so this domain never
-        proposes retiring one. Deleting durable user rows because a derived
-        relation no longer names them is the one thing the tier split exists to
-        prevent.
-        """
         del frame, cursor, limit
         return (), None
 
+    def quiet(self, frame: object, key: str) -> bool:
+        """This source stream has no index-generation-specific quiet state."""
+        del frame, key
+        return False
+
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
-        """Classify each session by whether its markers reached the user tier."""
+        """The user cursor, not current assertions or index rows, is authority."""
         del frame
-        conn = self._read_connection()
-        try:
-            conn.execute("BEGIN")
-            ids_by_session = {key: marker_assertion_ids(conn, key) for key in keys}
-        finally:
-            conn.close()
-        statuses: dict[str, str] = dict.fromkeys(keys, _VALID)
-        pending = {key: ids for key, ids in ids_by_session.items() if ids}
-        if not pending:
-            return statuses
-        marker_conn = self._marker_read_connection()
-        try:
-            for key, assertion_ids in pending.items():
-                if not marker_assertions_present(marker_conn, assertion_ids):
-                    statuses[key] = _MISSING
-        finally:
-            marker_conn.close()
+        applied = self._cursor()
+        statuses: dict[str, str] = {}
+        for key in keys:
+            stream_id, sequence = _parse_key(key)
+            statuses[key] = (
+                _VALID if applied is not None and applied[0] == stream_id and applied[1] >= sequence else _MISSING
+            )
         return statuses
 
     def prerequisite_keys(self, frame: object, key: str) -> tuple[tuple[str, str], ...]:
-        del frame
-        conn = self._read_connection()
-        try:
-            exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (key,)).fetchone()
-        finally:
-            conn.close()
-        return () if not exists else ((SESSION_PROFILE_DOMAIN, key),)
+        del frame, key
+        return ()
 
     def compute(self, frame: object, key: str) -> SessionMarkerReplacement:
-        """Read one session's marker candidates from a stable index snapshot."""
+        """Read exactly one retained batch and decode its sealed candidates."""
         del frame
-        from polylogue.storage.derived.session.rebuild import marker_candidates_for_session_sync
-
-        generation = self._generation_binding() if self._generation_binding is not None else None
-        conn = self._read_connection()
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("BEGIN")
-            candidates = tuple(marker_candidates_for_session_sync(conn, key))
-            assertion_ids = marker_assertion_ids(conn, key)
-        finally:
-            conn.close()
+        stream_id, sequence = _parse_key(key)
+        page = self._accepted_page(after_sequence=sequence - 1, limit=1)
+        if len(page) != 1 or page[0].stream_id != stream_id or page[0].sequence != sequence:
+            raise AcceptedMarkerInputRefusedError("accepted marker batch is absent or no longer contiguous")
+        batch = page[0]
         return SessionMarkerReplacement(
-            key=key,
-            input_binding=":".join(assertion_ids),
-            payload=candidates,
-            generation_binding=generation,
-            empty=not candidates,
+            stream_id=stream_id,
+            sequence=sequence,
+            identity=batch.batch.identity,
+            payload=_candidates(batch),
         )
 
     def publish(self, frame: object, replacement: object) -> bool:
-        """Lower one session's markers in the user tier's own transaction.
-
-        Typed ``object`` because the kernel's protocol admits any replacement;
-        narrowing it would break the contract by contravariance.
-
-        No index-tier write happens here and no index-tier write depends on
-        this succeeding, so a user-tier failure propagates as an ordinary
-        failed key for *this* domain. That is the whole point of the split:
-        there is no longer a committed index family waiting on a second
-        transaction that cannot share its atomicity.
-        """
+        """Commit canonical assertion lowering and the matching cursor together."""
         del frame
         assert isinstance(replacement, SessionMarkerReplacement)
         from polylogue.markers import lower_markers
@@ -253,32 +301,23 @@ class SessionMarkerDerivation:
 
         conn = self._marker_write_connection()
         try:
-            _ensure_delivery_cursor(conn)
-            # The assertion rows and sink cursor are one user-tier
-            # transaction.  ``lower_markers`` intentionally does not commit;
-            # a failure rolls back both effects and leaves this domain
-            # pending for restart.
             conn.execute("BEGIN IMMEDIATE")
-            if marker_delivery_binding(conn, replacement.key) == replacement.input_binding:
-                from polylogue.markers.lowering import assertion_id_for_marker
-
-                ids = tuple(
-                    assertion_id
-                    for candidate in replacement.payload
-                    if (assertion_id := assertion_id_for_marker(candidate)) is not None
-                )
-                if marker_assertions_present(conn, ids):
-                    conn.rollback()
-                    return True
+            applied = accepted_marker_delivery_cursor(conn)
+            if applied is not None and applied[0] == replacement.stream_id and applied[1] >= replacement.sequence:
+                conn.rollback()
+                return True
+            expected_prior = 0 if applied is None else applied[1]
+            if applied is not None and applied[0] != replacement.stream_id:
+                raise AcceptedMarkerInputRefusedError("accepted marker stream changed under durable user cursor")
+            if replacement.sequence != expected_prior + 1:
+                raise AcceptedMarkerInputRefusedError("accepted marker batch is not the next durable source sequence")
             lower_markers(conn, replacement.payload)
-            # The durable user tier owns this row; the statement lives with its
-            # writer (user_write.advance_session_marker_delivery) so a derived
-            # module does not mutate user.db directly.
-            advance_session_marker_delivery(
+            advance_accepted_marker_delivery_cursor(
                 conn,
-                session_id=replacement.key,
-                input_binding=replacement.input_binding,
+                stream_id=replacement.stream_id,
+                applied_sequence=replacement.sequence,
                 applied_at_ms=_now_ms(),
+                expected_prior_sequence=expected_prior,
             )
             conn.commit()
         except BaseException:
@@ -287,8 +326,3 @@ class SessionMarkerDerivation:
         finally:
             conn.close()
         return True
-
-    def quiet(self, frame: object, key: str) -> bool:
-        """Marker lowering has no hot-source policy of its own."""
-        del frame, key
-        return False

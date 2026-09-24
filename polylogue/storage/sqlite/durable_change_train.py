@@ -1266,6 +1266,30 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
                     detail = _probe_assertion_status_mark(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":advance_session_marker_delivery"):
+                    if train.tier is not ArchiveTier.USER:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
+                        )
+                    detail = _probe_session_marker_delivery_writer(
+                        cast(Callable[..., object], value), train.target_version
+                    )
+                elif reference.endswith(":advance_accepted_marker_delivery_cursor"):
+                    if train.tier is not ArchiveTier.USER:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
+                        )
+                    detail = _probe_accepted_marker_delivery_cursor_writer(
+                        cast(Callable[..., object], value), train.target_version
+                    )
+                elif reference.endswith(":accepted_marker_delivery_cursor"):
+                    if train.tier is not ArchiveTier.USER:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
+                        )
+                    detail = _probe_accepted_marker_delivery_cursor_reader(
+                        cast(Callable[..., object], value), train.target_version
+                    )
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -1844,6 +1868,92 @@ def _probe_assertion_status_mark(mark: Callable[..., object], target_version: in
     if stored is None or stored[0] != AssertionStatus.SUPERSEDED.value:
         raise DurableChangeTrainError("assertion status probe did not persist the marked status")
     return "marked one probe assertion superseded and refused the restatement"
+
+
+@contextmanager
+def _runtime_probe_user_file_connection(target_version: int) -> Iterator[sqlite3.Connection]:
+    """Make a file-backed user tier for cursor transaction probes."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-user-cursor-probe-") as directory:
+        path = Path(directory) / "user.db"
+        initialize_archive_database(path, ArchiveTier.USER)
+        connection = sqlite3.connect(path)
+        try:
+            _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.USER, target_version)
+            yield connection
+        finally:
+            connection.close()
+
+
+def _probe_session_marker_delivery_writer(writer: Callable[..., object], target_version: int) -> str:
+    """Exercise the v003 per-session cursor through its real user writer."""
+    with _runtime_probe_user_file_connection(target_version) as probe:
+        writer(probe, session_id="session:marker-probe", input_binding="first", applied_at_ms=10)
+        writer(probe, session_id="session:marker-probe", input_binding="older", applied_at_ms=9)
+        writer(probe, session_id="session:marker-probe", input_binding="newer", applied_at_ms=11)
+        stored = probe.execute(
+            "SELECT input_binding, applied_at_ms FROM session_marker_delivery WHERE session_id = ?",
+            ("session:marker-probe",),
+        ).fetchone()
+    if stored != ("newer", 11):
+        raise DurableChangeTrainError("session marker delivery writer did not retain its monotonic durable position")
+    return "advanced the v003 session marker cursor monotonically in a file-backed user tier"
+
+
+def _probe_accepted_marker_delivery_cursor_writer(writer: Callable[..., object], target_version: int) -> str:
+    """Exercise the v004 source-stream cursor through its canonical writer."""
+    from polylogue.storage.sqlite.archive_tiers.user_write import accepted_marker_delivery_cursor
+
+    with _runtime_probe_user_file_connection(target_version) as probe:
+        writer(
+            probe,
+            stream_id="durable-marker-stream",
+            applied_sequence=1,
+            applied_at_ms=10,
+            expected_prior_sequence=0,
+        )
+        try:
+            writer(
+                probe,
+                stream_id="durable-marker-stream",
+                applied_sequence=1,
+                applied_at_ms=11,
+                expected_prior_sequence=1,
+            )
+        except ValueError:
+            pass
+        else:
+            raise DurableChangeTrainError("accepted marker cursor writer accepted a duplicate source sequence")
+        writer(
+            probe,
+            stream_id="durable-marker-stream",
+            applied_sequence=2,
+            applied_at_ms=12,
+            expected_prior_sequence=1,
+        )
+        stored = accepted_marker_delivery_cursor(probe)
+    if stored != ("durable-marker-stream", 2):
+        raise DurableChangeTrainError("accepted marker cursor writer did not retain the contiguous source position")
+    return "advanced one contiguous accepted-marker source cursor in a file-backed user tier"
+
+
+def _probe_accepted_marker_delivery_cursor_reader(reader: Callable[..., object], target_version: int) -> str:
+    """Exercise the v004 cursor reader against a row written by the real writer."""
+    from polylogue.storage.sqlite.archive_tiers.user_write import advance_accepted_marker_delivery_cursor
+
+    with _runtime_probe_user_file_connection(target_version) as probe:
+        advance_accepted_marker_delivery_cursor(
+            probe,
+            stream_id="durable-marker-stream",
+            applied_sequence=1,
+            applied_at_ms=10,
+            expected_prior_sequence=0,
+        )
+        stored = reader(probe)
+    if stored != ("durable-marker-stream", 1):
+        raise DurableChangeTrainError("accepted marker cursor reader did not return the writer's durable position")
+    return "read back the accepted-marker source cursor from a file-backed user tier"
 
 
 def _probe_raw_state_update_compile(compiler: Callable[..., object]) -> str:

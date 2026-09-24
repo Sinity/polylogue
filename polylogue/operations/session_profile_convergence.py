@@ -180,8 +180,11 @@ def make_session_marker_derivation(
     direction.
     """
     del index_db_path
-    read_connection, _write_connection, generation_binding = _session_derivation_connections(archive_root)
+    source_db = archive_root / "source.db"
     user_db = archive_root / "user.db"
+
+    def source_read_connection() -> sqlite3.Connection:
+        return open_readonly_connection(source_db, timeout_class="background-read")
 
     def marker_read_connection() -> sqlite3.Connection:
         return open_readonly_connection(user_db, timeout_class="background-read")
@@ -190,11 +193,9 @@ def make_session_marker_derivation(
         return open_daemon_connection(user_db, archive_root=archive_root)
 
     return SessionMarkerDerivation(
-        read_connection,
+        source_read_connection,
         marker_read_connection,
         marker_write_connection,
-        session_scope=_session_scope,
-        generation_binding=generation_binding,
     )
 
 

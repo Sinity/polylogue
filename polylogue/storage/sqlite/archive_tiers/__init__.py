@@ -52,7 +52,7 @@ SOURCE_TIER_VERSION = 5
 #: alone would leave every existing user.db nullable, and user.db is never
 #: rebuilt from source evidence, so the shape has to be reached by
 #: copy-forward.
-USER_TIER_VERSION = 3
+USER_TIER_VERSION = 4
 
 # Audit slot 002 adds the operation lookup index declared in the fresh DDL.
 # Keep this in the single tier authority map: durable readers and bootstrap
