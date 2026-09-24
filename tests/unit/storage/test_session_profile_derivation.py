@@ -445,6 +445,67 @@ def test_prepared_partition_refuses_a_value_binding_that_moved_before_publish(
         ] == [0, 0]
 
 
+def test_prepared_profile_family_rolls_back_when_latency_write_fails(
+    archive: tuple[Path, str],
+) -> None:
+    """The profile rows and latency rows share one publication transaction.
+
+    Anti-vacuity: commit between the profile and latency writes in
+    ``publish_prepared_session_insight_partition`` and the profile replacement
+    survives the injected latency failure. The observer below would see a
+    mixed family.
+    """
+    from polylogue.daemon.derivation import DerivationFrame
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+    )
+    frame = DerivationFrame(
+        archive_root=str(index_db.parent),
+        source_revision="r1",
+        recipe_versions={
+            SESSION_SUMMARY_DOMAIN: SESSION_SUMMARY_RECIPE_VERSION,
+            SESSION_PROFILE_DOMAIN: SESSION_PROFILE_RECIPE_VERSION,
+        },
+    )
+    _mutate(index_db, session_id, "word_count", "word_count + 13")
+    # Input mutation may invalidate the previous binding before publication;
+    # snapshot that retryable state, not the older valid profile.
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        before_attempt = {
+            table: tuple(conn.execute(f"SELECT * FROM {table} WHERE session_id = ?", (session_id,)).fetchall())
+            for table in ("session_profiles", "session_latency_profiles")
+        }
+    prepared = adapter.compute(frame, session_id)
+    with write_lease("test.inject-latency-failure"), closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER fail_test_latency_insert
+            BEFORE INSERT ON session_latency_profiles
+            BEGIN
+                SELECT RAISE(ABORT, 'injected latency publication failure');
+            END
+            """
+        )
+        conn.commit()
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected latency publication failure"):
+        assert adapter.publish(frame, prepared) is True
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        after = {
+            table: tuple(conn.execute(f"SELECT * FROM {table} WHERE session_id = ?", (session_id,)).fetchall())
+            for table in ("session_profiles", "session_latency_profiles")
+        }
+    assert after == before_attempt
+
+
 @pytest.mark.parametrize("input_kind", ("attachment", "session_event"))
 def test_prepared_partition_refuses_related_input_that_moved_before_publish(
     archive: tuple[Path, str],
