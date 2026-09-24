@@ -39,6 +39,8 @@ from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
     is_declared_logical_export,
+    is_undeclared_logical_export,
+    member_export_scope,
     retained_content_revision,
     snapshot_sqlite_to_blob,
     sqlite_logical_revision,
@@ -299,6 +301,38 @@ def test_a_historical_page_image_cannot_recover_logical_source_identity(tmp_path
 
     assert not is_declared_logical_export(page_image, source)
     assert retained_content_revision(page_image, page_hash) == page_hash
+
+
+def test_declared_and_undeclared_logical_export_predicates_truth_table(tmp_path: Path) -> None:
+    """Only a framed export for its source identity is admitted by each predicate.
+
+    Anti-vacuity: making the undeclared predicate unconditional admits the
+    declared export and page image; making it always false rejects the valid
+    export from the noncanonical backup path.
+    """
+    declared_source = tmp_path / "state_5.sqlite"
+    _write_thread_state_db(declared_source, threads=1)
+    declared_export = tmp_path / "declared.export"
+    declared_export.write_bytes(
+        sqlite_export.logical_export_bytes(declared_source, scope=member_export_scope(declared_source))
+    )
+
+    backup_source = tmp_path / "backup.db"
+    _write_state_db(backup_source, sessions=1)
+    backup_export = tmp_path / "backup.export"
+    backup_export.write_bytes(sqlite_export.logical_export_bytes(backup_source))
+
+    page_image = tmp_path / "page-image.sqlite"
+    page_image.write_bytes(declared_source.read_bytes())
+
+    cases = (
+        (declared_export, declared_source, True, False),
+        (backup_export, backup_source, False, True),
+        (page_image, declared_source, False, False),
+    )
+    for material, source, expected_declared, expected_undeclared in cases:
+        assert is_declared_logical_export(material, source) is expected_declared, material.name
+        assert is_undeclared_logical_export(material, source) is expected_undeclared, material.name
 
 
 def test_the_retained_material_is_the_declared_logical_export(tmp_path: Path) -> None:
