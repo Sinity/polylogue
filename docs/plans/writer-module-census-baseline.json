@@ -162,6 +162,12 @@
     "tiers": []
   },
   {
+    "file": "polylogue/storage/accepted_marker_inputs.py",
+    "tiers": [
+      "source"
+    ]
+  },
+  {
     "file": "polylogue/storage/attachment_relink.py",
     "tiers": [
       "index"
