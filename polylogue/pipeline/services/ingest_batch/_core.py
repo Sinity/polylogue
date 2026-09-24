@@ -2430,8 +2430,18 @@ def _publish_marker_witnesses_before_index_commit(
                 ) = retained
     for request in requests.values():
         batch = retained_batches[request.identity]
-        if retained_incarnations[batch.identity] != incarnation_id:
+        retained_state = source_states[batch.identity]
+        retained_incarnation = retained_incarnations[batch.identity]
+        # Pending carriers belong to the index transaction they were prepared
+        # for and cannot cross a physical index replacement. An accepted
+        # carrier is different: its immutable source bytes and sequence remain
+        # authoritative across rebuilds. Recompute the complete request and
+        # require byte equality, or an exact current witness for a prior
+        # disposition, before publishing a witness for this incarnation.
+        if retained_state != "accepted" and retained_incarnation != incarnation_id:
             raise AcceptedMarkerInputRefusedError("pending marker carrier belongs to a replaced index incarnation")
+        if retained_state == "accepted" and retained_incarnation is None:
+            raise AcceptedMarkerInputRefusedError("accepted marker carrier has no recorded index incarnation")
         if batch.payload != request.payload and source_states[batch.identity] not in ("pending-new",):
             prior = index_conn.execute(
                 "SELECT carrier_digest, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
@@ -2457,9 +2467,9 @@ def _publish_marker_witnesses_before_index_commit(
         ).fetchone()
         if prior is None and batch.payload != request.payload:
             raise AcceptedMarkerInputRefusedError("retained marker carrier has no matching index publication witness")
-        if prior is None and source_states[batch.identity] not in ("pending-new", "pending"):
+        if prior is None and retained_state not in ("pending-new", "pending", "pending-existing", "accepted"):
             raise AcceptedMarkerInputRefusedError(
-                "retained accepted marker carrier has no matching index publication witness"
+                f"retained marker carrier state {retained_state!r} has no matching index publication witness"
             )
         expected = (batch.payload_sha256, encoded, incarnation_id)
         if prior is not None and tuple(prior) != expected:

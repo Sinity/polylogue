@@ -247,13 +247,19 @@ def test_source_migration_matches_fresh_ddl_and_preserves_restart_sequence(tmp_p
             == 1
         )
         objects = source.execute(
-            "SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'accepted_marker_%' ORDER BY name"
+            "SELECT type, name, sql FROM sqlite_master WHERE name IN ("
+            "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
+            "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
+            "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete') ORDER BY name"
         ).fetchall()
     with sqlite3.connect(":memory:") as fresh:
         fresh.executescript(SOURCE_DDL)
         assert (
             fresh.execute(
-                "SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'accepted_marker_%' ORDER BY name"
+                "SELECT type, name, sql FROM sqlite_master WHERE name IN ("
+                "'pending_accepted_marker_inputs', 'accepted_marker_stream', 'accepted_marker_inputs', "
+                "'accepted_marker_stream_no_update', 'accepted_marker_stream_no_delete', "
+                "'accepted_marker_inputs_no_update', 'accepted_marker_inputs_no_delete') ORDER BY name"
             ).fetchall()
             == objects
         )
@@ -308,8 +314,8 @@ def test_request_identity_uses_full_parse_while_carrier_keeps_selected_delta() -
     assert changed_recipe.identity != original.identity
 
 
-def test_index_witness_recovers_original_carrier_after_noop_retry(tmp_path: Path) -> None:
-    """A committed index witness selects the retained append bytes on replay."""
+def test_index_witness_recovers_and_refreshes_exact_accepted_carrier(tmp_path: Path) -> None:
+    """A current witness can be rebuilt from the exact retained accepted carrier."""
     from polylogue.pipeline.services.ingest_batch._core import _publish_marker_witnesses_before_index_commit
 
     root = tmp_path / "archive"
@@ -352,6 +358,37 @@ def test_index_witness_recovers_original_carrier_after_noop_retry(tmp_path: Path
         assert witness == (
             first_batch.payload_sha256,
             '[{"disposition":"append","session_id":"child"}]',
+        )
+
+    old_incarnation = index.execute(
+        "SELECT incarnation_id FROM ingest_index_incarnation WHERE singleton = 1"
+    ).fetchone()[0]
+    index.close()
+    for suffix in ("", "-wal", "-shm"):
+        (root / f"index.db{suffix}").unlink(missing_ok=True)
+    with sqlite3.connect(root / "index.db") as rebuilt_index:
+        rebuilt_index.executescript(INDEX_DDL)
+        ingest_batch_core._ensure_ingest_index_incarnation(rebuilt_index)
+        new_incarnation = rebuilt_index.execute(
+            "SELECT incarnation_id FROM ingest_index_incarnation WHERE singleton = 1"
+        ).fetchone()[0]
+        assert new_incarnation != old_incarnation
+        same_accepted_input = _IngestBatchSummary(
+            marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
+            marker_request_sessions_by_raw_id={"raw": full},
+            marker_session_dispositions_by_raw_id={"raw": [{"session_id": "child", "disposition": "append"}]},
+            marker_sessions_by_raw_id={"raw": [original]},
+        )
+        rebuilt_index.execute("BEGIN IMMEDIATE")
+        _publish_marker_witnesses_before_index_commit(rebuilt_index, archive_root=root, summary=same_accepted_input)
+        rebuilt_index.commit()
+        assert same_accepted_input.marker_batches_by_raw_id["raw"] == first_batch
+        assert rebuilt_index.execute(
+            "SELECT carrier_digest, dispositions_json, incarnation_id FROM ingest_marker_witnesses"
+        ).fetchone() == (
+            first_batch.payload_sha256,
+            '[{"disposition":"append","session_id":"child"}]',
+            new_incarnation,
         )
 
 
@@ -556,6 +593,101 @@ async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
         assert source.execute(
             "SELECT sequence, payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids[1],)
         ).fetchone() == (2, original_payload)
+
+
+@pytest.mark.asyncio
+async def test_public_batch_rebuild_refuses_changed_accepted_carrier_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The public route preserves accepted history when its rebuilt carrier differs."""
+    from polylogue.pipeline.ids import session_content_hash
+
+    bootstrap_archive_root(tmp_path)
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    payload_bytes = b"accepted-marker-rebuild-replay"
+    BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        raw_id = write_source_raw_session(
+            source,
+            origin=Origin.CODEX_SESSION,
+            source_path="rebuild-replay.jsonl",
+            source_index=0,
+            payload=payload_bytes,
+            acquired_at_ms=1,
+        )
+    parsed = _session("::note: durable marker")
+    session = SessionWritePayload(
+        session_id="codex-session:session",
+        content_hash=str(session_content_hash(parsed)),
+        parsed_session=parsed,
+        message_count=len(parsed.messages),
+        raw_id=raw_id,
+    )
+
+    def fake_ingest(record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        return IngestRecordResult(
+            raw_id=record.raw_id,
+            payload_provider=Provider.CODEX.value,
+            validation_status="passed",
+            outcome_code="success",
+            sessions=[session],
+        )
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+    )
+    try:
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            original = source.execute(
+                "SELECT sequence, payload, index_incarnation_id FROM accepted_marker_inputs WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+        assert original is not None and original[0] == 1
+        await repository.close()
+
+        # Model a new derived index generation while leaving durable source
+        # acceptance untouched.
+        for suffix in ("", "-wal", "-shm"):
+            (tmp_path / f"index.db{suffix}").unlink(missing_ok=True)
+        from polylogue.storage.sqlite.connection import open_connection
+
+        with open_connection(tmp_path / "index.db"):
+            pass
+        repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+        service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+        with pytest.raises(AcceptedMarkerInputRefusedError, match="without its exact index witness"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+        with pytest.raises(AcceptedMarkerInputRefusedError, match="without its exact index witness"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert (
+            source.execute(
+                "SELECT sequence, payload, index_incarnation_id FROM accepted_marker_inputs WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+            == original
+        )
+        assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
 
 
 @pytest.mark.asyncio
