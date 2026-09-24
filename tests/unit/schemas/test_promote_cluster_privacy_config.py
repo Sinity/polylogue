@@ -31,16 +31,26 @@ _SAMPLES = [
 
 
 def test_generate_schema_from_samples_ignores_privacy_by_default() -> None:
-    """Baseline: without a privacy_config, the low-cardinality enum leaks verbatim."""
+    """Default generation keeps observed shape data but never publishes private values.
+
+    Anti-vacuity: the three input samples include two region codes, and the
+    generated distribution records all three documents even though the member
+    list is withheld.
+    """
     schema = generate_schema_from_samples(_SAMPLES)
 
     properties = cast("dict[str, Any]", schema["properties"])
     region = cast("dict[str, Any]", properties["region_code"])
-    assert region.get("x-polylogue-values") == ["us-east", "eu-west"]
+    assert "x-polylogue-values" not in region
+    assert region["x-polylogue-observed-distribution"]["documents"] == len(_SAMPLES)
 
 
 def test_generate_schema_from_samples_honors_privacy_config_field_deny() -> None:
-    """A field-level deny rule must suppress the annotation -- this is the plumbing fix."""
+    """Explicit field denial remains compatible with the publication boundary.
+
+    Anti-vacuity: generated distribution metadata confirms the denied field
+    was present in all three samples, so this exercises a populated field.
+    """
     privacy_config = PrivacyConfig(field_overrides={"$.region_code": "deny"})
 
     schema = generate_schema_from_samples(_SAMPLES, privacy_config=privacy_config)
@@ -48,6 +58,7 @@ def test_generate_schema_from_samples_honors_privacy_config_field_deny() -> None
     properties = cast("dict[str, Any]", schema["properties"])
     region = cast("dict[str, Any]", properties["region_code"])
     assert "x-polylogue-values" not in region
+    assert region["x-polylogue-observed-distribution"]["documents"] == len(_SAMPLES)
 
 
 def test_promote_cluster_real_path_honors_privacy_config(tmp_path: Path) -> None:
@@ -77,7 +88,11 @@ def test_promote_cluster_real_path_honors_privacy_config(tmp_path: Path) -> None
 
 
 def test_promote_cluster_real_path_without_privacy_config_still_leaks(tmp_path: Path) -> None:
-    """Confirms the test above is a genuine red/green pair, not a vacuous assertion."""
+    """The real promotion route withholds observed private values by default.
+
+    Anti-vacuity: the promoted region field retains observations for all three
+    source samples, proving that the route generated data while omitting values.
+    """
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
     manifest = registry.cluster_samples("privprov-baseline", _SAMPLES)
     registry.save_cluster_manifest(manifest)
@@ -89,4 +104,5 @@ def test_promote_cluster_real_path_without_privacy_config_still_leaks(tmp_path: 
     assert schema is not None
     properties = cast("dict[str, Any]", schema["properties"])
     region = cast("dict[str, Any]", properties["region_code"])
-    assert region.get("x-polylogue-values") == ["us-east", "eu-west"]
+    assert "x-polylogue-values" not in region
+    assert region["x-polylogue-observed-distribution"]["documents"] == len(_SAMPLES)

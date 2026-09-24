@@ -133,9 +133,9 @@ def test_promote_cluster_with_samples_honors_privacy_config_through_the_real_ope
     without that, every real ``devtools schema-promote`` run stayed exactly
     as unredacted as before the library fix landed.
 
-    Anti-vacuity: the baseline call (no ``privacy_config``) must still leak
-    the planted field's values, proving this is a genuine red/green pair and
-    not a heuristic that would have redacted it anyway.
+    Anti-vacuity: both promoted schemas must retain observations for the
+    planted field, proving the source data reached schema generation while
+    its private values remain unpublished with and without explicit denial.
     """
     index_db = _seed_chatgpt_raw_with_planted_field(workspace_env, values=["us-east", "eu-west"])
 
@@ -159,7 +159,9 @@ def test_promote_cluster_with_samples_honors_privacy_config_through_the_real_ope
 
     baseline_properties = promote_in_isolated_registry("baseline")["properties"]
     assert isinstance(baseline_properties, dict)
-    assert baseline_properties["region_code"].get("x-polylogue-values") == ["us-east", "eu-west"]
+    baseline_region = baseline_properties["region_code"]
+    assert "x-polylogue-values" not in baseline_region
+    assert baseline_region["x-polylogue-observed-distribution"]["documents"] == 2
 
     # Each comparison path gets its own promoted package history and fresh
     # manifest. Re-promoting one cluster after clearing only its manifest
@@ -169,7 +171,9 @@ def test_promote_cluster_with_samples_honors_privacy_config_through_the_real_ope
         "properties"
     ]
     assert isinstance(protected_properties, dict)
-    assert "x-polylogue-values" not in protected_properties["region_code"]
+    protected_region = protected_properties["region_code"]
+    assert "x-polylogue-values" not in protected_region
+    assert protected_region["x-polylogue-observed-distribution"]["documents"] == 2
 
 
 def test_infer_schema_builds_schema_from_source_tier_raw(workspace_env: dict[str, Path]) -> None:
