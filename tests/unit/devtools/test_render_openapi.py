@@ -149,6 +149,7 @@ def test_openapi_declares_generated_client_page_contracts() -> None:
     assert sessions["x-polylogue-page"] == {
         "iterator": "search",
         "initial_required_parameters": ["query"],
+        "initial_optional_parameters": ["cursor"],
         "response_schemas": ["SearchEnvelope"],
         "items_property": "hits",
         "cursor_property": "next_cursor",
