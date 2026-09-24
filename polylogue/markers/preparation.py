@@ -56,7 +56,7 @@ def marker_recipe_fingerprint() -> str:
             inspect.getsource(candidates_for_block),
             inspect.getsource(marker_parser.parse_markers),
             inspect.getsource(marker_parser._args),
-            inspect.getsource(marker_parser.marker_spec),
+            inspect.getsource(marker_parser.__dict__["marker_spec"]),
             inspect.getsource(MarkerRegistry.get),
             inspect.getsource(MarkerRegistry.__contains__),
             inspect.getsource(marker_provenance),
