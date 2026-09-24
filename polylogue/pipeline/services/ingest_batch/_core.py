@@ -11,6 +11,7 @@ Architecture:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -2667,7 +2668,7 @@ def _process_ingest_batch_sync(
                 "source_path": record.source_path,
                 "source_index": record.source_index,
                 "native_id": record.revision.logical_source_key if record.revision is not None else None,
-                "revision": record.revision.model_dump(mode="json") if record.revision is not None else None,
+                "revision": dataclasses.asdict(record.revision) if record.revision is not None else None,
                 "source_name": record.source_name,
                 "payload_provider": provider.value if provider is not None else None,
                 "acquired_at": record.acquired_at,
@@ -3230,7 +3231,8 @@ async def _persist_batch_raw_state_updates(
         batch = (marker_batches_by_raw_id or {}).get(rid)
         if batch is None:
             batch = prepare_accepted_marker_input(rid, sessions, request_facts=facts)
-        await finalize_pending_accepted_marker_input(raw_state_conn, cast(PreparedAcceptedMarkerInput, batch))
+        assert isinstance(batch, PreparedAcceptedMarkerInput)
+        await finalize_pending_accepted_marker_input(raw_state_conn, batch)
 
     async def stage_accepted_payloads(
         raw_state_conn: AsyncSqlConnection,

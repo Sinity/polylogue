@@ -29,6 +29,15 @@ def _encode(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def _stored_payload(value: object) -> bytes:
+    """Narrow SQLite's dynamically typed BLOB result before comparing it."""
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, (bytearray, memoryview)):
+        return bytes(value)
+    raise AcceptedMarkerInputRefusedError("retained accepted marker payload is not a BLOB")
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedAcceptedMarkerInput:
     raw_id: str
@@ -93,7 +102,7 @@ def persist_pending_marker_input_sync(conn: sqlite3.Connection, batch: PreparedA
     ).fetchone()
     if accepted is not None:
         digest, payload = cast(tuple[str, object], accepted)
-        if digest != batch.payload_sha256 or bytes(payload) != batch.payload:
+        if digest != batch.payload_sha256 or _stored_payload(payload) != batch.payload:
             raise AcceptedMarkerInputRefusedError("accepted marker request conflicts with retained carrier")
         return "accepted"
     row = conn.execute(
@@ -125,7 +134,7 @@ async def append_accepted_marker_input(conn: _Connection, batch: PreparedAccepte
     existing = await cursor.fetchone()
     if existing is not None:
         sequence, payload, digest = cast(tuple[int, object, str], existing)
-        if bytes(payload) != batch.payload or digest != batch.payload_sha256:
+        if _stored_payload(payload) != batch.payload or digest != batch.payload_sha256:
             raise AcceptedMarkerInputRefusedError("conflicting replay of accepted marker input")
         return int(sequence)
     await conn.execute(
@@ -152,7 +161,7 @@ async def persist_pending_accepted_marker_input(conn: _Connection, batch: Prepar
     accepted = await cursor.fetchone()
     if accepted is not None:
         digest, payload = cast(tuple[str, object], accepted)
-        if digest != batch.payload_sha256 or bytes(payload) != batch.payload:
+        if digest != batch.payload_sha256 or _stored_payload(payload) != batch.payload:
             raise AcceptedMarkerInputRefusedError("accepted marker request conflicts with retained carrier")
         return
     cursor = await conn.execute(
@@ -162,7 +171,7 @@ async def persist_pending_accepted_marker_input(conn: _Connection, batch: Prepar
     row = await cursor.fetchone()
     if row is not None:
         digest, payload = cast(tuple[str, object], row)
-        if digest != batch.payload_sha256 or bytes(payload) != batch.payload:
+        if digest != batch.payload_sha256 or _stored_payload(payload) != batch.payload:
             raise AcceptedMarkerInputRefusedError("pending marker request conflicts with retained carrier")
         return
     await conn.execute(
@@ -187,11 +196,11 @@ async def finalize_pending_accepted_marker_input(conn: _Connection, batch: Prepa
         accepted = await accepted_cursor.fetchone()
         if accepted is not None:
             sequence, digest, payload = cast(tuple[int, str, object], accepted)
-            if digest == batch.payload_sha256 and bytes(payload) == batch.payload:
+            if digest == batch.payload_sha256 and _stored_payload(payload) == batch.payload:
                 return int(sequence)
         raise AcceptedMarkerInputRefusedError("pending marker carrier is absent for this request")
     digest, payload = cast(tuple[str, object], row)
-    if digest != batch.payload_sha256 or bytes(payload) != batch.payload:
+    if digest != batch.payload_sha256 or _stored_payload(payload) != batch.payload:
         raise AcceptedMarkerInputRefusedError("pending marker carrier differs from this request")
     sequence = await append_accepted_marker_input(conn, batch)
     await conn.execute("DELETE FROM pending_accepted_marker_inputs WHERE request_key = ?", (batch.identity,))
