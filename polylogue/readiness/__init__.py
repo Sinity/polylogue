@@ -36,7 +36,11 @@ from polylogue.readiness.capability import (
     component_from_transform_registry,
 )
 from polylogue.storage.archive_identity import resolve_active_index_path
-from polylogue.storage.archive_readiness import claude_workflow_materialization_status, raw_materialization_ready
+from polylogue.storage.archive_readiness import (
+    RawMaterializationAssessmentState,
+    assess_raw_materialization,
+    claude_workflow_materialization_status,
+)
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
@@ -93,11 +97,11 @@ class ReadinessReport(OutcomeReport):
 
     @property
     def archive_convergence(self) -> dict[str, object]:
-        archive_state_checked = bool(self.raw_materialization_readiness or self.raw_frontier_integrity)
-        materialization_ready = raw_materialization_ready(self.raw_materialization_readiness)
-        frontier_ready = (
-            not self.raw_frontier_integrity or self.raw_frontier_integrity.get("overall_status") == "healthy"
-        )
+        materialization_assessment = assess_raw_materialization(self.raw_materialization_readiness)
+        frontier_status = self.raw_frontier_integrity.get("overall_status", "unknown")
+        frontier_checked = bool(self.raw_frontier_integrity) and frontier_status != "unknown"
+        materialization_ready = materialization_assessment.ready
+        materialization_checked = materialization_assessment.state is not RawMaterializationAssessmentState.UNMEASURED
         materialization_progress = {
             "raw_artifact_count": _payload_int(self.raw_materialization_readiness.get("raw_artifact_count")),
             "materialized_raw_artifact_count": _payload_int(
@@ -107,9 +111,13 @@ class ReadinessReport(OutcomeReport):
             "join_gap_count": _payload_int(self.raw_materialization_readiness.get("join_gap_count")),
         }
         return {
-            "checked": archive_state_checked,
-            "converging": archive_state_checked and (not materialization_ready or not frontier_ready),
+            "checked": materialization_checked or frontier_checked,
+            "converging": (
+                materialization_assessment.state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
+                or (frontier_checked and frontier_status != "healthy")
+            ),
             "materialization_ready": materialization_ready,
+            "materialization_assessment": materialization_assessment.to_dict(),
             "materialization_progress": materialization_progress,
             "raw_materialization_readiness": self.raw_materialization_readiness,
             "raw_frontier_integrity": self.raw_frontier_integrity,

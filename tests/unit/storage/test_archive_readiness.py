@@ -12,7 +12,9 @@ from polylogue.core.errors import SchemaSkew
 from polylogue.storage.archive_readiness import (
     CLAUDE_WORKFLOW_STAGE_NAME,
     RAW_ALIAS_BLOB_MISSING_CATEGORY,
+    RawMaterializationAssessmentState,
     archive_readiness_status,
+    assess_raw_materialization,
     claude_workflow_materialization_status,
     probe_archive_tier,
     raw_materialization_readiness_snapshot,
@@ -72,19 +74,72 @@ def test_probe_archive_tier_reports_schema_skew_without_opening_a_usable_reader(
     assert probe.version_status == "mismatch"
 
 
-def test_raw_materialization_readiness_requires_the_parser_census() -> None:
-    """The durable parser census, not a per-pass census row, gates the claim.
+def test_raw_materialization_readiness_requires_populated_parser_census() -> None:
+    """The durable parser census and a populated denominator gate the claim.
 
     Anti-vacuity: the last assertion is the only True, and it differs from the
     one above it solely by ``raw_authority_parser_census.available`` being the
     boolean the projection writes rather than a truthy string. Re-adding a
     retired census precondition would make it False.
     """
-    counters_green: dict[str, object] = {"available": True}
+    counters_green: dict[str, object] = {"available": True, "raw_artifact_count": 1}
 
     assert raw_materialization_ready(counters_green) is False
     assert raw_materialization_ready({**counters_green, "raw_authority_parser_census": {"available": "yes"}}) is False
-    assert raw_materialization_ready({**counters_green, "raw_authority_parser_census": {"available": True}}) is True
+    populated = {**counters_green, "raw_authority_parser_census": {"available": True}}
+    # Materialized count is informational on this compatibility snapshot; the
+    # populated denominator, blocker counters, and parser census carry verdict.
+    assert assess_raw_materialization(populated).state is RawMaterializationAssessmentState.POPULATED_CONVERGED
+    assert raw_materialization_ready(populated) is True
+
+
+def test_raw_materialization_assessment_distinguishes_unmeasured_and_convergence() -> None:
+    """A pristine archive is unknown, while populated evidence gets a verdict."""
+    census = {"available": True}
+    pristine = {
+        "available": True,
+        "raw_artifact_count": 0,
+        "materialized_raw_artifact_count": 0,
+        "raw_authority_parser_census": census,
+    }
+    converged = {
+        **pristine,
+        "raw_artifact_count": 1,
+        "materialized_raw_artifact_count": 1,
+    }
+    unconverged = {**converged, "unchecked": 1}
+
+    assert assess_raw_materialization(pristine).state is RawMaterializationAssessmentState.UNMEASURED
+    assert assess_raw_materialization(pristine).reason == "zero_denominator"
+    assert assess_raw_materialization(converged).state is RawMaterializationAssessmentState.POPULATED_CONVERGED
+    assert assess_raw_materialization(unconverged).state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
+    assert raw_materialization_ready(pristine) is False
+    assert raw_materialization_ready(converged) is True
+    assert raw_materialization_ready(unconverged) is False
+
+    unavailable = assess_raw_materialization({"available": False, "error": "index unavailable"})
+    assert unavailable.state is RawMaterializationAssessmentState.UNMEASURED
+    assert unavailable.reason == "readiness_unavailable"
+    assert unavailable.detail == "index unavailable"
+
+    known_debt_without_census = assess_raw_materialization(
+        {**converged, "raw_authority_parser_census": {"available": False}, "unchecked": 1}
+    )
+    known_debt_without_classifier = assess_raw_materialization(
+        {**converged, "debt_classifier_error": "ops.db locked", "actionable": 1}
+    )
+    assert known_debt_without_census.state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
+    assert known_debt_without_classifier.state is RawMaterializationAssessmentState.POPULATED_UNCONVERGED
+
+    missing_denominator_with_debt = assess_raw_materialization(
+        {
+            "available": True,
+            "raw_authority_parser_census": {"available": True},
+            "critical": 1,
+        }
+    )
+    assert missing_denominator_with_debt.state is RawMaterializationAssessmentState.UNMEASURED
+    assert missing_denominator_with_debt.reason == "raw_artifact_count_unavailable"
 
 
 def test_raw_materialization_snapshot_rejects_malformed_parser_receipt(tmp_path: Path) -> None:
@@ -327,9 +382,33 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
     assert ready["surfaces"]["raw_artifacts"]["ready"] is True
 
 
+def test_archive_readiness_status_uses_active_index_when_conventional_path_is_shadowed(tmp_path: Path) -> None:
+    """Surface counts and parser census must come from one pointer-selected generation."""
+    initialize_active_archive_root(tmp_path)
+    active_index = tmp_path / "generations" / "candidate" / "index.db"
+    active_index.parent.mkdir(parents=True)
+    shadow_index = tmp_path / "index.db"
+    with sqlite3.connect(shadow_index) as source, sqlite3.connect(active_index) as destination:
+        source.backup(destination)
+
+    shadow_index.unlink()
+    for suffix in ("-wal", "-shm"):
+        (tmp_path / f"index.db{suffix}").unlink(missing_ok=True)
+    with sqlite3.connect(shadow_index):
+        pass
+    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+
+    status = archive_readiness_status(tmp_path)
+
+    assert status["checked"] is True
+    assert status["reason"] is None
+    assert status["surfaces"]["archive_sessions"]["ready"] is True
+
+
 def test_raw_materialization_readiness_rejects_unresolved_authority_blockers() -> None:
     readiness = {
         "available": True,
+        "raw_artifact_count": 1,
         "raw_authority_parser_census": {"available": True},
         "raw_authority_blocker_count": 1,
     }
@@ -914,6 +993,18 @@ def test_raw_materialization_snapshot_marks_reverse_authority_query_failure_unav
     assert raw_materialization_ready(snapshot) is False
 
 
+def test_raw_materialization_snapshot_returns_unavailable_for_invalid_active_pointer(tmp_path: Path) -> None:
+    (tmp_path / ".index-active-pointer").write_text("relative/index.db", encoding="utf-8")
+
+    snapshot = raw_materialization_readiness_snapshot(tmp_path)
+    status = archive_readiness_status(tmp_path)
+
+    assert snapshot["available"] is False
+    assert "invalid active index pointer" in str(snapshot["error"])
+    assert status["checked"] is False
+    assert "invalid active index pointer" in str(status["reason"])
+
+
 def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
@@ -1188,6 +1279,7 @@ def test_raw_materialization_ready_rejects_failed_debt_classifier() -> None:
     """
     clean = {
         "available": True,
+        "raw_artifact_count": 1,
         "raw_authority_parser_census": {"available": True},
         "critical": 0,
         "warning": 0,

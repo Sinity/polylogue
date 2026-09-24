@@ -136,30 +136,14 @@ def raw_materialization_unmeasured_reason(readiness: Mapping[str, Any] | object 
     refuses for FTS coverage at a zero denominator (polylogue-o6oct), and
     unlike the census condition it leaves every populated archive determinate.
     """
-    payload: Mapping[str, Any] | None
-    if readiness is None:
-        payload = None
-    elif isinstance(readiness, Mapping):
-        payload = readiness
-    else:
-        model_dump = getattr(readiness, "model_dump", None)
-        dumped = model_dump() if callable(model_dump) else None
-        payload = dumped if isinstance(dumped, Mapping) else None
-    if payload is None or not bool(payload.get("available", False)):
-        return "raw-materialization readiness was not inspected"
-    if payload.get("debt_classifier_error"):
-        return "raw debt classifier did not run"
-    parser_census = payload.get("raw_authority_parser_census")
-    if not isinstance(parser_census, Mapping) or parser_census.get("available") is not True:
-        return "source parser census not measured"
-    raw_artifact_count = payload.get("raw_artifact_count")
-    # Only an explicit zero is classified, for the same reason
-    # ``search_unmeasured_reason`` only classifies an explicit zero: a producer
-    # that reported no denominator keeps its own verdict rather than having a
-    # real refutation masked into "unknown".
-    if isinstance(raw_artifact_count, int) and not isinstance(raw_artifact_count, bool) and raw_artifact_count == 0:
+    from polylogue.storage.archive_readiness import RawMaterializationAssessmentState, assess_raw_materialization
+
+    assessment = assess_raw_materialization(readiness)
+    if assessment.state is not RawMaterializationAssessmentState.UNMEASURED:
+        return None
+    if assessment.reason == "zero_denominator":
         return "no raw artifacts: raw materialization is undefined at a zero denominator, not converged"
-    return None
+    return assessment.detail or assessment.reason.replace("_", " ")
 
 
 def search_unmeasured_reason(indexable_count: int | None) -> str | None:

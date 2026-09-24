@@ -12,8 +12,9 @@ import click
 
 from polylogue.storage import archive_layout
 from polylogue.storage.archive_readiness import (
+    RawMaterializationAssessmentState,
+    assess_raw_materialization,
     raw_materialization_readiness_snapshot,
-    raw_materialization_ready,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -68,12 +69,16 @@ def paths_command(output_format: str) -> None:
     present_tiers = [name for name, path in tier_paths.items() if path.exists()]
     missing_tiers = [name for name, path in tier_paths.items() if not path.exists()]
     archive_schema_ready = all(status["version_status"] == "ok" for status in tier_versions.values())
-    raw_materialization_readiness = _raw_materialization_readiness(active_archive)
+    # Durable tiers stay at the configured root when the active index is a
+    # promoted generation. Pass that root so readiness resolves the selected
+    # index while attaching the correct source tier.
+    raw_materialization_readiness = _raw_materialization_readiness(archive)
+    raw_materialization_assessment = assess_raw_materialization(raw_materialization_readiness)
     archive_materialization_ready = (
         source_db.exists()
         and db.exists()
         and archive_schema_ready
-        and raw_materialization_ready(raw_materialization_readiness)
+        and raw_materialization_assessment.state is RawMaterializationAssessmentState.POPULATED_CONVERGED
     )
     archive_ready = source_db.exists() and db.exists() and archive_schema_ready and archive_materialization_ready
     final_shape_ready = not missing_tiers
@@ -118,6 +123,7 @@ def paths_command(output_format: str) -> None:
             "archive_ready": archive_ready,
             "archive_materialization_ready": archive_materialization_ready,
             "raw_materialization_readiness": raw_materialization_readiness,
+            "raw_materialization_assessment": raw_materialization_assessment.to_dict(),
             "final_shape_ready": final_shape_ready,
             "archive_schema_ready": archive_schema_ready,
             "archive_layout_ready": archive_layout_ready,
@@ -165,7 +171,14 @@ def paths_command(output_format: str) -> None:
     _print_line("Archive layout", "ready" if archive_layout_ready else "not ready", extra=layout_status_extra)
     schema_extra = "ready" if archive_schema_ready else _schema_blocker_text(tier_versions)
     _print_line("Archive schema", "ready" if archive_schema_ready else "not ready", extra=schema_extra)
-    _print_line("Archive materialization", "ready" if archive_materialization_ready else "not ready")
+    materialization_label = (
+        "ready"
+        if archive_materialization_ready
+        else "undetermined"
+        if raw_materialization_assessment.state is RawMaterializationAssessmentState.UNMEASURED
+        else "not ready"
+    )
+    _print_line("Archive materialization", materialization_label)
     _print_line("Source DB", str(source_db), extra=_tier_extra("source", source_db, tier_versions))
     _print_line("Index DB", str(db), extra=_tier_extra("index", db, tier_versions))
     _print_line(

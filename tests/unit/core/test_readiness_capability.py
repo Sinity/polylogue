@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -113,6 +114,7 @@ def test_archive_convergence_hoists_materialization_progress_counts() -> None:
             "classification": "not_run",
             "raw_artifact_count": 10,
             "materialized_raw_artifact_count": 7,
+            "raw_authority_parser_census": {"available": True},
             "archive_session_count": 8,
             "join_gap_count": 3,
             "total": 3,
@@ -143,6 +145,21 @@ def test_runtime_only_readiness_does_not_claim_archive_convergence() -> None:
     assert convergence["converging"] is False
     assert convergence["materialization_ready"] is False
     assert convergence["raw_frontier_integrity"] == {}
+
+
+def test_unavailable_materialization_and_frontier_remain_unmeasured() -> None:
+    report = ReadinessReport(
+        raw_materialization_readiness={"available": False, "error": "collector timed out"},
+        raw_frontier_integrity={"available": False, "overall_status": "unknown"},
+    )
+
+    convergence = report.archive_convergence
+
+    assert convergence["checked"] is False
+    assert convergence["converging"] is False
+    assessment = convergence["materialization_assessment"]
+    assert isinstance(assessment, dict)
+    assert assessment["state"] == "unmeasured"
 
 
 def test_outcome_checks_map_to_capability_states() -> None:
@@ -179,6 +196,8 @@ def test_raw_materialization_readiness_maps_actionable_debt_to_stale() -> None:
     component = component_from_raw_materialization_readiness(
         {
             "available": True,
+            "raw_artifact_count": 4,
+            "raw_authority_parser_census": {"available": True},
             "total": 1,
             "warning": 1,
             "actionable": 1,
@@ -199,6 +218,8 @@ def test_raw_materialization_readiness_maps_classified_info_debt_to_ready_with_c
     component = component_from_raw_materialization_readiness(
         {
             "available": True,
+            "raw_artifact_count": 4,
+            "raw_authority_parser_census": {"available": True},
             "total": 2,
             "critical": 0,
             "warning": 0,
@@ -226,6 +247,7 @@ def test_raw_materialization_readiness_maps_unchecked_join_gaps_to_degraded() ->
     component = component_from_raw_materialization_readiness(
         {
             "available": True,
+            "raw_authority_parser_census": {"available": True},
             "classification": "not_run",
             "total": 3,
             "raw_artifact_count": 10,
@@ -262,6 +284,8 @@ def test_raw_materialization_readiness_maps_lost_source_evidence_to_blocked() ->
     component = component_from_raw_materialization_readiness(
         {
             "available": True,
+            "raw_artifact_count": 1,
+            "raw_authority_parser_census": {"available": True},
             "total": 0,
             "lost_source_evidence_count": 1,
             "lost_source_evidence_samples": [sample],
@@ -286,6 +310,7 @@ def test_raw_materialization_capability_exposes_parser_census_evidence() -> None
     component = component_from_raw_materialization_readiness(
         {
             "available": True,
+            "raw_artifact_count": 3,
             "raw_authority_parser_census": census,
             "raw_authority_parser_census_incomplete_count": 3,
             "raw_authority_parser_census_incomplete_blob_bytes": 99,
@@ -302,12 +327,76 @@ def test_raw_materialization_capability_treats_unavailable_parser_census_as_unkn
     component = component_from_raw_materialization_readiness(
         {
             "available": True,
+            "raw_artifact_count": 3,
             "raw_authority_parser_census": {"available": False},
         }
     )
 
     assert component.state is CapabilityReadinessState.UNKNOWN
     assert component.summary == "source parser census unavailable"
+
+
+def test_zero_raw_denominator_is_unknown_not_ready_or_stale() -> None:
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "raw_artifact_count": 0,
+            "materialized_raw_artifact_count": 0,
+            "raw_authority_parser_census": {"available": True},
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.summary == "raw materialization unmeasured: no raw artifacts"
+
+
+def test_malformed_raw_debt_counter_is_unknown_without_crashing() -> None:
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "raw_artifact_count": 1,
+            "materialized_raw_artifact_count": 1,
+            "raw_authority_parser_census": {"available": True},
+            "critical": "not-an-int",
+        }
+    )
+
+    assert component.state is CapabilityReadinessState.UNKNOWN
+    assert component.counts["critical"] == 0
+    assessment = cast(dict[str, object], component.metadata["assessment"])
+    assert assessment["reason"] == "blocking_count_invalid"
+
+
+@pytest.mark.parametrize(
+    ("blocking_key", "expected_state", "expected_summary"),
+    [
+        ("raw_authority_blocker_count", CapabilityReadinessState.BLOCKED, "unresolved raw authority blockers"),
+        ("affected_blocked", CapabilityReadinessState.BLOCKED, "raw evidence blocked"),
+        ("affected_open", CapabilityReadinessState.STALE, "raw evidence pending materialization"),
+    ],
+)
+def test_raw_materialization_capability_does_not_certify_assessed_blockers(
+    blocking_key: str,
+    expected_state: CapabilityReadinessState,
+    expected_summary: str,
+) -> None:
+    component = component_from_raw_materialization_readiness(
+        {
+            "available": True,
+            "raw_artifact_count": 1,
+            "materialized_raw_artifact_count": 1,
+            "raw_authority_parser_census": {"available": True},
+            "classified": 1,
+            "affected_classified": 1,
+            blocking_key: 1,
+        }
+    )
+
+    assert component.state is expected_state
+    assert component.summary == expected_summary
+    assert component.repair_hint is not None
+    assessment = cast(dict[str, object], component.metadata["assessment"])
+    assert assessment["state"] == "populated_unconverged"
 
 
 def test_raw_frontier_integrity_maps_healthy_to_ready() -> None:

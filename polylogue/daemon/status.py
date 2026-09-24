@@ -82,16 +82,17 @@ from polylogue.readiness.capability import CapabilityReadinessState, ComponentRe
 from polylogue.readiness.claim_guard import (
     DerivedDomainReadiness,
     derive_claim_guard,
-    raw_materialization_unmeasured_reason,
     search_unmeasured_reason,
 )
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import (
+    RawMaterializationAssessment,
+    RawMaterializationAssessmentState,
+    assess_raw_materialization,
     probe_archive_tier,
     raw_materialization_readiness_snapshot,
-    raw_materialization_ready,
 )
 from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -483,6 +484,7 @@ class ArchiveStorageStatus(BaseModel):
     archive_root_matches_configured: bool | None = None
     archive_ready: bool = False
     archive_materialization_ready: bool = False
+    archive_materialization_assessment: dict[str, object] | None = None
     final_shape_ready: bool = False
     archive_schema_ready: bool = False
     schema_mismatches: list[str] = Field(default_factory=list)
@@ -2178,7 +2180,7 @@ def _daemon_component_readiness(
 
 def _raw_materialization_domain(
     raw_component: ComponentReadiness,
-    unmeasured_reason: str | None,
+    assessment: RawMaterializationAssessment,
 ) -> DerivedDomainReadiness:
     """Derive the raw-materialization claim from one projection, plus a gate.
 
@@ -2186,17 +2188,13 @@ def _raw_materialization_domain(
     erase a projection that already found the domain wanting: only a ``ready``
     projection is downgraded to indeterminate.
     """
-    if raw_component.state is CapabilityReadinessState.UNKNOWN:
+    if assessment.state is RawMaterializationAssessmentState.UNMEASURED:
         return DerivedDomainReadiness(
             domain="raw_materialization", ready=False, summary=raw_component.summary, determinate=False
         )
-    if raw_component.state is CapabilityReadinessState.READY and unmeasured_reason is not None:
-        return DerivedDomainReadiness(
-            domain="raw_materialization", ready=True, summary=unmeasured_reason, determinate=False
-        )
     return DerivedDomainReadiness(
         domain="raw_materialization",
-        ready=raw_component.state is CapabilityReadinessState.READY,
+        ready=assessment.state is RawMaterializationAssessmentState.POPULATED_CONVERGED,
         summary=raw_component.summary,
         determinate=True,
     )
@@ -2215,7 +2213,7 @@ def _daemon_claim_guard(
 ) -> dict[str, object]:
     """Derive the claim-guard block for the daemon-serving status path."""
     raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
-    raw_unmeasured = raw_materialization_unmeasured_reason(raw_materialization_readiness)
+    raw_assessment = assess_raw_materialization(raw_materialization_readiness)
     fts_component = _component_from_fts_readiness(fts_readiness)
     profile_component = _component_from_insight_freshness(insight_freshness)
     embedding_component = _component_from_daemon_embedding_readiness(embedding_readiness)
@@ -2235,7 +2233,7 @@ def _daemon_claim_guard(
         # predicate's never-run preconditions withhold certification rather
         # than refute (polylogue-kjy0a). Same derivation as the direct path's
         # operations.daemon_status._raw_materialization_domain.
-        _raw_materialization_domain(raw_component, raw_unmeasured),
+        _raw_materialization_domain(raw_component, raw_assessment),
         DerivedDomainReadiness(
             domain="raw_frontier_integrity",
             ready=raw_frontier_integrity.overall_status == "healthy",
@@ -2435,6 +2433,14 @@ def _daemon_embedding_repair_hint(
 def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentReadiness:
     if storage.archive_ready:
         state = CapabilityReadinessState.READY
+    elif (
+        storage.final_shape_ready
+        and storage.archive_schema_ready
+        and storage.archive_materialization_assessment is not None
+        and storage.archive_materialization_assessment.get("state")
+        == RawMaterializationAssessmentState.UNMEASURED.value
+    ):
+        state = CapabilityReadinessState.UNKNOWN
     elif storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
         state = CapabilityReadinessState.STALE
     elif storage.final_shape_ready or storage.schema_mismatches:
@@ -2452,7 +2458,15 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         caveats += (f"schema_mismatch:{','.join(storage.schema_mismatches)}",)
     if storage.unreadable_tiers:
         caveats += (f"unreadable_tiers:{','.join(storage.unreadable_tiers)}",)
-    if storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
+    if state is CapabilityReadinessState.UNKNOWN and storage.archive_materialization_assessment is not None:
+        reason = storage.archive_materialization_assessment.get("reason")
+        caveats += (f"raw_materialization_unmeasured:{reason or 'unknown'}",)
+    if (
+        storage.final_shape_ready
+        and storage.archive_schema_ready
+        and not storage.archive_materialization_ready
+        and state is CapabilityReadinessState.STALE
+    ):
         caveats += ("materialization_pending",)
     repair_hint = None
     if state is not CapabilityReadinessState.READY:
@@ -2461,7 +2475,11 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         component="archive_storage",
         scope="archive",
         state=state,
-        summary=storage.active_store,
+        summary=(
+            f"{storage.active_store}: raw materialization unmeasured"
+            if state is CapabilityReadinessState.UNKNOWN and storage.archive_materialization_assessment is not None
+            else storage.active_store
+        ),
         counts={
             "present_tier_count": len(storage.present_tiers),
             "missing_tier_count": len(storage.missing_tiers),
@@ -3106,13 +3124,13 @@ def build_daemon_status(
     raw_frontier_integrity = _raw_frontier_integrity_info(raw_materialization_readiness)
     raw_replay_backlog: dict[str, object] = _v("raw_replay_backlog", {}, unmeasured=_UNMEASURED_RAW_REPLAY_BACKLOG)
     sinex_publication: dict[str, object] = _v("sinex_publication", {}, unmeasured=_UNMEASURED_SINEX_PUBLICATION)
-    materialization_ready = storage_info.archive_materialization_ready and raw_materialization_ready(
-        raw_materialization_readiness
-    )
+    raw_materialization_assessment = assess_raw_materialization(raw_materialization_readiness)
+    materialization_ready = storage_info.archive_materialization_ready and raw_materialization_assessment.ready
     storage_info = storage_info.model_copy(
         update={
             "archive_materialization_ready": materialization_ready,
             "archive_ready": storage_info.archive_ready and materialization_ready,
+            "archive_materialization_assessment": raw_materialization_assessment.to_dict(),
         }
     )
     live_cursor = _v(
