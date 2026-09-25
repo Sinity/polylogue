@@ -55,6 +55,15 @@ def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:
     )
 
 
+def test_parsed_attachment_rejects_unknown_upload_origin() -> None:
+    with pytest.raises(ValueError, match="upload_origin"):
+        ParsedAttachment(
+            provider_attachment_id="invalid-origin",
+            message_provider_id="m0",
+            upload_origin="local-cache",
+        )
+
+
 def _preacquired(store: BlobStore, session: ParsedSession) -> dict[int, tuple[bytes | None, int, str]]:
     acquired: dict[int, tuple[bytes | None, int, str]] = {}
     for attachment in session.attachments:

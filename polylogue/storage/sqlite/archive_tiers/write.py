@@ -58,7 +58,7 @@ from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
-from polylogue.core.types import AttachmentDirection, require_literal
+from polylogue.core.types import AttachmentDirection, LineageInheritance, require_literal
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import (
     MessageContentIdentity,
@@ -5471,6 +5471,8 @@ def _upsert_session_link(
     ``revision_authority_refuses_write``: a lower-authority writer is refused
     rather than allowed to win by last-writer-wins.
     """
+    if inheritance is not None:
+        require_literal(inheritance, LineageInheritance, name="lineage inheritance")
     existing = conn.execute(
         """
         SELECT method FROM session_links

@@ -18,7 +18,9 @@ from polylogue.core.enums import (
 )
 from polylogue.core.types import (
     ConvergenceDebtStatus,
+    CursorLagSeverity,
     JudgmentSchedulerStatus,
+    OperationRunStatus,
     RouteDaemonPath,
     RouteObservationStatus,
     require_literal,
@@ -757,7 +759,7 @@ def upsert_ingest_cursor(
 def record_ingest_attempt(
     conn: sqlite3.Connection,
     *,
-    status: OperationStatus | str,
+    status: OperationStatus | OperationRunStatus | str,
     source_path: str | None = None,
     origin: Origin | str | None = None,
     phase: str | None = None,
@@ -781,7 +783,7 @@ def record_ingest_attempt(
     """
     if attempt_id is None:
         attempt_id = str(uuid.uuid4())
-    status_value = require_operation_lifecycle_status(status).value
+    status_value = require_literal(status, OperationRunStatus, name="ingest attempt status")
     has_storage_route = _table_has_column(conn, "ingest_attempts", "storage_route")
     route_column = "storage_route,\n            " if has_storage_route else ""
     route_value = "?, " if has_storage_route else ""
@@ -951,8 +953,6 @@ def record_cursor_lag_sample(
     sample_id: str | None = None,
 ) -> str:
     """Record one cursor lag observation and return its sample id."""
-    from polylogue.core.types import CursorLagSeverity
-
     require_literal(severity, CursorLagSeverity, name="cursor lag severity")
     if sample_id is None:
         sample_id = str(uuid.uuid4())

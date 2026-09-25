@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 
 from polylogue.core.refs import ObjectRef
+from polylogue.core.types import SessionCommitDetectionType
 
 # ── GitHub Issue / PR reference extraction (#1690 phase 3) ──────────────
 
@@ -249,7 +250,7 @@ class SessionCommitEdge:
 
     session_id: str
     commit_sha: str
-    detection_method: str  # "time_window", "file_overlap", "explicit_ref", "origin_reported"
+    detection_method: SessionCommitDetectionType
     confidence: float  # 0.0 – 1.0
     file_overlap_count: int = 0
     repo_path: str | None = None
