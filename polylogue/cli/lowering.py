@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.cli.operation_kernel import OperationRequest
+from polylogue.operations.query_lowering import lower_query_params
 
 if TYPE_CHECKING:
     from polylogue.archive.query.expression import WithUnitWindow
@@ -35,7 +36,6 @@ __all__ = [
     "AGGREGATE_MODE_PARAMS",
     "COMPLETION_LIMIT_BOUNDS",
     "aggregate_mode",
-    "desugar_cli_retrieval_lane",
     "lower_cli_query",
     "lower_completion",
     "lower_query_aggregate",
@@ -52,37 +52,6 @@ AGGREGATE_MODE_PARAMS: tuple[tuple[str, str], ...] = (
     ("stats_only", "stats"),
     ("count_only", "count"),
 )
-
-
-def desugar_cli_retrieval_lane(params: dict[str, object], query_terms: Sequence[str]) -> tuple[str, ...]:
-    """Fold the CLI-only ``--retrieval-lane semantic`` spelling into the declared vocabulary.
-
-    ``semantic`` is a CLI spelling, not a declared lane: ``QUERY_RETRIEVAL_LANES``
-    has no such member, and the handler's ``normalize_retrieval_lane`` refuses
-    it.  It means "rank these terms by similarity", which the declared
-    vocabulary expresses as the ``auto`` lane with the terms promoted into
-    ``similar_text``.  Applying it here — the one place that knows CLI
-    spellings — is what keeps ``--semantic`` working now that the request is
-    compiled by the operation rather than by the adapter.
-
-    Returns the query terms that survive: a promoted similarity prompt leaves
-    none, or the phrase would also be searched literally.
-    """
-
-    if params.get("retrieval_lane") != "semantic":
-        return tuple(query_terms)
-    params["retrieval_lane"] = "auto"
-    if not params.get("similar_text"):
-        prompt = " ".join(term for term in query_terms if term).strip()
-        if prompt:
-            params["similar_text"] = prompt
-    return ()
-
-
-# Presentation-only keys never reach a selection payload.  They do not change
-# which rows are selected, and forwarding them would vary the operation's
-# result-cache key for two requests that must share one answer.
-_SELECTION_EXCLUDED = frozenset({"exclude_text"})
 
 
 def aggregate_mode(params: Mapping[str, object]) -> str | None:
@@ -104,12 +73,9 @@ def _selection_params(request: RootModeRequest) -> dict[str, object]:
     ``--has-paste``/``--has-tool-use``/``--has-thinking`` silently and
     re-tokenised quoted phrases by joining the query terms into one string.
 
-    ``exclude_text`` is deliberately still withheld.  It is a content
-    post-filter the two routes answered differently — the operation applies it
-    to a list page and, on a ranked page, to the count but not the hits, while
-    the local branch ignored it everywhere — so forwarding it would change
-    ``find --exclude-text`` results before anyone has decided which of those
-    three answers is right (polylogue-v1mnm).
+    Content exclusions are forwarded with the other selection parameters.
+    The operation applies them before a list page or count and explicitly
+    refuses ranked combinations it cannot filter before ranking.
     """
 
     # Imported under its private name deliberately: ``archive/query/spec.py``
@@ -120,7 +86,7 @@ def _selection_params(request: RootModeRequest) -> dict[str, object]:
     return {
         key: value
         for key, value in request.params.items()
-        if key in _RECOGNIZED_PARAMS and key not in _SELECTION_EXCLUDED and value is not None and value not in ((), [])
+        if key in _RECOGNIZED_PARAMS and value is not None and value not in ((), [])
     }
 
 
@@ -165,8 +131,8 @@ def lower_cli_query(
 ) -> OperationRequest:
     """Lower one root session page onto ``cli.query``."""
 
-    params = _selection_params(request)
-    params["query"] = list(desugar_cli_retrieval_lane(params, request.query_terms))
+    params, terms = lower_query_params({**_selection_params(request), "query": request.query_terms})
+    params["query"] = list(terms)
     params["limit"] = limit
     params["offset"] = offset
     if sample is not None:
@@ -192,8 +158,8 @@ def lower_query_aggregate(request: RootModeRequest, *, mode: str) -> OperationRe
     disagree about which sessions were selected.
     """
 
-    params = _selection_params(request)
-    params["query"] = list(desugar_cli_retrieval_lane(params, request.query_terms))
+    params, terms = lower_query_params({**_selection_params(request), "query": request.query_terms})
+    params["query"] = list(terms)
     payload: dict[str, object] = {"mode": mode, "params": params}
     if mode == "stats_by":
         group_by = str(request.params.get("stats_by") or "").strip()

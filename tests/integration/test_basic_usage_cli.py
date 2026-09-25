@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -91,6 +92,18 @@ def test_read_renders_the_seeded_transcript(cli_env: dict[str, str], cli_daemon:
     assert "codex-session:demo-receipts" in result.output
     assert "## user" in result.output
     assert "## assistant" in result.output
+
+
+def test_declared_read_examples_execute_on_the_seeded_demo(cli_env: dict[str, str], cli_daemon: None) -> None:
+    from polylogue.cli.read_view_registry import read_view_examples
+
+    examples = read_view_examples()
+    assert examples
+    for example in examples:
+        argv = shlex.split(example)
+        assert argv.pop(0) == "polylogue"
+        result = _run(argv, env=cli_env)
+        assert "demo-receipts" in result.output
 
 
 def test_search_spans_multiple_origins(cli_env: dict[str, str], cli_daemon: None) -> None:

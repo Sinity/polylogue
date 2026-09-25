@@ -24,6 +24,7 @@ from hypothesis import strategies as st
 
 from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.cli.lowering import lower_cli_query
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.mcp.query_contracts import build_query_spec
 from polylogue.operations.daemon_reads import _cli_query_spec
@@ -145,3 +146,41 @@ def test_root_request_and_daemon_reads_lower_identically(terms: tuple[str, ...],
         f"one surface refused and the other did not for {params!r}: {cli_error!r} vs {daemon_error!r}"
     )
     assert cli_spec == daemon_spec
+
+
+def test_cli_and_daemon_query_selection_pass_through_read_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both executable adapters use the canonical read request after DSL lowering."""
+
+    from polylogue.surfaces.read_contract import ReadRequest
+
+    seen: list[SessionQuerySpec] = []
+    normalize = ReadRequest.normalize
+
+    def recording_normalize(params: dict[str, object], *, preset: str | None = None) -> ReadRequest:
+        result = normalize(params, preset=preset)
+        seen.append(result.selection)
+        return result
+
+    monkeypatch.setattr(ReadRequest, "normalize", staticmethod(recording_normalize))
+    params: dict[str, object] = {"query": ("repo:polylogue", "typed_only:true"), "limit": 7}
+
+    cli = RootModeRequest.from_params(params).query_spec()
+    daemon = _cli_query_spec(params)
+
+    assert seen == [cli, daemon]
+    assert cli == daemon
+    assert cli.repo_names == ("polylogue",)
+    assert cli.typed_only is True
+
+
+def test_semantic_lane_is_desugared_once_for_cli_and_daemon() -> None:
+    request = RootModeRequest.from_params({"query": ("semantic evidence",), "retrieval_lane": "semantic"})
+    cli = request.query_spec()
+    daemon = _cli_query_spec(request.query_params())
+    operation = lower_cli_query(request, limit=5, offset=0)
+
+    assert cli == daemon
+    assert cli.similar_text == "semantic evidence"
+    assert cli.retrieval_lane == "auto"
+    assert cli.query_terms == ()
+    assert operation.payload["params"]["similar_text"] == "semantic evidence"

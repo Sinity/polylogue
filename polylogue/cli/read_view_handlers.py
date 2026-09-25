@@ -114,7 +114,7 @@ def build_read_view_handler(
         view_id=view_id,
         session_policy=metadata.session_policy,
         handler=execution.run,
-        accepted_options=metadata.accepted_options,
+        accepted_options=metadata.accepted_options | {option.name for option in metadata.declared_options},
         option_builder=execution.option_builder,
         accepts_query_set=metadata.accepts_query_set,
     )

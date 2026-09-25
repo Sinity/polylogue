@@ -247,31 +247,49 @@ def test_every_case_changes_the_answer(query_route_workspace: dict[str, Path], c
         assert _ids(flagged) != _ids(unflagged), f"{case.name} produced the unflagged order; it exercises nothing"
 
 
-def test_exclude_text_is_withheld_from_the_operation_because_no_answer_is_chosen(
+def test_exclude_text_filters_before_list_pagination_and_count(
     query_route_workspace: dict[str, Path],
 ) -> None:
-    """``--exclude-text`` is the one recognised parameter deliberately not forwarded.
-
-    Three answers exist for one flag and none has been chosen: ``cli.query``
-    applies the content post-filter to a list page
-    (``_archive_list_summaries_with_post_filters``); on a ranked page it applies
-    it to the count and not to the hits, reporting a total smaller than the page
-    it returned; and the CLI's retired local branch ignored it everywhere.
-    Forwarding it would silently change ``find --exclude-text`` results, so
-    ``lowering._SELECTION_EXCLUDED`` withholds it and the flag stays inert
-    (polylogue-v1mnm).
-
-    Anti-vacuity: remove ``exclude_text`` from ``lowering._SELECTION_EXCLUDED``
-    and this goes red -- ``harder`` appears in one seeded session, so the page
-    and the total both shrink.
-    """
+    """The excluded session leaves the population before the page is cut."""
     plain = ["find", "--format", "json", "--limit", "10"]
-    excluded = ["--exclude-text", "harder", *plain]
+    excluded = ["--exclude-text", "weigh", *plain]
     _, baseline = _run(plain)
     _, filtered = _run(excluded)
 
-    assert _ids(filtered) == _ids(baseline)
-    assert filtered["total"] == baseline["total"]
+    assert LONE_C in _ids(baseline)
+    assert _ids(filtered) == (PARENT_B, CHILD_A, PARENT_A)
+    assert filtered["total"] == baseline["total"] - 1
+
+    _, page = _run(["--exclude-text", "weigh", "find", "--format", "json", "--limit", "1", "--offset", "1"])
+    assert _ids(page) == (CHILD_A,)
+    assert page["total"] == filtered["total"]
+
+    _, count = _run(["--exclude-text", "weigh", "find", "then", "analyze", "count", "--format", "json"])
+    assert count.get("count") == filtered["total"], count
+
+
+def test_ranked_exclude_text_refuses_without_a_misleading_page(query_route_workspace: dict[str, Path]) -> None:
+    exit_code, payload = _run(["--exclude-text", "harder", "find", "retry", "--format", "json"])
+
+    assert exit_code != 0
+    assert "ranked search cannot apply text exclusions before ranking" in str(payload)
+
+
+@pytest.mark.parametrize(
+    ("query", "reason"),
+    [
+        (["--id", LONE_C, "find"], "Exact session reads do not apply --exclude-text"),
+        (["find", "messages where role:assistant"], "Unit queries do not apply --exclude-text"),
+        (["find", "from result-set:stable-set"], "Reference reads do not apply --exclude-text"),
+    ],
+)
+def test_exclude_text_refuses_routes_that_cannot_filter_before_read(
+    query_route_workspace: dict[str, Path], query: list[str], reason: str
+) -> None:
+    exit_code, payload = _run(["--exclude-text", "weigh", *query, "--format", "json"])
+
+    assert exit_code != 0
+    assert reason in str(payload)
 
 
 def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest.MonkeyPatch) -> None:

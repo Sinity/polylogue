@@ -32,6 +32,8 @@ from polylogue.archive.viewport import (
 from polylogue.cli.read_view_registry import (
     READ_VIEW_GLOBAL_OPTION_NAMES,
     READ_VIEW_HANDLER_METADATA,
+    declared_read_view_options,
+    read_view_examples,
     read_view_option_names,
     read_view_specific_option_names,
 )
@@ -485,6 +487,7 @@ def _read_view_option_values(
     edge_limit: int | None,
     continuation: str | None = None,
     around: str | None = None,
+    **declared_options: object,
 ) -> dict[str, object]:
     """Collect raw Click option values for read-view handler builders."""
 
@@ -507,6 +510,7 @@ def _read_view_option_values(
         "edge_limit": edge_limit,
         "continuation": continuation,
         "around": around,
+        **declared_options,
     }
 
 
@@ -629,9 +633,9 @@ def _read_view_specific_option_names(views: tuple[str, ...]) -> frozenset[str]:
     return read_view_specific_option_names(views)
 
 
-def _read_option_name_by_flag(command: click.Command) -> dict[str, str]:
+def _read_option_name_by_flag(command: click.Command, ctx: click.Context) -> dict[str, str]:
     options: dict[str, str] = {}
-    for param in command.params:
+    for param in command.get_params(ctx):
         if not isinstance(param, click.Option) or param.name is None:
             continue
         for option in (*param.opts, *param.secondary_opts):
@@ -639,9 +643,9 @@ def _read_option_name_by_flag(command: click.Command) -> dict[str, str]:
     return options
 
 
-def _read_option_value_arity(command: click.Command) -> dict[str, int]:
+def _read_option_value_arity(command: click.Command, ctx: click.Context) -> dict[str, int]:
     arity: dict[str, int] = {}
-    for param in command.params:
+    for param in command.get_params(ctx):
         if not isinstance(param, click.Option) or param.is_flag:
             continue
         for option in (*param.opts, *param.secondary_opts):
@@ -683,7 +687,8 @@ def _render_read_view_profiles_plain() -> str:
     lines = ["Read views:"]
     for profile in READ_VIEW_PROFILES:
         metadata = READ_VIEW_HANDLER_METADATA[profile.view_id]
-        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(metadata.accepted_options)) or "none"
+        owned_options = metadata.accepted_options | {option.name for option in metadata.declared_options}
+        options = ", ".join(f"--{name.replace('_', '-')}" for name in sorted(owned_options)) or "none"
         scope = "query-set" if metadata.accepts_query_set else metadata.session_policy
         handoff = " handoff" if profile.successor_handoff else ""
         projection = _read_view_projection_contract(profile.view_id)
@@ -700,6 +705,8 @@ def _render_read_view_profiles_plain() -> str:
             f"timestamps={projection['timestamp_policy']}"
         )
         lines.append(f"      {profile.purpose}")
+        if metadata.example is not None:
+            lines.append(f"      example={metadata.example}")
     return "\n".join(lines)
 
 
@@ -711,10 +718,14 @@ def _emit_read_view_profiles(output_format: str | None) -> None:
         for payload in read_view_profile_payloads():
             metadata = READ_VIEW_HANDLER_METADATA[str(payload["view_id"])]
             augmented: dict[str, object] = dict(payload)
-            augmented["cli_options"] = sorted(metadata.accepted_options)
+            augmented["cli_options"] = sorted(
+                metadata.accepted_options | {option.name for option in metadata.declared_options}
+            )
             augmented["session_policy"] = metadata.session_policy
             augmented["accepts_query_set"] = metadata.accepts_query_set
             augmented["projection_contract"] = _read_view_projection_contract(str(payload["view_id"]))
+            if metadata.example is not None:
+                augmented["example"] = metadata.example
             payloads.append(augmented)
         emit_success({"read_views": payloads})
         return
@@ -912,14 +923,40 @@ _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
 class _ReadCommand(click.Command):
     """Click command with read-option help grouped by ownership."""
 
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        super().format_help(ctx, formatter)
+        with formatter.section("Examples"):
+            formatter.write_text("\n".join(read_view_examples()))
+
+    def get_params(self, ctx: click.Context) -> list[click.Parameter]:
+        params = list(super().get_params(ctx))
+        names = {param.name for param in params}
+        types: dict[str, click.ParamType | type[str] | type[int] | type[float]] = {
+            "string": str,
+            "integer": int,
+            "float": float,
+        }
+        for definition in declared_read_view_options():
+            if definition.name in names:
+                raise RuntimeError(f"read option {definition.name!r} is declared and also hand-bound")
+            params.append(
+                click.Option(
+                    (*definition.flags, definition.name),
+                    type=types[definition.value_type],
+                    default=definition.default,
+                    help=definition.help,
+                )
+            )
+        return params
+
     def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
         """Reject view flags before Click can accept an unrelated namespace."""
 
         views = _read_views_from_args(args)
         ctx.meta["polylogue_read_views"] = views
         allowed = _read_view_specific_option_names(views)
-        option_names = _read_option_name_by_flag(self)
-        arity = _read_option_value_arity(self)
+        option_names = _read_option_name_by_flag(self, ctx)
+        arity = _read_option_value_arity(self, ctx)
         index = 0
         while index < len(args):
             raw = args[index]
@@ -938,7 +975,7 @@ class _ReadCommand(click.Command):
             return items
         views = ctx.meta.get("polylogue_read_views") or _read_views_from_value(ctx.params.get("view", "summary"))
         allowed = _read_view_specific_option_names(views)
-        option_names = _read_option_name_by_flag(self)
+        option_names = _read_option_name_by_flag(self, ctx)
         return [
             item
             for item in items
@@ -1177,16 +1214,6 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
         "Supersedes --limit/--offset; a write landing since the token was issued is refused as stale."
     ),
 )
-# New params on a query verb go last: a positional shift silently reroutes args.
-@click.option(
-    "--around",
-    "around",
-    default=None,
-    help=(
-        "Read the window holding this message id (--view messages). Sugar over --offset: the resolved "
-        "coordinate is reported back, and a message the session does not contain is refused, not paged past."
-    ),
-)
 @click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
@@ -1225,6 +1252,7 @@ def read_verb(
     continuation: str | None = None,
     around: str | None = None,
     ref: str | None = None,
+    **declared_options: object,
 ) -> None:
     """Read matched sessions.
 
@@ -1233,23 +1261,6 @@ def read_verb(
     output to --to (terminal, stdout, browser, clipboard, or file).
     Use --views to inspect which options belong to each read view.
 
-    \b
-    Examples:
-        polylogue --id abc123 read
-        polylogue find id:abc then read --view messages
-        polylogue find id:abc then read --view raw --format json
-        polylogue find id:abc then read --to browser
-        polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
-        polylogue find id:abc then read --view context --related-limit 5
-        polylogue find 'cost tracking' then read --view context-image --max-sessions 5
-        polylogue find 'repo:github.com/Sinity/polylogue since:2026-01-01' then read --view context-image
-        polylogue read --views
-        polylogue read --views --format json
-        polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
-        polylogue find id:abc then read --view neighbors --window-hours 48
-        polylogue --latest read --view neighbors --format json
-        polylogue find id:abc then read --view correlation --since-hours 4
-        polylogue read session:abc123 --format json
     """
     env: AppEnv = ctx.obj
     output_format = normalize_output_dialect(output_format)
@@ -1502,6 +1513,7 @@ def read_verb(
                 edge_limit=edge_limit,
                 continuation=continuation,
                 around=around,
+                **declared_options,
             ),
         )
         return
@@ -1639,6 +1651,7 @@ def read_verb(
                     edge_limit=edge_limit,
                     continuation=continuation,
                     around=around,
+                    **declared_options,
                 ),
             ),
             explicit_options=explicit_options,
