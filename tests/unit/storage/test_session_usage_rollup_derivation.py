@@ -276,7 +276,7 @@ def test_a_refused_reconciliation_commits_nothing(archive: tuple[Path, str]) -> 
 
 
 def test_the_profile_publisher_writes_no_canonical_usage(archive: tuple[Path, str]) -> None:
-    """Profile publication owns the four-table family and nothing else.
+    """Profile publication must not repair stale canonical usage or certify it.
 
     Anti-vacuity: restore the ``reconcile_session_usage_rollup`` +
     ``conn.commit()`` pair inside ``publish_prepared_session_profile`` and the
@@ -293,10 +293,10 @@ def test_the_profile_publisher_writes_no_canonical_usage(archive: tuple[Path, st
         prepared = prepare_session_insight_partition(conn, session_id)
 
     with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
-        assert publish_prepared_session_profile(conn, prepared) is True
+        assert publish_prepared_session_profile(conn, prepared) is False
 
     assert _usage_rows(index_db, session_id) == before
-    assert _profile_status(index_db, session_id) == "valid"
+    assert _profile_status(index_db, session_id) == "stale"
 
 
 def test_a_bulk_rebuild_stamps_the_binding_it_reconciled(archive: tuple[Path, str]) -> None:

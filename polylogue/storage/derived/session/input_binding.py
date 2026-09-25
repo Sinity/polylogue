@@ -47,6 +47,7 @@ __all__ = [
     "SESSION_ROW_PROJECTION_COLUMNS",
     "SessionInputDigest",
     "SESSION_INPUT_RECIPE_VERSION",
+    "encode_input_binding_row",
     "session_input_bindings",
     "session_input_bindings_async",
     "session_input_binding_sql",
@@ -56,7 +57,7 @@ __all__ = [
 #: Bumped when the meaning of a session-scoped derivation changes without the
 #: projection changing. Every stored binding compares unequal afterwards, which
 #: is the whole invalidation mechanism: there is no separate freshness ledger.
-SESSION_INPUT_RECIPE_VERSION = "3"
+SESSION_INPUT_RECIPE_VERSION = "4"
 
 #: The exact session-row columns session-scoped aggregates read. The profile
 #: caches several of these directly (``source_sort_key``, ``source_updated_at``,
@@ -370,6 +371,30 @@ ORDER BY pue.session_id, pue.position
 """
 
 
+def encode_input_binding_row(values: Sequence[object]) -> bytes:
+    """Frame SQLite scalar values without erasing nulls, types, or boundaries."""
+    out = bytearray(str(len(values)).encode("ascii") + b":")
+    for value in values:
+        if value is None:
+            out.extend(b"N")
+            continue
+        if isinstance(value, str):
+            tag, payload = b"T", value.encode("utf-8")
+        elif isinstance(value, bytes):
+            tag, payload = b"B", value
+        elif isinstance(value, int):
+            tag, payload = b"I", str(value).encode("ascii")
+        elif isinstance(value, float):
+            tag, payload = b"R", value.hex().encode("ascii")
+        else:
+            raise TypeError(f"unsupported SQLite binding value: {type(value).__name__}")
+        out.extend(tag)
+        out.extend(str(len(payload)).encode("ascii"))
+        out.extend(b":")
+        out.extend(payload)
+    return bytes(out)
+
+
 class SessionInputDigest:
     """Accumulates one binding per session from projection rows, in order.
 
@@ -394,8 +419,8 @@ class SessionInputDigest:
         digest = self._digests.get(session_id)
         if digest is None:  # pragma: no cover - IN () cannot return an unasked id
             return
-        digest.update(b"\x1e")
-        digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row[1:]))
+        digest.update(b"M")
+        digest.update(encode_input_binding_row(row[1:]))
 
     def add_related_row(self, relation: str, row: Sequence[object]) -> None:
         """Add one ordered value row from a non-message input relation."""
@@ -403,10 +428,8 @@ class SessionInputDigest:
         digest = self._digests.get(session_id)
         if digest is None:  # pragma: no cover - IN () cannot return an unasked id
             return
-        digest.update(b"\x1d")
-        digest.update(relation.encode("utf-8"))
-        digest.update(b"\x1e")
-        digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row[1:]))
+        digest.update(b"R")
+        digest.update(encode_input_binding_row((relation, *row[1:])))
 
     def result(self) -> dict[str, str]:
         return {session_id: digest.hexdigest() for session_id, digest in self._digests.items()}
