@@ -26,6 +26,7 @@ from polylogue.daemon.services import (
     service_spec,
     service_specs,
 )
+from tests.infra.daemon_service_harness import ServiceHarness
 
 ALL_CAPABILITIES = frozenset(ServiceCapability) - {ServiceCapability.SCHEMA_BLOCKED}
 
@@ -109,6 +110,36 @@ def test_resident_core_profile_starts_no_archive_work() -> None:
 
     assert selected == {"lifecycle_heartbeat", "health_check"}
     assert "raw_observation_convergence" not in selected
+
+
+def test_full_profile_resolves_missing_source_prerequisite_with_attributable_state() -> None:
+    """A selected raw service with no source tier is explicit and leaves no task.
+
+    Anti-vacuity: bypass ``mark_unavailable`` or lose the reason publication,
+    and the declared selected node is left pending or loses its source-tier
+    attribution.
+    """
+    import asyncio
+
+    harness = ServiceHarness(
+        profile=ServiceProfile.PRODUCTION,
+        capabilities=ALL_CAPABILITIES,
+    )
+    assert "raw_observation_convergence" in harness.selected_names
+
+    harness.resolve_prerequisite(
+        "raw_observation_convergence",
+        available=False,
+        reason="source.db is absent",
+    )
+
+    assert harness.state("raw_observation_convergence").value == "unavailable"
+    observation = harness.supervisor.board.get_or_unavailable("convergence")
+    assert observation.state.value == "unavailable"
+    assert observation.reason == "source.db is absent"
+    assert not [task for task in harness.supervisor.tasks if not task.done()]
+    report = asyncio.run(harness.close())
+    assert report.clean
 
 
 def test_socket_servers_fail_the_daemon_and_maintenance_loops_do_not() -> None:

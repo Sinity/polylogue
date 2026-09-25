@@ -36,11 +36,8 @@ from polylogue.core.stage_admission import (
     admit_stage_write,
     stage_write_admission,
 )
-from polylogue.daemon.api_auth import (
-    API_ALLOW_NO_AUTH_ENV,
-    api_command,
-    resolve_api_auth_token,
-)
+from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV, api_command
+from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
 from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
 from polylogue.daemon.execution import publish_daemon_compute_adapter
@@ -104,6 +101,23 @@ from polylogue.storage.sqlite.wal_checkpoint import (
     checkpoint_connection as checkpoint_connection,
 )
 from polylogue.version import POLYLOGUE_VERSION
+
+
+def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, auth_token: str | None) -> None:
+    """Enforce the daemon API's remote-bind policy before service startup."""
+    if enabled and not is_loopback_host(host):
+        if not allow_remote:
+            raise click.UsageError(
+                f"--api-host={host} is not a loopback address. "
+                f"Add --insecure-allow-remote to accept the risk of exposing the daemon API."
+            )
+        if not auth_token:
+            raise click.UsageError(
+                f"--api-host={host} with --insecure-allow-remote requires --api-auth-token "
+                f"(or an auto-minted token; drop --api-allow-no-auth). "
+                f"Remote binding without authentication is not supported."
+            )
+
 
 if TYPE_CHECKING:
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
@@ -2279,18 +2293,12 @@ async def _run_daemon_services_under_active_writer_lease(
 
     # Non-localhost API binding requires explicit opt-in AND an auth token --
     # allow_no_auth cannot be combined with a remote bind.
-    if enable_api and not is_loopback_host(api_host):
-        if not browser_capture_allow_remote:
-            raise click.UsageError(
-                f"--api-host={api_host} is not a loopback address. "
-                f"Add --insecure-allow-remote to accept the risk of exposing the daemon API."
-            )
-        if not resolved_api_auth_token:
-            raise click.UsageError(
-                f"--api-host={api_host} with --insecure-allow-remote requires --api-auth-token "
-                f"(or an auto-minted token; drop --api-allow-no-auth). "
-                f"Remote binding without authentication is not supported."
-            )
+    validate_api_bind_policy(
+        enabled=enable_api,
+        host=api_host,
+        allow_remote=browser_capture_allow_remote,
+        auth_token=resolved_api_auth_token,
+    )
     configure_runtime_components(
         api_enabled=enable_api,
         watcher_enabled=enable_watch,
