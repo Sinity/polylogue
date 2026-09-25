@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from polylogue.analysis.authored_payloads import merge_unique_string_tuples
@@ -51,6 +52,21 @@ class CompiledCliSurface:
     tier: int
     env: str
     max_rss_mb: int | None = None
+
+
+def validate_cli_surface_families(
+    families: tuple[CliSurfaceFamily, ...],
+    command_exists: Callable[[tuple[str, ...]], bool],
+) -> None:
+    """Reject authored scenario families whose command path is not registered."""
+
+    missing = [
+        f"{family.slug}: {' '.join(family.command_args)}"
+        for family in families
+        if not command_exists(family.command_args)
+    ]
+    if missing:
+        raise ValueError("scenario surface families reference missing CLI commands: " + "; ".join(missing))
 
 
 def merge_cli_surface_tags(*groups: tuple[str, ...]) -> tuple[str, ...]:
@@ -111,4 +127,5 @@ __all__ = [
     "build_cli_surface_memory_budget_variants",
     "compile_cli_surface_variant",
     "merge_cli_surface_tags",
+    "validate_cli_surface_families",
 ]
