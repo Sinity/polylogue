@@ -777,11 +777,12 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 item_key = "projected_items"
         if not items:
             _emit_unit_no_results(payload, unit=unit_source.unit, output_format=output_format)
-        text_line = (
-            _aggregate_query_line
-            if payload.get("mode") == "query-unit-aggregate"
-            else _query_unit_text_line(unit_source.unit)
-        )
+        if payload.get("mode") == "query-unit-aggregate":
+            text_line = _aggregate_query_line
+        elif item_key == "projected_items":
+            text_line = _projected_query_unit_text_line(unit_source.unit)
+        else:
+            text_line = _query_unit_text_line(unit_source.unit)
         emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields, item_key=item_key)
         return
 
@@ -1853,6 +1854,34 @@ def _message_query_line(item: dict[str, object]) -> str:
     if text:
         parts.append(text)
     return " ".join(parts)
+
+
+def _projected_query_unit_text_line(unit: str) -> _QueryUnitTextLine:
+    """Render every field a terminal ``select`` actually supplied."""
+    return _projected_message_query_line if unit == "message" else _projected_query_unit_line
+
+
+def _projected_message_query_line(item: dict[str, object]) -> str:
+    parts: list[str] = []
+    message_id = item.get("message_id")
+    if message_id is not None:
+        parts.append(str(message_id))
+    role = item.get("role")
+    if role is not None:
+        parts.append(f"[{role}]")
+    text = bound_display_text(item.get("text"))
+    if text:
+        parts.append(text)
+    parts.extend(
+        f"{field}={bound_display_text(value)}"
+        for field, value in item.items()
+        if field not in {"message_id", "role", "text"}
+    )
+    return " ".join(parts)
+
+
+def _projected_query_unit_line(item: dict[str, object]) -> str:
+    return " ".join(f"{field}={bound_display_text(value)}" for field, value in item.items())
 
 
 def _action_query_line(item: dict[str, object]) -> str:

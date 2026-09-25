@@ -4426,6 +4426,43 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
         await archive.close()
 
 
+async def test_export_otel_projects_selected_message_rows(tmp_path: Path) -> None:
+    """``export_otel()`` consumes the selected-message envelope rows.
+
+    The selected query uses the real field-only message route, whose public
+    contract has ``items=()``. Anti-vacuity: retain ``envelope.items`` in the
+    export loop and the OTel payload has no log for this source message.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    archive = _archive(tmp_path)
+    try:
+        index_db = archive.config.archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "facade-otel-selected-message")
+            .provider("codex")
+            .title("Facade OTel selected message")
+            .add_message("m-selected", role="user", text="Selected OTel message")
+            .save()
+        )
+
+        payload = await archive.export_otel(
+            source_ref="session:codex-session:facade-otel-selected-message",
+            expressions=(
+                "messages where role:user | select "
+                "message_id, session_id, origin, role, message_type, position, word_count, text",
+            ),
+            include_message_text=True,
+        )
+
+        assert payload.log_count == 1
+        [log] = payload.logs
+        assert log.body == "Selected OTel message"
+        assert log.attributes["polylogue.message.id"] == "codex-session:ext-facade-otel-selected-message:n:m-selected"
+    finally:
+        await archive.close()
+
+
 async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
     """``query_units()`` is only for terminal source expressions."""
     from polylogue.archive.query.expression import ExpressionCompileError

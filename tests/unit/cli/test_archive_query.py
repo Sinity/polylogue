@@ -127,14 +127,14 @@ def test_message_select_renders_projected_items_from_the_unit_envelope(
         assert "codex-session:projected:n:u1 [user]" in rendered
 
 
-def test_message_select_plaintext_renders_a_role_only_projection(
+def test_message_select_plaintext_renders_every_requested_projection_field(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Plaintext formats only the fields the message ``select`` actually returned.
 
     Anti-vacuity: make ``_message_query_line`` index ``message_id`` again and
     the real root query-unit handler raises ``KeyError`` before writing this
-    role-only projection.
+    role/word-count projection.
     """
     import polylogue.cli.archive_query as archive_query
 
@@ -143,7 +143,7 @@ def test_message_select_plaintext_renders_a_role_only_projection(
         "mode": "query-unit",
         "unit": "message",
         "items": [],
-        "projected_items": [{"role": "user"}],
+        "projected_items": [{"role": "user", "word_count": 3}],
         "outcome": {"state": "ok", "reason": None, "detail": {}},
     }
     monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
@@ -154,14 +154,14 @@ def test_message_select_plaintext_renders_a_role_only_projection(
         AppEnv(),
         RootModeRequest.from_params(
             {
-                "query": ("messages where role:user | select role",),
+                "query": ("messages where role:user | select role, word_count",),
                 "output_format": "plaintext",
                 "limit": 1,
             }
         ),
     )
 
-    assert capsys.readouterr().out == "[user]\n"
+    assert capsys.readouterr().out == "[user] word_count=3\n"
 
 
 def test_session_list_row_renders_read_time_display_label() -> None:

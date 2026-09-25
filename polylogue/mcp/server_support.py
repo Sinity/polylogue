@@ -281,15 +281,15 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
     root = getattr(payload, "root", None)
     if isinstance(root, dict):
         return _bounded_root_dict_page(payload, root, exclude_none=exclude_none)
-    item_field = "items"
-    raw_items = getattr(payload, item_field, None)
-    if not isinstance(raw_items, (tuple, list)):
-        item_field = "messages"
-        raw_items = getattr(payload, item_field, None)
-    if not isinstance(raw_items, (tuple, list)):
-        item_field = "hits"
-        raw_items = getattr(payload, item_field, None)
-    if not isinstance(raw_items, (tuple, list)) or not raw_items:
+    item_field = ""
+    raw_items: object = None
+    for candidate_field in ("items", "projected_items", "messages", "hits"):
+        candidate_items = getattr(payload, candidate_field, None)
+        if isinstance(candidate_items, (tuple, list)) and candidate_items:
+            item_field = candidate_field
+            raw_items = candidate_items
+            break
+    if not item_field:
         return None
     items = tuple(raw_items)
     low, high = 1, len(items)
