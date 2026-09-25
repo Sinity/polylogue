@@ -19,8 +19,9 @@ This module owns the parts that must not differ by surface:
 * **epoch validation** — resuming a continuation issued against an older
   snapshot raises ``QueryContinuationStaleError`` rather than paging into
   shifted rows;
-* **continuation vocabulary** — one opaque ``QueryContinuation`` token, so a
-  token minted on one surface is readable on every other.
+* **continuation binding** — the same ``QueryContinuation`` encoding and epoch
+  checks across routes. Declared projections identify the dialect; replay
+  across dialects is refused with a typed error naming both.
 
 What deliberately stays with each surface is the **row projection**: the CLI,
 MCP and Python API answer with domain ``Message`` rows, while the HTTP
