@@ -2341,6 +2341,7 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
     target_ref: str | None = None
     candidate_statuses: tuple[AssertionStatus, ...] | None = None
     durable_assertions_excluded: bool = True
+    outcome: OutcomeEnvelope = Field(default_factory=lambda: OutcomeEnvelope(state="ok"))
 
     @field_validator("target_ref")
     @classmethod
@@ -2376,6 +2377,10 @@ class AssertionCandidateReviewListPayload(SurfacePayloadModel):
             candidate_statuses=None
             if candidate_statuses is None
             else tuple(AssertionStatus.from_string(status) for status in candidate_statuses),
+            outcome=decide_outcome(
+                matched=len(items) if matched is None else matched,
+                degraded=("result_truncated",) if (len(items) if matched is None else matched) > len(items) else (),
+            ),
         )
 
 
