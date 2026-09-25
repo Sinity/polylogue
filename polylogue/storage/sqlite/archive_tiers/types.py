@@ -50,6 +50,17 @@ ProvenRevisionAuthority = Literal["byte_proven", "quarantined"]
 EmbeddingFailureState = Literal["retryable", "terminal", "acknowledged", "superseded", "resolved"]
 EmbeddingAttemptState = Literal["pending", "succeeded", "failed_retryable", "failed_terminal"]
 
+# polylogue-3szyi: these three index-tier values are closed, derived facts.
+# Their writers and readers agree on a small vocabulary, so the generated
+# index DDL must take its CHECK membership from this shared declaration rather
+# than maintain a second string list at the storage boundary.  Because index
+# DDL contributes to the derived-schema identity, changing any of these
+# Literals requires index-tier reconvergence even when the emitted values do
+# not change.
+ProviderUsageEventType = Literal["token_count", "message_usage"]
+SourceMessageResolution = Literal["resolved", "session", "ambiguous", "unresolved"]
+AttachmentNativeIdKind = Literal["attachment", "file", "drive", "url"]
+
 # One owner for the revision frontier vocabulary.  Both the nullable
 # application receipt and the non-null revision-head row persist the same
 # concept; keeping the Literal here prevents those two DDL declarations from
@@ -59,10 +70,13 @@ RevisionFrontierKind = Literal["byte", "semantic"]
 
 __all__ = [
     "ArchiveTier",
+    "AttachmentNativeIdKind",
     "DelegationMappingState",
     "DelegationResultStatus",
     "EmbeddingAttemptState",
     "EmbeddingFailureState",
+    "ProviderUsageEventType",
     "ProvenRevisionAuthority",
     "RevisionFrontierKind",
+    "SourceMessageResolution",
 ]
