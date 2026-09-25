@@ -237,6 +237,73 @@ async def test_process_parse_stage_produces_identical_archive_content(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_path_worker_publishes_prepared_rows_from_captured_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.sources.live.batch as batch
+    import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    await _ingest(tmp_path / "baseline", paths, parse_stage=None)
+    monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+    copied = 0
+    original_copy = archive_tier_write.copy_shard_session_rows
+
+    def count_copy(*args: object, **kwargs: object) -> object:
+        nonlocal copied
+        copied += 1
+        return original_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", count_copy)
+    directory = tmp_path / "parse-shards"
+    stage = LiveParseStage(max_workers=1, shard_directory=directory, use_processes=True)
+    try:
+        await _ingest(tmp_path / "prepared", paths, parse_stage=stage)
+    finally:
+        stage.shutdown()
+    assert copied == 1
+    assert _canonical_snapshot(tmp_path / "baseline") == _canonical_snapshot(tmp_path / "prepared")
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_path_worker_failure_retains_raw_for_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.sources.live.batch as batch
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+
+    def failed_worker(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("synthetic worker death")
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", failed_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    cursor = CursorStore(archive_root / "index.db")
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=paths[0].parent),),
+        cursor=cursor,
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+    )
+    try:
+        metrics = await processor.ingest_files(paths, emit_event=False)
+    finally:
+        stage.shutdown()
+    assert metrics.failed_file_count == 1
+    with _connect(archive_root / "source.db") as conn:
+        row = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()
+        assert row is not None
+        assert "worker failed" in str(row[0])
+    with _connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
 async def test_a_shard_the_writer_refuses_still_writes_the_session(tmp_path: Path) -> None:
     """A truncated shard is a miss, not a failure: the rows get built inline."""
     baseline_root = tmp_path / "baseline"

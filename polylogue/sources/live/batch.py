@@ -172,7 +172,7 @@ from polylogue.sources.live.metrics import (
     LiveFullIngestAggregate,
     split_offered_bytes,
 )
-from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
+from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage, LivePathPreparation
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import (
@@ -594,6 +594,25 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
                 is_stream=is_stream_record_provider(source_path, str(provider)),
             )
         )
+    return candidates
+
+
+def _live_parse_stage_path_candidates(
+    paths: list[Path], *, fallback_provider: Provider
+) -> list[tuple[str, Provider, bool]]:
+    """Select large JSONL session paths for file-backed worker preparation."""
+    candidates: list[tuple[str, Provider, bool]] = []
+    for path in paths:
+        if not is_jsonl_source_path(str(path)):
+            continue
+        try:
+            if path.stat().st_size < _STREAMING_FULL_INGEST_BYTES:
+                continue
+        except OSError:
+            continue
+        provider, parse_as_session = _jsonl_provider_and_session_artifact(path, fallback_provider)
+        if parse_as_session:
+            candidates.append((str(path), provider, is_stream_record_provider(str(path), str(provider))))
     return candidates
 
 
@@ -2490,6 +2509,11 @@ class LiveBatchProcessor:
                             warmed,
                             len(candidates),
                         )
+                path_candidates = await asyncio.to_thread(
+                    _live_parse_stage_path_candidates, paths, fallback_provider=fallback_provider
+                )
+                if path_candidates:
+                    await asyncio.to_thread(self._parse_stage.warm_paths, path_candidates)
             except Exception:
                 logger.warning(
                     "live.watcher: parse-stage prefetch failed; falling back to in-hold parse",
@@ -2557,6 +2581,7 @@ class LiveBatchProcessor:
         raw_payloads: dict[str, bytes] = {}
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         shard_paths_by_raw_id: dict[str, Path] = {}
+        path_preparations_by_raw_id: dict[str, LivePathPreparation] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -3151,6 +3176,10 @@ class LiveBatchProcessor:
                         failed.append(path)
                         continue
                     source_payload_read_bytes += blob_size
+                    if self._parse_stage is not None:
+                        preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
+                        if preparation is not None:
+                            path_preparations_by_raw_id[raw_id] = preparation
                     if heartbeat is not None:
                         heartbeat(
                             "full_blob_copy",
@@ -3390,6 +3419,7 @@ class LiveBatchProcessor:
                     blob_store,
                     parsed_sessions_by_raw_id,
                     shard_paths_by_raw_id,
+                    path_preparations_by_raw_id,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
@@ -3397,6 +3427,9 @@ class LiveBatchProcessor:
                 for residue in shard_paths_by_raw_id.values():
                     discard_session_shard(residue)
                 shard_paths_by_raw_id.clear()
+                for preparation in path_preparations_by_raw_id.values():
+                    preparation.discard()
+                path_preparations_by_raw_id.clear()
             # skipped_raw_ids (polylogue-11cg9) are records the time budget
             # never let the archive-write loop reach at all -- neither a
             # failure nor a conveyor hand-off, so they must be excluded from
@@ -3558,6 +3591,7 @@ class LiveBatchProcessor:
         blob_store: BlobStore,
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
         shard_paths_by_raw_id: dict[str, Path] | None = None,
+        path_preparations_by_raw_id: dict[str, LivePathPreparation] | None = None,
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
@@ -3925,6 +3959,19 @@ class LiveBatchProcessor:
                         )
                         else None
                     )
+                    path_preparation = (
+                        (path_preparations_by_raw_id or {}).get(record.raw_id)
+                        if not (
+                            record.complete_prefix_size is not None and record.complete_prefix_size < record.blob_size
+                        )
+                        else None
+                    )
+                    if path_preparation is not None:
+                        if path_preparation.error is not None:
+                            raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
+                        cached_sessions = path_preparation.load_sessions()
+                        if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
+                            shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
                     if cached_sessions is not None:
                         # polylogue-wf8a: this record's decode already ran
                         # off the writer hold (``LiveParseStage.warm``,

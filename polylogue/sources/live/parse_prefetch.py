@@ -1,31 +1,11 @@
-"""Off-writer-hold parallel pre-parse for the live watcher's full-ingest route.
+"""Off-writer preparation for the live watcher's full-ingest route.
 
-polylogue-wf8a (xikl free-threading epic). Mirrors
-``polylogue.daemon.parse_prefetch.DaemonParseStage`` (polylogue-m6tp phase
-(a)) for the watcher's catch-up / live-batch full-ingest path, instead of the
-raw-materialization census path: the CPU-bound ``parse_payload``/
-``parse_stream_payload`` decode for small (below-streaming-threshold) JSONL
-session files is dispatched to a bounded ``ThreadPoolExecutor`` BEFORE
-``LiveBatchProcessor._ingest_full_paths_sync`` ever asks the write
-coordinator for its writer hold -- exactly the same safety argument as
-``DaemonParseStage`` (see its docstring): threads never run CONCURRENTLY with
-an active writer thread, so there is no writer-starvation hazard even on a
-standard GIL build, and no wall-clock speedup either until the free-threaded
-3.14t deploy makes the same code path genuinely parallel.
-
-Unlike the census prefetch cache (keyed on a content-hash ``raw_id`` already
-known from ``source.db``), the live watcher does not know a file's raw_id
-until ``ArchiveBlobPublisher.write_from_bytes`` runs INSIDE the writer hold
-(the archive tier assigns content-hash identity at write time). This cache is
-therefore keyed on the watcher's own path string and bridged to the real
-raw_id the instant ``_ingest_full_paths_sync`` computes it -- see the
-``LiveParsePrefetchCache.pop`` call site in ``polylogue.sources.live.batch``.
-
-Graceful degradation, same contract as ``DaemonParseStage``: a cache miss
-(no ``LiveParseStage`` instance, path not selected for prewarm, worker
-exception, or a warm() timeout) always falls back to parsing inline exactly
-as before. Prefetch only ever shortcuts the happy path; it never changes
-what gets parsed or how parse failures are recorded.
+Small JSONL files use the historical in-memory cache. Large JSONL files use
+``PreparedJsonl``: the process worker leaves a sealed private carrier on disk,
+and the writer verifies its captured blob hash before publishing it. A failed
+selected large worker leaves the accepted raw retryable without an inline
+parse. The selected large path and the acquired blob must contain identical
+bytes; a changed source is retried from its retained acquisition.
 """
 
 from __future__ import annotations
@@ -42,6 +22,8 @@ from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
+from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
@@ -178,6 +160,24 @@ class LiveParsedEntry:
 
     sessions: list[ParsedSession]
     shard_path: Path | None
+
+
+def live_parse_path_worker(
+    provider_value: str,
+    source_path: str,
+    fallback_id: str,
+    *,
+    is_stream: bool,
+    shard_directory: str,
+) -> LivePathPreparation:
+    return prepare_jsonl_blob(
+        source_path,
+        source_path,
+        provider_value,
+        fallback_id,
+        is_stream=is_stream,
+        shard_directory=shard_directory,
+    )
 
 
 def _discard_orphaned_shard(
@@ -361,6 +361,7 @@ class LiveParseStage:
         #: removes the writer-side benefit with nothing but a per-file
         #: warning to show for it.
         self.shard_build_failure_count = 0
+        self._path_results: dict[str, LivePathPreparation] = {}
         if shard_directory is not None:
             shard_directory.mkdir(parents=True, exist_ok=True)
             # Anything already here belongs to a process that died before it
@@ -368,6 +369,8 @@ class LiveParseStage:
             # is no other owner to consult.
             for residue in shard_directory.glob("shard-*"):
                 discard_session_shard(residue)
+            for residue in shard_directory.glob("sessions-*.pickle"):
+                residue.unlink(missing_ok=True)
         worker_count = max_workers if max_workers is not None else live_watcher_parse_stage_worker_count()
         if use_processes:
             # The ordinary watcher route runs on the supported GIL build too.
@@ -392,6 +395,61 @@ class LiveParseStage:
             if warm_timeout_seconds is not None
             else live_watcher_parse_stage_warm_timeout_seconds()
         )
+
+    def warm_paths(self, candidates: Sequence[tuple[str, Provider, bool]]) -> int:
+        """Prepare path-backed JSONL outside the writer lease.
+
+        Every selected path gets a result, including worker death and timeout.
+        The publisher can therefore retain raw bytes and retry without an
+        accidental inline parse when preparation failed.
+        """
+        if self._shard_directory is None:
+            return 0
+        futures: dict[Future[LivePathPreparation], str] = {}
+        for source_path, provider, is_stream in candidates:
+            try:
+                future = self._executor.submit(
+                    live_parse_path_worker,
+                    provider.value,
+                    source_path,
+                    Path(source_path).stem,
+                    is_stream=is_stream,
+                    shard_directory=str(self._shard_directory),
+                )
+            except Exception as exc:
+                self._path_results[source_path] = LivePathPreparation(
+                    None, None, None, f"worker submission failed: {type(exc).__name__}"[:500]
+                )
+                continue
+            futures[future] = source_path
+        for future, source_path in futures.items():
+            try:
+                result = future.result(timeout=max(self._warm_timeout_seconds, 1800.0))
+            except Exception as exc:
+                result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500])
+                if not future.done():
+                    future.add_done_callback(
+                        lambda completed: (
+                            completed.result().discard()
+                            if not completed.cancelled() and completed.exception() is None
+                            else None
+                        )
+                    )
+                    future.cancel()
+            old = self._path_results.pop(source_path, None)
+            if old is not None:
+                old.discard()
+            self._path_results[source_path] = result
+        return len(candidates)
+
+    def pop_path(self, source_path: str, *, blob_hash: str) -> LivePathPreparation | None:
+        result = self._path_results.pop(source_path, None)
+        if result is None:
+            return None
+        if result.error is None and result.blob_hash != blob_hash:
+            result.discard()
+            return LivePathPreparation(None, None, None, "captured source changed after preparation")
+        return result
 
     def warm(self, candidates: Sequence[LiveParseCandidate]) -> int:
         """Pre-parse ``candidates`` outside any writer hold.
@@ -503,9 +561,14 @@ class LiveParseStage:
         # seal a shard after cleanup and leave an unattached file behind.
         self._executor.shutdown(wait=True, cancel_futures=True)
         self.cache.discard_all()
+        for result in self._path_results.values():
+            result.discard()
+        self._path_results.clear()
         if self._shard_directory is not None:
             for residue in self._shard_directory.glob("shard-*"):
                 discard_session_shard(residue)
+            for residue in self._shard_directory.glob("sessions-*.pickle"):
+                residue.unlink(missing_ok=True)
 
 
 __all__ = [
