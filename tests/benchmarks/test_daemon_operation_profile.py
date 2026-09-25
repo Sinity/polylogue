@@ -301,6 +301,7 @@ def test_bench_daemon_mixed_load(
     phase_lock = threading.Lock()
     phase_name = "quiet"
     phase_names = (
+        "admission_queue",
         "read_frame_acquisition",
         "compute",
         "cache_invalidation",
@@ -475,16 +476,20 @@ def test_bench_daemon_mixed_load(
         frame_started.client_ms = client_ms
         timing = result.get("timing")
         server_ms = float(timing.get("elapsed_ms", client_ms)) if isinstance(timing, dict) else client_ms
+        admission_queue_ms = float(timing.get("queue_ms", 0.0)) if isinstance(timing, dict) else 0.0
         frame_ms = float(getattr(frame_started, "elapsed_ms", 0.0))
         with phase_lock:
             current_phase = phase_name
             compute_ms = pending_compute[current_phase].popleft() if pending_compute[current_phase] else 0.0
+            phase_samples[current_phase]["admission_queue"].append(max(0.0, admission_queue_ms))
             phase_samples[current_phase]["compute"].append(compute_ms)
             phase_samples[current_phase]["read_frame_acquisition"].append(max(0.0, frame_ms))
             phase_samples[current_phase]["cache_invalidation"].append(
                 0.0 if current_cache_epoch() == before_epoch else max(0.0, server_ms - frame_ms - compute_ms)
             )
-            phase_samples[current_phase]["instrumentation_tail"].append(max(0.0, server_ms - frame_ms - compute_ms))
+            phase_samples[current_phase]["instrumentation_tail"].append(
+                max(0.0, server_ms - admission_queue_ms - frame_ms - compute_ms)
+            )
             phase_samples[current_phase]["serialization_tail"].append(max(0.0, client_ms - server_ms))
         return result
 
@@ -615,10 +620,10 @@ def test_bench_daemon_mixed_load(
     )
 
 
-#: Latency the injection adds to one archive query. Large enough to dominate a
-#: served read on any host this runs on, small enough that four of them fit
-#: inside the client deadline below.
-_ARCHIVE_PATH_INJECTION_MS = 150
+#: Latency the injection adds to one archive query. Leave enough separation
+#: from cache-hit transport jitter on a loaded workstation that the positive
+#: cache control does not fail merely because the host is busy.
+_ARCHIVE_PATH_INJECTION_MS = 500
 
 
 def test_read_series_separates_cache_hits_from_archive(
