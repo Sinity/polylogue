@@ -33,6 +33,7 @@ from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import ContentHash, SessionId
 from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
 from polylogue.storage.derived.session.input_binding import (
+    encode_input_binding_row,
     session_input_bindings,
     session_input_bindings_async,
 )
@@ -54,6 +55,7 @@ from polylogue.storage.derived.session.threads import thread_root_ids_async, thr
 from polylogue.storage.derived.session.usage_rollup import (
     reconcile_session_usage_rollups,
     reconcile_session_usage_rollups_async,
+    session_usage_rollup_recipe_version,
 )
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.runtime import (
@@ -1629,7 +1631,7 @@ def session_insight_compute_binding(conn: sqlite3.Connection, session_id: str) -
         (session_id,),
     ):
         digest.update(b"\x1e")
-        digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row))
+        digest.update(encode_input_binding_row(row))
     return digest.hexdigest()
 
 
@@ -1708,8 +1710,20 @@ def publish_prepared_session_insight_partition(
             conn.rollback()
             return False
         current_input = session_input_bindings(conn, (prepared.session_id,)).get(prepared.session_id, "")
+        if current_input != prepared.input_binding:
+            conn.rollback()
+            return False
+        # An unchanged prerequisite is not necessarily a current prerequisite.
+        # Check its provenance in this writer transaction. Do not repair or
+        # commit canonical usage from the profile publisher: its owner retries
+        # first, then a newly prepared profile can be accepted.
+        usage_certificate = conn.execute(
+            "SELECT input_binding, recipe_version FROM session_usage_rollup_bindings WHERE session_id = ?",
+            (prepared.session_id,),
+        ).fetchone()
         if (
-            current_input != prepared.input_binding
+            usage_certificate is None
+            or tuple(usage_certificate) != (current_input, session_usage_rollup_recipe_version())
             or session_insight_compute_binding(conn, prepared.session_id) != prepared.compute_binding
         ):
             conn.rollback()
