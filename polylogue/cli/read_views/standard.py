@@ -97,22 +97,6 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
     """Standard query/list renderer used by summary and transcript views."""
 
     fmt = invocation.output_format or "markdown"
-    if (
-        invocation.view == "transcript"
-        and invocation.destination == RenderDestination.FILE
-        and invocation.session_id is not None
-        and fmt == "markdown"
-        and invocation.out_path
-        and stream_exact_session_markdown(
-            env.config.archive_root,
-            invocation.session_id,
-            Path(invocation.out_path),
-            prose_only=False,
-        )
-    ):
-        _warn_on_written_file_secret_candidates(env, invocation.out_path)
-        env.ui.console.print(f"Wrote to {invocation.out_path}")
-        return
     updated = (
         _request_for_standard_read(request, invocation)
         .with_param_updates(output_format=fmt)

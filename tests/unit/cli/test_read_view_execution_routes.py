@@ -155,6 +155,53 @@ def test_each_view_executes_the_route_it_declares(
     assert reached, f"{view} declares {metadata.operations} but reached no operation"
 
 
+def test_transcript_file_delivery_does_not_bypass_its_declared_operation(
+    probe_env: tuple[Any, Config, str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The file destination uses the same ``cli.query`` route as terminal output.
+
+    Anti-vacuity: ``run_read_summary_or_transcript`` used to stream markdown
+    directly from the archive for this exact shape, so the registry's normal
+    stdout probe could not see that the shipped file route bypassed its
+    ``cli.query`` declaration.
+    """
+
+    from polylogue.cli import operation_kernel
+    from polylogue.cli.read_view_handlers import run_read_view
+    from polylogue.cli.read_views import standard
+    from polylogue.cli.read_views.base import ReadViewInvocation
+
+    env, config, session_id = probe_env
+    reached: list[str] = []
+    real_dispatch = operation_kernel.dispatch
+
+    def _recording_dispatch(cfg: object, request: Any, **kwargs: object) -> object:
+        reached.append(request.operation)
+        kwargs["daemon_only"] = True
+        kwargs["daemon_disabled"] = False
+        return real_dispatch(cfg, request, **kwargs)  # type: ignore[arg-type]
+
+    def _forbid_streaming(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("transcript file delivery bypassed cli.query")
+
+    monkeypatch.setattr(operation_kernel, "dispatch", _recording_dispatch)
+    monkeypatch.setattr(standard, "stream_exact_session_markdown", _forbid_streaming)
+    request = RootModeRequest.from_params({"_config": config, "id": session_id})
+    invocation = ReadViewInvocation(
+        view="transcript",
+        session_id=session_id,
+        output_format="markdown",
+        destination="file",
+        out_path=str(tmp_path / "transcript.md"),
+    )
+
+    with pytest.raises(SystemExit) as refusal:
+        run_read_view(env, request, invocation)
+
+    assert refusal.value.code != 0
+    assert reached == ["cli.query"]
+
+
 def test_session_read_projections_name_a_kind_the_operation_actually_serves() -> None:
     """The second mirror: what ``session.read`` serves, not what a row claims.
 
