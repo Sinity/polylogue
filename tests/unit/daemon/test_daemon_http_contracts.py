@@ -1053,14 +1053,29 @@ class TestBoundedArchiveQueryExecutor:
             handler._write_gate_depth = 0
         assert kernel.snapshot().by_class("control").admitted == before + 1
 
+    @pytest.mark.uses_real_clock("waits for real daemon-owned writer and compute threads to exit")
     def test_server_close_shuts_down_archive_query_executor(self, tmp_path: Path) -> None:
         import threading
+        import time
         from unittest.mock import patch
 
         from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+        from polylogue.daemon.services import ServiceCapability, ServiceProfile
+        from tests.infra.daemon_service_harness import ServiceHarness
 
-        before = {thread.ident for thread in threading.enumerate() if thread.name == "daemon-http-writer"}
+        harness = ServiceHarness(
+            profile=ServiceProfile.SURFACES,
+            capabilities={ServiceCapability.API},
+        )
+        harness.require_selected("api_server")
+        before = {
+            thread.ident
+            for thread in threading.enumerate()
+            if thread.name in {"daemon-http-writer", "polylogue-compute"}
+        }
         server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=tmp_path)
+        submitted = server.execution_kernel.submit(lambda: "completed")
+        assert submitted.future.result(timeout=2) == "completed"
         shutdown = server.execution_kernel.shutdown
         calls = 0
 
@@ -1075,11 +1090,32 @@ class TestBoundedArchiveQueryExecutor:
 
         assert calls == 1
         assert server._owned_write_runtime is None
-        assert not ({thread.ident for thread in threading.enumerate() if thread.name == "daemon-http-writer"} - before)
+        deadline = time.monotonic() + 2
+        remaining = {"daemon-http-writer", "polylogue-compute"}
+        while time.monotonic() < deadline:
+            remaining = {
+                thread.name
+                for thread in threading.enumerate()
+                if thread.name in {"daemon-http-writer", "polylogue-compute"} and thread.ident not in before
+            }
+            if not remaining:
+                break
+            time.sleep(0.01)
+        assert not remaining
+        import asyncio
+
+        assert asyncio.run(harness.close()).clean
 
     def test_server_close_preserves_borrowed_write_runtime(self, tmp_path: Path) -> None:
         from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer, _StandaloneWriteRuntime
+        from polylogue.daemon.services import ServiceCapability, ServiceProfile
+        from tests.infra.daemon_service_harness import ServiceHarness
 
+        harness = ServiceHarness(
+            profile=ServiceProfile.SURFACES,
+            capabilities={ServiceCapability.API},
+        )
+        harness.require_selected("api_server")
         borrowed_runtime = _StandaloneWriteRuntime(tmp_path / "borrowed")
         try:
             server = DaemonAPIHTTPServer(
@@ -1089,8 +1125,12 @@ class TestBoundedArchiveQueryExecutor:
                 write_bridge=borrowed_runtime.bridge,
             )
             server.server_close()
+            server.server_close()
             assert borrowed_runtime.thread.is_alive()
             assert server._owned_write_runtime is None
         finally:
             borrowed_runtime.close()
         assert not borrowed_runtime.thread.is_alive()
+        import asyncio
+
+        assert asyncio.run(harness.close()).clean

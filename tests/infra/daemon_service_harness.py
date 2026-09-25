@@ -35,6 +35,15 @@ class ServiceHarness:
     def selected_names(self) -> tuple[str, ...]:
         return tuple(spec.name for spec in self.supervisor.selected)
 
+    def require_selected(self, name: str, *, selected: bool = True) -> None:
+        """Assert that the production registry made the requested selection."""
+        present = name in self.selected_names
+        if present is not selected:
+            expectation = "selected" if selected else "excluded"
+            raise AssertionError(
+                f"production profile must have {name!r} {expectation}; selected={self.selected_names!r}"
+            )
+
     def start(self, name: str, factory: Callable[[], Coroutine[Any, Any, None]]) -> asyncio.Task[None] | None:
         return self.supervisor.start(name, factory)
 
@@ -50,9 +59,9 @@ class ServiceHarness:
     def state(self, name: str) -> ServiceState:
         return self.supervisor.state(name)
 
-    @staticmethod
-    def validate_api_bind(*, enabled: bool, host: str, allow_remote: bool, auth_token: str | None) -> None:
+    def validate_api_bind(self, *, enabled: bool, host: str, allow_remote: bool, auth_token: str | None) -> None:
         """Apply the production API bind policy without starting archive work."""
         from polylogue.daemon.cli import validate_api_bind_policy
 
+        self.require_selected("api_server", selected=enabled)
         validate_api_bind_policy(enabled=enabled, host=host, allow_remote=allow_remote, auth_token=auth_token)

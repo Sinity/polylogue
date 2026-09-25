@@ -105,10 +105,11 @@ def test_non_loopback_bind_with_allow_remote_and_no_explicit_token_auto_mints(
     service harness, without starting archive convergence or opening sockets.
     """
     harness = ServiceHarness(
-        profile=ServiceProfile.RESIDENT_CORE,
+        profile=ServiceProfile.SURFACES,
         capabilities={ServiceCapability.API},
     )
-    assert harness.selected_names == ("lifecycle_heartbeat", "health_check")
+    harness.require_selected("api_server")
+    assert "raw_observation_convergence" not in harness.selected_names
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
     from polylogue.daemon.cli import resolve_api_auth_token
@@ -159,7 +160,11 @@ def test_loopback_bind_passes_remote_check(_repeat: int) -> None:
     The focused production profile is selected and the production policy
     helper decides the bind without entering archive startup.
     """
-    harness = ServiceHarness(profile=ServiceProfile.RESIDENT_CORE)
+    harness = ServiceHarness(
+        profile=ServiceProfile.SURFACES,
+        capabilities={ServiceCapability.API},
+    )
+    harness.require_selected("api_server")
     assert "raw_observation_convergence" not in harness.selected_names
     harness.validate_api_bind(enabled=True, host="127.0.0.1", allow_remote=False, auth_token="token")
 
@@ -172,6 +177,7 @@ def test_api_disabled_skips_remote_check(_repeat: int) -> None:
     non-loopback ``api_host`` value is irrelevant.
     """
     harness = ServiceHarness(profile=ServiceProfile.RESIDENT_CORE)
+    harness.require_selected("api_server", selected=False)
     assert "raw_observation_convergence" not in harness.selected_names
     harness.validate_api_bind(enabled=False, host="0.0.0.0", allow_remote=False, auth_token=None)
 
