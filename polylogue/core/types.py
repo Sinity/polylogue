@@ -26,6 +26,7 @@ JudgmentSchedulerStatus = Literal["completed", "parked", "failed"]
 OperationRunStatus = Literal["running", "completed", "failed", "interrupted", "completed_with_failures"]
 RouteObservationStatus = Literal["ok", "error", "degraded", "timed_out", "unavailable"]
 RouteDaemonPath = Literal["daemon", "direct"]
+ContextInjectionDecision = Literal["included", "degraded", "dropped"]
 
 
 def require_literal(value: object, vocabulary: object, *, name: str) -> str:
@@ -42,6 +43,7 @@ __all__ = [
     "AttachmentDirection",
     "AttachmentUploadOrigin",
     "ConvergenceDebtStatus",
+    "ContextInjectionDecision",
     "CursorLagSeverity",
     "JudgmentSchedulerStatus",
     "LineageInheritance",

@@ -7,6 +7,7 @@ from typing import Literal, get_args
 
 from polylogue.core.enums import IngestOutcome, Origin, TelemetrySurface
 from polylogue.core.types import (
+    ContextInjectionDecision,
     ConvergenceDebtStatus,
     CursorLagSeverity,
     JudgmentSchedulerStatus,
@@ -111,6 +112,7 @@ _CURSOR_LAG_SEVERITY_CHECK = literal_check("severity", *get_args(CursorLagSeveri
 _MCP_SESSION_RELATION_CHECK = literal_check("relation", *get_args(McpCallSessionRelation))
 _ROUTE_DAEMON_PATH_CHECK = literal_check("daemon_path", *get_args(RouteDaemonPath))
 _ROUTE_OBSERVATION_STATUS_CHECK = literal_check("status", *get_args(RouteObservationStatus))
+_CONTEXT_INJECTION_DECISION_CHECK = literal_check("decision", *get_args(ContextInjectionDecision))
 # Split out of OPS_DDL (polylogue-sd9s) so the ops-bootstrap convergence step
 # that repairs a stale live CHECK (``_ensure_schema_drift_samples_check`` in
 # bootstrap.py) can re-execute exactly this fragment after a DROP TABLE,
@@ -514,7 +516,7 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS context_injection_ledger (
     ledger_id TEXT PRIMARY KEY, build_ref TEXT NOT NULL, observed_at_ms INTEGER NOT NULL,
-    decision TEXT NOT NULL CHECK(decision IN ('included', 'degraded', 'dropped')),
+    decision TEXT NOT NULL CHECK({_CONTEXT_INJECTION_DECISION_CHECK}),
     source TEXT NOT NULL, item_ref TEXT NOT NULL, token_cost INTEGER NOT NULL CHECK(token_cost >= 0),
     source_local_rank INTEGER NOT NULL CHECK(source_local_rank > 0),
     budget_before INTEGER NOT NULL CHECK(budget_before >= 0), budget_after INTEGER NOT NULL CHECK(budget_after >= 0),

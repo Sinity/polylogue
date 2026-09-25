@@ -406,8 +406,15 @@ def test_ops_vocabularies_round_trip_and_reject_at_typed_and_sql_boundaries(tmp_
     assert {
         row[0] for row in conn.execute("SELECT status FROM ingest_attempts WHERE attempt_id LIKE 'run-status-%'")
     } == {"running", "completed", "failed", "interrupted", "completed_with_failures"}
+    for index, status in enumerate(("running", "completed", "failed", "interrupted", "completed_with_failures")):
+        upsert_embedding_catchup_run(conn, run_id=f"catchup-status-{index}", status=status, started_at_ms=index)
+    assert {
+        row[0] for row in conn.execute("SELECT status FROM embedding_catchup_runs WHERE run_id LIKE 'catchup-status-%'")
+    } == {"running", "completed", "failed", "interrupted", "completed_with_failures"}
     with pytest.raises(ValueError):
         record_ingest_attempt(conn, attempt_id="run-status-invalid", status="cancelled", started_at_ms=5)
+    with pytest.raises(ValueError):
+        upsert_embedding_catchup_run(conn, run_id="catchup-status-invalid", status="cancelled", started_at_ms=6)
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             "INSERT INTO ingest_attempts (attempt_id, status, started_at_ms) "

@@ -1221,7 +1221,7 @@ def upsert_embedding_catchup_run(
     run_id: str | None = None,
     started_at_ms: int,
     finished_at_ms: int | None = None,
-    status: OperationStatus | str,
+    status: OperationStatus | OperationRunStatus | str,
     origin: Origin | str | None = None,
     scanned_sessions: int = 0,
     embedded_sessions: int = 0,
@@ -1234,7 +1234,7 @@ def upsert_embedding_catchup_run(
     """Create or replace one ``embedding_catchup_runs`` row and return ``run_id``."""
     if run_id is None:
         run_id = str(uuid.uuid4())
-    status_value = require_operation_lifecycle_status(status).value
+    status_value = require_literal(status, OperationRunStatus, name="embedding catchup status")
     ensure_embedding_catchup_run_outcome_columns(conn)
     conn.execute(
         """
