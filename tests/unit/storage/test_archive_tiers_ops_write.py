@@ -293,9 +293,9 @@ def test_ops_writers_reject_admission_only_statuses(tmp_path: Path) -> None:
     """Writer validation keeps admission states from bypassing the ledger contract."""
     conn = _connect(tmp_path / "ops.db")
 
-    with pytest.raises(ValueError, match="not a run lifecycle status"):
+    with pytest.raises(ValueError, match="ingest attempt status"):
         record_ingest_attempt(conn, attempt_id="pending-attempt", status=OperationStatus.PENDING, started_at_ms=1)
-    with pytest.raises(ValueError, match="not a run lifecycle status"):
+    with pytest.raises(ValueError, match="embedding catchup status"):
         upsert_embedding_catchup_run(conn, run_id="pending-run", status=OperationStatus.PENDING, started_at_ms=1)
 
 
@@ -391,6 +391,143 @@ def test_add_convergence_debt_adds_or_refreshes_one_row(tmp_path: Path) -> None:
     assert row[1] == 2
     assert row[2] == "still failing"
     assert conn.execute("SELECT COUNT(*) FROM convergence_debt").fetchone()[0] == 1
+
+
+def test_ops_vocabularies_round_trip_and_reject_at_typed_and_sql_boundaries(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "ops.db")
+
+    for index, status in enumerate(("running", "completed", "failed", "interrupted", "completed_with_failures")):
+        record_ingest_attempt(
+            conn,
+            attempt_id=f"run-status-{index}",
+            status=status,
+            started_at_ms=index,
+        )
+    assert {
+        row[0] for row in conn.execute("SELECT status FROM ingest_attempts WHERE attempt_id LIKE 'run-status-%'")
+    } == {"running", "completed", "failed", "interrupted", "completed_with_failures"}
+    for index, status in enumerate(("running", "completed", "failed", "interrupted", "completed_with_failures")):
+        upsert_embedding_catchup_run(conn, run_id=f"catchup-status-{index}", status=status, started_at_ms=index)
+    assert {
+        row[0] for row in conn.execute("SELECT status FROM embedding_catchup_runs WHERE run_id LIKE 'catchup-status-%'")
+    } == {"running", "completed", "failed", "interrupted", "completed_with_failures"}
+    with pytest.raises(ValueError):
+        record_ingest_attempt(conn, attempt_id="run-status-invalid", status="cancelled", started_at_ms=5)
+    with pytest.raises(ValueError):
+        upsert_embedding_catchup_run(conn, run_id="catchup-status-invalid", status="cancelled", started_at_ms=6)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO ingest_attempts (attempt_id, status, started_at_ms) "
+            "VALUES ('run-status-sql-invalid', 'cancelled', 6)"
+        )
+
+    for status in ("failed", "deferred"):
+        add_convergence_debt(
+            conn,
+            stage="round-trip",
+            target_type="session",
+            target_id=status,
+            status=status,
+            created_at_ms=10,
+        )
+    assert conn.execute("SELECT DISTINCT status FROM convergence_debt ORDER BY status").fetchall() == [
+        ("deferred",),
+        ("failed",),
+    ]
+
+    with pytest.raises(ValueError, match="convergence debt status"):
+        add_convergence_debt(
+            conn,
+            stage="invalid",
+            target_type="session",
+            target_id="bad",
+            status="retrying",
+            created_at_ms=11,
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO convergence_debt (debt_id, stage, target_type, target_id, status, created_at_ms, updated_at_ms) "
+            "VALUES ('bad', 'invalid', 'session', 'bad', 'retrying', 1, 1)"
+        )
+
+    for index, severity in enumerate(("info", "warning", "error", "critical")):
+        record_cursor_lag_sample(
+            conn,
+            sample_id=f"severity-{index}",
+            family="synthetic",
+            source_path=None,
+            lag_ms=1,
+            severity=severity,
+            sampled_at_ms=index,
+        )
+    assert {row[0] for row in conn.execute("SELECT severity FROM cursor_lag_samples")} == {
+        "info",
+        "warning",
+        "error",
+        "critical",
+    }
+    with pytest.raises(ValueError, match="cursor lag severity"):
+        record_cursor_lag_sample(
+            conn,
+            sample_id="invalid-severity",
+            family="synthetic",
+            source_path=None,
+            lag_ms=1,
+            severity="fatal",
+            sampled_at_ms=5,
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO cursor_lag_samples "
+            "(sample_id, family, lag_ms, stuck_file_count, p50_lag_ms, p95_lag_ms, severity, sampled_at_ms) "
+            "VALUES ('invalid-severity-sql', 'synthetic', 1, 1, 1, 1, 'fatal', 6)"
+        )
+
+    for index, status in enumerate(("ok", "error", "degraded", "timed_out", "unavailable")):
+        record_route_observation(
+            conn,
+            observation_id=f"route-status-{index}",
+            trace_id=f"trace-status-{index}",
+            surface="cli",
+            route="cli.test",
+            started_at_ms=1_790_000_000_000 + index,
+            duration_ms=1,
+            status=status,
+            daemon_path="daemon" if index % 2 == 0 else "direct",
+        )
+    assert {
+        row[0]
+        for row in conn.execute("SELECT status FROM route_observations WHERE observation_id LIKE 'route-status-%'")
+    } == {"ok", "error", "degraded", "timed_out", "unavailable"}
+    with pytest.raises(ValueError, match="route observation status"):
+        record_route_observation(
+            conn,
+            observation_id="route-status-invalid",
+            trace_id="trace-status-invalid",
+            surface="cli",
+            route="cli.test",
+            started_at_ms=1_790_000_000_020,
+            duration_ms=1,
+            status="cancelled",
+        )
+    with pytest.raises(ValueError, match="route daemon path"):
+        record_route_observation(
+            conn,
+            observation_id="route-path-invalid",
+            trace_id="trace-path-invalid",
+            surface="cli",
+            route="cli.test",
+            started_at_ms=1_790_000_000_021,
+            duration_ms=1,
+            status="ok",
+            daemon_path="unreachable",
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO route_observations "
+            "(observation_id, trace_id, surface, route, daemon_path, started_at_ms, duration_ms, status, sampled) "
+            "VALUES ('route-path-sql-invalid', 'trace', 'cli', 'cli.test', 'unreachable', 22, 1, 'ok', 1)"
+        )
 
 
 def test_record_cursor_lag_sample_writes_reads_and_filters(tmp_path: Path) -> None:
@@ -688,6 +825,15 @@ def test_record_mcp_call_writes_reads_and_filters_by_session(tmp_path: Path) -> 
 
     assert conn.execute("SELECT COUNT(*) FROM mcp_call_log").fetchone()[0] == 4
     assert conn.execute("SELECT COUNT(*) FROM mcp_call_session_refs").fetchone()[0] == 4
+    assert {row[0] for row in conn.execute("SELECT DISTINCT relation FROM mcp_call_session_refs")} == {
+        "primary",
+        "member",
+    }
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO mcp_call_session_refs (call_id, session_id, relation) "
+            "VALUES ('call-1', 'invalid-session', 'related')"
+        )
 
 
 def test_record_route_observation_writes_reads_and_filters(tmp_path: Path) -> None:

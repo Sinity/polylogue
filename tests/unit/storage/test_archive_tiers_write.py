@@ -984,6 +984,23 @@ def test_archive_tiers_session_tags_upsert_normalizes_and_refreshes_scores(tmp_p
     )
     assert read_session_tags(conn, session_id=session_id, tag_source="auto") == {"archive": refreshed}
 
+    with pytest.raises(ValueError, match="session tag source"):
+        upsert_session_tag(conn, session_id=session_id, tag="invalid", tag_source="system")
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO session_tags (session_id, tag, tag_source) VALUES (?, ?, ?)",
+            (session_id, "sql-invalid", "system"),
+        )
+
+    conn.execute("PRAGMA ignore_check_constraints = ON")
+    conn.execute(
+        "INSERT INTO session_tags (session_id, tag, tag_source) VALUES (?, ?, ?)",
+        (session_id, "hydration-invalid", "system"),
+    )
+    conn.execute("PRAGMA ignore_check_constraints = OFF")
+    with pytest.raises(ValueError, match="stored session tag source"):
+        read_session_tags(conn, session_id=session_id)
+
 
 def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
