@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import platform
@@ -223,6 +224,51 @@ def git_head(cwd: Path | None = None) -> str | None:
     return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
 
 
+def git_worktree_content_sha256(cwd: Path) -> str | None:
+    """Hash Git-visible worktree paths and their execution-time content."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            timeout=30,
+            cwd=cwd,
+            env=_read_only_git_env(),
+        )
+        if listed.returncode != 0:
+            return None
+        digest = hashlib.sha256()
+        paths = sorted(set(listed.stdout.split(b"\0")) - {b""})
+        for raw_path in paths:
+            path = cwd / os.fsdecode(raw_path)
+            digest.update(len(raw_path).to_bytes(8, "big"))
+            digest.update(raw_path)
+            try:
+                mode = path.lstat().st_mode
+            except FileNotFoundError:
+                digest.update(b"missing\0")
+                continue
+            if stat.S_ISLNK(mode):
+                digest.update(b"symlink\0")
+                target = os.fsencode(os.readlink(path))
+                digest.update(len(target).to_bytes(8, "big"))
+                digest.update(target)
+            elif stat.S_ISREG(mode):
+                digest.update(b"executable\0" if mode & 0o111 else b"file\0")
+                file_digest = hashlib.sha256()
+                size = 0
+                with path.open("rb") as handle:
+                    while chunk := handle.read(1024 * 1024):
+                        file_digest.update(chunk)
+                        size += len(chunk)
+                digest.update(size.to_bytes(8, "big"))
+                digest.update(file_digest.digest())
+            else:
+                return None
+        return digest.hexdigest()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 @dataclass(frozen=True)
 class PytestStepArtifacts:
     step_id: str
@@ -264,6 +310,9 @@ class VerifyRun:
             "steps": [],
             "artifact_dir": str(VERIFY_RUNS_DIR / self.run_id),
         }
+        if tier == "focused-test":
+            self._payload["git_worktree_content_sha256"] = None
+            self._payload["worktree_capture_source"] = None
         # These are opaque execution identities.  They are provenance only;
         # semantic status is still decided by this verifier.
         if agentctl_operation is not None:
@@ -288,6 +337,11 @@ class VerifyRun:
         _write_json(self.run_dir / "run.json", self._payload)
         if self.mirror_current:
             _write_json(self.root / CURRENT_RUN_PATH, self._payload)
+
+    def record_execution_worktree(self, provenance: Mapping[str, Any]) -> None:
+        for key in ("git_head", "git_dirty", "git_worktree_content_sha256"):
+            self._payload[key] = provenance.get(key)
+        self._payload["worktree_capture_source"] = provenance.get("capture_source")
 
     def record_selection(
         self,

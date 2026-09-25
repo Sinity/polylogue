@@ -853,6 +853,24 @@ def _slot_receipt(
     return receipt
 
 
+def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> dict[str, Any] | None:
+    if environment.get("POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE") != "1":
+        return None
+    from devtools.verify_runs import git_dirty, git_head, git_worktree_content_sha256
+
+    root = Path(cwd)
+    head = git_head(root)
+    digest = git_worktree_content_sha256(root)
+    if head is None or digest is None:
+        raise PytestSlotUnavailableError("focused worktree content could not be identified")
+    return {
+        "git_head": head,
+        "git_dirty": git_dirty(root),
+        "git_worktree_content_sha256": digest,
+        "capture_source": "pytest_slot_start",
+    }
+
+
 def _persist_slot_result(log_path: Path, receipt: Mapping[str, Any]) -> None:
     """Atomically publish the result document the waiting client reads."""
     path = _slot_result_path(log_path)
@@ -913,6 +931,7 @@ def _run_held(
     evidence is worth the most.
     """
     started = time.monotonic()
+    worktree_provenance = _focused_worktree_provenance(cwd, env)
     command, sizing = resize_worker_argument(list(argv))
     note = _sizing_note(sizing)
     if note is not None:
@@ -987,6 +1006,7 @@ def _run_held(
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
+        extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
     )
 
 
@@ -1113,6 +1133,7 @@ def _run_launch(launch_path: Path) -> int:
     launch_path.unlink(missing_ok=True)
     environment = dict(launch["environment"])
     environment[SLOT_ESCAPE_ENV] = SLOT_HELD
+    worktree_provenance = _focused_worktree_provenance(launch["working_directory"], environment)
     log_path = Path(launch["log_path"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
     child: subprocess.Popen[Any] | None = None
@@ -1198,6 +1219,7 @@ def _run_launch(launch_path: Path) -> int:
         sizing=sizing,
         memory=memory,
         log_path=log_path,
+        extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
     )
     # Written as well as printed: the waiting client reads the file, and the
     # job's stdout is the result artifact.

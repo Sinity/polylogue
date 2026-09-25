@@ -10,7 +10,7 @@ from typing import Any, cast
 
 import pytest
 
-from devtools import run_tests
+from devtools import pytest_slot, run_tests
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
@@ -25,6 +25,7 @@ from devtools.verify_runs import (
     CURRENT_STATISTICS_PATH,
     VerifyRun,
     git_head,
+    git_worktree_content_sha256,
     pytest_command_worker_request,
 )
 
@@ -262,6 +263,73 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert captured["history"]["verification_scope"] == "affected"
     assert captured["history"]["status"] == "success"
     assert captured["evidence"] == captured["history"]
+
+
+def test_queued_focused_receipt_identifies_execution_content(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A mutation after submission changes the content named by run.json."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    ignored = tmp_path / ".gitignore"
+    ignored.write_text(".cache/\n", encoding="utf-8")
+    source = tmp_path / "test_input.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore", "test_input.py"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture"],
+        cwd=tmp_path,
+        check=True,
+    )
+    submitted_head = git_head(tmp_path)
+    submitted_digest = git_worktree_content_sha256(tmp_path)
+    assert submitted_head is not None and submitted_digest is not None
+
+    untracked = tmp_path / "new_input.py"
+    executed: dict[str, Any] = {}
+
+    def queued_pytest(cmd: list[str], **kwargs: Any) -> SlotOutcome:
+        source.write_text("value = 2\n", encoding="utf-8")
+        tracked_edit_digest = git_worktree_content_sha256(tmp_path)
+        untracked.write_text("value = 3\n", encoding="utf-8")
+        execution_digest = git_worktree_content_sha256(tmp_path)
+        assert tracked_edit_digest not in (None, submitted_digest)
+        assert execution_digest not in (None, submitted_digest, tracked_edit_digest)
+        executed["digest"] = execution_digest
+        executed["provenance"] = pytest_slot._focused_worktree_provenance(kwargs["cwd"], kwargs["env"])
+        env = kwargs["env"]
+        Path(env["POLYLOGUE_PYTEST_SELECTION_PATH"]).write_text(json.dumps({"selected_count": 1}), encoding="utf-8")
+        Path(env["POLYLOGUE_PYTEST_SUMMARY_PATH"]).write_text(json.dumps({"exitstatus": 0}), encoding="utf-8")
+        events = Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"])
+        events.mkdir()
+        (events / "gw0.jsonl").write_text(
+            json.dumps({"event": "collection_finished", "updated_at": "2026-01-01T00:00:00Z"}) + "\n",
+            encoding="utf-8",
+        )
+        report_arg = next(arg for arg in cmd if arg.startswith("--polylogue-report-file="))
+        Path(report_arg.split("=", 1)[1]).write_text(
+            json.dumps({"tests": [{"nodeid": "test_input.py", "outcome": "passed"}]}), encoding="utf-8"
+        )
+        return SlotOutcome(
+            returncode=0,
+            slot="agentctl job 1",
+            receipt={"worktree_provenance": executed["provenance"]},
+        )
+
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _path: None)
+    monkeypatch.setattr(run_tests, "run_pytest", queued_pytest)
+    assert run_tests.main(["test_input.py"]) == 0
+
+    receipt = json.loads((tmp_path / CURRENT_RUN_PATH).read_text(encoding="utf-8"))
+    assert receipt["git_head"] == submitted_head
+    assert receipt["git_dirty"] is True
+    assert receipt["git_worktree_content_sha256"] == executed["digest"]
+    assert receipt["worktree_capture_source"] == "pytest_slot_start"
+    assert json.loads((tmp_path / receipt["artifact_dir"] / "run.json").read_text(encoding="utf-8")) == receipt
+
+    source.write_text("value = 1\n", encoding="utf-8")
+    untracked.unlink()
+    assert git_worktree_content_sha256(tmp_path) == submitted_digest
 
 
 @pytest.mark.parametrize("runner", ["managed", "isolated"])
