@@ -162,12 +162,30 @@ def test_daemon_off_completion_uses_recent_values_from_same_archive(
     from polylogue.cli.shell_completion_values import completion_values
 
     assert [item.value for item in completion_values("tag", "", limit=5)] == ["release-tag", "roadmap"]
+    monkeypatch.setattr(
+        operation_kernel,
+        "dispatch",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            value={
+                "value_completions": {
+                    "values": [{"value": "claude-code-session:ext-123", "help": "claude-code · Roadmap planning"}]
+                }
+            }
+        ),
+    )
+    assert [item.value for item in completion_values("session_id", "", limit=5)] == ["claude-code-session:ext-123"]
 
     def unavailable(*_args: object, **_kwargs: object) -> None:
         raise OperationUnavailableError("daemon unavailable")
 
     monkeypatch.setattr(operation_kernel, "dispatch", unavailable)
     assert [item.value for item in completion_values("tag", "rel", limit=5)] == ["release-tag"]
+    assert [item.value for item in completion_values("session_id", "ext-123", limit=5)] == [
+        "claude-code-session:ext-123"
+    ]
+    assert [item.value for item in completion_values("session_id", "Roadmap", limit=5)] == [
+        "claude-code-session:ext-123"
+    ]
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-b"))
     assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-a"))

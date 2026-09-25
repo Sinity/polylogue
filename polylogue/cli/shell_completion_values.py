@@ -87,6 +87,15 @@ def _completion_cache_path() -> Path:
     return cache_home() / "shell-completions.json"
 
 
+def _cached_value_matches(source: str, value: str, help_text: object, incomplete: str) -> bool:
+    prefix = incomplete.casefold()
+    if source == "session_id":
+        # Session completion also accepts native-ID substrings and title text.
+        title = help_text.partition(" · ")[2] if isinstance(help_text, str) else ""
+        return prefix in value.casefold() or prefix in title.casefold()
+    return value.casefold().startswith(prefix)
+
+
 def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_root: str) -> list[CompletionItem]:
     """Read recent daemon answers without opening the archive."""
     try:
@@ -105,16 +114,15 @@ def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_
         values = values_by_source.get(source) if isinstance(values_by_source, dict) else None
         if not isinstance(values, list):
             return []
-        prefix = incomplete.casefold()
         now = time.time()
         return [
-            CompletionItem(row["value"])
+            CompletionItem(row["value"], help=row.get("help") if isinstance(row.get("help"), str) else None)
             for row in values
             if isinstance(row, dict)
             and isinstance(row.get("value"), str)
             and isinstance(row.get("seen_at"), (int, float))
             and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
-            and row["value"].casefold().startswith(prefix)
+            and _cached_value_matches(source, row["value"], row.get("help"), incomplete)
         ][:limit]
     except (OSError, ValueError, TypeError):
         return []
@@ -153,7 +161,11 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
     merged = {str(row["value"]): row for row in values.get(source, [])}
     for item in items:
         if len(item.value) <= 512:
-            merged[item.value] = {"value": item.value, "seen_at": now}
+            merged[item.value] = {
+                "value": item.value,
+                "help": item.help[:512] if isinstance(item.help, str) else None,
+                "seen_at": now,
+            }
     values[source] = list(merged.values())[-_COMPLETION_CACHE_MAX_VALUES:]
     temporary: str | None = None
     try:
