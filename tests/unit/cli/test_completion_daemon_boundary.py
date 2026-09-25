@@ -202,15 +202,7 @@ def test_a_message_item_is_displayed_and_never_inserted() -> None:
 def test_daemon_only_dispatch_refuses_instead_of_reading_locally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``daemon_only`` turns "no daemon" into a refusal, not a slow success.
-
-    ``completion`` is ``direct_allowed``, so without this flag the same call
-    answers correctly from the local reader -- the behaviour every other CLI
-    route wants and completion cannot afford.
-
-    Mutation: make ``daemon_only`` ignored in ``dispatch`` and this returns a
-    result instead of raising.
-    """
+    """Archive completion refuses without a daemon and never reads locally."""
 
     bootstrap_archive_root(tmp_path)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
@@ -220,5 +212,7 @@ def test_daemon_only_dispatch_refuses_instead_of_reading_locally(
     with pytest.raises(OperationUnavailableError):
         dispatch(config, request, daemon_only=True, archive_root=tmp_path)
 
-    fallback = dispatch(config, request, archive_root=tmp_path)
-    assert fallback.value is not None, "the local fallback is what daemon_only refuses; it must still work"
+    # This operation now has one daemon-owned route even without the explicit
+    # flag; a local archive fallback would put seconds back on the TAB path.
+    with pytest.raises(OperationUnavailableError):
+        dispatch(config, request, archive_root=tmp_path)
