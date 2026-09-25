@@ -1,4 +1,4 @@
-"""MCP judge coverage for the shared embedded writer boundary."""
+"""MCP durable writes obey the shared embedded writer boundary."""
 
 from __future__ import annotations
 
@@ -13,10 +13,15 @@ from typing import cast
 import pytest
 
 import polylogue.api.archive as archive_module
+from polylogue.archive.message.roles import Role
+from polylogue.core.enums import Provider
 from polylogue.mcp.declarations.models import MCPCapabilities
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
@@ -77,6 +82,80 @@ def _seed_candidate(root: Path, assertion_id: str) -> None:
             status="candidate",
             now_ms=1_700_000_000_000,
         )
+
+
+def _annotation_import_fields(session_id: str, batch_id: str) -> dict[str, object]:
+    return {
+        "jsonl": json.dumps(
+            {
+                "row_key": "writer-boundary-row",
+                "value": {"activity": "research", "confidence": 0.9},
+                "evidence_refs": [session_id],
+            }
+        ),
+        "batch_id": batch_id,
+        "schema_id": "seed.activity",
+        "schema_version": 1,
+        "target_ref": f"session:{session_id}",
+        "source_result_ref": f"result-set:{batch_id}",
+        "actor_ref": "agent:writer-boundary-test",
+        "model_ref": "agent:model",
+        "prompt_ref": "block:prompt:0",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resident,bypass_guard", [(True, False), (False, False), (True, True)])
+async def test_annotation_import_mcp_obeys_writer_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resident_daemon: Callable[[Path], int],
+    resident: bool,
+    bypass_guard: bool,
+) -> None:
+    """The real MCP import refuses a resident owner before any user-tier commit.
+
+    Bypassing the facade guard reproduces the unowned durable commit; offline
+    import still works through the same production dispatcher and importer.
+    """
+    from polylogue.mcp.server import build_server
+
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="annotation-writer-boundary",
+                title="Writer boundary fixture",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+            ),
+        )
+    if resident:
+        resident_daemon(archive_root / "daemon.pid")
+    if bypass_guard:
+        monkeypatch.setattr(archive_module, "_require_archive_write_authority", lambda *_args: None)
+
+    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+    write_fn = server._tool_manager._tools["write"].fn
+    with installed_runtime_services(archive_root):
+        result = json.loads(
+            await invoke_surface_async(
+                write_fn,
+                operation="import_annotation_batch",
+                fields=_annotation_import_fields(session_id, "writer-boundary-batch"),
+            )
+        )
+
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        row = conn.execute("SELECT status FROM assertions WHERE key = 'writer-boundary-row'").fetchone()
+    if resident and not bypass_guard:
+        assert result.get("is_error") is True, result
+        assert result.get("detail") == "ArchiveWriterOwnershipError", result
+        assert row is None
+    else:
+        assert result.get("is_error") is not True, result
+        assert row == ("candidate",)
 
 
 @pytest.mark.asyncio
