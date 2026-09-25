@@ -8,6 +8,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -454,20 +455,10 @@ def _seed_assertion_export_rows(archive_root: Path) -> None:
 
 
 def _create_user_at_previous_slot(path: Path) -> None:
-    """Stage a user tier one numbered slot below this runtime's target.
-
-    The pre-reset fixture hand-wrote a ``PRAGMA user_version = 3`` schema.
-    This lineage has no version 3, so every route that opened the tier
-    refused it with ``user schema skew`` before the migration under test ran.
-
-    The shape that still matters is the one the tier's single numbered slot
-    (``002_assertions_status_not_null.sql``) migrates away from:
-    ``assertions.status`` nullable. It is derived from the live canonical DDL
-    rather than transcribed, so a canonical change cannot silently leave this
-    fixture describing a schema nothing ships.
-    """
+    """Stage the canonical user schema immediately before the current train."""
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION, USER_TIER_VERSION
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.migration_runner import _prepare_fresh_connection_for_target
 
     previous = USER_TIER_VERSION - 1
     assert previous >= ARCHIVE_FORMAT_FLOOR_VERSION, (
@@ -477,33 +468,16 @@ def _create_user_at_previous_slot(path: Path) -> None:
 
     path.unlink(missing_ok=True)
     initialize_archive_database(path, ArchiveTier.USER)
-    with sqlite3.connect(path) as conn:
-        canonical = str(
-            conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assertions'").fetchone()[0]
+    with closing(sqlite3.connect(path)) as conn:
+        with conn:
+            _prepare_fresh_connection_for_target(conn, ArchiveTier.USER, previous)
+            conn.execute(f"PRAGMA user_version = {previous}")
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'accepted_marker_delivery_cursor'"
+            ).fetchone()
+            is None
         )
-        nullable = canonical.replace(
-            "status              TEXT NOT NULL DEFAULT 'active'", "status TEXT DEFAULT 'active'"
-        )
-        assert nullable != canonical, (
-            "canonical assertions.status is no longer the NOT NULL column slot 002 introduced; "
-            "this fixture no longer stages the shape that slot migrates away from"
-        )
-        dependents = [
-            str(row[0])
-            for row in conn.execute(
-                "SELECT sql FROM sqlite_master WHERE tbl_name = 'assertions' AND type IN ('index', 'trigger') "
-                "AND sql IS NOT NULL"
-            )
-        ]
-        columns = [str(row[1]) for row in conn.execute("PRAGMA table_info(assertions)")]
-        column_list = ", ".join(columns)
-        conn.executescript(nullable.replace("assertions", "assertions__previous_slot", 1))
-        conn.execute(f"INSERT INTO assertions__previous_slot ({column_list}) SELECT {column_list} FROM assertions")
-        conn.execute("DROP TABLE assertions")
-        conn.execute("ALTER TABLE assertions__previous_slot RENAME TO assertions")
-        for statement in dependents:
-            conn.executescript(statement)
-        conn.execute(f"PRAGMA user_version = {previous}")
     refresh_fresh_bootstrap_marker(path.parent)
     refresh_archive_format_marker(path.parent)
 
@@ -1648,25 +1622,7 @@ def test_migrate_tier_cli_applies_the_user_slot(
     cli_runner: CliRunner,
     tmp_path: Path,
 ) -> None:
-    """A verified backup lets the CLI apply the user tier's one numbered slot.
-
-    The pre-reset version of this test described a multi-step climb: a legacy
-    chain committing to an adoption floor of 10, the v11 train then refusing
-    the manifest taken before that climb, and a second migrate with a fresh
-    backup applying 11..N. None of that exists -- the user tier owns exactly
-    one numbered slot (002), reached in one step from the floor -- so the
-    staleness leg it asserted has no producer left and is not re-expressed
-    here.
-
-    What survives is the property the route exists for: a verified backup
-    manifest admits the slot, the tier lands at the runtime target, and the
-    rebuilt column is the one the slot declares.
-
-    Anti-vacuity: revert ``assertions.status`` to nullable in the canonical
-    user DDL and the fixture's ``assert nullable != canonical`` fires; skip
-    the migration and ``applied_versions`` is empty with ``status`` still
-    nullable below.
-    """
+    """A verified backup admits the current user train and creates its table."""
     user_db = cli_workspace["archive_root"] / "user.db"
     _create_user_at_previous_slot(user_db)
     target = ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
@@ -1697,8 +1653,9 @@ def test_migrate_tier_cli_applies_the_user_slot(
     assert payload["applied_versions"] == [target]
     with sqlite3.connect(user_db) as conn:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == target
-        status = next(row for row in conn.execute("PRAGMA table_info(assertions)") if row[1] == "status")
-        assert status[3] == 1, "slot 002 must leave assertions.status NOT NULL"
+        assert conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'accepted_marker_delivery_cursor'"
+        ).fetchone() == ("accepted_marker_delivery_cursor",)
 
 
 def test_migrate_tier_cli_executes_and_persists_a_future_change_train(
