@@ -60,6 +60,8 @@ duplicated in caller metadata:
   (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:773-779`).
 - `message_id` uses explicit native (`:n:`) or content-derived (`:c:`) namespaces
   (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:324-329`).
+- `identity_source` records which identity path fired; `MessageIdentitySource`
+  owns its closed vocabulary (`polylogue/core/types.py:13-16`).
 - `block_id` is generated as `message_id || ':' || position`
   (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:548-553`).
 

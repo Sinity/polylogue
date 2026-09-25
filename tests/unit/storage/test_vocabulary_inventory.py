@@ -12,7 +12,7 @@ def test_inventory_covers_all_string_membership_checks_and_declares_exclusions()
 
     # Runtime canonical DDL, not a remembered source-text count, is the
     # denominator: numeric and NOT IN checks are intentionally excluded.
-    assert inventory.denominator == 95
+    assert inventory.denominator == 96
     assert inventory.durable_exclusions == 41
     assert inventory.unknown_ownership == 0
     assert {item.tier.value for item in inventory.checks} == {

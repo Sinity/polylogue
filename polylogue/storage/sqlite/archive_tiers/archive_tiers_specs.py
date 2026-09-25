@@ -45,6 +45,7 @@ from polylogue.core.errors import DatabaseError
 from polylogue.core.json import loads
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.tool_identity import TOOL_COMMAND_INPUT_KEYS, TOOL_PATH_INPUT_KEYS, sql_coalesced_json_extract
+from polylogue.core.types import MessageIdentitySource
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -358,7 +359,7 @@ MESSAGES_SPEC = _make_table_spec(
         ),
         _raw_column(
             "identity_source",
-            "identity_source TEXT NOT NULL DEFAULT 'content' CHECK(identity_source IN ('native', 'content'))",
+            f"identity_source TEXT NOT NULL DEFAULT 'content' CHECK({literal_check('identity_source', *get_args(MessageIdentitySource))})",
             record_name="identity_source",
             domain_name="identity_source",
         ),
