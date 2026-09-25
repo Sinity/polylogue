@@ -1076,3 +1076,21 @@ class TestBoundedArchiveQueryExecutor:
         assert calls == 1
         assert server._owned_write_runtime is None
         assert not ({thread.ident for thread in threading.enumerate() if thread.name == "daemon-http-writer"} - before)
+
+    def test_server_close_preserves_borrowed_write_runtime(self, tmp_path: Path) -> None:
+        from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer, _StandaloneWriteRuntime
+
+        borrowed_runtime = _StandaloneWriteRuntime(tmp_path / "borrowed")
+        try:
+            server = DaemonAPIHTTPServer(
+                ("127.0.0.1", 0),
+                DaemonAPIHandler,
+                archive_root=tmp_path / "server",
+                write_bridge=borrowed_runtime.bridge,
+            )
+            server.server_close()
+            assert borrowed_runtime.thread.is_alive()
+            assert server._owned_write_runtime is None
+        finally:
+            borrowed_runtime.close()
+        assert not borrowed_runtime.thread.is_alive()
