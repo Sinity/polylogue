@@ -2550,6 +2550,7 @@ def backfill_historical_revision_evidence(
     pipeline_decode: bool | None = None,
     deadline_check: Callable[[], None] | None = None,
     use_session_shards: bool = False,
+    defer_secondary_indexes: bool | None = None,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -2636,6 +2637,12 @@ def backfill_historical_revision_evidence(
     corrupt shard refuses the replay rather than falling back to inline row
     binding. Retained-index and batched replays do not own that construction
     boundary and are refused instead of being silently re-routed.
+
+    ``defer_secondary_indexes`` is an optional comparison control for a fresh
+    owned inactive generation. ``None`` uses the production cold-build
+    policy; ``False`` keeps the reader indexes maintained during replay while
+    retaining every other fresh-build optimization. ``True`` is rejected by
+    policy unless the generation is empty and exclusively owned.
     """
     if use_session_shards and owned_inactive_generation is None:
         raise ValueError("sealed replay shards require an owned inactive generation")
@@ -2677,6 +2684,7 @@ def backfill_historical_revision_evidence(
             owned_rebuildable_generation=owns_whole_generation,
         ),
         archive_empty=archive_empty,
+        defer_secondary_indexes=defer_secondary_indexes,
     )
     fresh_build = cold_build_shape.fresh_build
     if fresh_build:

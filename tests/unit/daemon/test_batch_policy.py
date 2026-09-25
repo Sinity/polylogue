@@ -151,3 +151,30 @@ def test_an_owned_generation_keeps_both_levers() -> None:
     shape = select_cold_build_shape(destination=_OWNED_INDEX, archive_empty=True)
     assert shape.fresh_build is True
     assert shape.defer_secondary_indexes is True
+
+
+def test_an_owned_empty_generation_can_retain_indexes_for_a_control_arm() -> None:
+    shape = select_cold_build_shape(
+        destination=_OWNED_INDEX,
+        archive_empty=True,
+        defer_secondary_indexes=False,
+    )
+    assert shape.fresh_build is True
+    assert shape.bulk_pragmas is True
+    assert shape.defer_secondary_indexes is False
+
+
+@pytest.mark.parametrize(
+    ("destination", "archive_empty"),
+    [(_ACTIVE_INDEX, True), (_OWNED_INDEX, False), (_LIVE_INDEX, True)],
+)
+def test_explicit_index_deferral_cannot_expand_its_eligibility(
+    destination: WriteDestination,
+    archive_empty: bool,
+) -> None:
+    with pytest.raises(ValueError, match="empty owned inactive generation"):
+        select_cold_build_shape(
+            destination=destination,
+            archive_empty=archive_empty,
+            defer_secondary_indexes=True,
+        )
