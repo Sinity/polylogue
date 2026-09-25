@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from hashlib import sha256
 from pathlib import PurePosixPath
 
+from polylogue.core.errors import PolylogueError
 from polylogue.core.json import require_json_document
 from polylogue.core.refs import normalize_public_ref_text
 from polylogue.surfaces.payloads import (
@@ -27,6 +28,19 @@ from polylogue.surfaces.payloads import (
 )
 
 _ABSOLUTE_POSIX_PATH_TOKEN = re.compile(r"(?<!\S)/(?:[^ \t\r\n'\"`]+)")
+
+
+class OtelProjectionInputError(PolylogueError):
+    """A query projection omits fields required by the OTel export contract."""
+
+    code = "otel_projection_input"
+    http_status_code = 422
+
+    def __init__(self, *, unit: str, missing_fields: Iterable[str]) -> None:
+        self.unit = unit
+        self.missing_fields = tuple(sorted(set(missing_fields)))
+        fields = ", ".join(self.missing_fields)
+        super().__init__(f"OTel export of projected {unit} rows requires fields: {fields}")
 
 
 def project_query_unit_rows_to_otel(
@@ -236,4 +250,4 @@ def _contains_absolute_path(value: str | None) -> bool:
     return bool(value and _ABSOLUTE_POSIX_PATH_TOKEN.search(value))
 
 
-__all__ = ["project_query_unit_rows_to_otel"]
+__all__ = ["OtelProjectionInputError", "project_query_unit_rows_to_otel"]

@@ -4466,6 +4466,42 @@ async def test_export_otel_projects_selected_message_rows(tmp_path: Path) -> Non
         await archive.close()
 
 
+async def test_export_otel_refuses_selected_message_rows_missing_required_fields(tmp_path: Path) -> None:
+    """A narrow select is refused before row-model validation can leak details."""
+    from polylogue.telemetry.otel_projection import OtelProjectionInputError
+    from tests.infra.storage_records import SessionBuilder
+
+    archive = _archive(tmp_path)
+    try:
+        index_db = archive.config.archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "facade-otel-narrow-selected-message")
+            .provider("codex")
+            .title("Facade OTel narrow selected message")
+            .add_message("m-selected", role="user", text="Selected OTel message")
+            .save()
+        )
+
+        with pytest.raises(OtelProjectionInputError) as raised:
+            await archive.export_otel(
+                source_ref="session:codex-session:facade-otel-narrow-selected-message",
+                expressions=("messages where role:user | select message_id, role",),
+            )
+
+        assert raised.value.unit == "message"
+        assert set(raised.value.missing_fields) == {
+            "message_type",
+            "origin",
+            "position",
+            "session_id",
+            "text",
+            "word_count",
+        }
+        assert raised.value.http_status_code == 422
+    finally:
+        await archive.close()
+
+
 async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
     """``query_units()`` is only for terminal source expressions."""
     from polylogue.archive.query.expression import ExpressionCompileError
