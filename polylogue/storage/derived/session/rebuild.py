@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiosqlite
@@ -645,6 +645,8 @@ def sync_attachment_batch(
 def load_sync_batch(
     conn: sqlite3.Connection,
     session_ids: Sequence[str],
+    *,
+    include_marker_blocks: bool = True,
 ) -> SessionInsightArchiveBatch:
     placeholders = ", ".join("?" for _ in session_ids)
     session_cursor = conn.execute(
@@ -665,7 +667,7 @@ def load_sync_batch(
     )
     decode_block = bind_block_row_mapper(cursor_column_names(block_cursor.description))
     blocks = [decode_block(row) for row in block_cursor.fetchall()]
-    marker_blocks_by_session = load_marker_blocks_sync(conn, session_ids)
+    marker_blocks_by_session = load_marker_blocks_sync(conn, session_ids) if include_marker_blocks else {}
     return SessionInsightArchiveBatch(
         sessions=sessions,
         messages=messages,
@@ -1660,10 +1662,10 @@ def prepare_session_insight_partition(
             conn,
             session_id,
             logical_session_id=root_id,
-            marker_blocks=load_marker_blocks_sync(conn, (session_id,)).get(session_id, ()),
+            marker_blocks=(),
         )
     else:
-        batch = load_sync_batch(conn, (session_id,))
+        batch = load_sync_batch(conn, (session_id,), include_marker_blocks=False)
         hydrated = hydrate_sessions(batch)
         if len(hydrated) != 1:
             raise KeyError(f"session disappeared from prepared read frame: {session_id}")
@@ -1676,16 +1678,16 @@ def prepare_session_insight_partition(
             marker_blocks_by_session=batch.marker_blocks_by_session,
             input_content_hash_by_session={session_id: input_binding},
         )[0]
-    # Marker inspection and publication must see the identical complete text
-    # evidence.  In particular, a heavy session cannot silently omit a
-    # marker-looking non-text block that restart inspection would demand.
-    bundle = replace(bundle, marker_candidates=marker_candidates_for_session_sync(conn, session_id))
+    # Accepted marker batches have their own source-owned derivation and must
+    # not be rescanned as part of current-state profile preparation.
     return PreparedSessionInsightPartition(session_id, input_binding, compute_binding, bundle)
 
 
 def publish_prepared_session_insight_partition(
     conn: sqlite3.Connection,
     prepared: PreparedSessionInsightPartition,
+    *,
+    expected_demand_revision: int = 0,
 ) -> bool:
     """Atomically replace a prepared profile family after exact revalidation.
 
@@ -1697,6 +1699,14 @@ def publish_prepared_session_insight_partition(
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
+        demand_row = conn.execute(
+            "SELECT revision FROM session_profile_demand WHERE session_id = ?",
+            (prepared.session_id,),
+        ).fetchone()
+        current_demand_revision = 0 if demand_row is None else int(demand_row[0])
+        if current_demand_revision != expected_demand_revision:
+            conn.rollback()
+            return False
         exists = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (prepared.session_id,)).fetchone()
         if prepared.bundle is None:
             if exists is not None:
@@ -1704,6 +1714,10 @@ def publish_prepared_session_insight_partition(
                 return False
             for table in ("session_latency_profiles", "session_profiles"):
                 conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (prepared.session_id,))
+            conn.execute(
+                "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
+                (prepared.session_id, expected_demand_revision),
+            )
             conn.commit()
             return True
         if exists is None:
@@ -1731,6 +1745,10 @@ def publish_prepared_session_insight_partition(
         bundle = prepared.bundle
         replace_session_profiles_bulk_sync(conn, (bundle.profile_record,))
         replace_session_latency_profiles_bulk_sync(conn, (bundle.latency_profile_record,))
+        conn.execute(
+            "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
+            (prepared.session_id, expected_demand_revision),
+        )
     except BaseException:
         conn.rollback()
         raise
@@ -2020,6 +2038,21 @@ def rebuild_session_insights_sync(
             [bundle.latency_profile_record for bundle in record_bundles],
         )
         add_timing("write_latency_profiles", t0)
+        # A bulk rebuild also completes local profile demand. Acknowledge only
+        # rows whose exact input digest still matches inside the same index
+        # transaction as both retained profile relations.
+        expected_bindings = {
+            str(bundle.profile_record.session_id): bundle.profile_record.input_content_hash
+            for bundle in record_bundles
+            if bundle.profile_record.input_content_hash is not None
+        }
+        current_bindings = session_input_bindings(conn, tuple(expected_bindings)) if expected_bindings else {}
+        for demanded_session_id, expected_binding in expected_bindings.items():
+            if current_bindings.get(demanded_session_id) == expected_binding:
+                conn.execute(
+                    "DELETE FROM session_profile_demand WHERE session_id = ?",
+                    (demanded_session_id,),
+                )
         if marker_conn is not None:
             _lower_marker_candidates(marker_conn, record_bundles)
         # Run-projection cache tables are no longer materialized (polylogue-dab).

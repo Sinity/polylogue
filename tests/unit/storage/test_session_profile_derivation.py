@@ -880,3 +880,36 @@ def test_a_second_pass_over_the_repeated_marker_publishes_nothing_new(
             (session_id,),
         ).fetchone()
     assert tuple(first) == tuple(second), "an already-valid marker family must not be rewritten"
+
+
+def test_profile_input_demand_is_transactional_and_late_worker_cannot_ack_it(
+    marker_archive: tuple[Path, Path, str],
+) -> None:
+    """Input writers enqueue work; a later revision survives an older publication."""
+    from polylogue.operations.session_profile_convergence import (
+        make_session_profile_derivation,
+        make_session_profile_frame,
+    )
+
+    root, index_db, session_id = marker_archive
+    _converge_session_profile(root, index_db, session_id)
+
+    def now() -> float:
+        return 0.0
+
+    profile = make_session_profile_derivation(index_db, archive_root=root, now=now)
+    frame = make_session_profile_frame(index_db, archive_root=root, scope=None)
+    assert profile.required_page(frame, cursor=None, limit=20)[0] == ()
+
+    _mutate(index_db, session_id, "input_tokens", "COALESCE(input_tokens, 0) + 19")
+    assert profile.required_page(frame, cursor=None, limit=20)[0] == (session_id,)
+    prepared = profile.compute(frame, session_id)
+
+    _mutate(index_db, session_id, "output_tokens", "COALESCE(output_tokens, 0) + 23")
+    assert profile.publish(frame, prepared) is False
+    assert profile.required_page(frame, cursor=None, limit=20)[0] == (session_id,)
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        current_revision = conn.execute(
+            "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    assert current_revision > prepared.demand_revision
