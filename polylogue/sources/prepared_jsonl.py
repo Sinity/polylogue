@@ -84,8 +84,8 @@ def prepare_jsonl_blob(
         if before_hash != after_hash:
             raise ValueError("blob changed during worker preparation")
         shard_path = prepare_session_shard(directory, sessions).path if sessions else None
-        with sessions_path.open("xb") as handle:
-            pickle.dump(sessions, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        with sessions_path.open("xb") as output_handle:
+            pickle.dump(sessions, output_handle, protocol=pickle.HIGHEST_PROTOCOL)
         return PreparedJsonl(after_hash, sessions_path, shard_path)
     except Exception as exc:
         sessions_path.unlink(missing_ok=True)

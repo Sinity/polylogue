@@ -172,7 +172,7 @@ from polylogue.sources.live.metrics import (
     LiveFullIngestAggregate,
     split_offered_bytes,
 )
-from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage, LivePathPreparation
+from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import (
@@ -184,6 +184,7 @@ from polylogue.sources.origin_specs import (
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
     parse_retained_raw_sessions,
@@ -2612,7 +2613,7 @@ class LiveBatchProcessor:
         raw_payloads: dict[str, bytes] = {}
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         shard_paths_by_raw_id: dict[str, Path] = {}
-        path_preparations_by_raw_id: dict[str, LivePathPreparation] = {}
+        path_preparations_by_raw_id: dict[str, PreparedJsonl] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -3633,7 +3634,7 @@ class LiveBatchProcessor:
         blob_store: BlobStore,
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
         shard_paths_by_raw_id: dict[str, Path] | None = None,
-        path_preparations_by_raw_id: dict[str, LivePathPreparation] | None = None,
+        path_preparations_by_raw_id: dict[str, PreparedJsonl] | None = None,
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
