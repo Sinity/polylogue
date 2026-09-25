@@ -364,12 +364,14 @@ class DerivationReport:
 
     @property
     def wrote_nothing(self) -> bool:
-        """True when the pass published no replacement at all.
+        """True when the kernel made no publication attempt.
 
-        A second pass over unchanged inputs must satisfy this: it is the law
-        that says inspection is authoritative rather than merely advisory.
+        This is deliberately scoped to the kernel's work counter, not to a
+        certified outcome: an adapter can commit a replacement and then fail
+        post-publication certification. A second pass over unchanged inputs
+        must still satisfy it.
         """
-        return self.done == 0
+        return self.work.published == 0
 
 
 class DerivationAdapter(Protocol):
