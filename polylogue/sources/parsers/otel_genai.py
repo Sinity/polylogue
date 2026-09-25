@@ -170,6 +170,25 @@ def _span_key(span: dict[str, object]) -> tuple[int, str]:
     return start, str(span.get("spanId", span.get("span_id", "")))
 
 
+def _span_coordinate(resource_id: str, span: dict[str, object]) -> tuple[str, str, str]:
+    return (
+        resource_id,
+        optional_string(span.get("traceId")) or optional_string(span.get("trace_id")) or "",
+        optional_string(span.get("spanId")) or optional_string(span.get("span_id")) or "",
+    )
+
+
+def _span_variant_key(item: tuple[dict[str, object], str | None]) -> tuple[int, int, str, str]:
+    span, schema_url = item
+    schema_rank = 0 if schema_url == SEMCONV_SCHEMA_URL else 1 if schema_url is None else 2
+    return (
+        schema_rank,
+        _span_key(span)[0],
+        schema_url or "",
+        json.dumps(span, sort_keys=True, separators=(",", ":")),
+    )
+
+
 def _iter_spans(payload: dict[str, object]) -> Iterable[tuple[str, dict[str, object], str | None]]:
     resource_spans = payload.get("resourceSpans", payload.get("resource_spans"))
     if not isinstance(resource_spans, list):
@@ -290,7 +309,25 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
 def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
     """Normalize OTLP GenAI spans into resource/conversation or trace sessions."""
     del fallback_id  # stable source coordinates, never an import filename
-    spans = list(_iter_spans(_mapping(payload)))
+    variants: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = defaultdict(list)
+    for resource_id, span, schema_url in _iter_spans(_mapping(payload)):
+        variants[_span_coordinate(resource_id, span)].append((span, schema_url))
+    spans: list[tuple[str, dict[str, object], str | None]] = []
+    conflicts: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = {}
+    for coordinate, copies in sorted(variants.items()):
+        ordered = sorted(copies, key=_span_variant_key)
+        selected = ordered[0]
+        spans.append((coordinate[0], *selected))
+        selected_identity = (selected[1], _span_variant_key(selected)[3])
+        seen = {selected_identity}
+        alternatives = []
+        for item in ordered[1:]:
+            identity = (item[1], _span_variant_key(item)[3])
+            if identity not in seen:
+                alternatives.append(item)
+                seen.add(identity)
+        if alternatives:
+            conflicts[coordinate] = alternatives
     span_details: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
     for resource_id, span, _schema_url in spans:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
@@ -332,7 +369,10 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         messages: list[ParsedMessage] = []
         events: list[ParsedSessionEvent] = []
         models: set[str] = set()
-        for span, schema_url in sorted(scoped_spans, key=lambda item: _span_key(item[0])):
+        for span, schema_url in sorted(
+            scoped_spans,
+            key=lambda item: (_span_key(item[0]), _span_coordinate(resource_id, item[0])[1]),
+        ):
             attrs = _attributes(span.get("attributes"))
             trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
             if trace_id is None:
@@ -366,6 +406,18 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
                     },
                 )
             )
+            for conflicting_span, conflicting_schema_url in conflicts.get(_span_coordinate(resource_id, span), ()):
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="otel_conflicting_span_id",
+                        payload={
+                            "trace_id": trace_id,
+                            "span_id": span.get("spanId", span.get("span_id")),
+                            "conflicting_span": conflicting_span,
+                            "schema_url": conflicting_schema_url,
+                        },
+                    )
+                )
             if schema_url not in (None, SEMCONV_SCHEMA_URL):
                 continue
             span_messages = _messages_for_span(span, attrs, trace_id)

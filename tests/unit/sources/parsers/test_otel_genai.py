@@ -150,3 +150,81 @@ def test_otel_genai_assigns_span_usage_to_one_assistant_output() -> None:
         (None, None, None),
     ]
     assert not any(event.event_type == "message_usage" for event in session.session_events)
+
+
+def test_duplicate_span_copies_normalize_once_in_any_wire_order() -> None:
+    payload = _payload()
+    chat = _spans(payload)[1]
+    _spans(payload).append(copy.deepcopy(chat))
+
+    forward = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+    _spans(payload).reverse()
+    reversed_result = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+
+    assert [session.model_dump(mode="json") for session in forward] == [
+        session.model_dump(mode="json") for session in reversed_result
+    ]
+    assert len(forward[0].messages) == 6
+    assert not any(event.event_type == "otel_conflicting_span_id" for event in forward[0].session_events)
+
+
+def test_conflicting_span_chooses_one_copy_before_conversation_grouping() -> None:
+    payload = _payload()
+    chat = _spans(payload)[1]
+    conflict = copy.deepcopy(chat)
+    conflict["startTimeUnixNano"] = "1735689609000000000"
+    conversation = next(attr for attr in conflict["attributes"] if attr["key"] == "gen_ai.conversation.id")
+    conversation["value"] = {"stringValue": "different-conversation"}
+    _spans(payload).extend((copy.deepcopy(chat), conflict, copy.deepcopy(conflict)))
+
+    forward = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+    _spans(payload).reverse()
+    reversed_result = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+
+    assert [session.model_dump(mode="json") for session in forward] == [
+        session.model_dump(mode="json") for session in reversed_result
+    ]
+    assert len(forward) == 1
+    assert forward[0].provider_session_id == "synthetic-agent:conversation:conversation-demo-7"
+    assert len(forward[0].messages) == 6
+    conflicts = [event for event in forward[0].session_events if event.event_type == "otel_conflicting_span_id"]
+    assert len(conflicts) == 1
+    assert conflicts[0].payload["conflicting_span"]["startTimeUnixNano"] == "1735689609000000000"
+
+
+def test_supported_schema_wins_conflicting_unsupported_copy() -> None:
+    payload = _payload()
+    scope = payload["resourceSpans"][0]["scopeSpans"][0]
+    unsupported = copy.deepcopy(scope)
+    unsupported["schemaUrl"] = "https://example.invalid/genai/99.0.0"
+    unsupported["spans"] = [copy.deepcopy(_spans(payload)[1])]
+    unsupported["spans"][0]["startTimeUnixNano"] = "1735689600000000000"
+    payload["resourceSpans"][0]["scopeSpans"].insert(0, unsupported)
+
+    session = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")[0]
+
+    assert len(session.messages) == 6
+    conflicts = [event for event in session.session_events if event.event_type == "otel_conflicting_span_id"]
+    assert len(conflicts) == 1
+    assert conflicts[0].payload["schema_url"] == "https://example.invalid/genai/99.0.0"
+
+
+def test_evidence_only_genai_span_remains_an_admitted_session() -> None:
+    payload = _payload()
+    chat = _spans(payload)[1]
+    _spans(payload)[:] = [chat]
+    chat["attributes"] = [
+        attr
+        for attr in chat["attributes"]
+        if attr["key"] not in {"gen_ai.input.messages", "gen_ai.output.messages"}
+        and not attr["key"].startswith("gen_ai.usage.")
+    ]
+
+    sessions = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+
+    assert len(sessions) == 1
+    assert sessions[0].messages == []
+    assert [event.event_type for event in sessions[0].session_events] == ["otel_span_evidence"]
+    assert (
+        require_positive_conversational_evidence(sessions, provider=Provider.OTEL_GENAI, source_path=None) == sessions
+    )

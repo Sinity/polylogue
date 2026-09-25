@@ -139,6 +139,13 @@ URL, and source fidelity states remain session evidence. Usage is only copied
 from reported non-negative `gen_ai.usage.*` values; absent usage is never
 invented as zero.
 
+Within a resource, trace ID plus span ID identifies one span. Repeated exact
+copies normalize once. If copies conflict, the pinned schema wins, followed by
+an earlier start time and canonical JSON bytes. Other distinct copies remain
+in `otel_conflicting_span_id` evidence events. The selected copy determines
+conversation grouping, so export order cannot change the session identity.
+Spans with no messages still produce an evidence session.
+
 ## How New Features Should Cite This Map
 
 ### ImportExplain
