@@ -124,7 +124,7 @@ timeout_seconds = 180
 
 [packets.review]
 backend = "codex"
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 effort = "high"
 
 [operations.parser_census]

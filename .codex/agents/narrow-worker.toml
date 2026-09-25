@@ -1,7 +1,7 @@
 name = "narrow_worker"
 description = "Executes a fully-specified lane -- a checklist-grade recipe or an already-decided architectural refactor -- without re-deriving the design."
 
-model = "gpt-5.6-luna"
+model = "gpt-6-luna"
 model_reasoning_effort = "high"
 
 developer_instructions = """
