@@ -969,7 +969,10 @@ def _prepared_retained_outcome(
     try:
         with staged.open("xb") as handle:
             pickle.dump(outcome[0], handle, protocol=pickle.HIGHEST_PROTOCOL)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(staged, prepared.sessions_path)
+        _fsync_directory(prepared.sessions_path.parent)
     except Exception as exc:
         raise RetainedPreparationRetryableError(
             f"prepared retained enrichment carrier failed for raw {raw_id}"
@@ -978,6 +981,14 @@ def _prepared_retained_outcome(
         staged.unlink(missing_ok=True)
     prepared.enriched = True
     return outcome
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 class RawParsePrefetchCache:
