@@ -378,7 +378,6 @@ def test_gemini_cli_contentless_turn_keeps_its_token_counts() -> None:
         "input_tokens": 19029,
         "output_tokens": 782,
         "cached_input_tokens": 0,
-        "cache_write_tokens": None,
         "reasoning_output_tokens": 0,
         "total_tokens": 19811,
     }
