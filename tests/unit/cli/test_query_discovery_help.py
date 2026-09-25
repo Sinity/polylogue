@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.archive.query import discovery
@@ -20,7 +21,7 @@ def test_root_help_resolves_query_discovery_markers() -> None:
 
 
 def test_a_new_help_marker_uses_the_discovery_declaration_without_a_renderer_edit(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A marker key is resolved through the declaration lookup, not a copied map."""
 
