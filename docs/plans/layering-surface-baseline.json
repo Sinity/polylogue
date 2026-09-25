@@ -211,21 +211,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/embed.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/embed.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/embed.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/import_command.py",
     "import": "polylogue.sources.import_explain"
   },

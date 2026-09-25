@@ -197,7 +197,7 @@
     },
     {
       "file": "polylogue/daemon/fts_status.py",
-      "digest": "0620e113494c05e43fc1853a07e36c6e65c56a0d"
+      "digest": "2519e6a7503320d7b938dc2795cb7b5104673ce0"
     },
     {
       "file": "polylogue/daemon/http.py",
