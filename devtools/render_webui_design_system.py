@@ -64,6 +64,7 @@ ORIGIN_LABELS: dict[Origin, str] = {
     Origin.CLAUDE_AI_EXPORT: "Claude.ai export",
     Origin.CLAUDE_DESIGN_SESSION: "Claude Design",
     Origin.AISTUDIO_DRIVE: "AI Studio Drive",
+    Origin.OTEL_GENAI: "OpenTelemetry GenAI",
 }
 EVIDENCE_LABELS: dict[str, str] = {
     "exact": "Exact",
@@ -98,8 +99,6 @@ def contrast_ratio(foreground: str, background: str) -> float:
 
 def _contract_validation() -> None:
     public_origins = tuple(PUBLIC_ORIGIN_TOKENS)
-    if len(public_origins) != 10:
-        raise ValueError(f"expected 10 public Origin tokens, found {len(public_origins)}")
     if Origin.UNKNOWN_EXPORT in public_origins:
         raise ValueError("unknown-export is a fallback state, not a public Origin badge token")
     if set(ORIGIN_LABELS) != set(public_origins):

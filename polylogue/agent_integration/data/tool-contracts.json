@@ -88,6 +88,7 @@
             "claude-ai-export",
             "claude-design-session",
             "aistudio-drive",
+            "otel-genai",
             "unknown-export"
           ],
           "kind": "string",

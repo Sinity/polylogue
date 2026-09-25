@@ -297,6 +297,7 @@ WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
         Origin.CLAUDE_AI_EXPORT: ("#fed7aa", "#3b2410"),
         Origin.CLAUDE_DESIGN_SESSION: ("#fdba74", "#3a2a12"),
         Origin.AISTUDIO_DRIVE: ("#a5b4fc", "#24264b"),
+        Origin.OTEL_GENAI: ("#fcd34d", "#3f2d0a"),
     },
     "light": {
         Origin.CLAUDE_CODE_SESSION: ("#9a3412", "#ffedd5"),
@@ -309,6 +310,7 @@ WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
         Origin.CLAUDE_AI_EXPORT: ("#9a3412", "#ffedd5"),
         Origin.CLAUDE_DESIGN_SESSION: ("#c2410c", "#ffedd5"),
         Origin.AISTUDIO_DRIVE: ("#3730a3", "#e0e7ff"),
+        Origin.OTEL_GENAI: ("#92400e", "#fef3c7"),
     },
 }
 

@@ -31,6 +31,7 @@ The authoritative `Origin` enum contains the currently supported public source t
 | `claude-ai-export` | Claude web exports (lab: Anthropic) |
 | `claude-design-session` | Claude Design agentic sessions (lab: Anthropic) |
 | `aistudio-drive` | Google AI Studio / Drive exports (lab: Google) |
+| `otel-genai` | OpenTelemetry GenAI OTLP-JSON files (explicit source roots) |
 | `unknown-export` | Unrecognized fallback exports |
 
 Coverage is not implied by token existence. `status` must report whether the requested origins are configured, ingested, fresh, converged, and suitable for the requested evidence type. State missing or stale coverage in the answer.

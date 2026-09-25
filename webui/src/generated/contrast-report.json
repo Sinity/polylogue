@@ -194,6 +194,15 @@
       "threshold": 4.5
     },
     {
+      "background": "#fef3c7",
+      "foreground": "#92400e",
+      "mode": "light",
+      "pair": "origin-otel-genai",
+      "passes": true,
+      "ratio": 6.37,
+      "threshold": 4.5
+    },
+    {
       "background": "#0b1015",
       "foreground": "#eef4f8",
       "mode": "dark",
@@ -380,6 +389,15 @@
       "pair": "origin-aistudio-drive",
       "passes": true,
       "ratio": 7.25,
+      "threshold": 4.5
+    },
+    {
+      "background": "#3f2d0a",
+      "foreground": "#fcd34d",
+      "mode": "dark",
+      "pair": "origin-otel-genai",
+      "passes": true,
+      "ratio": 9.15,
       "threshold": 4.5
     }
   ],
