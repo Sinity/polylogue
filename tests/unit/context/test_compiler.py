@@ -75,7 +75,8 @@ def test_query_unit_context_segment_projects_refs() -> None:
             "unit": "run",
             "query": "runs where session.id:codex-session:compiler",
             "total": 1,
-            "items": [
+            "items": [],
+            "projected_items": [
                 {
                     "unit": "run",
                     "run_ref": "run:codex-session:compiler",

@@ -284,7 +284,7 @@ def compile_query_unit_context_segment(envelope: object) -> ContextSegment:
     payload = cast(dict[str, object], envelope.model_dump(mode="json", exclude_none=True))  # type: ignore[attr-defined]
     unit = str(payload.get("unit") or "unit")
     query = str(payload.get("query") or "")
-    items = cast(list[dict[str, object]], payload.get("items") or [])
+    items = cast(list[dict[str, object]], payload.get("projected_items") or payload.get("items") or [])
     object_refs, evidence_refs = _query_unit_refs(items)
     title = f"Query: {unit}"
     lines = [f"# {title}", "", f"- expression: `{query}`", f"- rows: {payload.get('total', len(items))}", ""]

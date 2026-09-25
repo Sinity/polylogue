@@ -176,6 +176,18 @@ def _is_daemon_unavailable(exc: Exception) -> bool:
     return isinstance(exc, OperationUnavailableError)
 
 
+def _is_session_not_found(exc: Exception) -> bool:
+    """Whether the daemon completed a read and rejected its session identity.
+
+    The text of a daemon-unavailable refusal can legitimately mention a missing
+    socket or endpoint.  Only a completed operation failure may establish that
+    the requested session is absent.
+    """
+    from polylogue.cli.operation_kernel import OperationFailedError
+
+    return isinstance(exc, OperationFailedError) and _read_failure_detail(exc).lower().startswith("session not found")
+
+
 def _read_failure_as_usage_error(exc: Exception) -> NoReturn:
     """Re-raise a declared read's typed refusal as the CLI's own refusal.
 
@@ -551,7 +563,7 @@ def _transcript_or_page(
     through to ordinary page execution — but an *ambiguous* reference is a real
     identity failure and must not broaden into a text search.
     """
-    from polylogue.cli.operation_kernel import OperationFailedError, OperationKernelError
+    from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
         return _read_session_windows(config, ref, daemon_disabled=daemon_disabled, message_limit=message_limit)
@@ -564,10 +576,10 @@ def _transcript_or_page(
         # second read.
         detail = _read_failure_detail(exc)
         if certain:
-            if "not found" in detail:
+            if _is_session_not_found(exc):
                 _fail(f"Session not found: {ref}")
             _read_failure_as_usage_error(exc)
-        if isinstance(exc, OperationFailedError) and exc.code.lower().startswith("session not found"):
+        if _is_session_not_found(exc):
             return None
         if "ambiguous" in detail:
             raise click.UsageError(detail) from exc
@@ -751,16 +763,26 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         except OperationKernelError as exc:
             _read_failure_as_usage_error(exc)
         env.record_timing("db-open", db_open_started_at)
-        raw_items = payload.get("items")
-        items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+        raw_projected_items = payload.get("projected_items")
+        items = (
+            [item for item in raw_projected_items if isinstance(item, dict)]
+            if isinstance(raw_projected_items, list)
+            else []
+        )
+        item_key = "projected_items" if items else "items"
+        if not items:
+            raw_items = payload.get("items")
+            items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
         if not items:
             _emit_unit_no_results(payload, unit=unit_source.unit, output_format=output_format)
-        text_line = (
-            _aggregate_query_line
-            if payload.get("mode") == "query-unit-aggregate"
-            else _query_unit_text_line(unit_source.unit)
-        )
-        emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
+        text_line: _QueryUnitTextLine
+        if payload.get("mode") == "query-unit-aggregate":
+            text_line = _aggregate_query_line
+        elif item_key == "projected_items":
+            text_line = _projected_query_unit_text_line(unit_source.unit)
+        else:
+            text_line = _query_unit_text_line(unit_source.unit)
+        emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields, item_key=item_key)
         return
 
     if aggregate is not None:
@@ -1820,7 +1842,45 @@ def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_form
 
 
 def _message_query_line(item: dict[str, object]) -> str:
-    return f"{item['message_id']} [{item['role']}] {bound_display_text(item.get('text'))}"
+    parts: list[str] = []
+    message_id = item.get("message_id")
+    if message_id is not None:
+        parts.append(str(message_id))
+    role = item.get("role")
+    if role is not None:
+        parts.append(f"[{role}]")
+    text = bound_display_text(item.get("text"))
+    if text:
+        parts.append(text)
+    return " ".join(parts)
+
+
+def _projected_query_unit_text_line(unit: str) -> _QueryUnitTextLine:
+    """Render every field a terminal ``select`` actually supplied."""
+    return _projected_message_query_line if unit == "message" else _projected_query_unit_line
+
+
+def _projected_message_query_line(item: dict[str, object]) -> str:
+    parts: list[str] = []
+    message_id = item.get("message_id")
+    if message_id is not None:
+        parts.append(str(message_id))
+    role = item.get("role")
+    if role is not None:
+        parts.append(f"[{role}]")
+    text = bound_display_text(item.get("text"))
+    if text:
+        parts.append(text)
+    parts.extend(
+        f"{field}={bound_display_text(value)}"
+        for field, value in item.items()
+        if field not in {"message_id", "role", "text"}
+    )
+    return " ".join(parts)
+
+
+def _projected_query_unit_line(item: dict[str, object]) -> str:
+    return " ".join(f"{field}={bound_display_text(value)}" for field, value in item.items())
 
 
 def _action_query_line(item: dict[str, object]) -> str:

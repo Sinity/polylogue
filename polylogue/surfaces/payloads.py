@@ -3451,14 +3451,18 @@ class QueryUnitAggregateRowPayload(SurfacePayloadModel):
 
 
 class QueryUnitEnvelope(SurfacePayloadModel):
-    """Shared envelope for explicit terminal unit-source query results."""
+    """Shared envelope for explicit terminal unit-source query results.
+
+    ``items`` contains full typed rows by default. A message ``select`` route
+    leaves it empty and returns only requested fields in ``projected_items``.
+    """
 
     mode: Literal["query-unit"] = "query-unit"
     unit: QueryUnitKind
     query: str
     items: tuple[QueryUnitRowPayload, ...]
     projected_items: QueryUnitProjectedRows = ()
-    """Requested field projections, kept additive to the typed ``items``."""
+    """Field-name keyed rows requested by a terminal projection stage."""
     pipeline: dict[str, object] | None = None
     """Typed source-to-result pipeline that shaped this terminal-unit page."""
     pipeline_stages: tuple[dict[str, object], ...] = Field(
@@ -3597,15 +3601,17 @@ def build_query_unit_envelope(
     """
 
     items_tuple = tuple(items)
+    projected_items_tuple = tuple(projected_items)
+    emitted_rows = len(items_tuple) or len(projected_items_tuple)
     return QueryUnitEnvelope(
-        outcome=decide_outcome(matched=len(items_tuple), degraded=degraded, error=error),
+        outcome=decide_outcome(matched=emitted_rows, degraded=degraded, error=error),
         unit=unit,
         query=query,
         items=items_tuple,
-        projected_items=tuple(projected_items),
+        projected_items=projected_items_tuple,
         pipeline=dict(pipeline) if pipeline is not None else None,
         pipeline_stages=tuple(dict(stage) for stage in pipeline_stages),
-        total=len(items_tuple),
+        total=emitted_rows,
         limit=limit,
         offset=offset,
         next_offset=offset + limit if has_next else None,

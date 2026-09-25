@@ -2975,6 +2975,90 @@ def query_messages(
     ]
 
 
+_ARCHIVE_MESSAGE_PROJECTION_COLUMNS: dict[str, str] = {
+    "message_id": "m.message_id",
+    "session_id": "m.session_id",
+    "origin": "s.origin",
+    "session.origin": "s.origin",
+    "title": "s.title",
+    "session.title": "s.title",
+    "session.repo": """(
+        SELECT group_concat(repo_name, ', ')
+        FROM (
+            SELECT r.repo_name
+            FROM session_repos sr
+            JOIN repos r ON r.repo_id = sr.repo_id
+            WHERE sr.session_id = m.session_id
+            ORDER BY r.repo_name
+        )
+    )""",
+    "role": "m.role",
+    "message_type": "m.message_type",
+    "material_origin": "m.material_origin",
+    "occurred_at": "m.occurred_at_ms",
+    "occurred_at_ms": "m.occurred_at_ms",
+    "position": "m.position",
+    "word_count": "m.word_count",
+    "text": """COALESCE((
+        SELECT group_concat(ordered.search_text, char(10))
+        FROM (
+            SELECT b.search_text
+            FROM blocks b
+            WHERE b.message_id = m.message_id
+              AND b.search_text IS NOT NULL
+            ORDER BY b.position, b.block_id
+        ) AS ordered
+    ), '')""",
+}
+
+
+def query_message_projection(
+    self: _ArchiveQueryReadsHost,
+    predicate: QueryPredicate,
+    *,
+    fields: Sequence[str],
+    limit: int = 50,
+    offset: int = 0,
+    session_filters: Mapping[str, object] | None = None,
+    sort: Literal["time"] | None = None,
+    sort_direction: Literal["asc", "desc"] = "asc",
+) -> list[dict[str, object]]:
+    """Return selected message fields, leaving unselected text and blocks unread."""
+
+    if not fields:
+        raise ValueError("message projection requires at least one field")
+    unknown = tuple(field for field in fields if field not in _ARCHIVE_MESSAGE_PROJECTION_COLUMNS)
+    if unknown:
+        raise ValueError(f"unsupported message projection field: {unknown[0]}")
+
+    normalized_limit = max(int(limit), 0)
+    normalized_offset = max(int(offset), 0)
+    order_direction = _query_unit_order_direction(sort_direction)
+    if sort == "time":
+        order_by = f"COALESCE(m.occurred_at_ms, s.sort_key_ms) {order_direction}, m.message_id {order_direction}"
+    else:
+        order_by = "COALESCE(m.occurred_at_ms, s.sort_key_ms), m.message_id"
+    clause, params = _structural_predicate_clause("message", "m", predicate, session_alias="s")
+    session_clause = ""
+    session_params: list[object] = []
+    if session_filters:
+        session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
+    selected = ",\n            ".join(f'{_ARCHIVE_MESSAGE_PROJECTION_COLUMNS[field]} AS "{field}"' for field in fields)
+    rows = self._conn.execute(
+        f"""
+        SELECT {selected}
+        FROM messages m
+        JOIN sessions s ON s.session_id = m.session_id
+        WHERE {clause}
+        {session_clause}
+        ORDER BY {order_by}
+        LIMIT ? OFFSET ?
+        """,
+        [*params, *session_params, normalized_limit, normalized_offset],
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def query_session_messages(
     self: _ArchiveQueryReadsHost,
     session_ids: Sequence[str],

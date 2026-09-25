@@ -2819,6 +2819,106 @@ async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Pat
         await archive.close()
 
 
+async def test_query_units_selects_message_fields_without_materializing_full_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A message ``select`` page exposes field-only rows while the default stays typed.
+
+    The facade reaches the production terminal executor and a real SQLite
+    archive.  If ``select`` falls back to ``ArchiveStore.query_messages()``,
+    the guard makes the test fail before its field assertions can pass.
+    """
+    from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitEnvelope, QueryUnitProjectedRowPayload
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="unit-field-select",
+                    title="Field-only terminal rows",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="first selected message",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first selected message")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="u2",
+                            role=Role.USER,
+                            text="second selected message",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second selected message")],
+                        ),
+                    ],
+                ),
+            )
+
+        projection_reads: set[tuple[str, str]] = set()
+        query_message_projection = cast(Any, ArchiveStore.query_message_projection)
+
+        def _record_projection_reads(self: ArchiveStore, *args: object, **kwargs: object) -> object:
+            def _authorizer(
+                action: int,
+                table: str | None,
+                column: str | None,
+                _database: str | None,
+                _trigger: str | None,
+            ) -> int:
+                if action == sqlite3.SQLITE_READ and table is not None and column is not None:
+                    projection_reads.add((table, column))
+                return sqlite3.SQLITE_OK
+
+            self._conn.set_authorizer(_authorizer)
+            try:
+                return query_message_projection(self, *args, **kwargs)
+            finally:
+                self._conn.set_authorizer(None)
+
+        def _full_row_fallback(*args: object, **kwargs: object) -> object:
+            raise AssertionError("message select must use the field projection read")
+
+        monkeypatch.setattr(ArchiveStore, "query_message_projection", _record_projection_reads)
+        monkeypatch.setattr(ArchiveStore, "query_messages", _full_row_fallback)
+        first = await archive.query_units("messages where role:user | select message_id, role", limit=1)
+        assert isinstance(first, QueryUnitEnvelope)
+        assert first.outcome.state == "ok"
+        assert first.items == ()
+        assert first.total == 1
+        assert len(first.projected_items) == 1
+        assert isinstance(first.projected_items[0], QueryUnitProjectedRowPayload)
+        assert first.projected_items[0].root == {
+            "message_id": "codex-session:unit-field-select:n:u1",
+            "role": "user",
+        }
+        assert {("messages", "message_id"), ("messages", "role")} <= projection_reads
+        assert not {table for table, _column in projection_reads if table == "blocks"}
+        assert first.continuation is not None
+
+        second = await archive.query_units(continuation=first.continuation)
+        assert isinstance(second, QueryUnitEnvelope)
+        assert second.outcome.state == "ok"
+        assert second.items == ()
+        assert second.total == 1
+        assert len(second.projected_items) == 1
+        assert isinstance(second.projected_items[0], QueryUnitProjectedRowPayload)
+        assert second.projected_items[0].root == {
+            "message_id": "codex-session:unit-field-select:n:u2",
+            "role": "user",
+        }
+        assert second.continuation is None
+
+        monkeypatch.undo()
+        default = await archive.query_units("messages where role:user", limit=1)
+        assert isinstance(default, QueryUnitEnvelope)
+        assert isinstance(default.items[0], MessageQueryRowPayload)
+        assert default.items[0].text == "first selected message"
+    finally:
+        await archive.close()
+
+
 async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None:
     """``query_units()`` applies surrounding session filters before returning rows."""
     archive = _archive(tmp_path)
@@ -4325,6 +4425,79 @@ async def test_export_otel_projects_query_unit_rows(tmp_path: Path) -> None:
         assert "context-snapshot:codex-session:ext-facade-otel-child:subagent_start" in payload.refs
         [span] = payload.spans
         assert span.attributes["polylogue.run.ref"] == "run:codex-session:ext-facade-otel-child"
+    finally:
+        await archive.close()
+
+
+async def test_export_otel_projects_selected_message_rows(tmp_path: Path) -> None:
+    """``export_otel()`` consumes the selected-message envelope rows.
+
+    The selected query uses the real field-only message route, whose public
+    contract has ``items=()``. Anti-vacuity: retain ``envelope.items`` in the
+    export loop and the OTel payload has no log for this source message.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    archive = _archive(tmp_path)
+    try:
+        index_db = archive.config.archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "facade-otel-selected-message")
+            .provider("codex")
+            .title("Facade OTel selected message")
+            .add_message("m-selected", role="user", text="Selected OTel message")
+            .save()
+        )
+
+        payload = await archive.export_otel(
+            source_ref="session:codex-session:facade-otel-selected-message",
+            expressions=(
+                "messages where role:user | select "
+                "message_id, session_id, origin, role, message_type, position, word_count, text",
+            ),
+            include_message_text=True,
+        )
+
+        assert payload.log_count == 1
+        [log] = payload.logs
+        assert log.body == "Selected OTel message"
+        assert log.attributes["polylogue.message.id"] == "codex-session:ext-facade-otel-selected-message:n:m-selected"
+    finally:
+        await archive.close()
+
+
+async def test_export_otel_refuses_selected_message_rows_missing_required_fields(tmp_path: Path) -> None:
+    """A narrow select is refused before row-model validation can leak details."""
+    from polylogue.telemetry.otel_projection import OtelProjectionInputError
+    from tests.infra.storage_records import SessionBuilder
+
+    archive = _archive(tmp_path)
+    try:
+        index_db = archive.config.archive_root / "index.db"
+        (
+            SessionBuilder(index_db, "facade-otel-narrow-selected-message")
+            .provider("codex")
+            .title("Facade OTel narrow selected message")
+            .add_message("m-selected", role="user", text="Selected OTel message")
+            .save()
+        )
+
+        with pytest.raises(OtelProjectionInputError) as raised:
+            await archive.export_otel(
+                source_ref="session:codex-session:facade-otel-narrow-selected-message",
+                expressions=("messages where role:user | select message_id, role",),
+            )
+
+        assert raised.value.unit == "message"
+        assert set(raised.value.missing_fields) == {
+            "message_type",
+            "origin",
+            "position",
+            "session_id",
+            "text",
+            "word_count",
+        }
+        assert raised.value.http_status_code == 422
     finally:
         await archive.close()
 

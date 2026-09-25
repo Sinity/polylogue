@@ -6866,6 +6866,28 @@ class ArchiveStore:
             sort_direction=sort_direction,
         )
 
+    def query_message_projection(
+        self,
+        predicate: QueryPredicate,
+        *,
+        fields: Sequence[str],
+        limit: int = 50,
+        offset: int = 0,
+        session_filters: Mapping[str, object] | None = None,
+        sort: Literal["time"] | None = None,
+        sort_direction: Literal["asc", "desc"] = "asc",
+    ) -> list[dict[str, object]]:
+        return _archive_query_reads.query_message_projection(
+            self,
+            predicate,
+            fields=fields,
+            limit=limit,
+            offset=offset,
+            session_filters=session_filters,
+            sort=sort,
+            sort_direction=sort_direction,
+        )
+
     def query_session_messages(
         self,
         session_ids: Sequence[str],
