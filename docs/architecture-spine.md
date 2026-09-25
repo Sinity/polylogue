@@ -10,8 +10,7 @@ For the standing invariants themselves — time, writer ownership, finding
 provenance, degradation, non-goals and revisit triggers, injected-context
 trust, and unification — read the [Doctrine index](atlas/doctrine.md). It
 names each invariant's executable owner, its gate, the observable failure, and
-the procedure for changing it, with anchors that `devtools gate atlas` keeps
-resolvable.
+the procedure for changing it. Check its source references against current code.
 
 ## Four Rings
 

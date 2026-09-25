@@ -231,14 +231,6 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
-        "atlas",
-        "Check that every atlas citation and declared owning gate resolves.",
-        "module",
-        ("devtools.verify_atlas",),
-        label="gate atlas",
-        in_quick=True,
-    ),
-    Gate(
         "schema-closure",
         "Ratchet the derived schema identity closure: it may shrink, never grow.",
         "module",

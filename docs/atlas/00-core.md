@@ -74,7 +74,7 @@ parent prefix (`polylogue/storage/sqlite/archive_tiers/write.py:810-856`;
 
 ## Where to start
 
-Read the area sheet before opening broad source trees:
+Use an area sheet when its map helps locate the relevant source:
 
 | Question | Sheet | First implementation area |
 | --- | --- | --- |
@@ -86,9 +86,9 @@ Read the area sheet before opening broad source trees:
 | Which invariant owns this rule, and what enforces it? | `doctrine.md` | `devtools/gate.py`, the owners it names |
 
 Then consult `docs/architecture.md` for the ring model, the specific area
-sheet for anchors and gotchas, and `devtools --list-commands` for executable
-verification. `devtools gate atlas` checks that every citation on these
-sheets still resolves to a real file and line range.
+sheet for navigation and gotchas, and `devtools --list-commands` for executable
+verification. Source references in these sheets are hints; inspect current code
+before relying on them.
 
 ## Non-negotiable boundaries
 

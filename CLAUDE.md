@@ -182,10 +182,8 @@ explicit-and-retryable or a typed permanent refusal.
 `devtools/command_catalog.py`; add a command → add its `CommandSpec` +
 `render devtools-reference`).
 
-Code-bound orientation facts in this file are kept aligned during edits but
-are not independently anchor-checked; durable citations belong in
-`docs/atlas/`, where `devtools gate atlas` proves every cited path and line
-range still resolves. It does not judge whether the prose is still true.
+Code-bound orientation facts in this file are kept aligned during edits.
+Source files, rather than documentation line numbers, decide current behavior.
 
 - `devtools test <sel>` — focused pytest through the managed harness (checkout
   guard, environment, typed result). It does not load or update testmon; its
@@ -260,12 +258,10 @@ grep the diff and check both paths.
 
 ## Documentation map
 
-`docs/atlas/` — agent-orientation sheets with code-verified anchors: read
-`00-core.md` and your area's sheet before exploring (storage, daemon, mcp,
-sources/parsers, query/read-path). `devtools gate atlas` runs in the quick set
-and blocks on a citation whose file or line range no longer exists. Prose that
-a change made wrong is re-verified or deleted by the change's author; no gate
-detects it.
+`docs/atlas/` — optional orientation sheets for storage, daemon, MCP,
+sources/parsers, and query/read paths. Their citations are navigation hints;
+check current source before relying on them. Update prose when changing the
+behavior it describes.
 `docs/architecture.md` (rings, data flow), `docs/internals.md` (invariants,
 schema history), `docs/architecture-spine.md` (decisions), `TESTING.md`,
 `CONTRIBUTING.md`, `docs/devtools.md` (generated), `docs/daemon.md`,

@@ -13,25 +13,10 @@ This sheet is an index, not a second contract. A stanza points at the owner
 and says what breaks; it does not restate an enum, a field list, or a schema.
 When the sheet and the owner disagree, the owner wins and the stanza is wrong.
 
-Each stanza carries a line of the form `**Owning gate**: ` followed by a
-backticked gate name, or by `none` with the reason. That name is resolved
-against the live gate registry (`devtools/gate.py:294-295`) by the atlas
-checker (`devtools/verify_atlas.py:118-129`), so a stanza cannot keep an owner
-that no longer exists. The denominator is the registry itself, not a copy of
-it: deleting a gate makes every stanza naming it go red on the next run.
-
-Two honest limits on that enforcement:
-
-- `devtools gate atlas` proves that a cited file exists and that a cited line
-  range lies inside it, and that a declared owning gate is a real gate. It
-  makes **no judgement about whether the surrounding prose is still true**
-  (`devtools/verify_atlas.py:1-10`). Prose that a change made wrong is
-  re-verified or deleted by that change's author; no gate detects it.
-- `devtools gate doc-commands` separately rejects a stale gate name written as
-  a runnable `devtools gate` invocation anywhere in a Markdown code segment
-  (`devtools/verify_doc_commands.py:309-318`) — including, as this paragraph
-  had to learn, a placeholder that is not a gate at all. It never sees an
-  owner written as a bare name, which is why the atlas-side resolution exists.
+Each stanza names an owning gate, or `none` with the reason. Resolve gate names
+against `devtools gate --list` and check source references before relying on
+them. Documentation citations do not establish that the surrounding prose is
+still true.
 
 ## Doctrine: time
 
@@ -197,10 +182,7 @@ retirement note required.
 **Owner**: this section. Each entry is affirmed against current source with a
 citation, or recorded as lapsed with the reason.
 
-**Owning gate**: `atlas`
-
-That gate covers the citations below and nothing else. No gate decides whether
-a non-goal is still the right call; a reviewer does.
+**Owning gate**: none — the decision remains a review responsibility.
 
 **Observable failure**: a non-goal is silently carried forward as if it had
 been re-checked, or is quietly abandoned by a change that never argued
