@@ -312,9 +312,12 @@ class _FullIngestResult:
     succeeded: list[Path]
     failed: list[Path]
     source_payload_read_bytes: int
+    # Accepted raw bytes awaiting worker completion or capacity. The cursor
+    # schedules a full retry without consuming its finite failure budget.
+    preparation_deferred: list[Path] = field(default_factory=list)
     #: Planned paths this pass deliberately admitted nothing for, each with
     #: the typed reason. A planned path must land in exactly one of
-    #: succeeded, failed, or here: one that lands in none of them is
+    #: succeeded, failed, preparation_deferred, or here: one that lands in none is
     #: indistinguishable from an idle source (polylogue-6q16u).
     excluded: dict[Path, str] = field(default_factory=dict)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
@@ -350,6 +353,7 @@ def _full_ingest_result_from_summary(
     *,
     succeeded: list[Path],
     failed: list[Path],
+    preparation_deferred: list[Path] | None = None,
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
     raw_fingerprints: dict[Path, str],
@@ -367,6 +371,7 @@ def _full_ingest_result_from_summary(
     return _FullIngestResult(
         succeeded=succeeded,
         failed=failed,
+        preparation_deferred=list(preparation_deferred or ()),
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
         raw_fingerprints=raw_fingerprints,

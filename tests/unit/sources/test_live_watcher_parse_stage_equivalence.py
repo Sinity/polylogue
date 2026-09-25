@@ -46,6 +46,11 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 
+def _stalled_process_worker(marker: str) -> None:
+    Path(marker).write_text("started")
+    time.sleep(30)
+
+
 def _codex_session_bytes(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
     rows: list[dict[str, object]] = [
         {"type": "session_meta", "payload": {"id": native_id, "timestamp": "2026-07-19T00:00:00Z"}}
@@ -234,6 +239,198 @@ async def test_process_parse_stage_produces_identical_archive_content(tmp_path: 
 
     assert len(stage.cache) == 0
     assert _canonical_snapshot(baseline_root) == _canonical_snapshot(process_root)
+
+
+@pytest.mark.asyncio
+async def test_path_worker_publishes_prepared_rows_from_captured_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.sources.live.batch as batch
+    import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    await _ingest(tmp_path / "baseline", paths, parse_stage=None)
+    monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+    copied = 0
+    original_copy = archive_tier_write.copy_shard_session_rows
+
+    def count_copy(*args: object, **kwargs: object) -> object:
+        nonlocal copied
+        copied += 1
+        return original_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", count_copy)
+    directory = tmp_path / "parse-shards"
+    stage = LiveParseStage(max_workers=1, shard_directory=directory, use_processes=True)
+    try:
+        await _ingest(tmp_path / "prepared", paths, parse_stage=stage)
+    finally:
+        stage.shutdown()
+    assert copied == 1
+    assert _canonical_snapshot(tmp_path / "baseline") == _canonical_snapshot(tmp_path / "prepared")
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_path_worker_failure_retains_raw_for_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.sources.live.batch as batch
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+
+    def failed_worker(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("synthetic worker death")
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", failed_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    cursor = CursorStore(archive_root / "index.db")
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=paths[0].parent),),
+        cursor=cursor,
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+    )
+    try:
+        metrics = await processor.ingest_files(paths, emit_event=False)
+    finally:
+        stage.shutdown()
+    assert metrics.failed_file_count == 1
+    with _connect(archive_root / "source.db") as conn:
+        row = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()
+        assert row is not None
+        assert "worker failed" in str(row[0])
+    with _connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_pending_preparation_does_not_spend_cursor_failure_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    import polylogue.sources.live.batch as batch
+    import polylogue.sources.live.cursor as cursor_module
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def delayed_worker(*args: object, **kwargs: object) -> object:
+        released.wait(timeout=30)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    cursor = CursorStore(archive_root / "index.db")
+    stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.01, shard_directory=tmp_path / "parse-shards")
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=cursor,
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+    )
+    try:
+        for _ in range(6):
+            metrics = await processor.ingest_files([path], emit_event=False)
+            assert str(path) in metrics.deferred_paths
+            state = cursor.get_record(path)
+            assert state is not None and state.failure_count == 0 and not state.excluded
+        with _connect(archive_root / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] >= 1
+        released.set()
+        stage._warm_timeout_seconds = 5
+        metrics = await processor.ingest_files([path], emit_event=False)
+        assert metrics.succeeded_file_count == 1
+    finally:
+        released.set()
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("measures concurrent worker wait against the configured timeout")
+def test_path_workers_share_one_wait_and_reuse_late_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+    import threading
+    import time
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+    calls: list[object] = []
+
+    def delayed_worker(*args: object, **kwargs: object) -> object:
+        calls.append(object())
+        released.wait(timeout=5)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    stage = LiveParseStage(
+        max_workers=2,
+        warm_timeout_seconds=0.05,
+        shard_directory=tmp_path / "parse-shards",
+    )
+    candidates = [(str(path), Provider.CODEX, True) for path in paths]
+    try:
+        started = time.monotonic()
+        assert stage.warm_paths(candidates) == 3
+        assert time.monotonic() - started < 0.5
+        for path in paths[:2]:
+            pending = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+            assert pending is not None and pending.error == "worker preparation pending"
+        capacity = stage.pop_path(str(paths[2]), blob_hash=hashlib.sha256(paths[2].read_bytes()).hexdigest())
+        assert capacity is not None and capacity.error == "worker preparation capacity is busy"
+        released.set()
+        stage._warm_timeout_seconds = 5
+        assert stage.warm_paths(candidates[:2]) == 2
+        assert len(calls) == 2
+        for path in paths[:2]:
+            result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+            assert result is not None and result.error is None
+            result.discard()
+        assert stage.warm_paths(candidates[2:]) == 1
+        assert len(calls) == 3
+        result = stage.pop_path(str(paths[2]), blob_hash=hashlib.sha256(paths[2].read_bytes()).hexdigest())
+        assert result is not None and result.error is None
+        result.discard()
+    finally:
+        released.set()
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("checks that a stalled process cannot block watcher shutdown")
+def test_path_stage_shutdown_terminates_stalled_process(tmp_path: Path) -> None:
+    directory = tmp_path / "parse-shards"
+    marker = tmp_path / "worker-started"
+    stage = LiveParseStage(max_workers=1, shard_directory=directory, use_processes=True)
+    future = stage._executor.submit(_stalled_process_worker, str(marker))
+    stage._path_futures["stalled"] = future  # type: ignore[assignment]
+    try:
+        for _ in range(500):
+            if marker.exists():
+                break
+            time.sleep(0.01)
+        assert marker.exists(), "process worker did not start"
+        started = time.monotonic()
+        stage.shutdown()
+        assert time.monotonic() - started < 5
+        assert future.done()
+        assert list(directory.iterdir()) == []
+    finally:
+        if not future.done():
+            stage.shutdown()
 
 
 @pytest.mark.asyncio
