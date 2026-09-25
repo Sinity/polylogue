@@ -395,7 +395,7 @@ def test_embedding_session_window_reports_max_session_truncation(
 
     from polylogue.operations.embedding_derivation import select_embedding_session_window
 
-    rows = [
+    rows: list[Any] = [
         SimpleNamespace(session_id="s1", message_count=1),
         SimpleNamespace(session_id="s2", message_count=1),
         SimpleNamespace(session_id="s3", message_count=1),
