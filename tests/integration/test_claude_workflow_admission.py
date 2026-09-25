@@ -27,6 +27,7 @@ from polylogue.analysis.claude_workflow_materializer import (
     claude_workflow_reparse_plan,
     materialize_claude_workflow_archive,
 )
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
@@ -267,16 +268,27 @@ def test_materializer_does_not_repair_pending_source_artifact_inventory(
     archive_root = workspace_env["archive_root"]
     initialize_active_archive_root(archive_root)
     source_path = workspace_env["data_root"] / ".claude/projects/project/subagents/workflows/wf-large/journal.jsonl"
-    payload = b"".join(
+    fact_payload = b"".join(
         b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(64)
     )
+    pending_payload = b'{"contentKey":"pending-source-only","agentId":"workflow-agent"}\n'
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_raw_payload(
+        classification = classify_artifact_path(str(source_path), provider=Provider.CLAUDE_CODE)
+        assert classification is not None and not classification.parse_as_session
+        archive.admit_raw_artifact_payload(
             provider=Provider.CLAUDE_CODE,
-            payload=payload,
+            payload=fact_payload,
             source_path=str(source_path),
             source_index=0,
             acquired_at_ms=2_000_000_000_000,
+            classification=classification,
+        )
+        archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=pending_payload,
+            source_path=str(source_path),
+            source_index=0,
+            acquired_at_ms=2_000_000_000_001,
             post_parse=True,
         )
 
@@ -284,8 +296,28 @@ def test_materializer_does_not_repair_pending_source_artifact_inventory(
 
     assert summary.current_artifact_count == 0
     with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
+        assert (
+            conn.execute(
+                """
+            SELECT a.raw_id
+            FROM raw_artifacts AS a
+            WHERE a.source_path = ?
+            """,
+                (str(source_path),),
+            ).fetchone()
+            == conn.execute(
+                """
+            SELECT raw_id
+            FROM raw_sessions
+            WHERE source_path = ?
+            ORDER BY acquired_at_ms, rowid
+            LIMIT 1
+            """,
+                (str(source_path),),
+            ).fetchone()
+        )
 
 
 @pytest.mark.asyncio

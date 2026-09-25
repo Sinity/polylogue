@@ -258,13 +258,32 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
 
 
 def _load_current_artifacts(conn: sqlite3.Connection) -> tuple[_RawArtifact, ...]:
+    # A source-only admission can supersede a classified fact before replay
+    # has enough evidence to publish its own artifact row.  Do not let the
+    # older fact carrier make that pending revision visible as current; the
+    # source owner will either classify the new revision during replay or leave
+    # it pending for a later pass.
     rows = conn.execute(
         """
+        WITH latest_raw AS (
+            SELECT raw_id, origin, source_path, source_index
+            FROM (
+                SELECT raw_id, origin, source_path, source_index,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY origin, source_path, source_index
+                           ORDER BY acquired_at_ms DESC, rowid DESC
+                       ) AS revision_rank
+                FROM raw_sessions
+                WHERE origin = ?
+            )
+            WHERE revision_rank = 1
+        )
         SELECT a.artifact_id, a.raw_id, a.source_path, a.source_index,
                a.artifact_kind, lower(hex(r.blob_hash)) AS blob_hash,
                r.acquired_at_ms
         FROM raw_artifacts AS a
         JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+        JOIN latest_raw AS latest ON latest.raw_id = a.raw_id
         WHERE a.origin = ?
           AND a.artifact_kind IN (
               'workflow_run_snapshot', 'workflow_journal', 'agent_transcript',
@@ -272,7 +291,7 @@ def _load_current_artifacts(conn: sqlite3.Connection) -> tuple[_RawArtifact, ...
           )
         ORDER BY a.source_path, a.source_index
         """,
-        (Origin.CLAUDE_CODE_SESSION.value,),
+        (Origin.CLAUDE_CODE_SESSION.value, Origin.CLAUDE_CODE_SESSION.value),
     ).fetchall()
     return tuple(
         _RawArtifact(
