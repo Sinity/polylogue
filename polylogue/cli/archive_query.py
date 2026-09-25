@@ -777,6 +777,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 item_key = "projected_items"
         if not items:
             _emit_unit_no_results(payload, unit=unit_source.unit, output_format=output_format)
+        text_line: _QueryUnitTextLine
         if payload.get("mode") == "query-unit-aggregate":
             text_line = _aggregate_query_line
         elif item_key == "projected_items":

@@ -4688,12 +4688,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         include_message_text: bool = False,
     ) -> OtelProjectionPayload:
         """Project bounded query-unit evidence into an OTel-like JSON payload."""
-        from polylogue.surfaces.payloads import MessageQueryRowPayload
+        from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitEnvelope
         from polylogue.telemetry.otel_projection import project_query_unit_rows_to_otel
 
         rows: list[Any] = []
         for expression in expressions:
             envelope = await self.query_units(expression, limit=limit)
+            if not isinstance(envelope, QueryUnitEnvelope):
+                raise ValueError("OTel export does not support aggregate query rows")
             if envelope.items:
                 rows.extend(envelope.items)
             elif envelope.projected_items:

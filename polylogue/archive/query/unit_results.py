@@ -41,6 +41,7 @@ from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
     QueryUnitAggregateRowPayload,
+    QueryUnitEnvelope,
     QueryUnitProjectedRowPayload,
     QueryUnitResultEnvelope,
     QueryUnitRowPayload,
@@ -458,8 +459,11 @@ def _record_result_page(
     selected_rows_exact: int | None = None,
 ) -> QueryUnitResultEnvelope:
     if ctx.execution_context is not None:
+        emitted_rows = len(envelope.items)
+        if isinstance(envelope, QueryUnitEnvelope):
+            emitted_rows = emitted_rows or len(envelope.projected_items)
         ctx.execution_context.record_result_page(
-            emitted_rows=len(envelope.items) or len(envelope.projected_items),
+            emitted_rows=emitted_rows,
             selected_rows_exact=selected_rows_exact,
         )
     return envelope
@@ -599,6 +603,7 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
     if method_name is None or payload_model is None:
         raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
     if ctx.source.unit == "message" and pipeline.selected_fields:
+        message_sort: Literal["time"] | None = "time" if sort == "time" else None
         rows = cast(
             Sequence[Any],
             ctx.archive.query_message_projection(
@@ -607,7 +612,7 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
                 limit=ctx.fetch_limit,
                 offset=ctx.offset,
                 session_filters=ctx.session_filters,
-                sort=sort,
+                sort=message_sort,
                 sort_direction=sort_direction,
             ),
         )

@@ -8,7 +8,7 @@ from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, TypeVar, get_args, overload
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast, get_args, overload
 
 from pydantic import BaseModel
 
@@ -291,7 +291,7 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
             break
     if not item_field:
         return None
-    items = tuple(raw_items)
+    items: tuple[object, ...] = tuple(cast(tuple[object, ...] | list[object], raw_items))
     low, high = 1, len(items)
     best: tuple[BaseModel, int] | None = None
     while low <= high:

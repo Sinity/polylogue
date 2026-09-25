@@ -2828,7 +2828,7 @@ async def test_query_units_selects_message_fields_without_materializing_full_row
     archive.  If ``select`` falls back to ``ArchiveStore.query_messages()``,
     the guard makes the test fail before its field assertions can pass.
     """
-    from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitProjectedRowPayload
+    from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitEnvelope, QueryUnitProjectedRowPayload
 
     archive = _archive(tmp_path)
     try:
@@ -2857,7 +2857,7 @@ async def test_query_units_selects_message_fields_without_materializing_full_row
             )
 
         projection_reads: set[tuple[str, str]] = set()
-        query_message_projection = ArchiveStore.query_message_projection
+        query_message_projection = cast(Any, ArchiveStore.query_message_projection)
 
         def _record_projection_reads(self: ArchiveStore, *args: object, **kwargs: object) -> object:
             def _authorizer(
@@ -2883,6 +2883,7 @@ async def test_query_units_selects_message_fields_without_materializing_full_row
         monkeypatch.setattr(ArchiveStore, "query_message_projection", _record_projection_reads)
         monkeypatch.setattr(ArchiveStore, "query_messages", _full_row_fallback)
         first = await archive.query_units("messages where role:user | select message_id, role", limit=1)
+        assert isinstance(first, QueryUnitEnvelope)
         assert first.outcome.state == "ok"
         assert first.items == ()
         assert first.total == 1
@@ -2897,6 +2898,7 @@ async def test_query_units_selects_message_fields_without_materializing_full_row
         assert first.continuation is not None
 
         second = await archive.query_units(continuation=first.continuation)
+        assert isinstance(second, QueryUnitEnvelope)
         assert second.outcome.state == "ok"
         assert second.items == ()
         assert second.total == 1
@@ -2910,6 +2912,7 @@ async def test_query_units_selects_message_fields_without_materializing_full_row
 
         monkeypatch.undo()
         default = await archive.query_units("messages where role:user", limit=1)
+        assert isinstance(default, QueryUnitEnvelope)
         assert isinstance(default.items[0], MessageQueryRowPayload)
         assert default.items[0].text == "first selected message"
     finally:
