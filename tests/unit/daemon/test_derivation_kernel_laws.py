@@ -215,6 +215,7 @@ def test_pending_is_required_minus_valid_and_a_second_pass_writes_nothing() -> N
 
     second = converge(registry, FRAME)
     assert second.wrote_nothing
+    assert second.work.published == 0
     assert second.outcomes == ()
     assert adapter.published == ["a", "b", "c"]
 
@@ -445,6 +446,10 @@ def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> No
     report = converge(registry, FRAME)
     assert report.done == 0
     assert report.failed == 1
+    # A replacement was committed before authoritative certification rejected
+    # it, so no DONE outcome cannot mean that storage was untouched.
+    assert not report.wrote_nothing
+    assert report.work.published == 1
     failure = report.by_outcome(Outcome.FAILED)[0]
     assert failure.error is not None and "stale" in failure.error
     assert adapter.output == {"a": "wrong-binding"}
