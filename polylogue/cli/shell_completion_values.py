@@ -7,13 +7,10 @@ Session-id, tag, repo-name and tool-name values come from native
 session/tag/repo/action read models; cwd-prefix has no archive source yet and
 degrades to an empty completion list.
 
-The daemon answers or nobody does. Completion runs on the coldest path the CLI
-has, and executing the read locally means building the execution graph and
-opening the archive for one keystroke -- measured in seconds, which is not a
-completion. So the archive-backed sources dispatch ``daemon_only`` and a
-missing daemon becomes a displayed refusal naming how to start it, not a
-silently empty list that reads as "no matches".
-
+The daemon-only operation avoids opening the archive on a cold shell process.
+Successful daemon answers are retained for 24 hours in a small disposable XDG
+cache so subsequent completion still has recent candidates while the daemon is
+offline. The cache is scoped to the selected archive file set.
 Declared vocabularies are answered here and never leave the process: an origin
 is a declaration, not archive content, so ``--origin`` completes on a fresh
 install with no daemon and no archive.
@@ -24,7 +21,13 @@ empty list.
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
+import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
+from pathlib import Path
 from typing import Final
 
 import click
@@ -67,12 +70,123 @@ _MAX_VALUE_COMPLETIONS = 32
 #: operation's ordinary read deadline.
 _COMPLETION_DEADLINE_MS = 1000
 
-#: Shown, not inserted, when an archive-backed completion has no daemon to ask.
-#: It names the remedy because "unsupported without a daemon" and "broken" look
-#: identical from a shell prompt otherwise.
+#: Shown, not inserted, when an archive-backed completion has no daemon and no
+#: prior daemon answer is cached. It explains how to populate suggestions.
 DAEMON_REQUIRED_COMPLETION_MESSAGE = (
-    "polylogue: no daemon — archive-backed completion needs `polylogued run` (systemctl --user start polylogued)"
+    "polylogue: no cached values — run `polylogued run` to populate shell completion suggestions"
 )
+_COMPLETION_CACHE_VERSION = 2
+_COMPLETION_CACHE_MAX_VALUES = 256
+_COMPLETION_CACHE_TTL_SECONDS = 24 * 60 * 60
+_COMPLETION_CACHE_MAX_BYTES = 1024 * 1024
+
+
+def _completion_cache_path() -> Path:
+    from polylogue.paths import cache_home
+
+    return cache_home() / "shell-completions.json"
+
+
+def _cached_value_matches(source: str, value: str, help_text: object, incomplete: str) -> bool:
+    prefix = incomplete.casefold()
+    if source == "session_id":
+        # Session completion also accepts native-ID substrings and title text.
+        title = help_text.partition(" · ")[2] if isinstance(help_text, str) else ""
+        return prefix in value.casefold() or prefix in title.casefold()
+    return value.casefold().startswith(prefix)
+
+
+def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_root: str) -> list[CompletionItem]:
+    """Read recent daemon answers without opening the archive."""
+    try:
+        with _completion_cache_path().open("r", encoding="utf-8") as stream:
+            raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
+        if len(raw) > _COMPLETION_CACHE_MAX_BYTES:
+            return []
+        payload = json.loads(raw)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != _COMPLETION_CACHE_VERSION
+            or payload.get("archive_root") != archive_root
+        ):
+            return []
+        values_by_source = payload.get("values")
+        values = values_by_source.get(source) if isinstance(values_by_source, dict) else None
+        if not isinstance(values, list):
+            return []
+        now = time.time()
+        return [
+            CompletionItem(row["value"], help=row.get("help") if isinstance(row.get("help"), str) else None)
+            for row in values
+            if isinstance(row, dict)
+            and isinstance(row.get("value"), str)
+            and isinstance(row.get("seen_at"), (int, float))
+            and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
+            and _cached_value_matches(source, row["value"], row.get("help"), incomplete)
+        ][:limit]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _remember_completion_values(source: str, value: object, *, archive_root: str) -> None:
+    """Merge daemon-returned candidates into the small, disposable XDG cache."""
+    items = render_completion_values(value)
+    if not items:
+        return
+    path = _completion_cache_path()
+    now = time.time()
+    values: dict[str, list[dict[str, object]]] = {}
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
+        prior = json.loads(raw) if len(raw) <= _COMPLETION_CACHE_MAX_BYTES else None
+        raw_values = (
+            prior.get("values") if isinstance(prior, dict) and prior.get("archive_root") == archive_root else None
+        )
+        if isinstance(raw_values, dict):
+            values = {
+                key: [
+                    row
+                    for row in rows
+                    if isinstance(row, dict)
+                    and isinstance(row.get("value"), str)
+                    and isinstance(row.get("seen_at"), (int, float))
+                    and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
+                ]
+                for key, rows in raw_values.items()
+                if isinstance(key, str) and key in {"session_id", "tag", "repo", "tool"} and isinstance(rows, list)
+            }
+    except (OSError, ValueError, TypeError):
+        pass
+    merged = {str(row["value"]): row for row in values.get(source, [])}
+    for item in items:
+        if len(item.value) <= 512:
+            merged[item.value] = {
+                "value": item.value,
+                "help": item.help[:512] if isinstance(item.help, str) else None,
+                "seen_at": now,
+            }
+    values[source] = list(merged.values())[-_COMPLETION_CACHE_MAX_VALUES:]
+    temporary: str | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=".shell-completions-", delete=False
+        ) as stream:
+            temporary = stream.name
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump({"version": _COMPLETION_CACHE_VERSION, "archive_root": archive_root, "values": values}, stream)
+        # This disposable cache does not require a durability barrier on each TAB press.
+        # ast-grep-ignore: replace-without-parent-fsync
+        os.replace(temporary, path)
+    except OSError:
+        pass
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                os.unlink(temporary)
+
+
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
 
 
@@ -103,11 +217,12 @@ def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[Completio
 def completion_values(source: str, incomplete: str, *, limit: int) -> list[CompletionItem]:
     """Ask the declared ``completion`` operation for one value vocabulary.
 
-    The resident daemon answers from its open snapshot or nothing does: the
-    dispatch is ``daemon_only`` precisely so that a TAB press can never fall
+    The resident daemon answers from its open snapshot; the dispatch is
+    ``daemon_only`` precisely so that a TAB press can never fall
     through to the local reader, which would open the archive and take seconds.
-    A missing daemon returns one displayed :func:`completion_message` instead,
-    because a bare empty list reads as "the archive has no matching values".
+    A missing daemon falls back to recently observed values in the small XDG
+    cache; this path never opens the archive. If the cache is cold, a displayed
+    message explains how to populate it.
 
     Every other failure degrades to an empty list: a completer has no channel
     to report on, and a traceback printed into a shell prompt is strictly worse
@@ -119,23 +234,29 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
         from polylogue.cli.lowering import lower_completion
         from polylogue.cli.operation_kernel import OperationUnavailableError, dispatch
         from polylogue.config import get_config
+        from polylogue.operations.archive_root import operation_archive_root
+
+        config = get_config()
+        archive_root = str(operation_archive_root(config))
     except Exception:
         return []
 
     try:
         result = dispatch(
-            get_config(),
+            config,
             lower_completion(source, incomplete, limit=limit),
             deadline_ms=_COMPLETION_DEADLINE_MS,
             daemon_only=True,
         )
     except OperationUnavailableError:
-        return [completion_message(DAEMON_REQUIRED_COMPLETION_MESSAGE)]
+        cached = _read_completion_cache(source, incomplete, limit=limit, archive_root=archive_root)
+        return cached or [completion_message(DAEMON_REQUIRED_COMPLETION_MESSAGE)]
     except Exception:
         # Deliberately broad: see the docstring. Any other typed refusal or
         # transport failure is rendered as no completion rather than a
         # traceback in the prompt.
         return []
+    _remember_completion_values(source, result.value, archive_root=archive_root)
     return render_completion_values(result.value)
 
 

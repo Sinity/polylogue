@@ -2,9 +2,9 @@
 
 Shell completion is the coldest, most latency-sensitive route the CLI has: it
 runs in a fresh process on a keystroke. The law these tests pin is that the
-archive-backed completers ask the resident daemon or say so -- they never open
-the archive themselves, and never fall through to the local reader, which costs
-seconds.
+archive-backed completers ask the resident daemon, use recent cached values,
+or explain a cold cache. They never open the archive themselves or fall through
+to the local reader, which costs seconds.
 
 Deliberately not a timing threshold. A latency assertion is flaky on a loaded
 machine and proves less than the structural fact: no database was opened.
@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import click
 import pytest
@@ -32,6 +33,7 @@ from polylogue.cli.shell_completion_values import (
 )
 from polylogue.config import get_config
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.frozen_clock import FrozenClock
 
 pytestmark = pytest.mark.contract
 
@@ -119,12 +121,12 @@ def test_daemon_off_completion_opens_no_database(tmp_path: Path) -> None:
     assert probe["opened"] == [], f"completion opened databases with no daemon: {probe['opened']}"
 
 
-def test_daemon_off_completion_says_why_it_is_empty(tmp_path: Path) -> None:
-    """A missing daemon is a displayed refusal, not an empty candidate list.
+def test_cold_cache_completion_says_how_to_populate_values(tmp_path: Path) -> None:
+    """A cold cache explains how to populate suggestions, not a false no-match.
 
     Mutation: return a bare ``[]`` on ``OperationUnavailableError`` and the
-    shell shows "no matches" for a running archive full of tags -- which is the
-    difference between unsupported and broken.
+    shell shows "no matches" -- which is the difference between an empty cache
+    and a query with no matching values.
     """
 
     bootstrap_archive_root(tmp_path / "archive")
@@ -137,9 +139,58 @@ def test_daemon_off_completion_says_why_it_is_empty(tmp_path: Path) -> None:
     for source in ARCHIVE_BACKED_COMPLETERS:
         rows = returned[source]
         assert rows == [[MESSAGE_COMPLETION_TYPE, DAEMON_REQUIRED_COMPLETION_MESSAGE]], (
-            f"{source} did not render the daemon refusal: {rows}"
+            f"{source} did not render the cold-cache guidance: {rows}"
         )
     assert "polylogued" in DAEMON_REQUIRED_COMPLETION_MESSAGE, "the refusal must name how to fix it"
+
+
+def test_daemon_off_completion_uses_recent_values_from_same_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
+    """A prior daemon answer remains useful offline until its bounded expiry."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-a"))
+    from polylogue.cli import operation_kernel
+
+    monkeypatch.setattr(
+        operation_kernel,
+        "dispatch",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            value={"value_completions": {"values": [{"value": "release-tag"}, {"value": "roadmap"}]}}
+        ),
+    )
+    from polylogue.cli.shell_completion_values import completion_values
+
+    assert [item.value for item in completion_values("tag", "", limit=5)] == ["release-tag", "roadmap"]
+    monkeypatch.setattr(
+        operation_kernel,
+        "dispatch",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            value={
+                "value_completions": {
+                    "values": [{"value": "claude-code-session:ext-123", "help": "claude-code · Roadmap planning"}]
+                }
+            }
+        ),
+    )
+    assert [item.value for item in completion_values("session_id", "", limit=5)] == ["claude-code-session:ext-123"]
+
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise OperationUnavailableError("daemon unavailable")
+
+    monkeypatch.setattr(operation_kernel, "dispatch", unavailable)
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == ["release-tag"]
+    assert [item.value for item in completion_values("session_id", "ext-123", limit=5)] == [
+        "claude-code-session:ext-123"
+    ]
+    assert [item.value for item in completion_values("session_id", "Roadmap", limit=5)] == [
+        "claude-code-session:ext-123"
+    ]
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-b"))
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-a"))
+    frozen_clock.advance(24 * 60 * 60 + 1)
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
 
 
 def test_a_declared_vocabulary_still_completes_without_a_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -178,15 +229,7 @@ def test_a_message_item_is_displayed_and_never_inserted() -> None:
 def test_daemon_only_dispatch_refuses_instead_of_reading_locally(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``daemon_only`` turns "no daemon" into a refusal, not a slow success.
-
-    ``completion`` is ``direct_allowed``, so without this flag the same call
-    answers correctly from the local reader -- the behaviour every other CLI
-    route wants and completion cannot afford.
-
-    Mutation: make ``daemon_only`` ignored in ``dispatch`` and this returns a
-    result instead of raising.
-    """
+    """Archive completion refuses without a daemon and never reads locally."""
 
     bootstrap_archive_root(tmp_path)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
@@ -196,5 +239,7 @@ def test_daemon_only_dispatch_refuses_instead_of_reading_locally(
     with pytest.raises(OperationUnavailableError):
         dispatch(config, request, daemon_only=True, archive_root=tmp_path)
 
-    fallback = dispatch(config, request, archive_root=tmp_path)
-    assert fallback.value is not None, "the local fallback is what daemon_only refuses; it must still work"
+    # This operation now has one daemon-owned route even without the explicit
+    # flag; a local archive fallback would put seconds back on the TAB path.
+    with pytest.raises(OperationUnavailableError):
+        dispatch(config, request, archive_root=tmp_path)

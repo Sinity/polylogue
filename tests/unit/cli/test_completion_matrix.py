@@ -885,6 +885,7 @@ def test_dynamic_completers_format_seeded_items_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
     completion_seeded_archive_ro: SeededArchiveQueryLease,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A populated archive is still not read by the completer, on any shell.
@@ -904,6 +905,7 @@ def test_dynamic_completers_format_seeded_items_per_shell(
     this returns session ids instead of the refusal.
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(completion_seeded_archive_ro.root))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
 
     items = _run_completion(shell, comp_cls, CONTRACT_COMPLETION_COMMANDS["session_id"])
@@ -917,6 +919,7 @@ def test_every_dynamic_completer_resolves_against_a_seeded_archive(
     label: str,
     cwords: list[str],
     completion_seeded_archive_ro: SeededArchiveQueryLease,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each dynamic completer resolves without raising on a populated archive.
@@ -929,6 +932,7 @@ def test_every_dynamic_completer_resolves_against_a_seeded_archive(
     read the seeded archive returns candidates instead of the refusal.
     """
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(completion_seeded_archive_ro.root))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
 
     items = _run_completion("bash", BashComplete, cwords)
