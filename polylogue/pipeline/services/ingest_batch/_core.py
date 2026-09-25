@@ -1645,11 +1645,15 @@ def _reuse_current_accepted_marker_carrier(
     """Reuse an accepted carrier before the ordinary session writer runs.
 
     A matching current-incarnation witness proves this exact accepted request
-    already crossed the index commit boundary. In that one case replay must
-    keep the carrier and skip session preparation, whose no-op disposition
-    could otherwise look like a different marker interpretation. A missing
-    current witness (for example after index replacement) falls through to
-    the normal writer and exact-byte re-witness checks.
+    already crossed the index commit boundary. A pending carrier without its
+    own witness can make the same proof when every requested session is
+    already materialized with the retained input hash in that incarnation.
+    That occurs if a rollback lost the first raw's index transaction and a
+    different raw then published the identical normalized session. In either
+    case replay must keep the carrier and skip session preparation, whose
+    no-op disposition could otherwise look like a different marker
+    interpretation. Other missing witnesses (including a replacement index)
+    still fall through to the normal writer and exact-byte re-witness checks.
     """
     if source_conn is None or not ir.sessions:
         return False
@@ -1696,8 +1700,32 @@ def _reuse_current_accepted_marker_carrier(
         "SELECT carrier_digest, dispositions_json, incarnation_id FROM ingest_marker_witnesses WHERE request_key = ?",
         (probe.identity,),
     ).fetchone()
-    if witness is None or tuple(witness) != (batch.payload_sha256, encoded, current_incarnation_id):
+    if witness is not None:
+        if tuple(witness) != (batch.payload_sha256, encoded, current_incarnation_id):
+            return False
+        summary.marker_batches_by_raw_id[ir.raw_id] = batch
+        return True
+
+    # A pending carrier is bound to this physical index incarnation. If an
+    # intervening raw has already materialized every exact request input, it
+    # supplies the missing successful index publication without permitting a
+    # new carrier to replace the retained bytes. Do not infer this from mere
+    # session IDs: a stale or different interpretation can name the same ID.
+    if state != "pending":
         return False
+    for binding in request_sessions:
+        session_id = binding.get("session_id")
+        input_content_hash = binding.get("input_content_hash")
+        if not isinstance(session_id, str) or not session_id:
+            return False
+        if not isinstance(input_content_hash, str) or len(input_content_hash) != 64:
+            return False
+        row = index_conn.execute(
+            "SELECT lower(hex(content_hash)) FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None or str(row[0]) != input_content_hash.lower():
+            return False
     summary.marker_batches_by_raw_id[ir.raw_id] = batch
     return True
 
