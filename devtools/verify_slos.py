@@ -240,12 +240,19 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
         )
 
     if outcome.returncode != 0:
-        print(
-            f"verify-slos: benchmark run exited {outcome.returncode}; scoring the measurements it did write",
-            file=sys.stderr,
+        # A measurement artifact describes work the benchmark managed to
+        # emit; it does not turn a failed pytest run into a valid workload.
+        # Keep both artifacts so the failed run remains diagnosable.
+        try:
+            json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            detail = f"; measurement JSON is invalid: {exc}"
+        else:
+            detail = "; measurement JSON was retained as diagnostics"
+        raise BenchmarkRunUnavailableError(
+            f"benchmark run failed with exit {outcome.returncode}{detail}; "
+            f"raw log and measurement file kept under {scratch}; last output:\n{_log_tail(log_path)}"
         )
-        print(_log_tail(log_path), file=sys.stderr)
-        # pytest-benchmark writes the JSON even on test failures.
 
     payload = json.loads(json_path.read_text())
     with contextlib.suppress(OSError):
@@ -430,11 +437,11 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         actual_p50_ms = stats["median"] * 1000  # pytest-benchmark reports in seconds
-        actual_p95_ms = _estimate_p95(stats) * 1000
+        estimated_p95_ms = _estimate_p95(stats) * 1000
         actual_mean_ms = stats["mean"] * 1000
 
         p50_ok = actual_p50_ms <= target_p50
-        p95_ok = actual_p95_ms <= target_p95
+        p95_ok = estimated_p95_ms <= target_p95
         ok = p50_ok and p95_ok
 
         result: dict[str, object] = {
@@ -446,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
             "target_p50_ms": target_p50,
             "target_p95_ms": target_p95,
             "actual_p50_ms": round(actual_p50_ms, 2),
-            "actual_p95_ms": round(actual_p95_ms, 2),
+            "estimated_p95_ms": round(estimated_p95_ms, 2),
             "actual_mean_ms": round(actual_mean_ms, 2),
             "p50_ok": p50_ok,
             "p95_ok": p95_ok,
@@ -504,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"  {p['surface']}: "
                     f"p50={p['actual_p50_ms']:.1f}ms (target ≤{p['target_p50_ms']}ms), "
-                    f"p95={p['actual_p95_ms']:.1f}ms (target ≤{p['target_p95_ms']}ms)"
+                    f"estimated p95={p['estimated_p95_ms']:.1f}ms (target ≤{p['target_p95_ms']}ms)"
                 )
             print()
 
@@ -521,7 +528,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not v["p50_ok"]:
                     parts.append(f"p50={v['actual_p50_ms']:.1f}ms > {v['target_p50_ms']}ms")
                 if not v["p95_ok"]:
-                    parts.append(f"p95={v['actual_p95_ms']:.1f}ms > {v['target_p95_ms']}ms")
+                    parts.append(f"estimated p95={v['estimated_p95_ms']:.1f}ms > {v['target_p95_ms']}ms")
                 print(f"  {v['surface']}: {', '.join(parts)}")
             print()
 

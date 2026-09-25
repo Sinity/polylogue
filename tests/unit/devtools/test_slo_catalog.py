@@ -128,6 +128,7 @@ surfaces:
     assert "would not start the run" in payload["benchmark_error"]
     assert payload["missing_required"] == []
     assert payload["uncovered_informational"] == []
+
     assert {entry["surface"] for entry in payload["unmeasured"]} == {"reader", "cli_status_cold"}
     assert all(entry["reason"] == "the benchmark run did not execute" for entry in payload["unmeasured"])
 
@@ -137,6 +138,62 @@ surfaces:
     text = plain.getvalue()
     assert "BENCHMARKS DID NOT RUN:" in text
     assert "MISSING REQUIRED" not in text
+
+
+def test_failed_benchmark_with_valid_json_is_not_scored_and_keeps_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scorer must preserve failure separately from emitted measurements.
+
+    Anti-vacuity: return exit 0 from the actual _run_benchmarks call and this
+    test sees the fixture's passing reader measurement instead of a blocking
+    benchmark_error. The controlled runner writes valid benchmark JSON but
+    reports the same nonzero exit shape as a failed test/subprocess.
+    """
+    benchmark_test = "tests/benchmarks/test_reader_api.py::test_bench_reader_status"
+    catalog = _write_slo_catalog(
+        tmp_path,
+        f"""
+surfaces:
+  reader_status:
+    description: "Reader status"
+    benchmark_test: "{benchmark_test}"
+    p50_ms: 50
+    p95_ms: 100
+    gate: "required"
+    tier: "cheap-local"
+""",
+    )
+    monkeypatch.setattr(verify_slos, "BENCHMARK_SCRATCH", tmp_path / "benchmark-runs")
+    fixture = (BENCH_FIXTURE_DIR / "reader-status.json").read_bytes()
+    captured_json: list[Path] = []
+
+    def failed_run(
+        command: list[str], *, cwd: str, env: dict[str, str], root: Path, stdout: object = None
+    ) -> SlotOutcome:
+        del cwd, env, root, stdout
+        json_path = Path(next(arg.split("=", 1)[1] for arg in command if arg.startswith("--benchmark-json=")))
+        json_path.write_bytes(fixture)
+        captured_json.append(json_path)
+        return SlotOutcome(returncode=125, slot="agentctl job 125")
+
+    monkeypatch.setattr(verify_slos, "run_pytest", failed_run)
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        rc = verify_slos.main(["--yaml", str(catalog), "--json"])
+
+    payload = json.loads(buffer.getvalue())
+    assert rc != 0
+    assert payload["blocking"] is True
+    assert payload["passed"] == []
+    assert payload["violations"] == []
+    assert payload["unmeasured"] and payload["unmeasured"][0]["surface"] == "reader_status"
+    assert "failed with exit 125" in payload["benchmark_error"]
+    assert "retained as diagnostics" in payload["benchmark_error"]
+    assert len(captured_json) == 1 and captured_json[0].is_file()
+    assert json.loads(captured_json[0].read_text(encoding="utf-8"))["benchmarks"]
+    assert captured_json[0].with_name("benchmark.log").is_file()
 
 
 def test_catalog_exists_and_covers_required_surfaces() -> None:
@@ -650,4 +707,5 @@ surfaces:
     measured = payload["passed"][0]
     # fixture median is 0.0011s = 1.1ms; budget is 50ms.
     assert measured["actual_p50_ms"] < measured["target_p50_ms"]
-    assert measured["actual_p95_ms"] < measured["target_p95_ms"]
+    assert measured["estimated_p95_ms"] < measured["target_p95_ms"]
+    assert "actual_p95_ms" not in measured
