@@ -550,14 +550,21 @@ def _is_help_request(ctx: click.Context) -> bool:
 
 
 def _render_query_help_examples(help_text: str) -> str:
-    """Resolve parser-gated query markers in the public root help."""
+    """Resolve parser-gated query markers in the public root help.
+
+    The marker keys are authored alongside the help examples, while the
+    expressions are owned by ``QUERY_DISCOVERY_EXAMPLES``.  Discover markers
+    from the help text instead of keeping a second list of example keys here:
+    adding or replacing a shipped example then needs no matching renderer
+    edit.
+    """
+
+    import re
 
     from polylogue.archive.query.discovery import query_discovery_example
 
-    rendered = help_text
-    for key in ("actions-shell-pytest", "actions-file-edits", "ranked-semantic-text"):
-        rendered = rendered.replace(f"@@query:{key}@@", query_discovery_example(key).expression)
-    return rendered
+    marker = re.compile(r"@@query:([a-z0-9][a-z0-9-]*)@@")
+    return marker.sub(lambda match: query_discovery_example(match.group(1)).expression, help_text)
 
 
 if cli.help is not None:
