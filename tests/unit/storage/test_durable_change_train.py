@@ -1895,7 +1895,9 @@ def test_adopted_audit_restore_rejects_version_skew(
     assert verified.ok and verified.output_path is not None, verified.error
     backup_root = Path(verified.output_path)
     skewed_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.AUDIT] + 1
-    with sqlite3.connect(backup_root / "audit.db") as staged:
+    # sqlite3's transaction context manager commits but leaves the connection
+    # open; close it before checkpointing an immutable backup artifact.
+    with closing(sqlite3.connect(backup_root / "audit.db")) as staged:
         staged.execute(f"PRAGMA user_version = {skewed_version}")
     # The staged tier is in WAL mode and admission reads it with
     # ``immutable=1``. Without this checkpoint the stamp stays in the WAL, the
