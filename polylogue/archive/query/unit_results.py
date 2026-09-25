@@ -43,6 +43,7 @@ from polylogue.surfaces.payloads import (
     QueryUnitAggregateRowPayload,
     QueryUnitProjectedRowPayload,
     QueryUnitResultEnvelope,
+    QueryUnitRowPayload,
     build_query_unit_aggregate_envelope,
     build_query_unit_envelope,
 )
@@ -95,13 +96,18 @@ def _row_payload_model(descriptor: QueryUnitDescriptor) -> _RowPayloadModel | No
 def _projected_rows(
     rows: Sequence[Any], descriptor: QueryUnitDescriptor, selected_fields: Sequence[str]
 ) -> tuple[QueryUnitProjectedRowPayload, ...]:
-    """Shape selected fields while retaining the normal typed row payloads."""
+    """Build field-only payloads from either storage projections or full rows."""
 
     if not selected_fields:
         return ()
     return tuple(
         QueryUnitProjectedRowPayload(
-            root={field: getattr(row, descriptor.projectable_fields[field], None) for field in selected_fields}
+            root={
+                field: row[field]
+                if isinstance(row, Mapping)
+                else getattr(row, descriptor.projectable_fields[field], None)
+                for field in selected_fields
+            }
         )
         for row in rows
     )
@@ -453,7 +459,7 @@ def _record_result_page(
 ) -> QueryUnitResultEnvelope:
     if ctx.execution_context is not None:
         ctx.execution_context.record_result_page(
-            emitted_rows=len(envelope.items),
+            emitted_rows=len(envelope.items) or len(envelope.projected_items),
             selected_rows_exact=selected_rows_exact,
         )
     return envelope
@@ -592,23 +598,40 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
     payload_model = _row_payload_model(ctx.descriptor)
     if method_name is None or payload_model is None:
         raise ValueError(f"Query unit {ctx.source.unit!r} is not wired to a SQL executor")
-    query_method = cast(Any, getattr(ctx.archive, method_name))
-    rows = cast(
-        Sequence[Any],
-        query_method(
-            pipeline.predicate,
-            limit=ctx.fetch_limit,
-            offset=ctx.offset,
-            session_filters=ctx.session_filters,
-            sort=sort,
-            sort_direction=sort_direction,
-        ),
-    )
-    typed_rows = tuple(payload_model.from_row(row) for row in rows[: ctx.limit])
+    if ctx.source.unit == "message" and pipeline.selected_fields:
+        rows = cast(
+            Sequence[Any],
+            ctx.archive.query_message_projection(
+                pipeline.predicate,
+                fields=pipeline.selected_fields,
+                limit=ctx.fetch_limit,
+                offset=ctx.offset,
+                session_filters=ctx.session_filters,
+                sort=sort,
+                sort_direction=sort_direction,
+            ),
+        )
+        page_items: tuple[QueryUnitRowPayload, ...] = ()
+        projected_items = _projected_rows(rows[: ctx.limit], ctx.descriptor, pipeline.selected_fields)
+    else:
+        query_method = cast(Any, getattr(ctx.archive, method_name))
+        rows = cast(
+            Sequence[Any],
+            query_method(
+                pipeline.predicate,
+                limit=ctx.fetch_limit,
+                offset=ctx.offset,
+                session_filters=ctx.session_filters,
+                sort=sort,
+                sort_direction=sort_direction,
+            ),
+        )
+        page_items = tuple(payload_model.from_row(row) for row in rows[: ctx.limit])
+        projected_items = _projected_rows(rows[: ctx.limit], ctx.descriptor, pipeline.selected_fields)
     return _record_result_page(
         ctx,
         build_query_unit_envelope(
-            typed_rows,
+            page_items,
             unit=ctx.source.unit,
             query=ctx.query,
             limit=ctx.limit,
@@ -616,7 +639,7 @@ def _execute_rows_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnve
             has_next=len(rows) > ctx.limit,
             pipeline=pipeline.to_payload(),
             pipeline_stages=_pipeline_stage_payloads(pipeline),
-            projected_items=_projected_rows(rows[: ctx.limit], ctx.descriptor, pipeline.selected_fields),
+            projected_items=projected_items,
         ),
     )
 

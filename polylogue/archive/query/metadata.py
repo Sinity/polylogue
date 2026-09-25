@@ -1389,7 +1389,7 @@ def terminal_query_pipeline_stage_infos(source: str) -> tuple[QueryPipelineStage
                 QueryPipelineStageInfo(
                     value="fields",
                     insert="fields ",
-                    description="Emit selected field-name keyed rows alongside the typed terminal rows.",
+                    description="Emit field-name keyed selected rows in the terminal projection payload.",
                     source_unit=descriptor.unit,
                     lowerer_kind=descriptor.lowerer_kind,
                 ),

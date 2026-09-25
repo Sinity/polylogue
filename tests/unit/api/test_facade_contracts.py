@@ -2819,6 +2819,79 @@ async def test_query_units_returns_typed_envelope_on_empty_archive(tmp_path: Pat
         await archive.close()
 
 
+async def test_query_units_selects_message_fields_without_materializing_full_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A message ``select`` page exposes field-only rows while the default stays typed.
+
+    The facade reaches the production terminal executor and a real SQLite
+    archive.  If ``select`` falls back to ``ArchiveStore.query_messages()``,
+    the guard makes the test fail before its field assertions can pass.
+    """
+    from polylogue.surfaces.payloads import MessageQueryRowPayload, QueryUnitProjectedRowPayload
+
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="unit-field-select",
+                    title="Field-only terminal rows",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="u1",
+                            role=Role.USER,
+                            text="first selected message",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first selected message")],
+                        ),
+                        ParsedMessage(
+                            provider_message_id="u2",
+                            role=Role.USER,
+                            text="second selected message",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second selected message")],
+                        ),
+                    ],
+                ),
+            )
+
+        def _full_row_fallback(*args: object, **kwargs: object) -> object:
+            raise AssertionError("message select must use the field projection read")
+
+        monkeypatch.setattr(ArchiveStore, "query_messages", _full_row_fallback)
+        first = await archive.query_units("messages where role:user | select message_id, role", limit=1)
+        assert first.outcome.state == "ok"
+        assert first.items == ()
+        assert first.total == 1
+        assert len(first.projected_items) == 1
+        assert isinstance(first.projected_items[0], QueryUnitProjectedRowPayload)
+        assert first.projected_items[0].root == {
+            "message_id": "codex-session:unit-field-select:n:u1",
+            "role": "user",
+        }
+        assert first.continuation is not None
+
+        second = await archive.query_units(continuation=first.continuation)
+        assert second.outcome.state == "ok"
+        assert second.items == ()
+        assert second.total == 1
+        assert len(second.projected_items) == 1
+        assert isinstance(second.projected_items[0], QueryUnitProjectedRowPayload)
+        assert second.projected_items[0].root == {
+            "message_id": "codex-session:unit-field-select:n:u2",
+            "role": "user",
+        }
+        assert second.continuation is None
+
+        monkeypatch.undo()
+        default = await archive.query_units("messages where role:user", limit=1)
+        assert isinstance(default.items[0], MessageQueryRowPayload)
+        assert default.items[0].text == "first selected message"
+    finally:
+        await archive.close()
+
+
 async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None:
     """``query_units()`` applies surrounding session filters before returning rows."""
     archive = _archive(tmp_path)
