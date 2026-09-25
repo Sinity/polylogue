@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import get_args
+from typing import Literal, get_args
 
-from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin, TelemetrySurface
+from polylogue.core.enums import IngestOutcome, Origin, TelemetrySurface
+from polylogue.core.types import (
+    ContextInjectionDecision,
+    ConvergenceDebtStatus,
+    CursorLagSeverity,
+    JudgmentSchedulerStatus,
+    OperationRunStatus,
+    RouteDaemonPath,
+    RouteObservationStatus,
+)
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.index_convergence import BenignDDLEntry
@@ -93,9 +102,17 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
 }
 # Batch aggregation is a terminal run state distinct from both success and
 # failure: completed siblings and retryable failed siblings remain visible.
-_OPS_RUN_STATUS_CHECK = literal_check(
-    "status", *(status.value for status in OPERATION_LIFECYCLE_STATUSES), "completed_with_failures"
-)
+_OPS_RUN_STATUS_CHECK = literal_check("status", *get_args(OperationRunStatus))
+McpCallSessionRelation = Literal["primary", "member"]
+"""Storage-local relation labels for this disposable MCP call-reference table."""
+
+_CONVERGENCE_DEBT_STATUS_CHECK = literal_check("status", *get_args(ConvergenceDebtStatus))
+_JUDGMENT_SCHEDULER_STATUS_CHECK = literal_check("status", *get_args(JudgmentSchedulerStatus))
+_CURSOR_LAG_SEVERITY_CHECK = literal_check("severity", *get_args(CursorLagSeverity))
+_MCP_SESSION_RELATION_CHECK = literal_check("relation", *get_args(McpCallSessionRelation))
+_ROUTE_DAEMON_PATH_CHECK = literal_check("daemon_path", *get_args(RouteDaemonPath))
+_ROUTE_OBSERVATION_STATUS_CHECK = literal_check("status", *get_args(RouteObservationStatus))
+_CONTEXT_INJECTION_DECISION_CHECK = literal_check("decision", *get_args(ContextInjectionDecision))
 # Split out of OPS_DDL (polylogue-sd9s) so the ops-bootstrap convergence step
 # that repairs a stale live CHECK (``_ensure_schema_drift_samples_check`` in
 # bootstrap.py) can re-execute exactly this fragment after a DROP TABLE,
@@ -238,7 +255,7 @@ CREATE TABLE IF NOT EXISTS convergence_debt (
     stage          TEXT NOT NULL,
     target_type    TEXT NOT NULL,
     target_id      TEXT NOT NULL,
-    status         TEXT NOT NULL DEFAULT 'failed' CHECK(status IN ('failed', 'deferred')),
+    status         TEXT NOT NULL DEFAULT 'failed' CHECK({_CONVERGENCE_DEBT_STATUS_CHECK}),
     priority       INTEGER NOT NULL DEFAULT 0,
     attempts       INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
     last_error     TEXT,
@@ -280,7 +297,7 @@ CREATE TABLE IF NOT EXISTS cursor_lag_samples (
     stuck_file_count INTEGER NOT NULL DEFAULT 1 CHECK(stuck_file_count >= 0),
     p50_lag_ms       INTEGER NOT NULL DEFAULT 0 CHECK(p50_lag_ms >= 0),
     p95_lag_ms       INTEGER NOT NULL DEFAULT 0 CHECK(p95_lag_ms >= 0),
-    severity         TEXT NOT NULL CHECK(severity IN ('info', 'warning', 'error', 'critical')),
+    severity         TEXT NOT NULL CHECK({_CURSOR_LAG_SEVERITY_CHECK}),
     sampled_at_ms    INTEGER NOT NULL
 ) STRICT;
 
@@ -318,7 +335,7 @@ CREATE INDEX IF NOT EXISTS idx_daemon_events_lifecycle ON daemon_events(kind, op
 CREATE TABLE IF NOT EXISTS judgment_scheduler_receipts (
     operation_id                    TEXT PRIMARY KEY,
     observed_at_ms                  INTEGER NOT NULL,
-    status                          TEXT NOT NULL CHECK(status IN ('completed', 'parked', 'failed')),
+    status                          TEXT NOT NULL CHECK({_JUDGMENT_SCHEDULER_STATUS_CHECK}),
     reason                          TEXT NOT NULL,
     retryable                       INTEGER NOT NULL CHECK(retryable IN (0, 1)),
     retry_route                     TEXT NOT NULL,
@@ -402,7 +419,7 @@ ON mcp_call_log(started_at_ms);
 CREATE TABLE IF NOT EXISTS mcp_call_session_refs (
     call_id       TEXT NOT NULL REFERENCES mcp_call_log(call_id) ON DELETE CASCADE,
     session_id    TEXT NOT NULL,
-    relation      TEXT NOT NULL CHECK(relation IN ('primary', 'member')),
+    relation      TEXT NOT NULL CHECK({_MCP_SESSION_RELATION_CHECK}),
     PRIMARY KEY (call_id, session_id)
 ) STRICT;
 
@@ -423,11 +440,11 @@ CREATE TABLE IF NOT EXISTS route_observations (
     surface          TEXT NOT NULL CHECK({literal_check("surface", *get_args(TelemetrySurface))}),
     route            TEXT NOT NULL,
     verb             TEXT,
-    daemon_path      TEXT CHECK(daemon_path IN ('daemon', 'direct') OR daemon_path IS NULL),
+    daemon_path      TEXT CHECK({_ROUTE_DAEMON_PATH_CHECK} OR daemon_path IS NULL),
     phase            TEXT NOT NULL DEFAULT 'total',
     started_at_ms    INTEGER NOT NULL,
     duration_ms      INTEGER NOT NULL CHECK(duration_ms >= 0),
-    status           TEXT NOT NULL CHECK(status IN ('ok', 'error', 'degraded', 'timed_out', 'unavailable')),
+    status           TEXT NOT NULL CHECK({_ROUTE_OBSERVATION_STATUS_CHECK}),
     git_head         TEXT,
     archive_epoch    TEXT,
     attributes_json  TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(attributes_json)),
@@ -499,7 +516,7 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS context_injection_ledger (
     ledger_id TEXT PRIMARY KEY, build_ref TEXT NOT NULL, observed_at_ms INTEGER NOT NULL,
-    decision TEXT NOT NULL CHECK(decision IN ('included', 'degraded', 'dropped')),
+    decision TEXT NOT NULL CHECK({_CONTEXT_INJECTION_DECISION_CHECK}),
     source TEXT NOT NULL, item_ref TEXT NOT NULL, token_cost INTEGER NOT NULL CHECK(token_cost >= 0),
     source_local_rank INTEGER NOT NULL CHECK(source_local_rank > 0),
     budget_before INTEGER NOT NULL CHECK(budget_before >= 0), budget_after INTEGER NOT NULL CHECK(budget_after >= 0),

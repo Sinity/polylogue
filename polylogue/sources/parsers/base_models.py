@@ -27,6 +27,7 @@ from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.types import AttachmentDirection, AttachmentUploadOrigin
 
 
 class AdmissionUnit(PolylogueStrEnum):
@@ -509,8 +510,8 @@ class ParsedAttachment(BaseModel):
     path: str | None = None
     provider_file_id: str | None = None
     provider_drive_id: str | None = None
-    upload_origin: str | None = None
-    direction: Literal["user_input", "model_output"] | None = None
+    upload_origin: AttachmentUploadOrigin | None = None
+    direction: AttachmentDirection | None = None
     producer_ref: str | None = None
     attachment_kind: str | None = None
     source_url: str | None = None

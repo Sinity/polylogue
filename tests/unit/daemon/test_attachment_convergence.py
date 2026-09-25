@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.core.enums import Provider, Role
+from polylogue.core.types import AttachmentUploadOrigin
 from polylogue.operations.attachment_convergence import converge_drive_attachments
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.drive.types import DriveNotFoundError
@@ -17,7 +18,9 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
-def _session(session_id: str, *, upload_origin: str = "drive", file_id: str | None = None) -> ParsedSession:
+def _session(
+    session_id: str, *, upload_origin: AttachmentUploadOrigin = "drive", file_id: str | None = None
+) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.GEMINI,
         provider_session_id=session_id,

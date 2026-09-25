@@ -35,12 +35,21 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.types import RouteDaemonPath, RouteObservationStatus, require_literal
 from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
     from polylogue.scenarios.workload import WorkloadEnvelopeSpec, WorkloadReceipt, WorkloadRunStatus
 
 logger = get_logger(__name__)
+
+
+def _recordable_daemon_path(value: str | None) -> str | None:
+    """Map the CLI's unreachable marker to no selected runtime path."""
+    if value is None or value == "unreachable":
+        return None
+    return require_literal(value, RouteDaemonPath, name="route daemon path")
+
 
 _CONNECT_TIMEOUT_S = 2.0
 #: ``ops.db`` is the disposable tier and a route observation is explicitly
@@ -328,7 +337,7 @@ class RouteObservationReceipt:
     parent_run_id: str | None
     started_at_ms: int
     phases: tuple[RoutePhaseObservation, ...]
-    status: str
+    status: RouteObservationStatus
     daemon_path: str | None = None
     build_id: str | None = None
     archive_id: str | None = None
@@ -467,7 +476,7 @@ class RouteObservationContext:
     """
 
     attributes: dict[str, object] = field(default_factory=dict)
-    status: str = "ok"
+    status: RouteObservationStatus = "ok"
     daemon_path: str | None = None
     """Set explicitly by the caller once known ('daemon' or 'direct'); the
     ``observe_route`` argument of the same name only seeds the initial
@@ -572,7 +581,7 @@ def observe_route(
             started_at_ms=started_at_ms,
             phases=(total, *ctx._phases),
             status=ctx.status,
-            daemon_path=ctx.daemon_path,
+            daemon_path=_recordable_daemon_path(ctx.daemon_path),
             build_id=_current_git_head(git_head_cwd) if git_head_cwd is not None else None,
             archive_id=archive_id,
             archive_epoch=archive_epoch,

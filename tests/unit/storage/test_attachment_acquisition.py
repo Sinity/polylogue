@@ -9,11 +9,13 @@ import base64
 import hashlib
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.types import AttachmentUploadOrigin
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -53,6 +55,15 @@ def _session_with_attachment(attachment: ParsedAttachment) -> ParsedSession:
         ],
         attachments=[attachment],
     )
+
+
+def test_parsed_attachment_rejects_unknown_upload_origin() -> None:
+    with pytest.raises(ValueError, match="upload_origin"):
+        ParsedAttachment(
+            provider_attachment_id="invalid-origin",
+            message_provider_id="m0",
+            upload_origin=cast(AttachmentUploadOrigin, "local-cache"),
+        )
 
 
 def _preacquired(store: BlobStore, session: ParsedSession) -> dict[int, tuple[bytes | None, int, str]]:

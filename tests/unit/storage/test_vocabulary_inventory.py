@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Literal, cast
 
-from polylogue.storage.sqlite.archive_tiers.vocabulary_inventory import build_inventory
+import pytest
+
+from polylogue.core import types as core_types
+from polylogue.daemon.judgment_automation import JudgmentAutomationReceiptStatus
+from polylogue.storage.sqlite.archive_tiers import vocabulary_inventory
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+build_inventory = vocabulary_inventory.build_inventory
 
 
 def test_inventory_covers_all_string_membership_checks_and_declares_exclusions() -> None:
@@ -12,9 +19,10 @@ def test_inventory_covers_all_string_membership_checks_and_declares_exclusions()
 
     # Runtime canonical DDL, not a remembered source-text count, is the
     # denominator: numeric and NOT IN checks are intentionally excluded.
-    assert inventory.denominator == 96
-    assert inventory.durable_exclusions == 42
-    assert inventory.unknown_ownership == 0
+    assert inventory.denominator == 90
+    assert inventory.durable_exclusions == 38
+    assert inventory.unknown_ownership == inventory.unverified_owner_bindings
+    assert inventory.unknown_ownership > 0
     assert {item.tier.value for item in inventory.checks} == {
         "source",
         "index",
@@ -25,15 +33,18 @@ def test_inventory_covers_all_string_membership_checks_and_declares_exclusions()
     }
 
 
-def test_derived_rows_have_a_domain_owner_or_explicit_storage_local_reason() -> None:
+def test_derived_rows_have_a_domain_owner_or_remain_unknown() -> None:
     inventory = build_inventory()
     derived = [item for item in inventory.checks if item.disposition != "DURABLE_WRITE_BOUNDARY"]
 
     assert derived
     assert all(item.reason for item in derived)
-    assert all(item.disposition in {"GENERATED_FROM_OWNER", "STORAGE_LOCAL"} for item in derived)
-    assert any(item.disposition == "GENERATED_FROM_OWNER" for item in derived)
-    assert any(item.disposition == "STORAGE_LOCAL" for item in derived)
+    assert all(
+        item.disposition in {"OWNER_CANDIDATE", "GENERATED_FROM_OWNER", "STORAGE_LOCAL", "UNKNOWN_OWNERSHIP"}
+        for item in derived
+    )
+    assert any(item.disposition == "OWNER_CANDIDATE" for item in derived)
+    assert all(item.disposition != "UNKNOWN_OWNERSHIP" for item in derived)
 
 
 def test_durable_rows_are_excluded_even_when_a_domain_owner_matches() -> None:
@@ -69,3 +80,59 @@ def test_equivalent_python_vocabularies_are_reported_as_one_owner_group() -> Non
     frontier = [item for item in inventory.checks if item.column == "accepted_frontier_kind"]
     assert len(frontier) == 2
     assert {item.owner for item in frontier} == {"polylogue.storage.sqlite.archive_tiers.types.RevisionFrontierKind"}
+
+
+def test_judgment_scheduler_uses_the_storage_vocabulary_owner() -> None:
+    """The daemon receipt type must not grow a parallel copy of the ops status."""
+    assert JudgmentAutomationReceiptStatus is core_types.JudgmentSchedulerStatus
+
+
+def test_detaching_a_derived_check_from_its_owner_reports_unknown_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
+    before = build_inventory()
+    ddl = dict(vocabulary_inventory.ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.INDEX] = ddl[ArchiveTier.INDEX].replace(
+        "identity_source IN ('native', 'content')",
+        "identity_source IN ('native', 'detached')",
+        1,
+    )
+    monkeypatch.setattr(vocabulary_inventory, "ARCHIVE_DDL_BY_TIER", ddl)
+
+    inventory = build_inventory()
+    detached = [item for item in inventory.checks if item.ref == "index.messages.identity_source"]
+    assert len(detached) == 1
+    assert detached[0].disposition == "UNKNOWN_OWNERSHIP"
+    assert inventory.unknown_ownership == before.unknown_ownership
+    assert inventory.unverified_owner_bindings == before.unverified_owner_bindings - 1
+    assert (
+        sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in inventory.checks)
+        == sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in before.checks) + 1
+    )
+
+
+def test_omitting_a_canonical_tier_invalidates_the_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    ddl = {tier: sql for tier, sql in vocabulary_inventory.ARCHIVE_DDL_BY_TIER.items() if tier != ArchiveTier.OPS}
+    monkeypatch.setattr(vocabulary_inventory, "ARCHIVE_DDL_BY_TIER", ddl)
+
+    try:
+        build_inventory()
+    except ValueError as exc:
+        assert "ops" in str(exc)
+    else:
+        raise AssertionError("inventory accepted a canonical tier omission")
+
+
+def test_reintroducing_a_duplicate_owner_makes_ownership_ambiguous(monkeypatch: pytest.MonkeyPatch) -> None:
+    before = build_inventory()
+    monkeypatch.setattr(core_types, "DuplicateMessageIdentitySource", Literal["content", "native"], raising=False)
+
+    inventory = build_inventory()
+
+    identity = [item for item in inventory.checks if item.ref == "index.messages.identity_source"]
+    assert len(identity) == 1
+    assert identity[0].disposition == "UNKNOWN_OWNERSHIP"
+    assert inventory.unknown_ownership == before.unknown_ownership
+    assert inventory.unverified_owner_bindings == before.unverified_owner_bindings - 1
+    assert (
+        sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in inventory.checks)
+        == sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in before.checks) + 1
+    )

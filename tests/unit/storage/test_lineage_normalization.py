@@ -11,6 +11,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import aiosqlite
 import pytest
@@ -36,6 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _MAX_LINEAGE_DEPTH,
     IDENTITY_INVALIDATION_DEBT_STAGE,
     _repair_stale_prefix_branch_points_db,
+    _upsert_session_link,
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
     write_parsed_session_to_archive,
@@ -79,6 +81,25 @@ def _msg(
         timestamp=timestamp,
         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
     )
+
+
+def test_session_link_writer_rejects_unknown_inheritance_before_storage() -> None:
+    with pytest.raises(ValueError, match="lineage inheritance"):
+        _upsert_session_link(
+            cast(sqlite3.Connection, None),  # Validation must happen before the connection is touched.
+            src_session_id="child",
+            dst_origin="codex-session",
+            dst_native_id="parent",
+            link_type="subagent",
+            branch_point_message_id=None,
+            inheritance="shared-prefix",
+            status=None,
+            parent_tool_use_block_id=None,
+            method="parser-parent",
+            confidence=1.0,
+            evidence_json="{}",
+            observed_at_ms=1,
+        )
 
 
 def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, message_count: int) -> None:

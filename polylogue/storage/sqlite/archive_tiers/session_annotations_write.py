@@ -25,6 +25,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.types import SessionTagSource, require_literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,7 @@ def upsert_session_tag(
     """Upsert one unified user/auto tag row for an archive session."""
     from polylogue.storage.sqlite.archive_tiers.write import _json_dumps
 
+    require_literal(tag_source, SessionTagSource, name="session tag source")
     conn.execute("PRAGMA foreign_keys = ON")
     normalized_tag = tag.strip().lower()
     if not normalized_tag:
@@ -163,7 +165,7 @@ def read_session_tags(
         row["tag"]: ArchiveSessionTag(
             session_id=row["session_id"],
             tag=row["tag"],
-            tag_source=row["tag_source"],
+            tag_source=require_literal(row["tag_source"], SessionTagSource, name="stored session tag source"),
             method=row["method"],
             confidence=row["confidence"],
             evidence=_json_loads(row["evidence_json"]) if row["evidence_json"] is not None else None,

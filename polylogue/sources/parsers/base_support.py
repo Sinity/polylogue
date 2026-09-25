@@ -7,11 +7,12 @@ import binascii
 import inspect
 from collections.abc import Callable, Iterator, Sequence
 from functools import wraps
-from typing import Any, Literal, TypeVar
+from typing import Any, TypeVar
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, WebConstructType
 from polylogue.core.hashing import hash_text
+from polylogue.core.types import AttachmentDirection
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base_models import (
@@ -30,7 +31,6 @@ from .base_models import (
 )
 
 _SessionParser = TypeVar("_SessionParser", bound=Callable[..., ParsedSession])
-AttachmentDirection = Literal["user_input", "model_output"]
 
 
 class AdmissionLedger:

@@ -13,12 +13,13 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from polylogue.core.refs import ExecutionContextRef
+from polylogue.core.types import ContextInjectionDecision, require_literal
 
 TrustClass = Literal["operator", "system", "quoted"]
-Decision = Literal["included", "degraded", "dropped"]
+Decision = ContextInjectionDecision
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,6 +477,7 @@ def _row(
 def record_context_ledger(conn: sqlite3.Connection, assembly: ContextAssembly, *, observed_at_ms: int) -> None:
     """Persist the append-only admission receipt in disposable ``ops.db``."""
     for index, row in enumerate(assembly.ledger):
+        require_literal(row.decision, ContextInjectionDecision, name="context injection decision")
         ledger_id = hashlib.sha256(f"{assembly.build_ref}:{index}:{row.item_ref}".encode()).hexdigest()
         conn.execute(
             "INSERT OR IGNORE INTO context_injection_ledger VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -535,6 +537,10 @@ def read_context_ledger(
     ).fetchall()
     records: list[ContextLedgerRecord] = []
     for row in rows:
+        decision = cast(
+            ContextInjectionDecision,
+            require_literal(row[3], ContextInjectionDecision, name="stored context injection decision"),
+        )
         policy_refs = json.loads(str(row[13]))
         if not isinstance(policy_refs, list) or not all(isinstance(item, str) for item in policy_refs):
             raise ValueError("stored context ledger policy refs are not a string list")
@@ -544,7 +550,7 @@ def read_context_ledger(
                 build_ref=str(row[1]),
                 observed_at_ms=int(row[2]),
                 row=ContextLedgerRow(
-                    decision=row[3],
+                    decision=decision,
                     source=str(row[4]),
                     item_ref=str(row[5]),
                     token_cost=int(row[6]),
