@@ -208,7 +208,18 @@ def canonical_bytes(value: object, profile: DigestProfile) -> bytes:
 
 def digest(value: object, profile: DigestProfile) -> str:
     """Return the SHA-256 hex digest of *value*'s canonical bytes under *profile*."""
-    return profile.digest_prefix + hashlib.sha256(canonical_bytes(value, profile)).hexdigest()
+    if profile.encoder == "core-json":
+        return profile.digest_prefix + hashlib.sha256(canonical_bytes(value, profile)).hexdigest()
+    prepared = value if _passthrough(profile) else _prepared(value, profile)
+    encoder = _stdlib_json.JSONEncoder(
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=profile.ensure_ascii,
+    )
+    hasher = hashlib.sha256()
+    for chunk in encoder.iterencode(prepared):
+        hasher.update(chunk.encode("utf-8"))
+    return profile.digest_prefix + hasher.hexdigest()
 
 
 def normalized(value: object) -> object:

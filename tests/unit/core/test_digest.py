@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tracemalloc
 import unicodedata
 
 import pytest
@@ -188,6 +189,19 @@ class TestDomainSurfacesKeepTheirBytes:
         payload = (CORPUS | FLOAT_CORPUS)[name]
         expected = hashlib.sha256(_reference_query_bytes(payload)).hexdigest()
         assert hash_payload(payload) == expected
+
+    def test_large_query_digest_does_not_encode_the_whole_payload_at_once(self) -> None:
+        """A full JSON string plus UTF-8 copy exceeds this measured peak."""
+        payload = {"messages": [f"{index}:" + "x" * 65536 for index in range(128)]}
+        tracemalloc.start()
+        try:
+            actual = hash_payload(payload)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert peak < 2 * 1024 * 1024
+        assert actual == hashlib.sha256(_reference_query_bytes(payload)).hexdigest()
 
 
 class TestProfilesAreNotInterchangeable:
