@@ -3009,6 +3009,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         use a deliberately constructed schema registry without bypassing the
         facade.
         """
+        _require_archive_write_authority(self.config, "api.import_annotation_batch")
         from polylogue.annotations.importer import import_annotation_batch
 
         class _ActiveArchiveImportFacade:
