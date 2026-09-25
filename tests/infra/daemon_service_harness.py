@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Coroutine, Iterable
+from pathlib import Path
 from typing import Any
 
 from polylogue.daemon.services import (
@@ -48,7 +49,36 @@ class ServiceHarness:
         return self.supervisor.start(name, factory)
 
     def prerequisite_missing(self, name: str, reason: str) -> None:
+        self.resolve_prerequisite(name, available=False, reason=reason)
+
+    def resolve_prerequisite(self, name: str, *, available: bool, reason: str | None = None) -> None:
+        """Resolve one selected service's start prerequisite.
+
+        This follows the production supervisor contract: an unavailable
+        prerequisite settles the declared service as unavailable and
+        publishes that reason instead of starting a retrying background task.
+        """
+        self.require_selected(name)
+        if available:
+            return
+        if not reason:
+            raise ValueError(f"unavailable prerequisite for {name!r} needs an attributable reason")
         self.supervisor.mark_unavailable(name, reason=reason)
+
+    def api_server(self, archive_root: Path, *, write_bridge: Any = None) -> Any:
+        """Construct a production HTTP server for the selected API service.
+
+        Passing a bridge models the borrowed-runtime composition used by
+        ``polylogued``; omitting it lets the server construct its standalone
+        owned runtime. Both paths use the real server initializer.
+        """
+        self.require_selected("api_server")
+        from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+
+        kwargs: dict[str, Any] = {"archive_root": archive_root}
+        if write_bridge is not None:
+            kwargs["write_bridge"] = write_bridge
+        return DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, **kwargs)
 
     async def close(self) -> ShutdownReport:
         report = await self.supervisor.shutdown()

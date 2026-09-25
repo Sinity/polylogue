@@ -127,7 +127,11 @@ def test_full_profile_resolves_missing_source_prerequisite_with_attributable_sta
     )
     assert "raw_observation_convergence" in harness.selected_names
 
-    harness.prerequisite_missing("raw_observation_convergence", "source.db is absent")
+    harness.resolve_prerequisite(
+        "raw_observation_convergence",
+        available=False,
+        reason="source.db is absent",
+    )
 
     assert harness.state("raw_observation_convergence").value == "unavailable"
     observation = harness.supervisor.board.get_or_unavailable("convergence")

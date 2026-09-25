@@ -1059,7 +1059,6 @@ class TestBoundedArchiveQueryExecutor:
         import time
         from unittest.mock import patch
 
-        from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
         from polylogue.daemon.services import ServiceCapability, ServiceProfile
         from tests.infra.daemon_service_harness import ServiceHarness
 
@@ -1073,7 +1072,7 @@ class TestBoundedArchiveQueryExecutor:
             for thread in threading.enumerate()
             if thread.name in {"daemon-http-writer", "polylogue-compute"}
         }
-        server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=tmp_path)
+        server = harness.api_server(tmp_path)
         submitted = server.execution_kernel.submit(lambda: "completed")
         assert submitted.future.result(timeout=2) == "completed"
         shutdown = server.execution_kernel.shutdown
@@ -1107,7 +1106,7 @@ class TestBoundedArchiveQueryExecutor:
         assert asyncio.run(harness.close()).clean
 
     def test_server_close_preserves_borrowed_write_runtime(self, tmp_path: Path) -> None:
-        from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer, _StandaloneWriteRuntime
+        from polylogue.daemon.http import _StandaloneWriteRuntime
         from polylogue.daemon.services import ServiceCapability, ServiceProfile
         from tests.infra.daemon_service_harness import ServiceHarness
 
@@ -1118,12 +1117,7 @@ class TestBoundedArchiveQueryExecutor:
         harness.require_selected("api_server")
         borrowed_runtime = _StandaloneWriteRuntime(tmp_path / "borrowed")
         try:
-            server = DaemonAPIHTTPServer(
-                ("127.0.0.1", 0),
-                DaemonAPIHandler,
-                archive_root=tmp_path / "server",
-                write_bridge=borrowed_runtime.bridge,
-            )
+            server = harness.api_server(tmp_path / "server", write_bridge=borrowed_runtime.bridge)
             server.server_close()
             server.server_close()
             assert borrowed_runtime.thread.is_alive()
