@@ -35,6 +35,7 @@ from tests.infra.workload_artifacts import (
     SeededArchiveQueryLease,
     SeededArchiveReachabilityInventory,
     _assert_lock_identity,
+    _complete_orphan_blob_hashes,
     _journal_mode_delete_with_retry,
     _manifest_from_payload,
     _open_no_follow,
@@ -88,6 +89,28 @@ def test_finished_build_resource_probe_skips_linked_source_authority(tmp_path: P
     measurement = FinishedBuildResourceProbe.start().finish(candidate)
 
     assert measurement.storage_bytes == len(b"index")
+
+
+def test_complete_orphan_inventory_exceeds_diagnostic_sample_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Disposition uses every orphan, even when the finding sample is capped.
+
+    Anti-vacuity: using the integrity finding's ten-hash sample as the
+    disposition set would fail the exact count check for this 12-blob store.
+    """
+    from polylogue.storage.blob_store import BlobStore
+
+    archive_root = tmp_path / "archive"
+    store = BlobStore(archive_root / "blob")
+    hashes = {store.write_from_bytes(f"orphan-{index}".encode())[0] for index in range(12)}
+    live_hash = store.write_from_bytes(b"live")[0]
+    monkeypatch.setattr(
+        "tests.infra.workload_artifacts.referenced_blob_hashes",
+        lambda *_args, **_kwargs: [live_hash],
+    )
+
+    assert _complete_orphan_blob_hashes(archive_root, expected_count=12) == hashes
 
 
 def test_resource_probe_peak_is_the_interval(tmp_path: Path) -> None:

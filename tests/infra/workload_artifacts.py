@@ -53,7 +53,7 @@ from polylogue.sources.origin_specs import (
 )
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
-from polylogue.storage.blob_integrity import scan_blob_integrity
+from polylogue.storage.blob_integrity import referenced_blob_hashes, scan_blob_integrity
 from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
@@ -2931,6 +2931,24 @@ def build_seeded_archive(
         _release_lock_domain(domain)
 
 
+def _complete_orphan_blob_hashes(archive_root: Path, *, expected_count: int) -> set[str]:
+    """Return every unreferenced blob hash and cross-check the full scan."""
+    blob_store = BlobStore(archive_root / "blob")
+    live_hashes = set(
+        referenced_blob_hashes(
+            archive_root / "source.db",
+            index_db=archive_root / "index.db",
+        )
+    )
+    orphan_hashes = set(blob_store.iter_all()) - live_hashes
+    if len(orphan_hashes) != expected_count:
+        raise AssertionError(
+            "seeded archive orphan inventory disagrees with integrity scan: "
+            f"found={expected_count} inventoried={len(orphan_hashes)}"
+        )
+    return orphan_hashes
+
+
 def _build_seeded_archive_inner(
     specs: Iterable[CorpusSpec] | None = None,
     *,
@@ -3044,7 +3062,12 @@ def _build_seeded_archive_inner(
                     (finding for finding in blob_report.findings if finding.kind == "orphan_blobs"), None
                 )
                 if orphan_finding is not None:
-                    orphan_hashes = set(orphan_finding.sample)
+                    # Integrity findings cap their diagnostic sample, so
+                    # disposition recomputes the complete orphan inventory.
+                    orphan_hashes = _complete_orphan_blob_hashes(
+                        staging,
+                        expected_count=orphan_finding.count,
+                    )
                     receipts = inspect_blob_publication_receipts(
                         staging / "source.db", staging / "blob", index_db_path=staging / "index.db"
                     )
