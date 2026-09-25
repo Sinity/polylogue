@@ -24,6 +24,7 @@ import pytest
 
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+from polylogue.daemon.socket_path import ensure_private_socket_dir
 from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient
@@ -113,6 +114,7 @@ def running_daemon_operations(
     server_error_sink: queue.SimpleQueue[str] | None = None,
     compute_workers: int = 2,
     compute_queue_units: int = 4,
+    socket_path: Path | None = None,
 ) -> Iterator[DaemonOperationStack]:
     """Start one real machine operation stack rooted at ``archive_root``.
 
@@ -128,7 +130,9 @@ def running_daemon_operations(
     initialize_active_archive_root(archive_root)
     if seed_archive is not None:
         seed_archive(archive_root)
-    socket_path = Path("/tmp") / f"plg-op-{os.getpid()}-{uuid4().hex}.sock"
+    socket_path = socket_path or (Path("/tmp") / f"plg-op-{os.getpid()}-{uuid4().hex}.sock")
+    if socket_path.parent != Path("/tmp"):
+        ensure_private_socket_dir(socket_path.parent)
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         try:
