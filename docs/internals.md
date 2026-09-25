@@ -162,8 +162,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   materializer code stays in the AST). So a change that touches no schema at all
   moves the identity: memoizing one function in `sources/origin_specs.py` moves
   all three. Comments are absent from an AST, so a comment-only edit does not.
-  The closure is 560 of 1,311 modules — storage 162, archive 99, sources 93,
-  core 50 — and follows the import graph, so no directory rule describes it:
+  The closure spans hundreds of modules and follows the import graph, so no
+  directory rule describes it:
   `daemon/write_coordinator.py` and `sources/live/watcher.py` are inside it
   while `daemon/convergence.py` and `daemon/cli.py` are outside.
   `devtools schema closure <file>` answers membership for the working checkout;
