@@ -305,3 +305,32 @@ def test_a_daemon_absent_browse_is_refused_not_reported_as_empty(
     assert result.exit_code == FAILED_READ_EXIT_CODE, result.output
     assert "outcome: empty" not in result.output
     assert "polylogued run" in result.output
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OperationFailedError("stale_generation", "archive generation changed"),
+        OperationCancelledError("cli.query", "request cancelled"),
+        OperationEnvelopeError("daemon returned a different operation"),
+    ],
+    ids=["stale-generation", "cancelled", "protocol"],
+)
+def test_missing_local_index_does_not_replace_a_typed_daemon_failure(
+    failure: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon's final response remains authoritative when its index is not local."""
+
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    assert not (tmp_path / "index.db").exists()
+
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=failure) as dispatch:
+        result = CliRunner().invoke(cli, ["find", "repo:polylogue"])
+
+    assert result.exit_code == read_failure_exit_code(failure), result.output
+    assert "outcome: empty" not in result.output
+    assert read_failure_message(failure) in result.output
+    assert dispatch.call_count == 1

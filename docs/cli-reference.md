@@ -288,23 +288,6 @@ Usage: polylogue read [OPTIONS] [REF]
   output to --to (terminal, stdout, browser, clipboard, or file).
   Use --views to inspect which options belong to each read view.
 
-  Examples:
-      polylogue --id abc123 read
-      polylogue find id:abc then read --view messages
-      polylogue find id:abc then read --view raw --format json
-      polylogue find id:abc then read --to browser
-      polylogue find 'repo:polylogue has:paste' then read --all --format ndjson
-      polylogue find id:abc then read --view context --related-limit 5
-      polylogue find 'cost tracking' then read --view context-image --max-sessions 5
-      polylogue find 'repo:github.com/Sinity/polylogue since:2026-01-01' then read --view context-image
-      polylogue read --views
-      polylogue read --views --format json
-      polylogue find 'repo:polylogue' then read --view temporal,chronicle --spec
-      polylogue find id:abc then read --view neighbors --window-hours 48
-      polylogue --latest read --view neighbors --format json
-      polylogue find id:abc then read --view correlation --since-hours 4
-      polylogue read session:abc123 --format json
-
 Projection:
   -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
                                   dialogue, messages, raw, hooks, events,
@@ -353,6 +336,11 @@ Other options:
   --include-assertions  Include context-inject assertion claims in the
                         compiled context image.
   --help                Show this message and exit.
+
+Examples:
+  polylogue find id:codex-session:demo-receipts then read --view summary
+  polylogue find id:codex-session:demo-receipts then read --view transcript
+  polylogue find id:codex-session:demo-receipts then read --view messages
 ```
 
 ## Select Verb

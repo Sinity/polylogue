@@ -19,10 +19,12 @@ from polylogue.archive.query.root_lowering import expression_from_query_terms
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.surfaces.read_contract import ReadRequest
 
 __all__ = [
     "QueryLoweringError",
     "cli_query_spec",
+    "cli_read_request",
     "desugar_retrieval_flags",
     "expression_from_query_terms",
     "lower_cli_query_params",
@@ -96,7 +98,15 @@ def lower_query_params(params: Mapping[str, object]) -> tuple[dict[str, object],
 
     normalized = dict(params)
     terms = coerce_terms(normalized.pop("query", ()))
-    return desugar_retrieval_flags(normalized, terms)
+    normalized, terms = desugar_retrieval_flags(normalized, terms)
+    if normalized.get("retrieval_lane") == "semantic":
+        normalized["retrieval_lane"] = "auto"
+        if not normalized.get("similar_text"):
+            prompt = " ".join(term for term in terms if term).strip()
+            if prompt:
+                normalized["similar_text"] = prompt
+        terms = ()
+    return normalized, terms
 
 
 def lower_cli_query_params(params: Mapping[str, object]) -> tuple[dict[str, object], str]:
@@ -106,12 +116,20 @@ def lower_cli_query_params(params: Mapping[str, object]) -> tuple[dict[str, obje
     return normalized, expression_from_query_terms(terms)
 
 
-def cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:
-    """Compile the same CLI selection contract used by canonical execution."""
+def cli_read_request(params: Mapping[str, object], *, preset: str = "summary") -> ReadRequest:
+    """Lower CLI-shaped query intent into the shared read contract."""
 
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.surfaces.read_contract import ReadRequest
 
     normalized, expression = lower_cli_query_params(params)
     base = SessionQuerySpec.from_params(normalized)
-    return compile_expression_into(expression, base) if expression else base
+    selection = compile_expression_into(expression, base) if expression else base
+    return ReadRequest.normalize({"selection": selection}, preset=preset)
+
+
+def cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:
+    """Expose the shared read request's selection to existing query owners."""
+
+    return cli_read_request(params).selection

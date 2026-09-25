@@ -58,7 +58,7 @@ READ_VIEW_GLOBAL_OPTION_NAMES = frozenset({"limit", "offset"})
 #: anchor: accepting one it could only ignore would answer a window the caller
 #: did not ask for.
 RAW_READ_VIEW_OPTION_NAMES = frozenset({"full", "limit", "offset", "continuation"})
-MESSAGE_READ_VIEW_OPTION_NAMES = RAW_READ_VIEW_OPTION_NAMES | {"around"}
+MESSAGE_READ_VIEW_OPTION_NAMES = RAW_READ_VIEW_OPTION_NAMES
 CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"related_limit"})
 CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     {
@@ -85,15 +85,26 @@ TOPOLOGY_READ_VIEW_OPTION_NAMES = frozenset({"node_offset", "node_limit", "edge_
 
 
 @dataclass(frozen=True, slots=True)
+class ReadViewOptionDeclaration:
+    name: str
+    flags: tuple[str, ...]
+    help: str
+    value_type: Literal["string", "integer", "float"] = "string"
+    default: str | int | float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ReadViewHandlerMetadata:
     """Executable handler metadata needed by static CLI surfaces."""
 
     view_id: str
     session_policy: ReadViewSessionPolicy
     accepted_options: frozenset[ReadViewOptionName] = frozenset()
+    declared_options: tuple[ReadViewOptionDeclaration, ...] = ()
     accepts_query_set: bool = False
     execution_kind: ReadViewExecutionKind = field(kw_only=True)
     operations: tuple[str, ...] = field(kw_only=True, default=())
+    example: str | None = field(kw_only=True, default=None)
 
 
 #: Views whose handler still reads the archive in this process.  The ratchet:
@@ -149,6 +160,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         accepts_query_set=True,
         execution_kind="renderer",
         operations=("cli.query",),
+        example="polylogue find id:codex-session:demo-receipts then read --view summary",
     ),
     "transcript": ReadViewHandlerMetadata(
         "transcript",
@@ -156,6 +168,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         accepts_query_set=True,
         execution_kind="renderer",
         operations=("cli.query",),
+        example="polylogue find id:codex-session:demo-receipts then read --view transcript",
     ),
     "dialogue": ReadViewHandlerMetadata(
         "dialogue",
@@ -167,8 +180,16 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         "messages",
         "required",
         MESSAGE_READ_VIEW_OPTION_NAMES,
+        declared_options=(
+            ReadViewOptionDeclaration(
+                "around",
+                ("--around",),
+                "Read the window holding this message id (--view messages).",
+            ),
+        ),
         execution_kind="session-read-projection",
         operations=("session.read",),
+        example="polylogue find id:codex-session:demo-receipts then read --view messages",
     ),
     "raw": ReadViewHandlerMetadata(
         "raw",
@@ -272,8 +293,28 @@ def read_view_option_names() -> frozenset[ReadViewOptionName]:
     """Return every view-specific option name owned by read-view handlers."""
 
     return frozenset(
-        option_name for metadata in READ_VIEW_HANDLER_METADATA.values() for option_name in metadata.accepted_options
+        option_name
+        for metadata in READ_VIEW_HANDLER_METADATA.values()
+        for option_name in (*metadata.accepted_options, *(option.name for option in metadata.declared_options))
     )
+
+
+def declared_read_view_options() -> tuple[ReadViewOptionDeclaration, ...]:
+    """Return each dynamically bound Click option once, in declaration order."""
+
+    unique: dict[str, ReadViewOptionDeclaration] = {}
+    for metadata in READ_VIEW_HANDLER_METADATA.values():
+        for option in metadata.declared_options:
+            previous = unique.setdefault(option.name, option)
+            if previous != option:
+                raise RuntimeError(f"conflicting read option declaration: {option.name}")
+    return tuple(unique.values())
+
+
+def read_view_examples() -> tuple[str, ...]:
+    """Return the examples carried by executable view declarations."""
+
+    return tuple(metadata.example for metadata in READ_VIEW_HANDLER_METADATA.values() if metadata.example is not None)
 
 
 def read_view_specific_option_names(views: tuple[str, ...]) -> frozenset[ReadViewOptionName]:
@@ -289,9 +330,15 @@ def read_view_specific_option_names(views: tuple[str, ...]) -> frozenset[ReadVie
         frozenset(
             option_name
             for view in views
-            for option_name in READ_VIEW_HANDLER_METADATA.get(
-                view, READ_VIEW_HANDLER_METADATA["summary"]
-            ).accepted_options
+            for option_name in (
+                *READ_VIEW_HANDLER_METADATA.get(view, READ_VIEW_HANDLER_METADATA["summary"]).accepted_options,
+                *(
+                    option.name
+                    for option in READ_VIEW_HANDLER_METADATA.get(
+                        view, READ_VIEW_HANDLER_METADATA["summary"]
+                    ).declared_options
+                ),
+            )
         )
         - READ_VIEW_GLOBAL_OPTION_NAMES
     )
@@ -379,8 +426,11 @@ __all__ = [
     "RAW_READ_VIEW_OPTION_NAMES",
     "READ_VIEW_HANDLER_METADATA",
     "READ_VIEW_GLOBAL_OPTION_NAMES",
+    "declared_read_view_options",
+    "read_view_examples",
     "ReadViewExecutionKind",
     "ReadViewHandlerMetadata",
+    "ReadViewOptionDeclaration",
     "ReadViewOptionName",
     "ReadViewSessionPolicy",
     "read_view_option_names",

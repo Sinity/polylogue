@@ -18,7 +18,7 @@ from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFIL
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.read_view_handlers import ReadViewInvocation
-from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
+from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewOptionDeclaration
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -292,13 +292,17 @@ def test_a_declared_read_parameter_appears_in_production_completion_without_a_co
     """
 
     command = query_verbs.read_verb
-    probe = click.Option(["--declared-probe"], help="Synthetic option for completion coverage.")
-    monkeypatch.setattr(command, "params", [*command.params, probe])
     declaration = READ_VIEW_HANDLER_METADATA["neighbors"]
     monkeypatch.setitem(
         READ_VIEW_HANDLER_METADATA,
         "neighbors",
-        replace(declaration, accepted_options=declaration.accepted_options | {"declared_probe"}),
+        replace(
+            declaration,
+            declared_options=(
+                *declaration.declared_options,
+                ReadViewOptionDeclaration("declared_probe", ("--declared-probe",), "Synthetic read option."),
+            ),
+        ),
     )
 
     context = click.Context(command)
@@ -309,6 +313,19 @@ def test_a_declared_read_parameter_appears_in_production_completion_without_a_co
 
     assert "--declared-probe" in visible
     assert "--declared-probe" not in hidden
+    assert any(param.name == "declared_probe" for param in command.get_params(context))
+
+
+def test_declared_message_anchor_reaches_the_real_option_builder() -> None:
+    """Deleting the declaration removes Click admission before the message handler."""
+
+    command = query_verbs.read_verb
+    context = command.make_context("read", ["--view", "messages", "--around", "message-7"])
+
+    assert context.params["around"] == "message-7"
+    options = read_view_handlers.read_view_options_for_view("messages", context.params)
+    assert isinstance(options, read_view_handlers.ReadViewMessageOptions)
+    assert options.around == "message-7"
 
 
 def test_read_format_click_choices_come_from_view_profiles() -> None:

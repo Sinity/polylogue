@@ -14,7 +14,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.operations.authority import authority_for_reader
-from polylogue.operations.query_lowering import cli_query_spec, lower_cli_query_params
+from polylogue.operations.query_lowering import cli_query_spec, cli_read_request, lower_cli_query_params
 from polylogue.operations.session_evidence import (
     read_agent_policies_evidence,
     read_file_edits_page,
@@ -275,23 +275,19 @@ def _query_payload(
     dependencies: DaemonReadDependencies,
 ) -> dict[str, object]:
     from polylogue.api.archive import _archive_count_sessions_for_spec, _archive_list_summaries_for_spec
-    from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import (
         DEFAULT_SESSION_LIST_LIMIT,
-        SessionQuerySpec,
         clamp_query_limit,
         resolve_default_root_filter,
         session_count_unit_label,
     )
     from polylogue.surfaces.outcome import decide_outcome
 
-    normalized, expression = _lower_cli_query_params(params)
-    limit = clamp_query_limit(normalized.get("limit"), default=DEFAULT_SESSION_LIST_LIMIT)
-    offset = _non_negative_int(normalized.get("offset"), default=0)
+    limit = clamp_query_limit(params.get("limit"), default=DEFAULT_SESSION_LIST_LIMIT)
+    offset = _non_negative_int(params.get("offset"), default=0)
     # CLI root payloads retain presentation-only keys.  The existing query
     # contract intentionally ignores those while compiling selection intent.
-    base = SessionQuerySpec.from_params({**normalized, "limit": limit, "offset": offset})
-    spec = compile_expression_into(expression, base) if expression else base
+    spec = cli_read_request({**params, "limit": limit, "offset": offset}).selection
     spec = _resolved_scope_spec(spec, archive=archive)
 
     searching = bool(
@@ -470,6 +466,12 @@ def _search_payload(
     dependencies: DaemonReadDependencies,
 ) -> dict[str, object]:
     """Run lexical/vector search without reopening the archive for hydration."""
+
+    if spec.exclude_text_terms:
+        raise ValueError(
+            "ranked search cannot apply text exclusions before ranking; remove --exclude-text "
+            "or use a structural list query and retry"
+        )
 
     from dataclasses import fields
 
@@ -986,17 +988,26 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
     if spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid":
         raise ValueError("aggregates are computed over lexical and structural selection only")
     spec = _resolved_scope_spec(spec, archive=archive)
+    if spec.exclude_text_terms and mode != "count":
+        raise ValueError(
+            "stats cannot aggregate a content-excluded selection; use --count or remove --exclude-text and retry"
+        )
 
     filter_kwargs = spec_session_filter_kwargs(spec)
     query = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
     scope_id = spec.session_id
 
     if mode == "count":
-        count = (
-            archive.count_search_sessions(query, session_id=scope_id, **cast("Any", filter_kwargs))
-            if query
-            else archive.count_sessions(session_id=scope_id, **cast("Any", filter_kwargs))
-        )
+        if spec.exclude_text_terms:
+            from polylogue.api.archive import _archive_count_sessions_for_spec
+
+            count = _archive_count_sessions_for_spec(archive, spec)
+        else:
+            count = (
+                archive.count_search_sessions(query, session_id=scope_id, **cast("Any", filter_kwargs))
+                if query
+                else archive.count_sessions(session_id=scope_id, **cast("Any", filter_kwargs))
+            )
         return {"outcome": decide_outcome(matched=count).to_dict(), "mode": "count", "count": count}
 
     session_ids = _matched_session_ids(

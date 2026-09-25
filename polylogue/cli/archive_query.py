@@ -158,24 +158,6 @@ def _read_failure_detail(exc: Exception) -> str:
     return str(getattr(exc, "detail", None) or exc)
 
 
-def _is_daemon_unavailable(exc: Exception) -> bool:
-    """Is this failure "no daemon answered", rather than a fact about the archive?
-
-    The distinction decides whether the missing-archive branch may claim the
-    read. A daemon that did not answer says nothing about what the archive
-    holds, and browse mode renders a missing archive as a *valid empty answer*
-    -- so routing a ``daemon_required`` refusal through that branch made
-    ``polylogue read --all`` print ``outcome: empty (no_rows_in_scope)`` and
-    exit 0 for a read that was never executed. That is the silent failure
-    polylogue-3eexy names, and the direct-read fallback is all that hides it
-    today: once the CLI no longer executes reads in-process, this branch is
-    what the operator would see.
-    """
-    from polylogue.cli.operation_kernel import OperationUnavailableError
-
-    return isinstance(exc, OperationUnavailableError)
-
-
 def _is_session_not_found(exc: Exception) -> bool:
     """Whether the daemon completed a read and rejected its session identity.
 
@@ -214,6 +196,7 @@ def _emit_reference_query(
     output_format: str,
     limit: int | None,
     daemon_disabled: bool,
+    exclude_text: bool = False,
 ) -> bool:
     """Resolve and render a bare ``from <ref>`` root, or decline it.
 
@@ -227,6 +210,8 @@ def _emit_reference_query(
     pipeline = parse_reference_query_pipeline(expression)
     if pipeline is None:
         return False
+    if exclude_text:
+        raise click.UsageError("Reference reads do not apply --exclude-text; remove it or query sessions with find.")
     if pipeline.stages:
         raise click.UsageError(
             "reference pipeline stages are not supported by the CLI find surface; "
@@ -620,6 +605,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         output_format=output_format,
         limit=_optional_int(params.get("limit")),
         daemon_disabled=daemon_disabled,
+        exclude_text=bool(params.get("exclude_text")),
     ):
         env.record_timing("compile", perf_counter() - compile_started_at)
         return
@@ -641,11 +627,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         if unit_source_query and not _optional_str(params.get("similar_text"))
         else None
     )
-    compiled_spec = (
-        SessionQuerySpec.from_params(params)
-        if unit_source is not None
-        else _compiled_session_spec(request, params=params, raw_query=raw_query)
-    )
+    compiled_spec = SessionQuerySpec.from_params(params) if unit_source is not None else request.query_spec()
+    if unit_source is not None and compiled_spec.exclude_text_terms:
+        raise click.UsageError("Unit queries do not apply --exclude-text; remove it or query sessions with find.")
     origins = compiled_spec.origins
     origin = origins[0] if len(origins) == 1 else None
     query = _query_text(compiled_spec.query_terms, {"contains": compiled_spec.contains_terms})
@@ -820,6 +804,10 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         transcript_ref, certain_ref = session_scope_id, True
     elif session_scope_id is None and query and not similar_text and _single_query_token_looks_like_ref(query):
         transcript_ref = query
+    if transcript_ref is not None and compiled_spec.exclude_text_terms:
+        raise click.UsageError(
+            "Exact session reads do not apply --exclude-text; remove it or query sessions with find."
+        )
     if transcript_ref is not None and certain_ref and params.get("open_result"):
         # Opening a session needs its identity, not its content: a one-message
         # window resolves the reference (and proves the session exists) without
@@ -897,17 +885,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             # session, not a malformed command line: same wording and exit
             # class as an exact-ref read of the same reference.
             _fail(f"Session not found: {session_scope_id}")
-        if not index_db_path.exists() and not _is_daemon_unavailable(exc):
-            _missing_archive_refusal(
-                params,
-                index_db_path=index_db_path,
-                output_format=output_format,
-                origin=origin,
-                query=query,
-                fields=fields,
-                typo_hint=typo_hint,
-            )
-            return
         _read_failure_as_usage_error(exc)
     env.record_timing("db-open", db_open_started_at)
     if bool(params.get("verbose")):
@@ -1208,17 +1185,6 @@ def _query_text(query_terms: tuple[str, ...], params: dict[str, object]) -> str:
     if isinstance(contains, Iterable) and not isinstance(contains, str | bytes):
         terms.extend(str(term) for term in contains if term)
     return " ".join(terms).strip()
-
-
-def _compiled_session_spec(request: RootModeRequest, *, params: dict[str, object], raw_query: str) -> SessionQuerySpec:
-    """Compile CLI selection terms while preserving CLI-only semantic lane spelling."""
-    if params.get("retrieval_lane") != "semantic":
-        return request.query_spec()
-    spec_params = dict(params)
-    spec_params["retrieval_lane"] = "auto"
-    if raw_query and not spec_params.get("similar_text"):
-        spec_params["similar_text"] = raw_query
-    return RootModeRequest(params=spec_params, query_terms=()).query_spec()
 
 
 def _missing_archive_refusal(
