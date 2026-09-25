@@ -250,8 +250,10 @@ def _source_signature(path: Path) -> tuple[str, str, int]:
 
 
 def _invalidate_source_signatures() -> None:
-    """Invalidate signatures after an explicit in-process source edit."""
+    """Invalidate source-derived caches after an explicit in-process edit."""
     _source_signature.cache_clear()
+    _local_import_paths.cache_clear()
+    _semantic_source_closure.cache_clear()
 
 
 def _fingerprint_path_label(path: Path) -> str:

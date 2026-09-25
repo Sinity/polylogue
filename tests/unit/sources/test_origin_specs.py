@@ -1264,6 +1264,40 @@ class TestSemanticSourceClosureMemo:
         assert origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",)) == members
         assert origin_specs_module.lowering_fingerprint() != first
 
+    def test_invalidation_rebuilds_changed_import_membership(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit edit signal refreshes both signatures and import edges."""
+        import polylogue.sources.origin_specs as origin_specs_module
+
+        source_dir = tmp_path / "polylogue" / "sources"
+        source_dir.mkdir(parents=True)
+        emitter = source_dir / "emitter.py"
+        emitter.write_text(
+            "from polylogue.sources.first import shape\n\ndef emit(value):\n    return shape(value)\n",
+            encoding="utf-8",
+        )
+        first = source_dir / "first.py"
+        first.write_text("def shape(value):\n    return value\n", encoding="utf-8")
+        second = source_dir / "second.py"
+        second.write_text("def shape(value):\n    return {'value': value}\n", encoding="utf-8")
+
+        monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+        paths = ("polylogue/sources/emitter.py",)
+        origin_specs_module._invalidate_source_signatures()
+        before = origin_specs_module._semantic_source_paths(paths)
+        assert first.resolve() in before
+        assert second.resolve() not in before
+
+        emitter.write_text(
+            "from polylogue.sources.second import shape\n\ndef emit(value):\n    return shape(value)\n",
+            encoding="utf-8",
+        )
+        origin_specs_module._invalidate_source_signatures()
+        after = origin_specs_module._semantic_source_paths(paths)
+        assert second.resolve() in after
+        assert first.resolve() not in after
+
     def test_a_substituted_source_root_does_not_reuse_another_root_membership(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
