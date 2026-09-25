@@ -3926,7 +3926,7 @@ class ArchiveStore:
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
                    COALESCE((SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id), CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END) AS cost_provenance,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
-                   sp.input_row_count,
+                   sp.input_row_count, sp.input_content_hash, sp.materializer_version,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
             JOIN sessions s ON s.session_id = sp.session_id
@@ -8308,14 +8308,13 @@ def _session_profile_record_from_archive_row(
     return SessionProfileRecord(
         session_id=SessionId(session_id),
         logical_session_id=SessionId(logical_session_id),
-        materializer_version=(
-            provenance.materializer_version if provenance is not None else SESSION_INSIGHT_MATERIALIZER_VERSION
-        ),
+        materializer_version=int(row["materializer_version"]),
         materialized_at=materialized_at,
         source_updated_at=provenance.source_updated_at if provenance is not None else None,
         source_sort_key=provenance.source_sort_key if provenance is not None else None,
         input_high_water_mark=(provenance.input_high_water_mark if provenance is not None else None),
         input_high_water_mark_source=(provenance.input_high_water_mark_source if provenance is not None else None),
+        input_content_hash=(str(row["input_content_hash"]) if row["input_content_hash"] is not None else None),
         input_row_count=int(row["input_row_count"] or 0),
         source_name=source_name,
         title=title,

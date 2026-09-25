@@ -69,7 +69,7 @@ def compose_session_profile_callback(
     )
 
     async def converge(scope: Sequence[str] | None) -> DerivationReport:
-        frame = make_session_profile_frame(index_path, archive_root=archive_root, scope=scope)
+        frame = make_session_profile_frame(index_path, archive_root=archive_root, scope=scope, profile_demand_only=True)
         return await owner.converge(frame)
 
     return ComposedSessionProfiles(

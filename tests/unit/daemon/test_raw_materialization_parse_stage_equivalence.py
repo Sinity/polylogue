@@ -204,6 +204,129 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
         await coordinator.shutdown(timeout=1.0)
 
 
+@pytest.mark.asyncio
+async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepted R1/R2 marker inputs survive a coalesced profile publication."""
+    from polylogue.core.enums import Origin, Role
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.pipeline.services.ingest_batch import _core as ingest_batch_core
+    from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
+    from polylogue.pipeline.services.parsing import ParsingService
+    from polylogue.pipeline.services.parsing_models import ParseResult
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.repository import SessionRepository
+    from polylogue.storage.runtime import RawSessionRecord
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    config = _config(archive_root)
+    repository = SessionRepository(backend=SQLiteBackend(db_path=archive_root / "index.db"), archive_root=archive_root)
+    service = ParsingService(repository=repository, archive_root=archive_root, config=config, ingest_workers=1)
+    raw_notes: dict[str, str] = {}
+    for revision, note in ((1, "first retained note"), (2, "second retained note")):
+        payload_bytes = f"synthetic-revision-{revision}".encode()
+        BlobStore(archive_root / "blob").write_from_bytes(payload_bytes)
+        with sqlite3.connect(archive_root / "source.db") as source:
+            raw_id = write_source_raw_session(
+                source,
+                origin=Origin.CODEX_SESSION,
+                source_path=f"coalesced-{revision}.jsonl",
+                source_index=0,
+                payload=payload_bytes,
+                acquired_at_ms=revision,
+            )
+        raw_notes[raw_id] = note
+
+    def fresh_ingest(record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        parsed = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="coalesced-profile",
+            created_at="2026-01-01T00:00:00Z",
+            messages=[
+                ParsedMessage(provider_message_id="question", role=Role.USER, text="question"),
+                ParsedMessage(
+                    provider_message_id="note", role=Role.ASSISTANT, text=f"::note: {raw_notes[record.raw_id]}"
+                ),
+            ],
+        )
+        return IngestRecordResult(
+            raw_id=record.raw_id,
+            payload_provider=Provider.CODEX.value,
+            validation_status="passed",
+            outcome_code="success",
+            sessions=[
+                SessionWritePayload(
+                    session_id="codex-session:coalesced-profile",
+                    content_hash=str(session_content_hash(parsed)),
+                    parsed_session=parsed,
+                    message_count=len(parsed.messages),
+                    raw_id=record.raw_id,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", fresh_ingest)
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+    )
+    try:
+        for raw_id in raw_notes:
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+            )
+    finally:
+        await repository.close()
+
+    with sqlite3.connect(archive_root / "source.db") as source:
+        retained = source.execute("SELECT sequence, raw_id FROM accepted_marker_inputs ORDER BY sequence").fetchall()
+        assert len(retained) == 2
+        assert retained[0][0] < retained[1][0]
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        periodic = await composed.callback(None)
+        assert periodic.outcomes
+        # Marker delivery intentionally advances one accepted source batch per
+        # transaction. The next periodic tick consumes R2 without republishing
+        # the already-current profile of the coalesced index revision.
+        second = await composed.callback(None)
+        assert second.outcomes
+        assert all(item.key.domain != "session_profile" for item in second.outcomes)
+        with sqlite3.connect(archive_root / "index.db") as index:
+            assert index.execute(
+                "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", ("codex-session:coalesced-profile",)
+            ).fetchone() == (1,)
+            assert (
+                index.execute(
+                    "SELECT 1 FROM session_profile_demand WHERE session_id = ?", ("codex-session:coalesced-profile",)
+                ).fetchone()
+                is None
+            )
+        with sqlite3.connect(archive_root / "user.db") as user:
+            bodies = [str(row[0]) for row in user.execute("SELECT body_text FROM assertions ORDER BY body_text")]
+            assert any("first retained note" in body for body in bodies)
+            assert any("second retained note" in body for body in bodies)
+        unchanged = await composed.callback(None)
+        assert unchanged.made_no_publication_attempts
+        assert unchanged.work.inspected == 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
 def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_current_heads(tmp_path: Path) -> None:
     """Raw-to-profile handoff follows authoritative heads, not residual session rows.
 

@@ -13,6 +13,7 @@ from polylogue.storage.derived.session.derivation import (
     SESSION_PROFILE_DOMAIN,
     SESSION_PROFILE_RECIPE_VERSION,
     SessionProfileDerivation,
+    bound_session_profile_partitions,
 )
 from polylogue.storage.derived.session.marker_domain import (
     SESSION_MARKER_DOMAIN,
@@ -30,7 +31,7 @@ from polylogue.storage.derived.session.usage_rollup import (
     session_usage_rollup_recipe_version,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection, read_frame
 
 __all__ = [
     "make_session_marker_derivation",
@@ -38,7 +39,28 @@ __all__ = [
     "make_session_profile_frame",
     "make_session_summary_derivation",
     "make_session_usage_rollup_derivation",
+    "session_profile_partition_status",
 ]
+
+
+def session_profile_partition_status(archive_root: Path, session_id: str) -> tuple[str, str | None, int | None]:
+    """Classify one profile and return its row identity from one read frame."""
+    with read_frame(resolve_active_index_path(archive_root)) as frame:
+        conn = frame.connection
+        conn.execute("BEGIN")
+        status = bound_session_profile_partitions(
+            conn,
+            (session_id,),
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+        )[session_id]
+        row = conn.execute(
+            "SELECT input_content_hash, materializer_version FROM session_profiles WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        return (
+            status,
+            None if row is None or row[0] is None else str(row[0]),
+            None if row is None else int(row[1]),
+        )
 
 
 def _session_derivation_connections(
@@ -204,6 +226,7 @@ def make_session_profile_frame(
     *,
     archive_root: Path,
     scope: Sequence[str] | None,
+    profile_demand_only: bool = False,
 ) -> DerivationFrame:
     """Describe one bounded pass against the active index generation."""
     del index_db_path
@@ -217,4 +240,5 @@ def make_session_profile_frame(
             SESSION_MARKER_DOMAIN: SESSION_MARKER_RECIPE_VERSION,
         },
         scope=None if scope is None else tuple(dict.fromkeys(str(session_id) for session_id in scope)),
+        profile_demand_only=profile_demand_only,
     )

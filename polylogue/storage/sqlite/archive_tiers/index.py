@@ -11,8 +11,10 @@ from polylogue.storage.derived.session.input_binding import (
     SESSION_INPUT_RECIPE_VERSION,
     SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS,
     SESSION_ROW_PROJECTION_COLUMNS,
+    SESSION_WORKING_DIR_PROJECTION_COLUMNS,
 )
-from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MESSAGE_PROJECTION
+from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MESSAGE_PROJECTION, SESSION_SUMMARY_RECIPE_VERSION
+from polylogue.storage.derived.session.usage_rollup import session_usage_rollup_recipe_version
 from polylogue.storage.fts.sql import (
     FTS_BLOCK_INPUT_PROJECTION_COLUMNS,
     FTS_MESSAGES_IDENTITY_TABLE_SQL,
@@ -1555,11 +1557,13 @@ CREATE TABLE IF NOT EXISTS session_profile_demand (
 CREATE TABLE IF NOT EXISTS session_profile_demand_state (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     materializer_version INTEGER NOT NULL,
-    input_recipe_version TEXT NOT NULL
+    input_recipe_version TEXT NOT NULL,
+    summary_recipe_version TEXT NOT NULL,
+    usage_recipe_version TEXT NOT NULL
 ) STRICT;
 INSERT OR IGNORE INTO session_profile_demand_state
-    (singleton, materializer_version, input_recipe_version)
-VALUES (1, -1, '');
+    (singleton, materializer_version, input_recipe_version, summary_recipe_version, usage_recipe_version)
+VALUES (1, -1, '', '', '');
 INSERT INTO session_profile_demand(session_id, revision)
 SELECT s.session_id, 1
 FROM sessions AS s
@@ -1567,7 +1571,9 @@ WHERE EXISTS (
     SELECT 1 FROM session_profile_demand_state AS state
     WHERE state.singleton = 1
       AND (state.materializer_version != {SESSION_INSIGHT_MATERIALIZER_VERSION}
-           OR state.input_recipe_version != '{SESSION_INPUT_RECIPE_VERSION}')
+           OR state.input_recipe_version != '{SESSION_INPUT_RECIPE_VERSION}'
+           OR state.summary_recipe_version != '{SESSION_SUMMARY_RECIPE_VERSION}'
+           OR state.usage_recipe_version != '{session_usage_rollup_recipe_version()}')
 )
 UNION
 SELECT sp.session_id, 1
@@ -1578,12 +1584,16 @@ WHERE s.session_id IS NULL
     SELECT 1 FROM session_profile_demand_state AS state
     WHERE state.singleton = 1
       AND (state.materializer_version != {SESSION_INSIGHT_MATERIALIZER_VERSION}
-           OR state.input_recipe_version != '{SESSION_INPUT_RECIPE_VERSION}')
+           OR state.input_recipe_version != '{SESSION_INPUT_RECIPE_VERSION}'
+           OR state.summary_recipe_version != '{SESSION_SUMMARY_RECIPE_VERSION}'
+           OR state.usage_recipe_version != '{session_usage_rollup_recipe_version()}')
   )
 ON CONFLICT(session_id) DO NOTHING;
 UPDATE session_profile_demand_state
 SET materializer_version = {SESSION_INSIGHT_MATERIALIZER_VERSION},
-    input_recipe_version = '{SESSION_INPUT_RECIPE_VERSION}'
+    input_recipe_version = '{SESSION_INPUT_RECIPE_VERSION}',
+    summary_recipe_version = '{SESSION_SUMMARY_RECIPE_VERSION}',
+    usage_recipe_version = '{session_usage_rollup_recipe_version()}'
 WHERE singleton = 1;
 
 CREATE INDEX IF NOT EXISTS idx_session_profiles_provider
@@ -1744,6 +1754,27 @@ AFTER UPDATE OF session_id, {_binding_columns(SESSION_EVENT_PROJECTION_COLUMNS)}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_ad
 AFTER DELETE ON session_events BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    {_profile_demand_sql("OLD.session_id")}
+END;
+
+-- Profile hydration reads each session's ordered working directories. The
+-- full-replace writer already deletes and reinserts these rows inside its
+-- transaction; row triggers cover that route and direct edits alike.
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_working_dirs_ai
+AFTER INSERT ON session_working_dirs BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    {_profile_demand_sql("NEW.session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_working_dirs_au
+AFTER UPDATE OF session_id, {_binding_columns(SESSION_WORKING_DIR_PROJECTION_COLUMNS)} ON session_working_dirs BEGIN
+    UPDATE session_profiles SET input_content_hash = NULL
+     WHERE session_id IN (OLD.session_id, NEW.session_id);
+    {_profile_demand_sql("OLD.session_id")}
+    {_profile_demand_sql("NEW.session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_binding_working_dirs_ad
+AFTER DELETE ON session_working_dirs BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
     {_profile_demand_sql("OLD.session_id")}
 END;

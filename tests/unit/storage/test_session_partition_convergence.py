@@ -864,6 +864,8 @@ def test_the_partition_input_columns_are_projected_or_declared_excluded(archive_
         SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS,
         SESSION_ROW_EXCLUDED_COLUMNS,
         SESSION_ROW_PROJECTION_COLUMNS,
+        SESSION_WORKING_DIR_EXCLUDED_COLUMNS,
+        SESSION_WORKING_DIR_PROJECTION_COLUMNS,
     )
 
     index_db = _index_db(archive_root)
@@ -878,6 +880,7 @@ def test_the_partition_input_columns_are_projected_or_declared_excluded(archive_
         ("attachments", SESSION_ATTACHMENT_PROJECTION_COLUMNS, SESSION_ATTACHMENT_EXCLUDED_COLUMNS),
         ("attachment_refs", SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS, SESSION_ATTACHMENT_REF_EXCLUDED_COLUMNS),
         ("session_events", SESSION_EVENT_PROJECTION_COLUMNS, SESSION_EVENT_EXCLUDED_COLUMNS),
+        ("session_working_dirs", SESSION_WORKING_DIR_PROJECTION_COLUMNS, SESSION_WORKING_DIR_EXCLUDED_COLUMNS),
         (
             "session_provider_usage_events",
             SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS,
@@ -895,6 +898,23 @@ def test_the_partition_input_columns_are_projected_or_declared_excluded(archive_
             assert not unclassified, f"{relation}: columns neither projected nor declared excluded: {unclassified}"
             assert not (set(excluded) & set(projected)), f"{relation}: a column cannot be both"
             assert all(reason.strip() for reason in excluded.values()), f"{relation}: an exclusion needs a reason"
+
+
+def test_working_dir_order_is_part_of_the_session_binding(archive_root: Path) -> None:
+    """Swapping two fixed paths changes the prepared profile's input identity."""
+    index_db = _index_db(archive_root)
+    session_id = _seed(index_db, "working-dir-order", messages=[("user", "one")])
+    with closing(_write_connection(index_db)) as conn:
+        conn.executemany(
+            "INSERT INTO session_working_dirs(session_id, path, position) VALUES (?, ?, ?)",
+            ((session_id, "/work/one", 0), (session_id, "/work/two", 1)),
+        )
+        conn.commit()
+        before = session_input_bindings(conn, (session_id,))[session_id]
+        conn.execute("UPDATE session_working_dirs SET position = 1 - position WHERE session_id = ?", (session_id,))
+        conn.commit()
+        after = session_input_bindings(conn, (session_id,))[session_id]
+    assert before != after
 
 
 def test_dropping_a_projection_column_stops_the_binding_from_seeing_its_defect(
