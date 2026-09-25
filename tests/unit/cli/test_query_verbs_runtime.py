@@ -347,6 +347,47 @@ def test_read_request_normalization_preserves_context_and_correlation_options() 
     assert projection.projection.correlation_github_api is False
 
 
+def test_read_request_normalization_receives_the_full_parsed_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI projection normalization keeps predicates in the canonical request.
+
+    ``SelectionSpec`` on ``QueryProjectionSpec`` is the portable, renderer-facing
+    subset.  ``ReadRequest.selection`` is the query algebra and must retain
+    predicates and sort/reference fields that do not have renderer fields.
+
+    Anti-vacuity: removing the ``selection`` handoff to
+    ``ReadRequest.normalize`` makes ``normalized_selections`` empty and drops
+    ``typed_only`` from this production projection-building route.
+    """
+
+    from polylogue.surfaces.read_contract import ReadRequest
+
+    normalized_selections: list[object] = []
+    normalize = ReadRequest.normalize
+
+    def recording_normalize(params: dict[str, object], *, preset: str | None = None) -> ReadRequest:
+        result = normalize(params, preset=preset)
+        normalized_selections.append(result.selection)
+        return result
+
+    monkeypatch.setattr(ReadRequest, "normalize", staticmethod(recording_normalize))
+    request = RootModeRequest.from_params({"query": ("typed_only:true", "repo:polylogue")})
+    expected_selection = request.query_spec()
+
+    query_verbs._build_read_projection_spec(
+        request,
+        views=("summary",),
+        output_format="json",
+        destination="stdout",
+        out_path=None,
+        max_tokens=None,
+        selection_limit=7,
+    )
+
+    assert normalized_selections == [expected_selection]
+    assert expected_selection.typed_only is True
+    assert expected_selection.repo_names == ("polylogue",)
+
+
 def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.CaptureFixture[str]) -> None:
     session = make_conv(
         id="session-1",
