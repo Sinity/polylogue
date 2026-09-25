@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal, cast
 
 from polylogue.core import types as core_types
+from polylogue.daemon.judgment_automation import JudgmentAutomationReceiptStatus
 from polylogue.storage.sqlite.archive_tiers import vocabulary_inventory
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -77,6 +78,11 @@ def test_equivalent_python_vocabularies_are_reported_as_one_owner_group() -> Non
     frontier = [item for item in inventory.checks if item.column == "accepted_frontier_kind"]
     assert len(frontier) == 2
     assert {item.owner for item in frontier} == {"polylogue.storage.sqlite.archive_tiers.types.RevisionFrontierKind"}
+
+
+def test_judgment_scheduler_uses_the_storage_vocabulary_owner() -> None:
+    """The daemon receipt type must not grow a parallel copy of the ops status."""
+    assert JudgmentAutomationReceiptStatus is core_types.JudgmentSchedulerStatus
 
 
 def test_detaching_a_derived_check_from_its_owner_reports_unknown_ownership(monkeypatch) -> None:

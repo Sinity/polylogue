@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from polylogue.config import JUDGMENT_AUTOMATION_BATCH_LIMIT_DEFAULT, load_polylogue_config
 from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.core.types import JudgmentSchedulerStatus as JudgmentAutomationReceiptStatus
 from polylogue.logging import ERROR, INFO, WARNING, emit
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 
@@ -63,8 +64,6 @@ JUDGMENT_AUTOMATION_STAGE = "judgment-automation"
 JUDGMENT_AUTOMATION_RECEIPT_GRACE_MIN_SECONDS = 5 * 60
 JUDGMENT_AUTOMATION_RECEIPT_GRACE_MAX_SECONDS = 60 * 60
 JUDGMENT_AUTOMATION_RECEIPT_RECOVERY_BATCH_LIMIT = 100
-JudgmentAutomationReceiptStatus = Literal["completed", "parked", "failed"]
-
 JudgmentAutomationDecisionKind = Literal["accept", "reject", "escalate"]
 
 
