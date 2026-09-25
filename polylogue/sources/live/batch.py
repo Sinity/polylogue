@@ -2206,7 +2206,7 @@ class LiveBatchProcessor:
                         for paste_session_id in paste_session_ids:
                             self._cursor.record_convergence_debt(
                                 stage="hook_paste_enrichment",
-                                subject_type="session",
+                                subject_type="session_id",
                                 subject_id=str(paste_session_id),
                                 error=paste_error,
                             )

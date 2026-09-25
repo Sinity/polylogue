@@ -583,6 +583,50 @@ def make_fts_readiness_binding_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+def make_hook_paste_enrichment_stage(db_path: Path) -> ConvergenceStage:
+    """Retry hook-paste enrichment for the session subjects that recorded debt.
+
+    The ordinary live-ingest path performs this enrichment after path
+    convergence. This stage supplies the corresponding session-scoped retry
+    route when that write raised. Session debt is the work predicate: replaying
+    the idempotent enrichment is safe even if an earlier attempt committed
+    before it failed to clear its debt row.
+    """
+
+    def check(_path: Path) -> bool:
+        # Hook-paste retries are keyed by session id, not by source path.
+        return False
+
+    def execute(_path: Path) -> StageExecuteReturn:
+        return True
+
+    def check_sessions(session_ids: Sequence[str]) -> set[str]:
+        return {str(session_id) for session_id in session_ids if session_id}
+
+    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
+        selected_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
+        if not selected_ids:
+            return True
+        from polylogue.sources.live.hook_paste_enrichment import enrich_paste_from_hooks
+
+        # The stage engine admits this bounded, session-scoped write through
+        # the daemon's writer bridge. A completed no-op is success: the hooks
+        # may already have been applied or may no longer match a message.
+        enrich_paste_from_hooks(db_path, session_ids=selected_ids)
+        return True
+
+    return ConvergenceStage(
+        name="hook_paste_enrichment",
+        description="Apply durable hook paste evidence to the recorded sessions",
+        check=check,
+        execute=execute,
+        check_sessions=check_sessions,
+        execute_sessions=execute_sessions,
+        whole_archive=False,
+        writer_admission="whole_execute",
+    )
+
+
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -811,6 +855,7 @@ __all__ = [
     "make_claude_workflow_stage",
     "make_delegation_work_evidence_stage",
     "make_default_convergence_stages",
+    "make_hook_paste_enrichment_stage",
     "make_lineage_prefix_recompose_stage",
     "make_raw_authority_verdict_cache_stage",
     "make_sinex_publication_stage",

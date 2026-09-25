@@ -1714,7 +1714,10 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     row was never retried when its owner retries it every pass.
     """
     from polylogue.daemon.convergence import DaemonConverger
-    from polylogue.daemon.convergence_stages import make_default_convergence_stages
+    from polylogue.daemon.convergence_stages import (
+        make_default_convergence_stages,
+        make_hook_paste_enrichment_stage,
+    )
     from polylogue.sources.live.cursor import CursorStore
 
     # Constructing the store is a write section, not a read: it bootstraps the
@@ -1738,6 +1741,9 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
 
     default_stages = make_default_convergence_stages(db)
     stages_by_name = {stage.name: stage for stage in default_stages}
+    # This stage replays only recorded debt. Putting it in the ordinary
+    # convergence list would rescan hook evidence for every session pass.
+    stages_by_name["hook_paste_enrichment"] = make_hook_paste_enrichment_stage(db)
     implemented_stages = set(stages_by_name) | {"convergence"}
 
     # A debt row naming a stage no registered implementation can run was never
