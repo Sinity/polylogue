@@ -72,7 +72,7 @@ class VocabularyInventory:
     @property
     def unknown_ownership(self) -> int:
         return sum(
-            item.lifecycle == "derived" and item.owner is None and item.disposition != "STORAGE_LOCAL"
+            item.lifecycle == "derived" and item.disposition in {"OWNER_CANDIDATE", "UNKNOWN_OWNERSHIP"}
             for item in self.checks
         )
 

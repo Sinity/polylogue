@@ -18,8 +18,8 @@ def test_inventory_covers_all_string_membership_checks_and_declares_exclusions()
     # denominator: numeric and NOT IN checks are intentionally excluded.
     assert inventory.denominator == 90
     assert inventory.durable_exclusions == 38
-    assert inventory.unknown_ownership == 0
-    assert inventory.unverified_owner_bindings > 0
+    assert inventory.unknown_ownership == inventory.unverified_owner_bindings
+    assert inventory.unknown_ownership > 0
     assert {item.tier.value for item in inventory.checks} == {
         "source",
         "index",
@@ -80,6 +80,7 @@ def test_equivalent_python_vocabularies_are_reported_as_one_owner_group() -> Non
 
 
 def test_detaching_a_derived_check_from_its_owner_reports_unknown_ownership(monkeypatch) -> None:
+    before = build_inventory()
     ddl = dict(vocabulary_inventory.ARCHIVE_DDL_BY_TIER)
     ddl[ArchiveTier.INDEX] = ddl[ArchiveTier.INDEX].replace(
         "identity_source IN ('native', 'content')",
@@ -92,7 +93,12 @@ def test_detaching_a_derived_check_from_its_owner_reports_unknown_ownership(monk
     detached = [item for item in inventory.checks if item.ref == "index.messages.identity_source"]
     assert len(detached) == 1
     assert detached[0].disposition == "UNKNOWN_OWNERSHIP"
-    assert inventory.unknown_ownership == 1
+    assert inventory.unknown_ownership == before.unknown_ownership
+    assert inventory.unverified_owner_bindings == before.unverified_owner_bindings - 1
+    assert (
+        sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in inventory.checks)
+        == sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in before.checks) + 1
+    )
 
 
 def test_omitting_a_canonical_tier_invalidates_the_inventory(monkeypatch) -> None:
@@ -108,6 +114,7 @@ def test_omitting_a_canonical_tier_invalidates_the_inventory(monkeypatch) -> Non
 
 
 def test_reintroducing_a_duplicate_owner_makes_ownership_ambiguous(monkeypatch) -> None:
+    before = build_inventory()
     monkeypatch.setattr(core_types, "DuplicateMessageIdentitySource", Literal["content", "native"], raising=False)
 
     inventory = build_inventory()
@@ -115,4 +122,9 @@ def test_reintroducing_a_duplicate_owner_makes_ownership_ambiguous(monkeypatch) 
     identity = [item for item in inventory.checks if item.ref == "index.messages.identity_source"]
     assert len(identity) == 1
     assert identity[0].disposition == "UNKNOWN_OWNERSHIP"
-    assert inventory.unknown_ownership == 1
+    assert inventory.unknown_ownership == before.unknown_ownership
+    assert inventory.unverified_owner_bindings == before.unverified_owner_bindings - 1
+    assert (
+        sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in inventory.checks)
+        == sum(item.disposition == "UNKNOWN_OWNERSHIP" for item in before.checks) + 1
+    )
