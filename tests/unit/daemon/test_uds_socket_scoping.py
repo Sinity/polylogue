@@ -21,6 +21,7 @@ These tests cover two acceptance criteria:
 from __future__ import annotations
 
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -56,6 +57,19 @@ def test_archive_scope_key_stable_for_same_root(tmp_path: Path) -> None:
     # change the identity -- otherwise the same archive could still fracture
     # into two distinct sockets depending on how the caller wrote the path.
     assert archive_scope_key(root) == archive_scope_key(str(root) + "/")
+
+
+def test_operation_stack_preserves_an_occupied_supplied_socket(tmp_path: Path, _short_runtime_dir: Path) -> None:
+    """A failed probe bind must leave the existing listener reachable."""
+    socket_path = _short_runtime_dir / "occupied.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(socket_path))
+        listener.listen(1)
+        with pytest.raises(OSError):
+            with running_daemon_operations(tmp_path / "archive", socket_path=socket_path):
+                pass
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(socket_path))
 
 
 def test_daemon_socket_path_differs_by_archive_root(tmp_path: Path, _short_runtime_dir: Path) -> None:
