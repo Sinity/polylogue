@@ -31,6 +31,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -183,7 +184,7 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     old_snapshot = summary.corpus_snapshot_ref
     revised_run = _run_snapshot(final_value="final result revision two")
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_raw_payload(
+        revised_raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
             payload=json.dumps(revised_run, sort_keys=True).encode(),
             source_path=str(run_path),
@@ -191,6 +192,13 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
             acquired_at_ms=2_000_000_000_000,
         )
 
+    assert claude_workflow_materialization_needed(archive_root) is True
+    pending = materialize_claude_workflow_archive(archive_root)
+    assert pending.current_artifact_count == 223
+    assert pending.retained_raw_revision_count == 225
+    assert pending.artifact_counts.get("workflow_run_snapshot", 0) == 0
+
+    backfill_historical_revision_evidence(archive_root, selected_raw_ids=[revised_raw_id])
     assert claude_workflow_materialization_needed(archive_root) is True
     revised = materialize_claude_workflow_archive(archive_root)
     assert revised.current_artifact_count == 224
