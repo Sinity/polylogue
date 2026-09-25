@@ -21,15 +21,18 @@ from polylogue.analysis.archive import (
 )
 from polylogue.analysis.archive_models import ArchiveInsightModel, ObjectivePosturePayload
 from polylogue.analysis.objective_posture import resolve_session_objective_posture
+from polylogue.analysis.work_evidence import WorkEvidenceNode
 from polylogue.archive.actions.actions import build_tool_calls_from_content_blocks
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import TERMINAL_STATE_VALUES, TerminalState
+from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.logging import get_logger
 from polylogue.storage.search.query_support import normalize_fts5_query
 
 if TYPE_CHECKING:
     from polylogue.archive.message.models import Message
     from polylogue.core.enums import AssertionKind, AssertionStatus
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
     from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
 logger = get_logger(__name__)
@@ -127,6 +130,197 @@ class ResumeProvenance(ArchiveInsightModel):
     cited_session_ids: tuple[str, ...] = ()
     cited_message_ids: tuple[str, ...] = ()
     cited_thread_id: str | None = None
+
+
+ResumeContextArm = Literal[
+    "provider_native_resume_without_context",
+    "context_assisted_continuation",
+    "bare_continuation",
+    "prepared_unused_context",
+    "unavailable",
+]
+
+
+class ResumeContextDeliveryEvidence(ArchiveInsightModel):
+    """The delivery metadata that establishes an exact successor join.
+
+    The image itself remains in the durable receipt. A resume brief only needs
+    its stable identity and the evidence needed to explain the classification.
+    """
+
+    snapshot_ref: str
+    recipient_ref: str
+    run_ref: str | None = None
+    boundary: str
+    inheritance_mode: str
+    context_image_sha256: str
+    segment_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
+    assertion_refs: tuple[str, ...] = ()
+    delivered_by_ref: str
+    delivered_at_ms: int
+
+
+class ResumeContextEvidence(ArchiveInsightModel):
+    """Evidence-backed classification for one resume or continuation edge.
+
+    This describes an existing topology relation and its directly joined
+    receipts. It never creates, upgrades, or guesses session topology.
+    """
+
+    arm: ResumeContextArm
+    successor_session_ref: str | None = None
+    topology_link_type: str | None = None
+    topology_evidence_refs: tuple[str, ...] = ()
+    context_invocations: tuple[WorkEvidenceNode, ...] = ()
+    context_delivery_refs: tuple[str, ...] = ()
+    context_deliveries: tuple[ResumeContextDeliveryEvidence, ...] = ()
+    preparation_refs: tuple[str, ...] = ()
+    unavailable_reason: str | None = None
+
+
+def _canonical_source_refs(refs: Sequence[str]) -> tuple[str, ...]:
+    """Normalize public refs retained as direct support for a topology claim."""
+
+    normalized: list[str] = []
+    for value in refs:
+        ref = parse_public_ref(value)
+        if not isinstance(ref, (EvidenceRef, ObjectRef)):
+            raise TypeError("resume evidence refs must be ObjectRef or EvidenceRef values")
+        normalized.append(ref.format())
+    return tuple(dict.fromkeys(normalized))
+
+
+def _canonical_snapshot_refs(refs: Sequence[str], *, field: str) -> tuple[str, ...]:
+    """Normalize snapshot identities used by context preparation and delivery."""
+
+    normalized: list[str] = []
+    try:
+        for value in refs:
+            ref = ObjectRef.parse(value)
+            if ref.kind != "context-snapshot":
+                raise ValueError
+            normalized.append(ref.format())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must use context-snapshot ObjectRefs") from exc
+    return tuple(dict.fromkeys(normalized))
+
+
+def _delivery_evidence_for_successor(
+    deliveries: Sequence[ArchiveContextDeliveryEnvelope],
+    successor_ref: str | None,
+) -> tuple[ResumeContextDeliveryEvidence, ...]:
+    """Return only receipts explicitly delivered to the named successor."""
+
+    if successor_ref is None:
+        return ()
+    direct = [delivery for delivery in deliveries if delivery.recipient_ref == successor_ref]
+    return tuple(
+        ResumeContextDeliveryEvidence(
+            snapshot_ref=delivery.snapshot_ref,
+            recipient_ref=delivery.recipient_ref,
+            run_ref=delivery.run_ref,
+            boundary=delivery.boundary,
+            inheritance_mode=delivery.inheritance_mode,
+            context_image_sha256=delivery.context_image_sha256,
+            segment_refs=delivery.segment_refs,
+            evidence_refs=delivery.evidence_refs,
+            assertion_refs=delivery.assertion_refs,
+            delivered_by_ref=delivery.delivered_by_ref,
+            delivered_at_ms=delivery.delivered_at_ms,
+        )
+        for delivery in sorted(direct, key=lambda item: (item.delivered_at_ms, item.snapshot_ref))
+    )
+
+
+def classify_resume_context_evidence(
+    *,
+    successor_session_id: str | None,
+    topology_link_type: str | None,
+    topology_source_evidence_refs: Sequence[str] = (),
+    context_invocations: Sequence[WorkEvidenceNode] = (),
+    context_deliveries: Sequence[ArchiveContextDeliveryEnvelope] = (),
+    context_receipts_complete: bool = False,
+    preparation_refs: Sequence[str] = (),
+    consumed_preparation_refs: Sequence[str] | None = None,
+) -> ResumeContextEvidence:
+    """Classify context use only from exact, already-linked archive evidence.
+
+    A delivery assists a continuation only when its recipient is the explicit
+    successor. A prepared snapshot is unused only when the caller has a
+    complete consumed-snapshot projection. Empty or partial receipt lookups
+    therefore remain unavailable evidence, never proof of a bare handoff.
+    """
+
+    topology_evidence = _canonical_source_refs(topology_source_evidence_refs)
+    invocations = tuple(sorted(context_invocations, key=lambda item: (item.occurred_at_ms or -1, item.ref.format())))
+    if any(item.kind != "invocation" for item in invocations):
+        raise ValueError("context invocation evidence must use work-invocation nodes")
+
+    preparations = _canonical_snapshot_refs(preparation_refs, field="preparation refs")
+    consumed_snapshots = (
+        None
+        if consumed_preparation_refs is None
+        else set(_canonical_snapshot_refs(consumed_preparation_refs, field="consumed preparation refs"))
+    )
+    successor_ref = ObjectRef(kind="session", object_id=successor_session_id).format() if successor_session_id else None
+    deliveries = _delivery_evidence_for_successor(context_deliveries, successor_ref)
+    delivery_refs = tuple(delivery.snapshot_ref for delivery in deliveries)
+    if consumed_snapshots is not None:
+        consumed_snapshots.update(delivery_refs)
+
+    def evidence(
+        arm: ResumeContextArm,
+        *,
+        unavailable_reason: str | None = None,
+        unused_preparations: tuple[str, ...] | None = None,
+    ) -> ResumeContextEvidence:
+        return ResumeContextEvidence(
+            arm=arm,
+            successor_session_ref=successor_ref,
+            topology_link_type=topology_link_type,
+            topology_evidence_refs=topology_evidence,
+            context_invocations=invocations,
+            context_delivery_refs=delivery_refs,
+            context_deliveries=deliveries,
+            preparation_refs=preparations if unused_preparations is None else unused_preparations,
+            unavailable_reason=unavailable_reason,
+        )
+
+    if preparations and consumed_snapshots is None:
+        return evidence("unavailable", unavailable_reason="work-evidence consumption projection is incomplete")
+
+    unused_preparations = tuple(
+        ref for ref in preparations if consumed_snapshots is not None and ref not in consumed_snapshots
+    )
+    if unused_preparations:
+        return evidence("prepared_unused_context", unused_preparations=unused_preparations)
+
+    if topology_link_type in {"resume", "continuation"} and not topology_evidence:
+        return evidence("unavailable", unavailable_reason="topology relation has no exact source evidence refs")
+
+    if topology_link_type == "resume":
+        if successor_ref is None:
+            return evidence("unavailable", unavailable_reason="successor identity is unresolved")
+        if delivery_refs:
+            return evidence(
+                "unavailable",
+                unavailable_reason="resume has a direct context delivery; the context-free arm does not apply",
+            )
+        if not context_receipts_complete:
+            return evidence("unavailable", unavailable_reason="context-delivery lookup is incomplete")
+        return evidence("provider_native_resume_without_context")
+
+    if topology_link_type == "continuation":
+        if successor_ref is None:
+            return evidence("unavailable", unavailable_reason="successor identity is unresolved")
+        if delivery_refs:
+            return evidence("context_assisted_continuation")
+        if not context_receipts_complete:
+            return evidence("unavailable", unavailable_reason="context-delivery lookup is incomplete")
+        return evidence("bare_continuation")
+
+    return evidence("unavailable", unavailable_reason="topology relation is not an explicit resume or continuation")
 
 
 class ResumePathOverlap(ArchiveInsightModel):
@@ -1227,6 +1421,9 @@ __all__ = [
     "RESUME_BRIEF_MATERIALIZER_VERSION",
     "ResumeBrief",
     "ResumeCandidate",
+    "ResumeContextArm",
+    "ResumeContextDeliveryEvidence",
+    "ResumeContextEvidence",
     "ResumeFacts",
     "ResumeInferences",
     "ResumeLastMessage",
@@ -1238,5 +1435,6 @@ __all__ = [
     "ResumeUncertainty",
     "ResumeThread",
     "build_resume_brief",
+    "classify_resume_context_evidence",
     "find_resume_candidates",
 ]
