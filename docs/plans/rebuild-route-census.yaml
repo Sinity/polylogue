@@ -137,17 +137,6 @@ routes:
       The module-level FTS rebuild is called only by IndexService.rebuild_index
       above, which has no production caller of its own.
 
-  - function: polylogue.storage.derived.session.derivation.publish_session_profile
-    kinds: [direct_caller, entry_root]
-    entrypoints:
-      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
-    route: unreached
-    reason: >-
-      Exported from derivation.py's __all__ and called only by tests. The
-      daemon's session-profile owner imports SessionProfileDerivation from the
-      same module (polylogue/operations/session_profile_convergence.py) and
-      never this function.
-
   - function: polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
     kinds: [direct_caller, entry_root]
     entrypoints:
