@@ -122,6 +122,17 @@ EMBEDDING_PASS_MAX_MESSAGES = 2_500
 EMBEDDING_PASS_DEADLINE_S = 30.0
 
 
+def _catchup_receipt_status(*, failures: int, pending: int, stopped: bool) -> str:
+    """Classify a catch-up receipt without treating bounded work as complete."""
+    from polylogue.core.enums import OperationStatus
+
+    if failures:
+        return OperationStatus.FAILED.value
+    if pending or stopped:
+        return OperationStatus.INTERRUPTED.value
+    return OperationStatus.COMPLETED.value
+
+
 @dataclass(frozen=True, slots=True)
 class ComposedEmbeddingConvergence:
     """One retained owner and adapter for the daemon's shared compute capacity."""
@@ -473,8 +484,20 @@ def compose_embedding_convergence(
                     # deliberately conservative: a failed provider call can
                     # still be billable, while refs/meta/vector inspection is
                     # the sole readiness authority.
-                    from polylogue.core.enums import OperationStatus
                     from polylogue.daemon.embedding_backlog import _upsert_archive_embedding_catchup_run
+
+                    # A receipt with work left is not a completed catch-up.
+                    # Preserve it as retryable interrupted debt even when no
+                    # provider call failed (for example a cost or time cap).
+                    # Cancellation/deadline can also arrive after the last
+                    # derivation observation, so consult the request stop
+                    # signal before declaring a clean completion.
+                    stopped = bool(quiet and quiet())
+                    receipt_status = _catchup_receipt_status(
+                        failures=failures,
+                        pending=report.pending,
+                        stopped=stopped,
+                    )
 
                     await write_bridge.run_async(
                         "embedding.catchup_receipt",
@@ -482,7 +505,7 @@ def compose_embedding_convergence(
                             _upsert_archive_embedding_catchup_run,
                             archive_root / "ops.db",
                             run_id=str(run_id),
-                            status=OperationStatus.FAILED if failures else OperationStatus.COMPLETED,
+                            status=receipt_status,
                             started_at_ms=int(receipt["started_at_ms"]),
                             finished_at_ms=int(time.time() * 1000),
                             scanned_sessions=int(receipt["scanned_sessions"]),

@@ -367,3 +367,15 @@ def test_embedding_progress_ring_is_request_scoped_monotone_and_signals_overflow
     assert [frame["sequence"] for frame in first_events] == list(range(7, 71))
     assert second_state["progress_sequence"] == 1
     assert second_state["progress_gap"] is None
+
+
+def test_partial_embedding_pass_keeps_catchup_receipt_retryable() -> None:
+    """Bounds and cancellation cannot stamp unfinished backlog completed.
+
+    Anti-vacuity: classifying a no-error pass with pending messages as
+    completed would make operator limits erase the retryable catch-up state.
+    """
+    assert embedding_owner._catchup_receipt_status(failures=0, pending=3, stopped=False) == "interrupted"
+    assert embedding_owner._catchup_receipt_status(failures=0, pending=0, stopped=True) == "interrupted"
+    assert embedding_owner._catchup_receipt_status(failures=1, pending=3, stopped=True) == "failed"
+    assert embedding_owner._catchup_receipt_status(failures=0, pending=0, stopped=False) == "completed"
