@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import cast, get_args
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +12,7 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.timestamps import iso_from_epoch_ms
+from polylogue.core.types import ConvergenceDebtStatus
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -31,7 +32,7 @@ _REQUIRED_CONVERGENCE_DEBT_COLUMNS = frozenset(
         "updated_at_ms",
     )
 )
-_CONVERGENCE_DEBT_STATUSES = frozenset(("failed", "deferred"))
+_CONVERGENCE_DEBT_STATUSES = frozenset(get_args(ConvergenceDebtStatus))
 
 
 class ConvergenceDebtStageSummary(BaseModel):

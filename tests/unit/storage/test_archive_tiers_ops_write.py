@@ -393,6 +393,66 @@ def test_add_convergence_debt_adds_or_refreshes_one_row(tmp_path: Path) -> None:
     assert conn.execute("SELECT COUNT(*) FROM convergence_debt").fetchone()[0] == 1
 
 
+def test_ops_vocabularies_round_trip_and_reject_at_typed_and_sql_boundaries(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "ops.db")
+
+    for status in ("failed", "deferred"):
+        add_convergence_debt(
+            conn,
+            stage="round-trip",
+            target_type="session",
+            target_id=status,
+            status=status,
+            created_at_ms=10,
+        )
+    assert conn.execute("SELECT DISTINCT status FROM convergence_debt ORDER BY status").fetchall() == [
+        ("deferred",),
+        ("failed",),
+    ]
+
+    with pytest.raises(ValueError, match="convergence debt status"):
+        add_convergence_debt(
+            conn,
+            stage="invalid",
+            target_type="session",
+            target_id="bad",
+            status="retrying",
+            created_at_ms=11,
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO convergence_debt (debt_id, stage, target_type, target_id, status, created_at_ms, updated_at_ms) "
+            "VALUES ('bad', 'invalid', 'session', 'bad', 'retrying', 1, 1)"
+        )
+
+    for index, severity in enumerate(("info", "warning", "error", "critical")):
+        record_cursor_lag_sample(
+            conn,
+            sample_id=f"severity-{index}",
+            family="synthetic",
+            source_path=None,
+            lag_ms=1,
+            severity=severity,
+            sampled_at_ms=index,
+        )
+    assert {row[0] for row in conn.execute("SELECT severity FROM cursor_lag_samples")} == {
+        "info",
+        "warning",
+        "error",
+        "critical",
+    }
+    with pytest.raises(ValueError, match="cursor lag severity"):
+        record_cursor_lag_sample(
+            conn,
+            sample_id="invalid-severity",
+            family="synthetic",
+            source_path=None,
+            lag_ms=1,
+            severity="fatal",
+            sampled_at_ms=5,
+        )
+
+
 def test_record_cursor_lag_sample_writes_reads_and_filters(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "ops.db")
 

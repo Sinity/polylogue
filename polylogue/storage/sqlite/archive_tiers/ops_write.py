@@ -16,7 +16,15 @@ from polylogue.core.enums import (
     Origin,
     require_operation_lifecycle_status,
 )
+from polylogue.core.types import (
+    ConvergenceDebtStatus,
+    JudgmentSchedulerStatus,
+    RouteDaemonPath,
+    RouteObservationStatus,
+    require_literal,
+)
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
+from polylogue.storage.sqlite.archive_tiers.ops import McpCallSessionRelation
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
 ROUTE_OBSERVATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
@@ -159,7 +167,6 @@ class ArchiveJudgmentSchedulerReceipt:
     receipt_persistence_recovered: bool = False
 
 
-_JUDGMENT_SCHEDULER_RECEIPT_STATUSES = frozenset(("completed", "parked", "failed"))
 _JUDGMENT_SCHEDULER_RECEIPT_COUNTERS = (
     "considered",
     "accepted",
@@ -177,8 +184,7 @@ def _is_exact_bool(value: object) -> bool:
 def _validate_judgment_scheduler_receipt(receipt: ArchiveJudgmentSchedulerReceipt) -> None:
     if not receipt.operation_id:
         raise ValueError("judgment scheduler receipt operation_id must not be empty")
-    if receipt.status not in _JUDGMENT_SCHEDULER_RECEIPT_STATUSES:
-        raise ValueError(f"unknown judgment scheduler receipt status: {receipt.status}")
+    require_literal(receipt.status, JudgmentSchedulerStatus, name="judgment scheduler status")
     if not receipt.reason:
         raise ValueError("judgment scheduler receipt reason must not be empty")
     if not _is_exact_bool(receipt.retryable) or not _is_exact_bool(receipt.receipt_persistence_degraded):
@@ -882,6 +888,7 @@ def add_convergence_debt(
     debt_id: str | None = None,
 ) -> str:
     """Add or refresh one convergence-debt row and return its ``debt_id``."""
+    require_literal(status, ConvergenceDebtStatus, name="convergence debt status")
     if debt_id is None:
         debt_id = str(uuid.uuid4())
     conn.execute(
@@ -944,6 +951,9 @@ def record_cursor_lag_sample(
     sample_id: str | None = None,
 ) -> str:
     """Record one cursor lag observation and return its sample id."""
+    from polylogue.core.types import CursorLagSeverity
+
+    require_literal(severity, CursorLagSeverity, name="cursor lag severity")
     if sample_id is None:
         sample_id = str(uuid.uuid4())
     resolved_p50_lag_ms = lag_ms if p50_lag_ms is None else p50_lag_ms
@@ -1473,6 +1483,8 @@ def record_mcp_call(
     }
     if session_id is not None:
         desired_refs[session_id] = "primary"
+    for relation in desired_refs.values():
+        require_literal(relation, McpCallSessionRelation, name="MCP call session relation")
     with conn:
         existing = conn.execute(
             """
@@ -1493,6 +1505,8 @@ def record_mcp_call(
                 (call_id,),
             ).fetchall()
         }
+        for relation in existing_refs.values():
+            require_literal(relation, McpCallSessionRelation, name="stored MCP call session relation")
         if existing_refs and existing_refs != desired_refs:
             raise ValueError(f"conflicting MCP call session refs for call_id {call_id}")
         if existing is None:
@@ -1597,6 +1611,9 @@ def record_route_observation(
     (``ROUTE_OBSERVATION_ROW_CAP``) so a high-frequency route cannot let
     this table grow unbounded between prunes.
     """
+    require_literal(status, RouteObservationStatus, name="route observation status")
+    if daemon_path is not None:
+        require_literal(daemon_path, RouteDaemonPath, name="route daemon path")
     if observation_id is None:
         observation_id = str(uuid.uuid4())
     with conn:

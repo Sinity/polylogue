@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from types import ModuleType
 from typing import Literal
 
+from polylogue.core import types as core_types
 from polylogue.core.enums import PolylogueStrEnum
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -129,7 +130,7 @@ def _owner_sets() -> tuple[dict[frozenset[str], str], tuple[tuple[str, ...], ...
     # Declaration modules precede consumers that re-export their types.  This
     # makes the canonical owner stable while still retaining those re-exports
     # in the alias groups below.
-    modules = (types, archive_tiers_specs, ops, query_objects)
+    modules = (core_types, types, archive_tiers_specs, ops, query_objects)
     for module in modules:
         for name, value in vars(module).items():
             args = typing.get_args(value)

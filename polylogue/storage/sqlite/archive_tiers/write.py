@@ -58,6 +58,7 @@ from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
+from polylogue.core.types import AttachmentDirection, require_literal
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import (
     MessageContentIdentity,
@@ -4813,8 +4814,7 @@ def _write_attachments(
         direction, producer_ref = _attachment_provenance(
             attachment, owning_messages.get(message_id), resolved_message_id=message_id
         )
-        if direction not in {"user_input", "model_output"}:
-            raise ValueError(f"attachment direction is not supported: {direction!r}")
+        require_literal(direction, AttachmentDirection, name="attachment direction")
         if direction == "model_output" and not producer_ref:
             raise ValueError(
                 "model_output attachment requires producer provenance: "

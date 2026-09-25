@@ -45,7 +45,15 @@ from polylogue.core.errors import DatabaseError
 from polylogue.core.json import loads
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.tool_identity import TOOL_COMMAND_INPUT_KEYS, TOOL_PATH_INPUT_KEYS, sql_coalesced_json_extract
-from polylogue.core.types import MessageIdentitySource
+from polylogue.core.types import (
+    AttachmentAcquisitionStatus,
+    AttachmentDirection,
+    AttachmentUploadOrigin,
+    LineageInheritance,
+    MessageIdentitySource,
+    SessionCommitDetectionType,
+    SessionTagSource,
+)
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -1257,9 +1265,8 @@ SESSION_AGENT_POLICIES_SPEC = _make_table_spec(
 #: The ``session_links.inheritance`` vocabulary. Declared once here because
 #: both the column's membership CHECK and the branch-anchor table constraint
 #: below render from it; a second spelling is how the two drift apart.
-LINEAGE_PREFIX_SHARING = "prefix-sharing"
-LINEAGE_SPAWNED_FRESH = "spawned-fresh"
-LINEAGE_INHERITANCE_VALUES: tuple[str, ...] = (LINEAGE_PREFIX_SHARING, LINEAGE_SPAWNED_FRESH)
+LINEAGE_PREFIX_SHARING = get_args(LineageInheritance)[0]
+LINEAGE_SPAWNED_FRESH = get_args(LineageInheritance)[1]
 
 SESSION_LINKS_SPEC = _make_table_spec(
     "session_links",
@@ -1303,7 +1310,7 @@ SESSION_LINKS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "inheritance",
-            f"""inheritance             TEXT CHECK({literal_check("inheritance", *LINEAGE_INHERITANCE_VALUES)} OR inheritance IS NULL)""",
+            f"""inheritance             TEXT CHECK({literal_check("inheritance", *get_args(LineageInheritance))} OR inheritance IS NULL)""",
         ),
         _raw_column(
             "status",
@@ -1424,7 +1431,7 @@ SESSION_COMMITS_SPEC = _make_table_spec(
         _raw_column("repo_id", """repo_id         TEXT REFERENCES repos(repo_id) ON DELETE CASCADE"""),
         _raw_column(
             "detection_type",
-            f"""detection_type  TEXT NOT NULL CHECK({literal_check("detection_type", "time_window", "file_overlap", "explicit_ref", "origin_reported")})""",
+            f"""detection_type  TEXT NOT NULL CHECK({literal_check("detection_type", *get_args(SessionCommitDetectionType))})""",
         ),
         _raw_column("method", """method          TEXT"""),
         _raw_column("confidence", """confidence      REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1)"""),
@@ -1453,7 +1460,7 @@ ATTACHMENTS_SPEC = _make_table_spec(
         _raw_column(
             "acquisition_status",
             f"""acquisition_status     TEXT NOT NULL DEFAULT 'unfetched'
-                               CHECK({literal_check("acquisition_status", "acquired", "unavailable", "unfetched")})""",
+                               CHECK({literal_check("acquisition_status", *get_args(AttachmentAcquisitionStatus))})""",
         ),
         _raw_column("ref_count", """ref_count              INTEGER NOT NULL DEFAULT 0 CHECK(ref_count >= 0)"""),
     ),
@@ -1476,11 +1483,11 @@ ATTACHMENT_REFS_SPEC = _make_table_spec(
         _raw_column("position", """position               INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "upload_origin",
-            f"""upload_origin          TEXT CHECK({literal_check("upload_origin", "drive", "paste", "url", "oauth")} OR upload_origin IS NULL)""",
+            f"""upload_origin          TEXT CHECK({literal_check("upload_origin", *get_args(AttachmentUploadOrigin))} OR upload_origin IS NULL)""",
         ),
         _raw_column(
             "direction",
-            """direction              TEXT NOT NULL DEFAULT 'user_input' CHECK(direction IN ('user_input', 'model_output'))""",
+            f"""direction              TEXT NOT NULL DEFAULT 'user_input' CHECK({literal_check("direction", *get_args(AttachmentDirection))})""",
         ),
         _raw_column(
             "producer_ref",
@@ -1675,7 +1682,8 @@ SESSION_TAGS_SPEC = _make_table_spec(
         _raw_column("session_id", """session_id    TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""),
         _raw_column("tag", """tag           TEXT NOT NULL"""),
         _raw_column(
-            "tag_source", f"""tag_source    TEXT NOT NULL CHECK({literal_check("tag_source", "user", "auto")})"""
+            "tag_source",
+            f"""tag_source    TEXT NOT NULL CHECK({literal_check("tag_source", *get_args(SessionTagSource))})""",
         ),
         _raw_column("method", """method        TEXT"""),
         _raw_column("confidence", """confidence    REAL CHECK(confidence IS NULL OR confidence BETWEEN 0 AND 1)"""),
