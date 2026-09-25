@@ -441,7 +441,7 @@ class DaemonOperationRuntime:
                     outcome="rejected",
                     error={"code": "request_identity_conflict", "retryable": False},
                 ).to_dict()
-            if durable is not None and durable["outcome"] in {"completed", "failed", "cancelled"}:
+            if durable is not None and durable["outcome"] in {"completed", "failed", "cancelled", "interrupted"}:
                 # Initial generation/recipe preconditions were checked at
                 # acceptance. A historical terminal receipt does not reopen
                 # index/source or become false after ordinary reconvergence.
