@@ -53,7 +53,7 @@ from polylogue.sources.origin_specs import (
 )
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_under_exclusion
-from polylogue.storage.blob_integrity import referenced_blob_hashes, scan_blob_integrity
+from polylogue.storage.blob_integrity import BlobIntegrityFinding, referenced_blob_hashes, scan_blob_integrity
 from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
@@ -2949,6 +2949,32 @@ def _complete_orphan_blob_hashes(archive_root: Path, *, expected_count: int) -> 
     return orphan_hashes
 
 
+def _dispose_seeded_archive_orphans(archive_root: Path, orphan_finding: BlobIntegrityFinding) -> None:
+    """Disposition every orphan named by a scan, keeping its count guard."""
+    orphan_count = orphan_finding.count
+    # Integrity findings cap their diagnostic sample, so disposition
+    # recomputes the complete orphan inventory.
+    orphan_hashes = _complete_orphan_blob_hashes(archive_root, expected_count=orphan_count)
+    receipts = inspect_blob_publication_receipts(
+        archive_root / "source.db", archive_root / "blob", index_db_path=archive_root / "index.db"
+    )
+    abandoned = abandon_blob_publication_receipts(
+        archive_root / "source.db",
+        archive_root / "blob",
+        [receipt.publication_id for receipt in receipts if receipt.blob_hash in orphan_hashes],
+        confirmed=True,
+        index_db_path=archive_root / "index.db",
+    )
+    deleted, _deleted_bytes, blockers = unlink_unreferenced_blob_hashes_under_exclusion(
+        archive_root / "source.db", archive_root / "index.db", archive_root / "blob", orphan_hashes
+    )
+    if blockers or abandoned.abandoned != orphan_count or deleted != orphan_count:
+        raise AssertionError(
+            "seeded archive orphan disposition failed: "
+            f"found={orphan_count} abandoned={abandoned.abandoned} deleted={deleted} blockers={blockers}"
+        )
+
+
 def _build_seeded_archive_inner(
     specs: Iterable[CorpusSpec] | None = None,
     *,
@@ -3062,31 +3088,7 @@ def _build_seeded_archive_inner(
                     (finding for finding in blob_report.findings if finding.kind == "orphan_blobs"), None
                 )
                 if orphan_finding is not None:
-                    # Integrity findings cap their diagnostic sample, so
-                    # disposition recomputes the complete orphan inventory.
-                    orphan_hashes = _complete_orphan_blob_hashes(
-                        staging,
-                        expected_count=orphan_finding.count,
-                    )
-                    receipts = inspect_blob_publication_receipts(
-                        staging / "source.db", staging / "blob", index_db_path=staging / "index.db"
-                    )
-                    abandoned = abandon_blob_publication_receipts(
-                        staging / "source.db",
-                        staging / "blob",
-                        [receipt.publication_id for receipt in receipts if receipt.blob_hash in orphan_hashes],
-                        confirmed=True,
-                        index_db_path=staging / "index.db",
-                    )
-                    deleted, _deleted_bytes, blockers = unlink_unreferenced_blob_hashes_under_exclusion(
-                        staging / "source.db", staging / "index.db", staging / "blob", orphan_hashes
-                    )
-                    if blockers or abandoned.abandoned != orphan_finding.count or deleted != orphan_finding.count:
-                        raise AssertionError(
-                            "seeded archive orphan disposition failed: "
-                            f"found={orphan_finding.count} abandoned={abandoned.abandoned} deleted={deleted} "
-                            f"blockers={blockers}"
-                        )
+                    _dispose_seeded_archive_orphans(staging, orphan_finding)
                 inspect_raw_authority_frontier(
                     Config(
                         archive_root=staging,
