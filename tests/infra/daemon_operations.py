@@ -134,14 +134,17 @@ def running_daemon_operations(
     if socket_path.parent != Path("/tmp"):
         ensure_private_socket_dir(socket_path.parent)
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe_bound = False
     try:
         try:
             probe.bind(str(socket_path))
+            probe_bound = True
         except PermissionError:
             pytest.skip("sandbox denies AF_UNIX listeners required for the production operation stack")
     finally:
         probe.close()
-        socket_path.unlink(missing_ok=True)
+        if probe_bound:
+            socket_path.unlink(missing_ok=True)
 
     coordinator_loop = _CoordinatorLoop(archive_root)
     assert coordinator_loop.loop is not None

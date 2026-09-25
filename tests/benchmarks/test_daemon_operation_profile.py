@@ -468,7 +468,7 @@ def test_bench_daemon_mixed_load(
     counters = threading.Lock()
 
     def observe_write_event(event: DaemonWriteEvent) -> None:
-        if event.phase != "released" or event.hold_seconds is None:
+        if event.actor != "operation.mutation.session.tag" or event.phase != "released" or event.hold_seconds is None:
             return
         if event.hold_budget_s is None:
             return
@@ -500,7 +500,8 @@ def test_bench_daemon_mixed_load(
                 submitted = kernel.submit(background_unit, admission_class="bulk-candidate")
                 submitted.future.result(timeout=5)
                 with quiet_lock:
-                    quiet_completed += 1
+                    if not quiet_stop.is_set():
+                        quiet_completed += 1
             except DaemonBackpressureError:
                 sleep(0.005)
             except Exception as error:
@@ -512,10 +513,10 @@ def test_bench_daemon_mixed_load(
     for feeder in quiet_feeders:
         feeder.start()
     sleep(1.0)
+    quiet_stop.set()
     quiet_duration_s = max(perf_counter() - quiet_started, 1e-6)
     with quiet_lock:
         quiet_completed_in_window = quiet_completed
-    quiet_stop.set()
     for feeder in quiet_feeders:
         feeder.join(timeout=5)
     assert all(not feeder.is_alive() for feeder in quiet_feeders), "quiet bulk feeders did not drain"
@@ -545,7 +546,8 @@ def test_bench_daemon_mixed_load(
             with suppress(Exception):
                 submitted.future.result(timeout=5)
                 with counters:
-                    background_completed += 1
+                    if not stop.is_set():
+                        background_completed += 1
 
     def keep_writing(worker: int) -> None:
         """Hold the daemon's single writer with real audited tag mutations.
@@ -712,10 +714,10 @@ def test_bench_daemon_mixed_load(
         # timing, while the same writer/bulk feeders are still active.
         installed_cli_read(next(read_index))
     finally:
+        stop.set()
         mixed_window_s = max(perf_counter() - started, 1e-6)
         with counters:
             background_completed_in_window = background_completed
-        stop.set()
         for feeder in feeders:
             feeder.join(timeout=30)
         stack_coordinator._observer = previous_observer
