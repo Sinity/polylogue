@@ -163,6 +163,14 @@ class BenchmarkRunUnavailableError(RuntimeError):
     """
 
 
+class BenchmarkRunFailedError(RuntimeError):
+    """The managed benchmark process ran but failed, so its measurements are diagnostic only."""
+
+    def __init__(self, returncode: int, message: str) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
 #: Where the SLO benchmark run keeps its JSON and pytest trees: inside the
 #: checkout's disposable scratch, not the host's small /tmp tmpfs.
 BENCHMARK_SCRATCH = Path(".cache/verify/slo-benchmarks")
@@ -232,20 +240,31 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
         # The queued run captured its own log; the local handle stayed empty.
         log_path = outcome.log_path
 
+    if outcome.returncode != 0:
+        # A measurement artifact describes work the benchmark managed to
+        # emit; it does not turn a failed pytest run into a valid workload.
+        # Keep both artifacts so the failed run remains diagnosable.
+        if not json_path.exists() or json_path.stat().st_size == 0:
+            detail = "; no measurement JSON was produced"
+        else:
+            try:
+                json.loads(json_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                detail = f"; measurement JSON is invalid: {exc}"
+            else:
+                detail = "; measurement JSON was retained as diagnostics"
+        raise BenchmarkRunFailedError(
+            outcome.returncode,
+            f"benchmark run failed with exit {outcome.returncode}{detail}; "
+            f"raw log and any measurement file kept under {scratch}; last output:\n{_log_tail(log_path)}",
+        )
+
     if not json_path.exists() or json_path.stat().st_size == 0:
         # Kept, not cleaned: the evidence for why nothing was measured is here.
         raise BenchmarkRunUnavailableError(
             f"the benchmark run wrote no measurement file (pytest slot {outcome.slot}, "
             f"exit {outcome.returncode}); evidence kept under {scratch}; last output:\n{_log_tail(log_path)}"
         )
-
-    if outcome.returncode != 0:
-        print(
-            f"verify-slos: benchmark run exited {outcome.returncode}; scoring the measurements it did write",
-            file=sys.stderr,
-        )
-        print(_log_tail(log_path), file=sys.stderr)
-        # pytest-benchmark writes the JSON even on test failures.
 
     payload = json.loads(json_path.read_text())
     with contextlib.suppress(OSError):
@@ -351,12 +370,19 @@ def main(argv: list[str] | None = None) -> int:
     # 3. Run benchmarks
     benchmark_started = time.monotonic()
     benchmark_error: str | None = None
+    benchmark_outcome: str | None = None
+    benchmark_returncode: int | None = None
     benchmark_stats: dict[str, dict[str, float]] = {}
     if not args.skip_benchmarks:
         try:
             benchmark_stats = _run_benchmarks(test_ids)
+        except BenchmarkRunFailedError as exc:
+            benchmark_error = str(exc)
+            benchmark_outcome = "failed"
+            benchmark_returncode = exc.returncode
         except BenchmarkRunUnavailableError as exc:
             benchmark_error = str(exc)
+            benchmark_outcome = "unavailable"
     benchmark_wall_ms = (time.monotonic() - benchmark_started) * 1_000
 
     # 4. Check each surface against its SLO
@@ -430,11 +456,11 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         actual_p50_ms = stats["median"] * 1000  # pytest-benchmark reports in seconds
-        actual_p95_ms = _estimate_p95(stats) * 1000
+        estimated_p95_ms = _estimate_p95(stats) * 1000
         actual_mean_ms = stats["mean"] * 1000
 
         p50_ok = actual_p50_ms <= target_p50
-        p95_ok = actual_p95_ms <= target_p95
+        p95_ok = estimated_p95_ms <= target_p95
         ok = p50_ok and p95_ok
 
         result: dict[str, object] = {
@@ -446,7 +472,7 @@ def main(argv: list[str] | None = None) -> int:
             "target_p50_ms": target_p50,
             "target_p95_ms": target_p95,
             "actual_p50_ms": round(actual_p50_ms, 2),
-            "actual_p95_ms": round(actual_p95_ms, 2),
+            "estimated_p95_ms": round(estimated_p95_ms, 2),
             "actual_mean_ms": round(actual_mean_ms, 2),
             "p50_ok": p50_ok,
             "p95_ok": p95_ok,
@@ -470,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(
             {
                 "blocking": blocking,
+                "benchmark_outcome": benchmark_outcome,
+                "benchmark_returncode": benchmark_returncode,
                 "benchmark_error": benchmark_error,
                 "active_tiers": sorted(active_tiers) if active_tiers is not None else None,
                 "catalog_errors": catalog_errors,
@@ -487,7 +515,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
     else:
         if benchmark_error is not None:
-            print("BENCHMARKS DID NOT RUN:")
+            if benchmark_outcome == "failed":
+                print(f"BENCHMARK RUN FAILED (exit {benchmark_returncode}):")
+            else:
+                print("BENCHMARKS DID NOT RUN:")
             for line in benchmark_error.splitlines():
                 print(f"  {line}")
             print()
@@ -504,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"  {p['surface']}: "
                     f"p50={p['actual_p50_ms']:.1f}ms (target ≤{p['target_p50_ms']}ms), "
-                    f"p95={p['actual_p95_ms']:.1f}ms (target ≤{p['target_p95_ms']}ms)"
+                    f"estimated p95={p['estimated_p95_ms']:.1f}ms (target ≤{p['target_p95_ms']}ms)"
                 )
             print()
 
@@ -521,7 +552,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not v["p50_ok"]:
                     parts.append(f"p50={v['actual_p50_ms']:.1f}ms > {v['target_p50_ms']}ms")
                 if not v["p95_ok"]:
-                    parts.append(f"p95={v['actual_p95_ms']:.1f}ms > {v['target_p95_ms']}ms")
+                    parts.append(f"estimated p95={v['estimated_p95_ms']:.1f}ms > {v['target_p95_ms']}ms")
                 print(f"  {v['surface']}: {', '.join(parts)}")
             print()
 
