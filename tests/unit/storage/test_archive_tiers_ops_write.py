@@ -295,7 +295,7 @@ def test_ops_writers_reject_admission_only_statuses(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="ingest attempt status"):
         record_ingest_attempt(conn, attempt_id="pending-attempt", status=OperationStatus.PENDING, started_at_ms=1)
-    with pytest.raises(ValueError, match="not a run lifecycle status"):
+    with pytest.raises(ValueError, match="embedding catchup status"):
         upsert_embedding_catchup_run(conn, run_id="pending-run", status=OperationStatus.PENDING, started_at_ms=1)
 
 
