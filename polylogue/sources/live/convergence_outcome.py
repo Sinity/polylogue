@@ -18,7 +18,11 @@ def record_convergence_outcome(
     archive_root: Path | None = None,
 ) -> None:
     debt_items = tuple(debts)
-    failed_stages = tuple(dict.fromkeys(debt.stage for debt in debt_items))
+    # Hook-paste failures are recorded by the post-convergence owner, after
+    # the generic stage states were produced. That owner clears its row after
+    # a successful enrichment; generic outcome cleanup must not erase a retry
+    # it just recorded.
+    failed_stages = tuple(dict.fromkeys((*[debt.stage for debt in debt_items], "hook_paste_enrichment")))
     session_ids = session_ids_for_source_path(path, archive_root=archive_root)
     cursor.clear_convergence_debt_except(subject_type="source_path", subject_id=str(path), stages=failed_stages)
     for session_id in session_ids:
