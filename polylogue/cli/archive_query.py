@@ -763,18 +763,16 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         except OperationKernelError as exc:
             _read_failure_as_usage_error(exc)
         env.record_timing("db-open", db_open_started_at)
-        raw_items = payload.get("items")
-        items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
-        item_key = "items"
+        raw_projected_items = payload.get("projected_items")
+        items = (
+            [item for item in raw_projected_items if isinstance(item, dict)]
+            if isinstance(raw_projected_items, list)
+            else []
+        )
+        item_key = "projected_items" if items else "items"
         if not items:
-            raw_projected_items = payload.get("projected_items")
-            items = (
-                [item for item in raw_projected_items if isinstance(item, dict)]
-                if isinstance(raw_projected_items, list)
-                else []
-            )
-            if items:
-                item_key = "projected_items"
+            raw_items = payload.get("items")
+            items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
         if not items:
             _emit_unit_no_results(payload, unit=unit_source.unit, output_format=output_format)
         text_line: _QueryUnitTextLine

@@ -4696,12 +4696,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             envelope = await self.query_units(expression, limit=limit)
             if not isinstance(envelope, QueryUnitEnvelope):
                 raise ValueError("OTel export does not support aggregate query rows")
-            if envelope.items:
+            if envelope.unit == "message" and envelope.projected_items:
+                rows.extend(MessageQueryRowPayload.model_validate(item.root) for item in envelope.projected_items)
+            elif envelope.items:
                 rows.extend(envelope.items)
             elif envelope.projected_items:
-                if envelope.unit != "message":
-                    raise ValueError(f"OTel export does not support projected {envelope.unit} rows")
-                rows.extend(MessageQueryRowPayload.model_validate(item.root) for item in envelope.projected_items)
+                raise ValueError(f"OTel export does not support projected {envelope.unit} rows")
         return project_query_unit_rows_to_otel(
             source_ref,
             rows,

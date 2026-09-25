@@ -283,7 +283,7 @@ def _bounded_item_page(payload: BaseModel, *, exclude_none: bool) -> tuple[BaseM
         return _bounded_root_dict_page(payload, root, exclude_none=exclude_none)
     item_field = ""
     raw_items: object = None
-    for candidate_field in ("items", "projected_items", "messages", "hits"):
+    for candidate_field in ("projected_items", "items", "messages", "hits"):
         candidate_items = getattr(payload, candidate_field, None)
         if isinstance(candidate_items, (tuple, list)) and candidate_items:
             item_field = candidate_field
