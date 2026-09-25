@@ -12,11 +12,14 @@ archive built through the production writer, not a stub.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing
+from dataclasses import asdict
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from polylogue.daemon.derivation import DerivationFrame, DerivationReport
@@ -946,6 +949,53 @@ def test_a_repeated_marker_converges_to_valid_readiness_through_the_production_r
 
     with closing(sqlite3.connect(f"file:{root / 'user.db'}?mode=ro", uri=True)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone() == (0,)
+
+
+def test_an_accepted_repeated_marker_has_valid_readiness_and_one_assertion(
+    marker_archive: tuple[Path, Path, str],
+) -> None:
+    """The production marker consumer deduplicates one accepted marker identity."""
+    from polylogue.daemon.derivation import Outcome
+    from polylogue.markers import candidates_for_block
+    from polylogue.markers.lowering import assertion_id_for_marker
+    from polylogue.storage.accepted_marker_inputs import append_accepted_marker_input, prepare_accepted_marker_input
+    from polylogue.storage.derived.session.marker_domain import SESSION_MARKER_DOMAIN
+
+    root, index_db, session_id = marker_archive
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        message_id, block_id = conn.execute(
+            "SELECT message_id, block_id FROM blocks WHERE session_id = ? ORDER BY block_id LIMIT 1",
+            (session_id,),
+        ).fetchone()
+
+    candidates = candidates_for_block(str(message_id), str(block_id), _DUPLICATE_MARKER_BLOCK)
+    assert len(candidates) == 2
+    assertion_ids = [assertion_id_for_marker(candidate) for candidate in candidates]
+    assert assertion_ids[0] is not None and assertion_ids[0] == assertion_ids[1]
+    records = [asdict(candidate) for candidate in candidates]
+    for candidate, record in zip(candidates, records, strict=True):
+        record["assertion_kind"] = candidate.assertion_kind.value if candidate.assertion_kind is not None else None
+
+    async def accept_markers() -> None:
+        batch = prepare_accepted_marker_input(
+            "duplicate-marker",
+            [{"session_id": session_id, "candidates": records}],
+        )
+        async with aiosqlite.connect(root / "source.db") as source:
+            await append_accepted_marker_input(source, batch)
+            await source.commit()
+
+    asyncio.run(accept_markers())
+    adapter, frame, report = _converge_session_profile(root, index_db, session_id)
+
+    assert report.counts[Outcome.FAILED] == 0, [outcome.error for outcome in report.outcomes]
+    assert [item.outcome for item in report.outcomes if item.key.domain == SESSION_MARKER_DOMAIN] == [Outcome.DONE]
+    assert adapter.inspect(frame, [session_id]) == {session_id: "valid"}
+    with closing(sqlite3.connect(f"file:{root / 'user.db'}?mode=ro", uri=True)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM assertions WHERE assertion_id = ?", (assertion_ids[0],)
+        ).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone() == (1,)
 
 
 def test_a_second_pass_over_the_repeated_marker_publishes_nothing_new(
