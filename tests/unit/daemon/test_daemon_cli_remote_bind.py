@@ -16,19 +16,14 @@ Refusal conditions, each tested:
    ``--api-allow-no-auth`` (the only way to reach "no token in effect"
    now that a token auto-mints by default) → UsageError.
 
-A passing positive case (loopback bind, no explicit token, token
-auto-mints) would require mocking the entire daemon startup chain,
-which is out of scope for a focused security test. The pure-logic
-refusal lives at the top of the function and fires before any
-heavyweight setup.
+Passing bind-policy cases use the production policy helper through the
+resident-core service harness, so they do not start archive convergence.
 """
 
 from __future__ import annotations
 
 import asyncio
-import socket
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import click
@@ -36,17 +31,13 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.daemon.cli import main, run_daemon_services
+from polylogue.daemon.services import ServiceCapability, ServiceProfile
+from tests.infra.daemon_service_harness import ServiceHarness
 
 
 def _run(coro: object) -> None:
     """Drive an async function until it raises or returns."""
     asyncio.run(coro)  # type: ignore[arg-type]
-
-
-def _unused_loopback_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 @pytest.mark.parametrize("api_host", ["0.0.0.0", "192.168.1.1", "10.0.0.1"])
@@ -110,42 +101,21 @@ def test_non_loopback_bind_with_allow_remote_and_no_explicit_token_auto_mints(
     already-shipped contract (polylogue-rzve). Removing the auto-mint call
     from ``resolve_api_auth_token`` makes this raise UsageError instead.
 
-    The HTTP/UDS server classes are stubbed out so the test never attempts a
-    real bind to a non-loopback address that may not exist on the test host
-    (``192.168.1.1``) -- only the pure-logic gate at the top of
-    ``run_daemon_services`` is under test here.
+    The production bind-policy helper is exercised through the resident-core
+    service harness, without starting archive convergence or opening sockets.
     """
-    from unittest.mock import AsyncMock, MagicMock
+    harness = ServiceHarness(
+        profile=ServiceProfile.RESIDENT_CORE,
+        capabilities={ServiceCapability.API},
+    )
+    assert harness.selected_names == ("lifecycle_heartbeat", "health_check")
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
-    api_server = MagicMock()
-    api_server.operation_runtime = SimpleNamespace(shutdown=AsyncMock())
-    with (
-        patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=api_server),
-        patch("polylogue.daemon.uds.DaemonAPIUnixHTTPServer", return_value=MagicMock()),
-        patch(
-            "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
-            side_effect=RuntimeError("post-gate sentinel"),
-        ),
-        pytest.raises(RuntimeError, match="post-gate sentinel"),
-    ):
-        _run(
-            run_daemon_services(
-                sources=(),
-                enable_watch=False,
-                enable_browser_capture=False,
-                browser_capture_host="127.0.0.1",
-                browser_capture_port=8765,
-                browser_capture_spool_path=None,
-                browser_capture_allow_remote=True,
-                browser_capture_auth_token=None,
-                browser_capture_extra_origins=(),
-                enable_api=True,
-                api_host=api_host,
-                api_port=8766,
-                api_auth_token=None,
-            )
-        )
+    from polylogue.daemon.cli import resolve_api_auth_token
+
+    token = resolve_api_auth_token(None)
+    assert token
+    harness.validate_api_bind(enabled=True, host=api_host, allow_remote=True, auth_token=token)
     from polylogue.paths import api_auth_token_path
 
     assert api_auth_token_path().exists()
@@ -181,90 +151,29 @@ def test_api_and_browser_capture_same_socket_refuses(api_host: str, receiver_hos
         )
 
 
-@pytest.mark.timeout(30)
-def test_loopback_bind_passes_remote_check() -> None:
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("_repeat", range(10))
+def test_loopback_bind_passes_remote_check(_repeat: int) -> None:
     """Loopback bind does not trip the remote-bind refusal.
 
-    Tests only the security gate at the top of ``run_daemon_services``;
-    we patch the post-gate startup chain to a fast no-op so the test
-    exits the moment the gate decides "allow." A regression that broadens
-    the gate to apply to loopback would surface as a UsageError here.
+    The focused production profile is selected and the production policy
+    helper decides the bind without entering archive startup.
     """
-    from unittest.mock import patch
-
-    api_port = _unused_loopback_port()
-    configured: list[dict[str, object]] = []
-
-    def record_runtime_components(**kwargs: object) -> None:
-        configured.append(kwargs)
-
-    with (
-        patch(
-            "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
-            side_effect=RuntimeError("post-gate sentinel"),
-        ),
-        patch("polylogue.daemon.status_snapshot.configure_runtime_components", side_effect=record_runtime_components),
-    ):
-        with pytest.raises(RuntimeError, match="post-gate sentinel"):
-            _run(
-                run_daemon_services(
-                    sources=(),
-                    enable_watch=False,
-                    enable_browser_capture=False,
-                    browser_capture_host="127.0.0.1",
-                    browser_capture_port=8765,
-                    browser_capture_spool_path=None,
-                    browser_capture_allow_remote=False,
-                    browser_capture_auth_token=None,
-                    browser_capture_extra_origins=(),
-                    enable_api=True,
-                    api_host="127.0.0.1",
-                    api_port=api_port,
-                    api_auth_token=None,
-                )
-            )
-
-    assert configured == [
-        {
-            "api_enabled": True,
-            "watcher_enabled": False,
-            "watcher_roots": (),
-            "browser_capture_enabled": False,
-            "browser_capture_spool_path": None,
-        }
-    ]
+    harness = ServiceHarness(profile=ServiceProfile.RESIDENT_CORE)
+    assert "raw_observation_convergence" not in harness.selected_names
+    harness.validate_api_bind(enabled=True, host="127.0.0.1", allow_remote=False, auth_token="token")
 
 
-@pytest.mark.timeout(30)
-def test_api_disabled_skips_remote_check() -> None:
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("_repeat", range(10))
+def test_api_disabled_skips_remote_check(_repeat: int) -> None:
     """If the API is not enabled at all, the remote-bind check should
     not fire — the operator hasn't asked for an API server, so even a
     non-loopback ``api_host`` value is irrelevant.
     """
-    from unittest.mock import patch
-
-    with patch(
-        "polylogue.daemon.fts_convergence.FtsConvergenceOwner.converge",
-        side_effect=RuntimeError("post-gate sentinel"),
-    ):
-        with pytest.raises(RuntimeError, match="post-gate sentinel"):
-            _run(
-                run_daemon_services(
-                    sources=(),
-                    enable_watch=False,
-                    enable_browser_capture=False,
-                    browser_capture_host="127.0.0.1",
-                    browser_capture_port=8765,
-                    browser_capture_spool_path=None,
-                    browser_capture_allow_remote=False,
-                    browser_capture_auth_token=None,
-                    browser_capture_extra_origins=(),
-                    enable_api=False,
-                    api_host="0.0.0.0",  # would trip if gate fired
-                    api_port=8766,
-                    api_auth_token=None,
-                )
-            )
+    harness = ServiceHarness(profile=ServiceProfile.RESIDENT_CORE)
+    assert "raw_observation_convergence" not in harness.selected_names
+    harness.validate_api_bind(enabled=False, host="0.0.0.0", allow_remote=False, auth_token=None)
 
 
 def test_run_command_applies_configured_remote_api_fail_closed(

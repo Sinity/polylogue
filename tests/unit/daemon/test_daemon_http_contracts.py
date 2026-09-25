@@ -34,7 +34,6 @@ import os
 import re
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
@@ -1054,13 +1053,26 @@ class TestBoundedArchiveQueryExecutor:
             handler._write_gate_depth = 0
         assert kernel.snapshot().by_class("control").admitted == before + 1
 
-    def test_server_close_shuts_down_archive_query_executor(self) -> None:
-        from polylogue.daemon.http import DaemonAPIHTTPServer
+    def test_server_close_shuts_down_archive_query_executor(self, tmp_path: Path) -> None:
+        import threading
+        from unittest.mock import patch
 
-        server = DaemonAPIHTTPServer.__new__(DaemonAPIHTTPServer)
-        server.archive_query_executor = ThreadPoolExecutor(max_workers=1)
-        # Avoid binding a real socket; only server_close()'s own body runs.
-        server.socket = MagicMock()
-        server.server_close()
-        with pytest.raises(RuntimeError, match="cannot schedule new futures"):
-            server.archive_query_executor.submit(lambda: None)
+        from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+
+        before = {thread.ident for thread in threading.enumerate() if thread.name == "daemon-http-writer"}
+        server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=tmp_path)
+        shutdown = server.execution_kernel.shutdown
+        calls = 0
+
+        def counted_shutdown(**kwargs: object) -> None:
+            nonlocal calls
+            calls += 1
+            shutdown(**kwargs)  # type: ignore[arg-type]
+
+        with patch.object(server.execution_kernel, "shutdown", side_effect=counted_shutdown):
+            server.server_close()
+            server.server_close()
+
+        assert calls == 1
+        assert server._owned_write_runtime is None
+        assert not ({thread.ident for thread in threading.enumerate() if thread.name == "daemon-http-writer"} - before)

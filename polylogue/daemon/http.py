@@ -6320,6 +6320,8 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
             thread_name_prefix="polylogue-compute",
         )
+        self._compute_close_lock = threading.Lock()
+        self._compute_closed = False
         # Diagnostic alias; every submission goes through the adapter above.
         self.archive_query_executor = self.execution_kernel.executor
         self.coordination_cache: dict[tuple[str, int], _CoordinationCacheEntry] = {}
@@ -6373,6 +6375,10 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         # Standalone composition also drains its writer; polylogued drains
         # those services before calling this method.
         def close_compute() -> None:
+            with self._compute_close_lock:
+                if self._compute_closed:
+                    return
+                self._compute_closed = True
             kernel = getattr(self, "execution_kernel", None)
             if isinstance(kernel, BoundedComputeAdapter):
                 kernel.shutdown(wait=False, cancel_futures=True)
