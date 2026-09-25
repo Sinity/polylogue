@@ -16,6 +16,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import click
 import pytest
@@ -119,12 +120,12 @@ def test_daemon_off_completion_opens_no_database(tmp_path: Path) -> None:
     assert probe["opened"] == [], f"completion opened databases with no daemon: {probe['opened']}"
 
 
-def test_daemon_off_completion_says_why_it_is_empty(tmp_path: Path) -> None:
-    """A missing daemon is a displayed refusal, not an empty candidate list.
+def test_cold_cache_completion_says_how_to_populate_values(tmp_path: Path) -> None:
+    """A cold cache explains how to populate suggestions, not a false no-match.
 
     Mutation: return a bare ``[]`` on ``OperationUnavailableError`` and the
-    shell shows "no matches" for a running archive full of tags -- which is the
-    difference between unsupported and broken.
+    shell shows "no matches" -- which is the difference between an empty cache
+    and a query with no matching values.
     """
 
     bootstrap_archive_root(tmp_path / "archive")
@@ -137,9 +138,32 @@ def test_daemon_off_completion_says_why_it_is_empty(tmp_path: Path) -> None:
     for source in ARCHIVE_BACKED_COMPLETERS:
         rows = returned[source]
         assert rows == [[MESSAGE_COMPLETION_TYPE, DAEMON_REQUIRED_COMPLETION_MESSAGE]], (
-            f"{source} did not render the daemon refusal: {rows}"
+            f"{source} did not render the cold-cache guidance: {rows}"
         )
     assert "polylogued" in DAEMON_REQUIRED_COMPLETION_MESSAGE, "the refusal must name how to fix it"
+
+
+def test_daemon_off_completion_uses_values_cached_from_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A prior daemon answer remains useful offline without opening SQLite."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    from polylogue.cli import operation_kernel
+
+    monkeypatch.setattr(
+        operation_kernel,
+        "dispatch",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            value={"value_completions": {"values": [{"value": "release-tag"}, {"value": "roadmap"}]}}
+        ),
+    )
+    from polylogue.cli.shell_completion_values import completion_values
+
+    assert [item.value for item in completion_values("tag", "", limit=5)] == ["release-tag", "roadmap"]
+
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise OperationUnavailableError("daemon unavailable")
+
+    monkeypatch.setattr(operation_kernel, "dispatch", unavailable)
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == ["release-tag"]
 
 
 def test_a_declared_vocabulary_still_completes_without_a_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
