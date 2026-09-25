@@ -223,6 +223,8 @@ SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "source_message_provider_id": "declared attribution evidence; the rollup reads the resolved source_message_id",
     "source_message_resolution": "states how that attribution resolved, not a value the rollup reads",
     "finish_reason": "provider terminal signal retained beside the counters; not a rollup input",
+    "api_block_index": "provider billing/quota block coordinate retained as evidence; not read by usage/profile derivation",
+    "quota_limits_json": "provider quota metadata is retained as refusal evidence, not consumed by profile usage derivation",
 }
 
 #: Every ``sessions`` column the projection deliberately leaves out, with the
