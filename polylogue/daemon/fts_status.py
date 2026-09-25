@@ -67,7 +67,7 @@ def _fts_readiness_registry(dbf: Path) -> StatusComponentRegistry:
 
 class FTSReadiness(BaseModel):
     indexed_surface: str = "messages_fts"
-    inspection_state: Literal["fresh", "stale", "refreshing", "timed_out", "unavailable", "degraded"] = "fresh"
+    inspection_state: Literal["fresh", "stale", "refreshing", "timed_out", "unavailable", "degraded"] = "unavailable"
     messages_ready: bool = False
     invariant_ready: bool = False
     # Counts have no honest zero default. A missing/corrupt source is not an

@@ -402,6 +402,34 @@ def test_fts_readiness_error_when_large_gap(
     assert "missing row" in alert.message
 
 
+def test_fts_readiness_timeout_is_not_healthy(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded probe must not turn a timeout into a green health result.
+
+    ANTI-VACUITY: skipping the inspection-state branch means the empty
+    surface mapping falls through the older loop and reports ``FTS up to
+    date``.
+    """
+    dbf = index_db_path()
+    dbf.parent.mkdir(parents=True, exist_ok=True)
+    _init_blocks_db(dbf)
+    _patch_fts_readiness(
+        monkeypatch,
+        {
+            "inspection_state": "timed_out",
+            "unavailable_reason": "collector exceeded deadline_s=1.5",
+            "surfaces": {},
+        },
+    )
+
+    alert = _check_fts_readiness_medium()
+
+    assert alert.severity == HealthSeverity.ERROR
+    assert "timed_out" in alert.message
+
+
 def test_fts_readiness_counts_docsize_not_virtual_table(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
