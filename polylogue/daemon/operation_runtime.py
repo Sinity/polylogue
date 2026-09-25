@@ -78,6 +78,7 @@ class _Exchange:
     acceptance_started: bool = False
     snapshot: PinnedOperationRead | None = None
     binding: MachineRequestBinding | None = None
+    accepted_reference: dict[str, object] | None = None
     queue_ms: int = 0
     started_at: float = field(default_factory=monotonic)
     progress_events: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=64))
@@ -636,6 +637,8 @@ class DaemonOperationRuntime:
                         outcome="rejected",
                         error={"code": "request_identity_conflict", "retryable": False},
                     ).to_dict()
+                if record is not None:
+                    exchange.accepted_reference = AcceptedOperationReference.from_record(record).to_dict()
                 if peer_closed and not exchange.future.done():
                     return self._pending_envelope(
                         exchange,
@@ -811,7 +814,10 @@ class DaemonOperationRuntime:
                         state = machine_request_state(audit, record) if record is not None else None
                 except AuditContinuityError:
                     pending = True
-                    state = {"outcome": "indeterminate", "sequence": 0}
+                    still_executing = (
+                        exchange is not None and exchange.future is not None and not exchange.future.done()
+                    )
+                    state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
                 if state is None:
                     if exchange is None:
                         if cancelled_before_acceptance:
@@ -829,6 +835,13 @@ class DaemonOperationRuntime:
                             )
                         raise ValueError("operation_reference_unknown")
                     state = {"outcome": "running", "sequence": 0}
+                if exchange is not None and "reference" not in state and exchange.accepted_reference is not None:
+                    # A concurrent audit continuity publication may make the
+                    # settled read briefly unavailable while progress remains
+                    # observable. Keep the wait bound to the already returned
+                    # immutable acceptance reference; terminal state still
+                    # comes from the next durable read.
+                    state = {**state, "reference": exchange.accepted_reference}
                 if request.operation != "operation.await":
                     return OperationControlResult(state, snapshot)
                 sequence = _operation_int(state["sequence"], field="state sequence")

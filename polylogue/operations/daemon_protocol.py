@@ -687,6 +687,30 @@ class MutationResult(_OperationPayload):
         return self
 
 
+class EmbeddingBackfillProgress(_OperationPayload):
+    state: Literal["stopped", "complete"]
+    computed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    estimated_cost_usd: float = Field(ge=0)
+
+
+class EmbeddingBackfillCounts(_OperationPayload):
+    done: int = Field(ge=0)
+    pending: int = Field(ge=0)
+    failed: int = Field(ge=0)
+
+
+class EmbeddingBackfillResult(_OperationPayload):
+    operation: Literal["maintenance.embeddings.backfill"]
+    outcome: Literal["completed", "stopped", "cancelled", "failed"]
+    sequence: int = Field(ge=1)
+    effect: Literal["committed", "no-effect"]
+    affected_count: int = Field(ge=0)
+    stop_reason: str | None = None
+    progress: EmbeddingBackfillProgress
+    result: EmbeddingBackfillCounts
+
+
 class AcceptedOperationReference(_OperationPayload):
     """Immutable reference returned after durable admission of long work."""
 
@@ -1340,9 +1364,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_contract="maintenance.embeddings.backfill.request/v1",
         result_contract="maintenance.embeddings.backfill.result/v1",
         request_type="EmbeddingBackfillRequest",
-        result_type="MutationResult",
+        result_type="EmbeddingBackfillResult",
         request_model=EmbeddingBackfillRequest,
-        result_model=MutationResult,
+        result_model=EmbeddingBackfillResult,
         idempotent=True,
         handler="maintenance_embeddings_backfill",
     ),

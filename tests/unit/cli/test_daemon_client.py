@@ -529,7 +529,21 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
                     "reference": reference,
                     "progress_sequence": 1,
                     "progress_events": [],
-                    "result": {"affected_count": 1, "outcome": "completed", "sequence": 1},
+                    "result": {
+                        "operation": "maintenance.embeddings.backfill",
+                        "outcome": "completed",
+                        "sequence": 1,
+                        "effect": "committed",
+                        "affected_count": 1,
+                        "stop_reason": None,
+                        "progress": {
+                            "state": "complete",
+                            "computed": 1,
+                            "failed": 0,
+                            "estimated_cost_usd": 0.01,
+                        },
+                        "result": {"done": 1, "pending": 0, "failed": 0},
+                    },
                 },
             },
         ]
@@ -558,4 +572,4 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
     assert after_sequences == [(1, 0), (1, 1)]
     assert len(seen) == 1
     assert result is not None and result["outcome"] == "completed"
-    assert result["result"] == {"affected_count": 1, "outcome": "completed", "sequence": 1}
+    assert result["result"]["result"] == {"done": 1, "pending": 0, "failed": 0}

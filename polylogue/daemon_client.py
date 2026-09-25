@@ -485,21 +485,15 @@ class DaemonClient:
                 raise DaemonOperationProtocolError("operation await omitted its durable lifecycle")
             reference = state.get("reference")
             accepted = envelope.get("accepted_reference")
-            if (
-                not isinstance(reference, dict)
-                or not isinstance(accepted, dict)
-                or any(
-                    reference.get(key) != accepted.get(key)
-                    for key in (
-                        "request_id",
-                        "archive_identity",
-                        "principal_ref",
-                        "fingerprint",
-                        "operation_name",
-                    )
-                )
-            ):
-                raise DaemonOperationProtocolError("operation await returned a different durable request")
+            identity_fields = ("request_id", "archive_identity", "principal_ref", "fingerprint", "operation_name")
+            mismatched_reference_fields = (
+                [key for key in identity_fields if reference.get(key) != accepted.get(key)]
+                if isinstance(reference, dict) and isinstance(accepted, dict)
+                else list(identity_fields)
+            )
+            if not isinstance(reference, dict) or not isinstance(accepted, dict) or mismatched_reference_fields:
+                fields = ", ".join(mismatched_reference_fields) or "reference"
+                raise DaemonOperationProtocolError(f"operation await returned a different durable request ({fields})")
             sequence = int(state["sequence"])
             progress_sequence = int(state.get("progress_sequence", progress_sequence))
             gap = state.get("progress_gap")

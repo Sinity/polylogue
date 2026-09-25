@@ -231,9 +231,7 @@ class _EmbeddingBackfillExecution:
                 context={**payload, "scope": list(self.scope) if self.scope is not None else None},
             )
             preview = MutationPreview("pending-preview", self.plan)
-            with self.audit.bind_machine_request(self.binding, transition="create_preview_batch"):
-                refs = self.audit.create_preview_batch((self.plan,), self.context.principal)
-            self.preview_ref = str(refs[0])
+            self.preview_ref = self.audit.create_preview(self.plan, self.context.principal)
             preview = MutationPreview(self.preview_ref, self.plan)
             token = secrets.token_urlsafe(32)
             authorization = MutationAuthorization(
@@ -249,19 +247,11 @@ class _EmbeddingBackfillExecution:
                 capabilities=("archive.embeddings.backfill",),
                 surface=self.context.principal.surface,
             )
-            with self.audit.bind_machine_request(self.binding, transition="issue_authorization_batch"):
-                auth_refs = self.audit.issue_authorization_batch((preview,), self.context.principal, (authorization,))
-            self.authorization = replace(authorization, authorization_id=str(auth_refs[0]), token=None)
-            with self.audit.bind_machine_request(
-                self.binding,
-                transition="accept_execution_batch",
-                deadline_unix_ms=self.runtime.request_deadline_unix_ms(self.request),
-            ):
-                self.audit.accept_execution_batch(tuple(str(ref) for ref in auth_refs), self.context.principal)
+            auth_ref = self.audit.issue_authorization(preview, self.context.principal, authorization)
+            self.authorization = replace(authorization, authorization_id=str(auth_ref), token=None)
             with self.audit.bind_machine_request(
                 self.binding,
                 transition="consume_authorization_and_start",
-                part=0,
             ):
                 self.operation_id = self.audit.consume_authorization_and_start(preview, self.authorization)
             self.record = self.audit.machine_request(self.binding)
@@ -603,7 +593,9 @@ async def execute_embedding_backfill_operation(
                 "state": "stopped" if stop_reason is not None else "complete",
                 "computed": 0 if report is None else report.work.computed,
                 "failed": 0 if report is None else report.failed,
-                "cost_usd": 0.0 if report is None else report.work.computed * estimated_embedding_message_cost(),
+                "estimated_cost_usd": (
+                    0.0 if report is None else report.work.computed * estimated_embedding_message_cost()
+                ),
             },
             "result": {
                 "done": 0 if report is None else report.done,

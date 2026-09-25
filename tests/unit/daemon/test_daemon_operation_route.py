@@ -139,9 +139,14 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
     import asyncio
     from types import SimpleNamespace
 
+    from polylogue.daemon import embedding_owner as embedding_owner_module
     from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
 
+    composed = False
+
     def compose(_index: Path, **kwargs: object) -> object:
+        nonlocal composed
+        composed = True
         emit = kwargs["progress_callback"]
 
         async def converge(_scope: object) -> EmbeddingConvergenceResult:
@@ -158,7 +163,7 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
 
         return converge
 
-    monkeypatch.setattr("polylogue.daemon.embedding_owner.compose_embedding_convergence", compose)
+    monkeypatch.setattr(embedding_owner_module, "compose_embedding_convergence", compose)
     request_id = "embedding-accepted-progress"
     payload: dict[str, object] = {"max_messages": 1}
     with running_daemon_operations(tmp_path / "archive") as stack:
@@ -177,7 +182,9 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
         )
         assert terminal is not None
         assert terminal["outcome"] == "completed"
+        assert composed
         assert terminal["accepted_reference"]["request_id"] == request_id
+        assert terminal["accepted_reference"]["artifact_kind"] == "operation"
         exchange = stack.runtime._exchanges[request_id]
         assert exchange.progress_sequence == 1
         assert progress and progress[0]["state"] == "started"
@@ -207,11 +214,14 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
     from threading import Event
     from types import SimpleNamespace
 
+    from polylogue.daemon import embedding_owner as embedding_owner_module
     from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
 
     started = Event()
+    composed = Event()
 
     def compose(_index: Path, **kwargs: object) -> object:
+        composed.set()
         emit = kwargs["progress_callback"]
         quiet = kwargs["quiet"]
 
@@ -232,7 +242,7 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
 
         return converge
 
-    monkeypatch.setattr("polylogue.daemon.embedding_owner.compose_embedding_convergence", compose)
+    monkeypatch.setattr(embedding_owner_module, "compose_embedding_convergence", compose)
     request_id = "embedding-cancel-partial"
     with running_daemon_operations(tmp_path / "archive") as stack:
         accepted = stack.client.operation(
@@ -240,6 +250,8 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
         )
         assert accepted is not None and accepted["outcome"] == "accepted"
         assert accepted["accepted_reference"]["request_id"] == request_id
+        assert accepted["accepted_reference"]["artifact_kind"] == "operation"
+        assert composed.wait(timeout=2)
         assert started.wait(timeout=2)
         cancellation = stack.client.cancel(request_id, archive_root=str(stack.archive_root))
         assert cancellation is not None
