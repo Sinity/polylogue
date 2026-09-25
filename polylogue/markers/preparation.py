@@ -9,7 +9,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 from polylogue.markers import parser as marker_parser
-from polylogue.markers.lowering import candidates_for_block
+from polylogue.markers.lowering import assertion_id_for_marker, candidates_for_block
 from polylogue.markers.models import MarkerCandidate, MarkerKindSpec, MarkerMatch, MarkerProvenance, marker_provenance
 from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
@@ -26,6 +26,7 @@ def marker_candidates_for_prepared_write(prepared: PreparedSessionWrite) -> list
     """
     columns = tuple(column.name for column in BLOCKS_SPEC.insert_columns)
     candidates: list[dict[str, object]] = []
+    seen_assertion_ids: set[str] = set()
     for values in prepared.rows.block_rows:
         row = dict(zip(columns, values, strict=True))
         text = row["text"]
@@ -34,6 +35,11 @@ def marker_candidates_for_prepared_write(prepared: PreparedSessionWrite) -> list
         message_id = str(row["message_id"])
         block_id = f"{message_id}:{row['position']}"
         for candidate in candidates_for_block(message_id, block_id, text):
+            assertion_id = assertion_id_for_marker(candidate)
+            if assertion_id is not None:
+                if assertion_id in seen_assertion_ids:
+                    continue
+                seen_assertion_ids.add(assertion_id)
             value = asdict(candidate)
             value["assertion_kind"] = candidate.assertion_kind.value if candidate.assertion_kind else None
             candidates.append(value)
@@ -53,6 +59,7 @@ def marker_recipe_fingerprint() -> str:
         "format": 3,
         "sources": [
             inspect.getsource(marker_candidates_for_prepared_write),
+            inspect.getsource(assertion_id_for_marker),
             inspect.getsource(candidates_for_block),
             inspect.getsource(marker_parser.parse_markers),
             inspect.getsource(marker_parser._args),

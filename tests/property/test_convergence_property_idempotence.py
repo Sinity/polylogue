@@ -92,7 +92,7 @@ def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int)
 def test_second_convergence_pass_over_unchanged_inputs_writes_nothing(tmp_path: Path) -> None:
     """The derivation law, asserted against the real route rather than a fake.
 
-    ``DerivationReport.wrote_nothing`` states that a second pass over unchanged
+    ``DerivationReport.made_no_publication_attempts`` states that a second pass over unchanged
     inputs must perform no work. The kernel unit tests assert that on a
     synthetic domain; this asserts it on the production FTS and session-profile
     derivations driven through ``converge_convergence_archive``.

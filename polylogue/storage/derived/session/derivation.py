@@ -127,6 +127,14 @@ def stored_session_profile_binding(conn: sqlite3.Connection, session_id: str) ->
     return str(row[0])
 
 
+def _profile_demand_revision(conn: sqlite3.Connection, session_id: str) -> int:
+    row = conn.execute(
+        "SELECT revision FROM session_profile_demand WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    return 0 if row is None else _count(row[0])
+
+
 def _count(value: object) -> int:
     return int(value) if isinstance(value, int | float | str) else 0
 
@@ -163,6 +171,21 @@ def _classify_partition(
     return _VALID
 
 
+def _classify_partition_with_demand(
+    stored: _StoredPartition,
+    current_binding: str | None,
+    *,
+    materializer_version: int,
+    demanded: bool,
+) -> str:
+    status = _classify_partition(
+        stored,
+        current_binding,
+        materializer_version=materializer_version,
+    )
+    return _STALE if demanded and status == _VALID else status
+
+
 def _stored_partitions(conn: sqlite3.Connection, session_ids: Sequence[str]) -> Mapping[str, _StoredPartition]:
     unique = tuple(dict.fromkeys(session_ids))
     if not unique:
@@ -197,15 +220,24 @@ def inspect_session_profiles(
     if not unique:
         return {}
     stored = _stored_partitions(conn, unique)
+    placeholders = ",".join("?" * len(unique))
+    demanded = {
+        str(row[0])
+        for row in conn.execute(
+            f"SELECT session_id FROM session_profile_demand WHERE session_id IN ({placeholders})",
+            unique,
+        ).fetchall()
+    }
     # A session with no profile row is MISSING whatever its inputs say, so its
     # projection is not read. Absence is the one status identity settles.
     built = tuple(session_id for session_id in unique if stored[session_id].present)
     current = session_input_bindings(conn, built) if built else {}
     return {
-        session_id: _classify_partition(
+        session_id: _classify_partition_with_demand(
             stored[session_id],
             current.get(session_id),
             materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }
@@ -241,11 +273,20 @@ def bound_session_profile_partitions(
     if not unique:
         return {}
     stored = _stored_partitions(conn, unique)
+    placeholders = ",".join("?" * len(unique))
+    demanded = {
+        str(row[0])
+        for row in conn.execute(
+            f"SELECT session_id FROM session_profile_demand WHERE session_id IN ({placeholders})",
+            unique,
+        ).fetchall()
+    }
     return {
-        session_id: _classify_partition(
+        session_id: _classify_partition_with_demand(
             stored[session_id],
             stored[session_id].input_binding,
             materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }
@@ -266,11 +307,18 @@ async def bound_session_profile_partitions_async(
     async with conn.execute(sql, unique) as cursor:
         async for row in cursor:
             stored[str(row[0])] = _partition_row(row)
+    placeholders = ",".join("?" * len(unique))
+    async with conn.execute(
+        f"SELECT session_id FROM session_profile_demand WHERE session_id IN ({placeholders})",
+        unique,
+    ) as cursor:
+        demanded = {str(row[0]) async for row in cursor}
     return {
-        session_id: _classify_partition(
+        session_id: _classify_partition_with_demand(
             stored.get(session_id, _ABSENT_PARTITION),
             stored.get(session_id, _ABSENT_PARTITION).input_binding,
             materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }
@@ -297,11 +345,18 @@ async def inspect_session_profiles_async(
             stored[str(row[0])] = _partition_row(row)
     built = tuple(session_id for session_id in unique if session_id in stored)
     current = await session_input_bindings_async(conn, built) if built else {}
+    placeholders = ",".join("?" * len(unique))
+    async with conn.execute(
+        f"SELECT session_id FROM session_profile_demand WHERE session_id IN ({placeholders})",
+        unique,
+    ) as cursor:
+        demanded = {str(row[0]) async for row in cursor}
     return {
-        session_id: _classify_partition(
+        session_id: _classify_partition_with_demand(
             stored.get(session_id, _ABSENT_PARTITION),
             current.get(session_id),
             materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }
@@ -325,7 +380,13 @@ def _session_id_page(
     limit: int,
 ) -> tuple[tuple[str, ...], str | None]:
     rows = conn.execute(
-        "SELECT session_id FROM sessions WHERE session_id > COALESCE(?, '') ORDER BY session_id LIMIT ?",
+        """
+        SELECT d.session_id
+        FROM session_profile_demand AS d
+        JOIN sessions AS s ON s.session_id = d.session_id
+        WHERE d.session_id > COALESCE(?, '')
+        ORDER BY d.session_id LIMIT ?
+        """,
         (cursor, limit + 1),
     ).fetchall()
     keys = tuple(str(row[0]) for row in rows[:limit])
@@ -340,11 +401,12 @@ def _excess_page(
 ) -> tuple[tuple[str, ...], str | None]:
     rows = conn.execute(
         """
-        SELECT sp.session_id
-        FROM session_profiles AS sp
-        LEFT JOIN sessions AS s ON s.session_id = sp.session_id
-        WHERE s.session_id IS NULL AND sp.session_id > COALESCE(?, '')
-        ORDER BY sp.session_id
+        SELECT d.session_id
+        FROM session_profile_demand AS d
+        LEFT JOIN sessions AS s ON s.session_id = d.session_id
+        WHERE s.session_id IS NULL
+          AND d.session_id > COALESCE(?, '')
+        ORDER BY d.session_id
         LIMIT ?
         """,
         (cursor, limit + 1),
@@ -417,60 +479,27 @@ def publish_session_profile(
     input_binding: str,
     page_size: int = 200,
 ) -> bool:
-    """Replace one session's profile partition, revalidating the binding.
+    """Prepare and atomically replace one profile partition.
 
-    The binding stamp is the publication boundary, not the row write. The
-    existing session-insight writer commits internally, so a transaction wrapped
-    around it would not be atomic and a rollback after it could not undo the
-    rows; claiming otherwise would be the more dangerous shape, because a caller
-    would trust an atomicity that is not there.
-
-    What is atomic is the marker. Rows are rebuilt, then the binding is stamped
-    under ``BEGIN IMMEDIATE`` only if the inputs are still the ones the
-    computation read. A profile carrying no matching binding inspects stale
-    (:func:`inspect_session_profiles`), so a race leaves the key pending and the
-    next pass recomputes it — never a row certified against inputs that moved.
-
-    **This publisher writes no canonical usage** (polylogue-bp12n.1 AC2/AC7).
-    It used to, through the rebuild it calls: every invocation re-aggregated
-    ``session_model_usage`` and stamped that domain's binding, so a profile
-    publication that then returned ``False`` had already committed a usage
-    change and certified a rollup nobody asked it to reconcile. The rebuild
-    keeps that stage for the bulk route, and this one turns it off.
-
-    The rollup is :data:`SESSION_USAGE_ROLLUP_DOMAIN`'s output and a declared
-    prerequisite of this domain, and the profile's stored binding covers the
-    rollup's *inputs* rather than its rows — so publishing against an
-    unreconciled rollup would certify a profile built from superseded cost
-    values. Rather than reconcile it here, this refuses: a rollup that is not
-    VALID leaves the key pending for the pass that converges the prerequisite
-    first, which is the order the kernel already drives.
-
-    Returns False for either refusal, and a refusal commits nothing. An
-    exception is a genuine failure and is left to the caller to attribute; the
-    two are never collapsed.
+    Usage reconciliation belongs to :data:`SESSION_USAGE_ROLLUP_DOMAIN`; this
+    adapter refuses until that prerequisite is current. It then prepares the
+    complete family and publishes it under one ``BEGIN IMMEDIATE`` transaction,
+    rechecking both exact input values and the captured pending-demand revision.
+    A refusal commits nothing.
     """
-    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import (
+        prepare_session_insight_partition,
+        publish_prepared_session_insight_partition,
+    )
 
+    demand_revision = _profile_demand_revision(conn, session_id)
     if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None:
-        # An excess key: the session is gone, so the correct output is no rows.
-        # Rebuilding would leave the orphan in place and inspection would report
-        # it excess on every pass, which is a livelock rather than convergence.
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            # The retained family is profile + latency.  Removing only the
-            # parent leaves an orphan latency row behind, so a later rebuild or
-            # family census can still observe stale derived state for a session
-            # that no longer exists.  Retire both relations in this one
-            # transaction, matching the prepared publisher's excess path.
-            for table in ("session_latency_profiles", "session_profiles"):
-                conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
-        except BaseException:
-            conn.rollback()
-            raise
-        conn.commit()
-        return True
-
+        del page_size
+        return publish_prepared_session_insight_partition(
+            conn,
+            prepare_session_insight_partition(conn, session_id),
+            expected_demand_revision=demand_revision,
+        )
     if session_input_bindings(conn, (session_id,)).get(session_id, "") != input_binding:
         return False
 
@@ -487,37 +516,22 @@ def publish_session_profile(
         # this route exists without.
         return False
 
-    rebuild_session_insights_sync(
+    del page_size  # the prepared replacement is already one bounded session
+    prepared = prepare_session_insight_partition(conn, session_id)
+    if prepared.input_binding != input_binding:
+        return False
+    return publish_prepared_session_insight_partition(
         conn,
-        session_ids=[session_id],
-        page_size=page_size,
-        reconcile_usage_rollup=False,
+        prepared,
+        expected_demand_revision=demand_revision,
     )
-
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        if session_input_bindings(conn, (session_id,)).get(session_id, "") != input_binding:
-            conn.execute(
-                "UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = ?",
-                (session_id,),
-            )
-            conn.commit()
-            return False
-        conn.execute(
-            "UPDATE session_profiles SET input_content_hash = ? WHERE session_id = ?",
-            (input_binding, session_id),
-        )
-    except BaseException:
-        conn.rollback()
-        raise
-    conn.commit()
-    return True
 
 
 def publish_prepared_session_profile(
     conn: sqlite3.Connection,
     prepared: object,
     *,
+    expected_demand_revision: int = 0,
     generation_is_current: Callable[[], bool] | None = None,
 ) -> bool:
     """Atomically publish a lease-free prepared partition. Nothing else.
@@ -548,7 +562,11 @@ def publish_prepared_session_profile(
         raise TypeError(f"expected PreparedSessionInsightPartition, got {type(prepared).__name__}")
     if generation_is_current is not None and not generation_is_current():
         return False
-    return publish_prepared_session_insight_partition(conn, prepared)
+    return publish_prepared_session_insight_partition(
+        conn,
+        prepared,
+        expected_demand_revision=expected_demand_revision,
+    )
 
 
 #: One partition's publication is a bounded transaction over one session. A hold
@@ -611,7 +629,20 @@ class SessionProfileDerivation:
                 return _session_id_page(conn, cursor=cursor, limit=limit)
             finally:
                 conn.close()
-        keys = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+        scoped = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+        conn = self._read_connection()
+        try:
+            existing = {
+                str(row[0])
+                for chunk in _chunked(scoped, SESSION_PARTITION_INSPECT_CHUNK)
+                for row in conn.execute(
+                    f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+        keys = tuple(key for key in scoped if key in existing)
         start = bisect.bisect(keys, cursor) if cursor is not None else 0
         page = keys[start : start + limit]
         return page, (page[-1] if start + len(page) < len(keys) and page else None)
@@ -739,6 +770,7 @@ class SessionProfileDerivation:
             # One read transaction pins every session/message/attachment/event
             # query in this preparation to the same observed generation.
             conn.execute("BEGIN")
+            demand_revision = _profile_demand_revision(conn, key)
             prepared = prepare_session_insight_partition(conn, key)
         finally:
             conn.close()
@@ -749,6 +781,7 @@ class SessionProfileDerivation:
             input_binding=prepared.input_binding,
             payload=prepared,
             generation_binding=generation,
+            demand_revision=demand_revision,
         )
 
     def publish(self, frame: object, replacement: object) -> bool:
@@ -774,6 +807,8 @@ class SessionProfileDerivation:
                     and _connection_generation(conn) != replacement.generation_binding
                 ):
                     return False
+                if _profile_demand_revision(conn, replacement.key) != replacement.demand_revision:
+                    return False
                 if (
                     inspect_session_profiles(
                         conn,
@@ -787,6 +822,7 @@ class SessionProfileDerivation:
                     published = publish_prepared_session_profile(
                         conn,
                         replacement.payload,
+                        expected_demand_revision=replacement.demand_revision,
                         generation_is_current=(
                             None
                             if replacement.generation_binding is None or generation_binding is None
@@ -810,4 +846,5 @@ class SessionProfileReplacement:
     input_binding: str
     payload: object
     generation_binding: str | None = None
+    demand_revision: int = 0
     empty: bool = False

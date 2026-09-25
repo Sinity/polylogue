@@ -100,6 +100,13 @@ sites:
     scope: "state_predicate"
     classification: declared_retention
     reason: "DELETE FROM <per-session insight table> WHERE session_id NOT IN (SELECT session_id FROM sessions): the referential rule the index tier's own ON DELETE CASCADE declares, applied explicitly because bulk ingest and maintenance paths mutate sessions with foreign_keys disabled. It drops only rows whose owning session no longer exists and rewrites nothing that is retained"
+  - file: "polylogue/storage/derived/session/rebuild.py"
+    function: "rebuild_session_insights_sync"
+    subject: "sessions"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: whole_relation_derivation
+    reason: "the explicit full-rebuild path selects all canonical session IDs, then recomputes and replaces each session's derived profile rows in bounded chunks; it does not choose stale derived rows as the repair subject. Incremental callers pass session_ids and remain scoped to those IDs"
   - file: "polylogue/storage/embeddings/materialization.py"
     function: "_mark_all_archive_sessions_needs_reindex"
     subject: "embedding_derivation_state"

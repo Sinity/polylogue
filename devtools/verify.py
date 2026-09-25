@@ -1043,8 +1043,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 sys.stderr.write(f"  {label}: report-only, not blocking this run\n")
             if rc and blocking:
                 exit_code = exit_code or rc
-                if args.quick:
-                    break
     except VerificationInterrupted as exc:
         return _finish_interrupted_verification(
             run=run,

@@ -214,7 +214,7 @@ def test_pending_is_required_minus_valid_and_a_second_pass_writes_nothing() -> N
     assert adapter.published == ["a", "b", "c"]
 
     second = converge(registry, FRAME)
-    assert second.wrote_nothing
+    assert second.made_no_publication_attempts
     assert second.work.published == 0
     assert second.outcomes == ()
     assert adapter.published == ["a", "b", "c"]
@@ -231,7 +231,7 @@ def test_valid_empty_output_is_not_missing_work() -> None:
 
     assert converge(registry, FRAME).done == 1
     assert adapter.output == {"empty": ""}
-    assert converge(registry, FRAME).wrote_nothing
+    assert converge(registry, FRAME).made_no_publication_attempts
 
 
 def test_a_deleted_scheduling_hint_cannot_change_the_pending_set() -> None:
@@ -283,7 +283,7 @@ def test_excess_output_is_retired_and_certified_as_absent() -> None:
     assert report.done == 1
     assert [str(item.key) for item in report.by_outcome(Outcome.DONE)] == ["d:gone"]
     assert "gone" not in adapter.output
-    assert converge(registry, FRAME).wrote_nothing
+    assert converge(registry, FRAME).made_no_publication_attempts
 
 
 # ── what may publish ───────────────────────────────────────────────
@@ -448,7 +448,7 @@ def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> No
     assert report.failed == 1
     # A replacement was committed before authoritative certification rejected
     # it, so no DONE outcome cannot mean that storage was untouched.
-    assert not report.wrote_nothing
+    assert not report.made_no_publication_attempts
     assert report.work.published == 1
     failure = report.by_outcome(Outcome.FAILED)[0]
     assert failure.error is not None and "stale" in failure.error
@@ -627,7 +627,7 @@ def test_repeated_bounded_passes_visit_every_key() -> None:
     _drive(registry, budget=Budget(page=4, publication=2), passes=64, resume=True)
 
     assert len(domain.output) == 64
-    assert converge(registry, FRAME, budget=Budget(page=4, publication=2)).wrote_nothing
+    assert converge(registry, FRAME, budget=Budget(page=4, publication=2)).made_no_publication_attempts
 
 
 def test_a_permanently_refusing_prefix_cannot_starve_the_keys_behind_it() -> None:
@@ -676,7 +676,7 @@ def test_budget_exhaustion_is_pending_by_policy() -> None:
     assert {item.reason for item in report.by_outcome(Outcome.PENDING)} == {PendingReason.BUDGET}
 
     assert converge(registry, FRAME).done == 2
-    assert converge(registry, FRAME).wrote_nothing
+    assert converge(registry, FRAME).made_no_publication_attempts
 
 
 def test_a_bare_integer_budget_still_means_publications() -> None:

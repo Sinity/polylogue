@@ -196,12 +196,6 @@
     "tiers": []
   },
   {
-    "file": "polylogue/storage/derived/session/derivation.py",
-    "tiers": [
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/storage/derived/session/rebuild.py",
     "tiers": [
       "index"
