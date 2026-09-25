@@ -692,6 +692,137 @@ async def test_public_process_ingest_batch_recovers_empty_marker_carrier(
 
 
 @pytest.mark.asyncio
+async def test_public_marker_retry_reuses_pending_carrier_after_another_raw_publishes_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rollback carrier survives a same-incarnation publication by another raw.
+
+    Every parse returns a new object: the production batch deliberately clears
+    parsed payloads after use, so reusing the fixture object would hide the
+    retry that must retain the original marker bytes.
+    """
+    bootstrap_archive_root(tmp_path)
+    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
+    raw_ids: list[str] = []
+    parsed_template = _session("::note: retained through retry")
+    payload_template = SessionWritePayload(
+        session_id="codex-session:session",
+        content_hash=str(session_content_hash(parsed_template)),
+        parsed_session=parsed_template,
+        message_count=len(parsed_template.messages),
+    )
+    parsed_objects: list[ParsedSession] = []
+    try:
+        for suffix in ("first", "second"):
+            payload_bytes = f"same-normalized-session-{suffix}".encode()
+            BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
+            with sqlite3.connect(tmp_path / "source.db") as source:
+                raw_ids.append(
+                    write_source_raw_session(
+                        source,
+                        origin=Origin.CODEX_SESSION,
+                        source_path=f"pending-replay-{suffix}.jsonl",
+                        source_index=0,
+                        payload=payload_bytes,
+                        acquired_at_ms=1,
+                    )
+                )
+
+        def fresh_ingest(record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+            payload = copy.deepcopy(payload_template)
+            payload = replace(payload, raw_id=record.raw_id)
+            parsed_objects.append(payload.parsed_session)
+            return IngestRecordResult(
+                raw_id=record.raw_id,
+                payload_provider=Provider.CODEX.value,
+                validation_status="passed",
+                outcome_code="success",
+                sessions=[payload],
+            )
+
+        original_reuse = ingest_batch_core._reuse_current_accepted_marker_carrier
+        reuse_raw_ids: list[str] = []
+
+        def reuse_under_index_transaction(
+            index_conn: sqlite3.Connection,
+            source_conn: sqlite3.Connection | None,
+            record: IngestRecordResult,
+            *,
+            summary: _IngestBatchSummary,
+        ) -> bool:
+            assert index_conn.in_transaction, "carrier reuse must be classified under the index write transaction"
+            reuse_raw_ids.append(record.raw_id)
+            return original_reuse(index_conn, source_conn, record, summary=summary)
+
+        monkeypatch.setattr(ingest_batch_core, "ingest_record", fresh_ingest)
+        monkeypatch.setattr(ingest_batch_core, "_reuse_current_accepted_marker_carrier", reuse_under_index_transaction)
+        monkeypatch.setattr(
+            "polylogue.config.load_polylogue_config",
+            lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
+        )
+        original_commit_boundary = ingest_batch_core._commit_sync_ingest_side_effects
+
+        def interrupt_before_index_commit(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("simulated loss before first index commit")
+
+        monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", interrupt_before_index_commit)
+        with pytest.raises(RuntimeError, match="before first index commit"):
+            await ingest_batch_core.process_ingest_batch(
+                service, repository.backend, [raw_ids[0]], ParseResult(), None, repair_message_fts=False
+            )
+        monkeypatch.setattr(ingest_batch_core, "_commit_sync_ingest_side_effects", original_commit_boundary)
+
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            pending = source.execute(
+                "SELECT request_key, carrier_digest, payload FROM pending_accepted_marker_inputs WHERE raw_id = ?",
+                (raw_ids[0],),
+            ).fetchone()
+            assert pending is not None
+            pending_payload = bytes(cast(bytes, pending[2]))
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+
+        # The second raw writes the same normalized session in the unchanged
+        # index incarnation. It has a distinct request identity and cannot
+        # replace the first raw's pending byte carrier.
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_ids[1]], ParseResult(), None, repair_message_fts=False
+        )
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT raw_id FROM sessions").fetchone() == (raw_ids[1],)
+
+        # Retry the first raw from a fresh parsed object. Its ordinary writer
+        # now sees a no-op, but the existing session proves the retained
+        # pending interpretation was successfully published in this
+        # incarnation. Finalization must preserve those exact bytes.
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_ids[0]], ParseResult(), None, repair_message_fts=False
+        )
+    finally:
+        await repository.close()
+
+    assert len(parsed_objects) == 3
+    assert len({id(parsed) for parsed in parsed_objects}) == 3
+    assert reuse_raw_ids == [raw_ids[0], raw_ids[1], raw_ids[0]]
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        accepted = source.execute(
+            "SELECT payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids[0],)
+        ).fetchone()
+        assert accepted is not None
+        assert bytes(cast(bytes, accepted[0])) == pending_payload
+        assert source.execute(
+            "SELECT COUNT(*) FROM pending_accepted_marker_inputs WHERE raw_id = ?", (raw_ids[0],)
+        ).fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute(
+            "SELECT carrier_digest FROM ingest_marker_witnesses WHERE request_key = ?", (pending[0],)
+        ).fetchone() == (pending[1],)
+
+
+@pytest.mark.asyncio
 async def test_public_batch_append_retry_reuses_the_first_delta_carrier(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
