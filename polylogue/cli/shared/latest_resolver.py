@@ -38,8 +38,10 @@ def resolve_session_id_from_root_params(root_params: Mapping[str, object]) -> st
        the caller should surface its existing "missing id" error.
     """
     from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.cli.operation_kernel import OperationUnavailableError
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.session_rows import query_session_ids
+    from polylogue.cli.shared.helper_support import mutation_refusal
     from polylogue.config import Config, get_config
 
     explicit = cast("str | None", root_params.get("conv_id"))
@@ -52,7 +54,10 @@ def resolve_session_id_from_root_params(root_params: Mapping[str, object]) -> st
 
     pinned = root_params.get("_config")
     config = pinned if isinstance(pinned, Config) else get_config()
-    session_ids = query_session_ids(config, RootModeRequest.from_params(dict(root_params)), limit=1)
+    try:
+        session_ids = query_session_ids(config, RootModeRequest.from_params(dict(root_params)), limit=1)
+    except OperationUnavailableError as exc:
+        raise mutation_refusal(exc, exc.operation or "cli.query") from None
     return session_ids[0] if session_ids else None
 
 
