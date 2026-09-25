@@ -410,6 +410,14 @@ surfaces:
       latter came from an exit-125 subprocess importing outside the checkout.
       This fresh reproduction supersedes neither the retained targets nor the
       older historical records; it adds common-head evidence and phase data.
+      The profile now also records direct-UDS p50/p95/p99 across the loaded
+      read window, one installed-CLI find against the same archive-scoped
+      socket, the coordinator's measured writer hold and actor hold budget,
+      and quiet versus loaded bulk throughput. The CLI sample, p99, and
+      throughput ratio are calibration data without new thresholds. The
+      existing fairness checks remain nonzero background progress and a
+      maximum 60-second admission wait. The direct-UDS p99 is observed against
+      the existing five-second request deadline.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_mixed_load"
     p50_ms: 4000
     p95_ms: 6000

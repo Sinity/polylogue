@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.daemon.socket_path import daemon_socket_path
 from tests.benchmarks.helpers import BenchmarkFixture
 from tests.infra.benchmark_archives import seed_benchmark_archive
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
@@ -45,16 +46,22 @@ def bench_daemon_uds_stack(
 ) -> Iterator[DaemonOperationStack]:
     """A maintained production UDS operation stack with a seeded archive."""
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(bench_daemon_uds_archive_root))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
+    monkeypatch.delenv("POLYLOGUE_DAEMON_URL", raising=False)
 
     def seed(root: Path) -> None:
         seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
 
-    with running_daemon_operations(bench_daemon_uds_archive_root, seed_archive=seed) as stack:
+    with running_daemon_operations(
+        bench_daemon_uds_archive_root,
+        seed_archive=seed,
+        socket_path=daemon_socket_path(bench_daemon_uds_archive_root),
+    ) as stack:
         yield stack
 
 

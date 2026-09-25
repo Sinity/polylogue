@@ -27,6 +27,8 @@ from typing import Any
 import pytest
 
 from polylogue.daemon.execution import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
+from polylogue.daemon.socket_path import daemon_socket_path
+from polylogue.daemon.write_coordinator import DaemonWriteEvent
 from polylogue.daemon_client import DaemonClient
 from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, PROFILE_METRICS, profile_manifest, record_metrics
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_repeated
@@ -41,7 +43,7 @@ pytestmark = pytest.mark.uses_real_clock(
 )
 
 
-def _installed_cli() -> list[str]:
+def _installed_cli(*, installed_only: bool = False) -> list[str]:
     """Locate the console script this run's interpreter would dispatch.
 
     The warm-status lane measures the installed CLI, and a hard-coded path
@@ -50,20 +52,27 @@ def _installed_cli() -> list[str]:
 
     1. this checkout's own ``.venv`` console script — it is the one whose
        ``import polylogue`` is guaranteed to resolve inside this checkout;
-    2. the console script beside the running interpreter — right when the
-       environment is provisioned elsewhere, but it can belong to a shared
-       venv wired to a different checkout, so it is not tried first;
-    3. ``python -m polylogue`` — the same product entry point with a little
-       extra interpreter startup, so the lane measures rather than refusing.
+    2. the console script beside the running interpreter — only for callers
+       that allow fallback; it can belong to a shared venv wired to another
+       checkout;
+    3. ``python -m polylogue`` — only for callers that allow fallback, with a
+       little extra interpreter startup.
     """
 
-    candidates = (
-        Path(__file__).parents[2] / ".venv" / "bin" / "polylogue",
-        Path(sys.executable).parent / "polylogue",
-    )
-    for candidate in candidates:
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return [str(candidate)]
+    checkout_root = Path(__file__).resolve().parents[2]
+    checkout_candidate = checkout_root / ".venv" / "bin" / "polylogue"
+    try:
+        checkout_candidate.resolve(strict=True).relative_to(checkout_root)
+        checkout_owned = True
+    except (OSError, ValueError):
+        checkout_owned = False
+    if checkout_owned and checkout_candidate.is_file() and os.access(checkout_candidate, os.X_OK):
+        return [str(checkout_candidate)]
+    if installed_only:
+        raise RuntimeError("the benchmark requires this checkout's installed polylogue console script")
+    interpreter_candidate = Path(sys.executable).parent / "polylogue"
+    if interpreter_candidate.is_file() and os.access(interpreter_candidate, os.X_OK):
+        return [str(interpreter_candidate)]
     return [sys.executable, "-m", "polylogue"]
 
 
@@ -75,17 +84,92 @@ def _operation(client: DaemonClient, name: str, payload: dict[str, object] | Non
     return result
 
 
+def _validate_successful_find_response(returncode: int, stdout: str, stderr: str) -> dict[str, object]:
+    """Reject CLI errors, empty results, and non-product JSON before timing is recorded."""
+    assert returncode == 0, stderr
+    payload = json.loads(stdout)
+    assert isinstance(payload, dict), stdout
+    outcome = payload.get("outcome")
+    assert isinstance(outcome, dict) and outcome.get("state") == "ok", stdout
+    assert payload.get("source") == "daemon", stdout
+    items = payload.get("items")
+    assert isinstance(items, list) and items, stdout
+    assert all(isinstance(item, dict) for item in items), stdout
+    total = payload.get("total")
+    assert type(total) is int and total > 0, stdout
+    return payload
+
+
+def test_installed_cli_only_uses_a_console_script_inside_this_checkout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkout = tmp_path / "checkout"
+    module_file = checkout / "tests" / "benchmarks" / "test_daemon_operation_profile.py"
+    module_file.parent.mkdir(parents=True)
+    monkeypatch.setattr(sys.modules[__name__], "__file__", str(module_file))
+
+    shared_bin = tmp_path / "shared-venv" / "bin"
+    shared_bin.mkdir(parents=True)
+    shared_python = shared_bin / "python"
+    shared_python.write_text("", encoding="utf-8")
+    shared_cli = shared_bin / "polylogue"
+    shared_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+    shared_cli.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(shared_python))
+
+    with pytest.raises(RuntimeError, match="this checkout's installed polylogue"):
+        _installed_cli(installed_only=True)
+
+    checkout_cli = checkout / ".venv" / "bin" / "polylogue"
+    checkout_cli.parent.mkdir(parents=True)
+    checkout_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+    checkout_cli.chmod(0o755)
+    assert _installed_cli(installed_only=True) == [str(checkout_cli)]
+
+
+def test_installed_cli_timing_requires_successful_nonempty_product_envelope() -> None:
+    good = json.dumps(
+        {
+            "items": [{"id": "codex-session:seeded"}],
+            "outcome": {"state": "ok", "reason": None, "detail": {}},
+            "source": "daemon",
+            "total": 1,
+        }
+    )
+    assert _validate_successful_find_response(0, good, "")["total"] == 1
+
+    with pytest.raises(AssertionError):
+        _validate_successful_find_response(1, good, "CLI failed")
+    with pytest.raises(AssertionError):
+        _validate_successful_find_response(0, good.replace('"daemon"', '"direct"'), "")
+    with pytest.raises(AssertionError):
+        _validate_successful_find_response(
+            0,
+            json.dumps({"error": {"code": "daemon_unavailable"}, "items": [{"id": "x"}]}),
+            "",
+        )
+    with pytest.raises(AssertionError):
+        _validate_successful_find_response(
+            0,
+            json.dumps({"items": [], "outcome": {"state": "empty"}, "total": 0}),
+            "",
+        )
+
+
 @pytest.mark.benchmark
 def test_bench_daemon_warm_status(benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient) -> None:
     """Installed CLI warm status includes process, UDS, and rendering cost."""
 
-    del bench_daemon_uds_client
+    assert bench_daemon_uds_client.socket_path == daemon_socket_path(os.environ["POLYLOGUE_ARCHIVE_ROOT"]), (
+        "installed CLI status must use the production-derived archive socket"
+    )
     env = {**os.environ, "POLYLOGUE_FORCE_PLAIN": "1"}
 
     def run() -> subprocess.CompletedProcess[str]:
         started = perf_counter()
         result = subprocess.run(
-            [*_installed_cli(), "--plain", "status", "--format", "json"],
+            [*_installed_cli(installed_only=True), "--plain", "status", "--format", "json"],
             env=env,
             capture_output=True,
             text=True,
@@ -230,11 +314,17 @@ def bench_mixed_load_stack(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
+    monkeypatch.delenv("POLYLOGUE_DAEMON_URL", raising=False)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(mode=0o700)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
+    socket_path = daemon_socket_path(archive_root, runtime_dir=str(runtime_dir))
 
     def seed(root: Path) -> None:
         seed_benchmark_archive(root / "index.db", BenchmarkWorkloadTier.SMOKE)
@@ -244,6 +334,7 @@ def bench_mixed_load_stack(
         seed_archive=seed,
         compute_workers=4,
         compute_queue_units=16,
+        socket_path=socket_path,
     ) as stack:
         yield stack
 
@@ -266,10 +357,16 @@ def test_bench_daemon_mixed_load(
     * **Background compute** — feeder threads submit ``bulk-candidate`` units
       into the same bounded kernel the interactive reads are admitted to.
 
-    The measured operation is the interactive side: eight ``cli.query`` reads
-    over four connections, taken over five rounds. The background denominator
-    is completed background operations per mixed-load second, and queue delay
-    is the kernel's own longest admission-to-dispatch wait.
+    The measured operation is the interactive side: eight direct ``cli.query``
+    UDS reads over four connections, taken over five rounds, plus one installed
+    CLI ``find`` subprocess after those rounds while the same background load
+    remains active.
+    The CLI launcher uses the production-derived socket path; this stack binds
+    there instead of using the helper's random test socket. The background
+    denominator is completed bulk operations per mixed-load second, compared
+    with the same unit on this same kernel without contention. That ratio is
+    recorded for calibration only; the accepted fairness contract is nonzero
+    background progress and the declared maximum admission wait.
 
     The lane takes rounds rather than one shot, which is a change of claim as
     much as of shape: a latency budget describes a distribution, and a
@@ -349,6 +446,9 @@ def test_bench_daemon_mixed_load(
     kernel = bench_mixed_load_stack.execution_kernel
     socket_path = bench_mixed_load_stack.client.socket_path
     archive_root = str(bench_mixed_load_stack.archive_root)
+    assert socket_path == daemon_socket_path(archive_root), (
+        "installed CLI and direct UDS clients must reach the same production-derived archive socket"
+    )
     seeded = _operation(bench_mixed_load_stack.client, "cli.query", {"params": {"limit": 5}})
     page = seeded["result"]
     assert isinstance(page, dict)
@@ -362,12 +462,66 @@ def test_bench_daemon_mixed_load(
     peak_queue_units = 0
     peak_queue_bytes = 0
     writes_completed = 0
-    write_latency_ms: list[int] = []
     write_failures: list[str] = []
+    write_hold_measurements: list[tuple[float, float]] = []
+    write_event_lock = threading.Lock()
     counters = threading.Lock()
+
+    def observe_write_event(event: DaemonWriteEvent) -> None:
+        if event.phase != "released" or event.hold_seconds is None:
+            return
+        if event.hold_budget_s is None:
+            return
+        with write_event_lock:
+            write_hold_measurements.append((event.hold_seconds * 1000, event.hold_budget_s * 1000))
+
+    # Capture the coordinator's actual gate hold, not UDS roundtrip time. The
+    # stack is benchmark-owned and shuts down with this fixture.
+    stack_coordinator = bench_mixed_load_stack.write_coordinator
+    previous_observer = stack_coordinator._observer
+    stack_coordinator._observer = observe_write_event
 
     def background_unit() -> None:
         sleep(0.005)
+
+    # Establish an unloaded bulk-operation denominator with the same kernel,
+    # unit, and submit path used in the mixed window. This fraction is reported
+    # as exploratory; the accepted contract names nonzero progress and a
+    # bounded starvation window, not a minimum throughput ratio.
+    quiet_completed = 0
+    quiet_lock = threading.Lock()
+    quiet_stop = threading.Event()
+    quiet_failures: list[str] = []
+
+    def count_quiet_completion() -> None:
+        nonlocal quiet_completed
+        while not quiet_stop.is_set():
+            try:
+                submitted = kernel.submit(background_unit, admission_class="bulk-candidate")
+                submitted.future.result(timeout=5)
+                with quiet_lock:
+                    quiet_completed += 1
+            except DaemonBackpressureError:
+                sleep(0.005)
+            except Exception as error:
+                quiet_failures.append(f"{type(error).__name__}: {error}")
+                return
+
+    quiet_feeders = [threading.Thread(target=count_quiet_completion, daemon=True) for _ in range(2)]
+    quiet_started = perf_counter()
+    for feeder in quiet_feeders:
+        feeder.start()
+    sleep(1.0)
+    quiet_duration_s = max(perf_counter() - quiet_started, 1e-6)
+    with quiet_lock:
+        quiet_completed_in_window = quiet_completed
+    quiet_stop.set()
+    for feeder in quiet_feeders:
+        feeder.join(timeout=5)
+    assert all(not feeder.is_alive() for feeder in quiet_feeders), "quiet bulk feeders did not drain"
+    assert not quiet_failures, quiet_failures
+    assert quiet_completed_in_window > 0, "quiet bulk baseline produced no completions"
+    quiet_background_throughput = quiet_completed_in_window / quiet_duration_s
 
     def observe_admission() -> None:
         """Retain queue high-water marks while the real mixed load is active."""
@@ -453,20 +607,48 @@ def test_bench_daemon_mixed_load(
                 return
             with counters:
                 writes_completed += 1
-                write_latency_ms.append(client.last_elapsed_ms or 0)
             # Paced, not a denial-of-service: the lane measures reads served
             # under a steady stream of real writes, not the daemon's behavior
             # when two threads mutate as fast as the socket accepts.
             sleep(0.01)
 
     elapsed: list[int] = []
+    installed_cli_elapsed_ms: list[float] = []
     read_index = itertools.count()
 
     def percentile(values: list[float], fraction: float) -> float:
         ordered = sorted(values)
         if not ordered:
             return 0.0
-        return round(ordered[min(int((len(ordered) - 1) * fraction), len(ordered) - 1)], 3)
+        # Nearest-rank percentile, so p95/p99 include the upper-tail sample.
+        index = max(0, min(len(ordered) - 1, int((len(ordered) * fraction + 0.999999) - 1)))
+        return round(ordered[index], 3)
+
+    def installed_cli_read(offset: int) -> None:
+        """Exercise the installed CLI against the canonical daemon socket."""
+        env = {**os.environ, "POLYLOGUE_FORCE_PLAIN": "1"}
+        started = perf_counter()
+        result = subprocess.run(
+            [
+                *_installed_cli(installed_only=True),
+                "--plain",
+                "find",
+                "--format",
+                "json",
+                "--limit",
+                "5",
+                "--offset",
+                str(offset),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        elapsed_ms = (perf_counter() - started) * 1000
+        _validate_successful_find_response(result.returncode, result.stdout, result.stderr)
+        installed_cli_elapsed_ms.append(elapsed_ms)
 
     def phase_read(params: Mapping[str, object]) -> dict[str, object]:
         before_epoch = current_cache_epoch()
@@ -514,7 +696,10 @@ def test_bench_daemon_mixed_load(
             return result
 
         with ThreadPoolExecutor(max_workers=4) as pool:
-            return list(pool.map(one, range(8)))
+            results = list(pool.map(one, range(8)))
+        with phase_lock:
+            pending_compute["writer"].clear()
+        return results
 
     feeders = [threading.Thread(target=keep_background_busy, daemon=True) for _ in range(2)]
     feeders += [threading.Thread(target=keep_writing, args=(worker,), daemon=True) for worker in range(2)]
@@ -523,11 +708,17 @@ def test_bench_daemon_mixed_load(
         feeder.start()
     try:
         results = benchmark_repeated(benchmark, run)
+        # Sample the installed process once after the repeated direct-read
+        # timing, while the same writer/bulk feeders are still active.
+        installed_cli_read(next(read_index))
     finally:
+        mixed_window_s = max(perf_counter() - started, 1e-6)
+        with counters:
+            background_completed_in_window = background_completed
         stop.set()
         for feeder in feeders:
             feeder.join(timeout=30)
-    duration_s = max(perf_counter() - started, 1e-6)
+        stack_coordinator._observer = previous_observer
 
     # The last write's own control unit can still be settling when its client
     # reply is already back, so drain is a bounded wait rather than an instant.
@@ -552,7 +743,7 @@ def test_bench_daemon_mixed_load(
     # Mixed-load progress: the contention was real on both axes, and no
     # background unit waited past the declared starvation window.
     assert writes_completed > 0
-    assert background_completed > 0
+    assert background_completed_in_window > 0
     assert snapshot.background_max_wait_s < MAX_BACKGROUND_STARVATION_S
     assert snapshot.used_units == 0, snapshot
     assert peak_queue_units <= snapshot.capacity_units
@@ -576,7 +767,18 @@ def test_bench_daemon_mixed_load(
     # worst sample ``max()`` used to report under a p95's name. With five
     # rounds of eight reads there are forty samples to take it from.
     ordered = sorted(elapsed)
-    interference_p95 = ordered[min(int(len(ordered) * 0.95), len(ordered) - 1)] if ordered else 0
+    interactive_percentiles = {
+        "p50_ms": percentile([float(value) for value in ordered], 0.50),
+        "p95_ms": percentile([float(value) for value in ordered], 0.95),
+        "p99_ms": percentile([float(value) for value in ordered], 0.99),
+        "samples": len(ordered),
+    }
+    interference_p95 = int(interactive_percentiles["p95_ms"])
+    max_writer_hold_ms, writer_hold_budget_ms = max(write_hold_measurements, default=(0.0, 0.0))
+    loaded_background_throughput = background_completed_in_window / mixed_window_s
+    background_throughput_fraction = (
+        loaded_background_throughput / quiet_background_throughput if quiet_background_throughput > 0 else 0.0
+    )
     phase_report = {
         phase: {
             metric: {
@@ -596,9 +798,9 @@ def test_bench_daemon_mixed_load(
     record_metrics(
         benchmark,
         concurrent_interference_p95_ms=interference_p95,
-        writer_hold_ms=max(write_latency_ms, default=0),
-        background_operations=background_completed,
-        background_throughput=background_completed / duration_s,
+        writer_hold_ms=round(max_writer_hold_ms, 3),
+        background_operations=background_completed_in_window,
+        background_throughput=loaded_background_throughput,
         queue_delay_ms=int(snapshot.background_max_wait_s * 1000),
         peak_queue_units=peak_queue_units,
         peak_queue_bytes=peak_queue_bytes,
@@ -609,15 +811,25 @@ def test_bench_daemon_mixed_load(
             "quiet": {
                 "queue_delay_ms": 0.0,
                 "writer_hold_ms": 0.0,
-                "background_throughput": 0.0,
+                "background_throughput": round(quiet_background_throughput, 3),
             },
             "writer": {
                 "queue_delay_ms": round(float(snapshot.background_max_wait_s) * 1000, 3),
-                "writer_hold_ms": round(float(max(write_latency_ms, default=0)), 3),
-                "background_throughput": round(background_completed / duration_s, 3),
+                "writer_hold_ms": round(max_writer_hold_ms, 3),
+                "background_throughput": round(loaded_background_throughput, 3),
             },
         },
+        mixed_load_interactive_percentiles=interactive_percentiles,
+        mixed_load_installed_cli_samples_ms=[round(value, 3) for value in installed_cli_elapsed_ms],
+        mixed_load_quiet_background_throughput=round(quiet_background_throughput, 3),
+        mixed_load_background_throughput_fraction=round(background_throughput_fraction, 3),
+        mixed_load_writer_hold_budget_ms=round(writer_hold_budget_ms, 3),
     )
+    assert installed_cli_elapsed_ms, "the mixed-load window must include an installed CLI read"
+    assert len(installed_cli_elapsed_ms) == 1, "one installed CLI sample is required under the mixed-load window"
+    assert write_hold_measurements, "the mixed-load writer must produce coordinator hold measurements"
+    assert writer_hold_budget_ms > 0
+    assert all(hold_ms <= budget_ms for hold_ms, budget_ms in write_hold_measurements)
 
 
 #: Latency the injection adds to one archive query. Leave enough separation
