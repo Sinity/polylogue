@@ -37,6 +37,7 @@ _CREATE_VIRTUAL_TABLE = re.compile(
 # model. Their stable semantic consequences are compared through the current
 # revision heads, FTS membership, materialization markers, and debt state.
 _NON_COMPARABLE_TABLES: dict[str, str] = {
+    "ingest_index_incarnation": "physical index-file identity; each isolated candidate has its own inode/incarnation",
     "messages_fts_identity": "FTS support relation compared through public search and exact membership counts",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
     "raw_revision_applications": "attempt receipts contain generated decision ids and wall-clock timestamps",
@@ -55,7 +56,9 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "delegation_refresh_scope": frozenset(),
     "derived_refresh_guard": frozenset(),
     "file_edits": frozenset(),
+    "ingest_marker_witnesses": frozenset({"incarnation_id"}),
     "messages": frozenset(),
+    "messages_fts_readiness_binding": frozenset(),
     "paste_spans": frozenset(),
     "raw_revision_heads": frozenset({"decided_at_ms"}),
     "repo_checkouts": frozenset(),
@@ -71,6 +74,7 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_provider_usage_events": frozenset(),
     "session_refs": frozenset(),
     "session_repos": frozenset(),
+    "session_summary_bindings": frozenset(),
     "session_tags": frozenset(),
     # (session_id, input_binding, recipe_version): the inputs the canonical
     # usage rollup was computed from and the recipe that computed them. Every

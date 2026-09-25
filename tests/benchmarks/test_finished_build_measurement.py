@@ -41,9 +41,11 @@ from tests.infra.archive_templates import (
 )
 from tests.infra.reindex_differential import (
     DerivedModelSnapshot,
+    FinishedBuildOutput,
     FinishedBuildRoute,
     FinishedBuildWorkIdentity,
     SealedRawInput,
+    assert_finished_builds_equivalent,
     capture_finished_build_output,
     clone_sealed_arm,
     finished_build_work_identity,
@@ -76,6 +78,7 @@ class _Arm:
     uses_shard_transport: bool
     worker_mode: str = "thread"
     refusal_reason: str | None = None
+    defer_secondary_indexes: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +110,7 @@ class _ArmReceipt:
     refused_raw_count: int
     deferred_raw_count: int
     failed_raw_count: int
+    shard_lowering_degraded_count: int
     skipped_raw_count: int
     output_session_count: int
     output_message_count: int
@@ -134,6 +138,24 @@ def _compact_receipt(receipt: _ArmReceipt) -> _ArmReceipt:
     snapshot = receipt.snapshot
     assert snapshot is not None
     return replace(receipt, snapshot=None)
+
+
+def _finished_output(receipt: _ArmReceipt) -> FinishedBuildOutput:
+    snapshot = receipt.snapshot
+    if snapshot is None:
+        raise AssertionError("finished-build comparison requires retained snapshots")
+    return FinishedBuildOutput(
+        work=receipt.work,
+        route=receipt.route,
+        canonical_logical_digest=receipt.canonical_logical_digest,
+        schema_object_census=receipt.schema_object_census,
+        schema_identity=receipt.schema_identity,
+        output_session_count=receipt.output_session_count,
+        output_message_count=receipt.output_message_count,
+        output_block_count=receipt.output_block_count,
+        resources=receipt.resources,
+        snapshot=snapshot,
+    )
 
 
 def _receipt_payload(receipt: _ArmReceipt) -> dict[str, object]:
@@ -171,6 +193,7 @@ def _receipt_payload(receipt: _ArmReceipt) -> dict[str, object]:
         "refused_raw_count": receipt.refused_raw_count,
         "deferred_raw_count": receipt.deferred_raw_count,
         "failed_raw_count": receipt.failed_raw_count,
+        "shard_lowering_degraded_count": receipt.shard_lowering_degraded_count,
         "skipped_raw_count": receipt.skipped_raw_count,
         "output_session_count": receipt.output_session_count,
         "output_message_count": receipt.output_message_count,
@@ -183,6 +206,13 @@ _SELECTED_ARM = _Arm(
     "deferred-index-fresh-shard",
     uses_owned_inactive_generation=True,
     uses_shard_transport=True,
+    defer_secondary_indexes=True,
+)
+_RETAINED_INDEX_CONTROL = _Arm(
+    "retained-index-fresh-shard",
+    uses_owned_inactive_generation=True,
+    uses_shard_transport=True,
+    defer_secondary_indexes=False,
 )
 # These are declared non-cells, not a benchmark matrix.  The receipt keeps the
 # decision boundary auditable without executing a direct-writer arm or a
@@ -199,12 +229,6 @@ _REJECTED_ALTERNATIVES = (
         uses_owned_inactive_generation=True,
         uses_shard_transport=False,
         refusal_reason="does not exercise the selected sealed-shard transport",
-    ),
-    _Arm(
-        "retained-index-shard",
-        uses_owned_inactive_generation=False,
-        uses_shard_transport=True,
-        refusal_reason="sealed shards require the owned inactive-generation route",
     ),
     _Arm(
         "deferred-index-fresh-shard-process",
@@ -302,7 +326,7 @@ def _work_identity(sealed: SealedRawInput) -> FinishedBuildWorkIdentity:
     """Bind the sealed source, exact route code, and one selected profile."""
     return finished_build_work_identity(
         sealed,
-        profile="finished-build:sealed-516-raw:thread-4:owned-inactive-generation:session-shard",
+        profile=(f"finished-build:sealed-{sealed.raw_count}-raw:thread-4:owned-inactive-generation:session-shard"),
         routes=(backfill_historical_revision_evidence, revision_backfill._FrozenReplayShardTransport),
     )
 
@@ -355,7 +379,7 @@ def _run_arm(
     *,
     worker_count: int,
 ) -> _ArmReceipt:
-    if arm != _SELECTED_ARM:
+    if arm not in (_SELECTED_ARM, _RETAINED_INDEX_CONTROL):
         raise RuntimeError("finished-build measurement runs only the declared selected arm")
     destination, owned_generation = _candidate_root(root, arm)
     resource_probe = FinishedBuildResourceProbe.start()
@@ -364,6 +388,7 @@ def _run_arm(
         owned_inactive_generation=owned_generation,
         ingest_workers=worker_count,
         use_session_shards=arm.uses_shard_transport,
+        defer_secondary_indexes=arm.defer_secondary_indexes,
     )
     index_path = destination / "index.db"
     ids = _session_ids(index_path)
@@ -396,9 +421,10 @@ def _run_arm(
             f"or adoption_deferred={result.adoption_deferred}"
         )
     population_total = result.replayed_logical_sources + result.adoption_deferred + result.quarantined
-    if population_total != sealed.raw_count:
+    if result.scanned != sealed.raw_count or population_total != sealed.raw_count:
         raise AssertionError(
-            f"{arm.name} has unclassified raw population: offered={sealed.raw_count} classified={population_total}"
+            f"{arm.name} has unclassified raw population: offered={sealed.raw_count} "
+            f"scanned={result.scanned} classified={population_total}"
         )
     if output.output_session_count != result.replayed_logical_sources:
         raise AssertionError(
@@ -421,7 +447,7 @@ def _run_arm(
         stage_timings_s=dict(result.stage_timings_s),
         metrics=metrics.to_payload(),
         fresh_build=arm.uses_owned_inactive_generation,
-        deferred_secondary_indexes=arm.uses_owned_inactive_generation,
+        deferred_secondary_indexes=arm.defer_secondary_indexes is not False and arm.uses_owned_inactive_generation,
         derived_table_census=tuple(table for table, _projection in output.snapshot.tables),
         schema_object_census=output.schema_object_census,
         schema_identity=output.schema_identity,
@@ -435,6 +461,7 @@ def _run_arm(
         refused_raw_count=0,
         deferred_raw_count=result.adoption_deferred,
         failed_raw_count=result.quarantined,
+        shard_lowering_degraded_count=result.shard_lowering_degraded,
         skipped_raw_count=0,
         output_session_count=output.output_session_count,
         output_message_count=output.output_message_count,
@@ -459,7 +486,6 @@ def test_finished_build_measurement_declares_capability_boundary() -> None:
     assert {arm.name for arm in _REJECTED_ALTERNATIVES} == {
         "retained-index-inline",
         "deferred-index-fresh-inline",
-        "retained-index-shard",
         "deferred-index-fresh-shard-process",
     }
     assert all(arm.refusal_reason for arm in _REJECTED_ALTERNATIVES)
@@ -505,6 +531,7 @@ def test_finished_build_measurement_compacts_projection_before_rendering() -> No
         refused_raw_count=0,
         deferred_raw_count=0,
         failed_raw_count=0,
+        shard_lowering_degraded_count=0,
         skipped_raw_count=0,
         output_session_count=0,
         output_message_count=0,
@@ -516,6 +543,98 @@ def test_finished_build_measurement_compacts_projection_before_rendering() -> No
 
     assert compact.snapshot is None
     assert _receipt_payload(compact)["snapshot"] == "derived-model-equivalent-and-ready"
+
+
+def test_index_deferral_comparison_repeats_interleaved_finished_builds(tmp_path: Path) -> None:
+    """Compare index maintenance alone while holding the cold shard route fixed.
+
+    The four runs use one immutable, small input and alternate the index policy
+    so each policy is repeated on both sides of the other. Each run times the
+    complete backfill and finished-output checks, including boundary index
+    restoration, FTS and derived finalization, schema identity, and commit.
+    """
+    template = tmp_path / "sealed-input"
+    bootstrap_archive_root(template)
+    build_independent_raw_corpus(
+        template,
+        raw_count=8,
+        avg_payload_bytes=2_000,
+        authoritative_source=True,
+    )
+    census = census_historical_revision_evidence(template)
+    assert census.scanned == 8
+    assert census.quarantined == 0
+    sealed = seal_raw_input(template)
+    finalize_archive_template(template)
+    with sqlite3.connect(template / "index.db") as conn:
+        expected_schema_objects = tuple(
+            (str(kind), str(name))
+            for kind, name in conn.execute(
+                """
+                SELECT type, name
+                FROM sqlite_master
+                WHERE name NOT LIKE 'sqlite_%'
+                ORDER BY type, name
+                """
+            )
+        )
+        expected_schema_identity_row = conn.execute(
+            "SELECT identity FROM schema_identity WHERE tier = 'index'"
+        ).fetchone()
+    assert expected_schema_identity_row is not None
+    expected_schema_identity = str(expected_schema_identity_row[0])
+
+    order = (
+        _SELECTED_ARM,
+        _RETAINED_INDEX_CONTROL,
+        _RETAINED_INDEX_CONTROL,
+        _SELECTED_ARM,
+    )
+    receipts = [
+        _run_arm(
+            clone_sealed_arm(template, tmp_path / f"comparison-{index}-{arm.name}", sealed),
+            sealed,
+            arm,
+            worker_count=4,
+        )
+        for index, arm in enumerate(order)
+    ]
+    reference = receipts[0]
+    for receipt in receipts[1:]:
+        assert_finished_builds_equivalent(_finished_output(reference), _finished_output(receipt))
+
+    assert [receipt.deferred_secondary_indexes for receipt in receipts] == [True, False, False, True]
+    assert all(receipt.fresh_build for receipt in receipts)
+    assert all(receipt.offered_raw_count == receipt.ingested_raw_count == sealed.raw_count for receipt in receipts)
+    assert all(
+        receipt.refused_raw_count
+        == receipt.deferred_raw_count
+        == receipt.failed_raw_count
+        == receipt.shard_lowering_degraded_count
+        == receipt.skipped_raw_count
+        == 0
+        for receipt in receipts
+    )
+    elapsed = [receipt.resources.elapsed_seconds for receipt in receipts]
+    assert all(seconds > 0 for seconds in elapsed)
+    assert all(receipt.schema_object_census == reference.schema_object_census for receipt in receipts)
+    assert all(receipt.schema_identity == reference.schema_identity for receipt in receipts)
+    assert all(receipt.canonical_logical_digest == reference.canonical_logical_digest for receipt in receipts)
+    assert all(receipt.schema_object_census == expected_schema_objects for receipt in receipts)
+    assert all(receipt.schema_identity == expected_schema_identity for receipt in receipts)
+    emitted = emit_receipt(
+        "finished-build-index-deferral-comparison",
+        {
+            "input": {"digest": sealed.digest, "bytes": sealed.byte_count, "raw_count": sealed.raw_count},
+            "run_order": [receipt.arm for receipt in receipts],
+            "arms": [_receipt_payload(_compact_receipt(receipt)) for receipt in receipts],
+            "verdict": {
+                "conclusion": "equivalent-finished-output",
+                "reason": "interleaved retained/deferred index controls produced identical completed logical and schema digests; no speed ranking is claimed at this small scale",
+            },
+        },
+    )
+    print(f"finished-build-index-deferral comparison receipt: {emitted}")
 
 
 @pytest.mark.benchmark

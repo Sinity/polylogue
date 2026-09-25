@@ -128,15 +128,25 @@ def select_cold_build_shape(
     destination: WriteDestination,
     archive_empty: bool,
     at_admitted_input_boundary: bool = True,
+    defer_secondary_indexes: bool | None = None,
 ) -> BatchShape:
-    """Return the cold-build shape for an already-admitted offline rebuild."""
+    """Return the cold-build shape for an already-admitted offline rebuild.
+
+    ``defer_secondary_indexes`` is a measurement control for an owned empty
+    generation.  The default keeps the production choice; explicitly asking
+    to defer cannot grant eligibility to a live, active, or nonempty archive.
+    """
     fresh_generation = destination.admits_bulk_pragmas and archive_empty
+    can_defer_indexes = fresh_generation and destination.admits_reader_visible_schema_changes
+    if defer_secondary_indexes is True and not can_defer_indexes:
+        raise ValueError("secondary index deferral requires an empty owned inactive generation")
+    should_defer_indexes = can_defer_indexes if defer_secondary_indexes is None else defer_secondary_indexes
     return BatchShape(
         mode=IngestMode.COLD_BACKLOG,
         max_files=COLD_BACKLOG_MAX_FILES,
         max_bytes=COLD_BACKLOG_MAX_BYTES,
         bulk_pragmas=destination.admits_bulk_pragmas,
         archive_wide_derivations=at_admitted_input_boundary,
-        defer_secondary_indexes=fresh_generation and destination.admits_reader_visible_schema_changes,
+        defer_secondary_indexes=should_defer_indexes,
         fresh_build=fresh_generation,
     )
