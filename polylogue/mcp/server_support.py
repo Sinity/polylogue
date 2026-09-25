@@ -443,12 +443,15 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       (#1611).
     * Any :class:`PolylogueError` subclass → ``code="polylogue_error"`` with
       ``detail`` set to the exception class name.
+    * :class:`ArchiveWriterOwnershipError` → its typed refusal code and safe
+      resident-writer identity, so callers can route the write correctly.
     * Any other :class:`Exception` → ``code="internal_error"`` with ``detail``
       set to the exception class name only. The raw exception message is
       deliberately not included so the surface cannot leak credentials, file
       paths, or other internal state.
     """
     from polylogue.archive.query.expression import ExpressionCompileError
+    from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
 
     if isinstance(exc, QuerySpecError | ExpressionCompileError):
         field = exc.field
@@ -507,6 +510,14 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             detail=type(exc).__name__,
             tool=fn_name,
             readiness_status=exc.readiness_status,
+        )
+    elif isinstance(exc, ArchiveWriterOwnershipError):
+        payload = MCPErrorPayload(
+            message=f"{fn_name}: {exc.resident_writer or exc.code}",
+            code=exc.code,
+            error=exc.code,
+            detail=type(exc).__name__,
+            tool=fn_name,
         )
     elif isinstance(exc, PolylogueError):
         payload = MCPErrorPayload(

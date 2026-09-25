@@ -2270,7 +2270,6 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 AnnotationBatchImportError,
                 AnnotationBatchImportRequest,
             )
-            from polylogue.annotations.importer import import_annotation_batch as run_annotation_batch_import
 
             required = (
                 "jsonl",
@@ -2310,7 +2309,9 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                     prompt_ref=str(values["prompt_ref"]),
                     metadata=metadata if isinstance(metadata, dict) else {},
                 )
-                import_result = await run_annotation_batch_import(poly, request)
+                # The facade checks archive writer ownership before the
+                # importer initializes or opens the durable user tier.
+                import_result = await poly.import_annotation_batch(request)
             except (AnnotationBatchImportError, ValueError) as exc:
                 return hooks.error_json(str(exc), code="invalid_annotation_batch")
             return hooks.json_payload(import_result)
