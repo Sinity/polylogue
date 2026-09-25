@@ -73,13 +73,15 @@ provider (`docs/provider-origin-identity.md:15-30`;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
   write choke point (`polylogue/storage/sqlite/archive_tiers/write.py:1108`).
-- Batch ingest keeps source membership and precedence checks read-only: the
-  batch opens one read-only `source.db` handle for `raw_session_memberships`
-  reads, while index publication and the later blob-publication receipt
-  consumption each open their own archive-root-bound write connection
-  (`polylogue/pipeline/services/ingest_batch/_core.py:2928-2943`;
+- Batch ingest keeps source membership and precedence checks read-only:
+  `_core.py` opens one read-only `source.db` handle per batch, and
+  `revision_authority_refuses_write` reads `raw_session_memberships` through
+  it, while index publication and later blob-publication receipt consumption
+  each open their own archive-root-bound write connection
+  (`polylogue/pipeline/services/ingest_batch/_core.py:2956-2971`;
+  `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
   `polylogue/pipeline/services/ingest_batch/_core.py:202-212`;
-  `polylogue/pipeline/services/ingest_batch/_core.py:3051-3067`).
+  `polylogue/pipeline/services/ingest_batch/_core.py:3080-3095`).
 
 ## Gotchas
 
