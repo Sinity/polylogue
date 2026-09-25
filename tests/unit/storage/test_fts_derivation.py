@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+import tracemalloc
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -168,6 +171,48 @@ def test_frame_drift_rejects_prepared_partition_before_any_fts_write(
     assert adapter.publish(frame, replacement) is False
     assert adapter.input_for(test_conn, session_id) != replacement.payload
     assert adapter.inspect_partition(test_conn, session_id).status is FtsKeyStatus.VALID
+
+
+def test_large_partition_binding_streams_text_and_revalidates_changes(
+    test_conn: sqlite3.Connection, test_db: Path
+) -> None:
+    """Retaining all text makes the measured Python peak exceed the bound."""
+    session_id, _ = _seed_session(test_conn, "large-binding")
+    message_id = test_conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+    for position in range(1, 65):
+        test_conn.execute(
+            "INSERT INTO blocks(message_id, session_id, position, block_type, text, content_hash) "
+            "VALUES (?, ?, ?, 'text', ?, ?)",
+            (message_id, session_id, position, f"{position}:" + "x" * 65536, b"a" * 32),
+        )
+    test_conn.commit()
+    adapter = _adapter(test_db)
+
+    tracemalloc.start()
+    try:
+        binding = adapter.input_for(test_conn, session_id)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert binding.row_count == 65
+    assert peak < 2 * 1024 * 1024
+    rows = test_conn.execute(
+        "SELECT rowid, block_id, message_id, session_id, block_type, search_text, content_hash "
+        "FROM blocks WHERE session_id = ? AND search_text != '' ORDER BY rowid",
+        (session_id,),
+    )
+    expected_digest = hashlib.sha256(
+        json.dumps(
+            [[*row[:6], bytes(row[6]).hex()] for row in rows],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    assert binding.digest == expected_digest
+    test_conn.execute("UPDATE blocks SET text = 'changed' WHERE session_id = ? AND position = 64", (session_id,))
+    test_conn.commit()
+    assert adapter.publish_partition(test_conn, binding) is False
 
 
 def test_required_discovery_is_keyset_bounded_and_resumes(test_conn: sqlite3.Connection, test_db: Path) -> None:
