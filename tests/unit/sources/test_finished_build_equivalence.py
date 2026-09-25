@@ -173,6 +173,19 @@ def test_replay_prefetch_counts_are_separate_from_stage_durations(tmp_path: Path
     }
 
 
+def test_replay_enrichment_counts_are_request_local() -> None:
+    @revision_backfill._capture_replay_enrichment_degradations
+    def replay_probe() -> revision_backfill.RevisionBackfillResult:
+        revision_backfill._count_enrichment_degradation("probe")
+        return revision_backfill.RevisionBackfillResult(0, 0, 0, 0, 0, 0)
+
+    first = replay_probe()
+    second = replay_probe()
+
+    assert first.stage_counts == {"replay_enrichment_degraded.probe": 1}
+    assert second.stage_counts == {"replay_enrichment_degraded.probe": 1}
+
+
 def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Arm) -> _ArmRun:
     """Complete one production arm over an isolated clone of the sealed input."""
     archive_root = clone_sealed_arm(template, destination, sealed)

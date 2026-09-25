@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import os
 import pickle
@@ -16,6 +17,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import wraps
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
@@ -736,6 +738,31 @@ class RevisionBackfillResult:
 #: writer the bottleneck?" without guessing at every current and future
 #: writer-stage key name.
 _PARSE_STAGE_TIMING_KEYS: Final[frozenset[str]] = frozenset({"census", "spill_load"})
+
+
+_REPLAY_ENRICHMENT_DEGRADATIONS: contextvars.ContextVar[Counter[str] | None] = contextvars.ContextVar(
+    "replay_enrichment_degradations", default=None
+)
+_REPLAY_ENRICHMENT_DEGRADATIONS_LOCK = threading.Lock()
+
+
+def _capture_replay_enrichment_degradations(function: Callable[..., RevisionBackfillResult]):
+    """Give one historical backfill and its workers a private degradation ledger."""
+
+    @wraps(function)
+    def wrapped(*args: object, **kwargs: object) -> RevisionBackfillResult:
+        counts: Counter[str] = Counter()
+        token = _REPLAY_ENRICHMENT_DEGRADATIONS.set(counts)
+        try:
+            result = function(*args, **kwargs)
+            result.stage_counts.update(
+                {f"replay_enrichment_degraded.{reason}": count for reason, count in counts.items()}
+            )
+            return result
+        finally:
+            _REPLAY_ENRICHMENT_DEGRADATIONS.reset(token)
+
+    return wrapped
 
 
 def split_parse_and_apply_seconds(stage_timings_s: dict[str, float]) -> tuple[float, float]:
@@ -2536,6 +2563,7 @@ def _owned_generation_is_empty(archive_root: Path, *, generation: tuple[str, str
         return probe._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is None
 
 
+@_capture_replay_enrichment_degradations
 def backfill_historical_revision_evidence(
     archive_root: Path,
     *,
@@ -2648,10 +2676,6 @@ def backfill_historical_revision_evidence(
     retaining every other fresh-build optimization. ``True`` is rejected by
     policy unless the generation is empty and exclusively owned.
     """
-    # The legacy diagnostic counter is process-local, so start every
-    # backfill with an empty snapshot. Its values are returned separately
-    # below and never mixed into the duration ledger.
-    reset_replay_enrichment_degradations()
     if use_session_shards and owned_inactive_generation is None:
         raise ValueError("sealed replay shards require an owned inactive generation")
     if use_session_shards and (replay_commit_batch_size or commit_batch_size or 0) > 1:
@@ -3223,12 +3247,6 @@ def backfill_historical_revision_evidence(
             if decode_prefetcher is not None:
                 stage_timings.update(decode_prefetcher.close())
                 stage_counts.update(decode_prefetcher.counts())
-        stage_counts.update(
-            {
-                f"replay_enrichment_degraded.{reason}": count
-                for reason, count in replay_enrichment_degradations().items()
-            }
-        )
         if replay_batched:
             archive.commit()
         if fresh_build:
@@ -3892,24 +3910,28 @@ def _normalize_retained_parse_sessions(
 #: parsed-content heuristic. Replay determinism is then auditable: a nonzero
 #: count means some raw's title/assembly came from content, not durable
 #: evidence, and the receipt says so.
-_ENRICHMENT_DEGRADATIONS: Counter[str] = Counter()
-_ENRICHMENT_DEGRADATIONS_LOCK = threading.Lock()
-
-
 def _count_enrichment_degradation(reason: str) -> None:
-    with _ENRICHMENT_DEGRADATIONS_LOCK:
-        _ENRICHMENT_DEGRADATIONS[reason] += 1
+    counts = _REPLAY_ENRICHMENT_DEGRADATIONS.get()
+    if counts is None:
+        return
+    with _REPLAY_ENRICHMENT_DEGRADATIONS_LOCK:
+        counts[reason] += 1
 
 
 def replay_enrichment_degradations() -> dict[str, int]:
     """Snapshot the counted enrichment degradations (test/receipt surface)."""
-    with _ENRICHMENT_DEGRADATIONS_LOCK:
-        return dict(_ENRICHMENT_DEGRADATIONS)
+    counts = _REPLAY_ENRICHMENT_DEGRADATIONS.get()
+    if counts is None:
+        return {}
+    with _REPLAY_ENRICHMENT_DEGRADATIONS_LOCK:
+        return dict(counts)
 
 
 def reset_replay_enrichment_degradations() -> None:
-    with _ENRICHMENT_DEGRADATIONS_LOCK:
-        _ENRICHMENT_DEGRADATIONS.clear()
+    counts = _REPLAY_ENRICHMENT_DEGRADATIONS.get()
+    if counts is not None:
+        with _REPLAY_ENRICHMENT_DEGRADATIONS_LOCK:
+            counts.clear()
 
 
 def _replay_enrichment_reads_index(provider: Provider) -> bool:
@@ -4433,9 +4455,10 @@ class _ReplaySpillPrefetcher:
             return
         keys = tuple(ordered_keys)
         members_snapshot = {key: frozenset(raw_ids) for key, raw_ids in extra_members.items()}
+        worker_context = contextvars.copy_context()
         worker = threading.Thread(
-            target=self._run,
-            args=(generation, keys, members_snapshot),
+            target=worker_context.run,
+            args=(self._run, generation, keys, members_snapshot),
             name="replay-spill-prefetch",
             daemon=True,
         )

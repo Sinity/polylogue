@@ -39,6 +39,8 @@ _CREATE_VIRTUAL_TABLE = re.compile(
 _NON_COMPARABLE_TABLES: dict[str, str] = {
     "ingest_index_incarnation": "physical index-file identity; each isolated candidate has its own inode/incarnation",
     "messages_fts_identity": "FTS support relation compared through public search and exact membership counts",
+    "ingest_index_incarnation": "physical SQLite file identity; the compared outputs live in separate cloned files",
+    "ingest_marker_witnesses": "live-ingest idempotency receipts are route history, not finished-build output",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
     "raw_revision_applications": "attempt receipts contain generated decision ids and wall-clock timestamps",
     "schema_identity": "stores a hash of the DDL identity itself, not derived model data",
@@ -70,6 +72,7 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_latency_profiles": frozenset({"materialized_at"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_model_usage": frozenset(),
+    "session_summary_bindings": frozenset(),
     "session_profiles": frozenset({"materialized_at"}),
     "session_provider_usage_events": frozenset(),
     "session_refs": frozenset(),
