@@ -2003,6 +2003,8 @@ def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
     user_db = cli_workspace["archive_root"] / "user.db"
     _create_user_at_previous_slot(user_db)
     manifest = _run_verified_backup_cli(cli_runner, tmp_path / "backup", profile="diagnostics_bundle")
+    with sqlite3.connect(user_db) as conn:
+        status_before = next(row for row in conn.execute("PRAGMA table_info(assertions)") if row[1] == "status")
 
     result = cli_runner.invoke(
         cli,
@@ -2027,7 +2029,7 @@ def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
     with sqlite3.connect(user_db) as conn:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
         status = next(row for row in conn.execute("PRAGMA table_info(assertions)") if row[1] == "status")
-        assert status[3] == 0, "the refused migration must leave assertions.status nullable"
+        assert status == status_before, "the refused migration must leave assertions.status unchanged"
 
 
 def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliRunner) -> None:
