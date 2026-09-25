@@ -1024,7 +1024,7 @@
   },
   "measurement_digest": "05f1933a690275b8ba9de931d3145d09335b026d69c9059966c707f2544f4973",
   "name": "finished-build-sealed-516-raw",
-  "reason": "Re-ran the identical sealed 516-raw (210554832-byte) inactive-generation sealed-shard production backfill at this worker head: 516/516 admitted and completed, zero refusal/defer/failure/skip, zero debt, FTS parity; elapsed 21.69s, peak RSS 1837.9 MiB, writer apply 13.85s. Prior committed receipt on this route was 21.38s; the earlier pre-optimization baseline was 46.66s. This is one arm and does not rank transports.",
+  "reason": "Re-ran the sealed 516-raw (210554832-byte) inactive-generation sealed-shard production backfill at this worker head: 516/516 admitted and completed, zero refusal/defer/failure/skip, zero debt, FTS parity; elapsed 21.69s, peak RSS 1837.9 MiB, writer apply 13.85s. Prior committed timings were 21.38s and 46.66s. The canonical digest and schema identity differ from the immediately preceding receipt, so this records completion and timing only; it does not assert cross-candidate logical equality or attribute the change to one optimization.",
   "supersedes": {
     "measurement_digest": "7196f5516afa0971d96ae243fcfa87de5f2220234976a777b79969700bab5af3",
     "reason": "Current candidate finished-build observation on the identical sealed 516-raw input: 21.38s versus 46.66s baseline, 1,842 MiB peak RSS versus 1,823 MiB; all 516 raws completed, FTS parity and zero debt. Candidate schema identity and logical digest differ from the older baseline, so compare throughput only across those candidate versions."
