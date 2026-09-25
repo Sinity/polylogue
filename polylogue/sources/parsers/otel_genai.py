@@ -77,6 +77,14 @@ def _token_count(value: object) -> int | None:
     return count if count >= 0 else None
 
 
+def _usage_counts(attrs: dict[str, object]) -> tuple[int | None, int | None, int | None]:
+    return (
+        _token_count(attrs.get("gen_ai.usage.input_tokens")),
+        _token_count(attrs.get("gen_ai.usage.output_tokens")),
+        _token_count(attrs.get("gen_ai.usage.cache_read.input_tokens")),
+    )
+
+
 def _messages(value: object) -> tuple[list[dict[str, object]], str]:
     """Decode a GenAI messages attribute and expose its source state."""
     if value is None:
@@ -203,12 +211,15 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
     parent_span_id = optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id"))
     parent = f"{trace_id}:{parent_span_id}:output:0" if parent_span_id else None
     messages: list[ParsedMessage] = []
+    usage = _usage_counts(attrs)
+    usage_attached = False
     for field, direction, default_role in (
         ("gen_ai.input.messages", "input", Role.USER),
         ("gen_ai.output.messages", "output", Role.ASSISTANT),
     ):
         for index, raw_message in enumerate(_messages(attrs.get(field))[0]):
             role = _role(raw_message.get("role"), default_role)
+            carries_usage = direction == "output" and role is Role.ASSISTANT and not usage_attached
             messages.append(
                 ParsedMessage(
                     provider_message_id=f"{trace_id}:{span_id}:{direction}:{index}",
@@ -218,17 +229,13 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
                     occurred_at_ms=occurred_at_ms,
                     material_origin=_material_origin(role),
                     parent_message_provider_id=parent,
-                    input_tokens=_token_count(attrs.get("gen_ai.usage.input_tokens"))
-                    if role is Role.ASSISTANT
-                    else None,
-                    output_tokens=_token_count(attrs.get("gen_ai.usage.output_tokens"))
-                    if role is Role.ASSISTANT
-                    else None,
-                    cache_read_tokens=_token_count(attrs.get("gen_ai.usage.cache_read.input_tokens"))
-                    if role is Role.ASSISTANT
-                    else None,
+                    input_tokens=usage[0] if carries_usage else None,
+                    output_tokens=usage[1] if carries_usage else None,
+                    cache_read_tokens=usage[2] if carries_usage else None,
                 )
             )
+            if carries_usage:
+                usage_attached = True
     if optional_string(attrs.get("gen_ai.operation.name")) != "execute_tool" and "gen_ai.tool.name" not in attrs:
         return messages
     tool_id = optional_string(attrs.get("gen_ai.tool.call.id")) or span_id
@@ -283,13 +290,40 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
 def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
     """Normalize OTLP GenAI spans into resource/conversation or trace sessions."""
     del fallback_id  # stable source coordinates, never an import filename
-    groups: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = defaultdict(list)
-    for resource_id, span, schema_url in _iter_spans(_mapping(payload)):
-        attrs = _attributes(span.get("attributes"))
+    spans = list(_iter_spans(_mapping(payload)))
+    span_details: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
+    for resource_id, span, _schema_url in spans:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
-        if trace_id is None:
+        span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
+        if trace_id and span_id:
+            attrs = _attributes(span.get("attributes"))
+            span_details[(resource_id, trace_id, span_id)] = (
+                optional_string(attrs.get("gen_ai.conversation.id")),
+                optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id")),
+            )
+
+    def conversation_for(resource_id: str, trace_id: str, span_id: str) -> str | None:
+        seen: set[str] = set()
+        while span_id not in seen:
+            seen.add(span_id)
+            details = span_details.get((resource_id, trace_id, span_id))
+            if details is None:
+                break
+            conversation_id, parent_id = details
+            if conversation_id:
+                return conversation_id
+            if parent_id is None:
+                break
+            span_id = parent_id
+        return None
+
+    groups: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = defaultdict(list)
+    for resource_id, span, schema_url in spans:
+        trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
+        span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
+        if trace_id is None or span_id is None:
             continue
-        conversation_id = optional_string(attrs.get("gen_ai.conversation.id"))
+        conversation_id = conversation_for(resource_id, trace_id, span_id)
         kind, identity = ("conversation", conversation_id) if conversation_id else ("trace", trace_id)
         groups[(resource_id, kind, identity)].append((span, schema_url))
 
@@ -334,11 +368,39 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
             )
             if schema_url not in (None, SEMCONV_SCHEMA_URL):
                 continue
-            messages.extend(_messages_for_span(span, attrs, trace_id))
+            span_messages = _messages_for_span(span, attrs, trace_id)
+            messages.extend(span_messages)
             model = optional_string(attrs.get("gen_ai.request.model"))
             if model:
                 models.add(model)
-        if messages:
+            usage = _usage_counts(attrs)
+            if (
+                optional_string(attrs.get("gen_ai.operation.name")) == "chat"
+                and any(count is not None for count in usage)
+                and not any(
+                    message.input_tokens is not None
+                    or message.output_tokens is not None
+                    or message.cache_read_tokens is not None
+                    for message in span_messages
+                )
+            ):
+                events.append(
+                    ParsedSessionEvent(
+                        event_type="message_usage",
+                        timestamp=timestamp,
+                        payload={
+                            "last_token_usage": {
+                                key: count
+                                for key, count in zip(
+                                    ("input_tokens", "output_tokens", "cached_input_tokens"), usage, strict=True
+                                )
+                                if count is not None
+                            },
+                            "model": model,
+                        },
+                    )
+                )
+        if events:
             sessions.append(
                 ParsedSession(
                     source_name=Provider.OTEL_GENAI,

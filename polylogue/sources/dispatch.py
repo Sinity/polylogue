@@ -1809,9 +1809,8 @@ def require_positive_conversational_evidence(
     provider: str | Provider,
     source_path: str | None,
 ) -> list[ParsedSession]:
-    """polylogue-9ykn: a session requires positive evidence of a conversation
-    -- at minimum one message carrying authored content -- or it is refused
-    loudly rather than written.
+    """polylogue-9ykn: a session requires authored content or, for OTel GenAI,
+    retained span evidence. Other empty sessions are refused before writing.
 
     Deliberately NOT folded into ``parse_payload``/``parse_stream_payload``
     themselves: those two functions are pure provider-routing dispatch, and
@@ -1865,6 +1864,11 @@ def require_positive_conversational_evidence(
     kept: list[ParsedSession] = []
     for session in sessions:
         if any(message_carries_authored_content(message) for message in session.messages):
+            kept.append(session)
+            continue
+        if session.source_name is Provider.OTEL_GENAI and any(
+            event.event_type == "otel_span_evidence" for event in session.session_events
+        ):
             kept.append(session)
             continue
         logger.warning(
