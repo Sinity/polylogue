@@ -189,7 +189,8 @@ def test_conflicting_span_chooses_one_copy_before_conversation_grouping() -> Non
     assert len(forward[0].messages) == 6
     conflicts = [event for event in forward[0].session_events if event.event_type == "otel_conflicting_span_id"]
     assert len(conflicts) == 1
-    assert conflicts[0].payload["conflicting_span"]["startTimeUnixNano"] == "1735689609000000000"
+    conflicting_span = cast(dict[str, object], conflicts[0].payload["conflicting_span"])
+    assert conflicting_span["startTimeUnixNano"] == "1735689609000000000"
 
 
 def test_supported_schema_wins_conflicting_unsupported_copy() -> None:

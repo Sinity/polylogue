@@ -361,11 +361,11 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         if trace_id is None or span_id is None:
             continue
         conversation_id = conversation_for(resource_id, trace_id, span_id)
-        kind, identity = ("conversation", conversation_id) if conversation_id else ("trace", trace_id)
-        groups[(resource_id, kind, identity)].append((span, schema_url))
+        kind, group_identity = ("conversation", conversation_id) if conversation_id else ("trace", trace_id)
+        groups[(resource_id, kind, group_identity)].append((span, schema_url))
 
     sessions: list[ParsedSession] = []
-    for (resource_id, kind, identity), scoped_spans in sorted(groups.items()):
+    for (resource_id, kind, group_identity), scoped_spans in sorted(groups.items()):
         messages: list[ParsedMessage] = []
         events: list[ParsedSessionEvent] = []
         models: set[str] = set()
@@ -456,8 +456,8 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
             sessions.append(
                 ParsedSession(
                     source_name=Provider.OTEL_GENAI,
-                    provider_session_id=f"{resource_id}:{kind}:{identity}",
-                    title=f"OpenTelemetry GenAI {identity}",
+                    provider_session_id=f"{resource_id}:{kind}:{group_identity}",
+                    title=f"OpenTelemetry GenAI {group_identity}",
                     messages=messages,
                     session_events=events,
                     models_used=sorted(models),
