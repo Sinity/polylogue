@@ -513,6 +513,7 @@ def test_required_catalog_surfaces_are_reachable_in_an_explicit_tier_run() -> No
 
     explicit_tiers, error = verify_slos._resolve_active_tiers(tier=None, include_lab=True, all_tiers=False)
     assert error is None
+    assert explicit_tiers is not None
     unreachable = [
         name for name, config in required.items() if config.get("tier", verify_slos.DEFAULT_TIER) not in explicit_tiers
     ]
