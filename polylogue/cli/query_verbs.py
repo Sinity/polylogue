@@ -911,12 +911,7 @@ _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ),
     ("Delivery and format", frozenset({"destination", "output_format", "out_path", "fields"})),
     ("Cardinality and pagination", frozenset({"all_matches", "first_only", "limit", "offset"})),
-    (
-        "Context-image projection",
-        frozenset({"max_sessions", "no_redact"}),
-    ),
-    ("Context and neighbor views", frozenset({"related_limit", "window_hours"})),
-    ("Correlation view", frozenset({"repo_path", "since_hours", "confidence_threshold", "github_api"})),
+    ("View options", read_view_option_names() - READ_VIEW_GLOBAL_OPTION_NAMES),
 )
 
 
@@ -939,11 +934,20 @@ class _ReadCommand(click.Command):
         for definition in declared_read_view_options():
             if definition.name in names:
                 raise RuntimeError(f"read option {definition.name!r} is declared and also hand-bound")
+            option_type = (
+                click.IntRange(definition.minimum, definition.maximum)
+                if definition.value_type == "bounded-integer"
+                else None
+                if definition.value_type == "boolean"
+                else types[definition.value_type]
+            )
             params.append(
                 click.Option(
                     (*definition.flags, definition.name),
-                    type=types[definition.value_type],
+                    type=option_type,
+                    is_flag=definition.value_type == "boolean",
                     default=definition.default,
+                    show_default=definition.show_default,
                     help=definition.help,
                 )
             )
@@ -1123,55 +1127,8 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
 )
 @click.option("--out", "out_path", type=click.Path(), default=None, help="File path for --to file.")
 @click.option("--all", "all_matches", is_flag=True, help="Read all matched sessions.")
-@click.option("--full", "full", is_flag=True, help="Read a full single-session body for views that paginate.")
 @click.option("--limit", "-l", "-n", type=int, default=None, help="Max items to return.")
 @click.option("--offset", type=int, default=0, help="Pagination offset.")
-@click.option("--at-position", type=int, default=None, help="Message position for --view effective_context.")
-@click.option(
-    "--window-hours",
-    type=int,
-    default=24,
-    show_default=True,
-    help="Neighboring time window around the seed session (--view neighbors).",
-)
-@click.option(
-    "--repo-path",
-    default=None,
-    help="Git repository path for correlation (--view correlation). Defaults to the session's repo/cwd.",
-)
-@click.option(
-    "--since-hours",
-    type=int,
-    default=2,
-    show_default=True,
-    help="Hours before/after the session to scan for commits (--view correlation).",
-)
-@click.option(
-    "--confidence-threshold",
-    type=float,
-    default=0.3,
-    show_default=True,
-    help="Minimum confidence for file-overlap commit detection (--view correlation).",
-)
-@click.option(
-    "--github-api/--no-github-api",
-    default=True,
-    help="Cross-reference issue/PR refs with the GitHub API via gh CLI (--view correlation).",
-)
-@click.option(
-    "--related-limit",
-    type=int,
-    default=5,
-    show_default=True,
-    help="Number of related sessions to include (--view context).",
-)
-@click.option(
-    "--max-sessions",
-    type=click.IntRange(1, 20),
-    default=5,
-    show_default=True,
-    help="Max sessions, 1-20 (--view context-image).",
-)
 @click.option(
     "--max-tokens",
     type=int,
@@ -1184,36 +1141,10 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
     default=False,
     help="Include context-inject assertion claims in the compiled context image.",
 )
-@click.option("--no-redact", is_flag=True, default=False, help="Do not redact filesystem paths (--view context-image).")
 @click.option("--fields", help="Fields for JSON/YAML outputs (--all).")
 @click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles, formats, and options.")
 @click.option("--spec", "show_spec", is_flag=True, help="Print the composed selection/projection/render spec as JSON.")
 @click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
-@click.option("--node-offset", type=int, default=0, help="Lineage node-page offset (--view lineage).")
-@click.option(
-    "--node-limit",
-    type=int,
-    default=DEFAULT_LINEAGE_PAGE_LIMIT,
-    show_default=True,
-    help="Lineage node-page size (--view lineage).",
-)
-@click.option("--edge-offset", type=int, default=0, help="Lineage edge-page offset (--view lineage).")
-@click.option(
-    "--edge-limit",
-    type=int,
-    default=DEFAULT_LINEAGE_PAGE_LIMIT,
-    show_default=True,
-    help="Lineage edge-page size (--view lineage).",
-)
-@click.option(
-    "--continuation",
-    "continuation",
-    default=None,
-    help=(
-        "Resume a transcript window from a snapshot-bound continuation token (--view messages). "
-        "Supersedes --limit/--offset; a write landing since the token was issued is refused as stale."
-    ),
-)
 @click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
