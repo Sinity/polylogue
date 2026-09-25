@@ -10,9 +10,13 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from dataclasses import dataclass
+from multiprocessing import get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -28,6 +32,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
 )
+from polylogue.pipeline.services.process_pool import terminate_process_pool
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
@@ -40,7 +45,7 @@ from polylogue.storage.raw_authority import (
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
-    from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.sources.revision_backfill import PreparedRetainedInput, RawParsePrefetchCache
 
 RAW_OBSERVATION_DOMAIN = "raw_observation"
 
@@ -86,8 +91,11 @@ class RawObservationScope:
 class RawObservationReplacement:
     key: str
     input_binding: str
-    payload: RawParsePrefetchCache
+    payload: RawParsePrefetchCache | None
     raw_ids: tuple[str, ...]
+    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None
+    scratch_directory: Path | None = None
+    scratch_owner: tempfile.TemporaryDirectory[str] | None = None
     empty: bool = False
     already_valid: bool = False
 
@@ -444,7 +452,13 @@ class RawObservationDerivation:
     def compute(self, frame: RawFrame, key: str) -> RawObservationReplacement:
         from polylogue.operations.operation_context import open_operation_read
         from polylogue.sources.dispatch import is_stream_record_provider
-        from polylogue.sources.revision_backfill import RawParsePrefetchCache, parse_retained_raw_sessions
+        from polylogue.sources.revision_backfill import (
+            PreparedRetainedInput,
+            RawParsePrefetchCache,
+            RetainedPreparationRetryableError,
+            parse_retained_raw_sessions,
+            prepare_retained_jsonl_carrier,
+        )
 
         # One component replay settles every member. The kernel classified the
         # page before it began publishing, so a sibling can still arrive here
@@ -474,6 +488,73 @@ class RawObservationDerivation:
                     provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
                     if not is_stream_record_provider(source_path, str(provider)):
                         raise ValueError("oversized raw observation component is not entirely stream-safe")
+            descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+            process_prepared = all(
+                is_stream_record_provider(path, str(provider)) and provider.value in {"codex", "claude-code"}
+                for provider, _blob_hash, path, _kind, _size in descriptors.values()
+            )
+            if process_prepared:
+                scratch_owner = tempfile.TemporaryDirectory(
+                    prefix=".raw-prepared-", dir=Path(frame.source_revision).resolve().parent
+                )
+                scratch = Path(scratch_owner.name)
+                prepared: dict[str, PreparedRetainedInput] = {}
+                try:
+                    with ProcessPoolExecutor(max_workers=1, mp_context=get_context("spawn")) as pool:
+                        for raw_id in raw_ids:
+                            provider, blob_hash, path, kind, size = descriptors[raw_id]
+                            if not BlobStore(self.archive_root / "blob").verify(blob_hash):
+                                raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
+                            native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
+                            try:
+                                carrier, parser_error = pool.submit(
+                                    prepare_retained_jsonl_carrier,
+                                    raw_id,
+                                    provider.value,
+                                    blob_hash,
+                                    path,
+                                    kind.value,
+                                    native_id,
+                                    str(self.archive_root / "blob"),
+                                    str(self.archive_root / "source.db"),
+                                    str(scratch),
+                                ).result(timeout=600)
+                            except TimeoutError as exc:
+                                terminate_process_pool(pool)
+                                raise RetainedPreparationRetryableError(
+                                    f"retained JSONL preparation timed out for raw {raw_id}"
+                                ) from exc
+                            except BrokenProcessPool as exc:
+                                raise RetainedPreparationRetryableError(
+                                    f"retained JSONL worker exited before preparing raw {raw_id}"
+                                ) from exc
+                            if not BlobStore(self.archive_root / "blob").verify(blob_hash):
+                                raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
+                            prepared[raw_id] = PreparedRetainedInput(
+                                raw_id,
+                                provider,
+                                blob_hash,
+                                path,
+                                kind,
+                                size,
+                                native_id,
+                                self.recipe_version,
+                                archive.raw_revision_file_mtime(raw_id),
+                                Path(carrier) if carrier is not None else None,
+                                parser_error,
+                            )
+                except BaseException:
+                    scratch_owner.cleanup()
+                    raise
+                return RawObservationReplacement(
+                    key,
+                    binding,
+                    None,
+                    raw_ids,
+                    prepared_inputs=prepared,
+                    scratch_directory=scratch,
+                    scratch_owner=scratch_owner,
+                )
             cache = RawParsePrefetchCache(max_inflight_bytes=self.max_payload_bytes)
             empty = True
             for raw_id in raw_ids:
@@ -484,7 +565,7 @@ class RawObservationDerivation:
                 empty = empty and not sessions
                 if not cache.try_admit(raw_id, sessions, payload_bytes=size, revision_kind=kind):
                     raise ValueError("raw observation parse preparation exceeds its payload budget")
-        return RawObservationReplacement(key, binding, cache, raw_ids, empty)
+        return RawObservationReplacement(key, binding, cache, raw_ids, empty=empty)
 
     def publish(self, frame: RawFrame, replacement: RawObservationReplacement) -> bool:
         from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
@@ -495,8 +576,8 @@ class RawObservationDerivation:
             return self._current(frame) and self.inspect(frame, (replacement.key,)).get(replacement.key) == "valid"
 
         lease = ActiveWriterLease(self.archive_root)
-        lease.acquire()
         try:
+            lease.acquire()
             if not self._current(frame) or self._binding(replacement.raw_ids) != replacement.input_binding:
                 return False
             refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
@@ -520,8 +601,13 @@ class RawObservationDerivation:
                 selected_raw_ids=list(replacement.raw_ids),
                 max_payload_bytes=self.max_payload_bytes,
                 prefetch_cache=replacement.payload,
+                prepared_inputs=replacement.prepared_inputs,
                 pipeline_decode=False,
             )
             return True
         finally:
-            lease.close()
+            try:
+                lease.close()
+            finally:
+                if replacement.scratch_owner is not None:
+                    replacement.scratch_owner.cleanup()

@@ -4423,7 +4423,7 @@ def test_pipelined_decode_matches_serial_archive_state(
     assert serial_result == pipelined_result
     assert _index_content_manifest(serial_root) == _index_content_manifest(pipelined_root)
 
-    assert pipelined_result.stage_timings_s.get("spill_prefetch.consumed", 0.0) > 0
+    assert pipelined_result.stage_counts.get("spill_prefetch.consumed", 0) > 0
     assert "spill_prefetch.hits" not in serial_result.stage_timings_s
     assert "spill_prefetch.consumed" not in serial_result.stage_timings_s
 
@@ -4902,7 +4902,7 @@ def test_owned_generation_prefetch_never_waits_out_the_index_busy_timeout(
     assert timings.get("spill_prefetch.decode_concurrent", 0.0) < 5.0, timings
     assert result.replayed_logical_sources == revision_backfill._PIPELINE_DECODE_MIN_COHORTS
     # AUTO engaged: this route is exactly the cohort count the default needs.
-    assert timings.get("spill_prefetch.consumed", 0.0) > 0
+    assert result.stage_counts.get("spill_prefetch.consumed", 0) > 0
 
 
 def test_owned_generation_pipelined_decode_matches_serial_archive_state(
@@ -4948,7 +4948,7 @@ def test_owned_generation_pipelined_decode_matches_serial_archive_state(
     serial_result, pipelined_result = results
     assert serial_result == pipelined_result
     assert manifests[0] == manifests[1]
-    assert pipelined_result.stage_timings_s.get("spill_prefetch.consumed", 0.0) > 0
+    assert pipelined_result.stage_counts.get("spill_prefetch.consumed", 0) > 0
     assert "spill_prefetch.consumed" not in serial_result.stage_timings_s
 
 
