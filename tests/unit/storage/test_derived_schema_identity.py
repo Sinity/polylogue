@@ -140,7 +140,7 @@ def test_performance_only_closure_edit_moves_combined_identity_but_not_row_ids(
     origin_specs._semantic_source_closure.cache_clear()
     origin_specs._local_import_paths.cache_clear()
     origin_specs._fingerprint_sources_cached.cache_clear()
-    origin_specs._SOURCE_DIGESTS.clear()
+    origin_specs._invalidate_source_signatures()
 
     original_ids = _load_ids_source(isolated_ids, "polylogue.pipeline._identity_fixture_ids_before")
     row_and_public_ids_before = _row_and_public_identities()
@@ -157,6 +157,7 @@ def test_performance_only_closure_edit_moves_combined_identity_but_not_row_ids(
     new_check = "if not source_text:"
     assert original_source.count(old_check) == 1
     isolated_ids.write_text(original_source.replace(old_check, new_check), encoding="utf-8")
+    origin_specs._invalidate_source_signatures()
 
     optimized_ids = _load_ids_source(isolated_ids, "polylogue.pipeline._identity_fixture_ids_after")
     message_identity_after = optimized_ids.message_content_identity(message)
@@ -191,7 +192,7 @@ def test_semantic_recipe_input_edit_moves_combined_identity_without_row_id_drift
     origin_specs._semantic_source_closure.cache_clear()
     origin_specs._local_import_paths.cache_clear()
     origin_specs._fingerprint_sources_cached.cache_clear()
-    origin_specs._SOURCE_DIGESTS.clear()
+    origin_specs._invalidate_source_signatures()
 
     before = derived_schema_identity(DerivedTier.INDEX)
     path = tmp_path / "index.db"
@@ -228,6 +229,7 @@ def test_semantic_recipe_input_edit_moves_combined_identity_without_row_id_drift
     source = recipe_path.read_text(encoding="utf-8")
     assert source.count("_MAX_PARSE_DEPTH = 10") == 1
     recipe_path.write_text(source.replace("_MAX_PARSE_DEPTH = 10", "_MAX_PARSE_DEPTH = 11"), encoding="utf-8")
+    origin_specs._invalidate_source_signatures()
     after = derived_schema_identity(DerivedTier.INDEX)
 
     assert after != before

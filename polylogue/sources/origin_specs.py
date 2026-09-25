@@ -23,7 +23,7 @@ import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
@@ -236,33 +236,22 @@ def _source_file_from_reference(reference: str) -> str:
     return path if separator else reference
 
 
-#: Per-process content digests, keyed by the full inode identity of the file
-#: they were read from. ``st_ctime_ns`` is the load-bearing component: it
-#: advances on every write and, unlike ``st_mtime_ns``, cannot be restored by
-#: ``os.utime``, so a same-length rewrite under a replayed mtime misses this
-#: cache and is re-read.
-_SOURCE_DIGESTS: dict[tuple[str, int, int, int, int, int], str] = {}
-
-
+@cache
 def _source_signature(path: Path) -> tuple[str, str, int]:
     """Identify one parser source by its contents, not its stat metadata.
 
-    The persistent fingerprint memo is keyed by these signatures. Keyed on
-    (path, mtime, size) it is reused by any rewrite preserving both -- a
-    same-length edit under a restored mtime, which checkout, patch
-    application, and archive extraction all produce -- and the stale parser
-    fingerprint then claims semantics the file no longer has.
-
-    Digesting the bytes is the identity; the stat-keyed cache above only
-    avoids re-reading a file whose inode has not been touched since.
+    Production source files cannot change during this process, so their
+    signatures are memoized by path. Source-mutating test harnesses and
+    developer tools must call ``_invalidate_source_signatures`` after writes.
     """
     stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_dev, stat.st_ino)
-    digest = _SOURCE_DIGESTS.get(key)
-    if digest is None:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        _SOURCE_DIGESTS[key] = digest
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return str(path), digest, stat.st_size
+
+
+def _invalidate_source_signatures() -> None:
+    """Invalidate signatures after an explicit in-process source edit."""
+    _source_signature.cache_clear()
 
 
 def _fingerprint_path_label(path: Path) -> str:
@@ -434,10 +423,9 @@ def _semantic_source_paths(
 ) -> tuple[Path, ...]:
     """Return the parser-semantic import closure of ``paths``.
 
-    Membership is walked once per process per argument set. Only the member
-    *list* is memoized: every caller re-derives :func:`_source_signature` for
-    each member on each call, so an edited source still changes its content
-    digest and the fingerprint that digest keys.
+    Membership and member signatures are memoized for the process lifetime.
+    Production source files cannot change while the process runs; source-
+    mutating tests and developer tools invalidate signatures explicitly.
 
     The memo holds a member's import graph fixed for the life of the process,
     the same assumption :func:`_local_import_paths` makes by caching edges per
@@ -497,7 +485,7 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, str, int], ...], na
 
 def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     fragments: list[dict[str, str]] = []
-    for path_string, _mtime_ns, _size in signatures:
+    for path_string, _digest, _size in signatures:
         tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
         normalized = _DocstringStripper().visit(tree)
         if (
