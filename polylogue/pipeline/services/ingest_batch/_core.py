@@ -2330,14 +2330,14 @@ def _drain_ingest_result(
             )
             return
 
+    if ensure_index_transaction is not None:
+        ensure_index_transaction()
+
     reuse_marker_carrier = (
         marker_acceptance_enabled
         and not force_write
         and _reuse_current_accepted_marker_carrier(conn, source_conn, ir, summary=summary)
     )
-
-    if ensure_index_transaction is not None:
-        ensure_index_transaction()
 
     drain_started = time.perf_counter()
     if reuse_marker_carrier:

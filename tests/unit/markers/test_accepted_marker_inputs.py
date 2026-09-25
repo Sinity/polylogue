@@ -742,7 +742,22 @@ async def test_public_marker_retry_reuses_pending_carrier_after_another_raw_publ
                 sessions=[payload],
             )
 
+        original_reuse = ingest_batch_core._reuse_current_accepted_marker_carrier
+        reuse_raw_ids: list[str] = []
+
+        def reuse_under_index_transaction(
+            index_conn: sqlite3.Connection,
+            source_conn: sqlite3.Connection | None,
+            record: IngestRecordResult,
+            *,
+            summary: _IngestBatchSummary,
+        ) -> bool:
+            assert index_conn.in_transaction, "carrier reuse must be classified under the index write transaction"
+            reuse_raw_ids.append(record.raw_id)
+            return original_reuse(index_conn, source_conn, record, summary=summary)
+
         monkeypatch.setattr(ingest_batch_core, "ingest_record", fresh_ingest)
+        monkeypatch.setattr(ingest_batch_core, "_reuse_current_accepted_marker_carrier", reuse_under_index_transaction)
         monkeypatch.setattr(
             "polylogue.config.load_polylogue_config",
             lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
@@ -791,6 +806,7 @@ async def test_public_marker_retry_reuses_pending_carrier_after_another_raw_publ
 
     assert len(parsed_objects) == 3
     assert len({id(parsed) for parsed in parsed_objects}) == 3
+    assert reuse_raw_ids == [raw_ids[0], raw_ids[1], raw_ids[0]]
     with sqlite3.connect(tmp_path / "source.db") as source:
         accepted = source.execute(
             "SELECT payload FROM accepted_marker_inputs WHERE raw_id = ?", (raw_ids[0],)
