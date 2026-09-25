@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
-from concurrent.futures import Executor, Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Executor, Future, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -362,6 +362,7 @@ class LiveParseStage:
         #: warning to show for it.
         self.shard_build_failure_count = 0
         self._path_results: dict[str, LivePathPreparation] = {}
+        self._path_futures: dict[str, Future[LivePathPreparation]] = {}
         if shard_directory is not None:
             shard_directory.mkdir(parents=True, exist_ok=True)
             # Anything already here belongs to a process that died before it
@@ -372,6 +373,7 @@ class LiveParseStage:
             for residue in shard_directory.glob("sessions-*.pickle"):
                 residue.unlink(missing_ok=True)
         worker_count = max_workers if max_workers is not None else live_watcher_parse_stage_worker_count()
+        self._max_path_pending = max(1, min(worker_count, 2))
         if use_processes:
             # The ordinary watcher route runs on the supported GIL build too.
             # A process pool is the only way for its CPU-bound parser to make
@@ -405,8 +407,17 @@ class LiveParseStage:
         """
         if self._shard_directory is None:
             return 0
-        futures: dict[Future[LivePathPreparation], str] = {}
+        for source_path, future in tuple(self._path_futures.items()):
+            if future.done():
+                self._collect_path_future(source_path, future)
         for source_path, provider, is_stream in candidates:
+            if source_path in self._path_results or source_path in self._path_futures:
+                continue
+            if len(self._path_futures) >= self._max_path_pending:
+                self._path_results[source_path] = LivePathPreparation(
+                    None, None, None, "worker preparation capacity is busy"
+                )
+                continue
             try:
                 future = self._executor.submit(
                     live_parse_path_worker,
@@ -421,28 +432,37 @@ class LiveParseStage:
                     None, None, None, f"worker submission failed: {type(exc).__name__}"[:500]
                 )
                 continue
-            futures[future] = source_path
-        for future, source_path in futures.items():
-            try:
-                result = future.result(timeout=max(self._warm_timeout_seconds, 1800.0))
-            except Exception as exc:
-                result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500])
-                if not future.done():
-                    future.add_done_callback(
-                        lambda completed: (
-                            completed.result().discard()
-                            if not completed.cancelled() and completed.exception() is None
-                            else None
-                        )
-                    )
-                    future.cancel()
-            old = self._path_results.pop(source_path, None)
-            if old is not None:
-                old.discard()
-            self._path_results[source_path] = result
+            self._path_futures[source_path] = future
+        selected_futures = {
+            self._path_futures[source_path]
+            for source_path, _provider, _is_stream in candidates
+            if source_path in self._path_futures
+        }
+        if selected_futures:
+            wait(selected_futures, timeout=self._warm_timeout_seconds)
+        for source_path, future in tuple(self._path_futures.items()):
+            if future.done():
+                self._collect_path_future(source_path, future)
         return len(candidates)
 
+    def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
+        self._path_futures.pop(source_path, None)
+        try:
+            result = future.result()
+        except Exception as exc:
+            result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500])
+        old = self._path_results.pop(source_path, None)
+        if old is not None:
+            old.discard()
+        self._path_results[source_path] = result
+
     def pop_path(self, source_path: str, *, blob_hash: str) -> LivePathPreparation | None:
+        future = self._path_futures.get(source_path)
+        if future is not None:
+            if future.done():
+                self._collect_path_future(source_path, future)
+            else:
+                return LivePathPreparation(None, None, None, "worker preparation pending")
         result = self._path_results.pop(source_path, None)
         if result is None:
             return None
@@ -560,6 +580,8 @@ class LiveParseStage:
         # removing the directory's residue; otherwise a late worker could
         # seal a shard after cleanup and leave an unattached file behind.
         self._executor.shutdown(wait=True, cancel_futures=True)
+        for source_path, future in tuple(self._path_futures.items()):
+            self._collect_path_future(source_path, future)
         self.cache.discard_all()
         for result in self._path_results.values():
             result.discard()

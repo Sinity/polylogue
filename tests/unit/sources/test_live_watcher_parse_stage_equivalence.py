@@ -303,6 +303,58 @@ async def test_path_worker_failure_retains_raw_for_retry(tmp_path: Path, monkeyp
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
+@pytest.mark.uses_real_clock("measures concurrent worker wait against the configured timeout")
+def test_path_workers_share_one_wait_and_reuse_late_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import hashlib
+    import threading
+    import time
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+    calls: list[object] = []
+
+    def delayed_worker(*args: object, **kwargs: object) -> object:
+        calls.append(object())
+        released.wait(timeout=5)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    stage = LiveParseStage(
+        max_workers=2,
+        warm_timeout_seconds=0.05,
+        shard_directory=tmp_path / "parse-shards",
+    )
+    candidates = [(str(path), Provider.CODEX, True) for path in paths]
+    try:
+        started = time.monotonic()
+        assert stage.warm_paths(candidates) == 3
+        assert time.monotonic() - started < 0.5
+        for path in paths[:2]:
+            pending = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+            assert pending is not None and pending.error == "worker preparation pending"
+        capacity = stage.pop_path(str(paths[2]), blob_hash=hashlib.sha256(paths[2].read_bytes()).hexdigest())
+        assert capacity is not None and capacity.error == "worker preparation capacity is busy"
+        released.set()
+        stage._warm_timeout_seconds = 5
+        assert stage.warm_paths(candidates[:2]) == 2
+        assert len(calls) == 2
+        for path in paths[:2]:
+            result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+            assert result is not None and result.error is None
+            result.discard()
+        assert stage.warm_paths(candidates[2:]) == 1
+        assert len(calls) == 3
+        result = stage.pop_path(str(paths[2]), blob_hash=hashlib.sha256(paths[2].read_bytes()).hexdigest())
+        assert result is not None and result.error is None
+        result.discard()
+    finally:
+        released.set()
+        stage.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_a_shard_the_writer_refuses_still_writes_the_session(tmp_path: Path) -> None:
     """A truncated shard is a miss, not a failure: the rows get built inline."""
