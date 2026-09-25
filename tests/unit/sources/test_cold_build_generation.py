@@ -86,7 +86,9 @@ def _candidate_index_names(generation: ColdBuildGeneration) -> set[str]:
 @pytest.fixture
 def cold_build(tmp_path: Path) -> Iterator[ColdBuildGeneration]:
     assert active_index_generation_is_empty(tmp_path) is True
-    generation = ColdBuildGeneration.begin(tmp_path, reason="test")
+    generation = ColdBuildGeneration.begin(
+        tmp_path, reason="test", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+    )
     register_cold_build_generation(generation)
     try:
         yield generation
@@ -248,7 +250,9 @@ def test_the_cold_build_refuses_before_it_allocates_a_generation(
     _free_space(monkeypatch, 0)
 
     with pytest.raises(InsufficientCapacityError) as refusal:
-        ColdBuildGeneration.begin(tmp_path, reason="test")
+        ColdBuildGeneration.begin(
+            tmp_path, reason="test", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+        )
 
     assert refusal.value.projection.shortfall_bytes > 0
     assert list((tmp_path / GENERATIONS_DIRNAME).glob("gen-*")) == []
@@ -269,7 +273,9 @@ def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) ->
     making the projection scale from the filesystem rather than the archive,
     makes this red.
     """
-    generation = ColdBuildGeneration.begin(tmp_path, reason="test")
+    generation = ColdBuildGeneration.begin(
+        tmp_path, reason="test", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+    )
     try:
         receipts = read_capacity_receipts(tmp_path)
         assert [receipt.operation_id for receipt in receipts] == [generation.operation_id]
@@ -364,31 +370,19 @@ def _receipt_path(archive_root: Path) -> Path:
     return archive_root / MAINTENANCE_STATE_DIRNAME / WANTED_SOURCE_RECEIPT_DIRNAME / WANTED_SOURCE_RECEIPT_FILENAME
 
 
-def test_cold_build_refuses_an_unfrozen_denominator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Declared source roots and no receipt is a refusal, not a fresh walk.
-
-    ``require_rebuild_preflight`` existed with exactly one caller -- the
-    operator CLI -- so the build driver that the frozen denominator is *for*
-    started with no authorization at all (polylogue-co2iz AC3).
-
-    Anti-vacuity: deleting the ``_require_frozen_wanted_sources`` call from
-    ``ColdBuildGeneration.begin`` makes this red -- ``begin`` returns a live
-    generation instead of raising, and a ``gen-*`` directory appears.
-    """
+def test_cold_build_captures_effective_source_without_manual_receipt(tmp_path: Path) -> None:
+    """Removing the production source capture leaves the accepted revision unbound."""
     archive = _fresh_archive_root(tmp_path)
-    _declare_sources(monkeypatch, _declared_source_root(tmp_path))
-
-    with pytest.raises(WantedSourceReceiptError) as refusal:
-        ColdBuildGeneration.begin(archive, reason="empty active index generation")
-
-    detail = str(refusal.value)
-    assert "wanted-source receipt is missing" in detail
-    assert "1 declared source root(s)" in detail
-    # The refusal has to be actionable: one command produces a receipt.
-    assert "polylogue ops maintenance wanted-sources --freeze" in detail
-    assert list((archive / GENERATIONS_DIRNAME).glob("gen-*")) == []
-    # Refused before the capacity walk, so nothing was predicted either.
-    assert read_capacity_receipts(archive) == ()
+    source_root = _declared_source_root(tmp_path)
+    source = WatchSource(name="codex", root=source_root)
+    generation = ColdBuildGeneration.begin(archive, reason="test", sources=(source,))
+    try:
+        assert len(generation.source_baseline.accepted) == 1
+        assert generation.source_baseline.accepted[0].path == str(source_root / "one.jsonl")
+        receipt = json.loads((generation.generation_root / "source-baseline.json").read_text())
+        assert receipt["generation_id"] == generation.generation_id
+    finally:
+        generation.discard()
 
 
 def test_cold_build_refuses_a_tampered_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -408,7 +402,9 @@ def test_cold_build_refuses_a_tampered_receipt(tmp_path: Path, monkeypatch: pyte
     receipt_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
     with pytest.raises(WantedSourceReceiptError) as refusal:
-        ColdBuildGeneration.begin(archive, reason="explicit cold build")
+        ColdBuildGeneration.begin(
+            archive, reason="explicit cold build", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+        )
 
     assert "denominators mismatch" in str(refusal.value)
     assert list((archive / GENERATIONS_DIRNAME).glob("gen-*")) == []
@@ -428,7 +424,9 @@ def test_a_frozen_receipt_authorizes_the_cold_build(tmp_path: Path, monkeypatch:
     assert receipt.item_count == 1
     (source_root / "two.jsonl").write_bytes(_codex_session("declared-two", "later"))
 
-    generation = ColdBuildGeneration.begin(archive, reason="explicit cold build")
+    generation = ColdBuildGeneration.begin(
+        archive, reason="explicit cold build", sources=(WatchSource("fixture", archive / "absent-source"),)
+    )
     try:
         assert generation.generation.state == "inactive"
     finally:
@@ -452,44 +450,55 @@ def test_an_undeclared_denominator_still_builds(tmp_path: Path, monkeypatch: pyt
     with pytest.raises(WantedSourceReceiptError):
         write_wanted_source_receipt(archive, ())
 
-    generation = ColdBuildGeneration.begin(archive, reason="empty active index generation")
+    generation = ColdBuildGeneration.begin(
+        archive, reason="empty active index generation", sources=(WatchSource("fixture", archive / "absent-source"),)
+    )
     try:
         assert generation.generation.state == "inactive"
     finally:
         generation.discard()
 
 
-def test_undeclared_denominator_build_is_reported_degraded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A build with no frozen denominator is a named gap, not a clean run.
-
-    With no declared source root ``build_wanted_source_receipt`` itself
-    refuses, so requiring a receipt here would make every live-capture-only
-    archive permanently unbuildable -- the skip is deliberate. What was not
-    deliberate is that it emitted ``outcome="ok"``, making an
-    unauthorized-denominator whole-archive rebuild indistinguishable from an
-    authorized one in the event stream.
-
-    Anti-vacuity: restoring ``outcome="ok"`` on the
-    ``wanted_sources_undeclared`` emit makes this red. The positive control
-    below fails instead if the event is turned into a refusal, which would
-    make live-capture-only archives unbuildable.
-    """
-    from polylogue.sources.live import cold_build as cold_build_module
+def test_required_missing_source_blocks_promotion(tmp_path: Path) -> None:
+    """A configured root that vanished before capture cannot yield a clean promotion."""
+    from polylogue.sources.live.production_baseline import ProductionBaselineError
 
     archive = _fresh_archive_root(tmp_path)
-    emitted: list[tuple[str, dict[str, Any]]] = []
+    source = WatchSource(name="account", root=tmp_path / "missing", suffixes=(".json",), required=True)
+    generation = ColdBuildGeneration.begin(archive, reason="test", sources=(source,))
+    try:
+        assert generation.source_baseline.decisions[0].disposition == "fault"
+        with pytest.raises(ProductionBaselineError, match="discovery fault"):
+            generation.promote()
+    finally:
+        generation.discard()
 
-    def _record(kind: str, **fields: Any) -> None:
-        emitted.append((kind, fields))
 
-    monkeypatch.setattr(cold_build_module, "emit", _record)
-    cold_build_module._require_frozen_wanted_sources(
-        archive, reason="empty active index generation", operation_id="op-test"
+def test_discarded_generation_carries_deleted_source_into_retry(tmp_path: Path) -> None:
+    """A crash after capture cannot shrink the next generation's denominator."""
+    from polylogue.sources.live.production_baseline import (
+        ProductionBaselineError,
+        load_pending_production_baseline,
     )
 
-    undeclared = [fields for kind, fields in emitted if kind.endswith("wanted_sources_undeclared")]
-    assert undeclared, f"no wanted_sources_undeclared event: {emitted}"
-    assert undeclared[0]["outcome"] == "degraded"
-    # Positive control: the build is NOT refused. A live-capture-only archive
-    # must stay buildable, so this path returns rather than raising.
-    assert undeclared[0]["sources"] == 0
+    archive = _fresh_archive_root(tmp_path)
+    source_root = tmp_path / "account"
+    source_root.mkdir()
+    member = source_root / "A.json"
+    member.write_text('{"session":"A"}')
+    source = WatchSource("account", source_root, suffixes=(".json",), required=True)
+    first = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
+    assert [row.path for row in first.source_baseline.accepted] == [str(member)]
+    first.discard()
+    member.unlink()
+
+    retry = ColdBuildGeneration.begin(archive, reason="retry", sources=(source,))
+    try:
+        assert [row.path for row in retry.source_baseline.accepted] == [str(member)]
+        pending = load_pending_production_baseline(archive)
+        assert pending is not None
+        assert pending.digest == retry.source_baseline.digest
+        with pytest.raises(ProductionBaselineError, match="unretained revision"):
+            retry.promote()
+    finally:
+        retry.discard()

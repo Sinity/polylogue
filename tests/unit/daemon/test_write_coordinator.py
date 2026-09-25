@@ -26,6 +26,7 @@ from polylogue.daemon.write_coordinator import (
     daemon_write_telemetry_payload,
 )
 from polylogue.sources.live.cold_build import ColdBuildGeneration, active_index_generation_is_empty
+from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
@@ -65,6 +66,7 @@ async def test_cold_build_lifecycle_writable_opens_stay_under_one_coordinator(
                 ColdBuildGeneration.begin,
                 root,
                 reason="test",
+                sources=(WatchSource("fixture", root / "absent-source"),),
             )
             assert (
                 await coordinator.run_sync(

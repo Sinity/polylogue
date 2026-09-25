@@ -303,6 +303,18 @@ check independently reports its own outcome.
 
 ## Runbooks
 
+### Cold build source baseline and archive handoff
+
+A daemon cold build captures `source-baseline.json` inside its inactive index generation before intake starts. It uses the effective typed `WatchSource` roots and the same discovery walk as file intake, before cursor filtering. The receipt records accepted revisions, excluded paths, aliases, and discovery faults. Promotion refuses an unresolved fault or an accepted revision absent from durable `source.db`. Files arriving after capture are outside that generation's denominator. The older `wanted-sources` manual receipts remain readable historical evidence; the daemon validates a published receipt but no longer requires a new manual freeze.
+
+The generation receipt is backed by a private pending receipt at `.maintenance-state/production-source-baseline/pending.json`. A retry unions newly discovered accepted revisions with earlier accepted revisions before allocating another generation, so a file deleted after an interrupted attempt remains an unmet obligation. Unresolved discovery faults also carry forward until the same coordinate is observed as accepted, as an independently accepted alias, or as a recovered watched root. Successful promotion clears the pending receipt. ZIP obligations use the exact per-record hashes and source indexes emitted by production acquisition, including split conversation members and declared artifacts.
+
+For an archive-root move, capture the old root's effective typed sources before the aside, keep the receipt private, and publish that digest-verified receipt as pending under the fresh archive root before daemon start. The fresh build unions it with its own discovery; the old operation ID and source signature do not have to match the new build. Keep the aside and inventory as authority for any material that escaped the pre-aside capture.
+
+When moving an archive root aside for a fresh build, preserve the source coordinates before starting the daemon. Record each old inbox link's spelling, resolved target, and target revision or member inventory, then recreate the link in the fresh inbox and compare the target again. The account targets `/realm/accounts/chatgpt` and `/realm/accounts/claude` must also be declared as daemon watch roots in `programs.polylogued.settings.daemon.watch`; the generic route accepts `.json`, `.jsonl`, `.ndjson`, and `.zip`. An external inbox link is an alias only when its target is independently accepted by one of those roots. Other files under the account roots receive explicit excluded dispositions. Copy or reflink pending hook spool files into the fresh hook provider directories, keep the aside intact, and compare file counts and a content manifest before starting intake. The fresh route needs its own files because intake may consume carriers. If a target changed during the handoff, retain the earlier revision as durable source evidence or leave the build unpromoted until the change is accounted for.
+
+Also carry the private root files `api-auth-token`, `browser-capture-receiver-id`, and `browser-capture-receiver-token` into the fresh root with their ownership and mode intact. Compare file identity or hashes without printing their contents; existing clients may depend on these values. If they are regenerated, reauthorize affected clients before declaring the handoff complete.
+
 The runbooks below assume:
 
 - You have a recent local backup (`polylogue ops backup` — see

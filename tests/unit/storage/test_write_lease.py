@@ -263,12 +263,15 @@ def test_cold_generation_discard_requires_the_archive_bound_lease(
     ``index.db`` concurrently with any admitted writer.
     """
     from polylogue.sources.live.cold_build import ColdBuildGeneration
+    from polylogue.sources.live.watcher import WatchSource
 
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     with write_lease("test.generation", archive_root=root):
-        generation = ColdBuildGeneration.begin(root, reason="test")
+        generation = ColdBuildGeneration.begin(
+            root, reason="test", sources=(WatchSource("fixture", root / "absent-source"),)
+        )
 
     with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
         generation.discard()
