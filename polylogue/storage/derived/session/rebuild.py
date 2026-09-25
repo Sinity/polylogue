@@ -2209,6 +2209,7 @@ async def rebuild_session_insights_async(
 
 
 __all__ = [
+    "replace_session_latency_profiles_bulk_sync",
     "_ALL_SESSION_IDS_SQL",
     "_ALL_SESSION_PROFILE_ROWS_SQL",
     "SessionInsightArchiveBatch",

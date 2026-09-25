@@ -536,7 +536,7 @@ def test_reader_never_observes_a_mixed_profile_family_during_publish(
 
     prepared = adapter.compute(frame, session_id)
 
-    def snapshot() -> tuple[object, ...]:
+    def snapshot() -> tuple[tuple[object, ...], tuple[object, ...]]:
         with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as reader:
             profile = reader.execute(
                 "SELECT materialized_at, input_content_hash FROM session_profiles WHERE session_id = ?",
