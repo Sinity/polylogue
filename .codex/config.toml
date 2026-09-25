@@ -7,7 +7,7 @@
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 24
-default_subagent_model = "gpt-5.6-luna"
+default_subagent_model = "gpt-6-luna"
 default_subagent_reasoning_effort = "medium"
 
 [agents.architect]
@@ -15,11 +15,11 @@ description = "Bounded architectural decisions, migration design, and conflictin
 config_file = "agents/architect.toml"
 
 [agents.worker]
-description = "Bounded correctness/architecture-reduction implementer, one lane, one worktree. Terra, high reasoning, full write."
+description = "Bounded correctness/architecture-reduction implementer, one lane, one worktree. Sol, high reasoning, full write."
 config_file = "agents/worker.toml"
 
 [agents.reviewer]
-description = "Independent adversarial reviewer of a worker's diff. Terra, high reasoning, read-only."
+description = "Independent adversarial reviewer of a worker's diff. Sol, high reasoning, read-only."
 config_file = "agents/reviewer.toml"
 
 [agents.triage]
