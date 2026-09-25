@@ -475,6 +475,13 @@ def test_prepared_profile_family_rolls_back_when_latency_write_fails(
         },
     )
     _mutate(index_db, session_id, "word_count", "word_count + 13")
+    # Reach the sibling-write fault, rather than fail the upstream-staleness guard.
+    # Settle ONLY canonical usage here; retain the old profile family for rollback.
+    with write_lease("test.settle-usage-before-fault"), closing(_write_connection(index_db)) as conn:
+        binding = session_input_bindings(conn, (session_id,))[session_id]
+        assert publish_session_usage_rollup(
+            conn, session_id, input_binding=binding, recipe_version=session_usage_rollup_recipe_version()
+        )
     # Input mutation may invalidate the previous binding before publication;
     # snapshot that retryable state, not the older valid profile.
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
