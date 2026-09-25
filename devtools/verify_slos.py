@@ -163,6 +163,14 @@ class BenchmarkRunUnavailableError(RuntimeError):
     """
 
 
+class BenchmarkRunFailedError(RuntimeError):
+    """The managed benchmark process ran but failed, so its measurements are diagnostic only."""
+
+    def __init__(self, returncode: int, message: str) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
+
 #: Where the SLO benchmark run keeps its JSON and pytest trees: inside the
 #: checkout's disposable scratch, not the host's small /tmp tmpfs.
 BENCHMARK_SCRATCH = Path(".cache/verify/slo-benchmarks")
@@ -232,26 +240,30 @@ def _run_benchmarks(test_ids: set[str]) -> dict[str, dict[str, float]]:
         # The queued run captured its own log; the local handle stayed empty.
         log_path = outcome.log_path
 
+    if outcome.returncode != 0:
+        # A measurement artifact describes work the benchmark managed to
+        # emit; it does not turn a failed pytest run into a valid workload.
+        # Keep both artifacts so the failed run remains diagnosable.
+        if not json_path.exists() or json_path.stat().st_size == 0:
+            detail = "; no measurement JSON was produced"
+        else:
+            try:
+                json.loads(json_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                detail = f"; measurement JSON is invalid: {exc}"
+            else:
+                detail = "; measurement JSON was retained as diagnostics"
+        raise BenchmarkRunFailedError(
+            outcome.returncode,
+            f"benchmark run failed with exit {outcome.returncode}{detail}; "
+            f"raw log and any measurement file kept under {scratch}; last output:\n{_log_tail(log_path)}",
+        )
+
     if not json_path.exists() or json_path.stat().st_size == 0:
         # Kept, not cleaned: the evidence for why nothing was measured is here.
         raise BenchmarkRunUnavailableError(
             f"the benchmark run wrote no measurement file (pytest slot {outcome.slot}, "
             f"exit {outcome.returncode}); evidence kept under {scratch}; last output:\n{_log_tail(log_path)}"
-        )
-
-    if outcome.returncode != 0:
-        # A measurement artifact describes work the benchmark managed to
-        # emit; it does not turn a failed pytest run into a valid workload.
-        # Keep both artifacts so the failed run remains diagnosable.
-        try:
-            json.loads(json_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            detail = f"; measurement JSON is invalid: {exc}"
-        else:
-            detail = "; measurement JSON was retained as diagnostics"
-        raise BenchmarkRunUnavailableError(
-            f"benchmark run failed with exit {outcome.returncode}{detail}; "
-            f"raw log and measurement file kept under {scratch}; last output:\n{_log_tail(log_path)}"
         )
 
     payload = json.loads(json_path.read_text())
@@ -358,12 +370,19 @@ def main(argv: list[str] | None = None) -> int:
     # 3. Run benchmarks
     benchmark_started = time.monotonic()
     benchmark_error: str | None = None
+    benchmark_outcome: str | None = None
+    benchmark_returncode: int | None = None
     benchmark_stats: dict[str, dict[str, float]] = {}
     if not args.skip_benchmarks:
         try:
             benchmark_stats = _run_benchmarks(test_ids)
+        except BenchmarkRunFailedError as exc:
+            benchmark_error = str(exc)
+            benchmark_outcome = "failed"
+            benchmark_returncode = exc.returncode
         except BenchmarkRunUnavailableError as exc:
             benchmark_error = str(exc)
+            benchmark_outcome = "unavailable"
     benchmark_wall_ms = (time.monotonic() - benchmark_started) * 1_000
 
     # 4. Check each surface against its SLO
@@ -477,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
         json.dump(
             {
                 "blocking": blocking,
+                "benchmark_outcome": benchmark_outcome,
+                "benchmark_returncode": benchmark_returncode,
                 "benchmark_error": benchmark_error,
                 "active_tiers": sorted(active_tiers) if active_tiers is not None else None,
                 "catalog_errors": catalog_errors,
@@ -494,7 +515,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
     else:
         if benchmark_error is not None:
-            print("BENCHMARKS DID NOT RUN:")
+            if benchmark_outcome == "failed":
+                print(f"BENCHMARK RUN FAILED (exit {benchmark_returncode}):")
+            else:
+                print("BENCHMARKS DID NOT RUN:")
             for line in benchmark_error.splitlines():
                 print(f"  {line}")
             print()

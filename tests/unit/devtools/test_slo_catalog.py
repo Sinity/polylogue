@@ -125,6 +125,8 @@ surfaces:
     payload = json.loads(buffer.getvalue())
     assert rc != 0
     assert payload["blocking"] is True
+    assert payload["benchmark_outcome"] == "unavailable"
+    assert payload["benchmark_returncode"] is None
     assert "would not start the run" in payload["benchmark_error"]
     assert payload["missing_required"] == []
     assert payload["uncovered_informational"] == []
@@ -186,6 +188,8 @@ surfaces:
     payload = json.loads(buffer.getvalue())
     assert rc != 0
     assert payload["blocking"] is True
+    assert payload["benchmark_outcome"] == "failed"
+    assert payload["benchmark_returncode"] == 125
     assert payload["passed"] == []
     assert payload["violations"] == []
     assert payload["unmeasured"] and payload["unmeasured"][0]["surface"] == "reader_status"
@@ -194,6 +198,12 @@ surfaces:
     assert len(captured_json) == 1 and captured_json[0].is_file()
     assert json.loads(captured_json[0].read_text(encoding="utf-8"))["benchmarks"]
     assert captured_json[0].with_name("benchmark.log").is_file()
+
+    plain = io.StringIO()
+    with redirect_stdout(plain):
+        verify_slos.main(["--yaml", str(catalog)])
+    assert "BENCHMARK RUN FAILED (exit 125):" in plain.getvalue()
+    assert "BENCHMARKS DID NOT RUN:" not in plain.getvalue()
 
 
 def test_catalog_exists_and_covers_required_surfaces() -> None:
