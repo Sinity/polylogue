@@ -967,7 +967,10 @@ class _ReadCommand(click.Command):
             option = raw.split("=", 1)[0] if raw.startswith("--") else raw
             name = option_names.get(option)
             if name in read_view_option_names() and name not in allowed and name not in READ_VIEW_GLOBAL_OPTION_NAMES:
-                raise click.UsageError(f"read --view {','.join(views)} does not expose --{name.replace('_', '-')}.")
+                raise click.UsageError(
+                    f"read --view {','.join(views)} does not expose --{name.replace('_', '-')}; "
+                    "remove that option or use `read --views` to choose a view that accepts it."
+                )
             index += 1 + arity.get(option, 0)
         return super().parse_args(ctx, args)
 

@@ -28,6 +28,7 @@ from polylogue.cli.lowering import lower_cli_query
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.mcp.query_contracts import build_query_spec
 from polylogue.operations.daemon_reads import _cli_query_spec
+from polylogue.operations.query_lowering import cli_read_request
 
 #: ``(expression, the filter key it must reach)``.  The three
 #: ``action_sequence``/``action_text``/``since_session`` rows are the filters
@@ -171,6 +172,29 @@ def test_cli_and_daemon_query_selection_pass_through_read_request(monkeypatch: p
     assert cli == daemon
     assert cli.repo_names == ("polylogue",)
     assert cli.typed_only is True
+
+
+def test_cli_read_request_preserves_projection_and_render_controls() -> None:
+    """Accepted view controls must survive the shared lowering boundary."""
+
+    request = cli_read_request(
+        {
+            "query": ("repo:polylogue",),
+            "body_limit": 7,
+            "body_offset": 3,
+            "neighbor_window_hours": 12,
+            "output_format": "json",
+            "destination": "stdout",
+        },
+        preset="messages",
+    )
+
+    assert request.selection.repo_names == ("polylogue",)
+    assert request.projection.body_limit == 7
+    assert request.projection.body_offset == 3
+    assert request.projection.neighbor_window_hours == 12
+    assert request.render.format.value == "json"
+    assert request.render.destination.value == "stdout"
 
 
 def test_semantic_lane_is_desugared_once_for_cli_and_daemon() -> None:

@@ -59,6 +59,12 @@ def test_every_view_option_is_bound_only_from_its_declaration() -> None:
         READ_VIEW_HANDLER_METADATA["messages"] = original
 
 
+def test_view_option_refusal_names_a_next_action() -> None:
+    context = click.Context(read_verb)
+    with pytest.raises(click.UsageError, match="remove that option or use `read --views`"):
+        read_verb.parse_args(context, ["--view", "summary", "--at-position", "3"])
+
+
 def _never_runs(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     raise AssertionError("validation must refuse before the handler executes")
 
