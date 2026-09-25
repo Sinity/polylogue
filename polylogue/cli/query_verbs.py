@@ -818,6 +818,13 @@ def _build_read_projection_spec(
     )
     normalized_request = ReadRequest.normalize(
         {
+            # Keep the full parsed selection in the canonical request.  The
+            # projection's SelectionSpec is intentionally smaller (it is a
+            # portable presentation contract), while SessionQuerySpec carries
+            # query predicates such as typed_only, sort, and reference scope.
+            # Passing only the fields repeated below made ReadRequest look
+            # canonical while silently normalizing a reduced selection.
+            "selection": query_spec,
             "output_format": effective_format,
             "views": views,
             "destination": destination,
