@@ -918,6 +918,7 @@ Prompts: `cost_of`.
 - `claude-ai-export` — Claude web exports (lab: Anthropic)
 - `claude-design-session` — Claude Design agentic sessions (lab: Anthropic)
 - `aistudio-drive` — Google AI Studio / Drive exports (lab: Google)
+- `otel-genai` — OpenTelemetry GenAI OTLP-JSON files (explicit source roots)
 - `unknown-export` — Unrecognized fallback exports
 
 ## Native client delivery and deltas

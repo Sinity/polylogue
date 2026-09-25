@@ -84,7 +84,7 @@ exports through the repository's final WebUI build once that mount is added.
 
 | Export | Props and contract |
 | --- | --- |
-| `OriginBadge` | `origin: OriginToken`; accepts only the ten generated public Origin tokens. |
+| `OriginBadge` | `origin: OriginToken`; accepts the generated public Origin tokens. |
 | `UnknownOriginBadge` | No props; renders explicit unknown provenance. `unknown-export` is not promoted into the public badge union. |
 | `EvidenceStateBadge` | `state: EvidenceState`, `qualifiedBy?: string`; always exposes text and a non-color symbol. |
 | `Skeleton` | `lines?: number`, `label?: string`; visual placeholders are `aria-hidden` behind a live status label. |
@@ -166,13 +166,13 @@ server/bootstrap integration. The explicit preference is stored under
 
 - `DESIGN_SYSTEM_CONTRACT_VERSION = 1`;
 - `PUBLIC_ORIGINS` and `OriginToken`, generated from every `Origin` except the
-  `unknown-export` fallback;
-- `ORIGIN_LABELS` for those ten tokens;
+  `unknown-export` fallback and reserved `beads-issue` origin;
+- `ORIGIN_LABELS` for those tokens;
 - `EVIDENCE_STATES = exact | qualified | stale | unknown | degraded` and labels.
 
 The CSS badge selectors are generated from the same Python values. Adding or
 removing an Origin without regeneration makes `npm run generate:check` fail;
-the Python renderer test also requires exactly ten public tokens and rejects
+the Python renderer validates full label and theme coverage and rejects
 `unknown-export`.
 
 ## Theme token table

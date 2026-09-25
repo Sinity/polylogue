@@ -1606,23 +1606,23 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
         _raw_column("model_name", """model_name                     TEXT"""),
         _raw_column(
             "last_input_tokens",
-            """last_input_tokens              INTEGER NOT NULL DEFAULT 0 CHECK(last_input_tokens >= 0)""",
+            """last_input_tokens              INTEGER CHECK(last_input_tokens IS NULL OR last_input_tokens >= 0)""",
         ),
         _raw_column(
             "last_output_tokens",
-            """last_output_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(last_output_tokens >= 0)""",
+            """last_output_tokens             INTEGER CHECK(last_output_tokens IS NULL OR last_output_tokens >= 0)""",
         ),
         _raw_column(
             "last_cached_input_tokens",
-            """last_cached_input_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(last_cached_input_tokens >= 0)""",
+            """last_cached_input_tokens       INTEGER CHECK(last_cached_input_tokens IS NULL OR last_cached_input_tokens >= 0)""",
         ),
         _raw_column(
             "last_cache_write_tokens",
-            """last_cache_write_tokens        INTEGER NOT NULL DEFAULT 0 CHECK(last_cache_write_tokens >= 0)""",
+            """last_cache_write_tokens        INTEGER CHECK(last_cache_write_tokens IS NULL OR last_cache_write_tokens >= 0)""",
         ),
         _raw_column(
             "last_reasoning_output_tokens",
-            """last_reasoning_output_tokens   INTEGER NOT NULL DEFAULT 0 CHECK(last_reasoning_output_tokens >= 0)""",
+            """last_reasoning_output_tokens   INTEGER CHECK(last_reasoning_output_tokens IS NULL OR last_reasoning_output_tokens >= 0)""",
         ),
         _raw_column(
             "last_total_tokens",
@@ -1630,23 +1630,23 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
         ),
         _raw_column(
             "total_input_tokens",
-            """total_input_tokens             INTEGER NOT NULL DEFAULT 0 CHECK(total_input_tokens >= 0)""",
+            """total_input_tokens             INTEGER CHECK(total_input_tokens IS NULL OR total_input_tokens >= 0)""",
         ),
         _raw_column(
             "total_output_tokens",
-            """total_output_tokens            INTEGER NOT NULL DEFAULT 0 CHECK(total_output_tokens >= 0)""",
+            """total_output_tokens            INTEGER CHECK(total_output_tokens IS NULL OR total_output_tokens >= 0)""",
         ),
         _raw_column(
             "total_cached_input_tokens",
-            """total_cached_input_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(total_cached_input_tokens >= 0)""",
+            """total_cached_input_tokens      INTEGER CHECK(total_cached_input_tokens IS NULL OR total_cached_input_tokens >= 0)""",
         ),
         _raw_column(
             "total_cache_write_tokens",
-            """total_cache_write_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_write_tokens >= 0)""",
+            """total_cache_write_tokens       INTEGER CHECK(total_cache_write_tokens IS NULL OR total_cache_write_tokens >= 0)""",
         ),
         _raw_column(
             "total_reasoning_output_tokens",
-            """total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0)""",
+            """total_reasoning_output_tokens  INTEGER CHECK(total_reasoning_output_tokens IS NULL OR total_reasoning_output_tokens >= 0)""",
         ),
         _raw_column(
             "total_tokens",

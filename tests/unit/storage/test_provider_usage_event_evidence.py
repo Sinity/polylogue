@@ -71,7 +71,7 @@ def test_finish_reason_survives_all_zero_token_fields(tmp_path: Path) -> None:
         assert len(rows) == 1
         assert rows[0]["finish_reason"] == "SAFETY"
         assert rows[0]["source_message_resolution"] == "resolved"
-        assert rows[0]["last_input_tokens"] == 0
+        assert rows[0]["last_input_tokens"] is None
     finally:
         conn.close()
 
@@ -175,16 +175,7 @@ def test_claude_billing_fields_round_trip_through_archive_usage_row(tmp_path: Pa
 
 
 def test_payload_with_no_storable_fact_still_writes_no_row(tmp_path: Path) -> None:
-    """The evidence gate still exists: zero counters and no reason write nothing.
-
-    This also pins the deliberate limit: a zero-valued counter is not admitted
-    on its own, because the parsers coerce unreported counters to zero before
-    the writer sees them (polylogue-664l's billing-only Hermes rows depend on
-    exactly this).
-
-    Anti-vacuity: make the writer unconditional, or admit any present usage
-    mapping, and this is red.
-    """
+    """An empty usage mapping is not evidence; an explicit zero is."""
     session = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id="framing-only-usage",
@@ -196,7 +187,7 @@ def test_payload_with_no_storable_fact_still_writes_no_row(tmp_path: Path) -> No
                 payload={
                     "type": "message_usage",
                     "semantics": "per_message",
-                    "last_token_usage": {"input_tokens": 0, "output_tokens": 0},
+                    "last_token_usage": {},
                 },
             )
         ],
@@ -205,6 +196,85 @@ def test_payload_with_no_storable_fact_still_writes_no_row(tmp_path: Path) -> No
     try:
         session_id = _write(conn, session)
         assert _usage_rows(conn, session_id) == []
+    finally:
+        conn.close()
+
+
+def test_claude_usage_counter_presence_round_trips(tmp_path: Path) -> None:
+    """The production parser and writer distinguish missing, zero and positive counters."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": f"presence-{index}",
+                "sessionId": "usage-presence",
+                "timestamp": f"2026-01-01T00:00:0{index}.000Z",
+                "message": {
+                    "id": f"msg_presence_{index}",
+                    "role": "assistant",
+                    "model": "claude-opus-4",
+                    "content": [{"type": "text", "text": f"answer {index}"}],
+                    "usage": usage,
+                },
+            }
+            for index, usage in enumerate(({"input_tokens": 0}, {"output_tokens": 0}, {"input_tokens": 7}))
+        ],
+        "usage-presence",
+    )
+    usage_events = [event for event in parsed.session_events if event.event_type == "message_usage"]
+    assert [event.payload["last_token_usage"] for event in usage_events] == [
+        {"input_tokens": 0},
+        {"output_tokens": 0},
+        {"input_tokens": 7},
+    ]
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rows = _usage_rows(conn, _write(conn, parsed))
+        assert len(rows) == 3
+        assert [(row["last_input_tokens"], row["last_output_tokens"]) for row in rows] == [
+            (0, None),
+            (None, 0),
+            (7, None),
+        ]
+    finally:
+        conn.close()
+
+
+def test_total_usage_presence_and_legacy_payloads(tmp_path: Path) -> None:
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="total-usage-presence",
+        messages=[ParsedMessage(provider_message_id="a1", role=Role.ASSISTANT, text="done")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={"total_token_usage": {"input_tokens": 8}},
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={"total_token_usage": {"input_tokens": 0, "output_tokens": 0}},
+            ),
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "finish_reason": "complete",
+                    "total_token_usage": {"input_tokens": "invalid", "output_tokens": True},
+                },
+            ),
+            ParsedSessionEvent(event_type="token_count", payload={"finish_reason": "legacy"}),
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rows = _usage_rows(conn, _write(conn, session))
+        assert len(rows) == 4
+        assert [(row["total_input_tokens"], row["total_output_tokens"]) for row in rows] == [
+            (8, None),
+            (0, 0),
+            (None, None),
+            (None, None),
+        ]
+        assert [row["finish_reason"] for row in rows] == [None, None, "complete", "legacy"]
     finally:
         conn.close()
 

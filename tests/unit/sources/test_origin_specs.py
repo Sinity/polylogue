@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import gzip
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -363,6 +364,7 @@ def test_projection_only_origin_spec_changes_do_not_change_lowering_fingerprint(
     )
     monkeypatch.setattr(origin_specs, "ORIGIN_SPECS", changed_specs)
     origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
 
     assert origin_specs.lowering_fingerprint() == before
     target = next(spec for spec in changed_specs if spec.origin is Origin.CODEX_SESSION)
@@ -399,6 +401,7 @@ def test_source_ast_projection_mutation_is_closed_over_all_fingerprint_routes(
     monkeypatch.setattr(origin_specs_module, "_REPLAY_ROUTING_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
     monkeypatch.setattr(origin_specs_module, "_MATERIALIZER_FINGERPRINT_PATHS", ("polylogue/sources/semantic.py",))
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
 
     before = (
         origin_specs_module.lowering_fingerprint(),
@@ -409,6 +412,7 @@ def test_source_ast_projection_mutation_is_closed_over_all_fingerprint_routes(
         origin_source.read_text(encoding="utf-8").replace("before", "after").replace("True", "False"), encoding="utf-8"
     )
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert (
         origin_specs_module.lowering_fingerprint(),
         origin_specs_module.replay_routing_fingerprint(),
@@ -420,6 +424,7 @@ def test_source_ast_projection_mutation_is_closed_over_all_fingerprint_routes(
         encoding="utf-8",
     )
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert (
         origin_specs_module.lowering_fingerprint(),
         origin_specs_module.replay_routing_fingerprint(),
@@ -454,6 +459,8 @@ def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp
     the parser fingerprint, so a candidate stamped before that semantic change
     cannot satisfy the current-fingerprint comparison.
     """
+    from polylogue.sources import origin_specs as origin_specs_module
+
     spec = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION)
     parser_source = tmp_path / "parser.py"
     helper_source = tmp_path / "support.py"
@@ -466,6 +473,7 @@ def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp
 
     before = synthetic.parser_fingerprint()
     helper_source.write_text("def normalize(value):\n    return value.casefold()\n", encoding="utf-8")
+    origin_specs_module._invalidate_source_signatures()
     after = synthetic.parser_fingerprint()
 
     assert before != after
@@ -525,12 +533,14 @@ def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materiali
         artifact_rules=(),
     )
     origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
     parser_before = (first.parser_fingerprint(), second.parser_fingerprint())
     lowering_before = origin_specs.lowering_fingerprint()
     materializer_before = origin_specs.materializer_fingerprint()
 
     logging_source.write_text("def get_logger():\n    return 'after'\n", encoding="utf-8")
     origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
     assert (first.parser_fingerprint(), second.parser_fingerprint()) == parser_before
     assert origin_specs.lowering_fingerprint() != lowering_before
     assert origin_specs.materializer_fingerprint() != materializer_before
@@ -539,11 +549,14 @@ def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materiali
         "from polylogue.logging import get_logger\n\ndef parse(payload):\n    return {'a': payload}\n", encoding="utf-8"
     )
     origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
     assert first.parser_fingerprint() != parser_before[0]
 
 
 def test_parser_fingerprint_changes_when_a_declared_assembly_helper_changes(tmp_path: Path) -> None:
     """Assembly enrichment is part of the origin's normalized output contract."""
+    from polylogue.sources import origin_specs as origin_specs_module
+
     spec = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.AISTUDIO_DRIVE)
     parser_source = tmp_path / "parser.py"
     assembly_source = tmp_path / "assembly.py"
@@ -565,6 +578,7 @@ def test_parser_fingerprint_changes_when_a_declared_assembly_helper_changes(tmp_
 
     before = synthetic.parser_fingerprint()
     helper_source.write_text("def enrich(value):\n    return value.strip().casefold()\n", encoding="utf-8")
+    origin_specs_module._invalidate_source_signatures()
     after = synthetic.parser_fingerprint()
 
     assert before != after
@@ -584,9 +598,11 @@ def test_lowering_fingerprint_changes_when_session_emitter_changes(
     monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
     monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
     origin_specs._fingerprint_sources_cached.cache_clear()
+    origin_specs._invalidate_source_signatures()
 
     before = origin_specs.lowering_fingerprint()
     emitter.write_text("def emit(payload):\n    return {'session': payload}\n", encoding="utf-8")
+    origin_specs._invalidate_source_signatures()
     after = origin_specs.lowering_fingerprint()
 
     assert before != after
@@ -926,12 +942,14 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", source_root)
     monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
 
     first = origin_specs_module.lowering_fingerprint()
     memos = list((source_root / ".cache" / "source-fingerprints").glob("*.txt"))
     assert len(memos) == 1 and len(memos[0].read_text(encoding="utf-8")) == 64
 
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     monkeypatch.setattr(
         origin_specs_module,
         "_fingerprint_sources_compute",
@@ -944,6 +962,7 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
     emitter.write_text("def emit(payload):\n    return {'session': payload}\n", encoding="utf-8")
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert origin_specs_module.lowering_fingerprint() != first
 
 
@@ -978,6 +997,7 @@ def test_generated_build_provenance_is_not_a_semantic_fingerprint_dependency(
     origin_specs_module._semantic_source_closure.cache_clear()
     origin_specs_module._local_import_paths.cache_clear()
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
 
     first = origin_specs_module.lowering_fingerprint()
     members = origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",))
@@ -986,10 +1006,12 @@ def test_generated_build_provenance_is_not_a_semantic_fingerprint_dependency(
 
     build_info.write_text('BUILD_COMMIT = "commit-b"\nBUILD_DIRTY = True\n', encoding="utf-8")
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert origin_specs_module.lowering_fingerprint() == first
 
     helper.write_text("def shape(payload):\n    return {'session': payload}\n", encoding="utf-8")
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert origin_specs_module.lowering_fingerprint() != first
 
 
@@ -1005,12 +1027,14 @@ def test_index_ddl_formatting_is_normalized_in_the_production_source_hash_route(
     path.write_text(source, encoding="utf-8")
     monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
 
     first = origin_specs_module._fingerprint_sources(
         ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
     )
     path.write_text('INDEX_DDL = """ CREATE  TABLE x(a TEXT) """\n', encoding="utf-8")
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert (
         origin_specs_module._fingerprint_sources(
             ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
@@ -1020,6 +1044,7 @@ def test_index_ddl_formatting_is_normalized_in_the_production_source_hash_route(
 
     path.write_text('INDEX_DDL = """CREATE TABLE x(a BLOB)"""\n', encoding="utf-8")
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert (
         origin_specs_module._fingerprint_sources(
             ("polylogue/storage/sqlite/archive_tiers/index.py",), namespace="index-ddl-format"
@@ -1059,6 +1084,7 @@ def test_imported_fts_ddl_formatting_is_normalized_but_semantics_move_the_hash(
     origin_specs_module._semantic_source_closure.cache_clear()
     origin_specs_module._local_import_paths.cache_clear()
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
 
     first = origin_specs_module.lowering_fingerprint()
     fts_path.write_text(
@@ -1066,6 +1092,7 @@ def test_imported_fts_ddl_formatting_is_normalized_but_semantics_move_the_hash(
         encoding="utf-8",
     )
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert origin_specs_module.lowering_fingerprint() == first
 
     fts_path.write_text(
@@ -1073,6 +1100,7 @@ def test_imported_fts_ddl_formatting_is_normalized_but_semantics_move_the_hash(
         encoding="utf-8",
     )
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert origin_specs_module.lowering_fingerprint() != first
 
 
@@ -1097,6 +1125,7 @@ def test_runtime_index_ddl_formatting_is_normalized_but_semantics_move_the_hash(
     origin_specs_module._semantic_source_closure.cache_clear()
     origin_specs_module._local_import_paths.cache_clear()
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
 
     first = origin_specs_module.lowering_fingerprint()
     path.write_text(
@@ -1104,6 +1133,7 @@ def test_runtime_index_ddl_formatting_is_normalized_but_semantics_move_the_hash(
         encoding="utf-8",
     )
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert origin_specs_module.lowering_fingerprint() == first
 
     path.write_text(
@@ -1111,16 +1141,15 @@ def test_runtime_index_ddl_formatting_is_normalized_but_semantics_move_the_hash(
         encoding="utf-8",
     )
     origin_specs_module._fingerprint_sources_cached.cache_clear()
+    origin_specs_module._invalidate_source_signatures()
     assert origin_specs_module.lowering_fingerprint() != first
 
 
 class TestSemanticSourceClosureMemo:
-    """Closure membership is walked once per process; content freshness is not memoized.
+    """Closure membership and signatures are memoized for the process lifetime.
 
-    ``_fingerprint_sources`` asks for the closure on every session write, and
-    the walk resolves, stats and sorts one path per member. Memoizing the
-    member list is only safe while each fingerprint call still re-derives every
-    member's content signature; these laws hold that line.
+    Production source files cannot change during a process. Source-mutating
+    tests invalidate signatures explicitly after writing their fixtures.
     """
 
     def test_overlapping_large_closures_reuse_parsed_imports(
@@ -1169,24 +1198,34 @@ class TestSemanticSourceClosureMemo:
             assert origin_specs_module._semantic_source_paths(paths) is first
         assert walked == []
 
-    def test_fingerprint_calls_still_re_read_every_member_signature(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Anti-vacuity: memoize the fingerprint itself and the per-call re-read disappears."""
+    def test_fingerprint_calls_stat_each_member_once_per_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anti-vacuity: clearing the signature memo restores per-call stats."""
         import polylogue.sources.origin_specs as origin_specs_module
 
         paths = origin_specs_module._LOWERING_FINGERPRINT_PATHS
         origin_specs_module._semantic_source_closure.cache_clear()
-        members = origin_specs_module._semantic_source_paths(paths)
+        origin_specs_module._invalidate_source_signatures()
 
-        real_signature = origin_specs_module._source_signature
+        real_stat = Path.stat
         walked: list[Path] = []
 
-        def counting_signature(path: Path) -> tuple[str, str, int]:
+        def counting_stat(path: Path) -> os.stat_result:
             walked.append(path)
-            return real_signature(path)
+            return real_stat(path)
 
-        monkeypatch.setattr(origin_specs_module, "_source_signature", counting_signature)
+        monkeypatch.setattr(Path, "stat", counting_stat)
+        first = origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law")
+        cold_stat_count = len(walked)
+        members = origin_specs_module._semantic_source_paths(paths)
+        assert cold_stat_count == len(members)
+        for _ in range(20):
+            assert origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law") == first
+        assert len(walked) == cold_stat_count
+
+        origin_specs_module._invalidate_source_signatures()
+        origin_specs_module._semantic_source_closure.cache_clear()
         origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law")
-        assert sorted(walked) == sorted(members)
+        assert len(walked) >= cold_stat_count * 2
 
     def test_edited_member_changes_the_fingerprint_under_a_warm_memo(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1212,6 +1251,7 @@ class TestSemanticSourceClosureMemo:
         monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
         origin_specs_module._semantic_source_closure.cache_clear()
         origin_specs_module._fingerprint_sources_cached.cache_clear()
+        origin_specs_module._invalidate_source_signatures()
 
         first = origin_specs_module.lowering_fingerprint()
         members = origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",))
@@ -1220,8 +1260,43 @@ class TestSemanticSourceClosureMemo:
         # Edit a member's body without touching any import: membership is
         # unchanged and the memo stays warm, so only the re-read can move this.
         helper.write_text("def shape(payload):\n    return {'session': payload}\n", encoding="utf-8")
+        origin_specs_module._invalidate_source_signatures()
         assert origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",)) == members
         assert origin_specs_module.lowering_fingerprint() != first
+
+    def test_invalidation_rebuilds_changed_import_membership(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit edit signal refreshes both signatures and import edges."""
+        import polylogue.sources.origin_specs as origin_specs_module
+
+        source_dir = tmp_path / "polylogue" / "sources"
+        source_dir.mkdir(parents=True)
+        emitter = source_dir / "emitter.py"
+        emitter.write_text(
+            "from polylogue.sources.first import shape\n\ndef emit(value):\n    return shape(value)\n",
+            encoding="utf-8",
+        )
+        first = source_dir / "first.py"
+        first.write_text("def shape(value):\n    return value\n", encoding="utf-8")
+        second = source_dir / "second.py"
+        second.write_text("def shape(value):\n    return {'value': value}\n", encoding="utf-8")
+
+        monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+        paths = ("polylogue/sources/emitter.py",)
+        origin_specs_module._invalidate_source_signatures()
+        before = origin_specs_module._semantic_source_paths(paths)
+        assert first.resolve() in before
+        assert second.resolve() not in before
+
+        emitter.write_text(
+            "from polylogue.sources.second import shape\n\ndef emit(value):\n    return shape(value)\n",
+            encoding="utf-8",
+        )
+        origin_specs_module._invalidate_source_signatures()
+        after = origin_specs_module._semantic_source_paths(paths)
+        assert second.resolve() in after
+        assert first.resolve() not in after
 
     def test_a_substituted_source_root_does_not_reuse_another_root_membership(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1305,7 +1380,7 @@ def _reset_closure_caches(module: object) -> None:
     """Drop every in-process closure cache, leaving only what the disk memo holds."""
     module._semantic_source_closure.cache_clear()  # type: ignore[attr-defined]
     module._local_import_paths.cache_clear()  # type: ignore[attr-defined]
-    module._SOURCE_DIGESTS.clear()  # type: ignore[attr-defined]
+    module._invalidate_source_signatures()  # type: ignore[attr-defined]
     module._IMPORT_EDGES = None  # type: ignore[attr-defined]
     module._IMPORT_EDGES_ADDED = False  # type: ignore[attr-defined]
 

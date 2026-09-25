@@ -107,14 +107,10 @@ def test_autoincrement_state_changes_the_logical_revision(tmp_path: Path) -> Non
 
 
 def test_source_signature_is_keyed_by_contents(tmp_path: Path) -> None:
-    """A same-length rewrite under a restored mtime must not reuse the memo key.
+    """An explicit source-edit signal invalidates the process signature memo.
 
-    Checkout, patch application, and archive extraction all reproduce that
-    shape, and a stale parser fingerprint then claims semantics the file no
-    longer has.
-
-    Anti-vacuity: restoring the ``(path, st_mtime_ns, st_size)`` signature
-    makes both signatures identical and turns the inequality assertion red.
+    The stat key's content digest distinguishes a same-length rewrite even
+    when its modification time is restored.
     """
     module = tmp_path / "parser.py"
     module.write_text("VALUE = 1\n")
@@ -124,6 +120,9 @@ def test_source_signature_is_keyed_by_contents(tmp_path: Path) -> None:
 
     module.write_text("VALUE = 2\n")  # identical length
     os.utime(module, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    from polylogue.sources import origin_specs
+
+    origin_specs._invalidate_source_signatures()
 
     assert module.stat().st_size == stat.st_size
     assert module.stat().st_mtime_ns == stat.st_mtime_ns

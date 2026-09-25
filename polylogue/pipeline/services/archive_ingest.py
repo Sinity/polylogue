@@ -27,6 +27,7 @@ from polylogue.pipeline.services.process_pool import (
     resolve_archive_ingest_dispatch,
     resolve_parse_worker_count,
 )
+from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.decoder_zip import (
     ZipBombError,
     ZipEntryValidator,
@@ -358,6 +359,18 @@ async def parse_sources_archive(
                 if batched:
                     archive.rollback()
                 raise
+            record_session_artifact_observation(
+                archive,
+                raw_id=write_result.raw_id,
+                provider=Provider.from_string(session.source_name),
+                source_path=source_path,
+                source_index=source_index,
+                observed_at_ms=acquired_at_ms,
+                # Blob publication reserves through another source connection
+                # before the next file is parsed. Close this source write now;
+                # the batching threshold applies to index.db only.
+                manage_transaction=True,
+            )
             counters["raw_rows"] += 1
             index_changed = (
                 write_result.counts.get("sessions", 0)

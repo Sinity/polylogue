@@ -147,6 +147,10 @@
       "token": "aistudio-drive"
     },
     {
+      "meaning": "OpenTelemetry GenAI OTLP-JSON files (explicit source roots)",
+      "token": "otel-genai"
+    },
+    {
       "meaning": "Unrecognized fallback exports",
       "token": "unknown-export"
     }

@@ -1381,7 +1381,15 @@ def _write_session(
             counts[_FTS_REPAIR_COUNT_KEY] = 1
         return False, counts
 
-    if existing_row is None and not payload.parsed_session.messages and not force_write:
+    if (
+        existing_row is None
+        and not payload.parsed_session.messages
+        and not force_write
+        and not (
+            payload.parsed_session.source_name is Provider.OTEL_GENAI
+            and any(event.event_type == "otel_span_evidence" for event in payload.parsed_session.session_events)
+        )
+    ):
         counts["skipped_sessions"] = 1
         return False, counts
 

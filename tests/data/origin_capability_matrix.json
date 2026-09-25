@@ -12,6 +12,7 @@
     {"origin": "claude-ai-export", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/claude-ai-export.json", "format": "json", "fallback_id": "origin-matrix-claude-ai", "parser_claims": [{"provider": "claude-ai"}]}]},
     {"origin": "claude-design-session", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/claude-design-session.json", "format": "json", "fallback_id": "origin-matrix-claude-design", "parser_claims": [{"provider": "claude-design"}]}]},
     {"origin": "aistudio-drive", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/origin-capability/aistudio-drive.json", "format": "json", "fallback_id": "origin-matrix-aistudio-gemini", "parser_claims": [{"provider": "gemini"}]}, {"fixture": "tests/fixtures/origin-capability/aistudio-drive-hinted.json", "format": "json", "fallback_id": "origin-matrix-aistudio-drive", "route": "source-hint", "parser_claims": [{"provider": "drive"}]}]},
+    {"origin": "otel-genai", "status": "supported", "witnesses": [{"fixture": "tests/fixtures/otel-genai/trace.json", "format": "json", "fallback_id": "origin-matrix-otel-genai", "parser_claims": [{"provider": "opentelemetry"}]}]},
     {"origin": "unknown-export", "status": "unsupported", "witnesses": [], "unsupported": {"status": "unsupported", "reason": "compatibility-only", "detail": "OriginSpec is a compatibility fallback with no parser binding; retain evidence until a concrete source adapter is admitted."}}
   ],
   "empty": [

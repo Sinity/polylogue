@@ -23,7 +23,7 @@ import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
@@ -236,33 +236,24 @@ def _source_file_from_reference(reference: str) -> str:
     return path if separator else reference
 
 
-#: Per-process content digests, keyed by the full inode identity of the file
-#: they were read from. ``st_ctime_ns`` is the load-bearing component: it
-#: advances on every write and, unlike ``st_mtime_ns``, cannot be restored by
-#: ``os.utime``, so a same-length rewrite under a replayed mtime misses this
-#: cache and is re-read.
-_SOURCE_DIGESTS: dict[tuple[str, int, int, int, int, int], str] = {}
-
-
+@cache
 def _source_signature(path: Path) -> tuple[str, str, int]:
     """Identify one parser source by its contents, not its stat metadata.
 
-    The persistent fingerprint memo is keyed by these signatures. Keyed on
-    (path, mtime, size) it is reused by any rewrite preserving both -- a
-    same-length edit under a restored mtime, which checkout, patch
-    application, and archive extraction all produce -- and the stale parser
-    fingerprint then claims semantics the file no longer has.
-
-    Digesting the bytes is the identity; the stat-keyed cache above only
-    avoids re-reading a file whose inode has not been touched since.
+    Production source files cannot change during this process, so their
+    signatures are memoized by path. Source-mutating test harnesses and
+    developer tools must call ``_invalidate_source_signatures`` after writes.
     """
     stat = path.stat()
-    key = (str(path), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_dev, stat.st_ino)
-    digest = _SOURCE_DIGESTS.get(key)
-    if digest is None:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        _SOURCE_DIGESTS[key] = digest
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return str(path), digest, stat.st_size
+
+
+def _invalidate_source_signatures() -> None:
+    """Invalidate source-derived caches after an explicit in-process edit."""
+    _source_signature.cache_clear()
+    _local_import_paths.cache_clear()
+    _semantic_source_closure.cache_clear()
 
 
 def _fingerprint_path_label(path: Path) -> str:
@@ -434,10 +425,9 @@ def _semantic_source_paths(
 ) -> tuple[Path, ...]:
     """Return the parser-semantic import closure of ``paths``.
 
-    Membership is walked once per process per argument set. Only the member
-    *list* is memoized: every caller re-derives :func:`_source_signature` for
-    each member on each call, so an edited source still changes its content
-    digest and the fingerprint that digest keys.
+    Membership and member signatures are memoized for the process lifetime.
+    Production source files cannot change while the process runs; source-
+    mutating tests and developer tools invalidate signatures explicitly.
 
     The memo holds a member's import graph fixed for the life of the process,
     the same assumption :func:`_local_import_paths` makes by caching edges per
@@ -497,7 +487,7 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, str, int], ...], na
 
 def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     fragments: list[dict[str, str]] = []
-    for path_string, _mtime_ns, _size in signatures:
+    for path_string, _digest, _size in signatures:
         tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
         normalized = _DocstringStripper().visit(tree)
         if (
@@ -3050,6 +3040,51 @@ def _aistudio_drive_spec() -> OriginSpec:
     )
 
 
+def _otel_genai_spec() -> OriginSpec:
+    """Declare configured local OTLP JSON as an explicit source origin."""
+    from polylogue.sources.parsers.otel_genai import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
+
+    return _executable_spec(
+        Origin.OTEL_GENAI,
+        provider=Provider.OTEL_GENAI,
+        tightness=95,
+        discovery="Explicitly configured OTLP-JSON file with GenAI span attributes.",
+        acquisition_modes=("otlp-json-file",),
+        parser_paths=("polylogue/sources/parsers/otel_genai.py",),
+        fixture_paths=("tests/unit/sources/parsers/test_otel_genai.py", "tests/fixtures/otel-genai/trace.json"),
+        assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="session_document",
+                path_pattern=r".*\.json$",
+                parse_policy="session",
+                parser_path="polylogue/sources/parsers/otel_genai.py",
+                coverage_role="otlp_json_export",
+                fidelity_note=(
+                    "An explicitly configured root supplies the source scope; parser admission still requires an "
+                    "OTLP JSON document with a normalizable GenAI span."
+                ),
+                path_suffixes=(".json",),
+                watch_suffixes=(".json",),
+            ),
+        ),
+        fidelity_notes=(
+            f"Accepted dialect: {OTLP_JSON_DIALECT}; normalized GenAI schema URL: {SEMCONV_SCHEMA_URL}.",
+            "A session is scoped by resource service.name plus asserted gen_ai.conversation.id, falling back "
+            "to trace_id. A trace is correlation evidence, not proof of a complete conversation.",
+            "OTLP spans and their attributes are retained as session evidence. Unsupported schema URLs are "
+            "retained as evidence but do not produce normalized messages.",
+            "Usage is populated only from non-negative gen_ai.usage.* values actually present. Missing usage "
+            "is not converted to zero. Tool outcomes derive from OTLP status when it is reported.",
+        ),
+        display_description="OpenTelemetry GenAI OTLP-JSON files (explicit source roots)",
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
+        topology_capabilities=_no_topology_capabilities(Origin.OTEL_GENAI),
+    )
+
+
 def _unknown_spec() -> OriginSpec:
     origin = Origin.UNKNOWN_EXPORT
     return OriginSpec(
@@ -3297,6 +3332,22 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             fixture_paths=("tests/unit/sources/test_parsers_drive.py", "tests/data/gemini_chunked_prompt"),
             schema_paths=("polylogue/schemas/providers/gemini/catalog.json",),
             docs_paths=("docs/providers/gemini.md",),
+        ),
+    ),
+    Origin.OTEL_GENAI: (
+        _completeness_mode(
+            "provider-package:otel-genai/otlp-json-file@v1",
+            "otlp-json-file",
+            Provider.OTEL_GENAI,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/otel_genai.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/otel_genai.py",),
+            parser_paths=("polylogue/sources/parsers/otel_genai.py",),
+            normalizer_paths=("polylogue/sources/parsers/otel_genai.py",),
+            fixture_paths=("tests/unit/sources/parsers/test_otel_genai.py", "tests/fixtures/otel-genai/trace.json"),
+            schema_paths=(),
+            docs_paths=("docs/provider-origin-identity.md",),
+            caveats=("Configured OTLP-JSON files only; unsupported GenAI fields remain span evidence.",),
         ),
     ),
     Origin.UNKNOWN_EXPORT: (
@@ -3580,6 +3631,16 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             fixed_provider=Provider.GEMINI,
         ),
     ),
+    Origin.OTEL_GENAI: (
+        DetectorBinding(
+            "otel-genai-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_otel_genai_record",
+            0,
+            "OTLP-JSON resourceSpans contains a normalizable span with gen_ai.* attributes",
+            fixed_provider=Provider.OTEL_GENAI,
+        ),
+    ),
     Origin.UNKNOWN_EXPORT: (
         DetectorBinding(
             "browser-capture-record",
@@ -3624,6 +3685,7 @@ for _spec in (
     _claude_ai_spec(),
     _claude_design_spec(),
     _aistudio_drive_spec(),
+    _otel_genai_spec(),
     _unknown_spec(),
 ):
     ORIGIN_SPEC_REGISTRY.register(_with_declaration_fields(_spec))

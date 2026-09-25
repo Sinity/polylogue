@@ -1302,15 +1302,16 @@ def _message_usage_event_payload(
     message: Mapping[str, object] | None = None,
     record: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    last_usage: dict[str, int] = {
-        "input_tokens": _safe_int(usage.get("input_tokens")),
-        "output_tokens": _safe_int(usage.get("output_tokens")),
-        "cached_input_tokens": _safe_int(usage.get("cache_read_input_tokens")),
-        "cache_write_tokens": _safe_int(usage.get("cache_creation_input_tokens")),
-    }
-    total_tokens = _safe_int(usage.get("total_tokens"))
-    if total_tokens:
-        last_usage["total_tokens"] = total_tokens
+    last_usage: dict[str, int] = {}
+    for wire_key, event_key in (
+        ("input_tokens", "input_tokens"),
+        ("output_tokens", "output_tokens"),
+        ("cache_read_input_tokens", "cached_input_tokens"),
+        ("cache_creation_input_tokens", "cache_write_tokens"),
+        ("total_tokens", "total_tokens"),
+    ):
+        if wire_key in usage and (value := _optional_safe_int(usage[wire_key])) is not None:
+            last_usage[event_key] = value
     payload: dict[str, object] = {
         "type": "message_usage",
         "semantics": "per_message",

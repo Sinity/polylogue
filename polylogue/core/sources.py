@@ -151,6 +151,11 @@ _SOURCE_DRIVE: Final[Source] = Source(
     runtime_root=None,  # acquired via Google Drive / Takeout APIs
     originating_lab="google",
 )
+_SOURCE_OTEL_GENAI: Final[Source] = Source(
+    family="otel-genai",
+    runtime_root=None,  # explicitly configured OTLP-JSON file roots
+    originating_lab="unknown",  # telemetry can describe any producing lab
+)
 _SOURCE_UNKNOWN: Final[Source] = Source(
     family="unknown",
     runtime_root=None,
@@ -172,6 +177,7 @@ _PROVIDER_TO_SOURCE: Final[dict[Provider, Source]] = {
     Provider.BEADS: _SOURCE_BEADS,
     Provider.GROK: _SOURCE_GROK,
     Provider.DRIVE: _SOURCE_DRIVE,
+    Provider.OTEL_GENAI: _SOURCE_OTEL_GENAI,
     Provider.UNKNOWN: _SOURCE_UNKNOWN,
 }
 
@@ -251,6 +257,7 @@ _PROVIDER_TO_ORIGIN: Final[dict[Provider, Origin]] = {
     Provider.BEADS: Origin.BEADS_ISSUE,
     Provider.GROK: Origin.GROK_EXPORT,
     Provider.DRIVE: Origin.AISTUDIO_DRIVE,
+    Provider.OTEL_GENAI: Origin.OTEL_GENAI,
     Provider.UNKNOWN: Origin.UNKNOWN_EXPORT,
 }
 
@@ -270,6 +277,7 @@ _ORIGIN_TO_LAB: Final[dict[Origin, Lab]] = {
     Origin.BEADS_ISSUE: "beads",
     Origin.HERMES_SESSION: "nous",
     Origin.GROK_EXPORT: "xai",
+    Origin.OTEL_GENAI: "unknown",
     Origin.UNKNOWN_EXPORT: "unknown",
 }
 
@@ -319,6 +327,7 @@ _ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
     Origin.CLAUDE_AI_EXPORT: Provider.CLAUDE_AI,
     Origin.CLAUDE_DESIGN_SESSION: Provider.CLAUDE_DESIGN,
     Origin.AISTUDIO_DRIVE: Provider.GEMINI,
+    Origin.OTEL_GENAI: Provider.OTEL_GENAI,
     Origin.UNKNOWN_EXPORT: Provider.UNKNOWN,
 }
 

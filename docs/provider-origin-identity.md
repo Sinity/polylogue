@@ -47,7 +47,7 @@ replace archive object identity.
 | Coordinate | Current names and owners | Actual invariant | Public? | Decision |
 | --- | --- | --- | --- | --- |
 | Provider-wire family | `Provider` in `polylogue/core/enums.py`; canonical runtime/schema helpers in `polylogue/core/provider_identity.py`; parser outputs; provider schema packages | The normalized raw-export/parser/schema family used at provider-wire and older storage boundaries. | Mostly internal | Keep for parsers, schema packages, raw/provider metadata, and storage bridges that still require provider tokens. Do not use it as the public filter vocabulary. |
-| Public origin | `Origin` in `polylogue/core/enums.py`; `origin` filters in query spec, CLI, MCP, daemon, and row payloads | User-facing source-origin family such as `claude-code-session`, `codex-session`, `chatgpt-export`, or `aistudio-drive`. | Yes | Use on public read/query/API/MCP/daemon surfaces. It is the preferred coordinate for user-facing source filters. |
+| Public origin | `Origin` in `polylogue/core/enums.py`; `origin` filters in query spec, CLI, MCP, daemon, and row payloads | User-facing source-origin family such as `claude-code-session`, `codex-session`, `chatgpt-export`, `aistudio-drive`, or `otel-genai`. | Yes | Use on public read/query/API/MCP/daemon surfaces. It is the preferred coordinate for user-facing source filters. |
 | Source family descriptor | `Source` in `polylogue/core/sources.py`; `family`, `runtime_root`, `originating_lab`; `provider_to_source`, `origin_from_provider` bridges | A source family plus its conventional runtime root and lab attribution. | Sometimes | Use for source discovery, lab derivation, and transition bridges. Do not treat `Source` as material path, parser version, model, or archive ref. |
 | Material source | configured root, source path, import path, raw artifact path, raw id, blob refs, acquired file identity | Where bytes or records were acquired from and how they can be inspected or reacquired. | Yes when redacted/safe | ImportExplain and raw/debug views should expose this separately from origin/provider. Redact paths when crossing daemon/web/MCP boundaries. |
 | Capture mode | export ZIP/JSON, local session stream, hook event, sidecar, browser capture receiver, language-server export, synthetic fixture | Acquisition mechanism and completeness expectation. | Yes in ops/readiness/debt | Provider-package completeness and archive debt should classify by origin plus capture mode. Do not infer capture mode from provider vendor. |
@@ -116,6 +116,35 @@ enrichment hook that polylogue-2qx.2/j2zz/ih67 extend).
 - Browser capture has its own HTTP receiver/auth/raw-origin concerns. It should
   report capture mode and receiver readiness explicitly rather than pretending
   the captured page's lab/vendor explains the acquisition boundary.
+
+### OpenTelemetry GenAI file source
+
+`otel-genai` is a configured local-file origin for OTLP JSON
+`ExportTraceServiceRequest` documents. It is not a receiver. The detector
+requires an OTLP resource/span document with at least one `gen_ai.*` attribute
+under the supported GenAI schema URL, or under no schema URL. A schema URL the
+adapter does not support stays in span evidence when the document also has a
+normalizable span; it cannot create normalized transcript messages.
+
+The public origin is `otel-genai`; the provider-wire token is
+`opentelemetry`. That spelling stays at acquisition and parser boundaries,
+because public origin names and provider-wire names intentionally occupy
+different vocabularies.
+
+Sessions group spans by resource `service.name` plus
+`gen_ai.conversation.id`; absent conversation IDs fall back to `traceId`.
+Trace identity is correlation evidence, not proof that a captured file carries
+one complete conversation. Span attributes, status, parent span ID, schema
+URL, and source fidelity states remain session evidence. Usage is only copied
+from reported non-negative `gen_ai.usage.*` values; absent usage is never
+invented as zero.
+
+Within a resource, trace ID plus span ID identifies one span. Repeated exact
+copies normalize once. If copies conflict, the pinned schema wins, followed by
+an earlier start time, the schema URL, and canonical span JSON bytes. Other distinct copies remain
+in `otel_conflicting_span_id` evidence events. The selected copy determines
+conversation grouping, so export order cannot change the session identity.
+Spans with no messages still produce an evidence session.
 
 ## How New Features Should Cite This Map
 

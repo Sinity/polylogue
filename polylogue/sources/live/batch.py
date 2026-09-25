@@ -80,6 +80,7 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import (
@@ -4065,6 +4066,15 @@ class LiveBatchProcessor:
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
+                    record_session_artifact_observation(
+                        archive,
+                        raw_id=source_raw_id,
+                        provider=provider,
+                        source_path=record.source_path,
+                        source_index=record.source_index or 0,
+                        observed_at_ms=acquired_at_ms,
+                        manage_transaction=False,
+                    )
                     record_raw_id = source_raw_id
                     record_session_ids: list[str] = []
                     record_session_count = 0

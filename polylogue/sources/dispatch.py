@@ -41,6 +41,7 @@ from .parsers import (
     hermes_state,
     hermes_verification,
     local_agent,
+    otel_genai,
 )
 from .parsers.base import (
     ParsedMessage,
@@ -353,6 +354,11 @@ def _looks_like_claude_ai_sequence(payload: object) -> bool:
 def _looks_like_grok_record(payload: object) -> bool:
     record = _payload_record(payload)
     return record is not None and grok.looks_like_export(record)
+
+
+def _looks_like_otel_genai_record(payload: object) -> bool:
+    """Recognize an OTLP-JSON trace export carrying GenAI attributes."""
+    return otel_genai.looks_like(payload)
 
 
 def _looks_like_grok_sequence(payload: object) -> bool:
@@ -1584,6 +1590,19 @@ def _lower_payload_specs(
         return []
     if runtime_provider is Provider.GROK:
         return _lower_grok_export_payload(shaped_payload, fallback_id)
+    if runtime_provider is Provider.OTEL_GENAI:
+        record = _single_document_record(shaped_payload)
+        if record is None or not otel_genai.looks_like(record):
+            return []
+        return [
+            LoweredPayloadSpec(
+                provider=Provider.OTEL_GENAI,
+                fallback_id=fallback_id,
+                mode="single_record",
+                payload=record,
+                source_path=source_path,
+            )
+        ]
     return _lower_fallback_payload(runtime_provider, shaped_payload, fallback_id)
 
 
@@ -1680,6 +1699,10 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
     if spec.provider is Provider.GROK:
         record = _payload_record(spec.payload)
         return [grok.parse_conversation(record, spec.fallback_id)] if record is not None else []
+
+    if spec.provider is Provider.OTEL_GENAI:
+        record = _payload_record(spec.payload)
+        return otel_genai.parse(record, spec.fallback_id) if record is not None else []
 
     if spec.provider is Provider.CLAUDE_CODE:
         payloads = _payload_sequence(spec.payload)
@@ -1786,9 +1809,8 @@ def require_positive_conversational_evidence(
     provider: str | Provider,
     source_path: str | None,
 ) -> list[ParsedSession]:
-    """polylogue-9ykn: a session requires positive evidence of a conversation
-    -- at minimum one message carrying authored content -- or it is refused
-    loudly rather than written.
+    """polylogue-9ykn: a session requires authored content or, for OTel GenAI,
+    retained span evidence. Other empty sessions are refused before writing.
 
     Deliberately NOT folded into ``parse_payload``/``parse_stream_payload``
     themselves: those two functions are pure provider-routing dispatch, and
@@ -1842,6 +1864,11 @@ def require_positive_conversational_evidence(
     kept: list[ParsedSession] = []
     for session in sessions:
         if any(message_carries_authored_content(message) for message in session.messages):
+            kept.append(session)
+            continue
+        if session.source_name is Provider.OTEL_GENAI and any(
+            event.event_type == "otel_span_evidence" for event in session.session_events
+        ):
             kept.append(session)
             continue
         logger.warning(

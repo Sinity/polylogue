@@ -77,19 +77,8 @@ _WORK_PROFILE = "finished-build-equivalence:synthetic-8-raw:codex"
 #: observation, not a committed baseline: promoting one is the deliberate
 #: ``devtools bench baseline --record`` step.
 _MEASUREMENT_NAME = "finished-build-equivalence-synthetic"
-# ``RevisionBackfillResult.stage_timings_s`` carries a few COUNTERS in the same
-# mapping as its durations (``float(self.reparse_hits)`` and friends). A naive
-# maximum over the ledger therefore reports a hit count as the expensive phase.
-# These are excluded by name, and any other key claiming more time than the
-# route's own ``total`` is refused rather than reported -- so a counter added
-# later fails this harness instead of quietly becoming its verdict.
-_NON_DURATION_STAGE_KEYS = frozenset(
-    {
-        "spill_prefetch.hits",
-        "spill_prefetch.reparse_hits",
-        "spill_prefetch.consumed",
-    }
-)
+# Counts have their own ``stage_counts`` key space, so every non-total entry
+# in ``stage_timings_s`` is a duration and can be compared directly.
 #: Kernel/clock slack between the route's own ledger and the probe interval.
 _LEDGER_TOLERANCE_S = 0.5
 
@@ -133,6 +122,7 @@ class _ArmRun:
     adoption_deferred: int
     quarantined: int
     stage_timings_s: dict[str, float]
+    stage_counts: dict[str, int]
     writer_apply_seconds: float
 
     @property
@@ -149,11 +139,7 @@ class _ArmRun:
         if not self.stage_timings_s:
             raise AssertionError(f"{self.arm.name} recorded no stage ledger to attribute its elapsed time to")
         total = self.route_total_seconds
-        durations = {
-            stage: seconds
-            for stage, seconds in self.stage_timings_s.items()
-            if stage != "total" and stage not in _NON_DURATION_STAGE_KEYS
-        }
+        durations = {stage: seconds for stage, seconds in self.stage_timings_s.items() if stage != "total"}
         impossible = {stage: seconds for stage, seconds in durations.items() if seconds > total + _LEDGER_TOLERANCE_S}
         if impossible:
             raise AssertionError(
@@ -162,6 +148,42 @@ class _ArmRun:
         if not durations:
             raise AssertionError(f"{self.arm.name} recorded only a total with no phase to attribute it to")
         return max(durations.items(), key=lambda item: item[1])
+
+
+def test_replay_prefetch_counts_are_separate_from_stage_durations(tmp_path: Path) -> None:
+    with revision_backfill._ParsedSessionSpill(tmp_path, max_cached_payload_bytes=None) as spill:
+        prefetcher = revision_backfill._ReplaySpillPrefetcher(
+            spill,
+            archive_root=tmp_path,
+            max_buffered_tree_bytes=1,
+        )
+        prefetcher.hits = 2
+        prefetcher.reparse_hits = 1
+        prefetcher.consumed = 1
+        prefetcher.decode_seconds = 0.25
+
+        timings = prefetcher.close()
+        counts = prefetcher.counts()
+
+    assert timings == {"spill_prefetch.decode_concurrent": 0.25}
+    assert counts == {
+        "spill_prefetch.hits": 2,
+        "spill_prefetch.reparse_hits": 1,
+        "spill_prefetch.consumed": 1,
+    }
+
+
+def test_replay_enrichment_counts_are_request_local() -> None:
+    @revision_backfill._capture_replay_enrichment_degradations
+    def replay_probe() -> revision_backfill.RevisionBackfillResult:
+        revision_backfill._count_enrichment_degradation("probe")
+        return revision_backfill.RevisionBackfillResult(0, 0, 0, 0, 0, 0)
+
+    first = replay_probe()
+    second = replay_probe()
+
+    assert first.stage_counts == {"replay_enrichment_degraded.probe": 1}
+    assert second.stage_counts == {"replay_enrichment_degraded.probe": 1}
 
 
 def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Arm) -> _ArmRun:
@@ -214,6 +236,7 @@ def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Ar
         adoption_deferred=result.adoption_deferred,
         quarantined=result.quarantined,
         stage_timings_s=dict(result.stage_timings_s),
+        stage_counts=dict(result.stage_counts),
         writer_apply_seconds=writer_apply_seconds,
     )
 
@@ -317,6 +340,7 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
         assert resources.storage_bytes > 0
         assert run.writer_apply_seconds > 0, f"{run.arm.name} reported no serialized writer-apply time"
         stage, stage_seconds = run.dominant_stage
+        assert set(run.stage_counts).isdisjoint(run.stage_timings_s)
         # The route cannot have spent more time than the probe measured around
         # it. This is what stops a receipt from timing one inner phase and
         # presenting it as the finished operation.

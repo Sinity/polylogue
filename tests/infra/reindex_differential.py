@@ -39,6 +39,7 @@ _CREATE_VIRTUAL_TABLE = re.compile(
 _NON_COMPARABLE_TABLES: dict[str, str] = {
     "ingest_index_incarnation": "physical index-file identity; each isolated candidate has its own inode/incarnation",
     "messages_fts_identity": "FTS support relation compared through public search and exact membership counts",
+    "ingest_marker_witnesses": "live-ingest idempotency receipts are route history, not finished-build output",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
     "raw_revision_applications": "attempt receipts contain generated decision ids and wall-clock timestamps",
     "schema_identity": "stores a hash of the DDL identity itself, not derived model data",
@@ -56,7 +57,6 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "delegation_refresh_scope": frozenset(),
     "derived_refresh_guard": frozenset(),
     "file_edits": frozenset(),
-    "ingest_marker_witnesses": frozenset({"incarnation_id"}),
     "messages": frozenset(),
     "messages_fts_readiness_binding": frozenset(),
     "paste_spans": frozenset(),
@@ -70,6 +70,10 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_latency_profiles": frozenset({"materialized_at"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_model_usage": frozenset(),
+    # Completed arms must agree on outstanding profile work and the recipe
+    # seed that produced it. A pending demand is not a finished build.
+    "session_profile_demand": frozenset(),
+    "session_profile_demand_state": frozenset(),
     "session_profiles": frozenset({"materialized_at"}),
     "session_provider_usage_events": frozenset(),
     "session_refs": frozenset(),

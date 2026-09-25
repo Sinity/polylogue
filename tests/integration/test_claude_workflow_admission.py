@@ -31,7 +31,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
-from polylogue.storage.blob_store import BlobStore
+from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -184,7 +184,7 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     old_snapshot = summary.corpus_snapshot_ref
     revised_run = _run_snapshot(final_value="final result revision two")
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_raw_payload(
+        revised_raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
             payload=json.dumps(revised_run, sort_keys=True).encode(),
             source_path=str(run_path),
@@ -192,6 +192,13 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
             acquired_at_ms=2_000_000_000_000,
         )
 
+    assert claude_workflow_materialization_needed(archive_root) is True
+    pending = materialize_claude_workflow_archive(archive_root)
+    assert pending.current_artifact_count == 223
+    assert pending.retained_raw_revision_count == 225
+    assert pending.artifact_counts.get("workflow_run_snapshot", 0) == 0
+
+    backfill_historical_revision_evidence(archive_root, selected_raw_ids=[revised_raw_id])
     assert claude_workflow_materialization_needed(archive_root) is True
     revised = materialize_claude_workflow_archive(archive_root)
     assert revised.current_artifact_count == 224
@@ -262,54 +269,63 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     assert any("missing paired agent metadata sidecar" in gap for gap in degraded.gaps)
 
 
-def test_materializer_streams_large_jsonl_evidence_before_inventory_read(
-    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+def test_materializer_does_not_repair_pending_source_artifact_inventory(
+    workspace_env: dict[str, Path],
 ) -> None:
-    """Inventory repair must detect delayed sessions without ``read_all``."""
+    """A source-only raw row stays pending until replay owns classification."""
     archive_root = workspace_env["archive_root"]
     initialize_active_archive_root(archive_root)
     source_path = workspace_env["data_root"] / ".claude/projects/project/subagents/workflows/wf-large/journal.jsonl"
-    payload = (
-        b'{"contentKey":"'
-        + b"x" * (2 * 1024 * 1024)
-        + b'","agentId":"workflow-agent"}\n'
-        + b"".join(
-            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
-            for index in range(1, 64)
-        )
-        + b'{"sessionId":"late-session","parentUuid":null,"type":"user",'
-        b'"message":{"role":"user","content":"recover this session"},'
-        b'"uuid":"late-user","timestamp":"2025-01-01T00:00:00Z"}\n'
-        b'{"sessionId":"late-session","parentUuid":"late-user","type":"assistant",'
-        b'"message":{"role":"assistant","content":[{"type":"text","text":"recovered"}]},'
-        b'"uuid":"late-assistant","timestamp":"2025-01-01T00:00:01Z"}\n'
+    fact_payload = b"".join(
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(64)
     )
-    classification = classify_artifact_path(str(source_path), provider=Provider.CLAUDE_CODE)
-    assert classification is not None and not classification.parse_as_session
+    pending_payload = b'{"contentKey":"pending-source-only","agentId":"workflow-agent"}\n'
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        classification = classify_artifact_path(str(source_path), provider=Provider.CLAUDE_CODE)
+        assert classification is not None and not classification.parse_as_session
         archive.admit_raw_artifact_payload(
             provider=Provider.CLAUDE_CODE,
-            payload=payload,
+            payload=fact_payload,
             source_path=str(source_path),
             source_index=0,
             acquired_at_ms=2_000_000_000_000,
             classification=classification,
         )
-
-    original_read_all = BlobStore.read_all
-
-    def reject_large_read(self: BlobStore, hash_hex: str) -> bytes:
-        if self.blob_path(hash_hex).stat().st_size > 1024:
-            raise AssertionError("materializer must detect large JSONL sessions before BlobStore.read_all")
-        return original_read_all(self, hash_hex)
-
-    monkeypatch.setattr(BlobStore, "read_all", reject_large_read)
+        archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=pending_payload,
+            source_path=str(source_path),
+            source_index=0,
+            acquired_at_ms=2_000_000_000_001,
+            post_parse=True,
+        )
 
     summary = materialize_claude_workflow_archive(archive_root)
 
     assert summary.current_artifact_count == 0
     with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
+        assert (
+            conn.execute(
+                """
+            SELECT a.raw_id
+            FROM raw_artifacts AS a
+            WHERE a.source_path = ?
+            """,
+                (str(source_path),),
+            ).fetchone()
+            == conn.execute(
+                """
+            SELECT raw_id
+            FROM raw_sessions
+            WHERE source_path = ?
+            ORDER BY acquired_at_ms, rowid
+            LIMIT 1
+            """,
+                (str(source_path),),
+            ).fetchone()
+        )
 
 
 @pytest.mark.asyncio

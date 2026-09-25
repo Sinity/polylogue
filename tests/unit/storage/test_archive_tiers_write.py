@@ -5529,7 +5529,7 @@ def test_reingest_with_poorer_export_carries_provider_usage_evidence(tmp_path: P
     conn = _connect(tmp_path / "index.db")
     try:
 
-        def _event(input_tokens: int, output_tokens: int) -> ParsedSessionEvent:
+        def _event(input_tokens: int | None, output_tokens: int | None) -> ParsedSessionEvent:
             return ParsedSessionEvent(
                 event_type="token_count",
                 source_message_provider_id="m1",
@@ -5537,8 +5537,9 @@ def test_reingest_with_poorer_export_carries_provider_usage_evidence(tmp_path: P
                     "type": "token_count",
                     "model": "gpt-5-codex",
                     "total_token_usage": {
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
+                        key: value
+                        for key, value in (("input_tokens", input_tokens), ("output_tokens", output_tokens))
+                        if value is not None
                     },
                 },
             )
@@ -5558,7 +5559,7 @@ def test_reingest_with_poorer_export_carries_provider_usage_evidence(tmp_path: P
         )
         session_id = write_parsed_session_to_archive(conn, rich, raw_id="usage-rich-acquisition")
 
-        poorer = rich.model_copy(update={"session_events": [_event(0, 0)]})
+        poorer = rich.model_copy(update={"session_events": [_event(None, None)]})
         write_parsed_session_to_archive(conn, poorer, raw_id="usage-poor-acquisition")
 
         events = conn.execute(
@@ -5572,6 +5573,14 @@ def test_reingest_with_poorer_export_carries_provider_usage_evidence(tmp_path: P
             (session_id,),
         ).fetchone()
         assert tuple(rollup) == (100, 20)
+
+        measured_zero = rich.model_copy(update={"session_events": [_event(0, 0)]})
+        write_parsed_session_to_archive(conn, measured_zero, raw_id="usage-zero-acquisition")
+        zero_event = conn.execute(
+            "SELECT total_input_tokens, total_output_tokens FROM session_provider_usage_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert tuple(zero_event) == (0, 0)
     finally:
         conn.close()
 

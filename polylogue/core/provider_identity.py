@@ -79,10 +79,12 @@ CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "beads",
     "grok",
     "drive",
+    "opentelemetry",
     "unknown",
 )
 
 _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
+    "otel-genai": "opentelemetry",
     "claude": "claude-ai",
     "anthropic": "claude-ai",
     "claude-code-todos": "claude-code",

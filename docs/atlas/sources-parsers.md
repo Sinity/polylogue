@@ -28,7 +28,7 @@ parsed sessions before the storage writer lowers them
 
 Lower number runs first. Tightness must be unique among executable
 `OriginSpec`s, which is enforced at spec validation
-(`polylogue/sources/origin_specs.py:1456-1466`). Current executable order:
+(`polylogue/sources/origin_specs.py:1448-1451`). Current executable order:
 
 | Tightness | Origin |
 | --- | --- |

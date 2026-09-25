@@ -37,6 +37,29 @@ def test_projection_uses_latest_session_global_cumulative_once() -> None:
     assert projection.cost_usd == estimate_cost(300, 50, "gpt-4o", 0, 0)
 
 
+def test_explicit_zero_cumulative_supersedes_prior_positive() -> None:
+    (projection,) = project_provider_usage_events(
+        [
+            {
+                "session_id": "s1",
+                "position": 1,
+                "provider_event_type": "token_count",
+                "model_name": "gpt-4o",
+                "total_input_tokens": 100,
+            },
+            {
+                "session_id": "s1",
+                "position": 2,
+                "provider_event_type": "token_count",
+                "model_name": "gpt-4o",
+                "total_input_tokens": 0,
+            },
+        ],
+        origin="codex",
+    )
+    assert projection.input_tokens == 0
+
+
 def test_projection_splits_models_and_marks_missing_cache_rate_incomplete() -> None:
     events = [
         {

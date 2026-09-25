@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.archive.artifact_taxonomy.models import ArtifactKind
+from polylogue.archive.message.roles import Role
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider
@@ -21,8 +22,8 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES, LiveBatchProcessor
 from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, _parse_path_as_session_artifact
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.parsers import antigravity, hermes_state
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers import antigravity, hermes_state, local_agent
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions, iter_source_sessions_with_raw
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.blob_store import BlobStore
@@ -377,7 +378,6 @@ def test_gemini_cli_contentless_turn_keeps_its_token_counts() -> None:
         "input_tokens": 19029,
         "output_tokens": 782,
         "cached_input_tokens": 0,
-        "cache_write_tokens": None,
         "reasoning_output_tokens": 0,
         "total_tokens": 19811,
     }
@@ -788,7 +788,6 @@ def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
         "cached_input_tokens": 3,
         "cache_write_tokens": 4,
         "reasoning_output_tokens": 5,
-        "total_tokens": 42,
     }
     assert {
         key: usage_events[0].payload[key]
@@ -1902,3 +1901,23 @@ def test_gemini_cli_subagent_user_turn_is_not_stamped_human_authored() -> None:
 
     assert subagent_session.messages[0].material_origin is MaterialOrigin.UNKNOWN
     assert ordinary_session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+
+
+def test_gemini_usage_event_does_not_assign_total_only_count_to_output() -> None:
+    message = ParsedMessage(provider_message_id="a1", role=Role.ASSISTANT, text="done")
+    event = local_agent._gemini_message_usage_event({"usage": {"total_tokens": 0}}, message)
+    assert event is not None
+    assert event.payload["last_token_usage"] == {"total_tokens": 0}
+
+
+def test_hermes_usage_event_keeps_null_and_explicit_zero_distinct() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT NULL AS input_tokens, 0 AS output_tokens, 5 AS cache_read_tokens, "
+            "NULL AS cache_write_tokens, NULL AS reasoning_tokens, NULL AS ended_at, NULL AS end_reason"
+        ).fetchone()
+        assert row is not None
+        events = hermes_state._usage_and_lifecycle_events(row, [], session_columns=set(row.keys()))
+    assert len(events) == 1
+    assert events[0].payload["total_token_usage"] == {"output_tokens": 0, "cached_input_tokens": 5}

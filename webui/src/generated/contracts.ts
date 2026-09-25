@@ -10,7 +10,8 @@ export const PUBLIC_ORIGINS = [
   "chatgpt-export",
   "claude-ai-export",
   "claude-design-session",
-  "aistudio-drive"
+  "aistudio-drive",
+  "otel-genai"
 ] as const;
 export type OriginToken = (typeof PUBLIC_ORIGINS)[number];
 export const ORIGIN_LABELS: Readonly<Record<OriginToken, string>> = {
@@ -23,7 +24,8 @@ export const ORIGIN_LABELS: Readonly<Record<OriginToken, string>> = {
   "chatgpt-export": "ChatGPT export",
   "claude-ai-export": "Claude.ai export",
   "claude-design-session": "Claude Design",
-  "aistudio-drive": "AI Studio Drive"
+  "aistudio-drive": "AI Studio Drive",
+  "otel-genai": "OpenTelemetry GenAI"
 };
 export const EVIDENCE_STATES = [
   "exact",

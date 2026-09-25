@@ -3958,15 +3958,13 @@ def _merge_provider_usage_event_rows(
     for index in (1, 4, 17, 18, 19, 21, 22, 23):
         if merged[index] is None:
             merged[index] = existing[index]
-    # Zero is a measured/omitted value in the wire shapes that reach this
-    # table. Across proven-distinct acquisitions keep the richer non-zero
-    # counter; same-acquisition reparses never get here and can retract it.
+    # NULL means unreported. Across proven-distinct acquisitions retain an
+    # earlier observation when the new acquisition omits it; an explicit zero
+    # remains a measurement and must not become an earlier positive value.
     for index in range(5, 17):
         new_value = merged[index]
         old_value = existing[index]
-        if isinstance(new_value, (int, float)) and isinstance(old_value, (int, float)):
-            merged[index] = max(int(new_value), int(old_value))
-        elif new_value is None:
+        if new_value is None:
             merged[index] = old_value
     return tuple(merged)
 
@@ -6778,11 +6776,11 @@ def _provider_usage_event_row(
     """
     last_usage = _payload_mapping(event.payload, "last_token_usage")
     total_usage = _payload_mapping(event.payload, "total_token_usage")
-    total_input = _payload_int(total_usage, "input_tokens")
-    total_output = _payload_int(total_usage, "output_tokens")
-    total_cache_read = _payload_int(total_usage, "cached_input_tokens")
-    total_cache_write = _payload_int(total_usage, "cache_write_tokens")
-    total_reasoning = _payload_int(total_usage, "reasoning_output_tokens")
+    total_input = _payload_optional_int(total_usage, "input_tokens")
+    total_output = _payload_optional_int(total_usage, "output_tokens")
+    total_cache_read = _payload_optional_int(total_usage, "cached_input_tokens")
+    total_cache_write = _payload_optional_int(total_usage, "cache_write_tokens")
+    total_reasoning = _payload_optional_int(total_usage, "reasoning_output_tokens")
     last_total_tokens = _payload_optional_int(last_usage, "total_tokens")
     total_tokens = _payload_optional_int(total_usage, "total_tokens")
     return (
@@ -6791,11 +6789,11 @@ def _provider_usage_event_row(
         position,
         _sqlite_text(event.event_type),
         _sqlite_text(_payload_string(event.payload, "model", "model_name")),
-        _payload_int(last_usage, "input_tokens"),
-        _payload_int(last_usage, "output_tokens"),
-        _payload_int(last_usage, "cached_input_tokens"),
-        _payload_int(last_usage, "cache_write_tokens"),
-        _payload_int(last_usage, "reasoning_output_tokens"),
+        _payload_optional_int(last_usage, "input_tokens"),
+        _payload_optional_int(last_usage, "output_tokens"),
+        _payload_optional_int(last_usage, "cached_input_tokens"),
+        _payload_optional_int(last_usage, "cache_write_tokens"),
+        _payload_optional_int(last_usage, "reasoning_output_tokens"),
         last_total_tokens,
         total_input,
         total_output,
@@ -6829,8 +6827,8 @@ def _provider_usage_event_has_evidence(event: ParsedSessionEvent, row: tuple[obj
     the eight Hermes billing-provenance columns after a zero-reader audit, so
     a billing-only payload still writes no row here.
 
-    Beyond the original "some token field is a non-zero int", two facts now
-    have columns and therefore count on their own:
+    A present token counter, including measured zero, is evidence. Two other
+    facts have columns and count on their own:
 
     - the provider correlation id (``request_id``);
     - the provider's terminal signal (``finish_reason``/``stop_reason``) --
@@ -6842,16 +6840,10 @@ def _provider_usage_event_has_evidence(event: ParsedSessionEvent, row: tuple[obj
     ``model`` deliberately does not count: it names the subject of an
     observation rather than being one.
 
-    A token field at zero is still not admitted on its own, and that is a
-    LIMIT, not a decision that unknown is zero: the parsers coerce absent
-    counters to ``0`` before this point (``hermes_state._usage_and_lifecycle_
-    events``, ``claude/code_parser._message_usage_event_payload``), so at this
-    grain a zero genuinely cannot be told from an absence. Representing
-    measured zero here needs those parsers to stop coercing and these columns
-    to become nullable -- the message-grain change polylogue-qgyuj made, not
-    yet made at usage-event grain.
+    Parsers omit counters they cannot observe, so NULL remains distinct from
+    an explicit zero through this row.
     """
-    if any(isinstance(value, int) and value for value in row[5:17]):
+    if any(value is not None for value in row[5:17]):
         return True
     return (
         bool(_payload_string(event.payload, "request_id"))
@@ -6893,11 +6885,11 @@ def _provider_usage_disjoint_lanes(
 
 
 def _provider_usage_row_has_lane_totals(
-    total_input: int,
-    total_output: int,
-    total_cache_read: int,
-    total_cache_write: int,
-    total_reasoning: int,
+    total_input: int | None,
+    total_output: int | None,
+    total_cache_read: int | None,
+    total_cache_write: int | None,
+    total_reasoning: int | None,
 ) -> bool:
     """Return true when a cumulative row can be mapped to additive lanes.
 
@@ -6907,7 +6899,7 @@ def _provider_usage_row_has_lane_totals(
     """
 
     _ = total_reasoning
-    return bool(total_input or total_output or total_cache_read or total_cache_write)
+    return any(value is not None for value in (total_input, total_output, total_cache_read, total_cache_write))
 
 
 def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
@@ -6976,7 +6968,6 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
         last_cache_read = int(row[5] or 0)
         last_cache_write = int(row[6] or 0)
         last_reasoning = int(row[7] or 0)
-        last_total = int(row[8] or 0)
         total_input = int(row[9] or 0)
         total_output = int(row[10] or 0)
         total_cache_read = int(row[11] or 0)
@@ -6984,9 +6975,7 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
         total_reasoning = int(row[13] or 0)
         total_tokens = int(row[14] or 0)
 
-        if _provider_usage_row_has_lane_totals(
-            total_input, total_output, total_cache_read, total_cache_write, total_reasoning
-        ):
+        if _provider_usage_row_has_lane_totals(*(row[index] for index in range(9, 14))):
             latest_total = (
                 total_input,
                 total_output,
@@ -6998,7 +6987,7 @@ def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session
             latest_total_model = model_name
             continue
 
-        if last_input or last_output or last_cache_read or last_cache_write or last_reasoning or last_total:
+        if any(row[index] is not None for index in range(3, 9)):
             bucket = summed_last_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
             bucket[0] += last_input
             bucket[1] += last_output
@@ -7085,7 +7074,6 @@ def _aggregate_appended_provider_usage_into_model_usage(
         last_cache_read = int(row[4] or 0)
         last_cache_write = int(row[5] or 0)
         last_reasoning = int(row[6] or 0)
-        last_total = int(row[7] or 0)
         total_input = int(row[8] or 0)
         total_output = int(row[9] or 0)
         total_cache_read = int(row[10] or 0)
@@ -7093,9 +7081,7 @@ def _aggregate_appended_provider_usage_into_model_usage(
         total_reasoning = int(row[12] or 0)
         total_tokens = int(row[13] or 0)
 
-        if _provider_usage_row_has_lane_totals(
-            total_input, total_output, total_cache_read, total_cache_write, total_reasoning
-        ):
+        if _provider_usage_row_has_lane_totals(*(row[index] for index in range(8, 13))):
             latest_total = (
                 total_input,
                 total_output,
@@ -7107,7 +7093,7 @@ def _aggregate_appended_provider_usage_into_model_usage(
             latest_total_model = model_name
             continue
 
-        if last_input or last_output or last_cache_read or last_cache_write or last_reasoning or last_total:
+        if any(row[index] is not None for index in range(2, 8)):
             bucket = summed_last_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
             bucket[0] += last_input
             bucket[1] += last_output
@@ -7180,12 +7166,10 @@ def _provider_usage_has_cumulative_total(conn: sqlite3.Connection, session_id: s
           AND provider_event_type = 'token_count'
           AND model_name = ?
           AND (
-            total_input_tokens != 0
-            OR total_output_tokens != 0
-            OR total_cached_input_tokens != 0
-            OR total_cache_write_tokens != 0
-            OR total_reasoning_output_tokens != 0
-            OR total_tokens != 0
+            total_input_tokens IS NOT NULL
+            OR total_output_tokens IS NOT NULL
+            OR total_cached_input_tokens IS NOT NULL
+            OR total_cache_write_tokens IS NOT NULL
           )
         LIMIT 1
         """,
@@ -9940,10 +9924,6 @@ def _payload_string(payload: Mapping[str, object], *keys: str) -> str | None:
 def _payload_mapping(payload: Mapping[str, object], key: str) -> Mapping[str, object]:
     value = payload.get(key)
     return value if isinstance(value, Mapping) else {}
-
-
-def _payload_int(payload: Mapping[str, object], key: str) -> int:
-    return _payload_optional_int(payload, key) or 0
 
 
 def _payload_optional_int(payload: Mapping[str, object], key: str) -> int | None:

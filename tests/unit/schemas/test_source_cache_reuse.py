@@ -20,7 +20,15 @@ from polylogue.schemas.field_stats import detection
 from polylogue.schemas.generation.dynamic_keys import legacy_structure_schema_digest, observed_structure_schema
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.source_cache import CachedContribution
-from polylogue.schemas.source_recipe import SourceEvidenceRecipe
+from polylogue.schemas.source_recipe import SourceEvidenceRecipe, contracts_match_except_key_limit
+
+
+@pytest.mark.parametrize("revision", [None, True, "1", 1.0, [], {}])
+def test_malformed_recipe_revision_cannot_reuse_evidence(revision: JSONValue) -> None:
+    current = SourceEvidenceRecipe().contract("structure")
+    previous = {**current, "identity_revision": revision}
+
+    assert not contracts_match_except_key_limit(previous, current)
 
 
 def write_source(root: Path, name: str, *, extra: dict[str, object] | None = None, width: int = 0) -> None:
@@ -742,8 +750,8 @@ def test_implementation_provenance_does_not_invalidate_semantically_unchanged_ev
     [
         (SourceEvidenceRecipe(statistics_revision=2), {"structure": 1}, {"statistics": 1}),
         (SourceEvidenceRecipe(structure_revision=3), {"statistics": 1}, {"structure": 1}),
-        (SourceEvidenceRecipe(admission_revision=2), {}, {"structure": 1, "statistics": 1}),
-        (SourceEvidenceRecipe(identity_revision=3), {}, {"structure": 1, "statistics": 1}),
+        (SourceEvidenceRecipe(admission_revision=3), {}, {"structure": 1, "statistics": 1}),
+        (SourceEvidenceRecipe(identity_revision=4), {}, {"structure": 1, "statistics": 1}),
     ],
 )
 def test_semantic_revision_invalidates_only_the_dependent_phase(

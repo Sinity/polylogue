@@ -14,6 +14,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -35,6 +36,7 @@ from tests.infra.workload_artifacts import (
     SeededArchiveQueryLease,
     SeededArchiveReachabilityInventory,
     _assert_lock_identity,
+    _dispose_seeded_archive_orphans,
     _journal_mode_delete_with_retry,
     _manifest_from_payload,
     _open_no_follow,
@@ -88,6 +90,74 @@ def test_finished_build_resource_probe_skips_linked_source_authority(tmp_path: P
     measurement = FinishedBuildResourceProbe.start().finish(candidate)
 
     assert measurement.storage_bytes == len(b"index")
+
+
+def test_complete_orphan_inventory_exceeds_diagnostic_sample_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guarded disposition uses every orphan, beyond the finding sample.
+
+    Anti-vacuity: reverting the builder to the finding's ten-hash sample
+    would leave two orphans and fail both the full-count assertion and guard.
+    """
+    from polylogue.storage.blob_integrity import BlobIntegrityFinding
+    from polylogue.storage.blob_store import BlobStore
+    from tests.infra import workload_artifacts
+
+    archive_root = tmp_path / "archive"
+    store = BlobStore(archive_root / "blob")
+    hashes = {store.write_from_bytes(f"orphan-{index}".encode())[0] for index in range(12)}
+    live_hash = store.write_from_bytes(b"live")[0]
+    finding = BlobIntegrityFinding(
+        kind="orphan_blobs",
+        severity="warning",
+        count=12,
+        sample=tuple(sorted(hashes)[:10]),
+        suggested_action="test fixture",
+    )
+    monkeypatch.setattr(
+        "tests.infra.workload_artifacts.referenced_blob_hashes",
+        lambda *_args, **_kwargs: [live_hash],
+    )
+    monkeypatch.setattr(
+        workload_artifacts,
+        "inspect_blob_publication_receipts",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(publication_id=f"publication-{blob_hash}", blob_hash=blob_hash) for blob_hash in hashes
+        ],
+    )
+    monkeypatch.setattr(
+        workload_artifacts,
+        "abandon_blob_publication_receipts",
+        lambda _source, _blob, ids, **_kwargs: SimpleNamespace(abandoned=len(ids)),
+    )
+
+    disposed: list[set[str]] = []
+
+    def unlink(_source: Path, _index: Path, _blob: Path, blob_hashes: set[str]) -> tuple[int, int, tuple[str, ...]]:
+        disposed.append(set(blob_hashes))
+        return len(blob_hashes), 0, ()
+
+    monkeypatch.setattr(workload_artifacts, "unlink_unreferenced_blob_hashes_under_exclusion", unlink)
+
+    _dispose_seeded_archive_orphans(archive_root, finding)
+    assert disposed == [hashes]
+
+    # The build guard remains active if a disposition route only accounts for
+    # the diagnostic sample, even if the unlink helper reports no blockers.
+    disposed.clear()
+    monkeypatch.setattr(
+        workload_artifacts,
+        "abandon_blob_publication_receipts",
+        lambda _source, _blob, ids, **_kwargs: SimpleNamespace(abandoned=len(ids)),
+    )
+    monkeypatch.setattr(
+        workload_artifacts,
+        "unlink_unreferenced_blob_hashes_under_exclusion",
+        lambda *_args, **_kwargs: (10, 0, ()),
+    )
+    with pytest.raises(AssertionError, match="found=12 abandoned=12 deleted=10 blockers=\(\)"):
+        _dispose_seeded_archive_orphans(archive_root, finding)
 
 
 def test_resource_probe_peak_is_the_interval(tmp_path: Path) -> None:

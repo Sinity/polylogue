@@ -151,7 +151,15 @@ def _projection_event_lanes(row: Mapping[str, object]) -> tuple[int, int, int, i
     total_output = _projection_int(row, "total_output_tokens")
     total_cache_read = _projection_int(row, "total_cached_input_tokens")
     total_cache_write = _projection_int(row, "total_cache_write_tokens")
-    if total_input or total_output or total_cache_read or total_cache_write:
+    if any(
+        _projection_value(row, name) is not None
+        for name in (
+            "total_input_tokens",
+            "total_output_tokens",
+            "total_cached_input_tokens",
+            "total_cache_write_tokens",
+        )
+    ):
         # Codex totals include cache in input.  The stored projection's input
         # lane is deliberately uncached input, so the two lanes cannot overlap.
         return (
@@ -192,7 +200,7 @@ def project_provider_usage_events(
         lanes = _projection_event_lanes(row)
         key = (session_id, model)
         if str(_projection_value(row, "provider_event_type") or "") == "token_count" and any(
-            _projection_int(row, name)
+            _projection_value(row, name) is not None
             for name in (
                 "total_input_tokens",
                 "total_output_tokens",
@@ -1601,10 +1609,10 @@ def _stale_provider_rollup_stats(
                        WHERE e.session_id = sm.session_id
                          AND e.provider_event_type = 'token_count'
                          AND (
-                             e.total_input_tokens != 0
-                             OR e.total_output_tokens != 0
-                             OR e.total_cached_input_tokens != 0
-                             OR e.total_cache_write_tokens != 0
+                             e.total_input_tokens IS NOT NULL
+                             OR e.total_output_tokens IS NOT NULL
+                             OR e.total_cached_input_tokens IS NOT NULL
+                             OR e.total_cache_write_tokens IS NOT NULL
                          )
                          AND COALESCE(
                              NULLIF(TRIM(e.model_name, :model_strip_chars), ''),
@@ -1690,7 +1698,17 @@ def _stale_provider_rollup_stats(
                 _int(row["last_reasoning_output_tokens"]),
                 _int(row["last_total_tokens"]),
             )
-            if not any(last_values):
+            if all(
+                row[name] is None
+                for name in (
+                    "last_input_tokens",
+                    "last_output_tokens",
+                    "last_cached_input_tokens",
+                    "last_cache_write_tokens",
+                    "last_reasoning_output_tokens",
+                    "last_total_tokens",
+                )
+            ):
                 continue
             bucket = summed_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
             for index, value in enumerate(last_values[:5]):
@@ -2184,7 +2202,10 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     ]
     last_cols = _counter_columns(columns, prefix="last")
     total_cols = _counter_columns(columns, prefix="total")
-    zero_predicate = " AND ".join([f"COALESCE({expr}, 0) = 0" for expr in (*last_cols.values(), *total_cols.values())])
+    counter_exprs = (*last_cols.values(), *total_cols.values())
+    zero_predicate = " AND ".join(f"COALESCE({expr}, 0) = 0" for expr in counter_exprs)
+    present_predicate = " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs if expr != "0")
+    zero_predicate = f"({zero_predicate}) AND ({present_predicate or '0'})"
     select_parts.append(f"COALESCE(SUM(CASE WHEN {zero_predicate} THEN 1 ELSE 0 END), 0) AS zero_token_event_count")
     for public_name, expr in last_cols.items():
         select_parts.append(f"COALESCE(SUM({expr}), 0) AS {public_name}")
@@ -2280,7 +2301,24 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
             _int(row["total_reasoning_output_tokens"]),
             _int(row["total_tokens"]),
         )
-        if not any((*last_values, *total_values)):
+        raw_values = tuple(
+            row[name]
+            for name in (
+                "last_input_tokens",
+                "last_output_tokens",
+                "last_cached_input_tokens",
+                "last_cache_write_tokens",
+                "last_reasoning_output_tokens",
+                "last_total_tokens",
+                "total_input_tokens",
+                "total_output_tokens",
+                "total_cached_input_tokens",
+                "total_cache_write_tokens",
+                "total_reasoning_output_tokens",
+                "total_tokens",
+            )
+        )
+        if any(value is not None for value in raw_values) and not any((*last_values, *total_values)):
             counts["zero_token_event_count"] += 1
         last_totals = last_totals_by_origin[origin_name]
         for index, value in enumerate(last_values):
@@ -2314,12 +2352,10 @@ def _provider_cumulative_usage(conn: sqlite3.Connection, origin: str | None) -> 
                        FROM session_provider_usage_events AS e
                        WHERE e.session_id = s.session_id
                          AND (
-                             e.total_input_tokens > 0
-                             OR e.total_output_tokens > 0
-                             OR e.total_cached_input_tokens > 0
-                             OR e.total_cache_write_tokens > 0
-                             OR e.total_reasoning_output_tokens > 0
-                             OR e.total_tokens > 0
+                             e.total_input_tokens IS NOT NULL
+                             OR e.total_output_tokens IS NOT NULL
+                             OR e.total_cached_input_tokens IS NOT NULL
+                             OR e.total_cache_write_tokens IS NOT NULL
                          )
                        ORDER BY e.position DESC
                        LIMIT 1
@@ -2382,9 +2418,12 @@ def _sample_event_sessions(
     if zero_token:
         last_cols = _counter_columns(columns, prefix="last")
         total_cols = _counter_columns(columns, prefix="total")
+        counter_exprs = (*last_cols.values(), *total_cols.values())
         predicates.append(
             "("
-            + " AND ".join([f"COALESCE({expr}, 0) = 0" for expr in (*last_cols.values(), *total_cols.values())])
+            + " AND ".join(f"COALESCE({expr}, 0) = 0" for expr in counter_exprs)
+            + ") AND ("
+            + " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs if expr != "0")
             + ")"
         )
     if not predicates:
