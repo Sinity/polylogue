@@ -29,8 +29,13 @@ carry ``source_session_id``/``inherited_prefix`` (lineage-prefix provenance the
 domain model does not represent) and the stored per-message ``word_count``.
 That is a difference of what is rendered, not of how the window is decided, so
 the reader is a declared parameter of this one route rather than a second
-route. Collapsing it would drop real fields from the web reader; see the
-``Reader`` protocol below.
+route. The legacy ``session.read`` transcript envelope also uses these window
+mechanics but retains its ``session-read-v1`` continuation dialect because its
+projection arguments differ from the typed ``sessions.read`` owner contract.
+The token's decoded projection identifies its dialect. Replaying one dialect
+against the other is refused with a typed continuation error naming both
+projections. Collapsing the projections would drop real fields from the web
+reader; see the ``Reader`` protocol below.
 """
 
 from __future__ import annotations
@@ -109,7 +114,13 @@ def _window_arguments(request: SessionRead) -> dict[str, object]:
     return request.model_dump(mode="json", exclude={"continuation", "limit", "offset"})
 
 
-def frame_request(request: SessionRead) -> tuple[SessionRead, QueryTransactionRequest]:
+def frame_request(
+    request: SessionRead,
+    *,
+    transaction_operation: str | None = None,
+    projection: str = TRANSCRIPT_WINDOW_PROJECTION,
+    extra_arguments: Mapping[str, object] | None = None,
+) -> tuple[SessionRead, QueryTransactionRequest]:
     """Resolve a window request, honouring a continuation over its coordinates.
 
     A continuation carries the whole request it was minted from. Supplying a
@@ -117,32 +128,41 @@ def frame_request(request: SessionRead) -> tuple[SessionRead, QueryTransactionRe
     argument: the two disagree about which window the caller wants.
     """
 
+    operation = transaction_operation or request.operation
+    arguments = {**_window_arguments(request), **dict(extra_arguments or {})}
     continuation = request.continuation
     if not continuation:
         return request, QueryTransactionRequest(
-            operation=request.operation,
-            arguments=_window_arguments(request),
+            operation=operation,
+            arguments=arguments,
             page_size=request.limit,
             offset=request.offset,
-            projection=TRANSCRIPT_WINDOW_PROJECTION,
+            projection=projection,
             stable_order=TRANSCRIPT_WINDOW_ORDER,
         )
 
     decoded = QueryContinuation.decode(continuation)
     transaction = decoded.request
     if (
-        transaction.operation != request.operation
-        or transaction.projection != TRANSCRIPT_WINDOW_PROJECTION
+        transaction.operation != operation
+        or transaction.projection != projection
         or decoded.result_ref != transaction.result_ref
     ):
-        raise QueryContinuationInvalidError("continuation belongs to another session operation")
+        actual = f"{transaction.operation}/{transaction.projection}"
+        expected = f"{operation}/{projection}"
+        raise QueryContinuationInvalidError(f"continuation dialect mismatch: expected {expected}, got {actual}")
+    original_arguments = {
+        key: value for key, value in transaction.arguments.items() if key not in (extra_arguments or {})
+    }
     original = SessionRead.model_validate(
-        {**dict(transaction.arguments), "limit": transaction.page_size, "offset": transaction.offset}
+        {**original_arguments, "limit": transaction.page_size, "offset": transaction.offset}
     )
-    reference = original.model_dump(mode="json")
+    reference = {**_window_arguments(original), **dict(extra_arguments or {})}
+    if dict(transaction.arguments) != reference:
+        raise QueryContinuationInvalidError("continuation arguments do not match the requested transcript window")
     supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation"})
     for name, value in supplied.items():
-        if value != reference[name]:
+        if value != original.model_dump(mode="json")[name]:
             raise QueryContinuationInvalidError(f"continuation conflicts with {name}")
     return original, transaction
 
@@ -239,18 +259,26 @@ def read_transcript_window_sync(
     request: SessionRead,
     *,
     read: SyncReader,
+    transaction_operation: str | None = None,
+    projection: str = TRANSCRIPT_WINDOW_PROJECTION,
+    extra_arguments: Mapping[str, object] | None = None,
 ) -> TranscriptWindow[Any]:
     """Answer one transcript window against an already-pinned archive reader.
 
-    The HTTP web reader and the ``session.read`` declared operation both run
-    inside a reader the caller already opened (``archive_read_context`` and the
+    The HTTP web reader and the legacy ``session.read`` executor run inside a
+    reader the caller already opened (``archive_read_context`` and the
     operation kernel's pinned snapshot). Opening a second transaction from
     inside one would read a different snapshot than the one their payload is
-    composed from, so they bind against the reader they hold — the same
-    framing, validation and continuation vocabulary as the async route.
+    composed from, so they bind against the reader they hold. Callers may
+    declare a distinct transaction dialect while sharing these mechanics.
     """
 
-    request, transaction = frame_request(request)
+    request, transaction = frame_request(
+        request,
+        transaction_operation=transaction_operation,
+        projection=projection,
+        extra_arguments=extra_arguments,
+    )
     framed = bind_snapshot(archive, transaction)
     rows, total, completeness = read(framed.page_size, framed.offset)
     bind_snapshot(archive, framed)

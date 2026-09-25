@@ -14,10 +14,13 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.archive.query.transaction import QueryContinuationInvalidError
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.operations.session_contracts import SessionRead
+from polylogue.operations.session_reads import execute_session_operation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
 from tests.infra.daemon_operations import running_daemon_operations
@@ -129,7 +132,11 @@ def test_transcript_window_agrees_across_daemon_and_direct(tmp_path: Path) -> No
 
     def seed(root: Path) -> None:
         nonlocal session_id
-        session_id = _seed(root)
+        builder = SessionBuilder(root / "index.db", "parity-window").provider("codex").title("Window parity")
+        for index in range(5):
+            builder = builder.add_message(text=f"Transcript row {index}.")
+        builder.save()
+        session_id = builder.native_session_id()
 
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
         envelope = stack.client.operation(
@@ -147,8 +154,66 @@ def test_transcript_window_agrees_across_daemon_and_direct(tmp_path: Path) -> No
                 archive=pinned.archive,
                 serving_identity="direct",
             )
+            direct_next = execute_read_operation(
+                "session.read",
+                {"ref": session_id, "continuation": daemon_body["continuation"]},
+                archive=pinned.archive,
+                serving_identity="direct",
+            )
+        daemon_next = stack.client.operation(
+            "session.read",
+            {"ref": session_id, "continuation": direct_body["continuation"]},
+            archive_root=str(stack.archive_root),
+        )
 
     assert daemon_body["session"] == direct_body["session"]
     assert daemon_body["total"] == direct_body["total"]
     assert daemon_body.get("evidence") is None
     assert direct_body.get("evidence") is None
+    assert direct_next["offset"] == daemon_next["result"]["offset"] == 1
+    assert direct_next["session"]["messages"] == daemon_next["result"]["session"]["messages"]
+
+
+def test_session_owner_continuation_refusal_names_its_dialect(tmp_path: Path) -> None:
+    """A token from the owner executor cannot silently select the legacy envelope."""
+    session_id: str = ""
+
+    def seed(root: Path) -> None:
+        nonlocal session_id
+        builder = SessionBuilder(root / "index.db", "dialect-parity").provider("codex").title("Dialect parity")
+        for index in range(3):
+            builder = builder.add_message(text=f"Transcript row {index}.")
+        builder.save()
+        session_id = builder.native_session_id()
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        archive_root = Path(stack.archive_root)
+        config = Config(
+            archive_root=archive_root,
+            render_root=archive_root / "render",
+            sources=[],
+            db_path=archive_root / "index.db",
+        )
+
+        async def owner_page() -> object:
+            async with Polylogue.open(config=config) as api:
+                return await execute_session_operation(
+                    api,
+                    SessionRead(ref=f"session:{session_id}", limit=1),
+                )
+
+        owner_result = asyncio.run(owner_page())
+        owner_token = owner_result.continuation
+        assert owner_token
+
+        with open_operation_read(archive_root) as pinned:
+            with pytest.raises(
+                QueryContinuationInvalidError,
+                match=r"continuation dialect mismatch: expected session.read/session-read-v1, got sessions.read/session-owner-v1",
+            ):
+                execute_read_operation(
+                    "session.read",
+                    {"ref": f"session:{session_id}", "continuation": owner_token},
+                    archive=pinned.archive,
+                    serving_identity="direct",
+                )
