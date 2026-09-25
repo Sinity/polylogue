@@ -8664,6 +8664,38 @@ def test_undeclared_large_json_document_is_refused_visibly_and_stays_retryable(
     assert debt[0][1] == str(source)
     assert debt[0][2].startswith("large JSON document provider not declared for streaming ingest")
 
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.logging import capture
+
+    # A due admission refusal belongs to the source-path retry loop, so the
+    # generic stage drain must leave its diagnostic untouched and stay quiet.
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        conn.execute(
+            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00' "
+            "WHERE stage = 'live_ingest_admission'"
+        )
+        conn.commit()
+    with capture() as events:
+        assert daemon_cli._drain_convergence_debt_once(tmp_path / "index.db") == 0
+
+    stage_warnings = [event for event in events if event.get("event") == "daemon.convergence_debt.stage_unimplemented"]
+    assert stage_warnings == []
+    pending_debt = cursor.list_convergence_debt(stage="live_ingest_admission")
+    assert len(pending_debt) == 1
+    assert pending_debt[0].subject_id == str(source)
+    assert pending_debt[0].last_error == debt[0][2]
+
+    # The ordinary source-path pass rechecks admission; once the provider is
+    # declared, it ingests and convergence outcome recording clears the row.
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch_support._LARGE_JSON_DOCUMENT_PROVIDERS",
+        frozenset({Provider.GEMINI_CLI}),
+    )
+    retry = asyncio.run(processor.ingest_files([source], emit_event=False))
+    assert retry.succeeded_file_count == 1
+    assert retry.ingested_session_count == 1
+    assert cursor.list_convergence_debt(stage="live_ingest_admission") == []
+
 
 def test_hold_budget_spent_after_the_commit_still_records_the_cursor(
     tmp_path: Path,

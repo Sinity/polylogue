@@ -123,8 +123,12 @@ _CONVERGENCE_DEBT_RETRY_LIMIT = 100
 #: Convergence-debt stages whose backlog has its own recurring domain owner.
 #: The generic drain neither retries nor reports on these: the owner does.
 #: ``raw_retention`` is drained by ``LiveBatchProcessor`` on every live-ingest
-#: pass (``polylogue.sources.live.batch.RAW_RETENTION_STAGE``).
-_OWNED_DEBT_STAGES = frozenset({"derived", "fts", "fts_readiness", "raw_parse_recovery", "embed", "raw_retention"})
+#: pass (``polylogue.sources.live.batch.RAW_RETENTION_STAGE``). Admission
+#: refusals are also retried by that pass, which rechecks the source path and
+#: clears its debt after successful convergence.
+_OWNED_DEBT_STAGES = frozenset(
+    {"derived", "fts", "fts_readiness", "raw_parse_recovery", "embed", "raw_retention", "live_ingest_admission"}
+)
 
 T = TypeVar("T")
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
