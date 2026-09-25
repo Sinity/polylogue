@@ -56,11 +56,14 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 )
 from polylogue.storage.sqlite.archive_tiers.query_unit_frame import INDEX_FRAME_RELATIONS
 from polylogue.storage.sqlite.archive_tiers.types import (
+    AttachmentNativeIdKind,
     DelegationMappingState,
     DelegationResultStatus,
     EmbeddingAttemptState,
     EmbeddingFailureState,
+    ProviderUsageEventType,
     RevisionFrontierKind,
+    SourceMessageResolution,
 )
 
 _TOOL_COMMAND_SQL = sql_coalesced_json_extract("tool_input", TOOL_COMMAND_INPUT_KEYS)
@@ -1494,7 +1497,7 @@ ATTACHMENT_NATIVE_IDS_SPEC = _make_table_spec(
         _raw_column("ref_id", """ref_id     TEXT NOT NULL REFERENCES attachment_refs(ref_id) ON DELETE CASCADE"""),
         _raw_column(
             "id_kind",
-            f"""id_kind    TEXT NOT NULL CHECK({literal_check("id_kind", "attachment", "file", "drive", "url")})""",
+            f"""id_kind    TEXT NOT NULL CHECK({literal_check("id_kind", *get_args(AttachmentNativeIdKind))})""",
         ),
         _raw_column("native_id", """native_id  TEXT NOT NULL"""),
     ),
@@ -1585,12 +1588,12 @@ SESSION_PROVIDER_USAGE_EVENTS_SPEC = _make_table_spec(
         _raw_column("source_message_provider_id", """source_message_provider_id     TEXT"""),
         _raw_column(
             "source_message_resolution",
-            f"""source_message_resolution      TEXT NOT NULL DEFAULT 'session' CHECK({literal_check("source_message_resolution", "resolved", "session", "ambiguous", "unresolved")})""",
+            f"""source_message_resolution      TEXT NOT NULL DEFAULT 'session' CHECK({literal_check("source_message_resolution", *get_args(SourceMessageResolution))})""",
         ),
         _raw_column("position", """position                       INTEGER NOT NULL CHECK(position >= 0)"""),
         _raw_column(
             "provider_event_type",
-            f"""provider_event_type            TEXT NOT NULL CHECK({literal_check("provider_event_type", "token_count", "message_usage")})""",
+            f"""provider_event_type            TEXT NOT NULL CHECK({literal_check("provider_event_type", *get_args(ProviderUsageEventType))})""",
         ),
         _raw_column("model_name", """model_name                     TEXT"""),
         _raw_column(

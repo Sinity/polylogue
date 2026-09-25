@@ -1540,6 +1540,68 @@ def test_embeddings_vocabularies_generate_their_check_from_the_python_owner(tmp_
         conn.close()
 
 
+def test_index_usage_and_attachment_vocabularies_generate_checks_from_their_owners(tmp_path: Path) -> None:
+    """The three confirmed index vocabularies accept exactly their Literal values.
+
+    ``attachment_native_ids.id_kind`` and the two usage-event columns used
+    hand-maintained SQL lists.  The storage types are now their sole owner.
+    The test uses the actual initialized index schema: extending an alias
+    without wiring its spec makes its valid insert fail, while widening a
+    spec's SQL list lets the invalid insert through.
+    """
+    from typing import get_args
+
+    from polylogue.storage.sqlite.archive_tiers.types import (
+        AttachmentNativeIdKind,
+        ProviderUsageEventType,
+        SourceMessageResolution,
+    )
+
+    conn = _connect(tmp_path / "index-vocab.db")
+    try:
+        _apply_tier(conn, ArchiveTier.INDEX)
+        # These constraints concern their own closed vocabularies, not row
+        # ownership. Disabling FK enforcement lets this test isolate them from
+        # the much larger session/message fixture required by the index tier.
+        conn.execute("PRAGMA foreign_keys = OFF")
+
+        for index, id_kind in enumerate(get_args(AttachmentNativeIdKind)):
+            conn.execute(
+                "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES (?, ?, ?)",
+                (f"ref-{index}", id_kind, f"native-{index}"),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES ('ref-bad', 'source', 'bad')"
+            )
+
+        for index, event_type in enumerate(get_args(ProviderUsageEventType)):
+            conn.execute(
+                "INSERT INTO session_provider_usage_events (session_id, position, provider_event_type) VALUES (?, ?, ?)",
+                (f"session-type-{index}", index, event_type),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO session_provider_usage_events (session_id, position, provider_event_type) "
+                "VALUES ('session-type-bad', 0, 'completion')"
+            )
+
+        for index, resolution in enumerate(get_args(SourceMessageResolution)):
+            conn.execute(
+                "INSERT INTO session_provider_usage_events "
+                "(session_id, position, provider_event_type, source_message_resolution) VALUES (?, ?, 'token_count', ?)",
+                (f"session-resolution-{index}", index, resolution),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO session_provider_usage_events "
+                "(session_id, position, provider_event_type, source_message_resolution) "
+                "VALUES ('session-resolution-bad', 0, 'token_count', 'missing')"
+            )
+    finally:
+        conn.close()
+
+
 def test_revision_frontier_vocabulary_uses_one_literal_owner(tmp_path: Path) -> None:
     """Both revision tables derive the same closed vocabulary from one owner."""
     from typing import get_args
