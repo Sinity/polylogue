@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFIL
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.read_view_handlers import ReadViewInvocation
+from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -277,6 +279,36 @@ def test_read_view_completion_comes_from_view_profiles() -> None:
     items = option.shell_complete(click.Context(query_verbs.read_verb), "rec")
 
     assert [item.value for item in items] == []
+
+
+def test_a_declared_read_parameter_appears_in_production_completion_without_a_completion_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new declared option uses Click's parameter inventory and the view declaration.
+
+    No callback is added to a completion map. The production ``read`` command
+    discovers its option from Click, while the declaration controls which view
+    may advertise it.
+    """
+
+    command = query_verbs.read_verb
+    probe = click.Option(["--declared-probe"], help="Synthetic option for completion coverage.")
+    monkeypatch.setattr(command, "params", [*command.params, probe])
+    declaration = READ_VIEW_HANDLER_METADATA["neighbors"]
+    monkeypatch.setitem(
+        READ_VIEW_HANDLER_METADATA,
+        "neighbors",
+        replace(declaration, accepted_options=declaration.accepted_options | {"declared_probe"}),
+    )
+
+    context = click.Context(command)
+    context.params["view"] = "neighbors"
+    visible = {item.value for item in command.shell_complete(context, "--declared")}
+    context.params["view"] = "summary"
+    hidden = {item.value for item in command.shell_complete(context, "--declared")}
+
+    assert "--declared-probe" in visible
+    assert "--declared-probe" not in hidden
 
 
 def test_read_format_click_choices_come_from_view_profiles() -> None:
@@ -1184,15 +1216,11 @@ def test_continue_candidate_options_require_candidate_mode() -> None:
         wrapped(child, **_continue_verb_kwargs(repo_path="/workspace/polylogue"))
 
 
-def test_resolve_target_session_id_uses_query_terms(workspace_env: dict[str, Path]) -> None:
-    """Single-session verbs resolve ``find id:... then ...`` through the query DSL."""
-    from polylogue.config import Config
-    from tests.infra.storage_records import SessionBuilder
-
+def test_resolve_target_session_id_uses_query_terms(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-session verbs pass the selected query to the daemon-owned read route."""
     archive_root = workspace_env["archive_root"]
-    stored = (
-        SessionBuilder(archive_root / "index.db", "resolve-query-target").provider("codex").title("query target").save()
-    )
     request = RootModeRequest.from_params(
         {
             "_config": Config(
@@ -1204,8 +1232,16 @@ def test_resolve_target_session_id_uses_query_terms(workspace_env: dict[str, Pat
             "query": ("title:query",),
         }
     )
+    captured: list[tuple[object, int]] = []
 
-    assert query_verbs._resolve_target_session_id(request) == f"{stored.origin.value}:{stored.native_id}"
+    def fake_query_session_ids(config: object, selected: RootModeRequest, *, limit: int) -> list[str]:
+        captured.append((selected.query_params()["query"], limit))
+        return ["codex-session:resolve-query-target"]
+
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", fake_query_session_ids)
+
+    assert query_verbs._resolve_target_session_id(request) == "codex-session:resolve-query-target"
+    assert captured == [(("title:query",), 1)]
 
 
 def test_read_view_rejects_format_outside_selected_profile() -> None:

@@ -276,6 +276,27 @@ def read_view_option_names() -> frozenset[ReadViewOptionName]:
     )
 
 
+def read_view_specific_option_names(views: tuple[str, ...]) -> frozenset[ReadViewOptionName]:
+    """Return the view-specific options admitted by a selected composition.
+
+    The Click command owns the parameter objects and their shell completion,
+    but this registry owns which view may advertise each one. Keeping the
+    ownership calculation here means help validation and completion consume
+    the same declared contract.
+    """
+
+    return (
+        frozenset(
+            option_name
+            for view in views
+            for option_name in READ_VIEW_HANDLER_METADATA.get(
+                view, READ_VIEW_HANDLER_METADATA["summary"]
+            ).accepted_options
+        )
+        - READ_VIEW_GLOBAL_OPTION_NAMES
+    )
+
+
 def validate_read_view_metadata_registry() -> None:
     """Fail fast if profile metadata and handler metadata drift."""
 
@@ -363,6 +384,7 @@ __all__ = [
     "ReadViewOptionName",
     "ReadViewSessionPolicy",
     "read_view_option_names",
+    "read_view_specific_option_names",
     "read_views_by_execution_kind",
     "validate_read_view_metadata_registry",
 ]

@@ -33,6 +33,7 @@ from polylogue.cli.read_view_registry import (
     READ_VIEW_GLOBAL_OPTION_NAMES,
     READ_VIEW_HANDLER_METADATA,
     read_view_option_names,
+    read_view_specific_option_names,
 )
 from polylogue.cli.shared.formatting import json_output_option, normalize_output_dialect, output_dialect_choices
 from polylogue.cli.shared.types import AppEnv
@@ -625,16 +626,7 @@ def _read_views_from_args(args: list[str]) -> tuple[str, ...]:
 def _read_view_specific_option_names(views: tuple[str, ...]) -> frozenset[str]:
     """Return the option names admitted by the selected view composition."""
 
-    return (
-        frozenset(
-            option_name
-            for view in views
-            for option_name in READ_VIEW_HANDLER_METADATA.get(
-                view, READ_VIEW_HANDLER_METADATA["summary"]
-            ).accepted_options
-        )
-        - READ_VIEW_GLOBAL_OPTION_NAMES
-    )
+    return read_view_specific_option_names(views)
 
 
 def _read_option_name_by_flag(command: click.Command) -> dict[str, str]:
