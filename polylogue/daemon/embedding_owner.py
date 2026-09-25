@@ -32,6 +32,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, TypeVar, cast
 
+from polylogue.core.enums import OperationStatus
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.audit import MachineRequestBinding
@@ -122,15 +123,13 @@ EMBEDDING_PASS_MAX_MESSAGES = 2_500
 EMBEDDING_PASS_DEADLINE_S = 30.0
 
 
-def _catchup_receipt_status(*, failures: int, pending: int, stopped: bool) -> str:
+def _catchup_receipt_status(*, failures: int, pending: int, stopped: bool) -> OperationStatus:
     """Classify a catch-up receipt without treating bounded work as complete."""
-    from polylogue.core.enums import OperationStatus
-
     if failures:
-        return OperationStatus.FAILED.value
+        return OperationStatus.FAILED
     if pending or stopped:
-        return OperationStatus.INTERRUPTED.value
-    return OperationStatus.COMPLETED.value
+        return OperationStatus.INTERRUPTED
+    return OperationStatus.COMPLETED
 
 
 @dataclass(frozen=True, slots=True)
