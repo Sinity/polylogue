@@ -70,6 +70,10 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_latency_profiles": frozenset({"materialized_at"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_model_usage": frozenset(),
+    # Completed arms must agree on outstanding profile work and the recipe
+    # seed that produced it. A pending demand is not a finished build.
+    "session_profile_demand": frozenset(),
+    "session_profile_demand_state": frozenset(),
     "session_profiles": frozenset({"materialized_at"}),
     "session_provider_usage_events": frozenset(),
     "session_refs": frozenset(),
