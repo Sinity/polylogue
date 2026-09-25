@@ -8,6 +8,7 @@ from polylogue.storage.derived.session.input_binding import (
     SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS,
     SESSION_EVENT_PROJECTION_COLUMNS,
     SESSION_INPUT_PROJECTION_COLUMNS,
+    SESSION_INPUT_RECIPE_VERSION,
     SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS,
     SESSION_ROW_PROJECTION_COLUMNS,
 )
@@ -19,6 +20,7 @@ from polylogue.storage.fts.sql import (
     FTS_READINESS_BINDING_TABLE_SQL,
     FTS_TRIGGER_DDL,
 )
+from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
 from polylogue.storage.sqlite.archive_tiers.query_unit_frame import index_frame_bump_sql, index_frame_seed_sql
@@ -33,6 +35,15 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # value it commits to -- the one failure this domain has no other guard for.
 def _binding_columns(columns: tuple[str, ...], *, exclude: tuple[str, ...] = ()) -> str:
     return ", ".join(column for column in columns if column not in exclude)
+
+
+def _profile_demand_sql(session_id: str) -> str:
+    """Record a profile obligation in the input writer's transaction."""
+    return f"""
+    INSERT INTO session_profile_demand(session_id, revision)
+    SELECT {session_id}, 1 WHERE {session_id} IS NOT NULL
+    ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1;
+    """
 
 
 # polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
@@ -1530,6 +1541,40 @@ CREATE TABLE IF NOT EXISTS session_profiles (
     {TABLE_SPECS["session_profiles"].ddl_body}
 ) STRICT;
 
+-- A cheap, transaction-owned obligation for each changed profile input.
+-- Revisions are local to the rebuildable index incarnation; the exact input
+-- digest remains the publication backstop and the output binding.
+CREATE TABLE IF NOT EXISTS session_profile_demand (
+    session_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL CHECK (revision > 0)
+) STRICT;
+
+-- A one-time rebuild/recipe seed. Ordinary passes read only the indexed
+-- demand table; the archive scan below runs only when the retained family or
+-- input recipe changes, including the first installation of this contract.
+CREATE TABLE IF NOT EXISTS session_profile_demand_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    materializer_version INTEGER NOT NULL,
+    input_recipe_version TEXT NOT NULL
+) STRICT;
+INSERT OR IGNORE INTO session_profile_demand_state
+    (singleton, materializer_version, input_recipe_version)
+VALUES (1, -1, '');
+INSERT INTO session_profile_demand(session_id, revision)
+SELECT s.session_id, 1
+FROM sessions AS s
+WHERE EXISTS (
+    SELECT 1 FROM session_profile_demand_state AS state
+    WHERE state.singleton = 1
+      AND (state.materializer_version != {SESSION_INSIGHT_MATERIALIZER_VERSION}
+           OR state.input_recipe_version != '{SESSION_INPUT_RECIPE_VERSION}')
+)
+ON CONFLICT(session_id) DO NOTHING;
+UPDATE session_profile_demand_state
+SET materializer_version = {SESSION_INSIGHT_MATERIALIZER_VERSION},
+    input_recipe_version = '{SESSION_INPUT_RECIPE_VERSION}'
+WHERE singleton = 1;
+
 CREATE INDEX IF NOT EXISTS idx_session_profiles_provider
 ON session_profiles(source_name);
 
@@ -1580,15 +1625,19 @@ END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_ai
 AFTER INSERT ON messages BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_au
 AFTER UPDATE OF {_binding_columns(SESSION_INPUT_PROJECTION_COLUMNS)} ON messages BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
      WHERE session_id IN (OLD.session_id, NEW.session_id);
+    {_profile_demand_sql("OLD.session_id")}
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_messages_ad
 AFTER DELETE ON messages BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    {_profile_demand_sql("OLD.session_id")}
 END;
 
 -- The session row is an input in its own right: the profile caches its title,
@@ -1597,20 +1646,54 @@ END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_sessions_au
 AFTER UPDATE OF {_binding_columns(SESSION_ROW_PROJECTION_COLUMNS)} ON sessions BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    {_profile_demand_sql("NEW.session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_sessions_ai
+AFTER INSERT ON sessions BEGIN
+    {_profile_demand_sql("NEW.session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_sessions_ad
+AFTER DELETE ON sessions BEGIN
+    {_profile_demand_sql("OLD.session_id")}
+END;
+
+-- Logical-session root is part of the prepared profile payload. A lineage
+-- edge can move that root without touching any message value, so enqueue the
+-- child and its descendants in the same transaction as the topology change.
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_links_ai
+AFTER INSERT ON session_links BEGIN
+    {_profile_demand_sql("NEW.src_session_id")}
+    {_profile_demand_sql("NEW.resolved_dst_session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_links_au
+AFTER UPDATE OF src_session_id, resolved_dst_session_id, inheritance, status ON session_links BEGIN
+    {_profile_demand_sql("OLD.src_session_id")}
+    {_profile_demand_sql("NEW.src_session_id")}
+    {_profile_demand_sql("OLD.resolved_dst_session_id")}
+    {_profile_demand_sql("NEW.resolved_dst_session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_links_ad
+AFTER DELETE ON session_links BEGIN
+    {_profile_demand_sql("OLD.src_session_id")}
+    {_profile_demand_sql("OLD.resolved_dst_session_id")}
 END;
 
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_ai
 AFTER INSERT ON attachment_refs BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_au
 AFTER UPDATE OF session_id, {_binding_columns(SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS)} ON attachment_refs BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
      WHERE session_id IN (OLD.session_id, NEW.session_id);
+    {_profile_demand_sql("OLD.session_id")}
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_ad
 AFTER DELETE ON attachment_refs BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    {_profile_demand_sql("OLD.session_id")}
 END;
 
 -- Attachment metadata reaches the profile through its refs, so the retirement
@@ -1623,25 +1706,35 @@ AFTER UPDATE OF {_binding_columns(SESSION_ATTACHMENT_PROJECTION_COLUMNS, exclude
 BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
      WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = NEW.attachment_id);
+    INSERT INTO session_profile_demand(session_id, revision)
+    SELECT r.session_id, 1 FROM attachment_refs r WHERE r.attachment_id = NEW.attachment_id AND 1
+    ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1;
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_attachments_ad
 AFTER DELETE ON attachments BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
      WHERE session_id IN (SELECT r.session_id FROM attachment_refs r WHERE r.attachment_id = OLD.attachment_id);
+    INSERT INTO session_profile_demand(session_id, revision)
+    SELECT r.session_id, 1 FROM attachment_refs r WHERE r.attachment_id = OLD.attachment_id AND 1
+    ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1;
 END;
 
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_ai
 AFTER INSERT ON session_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_au
 AFTER UPDATE OF session_id, {_binding_columns(SESSION_EVENT_PROJECTION_COLUMNS)} ON session_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
      WHERE session_id IN (OLD.session_id, NEW.session_id);
+    {_profile_demand_sql("OLD.session_id")}
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_events_ad
 AFTER DELETE ON session_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    {_profile_demand_sql("OLD.session_id")}
 END;
 
 -- The usage rollup is recomputed from these rows immediately before the
@@ -1650,16 +1743,37 @@ END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_ai
 AFTER INSERT ON session_provider_usage_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = NEW.session_id;
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_au
 AFTER UPDATE OF session_id, {_binding_columns(SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS)}
 ON session_provider_usage_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
      WHERE session_id IN (OLD.session_id, NEW.session_id);
+    {_profile_demand_sql("OLD.session_id")}
+    {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_usage_ad
 AFTER DELETE ON session_provider_usage_events BEGIN
     UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = OLD.session_id;
+    {_profile_demand_sql("OLD.session_id")}
+END;
+
+-- The profile consumes the reconciled model-usage rows. Their owning
+-- prerequisite publishes before profile computation; its rows still enqueue
+-- the dependent profile in that same index transaction.
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_model_usage_ai
+AFTER INSERT ON session_model_usage BEGIN
+    {_profile_demand_sql("NEW.session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_model_usage_au
+AFTER UPDATE OF session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, catalog_cost_usd ON session_model_usage BEGIN
+    {_profile_demand_sql("OLD.session_id")}
+    {_profile_demand_sql("NEW.session_id")}
+END;
+CREATE TRIGGER IF NOT EXISTS session_profile_demand_model_usage_ad
+AFTER DELETE ON session_model_usage BEGIN
+    {_profile_demand_sql("OLD.session_id")}
 END;
 
 -- Delegations are derived from exact provider dispatch evidence. The parent
