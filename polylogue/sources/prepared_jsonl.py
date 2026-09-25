@@ -24,6 +24,7 @@ class PreparedJsonl:
     sessions_path: Path | None
     shard_path: Path | None
     error: str | None = None
+    deferred: bool = False
 
     def discard(self) -> None:
         if self.sessions_path is not None:

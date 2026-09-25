@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Sequence
-from concurrent.futures import Executor, Future, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -415,7 +415,7 @@ class LiveParseStage:
                 continue
             if len(self._path_futures) >= self._max_path_pending:
                 self._path_results[source_path] = LivePathPreparation(
-                    None, None, None, "worker preparation capacity is busy"
+                    None, None, None, "worker preparation capacity is busy", deferred=True
                 )
                 continue
             try:
@@ -462,7 +462,7 @@ class LiveParseStage:
             if future.done():
                 self._collect_path_future(source_path, future)
             else:
-                return LivePathPreparation(None, None, None, "worker preparation pending")
+                return LivePathPreparation(None, None, None, "worker preparation pending", deferred=True)
         result = self._path_results.pop(source_path, None)
         if result is None:
             return None
@@ -576,10 +576,15 @@ class LiveParseStage:
         return warmed
 
     def shutdown(self) -> None:
-        # Wait for workers that already entered shard construction before
-        # removing the directory's residue; otherwise a late worker could
-        # seal a shard after cleanup and leave an unattached file behind.
-        self._executor.shutdown(wait=True, cancel_futures=True)
+        # A process worker may outlive a warm window indefinitely. Stop and
+        # join it before removing scratch, so daemon stop stays bounded and
+        # no worker can seal a carrier after cleanup.
+        if isinstance(self._executor, ProcessPoolExecutor):
+            from polylogue.pipeline.services.process_pool import terminate_process_pool
+
+            terminate_process_pool(self._executor)
+        else:
+            self._executor.shutdown(wait=True, cancel_futures=True)
         for source_path, future in tuple(self._path_futures.items()):
             self._collect_path_future(source_path, future)
         self.cache.discard_all()

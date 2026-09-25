@@ -46,6 +46,11 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 
+def _stalled_process_worker(marker: str) -> None:
+    Path(marker).write_text("started")
+    time.sleep(30)
+
+
 def _codex_session_bytes(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
     rows: list[dict[str, object]] = [
         {"type": "session_meta", "payload": {"id": native_id, "timestamp": "2026-07-19T00:00:00Z"}}
@@ -303,6 +308,56 @@ async def test_path_worker_failure_retains_raw_for_retry(tmp_path: Path, monkeyp
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
+@pytest.mark.asyncio
+async def test_pending_preparation_does_not_spend_cursor_failure_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    import polylogue.sources.live.batch as batch
+    import polylogue.sources.live.cursor as cursor_module
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
+    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
+    released = threading.Event()
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def delayed_worker(*args: object, **kwargs: object) -> object:
+        released.wait(timeout=30)
+        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    cursor = CursorStore(archive_root / "index.db")
+    stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.01, shard_directory=tmp_path / "parse-shards")
+    processor = LiveBatchProcessor(
+        polylogue,
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=cursor,
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=stage,
+    )
+    try:
+        for _ in range(6):
+            metrics = await processor.ingest_files([path], emit_event=False)
+            assert str(path) in metrics.deferred_paths
+            state = cursor.get_record(path)
+            assert state is not None and state.failure_count == 0 and not state.excluded
+        with _connect(archive_root / "source.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] >= 1
+        released.set()
+        stage._warm_timeout_seconds = 5
+        metrics = await processor.ingest_files([path], emit_event=False)
+        assert metrics.succeeded_file_count == 1
+    finally:
+        released.set()
+        stage.shutdown()
+
+
 @pytest.mark.uses_real_clock("measures concurrent worker wait against the configured timeout")
 def test_path_workers_share_one_wait_and_reuse_late_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import hashlib
@@ -353,6 +408,29 @@ def test_path_workers_share_one_wait_and_reuse_late_results(tmp_path: Path, monk
     finally:
         released.set()
         stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("checks that a stalled process cannot block watcher shutdown")
+def test_path_stage_shutdown_terminates_stalled_process(tmp_path: Path) -> None:
+    directory = tmp_path / "parse-shards"
+    marker = tmp_path / "worker-started"
+    stage = LiveParseStage(max_workers=1, shard_directory=directory, use_processes=True)
+    future = stage._executor.submit(_stalled_process_worker, str(marker))
+    stage._path_futures["stalled"] = future  # type: ignore[assignment]
+    try:
+        for _ in range(500):
+            if marker.exists():
+                break
+            time.sleep(0.01)
+        assert marker.exists(), "process worker did not start"
+        started = time.monotonic()
+        stage.shutdown()
+        assert time.monotonic() - started < 5
+        assert future.done()
+        assert list(directory.iterdir()) == []
+    finally:
+        if not future.done():
+            stage.shutdown()
 
 
 @pytest.mark.asyncio

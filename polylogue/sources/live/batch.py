@@ -668,6 +668,10 @@ def _captured_jsonl_ends_at_record_boundary(
 @dataclass(slots=True)
 class _ArchiveFullWriteResult:
     raw_ids: dict[str, str] = field(default_factory=dict)
+    # Accepted raw bytes whose selected preparation is still running or
+    # awaiting worker capacity. The cursor must defer without spending its
+    # finite parse-failure budget.
+    preparation_deferred_raw_ids: dict[str, str] = field(default_factory=dict)
     # Terminal refusals are durably retained and therefore handled by this
     # observation. Keep them separate from accepted raw ids so deferred
     # authority failures remain retryable.
@@ -1034,6 +1038,7 @@ class LiveBatchProcessor:
         pending_append_plans: list[_AppendPlan] = []
         full_paths: list[Path] = []
         deferred_paths: list[Path] = []
+        preparation_deferred_paths: set[Path] = set()
         # Identity-scoped session touches for this batch (polylogue-20d.13):
         # collected as (source_name, session_id) pairs so the daemon can emit
         # session.appended/session.updated/message.appended events carrying
@@ -1440,6 +1445,16 @@ class LiveBatchProcessor:
                     cursor_fingerprint_read_bytes += await self._run_ops_write(
                         "cursor_failed", self._record_failed_cursor, path
                     )
+                for path in full_result.preparation_deferred:
+                    deferred_paths.append(path)
+                    preparation_deferred_paths.add(path)
+                    await self._run_ops_write(
+                        "cursor_deferred_preparation",
+                        self._defer_full_cursor_retry,
+                        path,
+                        source_name=source_name,
+                        captured_file_observation=full_result.captured_file_observations.get(path),
+                    )
                 excluded_by_path.update(full_result.excluded)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
@@ -1523,7 +1538,11 @@ class LiveBatchProcessor:
                 stage="live_ingest_deferred",
                 subject_type="source_path",
                 subject_id=str(deferred_path),
-                error="ingest deferred: no new authority-relevant append this pass",
+                error=(
+                    "ingest deferred: JSONL worker preparation pending"
+                    if deferred_path in preparation_deferred_paths
+                    else "ingest deferred: no new authority-relevant append this pass"
+                ),
                 deferred=True,
             )
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
@@ -2099,10 +2118,22 @@ class LiveBatchProcessor:
                 return _FullCapturePrefixProof("rejected", proof_end, bytes_read)
         return _FullCapturePrefixProof("deferred", latest_stat, bytes_read)
 
-    def _defer_full_cursor_retry(self, path: Path, *, source_name: str, stat: os.stat_result) -> None:
+    def _defer_full_cursor_retry(
+        self,
+        path: Path,
+        *,
+        source_name: str,
+        stat: os.stat_result | None = None,
+        captured_file_observation: tuple[int, int, int, int, int] | None = None,
+    ) -> None:
         """Back off a busy full-prefix handoff without discarding its raw evidence."""
 
-        self._invalidate_cursor_for_full_retry(path, source_name=source_name, stat=stat)
+        self._invalidate_cursor_for_full_retry(
+            path,
+            source_name=source_name,
+            stat=stat,
+            captured_file_observation=captured_file_observation,
+        )
         self._cursor.defer_full_cursor_reconciliation(path)
 
     def _invalidate_cursor_for_full_retry(
@@ -2588,6 +2619,7 @@ class LiveBatchProcessor:
         captured_content_hashes: dict[Path, str] = {}
         captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = {}
         failed: list[Path] = []
+        preparation_deferred_paths: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
@@ -3437,6 +3469,9 @@ class LiveBatchProcessor:
             # then also excluded from ``succeeded`` below (unlike
             # deferred_raw_ids, whose raw row IS durably written this pass).
             skipped_paths = {raw_by_id[raw_id] for raw_id in archive_write.skipped_raw_ids if raw_id in raw_by_id}
+            preparation_deferred_paths = [
+                raw_by_id[raw_id] for raw_id in archive_write.preparation_deferred_raw_ids if raw_id in raw_by_id
+            ]
             # deferred_raw_ids is a conveyor hand-off, not a failure -- only
             # raws in neither map (a real exception was raised) count below.
             failed.extend(
@@ -3446,12 +3481,14 @@ class LiveBatchProcessor:
                 and raw_id not in archive_write.deferred_raw_ids
                 and raw_id not in archive_write.terminal_raw_ids
                 and raw_id not in archive_write.skipped_raw_ids
+                and raw_id not in archive_write.preparation_deferred_raw_ids
             )
             raw_by_id = {
                 (
                     archive_write.raw_ids.get(raw_id)
                     or archive_write.deferred_raw_ids.get(raw_id)
                     or archive_write.terminal_raw_ids.get(raw_id)
+                    or archive_write.preparation_deferred_raw_ids.get(raw_id)
                     or raw_id
                 ): path
                 for raw_id, path in raw_by_id.items()
@@ -3488,10 +3525,14 @@ class LiveBatchProcessor:
 
         failed_set = set(failed)
         raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
-        succeeded_paths = [path for path in ingested if path not in failed_set and path not in skipped_paths]
+        succeeded_paths = [
+            path
+            for path in ingested
+            if path not in failed_set and path not in skipped_paths and path not in preparation_deferred_paths
+        ]
         for path in skipped_paths:
             excluded_paths.setdefault(path, "archive write skipped this raw")
-        accounted = set(succeeded_paths) | failed_set | set(excluded_paths)
+        accounted = set(succeeded_paths) | failed_set | set(excluded_paths) | set(preparation_deferred_paths)
         for path in paths:
             if path not in accounted:
                 # Reaching here means a planned path left the loop through a
@@ -3505,6 +3546,7 @@ class LiveBatchProcessor:
         result = _full_ingest_result_from_summary(
             succeeded=succeeded_paths,
             failed=failed,
+            preparation_deferred=preparation_deferred_paths,
             source_payload_read_bytes=source_payload_read_bytes,
             excluded=excluded_paths,
             raw_fingerprints=raw_fingerprints,
@@ -3967,6 +4009,10 @@ class LiveBatchProcessor:
                         else None
                     )
                     if path_preparation is not None:
+                        if path_preparation.deferred:
+                            result.preparation_deferred_raw_ids[record.raw_id] = source_raw_id
+                            _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                            continue
                         if path_preparation.error is not None:
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
                         cached_sessions = path_preparation.load_sessions()
