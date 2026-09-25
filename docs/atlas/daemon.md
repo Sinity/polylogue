@@ -2,7 +2,7 @@
 
 ## Runtime ownership
 
-The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. HTTP, UDS and derivation owners share the process compute adapter and writer bridge (`polylogue/daemon/cli.py:1985-1997`; `polylogue/daemon/write_coordinator.py:288-311`; `polylogue/daemon/convergence.py:125-146`).
+The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2713-2734`; `polylogue/daemon/cli.py:2774-2801`; `polylogue/daemon/http.py:6318-6347`; `polylogue/daemon/write_coordinator.py:784-807`).
 
 `run_daemon_services` is the service composition entry point (`polylogue/daemon/cli.py:2156-2156`). Its composition state declares `session_profile_callback` and `embedding_callback` (`polylogue/daemon/cli.py:2655-2656`), and constructs the `FtsConvergenceOwner` for startup work (`polylogue/daemon/cli.py:2833-2844`). FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner (`polylogue/daemon/cli.py:2824-2854`). These are source-route facts, not live deployment evidence.
 
