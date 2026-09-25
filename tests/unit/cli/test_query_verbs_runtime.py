@@ -314,6 +314,39 @@ def test_messages_text_format_maps_to_plaintext_projection() -> None:
     assert projection.render.format is RenderFormat.PLAINTEXT
 
 
+def test_read_request_normalization_preserves_context_and_correlation_options() -> None:
+    """The canonical request keeps every option the read CLI exposes.
+
+    Anti-vacuity: dropping any of these fields from either the CLI's
+    ``ReadRequest.normalize`` input or ``ReadPreset.projection`` makes this
+    assertion fail instead of silently reverting the handler to its default.
+    """
+
+    projection = query_verbs._build_read_projection_spec(
+        RootModeRequest.from_params({}),
+        views=("correlation",),
+        output_format="json",
+        destination="stdout",
+        out_path=None,
+        max_tokens=None,
+        selection_limit=7,
+        context_related_limit=4,
+        context_max_sessions=6,
+        correlation_repo_path="/work/project",
+        correlation_since_hours=72,
+        correlation_confidence_threshold=0.8,
+        correlation_github_api=False,
+    )
+
+    assert projection.selection.limit == 7
+    assert projection.projection.context_related_limit == 4
+    assert projection.projection.context_max_sessions == 6
+    assert projection.projection.correlation_repo_path == "/work/project"
+    assert projection.projection.correlation_since_hours == 72
+    assert projection.projection.correlation_confidence_threshold == 0.8
+    assert projection.projection.correlation_github_api is False
+
+
 def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.CaptureFixture[str]) -> None:
     session = make_conv(
         id="session-1",
