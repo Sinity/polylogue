@@ -122,7 +122,17 @@ surfaces:
   daemon_warm_status:
     description: >-
       Installed warm CLI status including operation startup and local
-      rendering. MEASURED 2026-09-22 at 9ef655cb8, 5 rounds x 2 runs on a
+      rendering. CURRENT COMMON-HEAD REPRODUCTION: 2026-09-25 at
+      0fb01e982c236c1ad3ad06c046f02d3d019c8258, managed Python 3.14.4
+      workstation run, 5 rounds, p50 2266.1 ms (mean 2259.4, stddev 74.3;
+      estimated p95 2381.6 ms). The focused receipt is
+      20260925T003229Z-focused-test-2446973-a958609f; the checkout import was
+      confirmed and the lane returned a nonempty JSON response. RULING:
+      retain 400/800 ms as the target and record a real performance defect.
+      The import tax remains attributable to polylogue-8s70, which is open;
+      no budget change is made here. The earlier 9ef655cb8 measurement below
+      is historical and is superseded by this common-head run.
+      MEASURED 2026-09-22 at 9ef655cb8, 5 rounds x 2 runs on a
       host running five other lanes: p50 3521.8 / 3647.9 ms, p95 3736.3 /
       3760.9 ms -- about 9x the budget below, and stable (4% run-to-run).
       RULING (polylogue-gd9i1 AC4): performance DEFECT against a retained
@@ -255,6 +265,31 @@ surfaces:
       than silently charged to query compute. The 250/500 ms product target is
       preserved; this informational ceiling remains a noise ceiling until a
       quiet-host run attributes a fixable phase.
+      CURRENT COMMON-HEAD REPRODUCTION AND RULING: 2026-09-25 at
+      0fb01e982c236c1ad3ad06c046f02d3d019c8258, managed Python 3.14.4
+      workstation run, 5 rounds. daemon_mixed_load p50 is 2513.2 ms (mean
+      2941.3, stddev 878.3; estimated p95 4386.2 ms), below the unchanged
+      4000/6000 ms informational noise ceiling. Its product target remains
+      250/500 ms and is still a performance defect; neither set of numbers is
+      recalibrated. Receipt 20260925T003121Z-focused-test-2442550-720b0a6b
+      passed the workload with nonempty reads, real tag writes, and background
+      progress. The accompanying benchmark JSON records quiet/writer p95 ms:
+      admission queue 0/1314, read-frame acquisition 0/0, query compute
+      2.111/2.878, cache invalidation 0/0, instrumentation tail 67.505/1237.972,
+      response serialization 2/3. Background admission wait peaked at 7511 ms;
+      79 background operations completed at 5.24/s. Request admission queue
+      and instrumentation tail dominate this run; the remaining measurements
+      are small. These are phase observations, not proof of the underlying
+      cause of the historical slowdown. Concurrent reads re-tested at p50
+      132.0 ms (5 rounds; receipt
+      20260925T002931Z-focused-test-2434941-f3b28b7b), with the 500 ms
+      controlled archive-path injection and cache-hit control passing in
+      receipt 20260925T003346Z-focused-test-2452791-04e859c2.
+      The dispatch's 2150.2 ms mixed-load and 5748.2 ms warm-status claims stay
+      visible as invalid history: the former included cache hits, while the
+      latter came from an exit-125 subprocess importing outside the checkout.
+      This fresh reproduction supersedes neither the retained targets nor the
+      older historical records; it adds common-head evidence and phase data.
     benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_mixed_load"
     p50_ms: 4000
     p95_ms: 6000
