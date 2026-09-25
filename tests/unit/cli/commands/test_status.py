@@ -40,7 +40,7 @@ from tests.infra.daemon_operations import cli_daemon_archive
 
 
 class _ArchiveTierResult(TypedDict):
-    table_counts: dict[str, int]
+    table_counts: dict[str, int | None]
     table_count_precision: dict[str, str]
 
 
@@ -421,12 +421,15 @@ class TestArchiveTableCounts:
             )
             assert result["table_counts"]["sessions"] == 2
             assert result["table_counts"]["messages"] == 3
-            assert result["table_count_precision"] == {"sessions": "exact", "messages": "exact"}
+            assert result["table_count_precision"]["sessions"] == "exact"
+            assert result["table_count_precision"]["messages"] == "exact"
+            assert result["table_count_precision"]["actions"] == "missing"
+            assert result["table_counts"]["actions"] is None
         finally:
             conn.close()
 
-    def test_omits_nonexistent_tables(self, tmp_path: Path) -> None:
-        """Only returns counts for declared tables that exist."""
+    def test_marks_nonexistent_tables_missing(self, tmp_path: Path) -> None:
+        """Declared relations with no table or view retain missing evidence."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(db_path)
         try:
@@ -440,7 +443,9 @@ class TestArchiveTableCounts:
             assert "sessions" in result["table_counts"]
             assert "nonexistent" not in result["table_counts"]
             assert "missing" not in result["table_counts"]
-            assert result["table_count_precision"] == {"sessions": "exact"}
+            assert result["table_count_precision"]["sessions"] == "exact"
+            assert result["table_count_precision"]["messages"] == "missing"
+            assert result["table_counts"]["messages"] is None
         finally:
             conn.close()
 
@@ -537,7 +542,7 @@ class TestArchiveOneTierStatus:
         try:
             result = _archive_tiers(_archive_fixture(tmp_path, expected_version), conn)
             index_result = cast(_ArchiveTierResult, result["index"])
-            assert "actions" not in index_result["table_counts"]
+            assert index_result["table_counts"]["actions"] is None
             assert index_result["table_count_precision"]["actions"] == "unavailable"
         finally:
             conn.close()

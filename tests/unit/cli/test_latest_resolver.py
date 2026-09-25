@@ -19,6 +19,8 @@ from collections.abc import Sequence
 
 import pytest
 
+from polylogue.cli.operation_kernel import OperationUnavailableError
+from polylogue.cli.shared.helper_support import DaemonRequiredError
 from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
 
@@ -69,3 +71,19 @@ def test_latest_returns_none_when_archive_empty(monkeypatch: pytest.MonkeyPatch)
     _stub_ids(monkeypatch, [])
 
     assert resolve_session_id_from_root_params({"latest": True}) is None
+
+
+def test_latest_reports_typed_daemon_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unavailable query keeps its operation in the CLI refusal."""
+
+    def unavailable(*_args: object, **_kwargs: object) -> list[str]:
+        raise OperationUnavailableError("daemon unavailable", operation="cli.query")
+
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", unavailable)
+
+    with pytest.raises(DaemonRequiredError) as exc_info:
+        resolve_session_id_from_root_params({"latest": True})
+
+    assert exc_info.value.code == "daemon_required"
+    assert exc_info.value.operation == "cli.query"
+    assert "polylogued run" in exc_info.value.format_message()

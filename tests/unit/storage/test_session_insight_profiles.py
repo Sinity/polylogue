@@ -171,27 +171,26 @@ def test_session_enrichment_maps_goal_outcome_from_terminal_state() -> None:
     profile = build_session_profile(session, analysis=analysis)
 
     outcomes: dict[str, str | None] = {}
-    for terminal_state in ("clean_finish", "error_left", "question_left", "tool_left", "agent_hanging", "unknown"):
+    for terminal_state in ("error_left", "question_left", "tool_left", "refused", "truncated", "unknown"):
         variant = profile.__class__.from_dict({**profile.to_dict(), "terminal_state": terminal_state})
         outcomes[terminal_state] = session_enrichment_payload(variant, analysis).goal_outcome
 
     assert outcomes == {
-        "clean_finish": "ended_cleanly",
         "error_left": "ended_with_error",
         "question_left": "awaiting_user",
         "tool_left": "pending_tool",
-        "agent_hanging": "inactive_pending",
+        "refused": "declined",
+        "truncated": "cut_off",
         "unknown": None,
     }
     payload = session_enrichment_payload(profile, analysis)
     assert payload.goal_text == "/goal fix the session-profile outcome mapping"
-    # clean_finish is no longer emitted by _terminal_state (polylogue-ve9z),
-    # but persisted pre-deletion profiles still carry it; prove the mapped
-    # outcome still lands in enrichment search text via an explicit variant.
+    # A legacy clean_finish profile does not establish that the goal succeeded.
     clean_variant = profile.__class__.from_dict({**profile.to_dict(), "terminal_state": "clean_finish"})
     variant_payload = session_enrichment_payload(clean_variant, analysis)
     search_text = profile_enrichment_search_text(clean_variant, variant_payload)
-    assert "ended_cleanly" in search_text
+    assert variant_payload.goal_outcome is None
+    assert "ended_cleanly" not in search_text
     assert "session-profile outcome mapping" in search_text
 
 
