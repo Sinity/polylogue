@@ -122,7 +122,17 @@ surfaces:
   daemon_warm_status:
     description: >-
       Installed warm CLI status including operation startup and local
-      rendering. CURRENT WORKER-HEAD REPRODUCTION: 2026-09-25 at
+      rendering. CURRENT DISPATCH COMMON-HEAD REPRODUCTION: 2026-09-25 at
+      58fa868404c69c8ad6ca2f2e089f6923f3d96c7a, managed checkout Python
+      3.14.4 and pytest-benchmark 5.3.0, 5 rounds, p50 2099.9 ms (mean
+      2128.6, stddev 75.4; estimated p95 2252.6 ms). Focused receipt
+      20260925T114749Z-focused-test-983975-1a8624ed passed one selected
+      workload, and the managed pytest log identifies this checkout's package.
+      The 400/800 ms target remains unchanged; this is a performance defect.
+      The dispatch's reported 5748.2 ms is retained as invalid history: its
+      subprocess exited 125 after importing outside the checkout, so it was
+      not scored. Import-time cost remains assigned to open polylogue-8s70;
+      no recalibration is made here. CURRENT WORKER-HEAD REPRODUCTION: 2026-09-25 at
       043b4729fee11e4b49c3d3d67c1c3f484e87d4e3, managed Python 3.14.4 and
       pytest-benchmark 5.3.0, 5 rounds, p50 2206.9 ms (mean 2269.3,
       stddev 213.6; estimated p95 2620.6 ms). Focused receipt
@@ -209,7 +219,16 @@ surfaces:
   daemon_concurrent_reads:
     description: >-
       Mixed interactive reads while representative background work progresses.
-      CURRENT WORKER-HEAD RE-TEST: 2026-09-25 at
+      CURRENT DISPATCH COMMON-HEAD RE-TEST: 2026-09-25 at
+      58fa868404c69c8ad6ca2f2e089f6923f3d96c7a, managed Python 3.14.4 and
+      pytest-benchmark 5.3.0, 5 rounds, p50 105.6 ms (mean 123.8,
+      stddev 40.5; estimated p95 190.4 ms). Focused receipt
+      20260925T114830Z-focused-test-986049-a28aa8ea passed one selected
+      workload with four distinct limit/offset requests. The unchanged
+      250/500 ms target is met in this run. Controlled 500 ms archive-path
+      injection and cache-hit control, plus the mixed-load unique-series
+      injection, passed in receipt
+      20260925T115103Z-focused-test-991803-a0281ae6. CURRENT WORKER-HEAD RE-TEST: 2026-09-25 at
       043b4729fee11e4b49c3d3d67c1c3f484e87d4e3, managed Python 3.14.4 and
       pytest-benchmark 5.3.0, 5 rounds, p50 206.3 ms (mean 221.5,
       stddev 48.5; estimated p95 301.4 ms). Focused receipt
@@ -254,6 +273,30 @@ surfaces:
       scheduler. Gates the interactive side; the profile additionally asserts
       nonzero background throughput, a bounded background admission wait, and
       that the write load did not grow the state the measured read joins.
+      CURRENT DISPATCH COMMON-HEAD REPRODUCTION: 2026-09-25 at
+      58fa868404c69c8ad6ca2f2e089f6923f3d96c7a, managed Python 3.14.4 and
+      pytest-benchmark 5.3.0, 5 rounds. The first focused receipt
+      20260925T114605Z-focused-test-979306-db9b1ee6 passed one selected
+      workload: p50 1519.0 ms (mean 1507.9, stddev 105.9; estimated p95
+      1682.0 ms), with nonempty reads, real writes, and background progress.
+      A capture-enabled repeat passed at receipt
+      20260925T115148Z-focused-test-994258-4eaabe32: p50 3446.0 ms (mean
+      2964.5, stddev 954.7; estimated p95 4535.5 ms). Its benchmark JSON is
+      retained locally at .cache/verify/gd9i1-mixed-load.json. Quiet/writer
+      p95 phase ms were admission queue 0/968, read-frame acquisition 0/0,
+      query compute 1.733/3.243, cache invalidation 0/0, instrumentation tail
+      31.743/1049.058, and response serialization 2/3; instrumentation tail
+      was dominant. The repeat recorded 40 writer-load reads, 80 completed
+      background operations at 5.166/s, 3730.5 ms maximum background queue
+      wait, and 1052 ms maximum writer hold. These are observed phase timings,
+      not a proved mechanism. The 250/500 ms product target remains a real
+      performance defect; the separate 4000/6000 ms informational host-noise
+      ceiling is also unchanged. Run-to-run variation is substantial, so no
+      recalibration is justified. The dispatch's 2150.2 ms claim remains
+      visible as invalid history because that run included cache hits.
+      The mixed-load unique-request series is proven to reach the archive
+      path by the controlled injection in receipt
+      20260925T115103Z-focused-test-991803-a0281ae6.
       CURRENT WORKER-HEAD REPRODUCTION: 2026-09-25 at
       043b4729fee11e4b49c3d3d67c1c3f484e87d4e3, managed Python 3.14.4 and
       pytest-benchmark 5.3.0, 5 rounds, p50 1990.7 ms (mean 2067.5,
