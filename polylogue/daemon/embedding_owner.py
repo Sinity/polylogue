@@ -160,12 +160,18 @@ class _EmbeddingBackfillExecution:
         self.operation_id: str | None = None
         self.record: dict[str, object] | None = None
         self.scope: tuple[str, ...] | None = None
+        self.scope_limited = False
 
     async def accept(self) -> None:
         """Pin authority and commit an auditable accepted reference before work."""
         from polylogue.operations.embedding_derivation import select_embedding_session_window
 
-        def prepare() -> tuple[MachineRequestBinding, tuple[str, ...] | None, dict[str, object] | None]:
+        def prepare() -> tuple[
+            MachineRequestBinding,
+            tuple[str, ...] | None,
+            bool,
+            dict[str, object] | None,
+        ]:
             with open_operation_read(
                 self.context.archive_root,
                 publication_guard=self.runtime.publication_guard,
@@ -190,7 +196,7 @@ class _EmbeddingBackfillExecution:
                     or payload.get("min_messages") is not None
                     or bool(payload.get("rebuild"))
                 ):
-                    scope = select_embedding_session_window(
+                    scope, scope_limited = select_embedding_session_window(
                         pinned.archive.index_db_path,
                         archive_root=self.context.archive_root,
                         rebuild=bool(payload.get("rebuild")),
@@ -198,10 +204,12 @@ class _EmbeddingBackfillExecution:
                         max_messages=cast(int | None, payload.get("max_messages")),
                         min_messages=cast(int | None, payload.get("min_messages")),
                     )
-                return binding, scope, existing
+                else:
+                    scope_limited = False
+                return binding, scope, scope_limited, existing
 
-        binding, scope, existing = await self.runtime.compute_phase(prepare)
-        self.binding, self.scope, self.record = binding, scope, existing
+        binding, scope, scope_limited, existing = await self.runtime.compute_phase(prepare)
+        self.binding, self.scope, self.scope_limited, self.record = binding, scope, scope_limited, existing
         if existing is not None:
             self.operation_id = str(self.audit.machine_parts(binding)[0]["operation_id"])
             return
@@ -238,7 +246,11 @@ class _EmbeddingBackfillExecution:
                 required_confirmation="role_only",
                 prepared_at_ms=int(time.time() * 1000),
                 expires_at_ms=self.runtime.request_deadline_unix_ms(self.request),
-                context={**payload, "scope": list(self.scope) if self.scope is not None else None},
+                context={
+                    **payload,
+                    "scope": list(self.scope) if self.scope is not None else None,
+                    "scope_limited": self.scope_limited,
+                },
             )
             preview = MutationPreview("pending-preview", self.plan)
             self.preview_ref = self.audit.create_preview(self.plan, self.context.principal)
@@ -319,6 +331,7 @@ def compose_embedding_convergence(
     max_cost_usd: float | None = None,
     stop_after_seconds: int | None = None,
     max_errors: int | None = None,
+    scope_limited: bool = False,
     progress_callback: Callable[[Mapping[str, object]], None] | None = None,
 ) -> ComposedEmbeddingConvergence:
     """Compose the common-kernel embedding owner once for a daemon process.
@@ -491,7 +504,7 @@ def compose_embedding_convergence(
                     # Cancellation/deadline can also arrive after the last
                     # derivation observation, so consult the request stop
                     # signal before declaring a clean completion.
-                    stopped = bool(quiet and quiet())
+                    stopped = scope_limited or bool(quiet and quiet())
                     receipt_status = _catchup_receipt_status(
                         failures=failures,
                         pending=report.pending,
@@ -523,6 +536,8 @@ def compose_embedding_convergence(
                     deferred = "stop_after_seconds"
                 elif max_errors is not None and failures >= max_errors:
                     deferred = "max_errors"
+                elif scope_limited:
+                    deferred = "max_sessions"
                 return EmbeddingConvergenceResult(report, deferred)
             finally:
                 with receipt_lock:
@@ -597,6 +612,7 @@ async def execute_embedding_backfill_operation(
             max_cost_usd=max_cost_usd,
             stop_after_seconds=stop_after_seconds,
             max_errors=max_errors,
+            scope_limited=execution.scope_limited,
             progress_callback=lambda event: runtime.emit_progress(request, event),
         )
         result = await owner(execution.scope)

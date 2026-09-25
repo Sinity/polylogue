@@ -39,7 +39,7 @@ def select_embedding_session_window(
     max_sessions: int | None = None,
     max_messages: int | None = None,
     min_messages: int | None = None,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], bool]:
     """Resolve one bounded pending-session window for a daemon operation."""
     from polylogue.storage.embeddings.materialization import select_pending_session_window
 
@@ -48,12 +48,16 @@ def select_embedding_session_window(
         rows = select_pending_session_window(
             conn,
             rebuild=rebuild,
-            max_sessions=max_sessions,
+            # Read one extra row so the operation can distinguish an exact
+            # fit from a max-sessions window that leaves pending sessions.
+            max_sessions=None if max_sessions is None else max_sessions + 1,
             max_messages=max_messages,
         )
     if min_messages is not None:
         rows = [row for row in rows if row.message_count >= min_messages]
-    return tuple(row.session_id for row in rows)
+    session_limit_reached = max_sessions is not None and len(rows) > max_sessions
+    selected = rows if max_sessions is None else rows[:max_sessions]
+    return tuple(row.session_id for row in selected), session_limit_reached
 
 
 def make_embedding_frame(

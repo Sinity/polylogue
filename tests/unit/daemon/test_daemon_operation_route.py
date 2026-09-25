@@ -127,8 +127,9 @@ def test_repeated_daemon_query_uses_revision_scoped_result_cache(
     assert calls == 1
 
 
+@pytest.mark.parametrize("scope_limited", [False, True])
 def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scope_limited: bool
 ) -> None:
     """Embedding progress is pre-terminal and its final counts survive runtime restart.
 
@@ -148,6 +149,7 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
         nonlocal composed
         composed = True
         emit = kwargs["progress_callback"]
+        limited = bool(kwargs["scope_limited"])
 
         async def converge(_scope: object) -> EmbeddingConvergenceResult:
             assert callable(emit)
@@ -159,13 +161,18 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
                 failed=0,
                 work=SimpleNamespace(computed=1),
             )
-            return EmbeddingConvergenceResult(cast(Any, report), None)
+            return EmbeddingConvergenceResult(cast(Any, report), "max_sessions" if limited else None)
 
         return converge
 
+    monkeypatch.setattr(
+        "polylogue.operations.embedding_derivation.select_embedding_session_window",
+        lambda *_args, **_kwargs: (("codex:synthetic",), scope_limited),
+    )
+
     monkeypatch.setattr(embedding_owner_module, "compose_embedding_convergence", compose)
     request_id = "embedding-accepted-progress"
-    payload: dict[str, object] = {"max_messages": 1}
+    payload: dict[str, object] = {"max_sessions": 1}
     with running_daemon_operations(tmp_path / "archive") as stack:
         progress: list[dict[str, object]] = []
 
@@ -181,7 +188,7 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
             progress_callback=receive_progress,
         )
         assert terminal is not None
-        assert terminal["outcome"] == "completed"
+        assert terminal["outcome"] == ("interrupted" if scope_limited else "completed")
         assert composed
         assert terminal["accepted_reference"]["request_id"] == request_id
         assert terminal["accepted_reference"]["artifact_kind"] == "operation"
@@ -201,7 +208,7 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
             request_id=request_id,
         )
         assert recovered is not None
-        assert recovered["outcome"] == "completed"
+        assert recovered["outcome"] == ("interrupted" if scope_limited else "completed")
         assert recovered["accepted_reference"] == accepted_reference
         assert recovered["result"]["result"] == {"done": 1, "pending": 2, "failed": 0}
 
