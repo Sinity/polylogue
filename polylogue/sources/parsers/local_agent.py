@@ -720,13 +720,22 @@ def _gemini_message_usage_event(item: object, message: ParsedMessage) -> ParsedS
     if not raw_usage:
         return None
     usage = _token_usage_fields(record)
+    # A total-only wire report does not identify its output lane. The message
+    # compatibility projection may use it there, but the usage event retains
+    # the provider's own counter grain.
+    if _first_non_negative_int(raw_usage, "output", "output_tokens", "completion_tokens", "generated_tokens") is None:
+        usage["output_tokens"] = None
     last_usage = {
-        "input_tokens": usage["input_tokens"],
-        "output_tokens": usage["output_tokens"],
-        "cached_input_tokens": usage["cache_read_tokens"],
-        "cache_write_tokens": usage["cache_write_tokens"],
-        "reasoning_output_tokens": usage["reasoning_output_tokens"],
-        "total_tokens": usage["total_tokens"],
+        event_key: value
+        for event_key, value in (
+            ("input_tokens", usage["input_tokens"]),
+            ("output_tokens", usage["output_tokens"]),
+            ("cached_input_tokens", usage["cache_read_tokens"]),
+            ("cache_write_tokens", usage["cache_write_tokens"]),
+            ("reasoning_output_tokens", usage["reasoning_output_tokens"]),
+            ("total_tokens", usage["total_tokens"]),
+        )
+        if value is not None
     }
     payload: dict[str, object] = {
         "type": "message_usage",

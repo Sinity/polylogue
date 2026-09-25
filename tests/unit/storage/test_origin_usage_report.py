@@ -122,8 +122,8 @@ def test_origin_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_pa
     conn.execute(
         """
         INSERT INTO session_provider_usage_events (
-            session_id, position, provider_event_type
-        ) VALUES (?, ?, 'token_count')
+            session_id, position, provider_event_type, last_input_tokens
+        ) VALUES (?, ?, 'token_count', 0)
         """,
         ("codex-session:provider-usage-report", 99),
     )

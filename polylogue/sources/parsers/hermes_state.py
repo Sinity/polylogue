@@ -847,16 +847,22 @@ def _usage_and_lifecycle_events(
     session_columns: set[str],
 ) -> list[ParsedSessionEvent]:
     events: list[ParsedSessionEvent] = []
-    total_usage: dict[str, int] = {
-        "input_tokens": _non_negative_int(_row_value(row, "input_tokens")) or 0,
-        "output_tokens": _non_negative_int(_row_value(row, "output_tokens")) or 0,
-        "cached_input_tokens": _non_negative_int(_row_value(row, "cache_read_tokens")) or 0,
-        "cache_write_tokens": _non_negative_int(_row_value(row, "cache_write_tokens")) or 0,
-        "reasoning_output_tokens": _non_negative_int(_row_value(row, "reasoning_tokens")) or 0,
+    # The SQLite row distinguishes NULL from zero. If its producer used a
+    # column DEFAULT 0 for an omitted insert, that earlier omission is no
+    # longer recoverable here; the row's zero is the available evidence.
+    total_usage = {
+        event_key: value
+        for event_key, wire_key in (
+            ("input_tokens", "input_tokens"),
+            ("output_tokens", "output_tokens"),
+            ("cached_input_tokens", "cache_read_tokens"),
+            ("cache_write_tokens", "cache_write_tokens"),
+            ("reasoning_output_tokens", "reasoning_tokens"),
+        )
+        if (value := _non_negative_int(_row_value(row, wire_key))) is not None
     }
-    total_usage["total_tokens"] = sum(total_usage.values())
     has_cost_evidence = any(field in session_columns for field in _COST_FIELDS)
-    if any(total_usage.values()) or has_cost_evidence:
+    if total_usage or has_cost_evidence:
         cost_payload = {field: _row_value(row, field) for field in _COST_FIELDS if field in session_columns}
         events.append(
             ParsedSessionEvent(
