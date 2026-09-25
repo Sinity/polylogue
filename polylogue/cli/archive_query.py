@@ -551,18 +551,27 @@ def _transcript_or_page(
     through to ordinary page execution — but an *ambiguous* reference is a real
     identity failure and must not broaden into a text search.
     """
-    from polylogue.cli.operation_kernel import OperationKernelError
+    from polylogue.cli.operation_kernel import OperationFailedError, OperationKernelError
 
     try:
         return _read_session_windows(config, ref, daemon_disabled=daemon_disabled, message_limit=message_limit)
     except OperationKernelError as exc:
+        # A ref-shaped token such as ``repo:polylogue`` may miss the cheap
+        # transcript probe and continue as an ordinary query.  Only the
+        # operation's explicit missing-session result is such a miss; daemon
+        # transport absence, stale generation, cancellation, protocol errors,
+        # and all other typed failures are terminal and must not trigger a
+        # second read.
         detail = _read_failure_detail(exc)
         if certain:
             if "not found" in detail:
                 _fail(f"Session not found: {ref}")
             _read_failure_as_usage_error(exc)
+        if isinstance(exc, OperationFailedError) and exc.code.lower().startswith("session not found"):
+            return None
         if "ambiguous" in detail:
             raise click.UsageError(detail) from exc
+        _read_failure_as_usage_error(exc)
         return None
 
 

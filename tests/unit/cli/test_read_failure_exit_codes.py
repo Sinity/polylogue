@@ -20,6 +20,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.operation_kernel import (
     OperationCancelledError,
+    OperationEnvelopeError,
     OperationFailedError,
     OperationUnavailableError,
 )
@@ -141,6 +142,64 @@ def test_the_real_cli_route_exits_without_a_usage_banner(
     assert result.exit_code == expected, result.output
     assert result.exit_code != EMPTY_EXIT_CODE
     assert "Usage:" not in result.output
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OperationFailedError("stale_generation", "archive generation changed"),
+        OperationCancelledError("session.read", "request cancelled"),
+        OperationEnvelopeError("daemon returned a different operation"),
+    ],
+    ids=["stale-generation", "cancelled", "protocol"],
+)
+def test_ref_shaped_query_does_not_retry_a_typed_read_failure(
+    failure: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed transcript probe is final unless transport is absent.
+
+    ``repo:polylogue`` is a valid field expression and also passes the cheap
+    ref-shape probe.  A typed failure from its ``session.read`` probe must not
+    be swallowed and followed by a second query operation.  Anti-vacuity:
+    removing the typed-error guard in ``_transcript_or_page`` makes dispatch
+    run twice and this public CLI route goes red.
+    """
+
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    (tmp_path / "index.db").write_bytes(b"")
+
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=failure) as dispatch:
+        result = CliRunner().invoke(cli, ["find", "repo:polylogue"])
+
+    assert result.exit_code != 0, result.output
+    assert dispatch.call_count == 1, result.output
+
+
+def test_ref_shaped_query_does_not_invent_a_direct_route_when_the_daemon_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unavailable operation cannot silently become a local read.
+
+    This CLI route has no declared direct executor, so transport absence is a
+    final refusal here.  Anti-vacuity: continue from the failed probe into the
+    ordinary query route and the dispatch-count assertion goes red.
+    """
+
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    (tmp_path / "index.db").write_bytes(b"")
+
+    absent = OperationUnavailableError("daemon is unavailable for operation: session.read")
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=absent) as dispatch:
+        result = CliRunner().invoke(cli, ["find", "repo:polylogue"])
+
+    assert result.exit_code != 0, result.output
+    assert dispatch.call_count == 1, result.output
 
 
 def test_a_machine_caller_still_gets_a_parseable_refusal(
