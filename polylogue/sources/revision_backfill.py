@@ -746,7 +746,9 @@ _REPLAY_ENRICHMENT_DEGRADATIONS: contextvars.ContextVar[Counter[str] | None] = c
 _REPLAY_ENRICHMENT_DEGRADATIONS_LOCK = threading.Lock()
 
 
-def _capture_replay_enrichment_degradations(function: Callable[..., RevisionBackfillResult]):
+def _capture_replay_enrichment_degradations(
+    function: Callable[..., RevisionBackfillResult],
+) -> Callable[..., RevisionBackfillResult]:
     """Give one historical backfill and its workers a private degradation ledger."""
 
     @wraps(function)
