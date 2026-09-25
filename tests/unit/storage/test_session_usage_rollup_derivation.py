@@ -487,3 +487,66 @@ def test_profile_needs_a_settled_rollup(archive: tuple[Path, str]) -> None:
         assert publish_session_profile(conn, session_id, input_binding=binding) is True
 
     assert _profile_status(index_db, session_id) == "valid"
+
+
+@pytest.mark.parametrize("upstream_state", ["missing", "changed-input", "old-recipe"])
+def test_prepared_profile_requires_a_current_usage_certificate(archive: tuple[Path, str], upstream_state: str) -> None:
+    """An unchanged stale rollup is not a valid dependency snapshot.
+
+    The changed-input case is the deterministic schedule: settle the prerequisite,
+    commit another input write, then prepare and publish. The writer must refuse
+    without reconciling usage or replacing any retained profile rows. Re-running
+    the prerequisite followed by fresh preparation must succeed.
+    """
+    from polylogue.storage.derived.session.rebuild import prepare_session_insight_partition
+
+    index_db, session_id = archive
+    if upstream_state != "missing":
+        assert _materialize(index_db, session_id)
+        if upstream_state == "changed-input":
+            _bump_message_input_tokens(index_db, session_id, 5000)
+        else:
+            with write_lease("test.old_recipe"), closing(_write_connection(index_db)) as conn:
+                conn.execute(
+                    "UPDATE session_usage_rollup_bindings SET recipe_version = ? WHERE session_id = ?",
+                    ("previous-software-recipe", session_id),
+                )
+                conn.commit()
+    assert _rollup_status(index_db, session_id) != "valid"
+    before_usage = _usage_rows(index_db, session_id)
+    with closing(_read_connection(index_db)) as conn:
+        before_profile = tuple(conn.execute("SELECT * FROM session_profiles WHERE session_id = ?", (session_id,)))
+        before_latency = tuple(
+            conn.execute("SELECT * FROM session_latency_profiles WHERE session_id = ?", (session_id,))
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        prepared = prepare_session_insight_partition(conn, session_id)
+    with write_lease("test.prepared_refusal"), closing(_write_connection(index_db)) as conn:
+        assert publish_prepared_session_profile(conn, prepared) is False
+    assert _usage_rows(index_db, session_id) == before_usage
+    with closing(_read_connection(index_db)) as conn:
+        assert (
+            tuple(conn.execute("SELECT * FROM session_profiles WHERE session_id = ?", (session_id,))) == before_profile
+        )
+        assert (
+            tuple(conn.execute("SELECT * FROM session_latency_profiles WHERE session_id = ?", (session_id,)))
+            == before_latency
+        )
+
+    with write_lease("test.settle_usage"), closing(_write_connection(index_db)) as conn:
+        binding = session_input_bindings(conn, (session_id,))[session_id]
+        assert publish_session_usage_rollup(
+            conn,
+            session_id,
+            input_binding=binding,
+            recipe_version=session_usage_rollup_recipe_version(),
+        )
+    with closing(_read_connection(index_db)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("BEGIN")
+        fresh = prepare_session_insight_partition(conn, session_id)
+    with write_lease("test.prepared_success"), closing(_write_connection(index_db)) as conn:
+        assert publish_prepared_session_profile(conn, fresh) is True
+    assert _rollup_status(index_db, session_id) == "valid"
+    assert _profile_status(index_db, session_id) == "valid"
