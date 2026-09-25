@@ -3050,6 +3050,51 @@ def _aistudio_drive_spec() -> OriginSpec:
     )
 
 
+def _otel_genai_spec() -> OriginSpec:
+    """Declare configured local OTLP JSON as an explicit source origin."""
+    from polylogue.sources.parsers.otel_genai import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
+
+    return _executable_spec(
+        Origin.OTEL_GENAI,
+        provider=Provider.OTEL_GENAI,
+        tightness=95,
+        discovery="Explicitly configured OTLP-JSON file with GenAI span attributes.",
+        acquisition_modes=("otlp-json-file",),
+        parser_paths=("polylogue/sources/parsers/otel_genai.py",),
+        fixture_paths=("tests/unit/sources/parsers/test_otel_genai.py", "tests/fixtures/otel-genai/trace.json"),
+        assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="session_document",
+                path_pattern=r".*\.json$",
+                parse_policy="session",
+                parser_path="polylogue/sources/parsers/otel_genai.py",
+                coverage_role="otlp_json_export",
+                fidelity_note=(
+                    "An explicitly configured root supplies the source scope; parser admission still requires an "
+                    "OTLP JSON document with a normalizable GenAI span."
+                ),
+                path_suffixes=(".json",),
+                watch_suffixes=(".json",),
+            ),
+        ),
+        fidelity_notes=(
+            f"Accepted dialect: {OTLP_JSON_DIALECT}; normalized GenAI schema URL: {SEMCONV_SCHEMA_URL}.",
+            "A session is scoped by resource service.name plus asserted gen_ai.conversation.id, falling back "
+            "to trace_id. A trace is correlation evidence, not proof of a complete conversation.",
+            "OTLP spans and their attributes are retained as session evidence. Unsupported schema URLs are "
+            "retained as evidence but do not produce normalized messages.",
+            "Usage is populated only from non-negative gen_ai.usage.* values actually present. Missing usage "
+            "is not converted to zero. Tool outcomes derive from OTLP status when it is reported.",
+        ),
+        display_description="OpenTelemetry GenAI OTLP-JSON files (explicit source roots)",
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
+        topology_capabilities=_no_topology_capabilities(Origin.OTEL_GENAI),
+    )
+
+
 def _unknown_spec() -> OriginSpec:
     origin = Origin.UNKNOWN_EXPORT
     return OriginSpec(
@@ -3297,6 +3342,22 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             fixture_paths=("tests/unit/sources/test_parsers_drive.py", "tests/data/gemini_chunked_prompt"),
             schema_paths=("polylogue/schemas/providers/gemini/catalog.json",),
             docs_paths=("docs/providers/gemini.md",),
+        ),
+    ),
+    Origin.OTEL_GENAI: (
+        _completeness_mode(
+            "provider-package:otel-genai/otlp-json-file@v1",
+            "otlp-json-file",
+            Provider.OTEL_GENAI,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/otel_genai.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/otel_genai.py",),
+            parser_paths=("polylogue/sources/parsers/otel_genai.py",),
+            normalizer_paths=("polylogue/sources/parsers/otel_genai.py",),
+            fixture_paths=("tests/unit/sources/parsers/test_otel_genai.py", "tests/fixtures/otel-genai/trace.json"),
+            schema_paths=(),
+            docs_paths=("docs/provider-origin-identity.md",),
+            caveats=("Configured OTLP-JSON files only; unsupported GenAI fields remain span evidence.",),
         ),
     ),
     Origin.UNKNOWN_EXPORT: (
@@ -3580,6 +3641,16 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             fixed_provider=Provider.GEMINI,
         ),
     ),
+    Origin.OTEL_GENAI: (
+        DetectorBinding(
+            "otel-genai-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_otel_genai_record",
+            0,
+            "OTLP-JSON resourceSpans contains a normalizable span with gen_ai.* attributes",
+            fixed_provider=Provider.OTEL_GENAI,
+        ),
+    ),
     Origin.UNKNOWN_EXPORT: (
         DetectorBinding(
             "browser-capture-record",
@@ -3624,6 +3695,7 @@ for _spec in (
     _claude_ai_spec(),
     _claude_design_spec(),
     _aistudio_drive_spec(),
+    _otel_genai_spec(),
     _unknown_spec(),
 ):
     ORIGIN_SPEC_REGISTRY.register(_with_declaration_fields(_spec))

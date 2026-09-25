@@ -92,6 +92,7 @@ class Origin(PolylogueStrEnum):
     # sources/parsers/claude/ai_parser.py's design-chat parser.
     CLAUDE_DESIGN_SESSION = "claude-design-session"
     AISTUDIO_DRIVE = "aistudio-drive"
+    OTEL_GENAI = "otel-genai"
     UNKNOWN_EXPORT = "unknown-export"
 
     @classmethod
@@ -120,6 +121,7 @@ class Provider(PolylogueStrEnum):
     BEADS = "beads"
     GROK = "grok"
     DRIVE = "drive"
+    OTEL_GENAI = "opentelemetry"
     UNKNOWN = "unknown"
 
     @classmethod

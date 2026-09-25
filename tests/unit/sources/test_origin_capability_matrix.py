@@ -61,7 +61,7 @@ def test_manifest_covers_every_origin_with_typed_support_state() -> None:
 
     supported = [entry for entry in manifest.entries if entry.unsupported is None]
     unsupported = [entry for entry in manifest.entries if entry.unsupported is not None]
-    assert len(supported) == 10
+    assert len(supported) == 11
     assert len(unsupported) == 2
     by_origin = {entry.origin: entry for entry in unsupported}
     assert set(by_origin) == {Origin.BEADS_ISSUE, Origin.UNKNOWN_EXPORT}
@@ -75,7 +75,7 @@ def test_manifest_covers_every_origin_with_typed_support_state() -> None:
     assert unknown_receipt is not None
     assert beads_receipt.reason == "no-parser"
     assert unknown_receipt.reason == "compatibility-only"
-    assert sum(len(entry.witnesses) for entry in supported) == 11
+    assert sum(len(entry.witnesses) for entry in supported) == 12
 
 
 def test_each_supported_origin_has_one_claim_and_reaches_production_detector_and_parser() -> None:
