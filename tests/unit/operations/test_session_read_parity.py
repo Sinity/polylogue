@@ -176,8 +176,8 @@ def test_transcript_window_agrees_across_daemon_and_direct(tmp_path: Path) -> No
     assert daemon_body["total"] == direct_body["total"]
     assert daemon_body.get("evidence") is None
     assert direct_body.get("evidence") is None
-    assert direct_next["offset"] == daemon_next["result"]["offset"] == 1
-    assert direct_next["session"]["messages"] == daemon_next["result"]["session"]["messages"]
+    assert direct_next["offset"] == daemon_next["offset"] == 1
+    assert direct_next["session"]["messages"] == daemon_next["session"]["messages"]
 
 
 def test_session_owner_continuation_refusal_names_its_dialect(tmp_path: Path) -> None:
