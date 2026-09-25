@@ -160,6 +160,67 @@ def _load_baseline(baseline_path: Path) -> set[tuple[str, str, str]]:
     return entries
 
 
+def _prune_layering_baseline(baseline_path: Path, stale: set[tuple[str, str, str]]) -> None:
+    """Remove entries that no longer describe live disallowed imports.
+
+    Pruning is part of the gate run: after a fixed import is observed absent,
+    its old exemption cannot become active again if the import is later
+    reintroduced.
+    """
+    if not stale:
+        return
+    with open(baseline_path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, list):
+        raise ValueError(f"invalid layering baseline in {baseline_path}: expected a list")
+    retained = []
+    for item in raw:
+        if not isinstance(item, dict):
+            retained.append(item)
+            continue
+        target, file_rel, imp = item.get("target"), item.get("file"), item.get("import")
+        if (target, file_rel, imp) not in stale:
+            retained.append(item)
+    baseline_path.write_text(json.dumps(retained, indent=2) + "\n", encoding="utf-8")
+
+
+def _prune_sqlite_degradation_baseline(
+    baseline_path: Path,
+    shrunk: dict[tuple[str, str], int],
+    observed: dict[tuple[str, str], int],
+) -> None:
+    """Lower stale SQLite anchor counts to the number of sites still present."""
+    if not shrunk:
+        return
+    with open(baseline_path, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if not isinstance(raw, dict) or not isinstance(raw.get("anchors"), list):
+        raise ValueError(f"invalid SQLite degradation baseline in {baseline_path}")
+
+    remaining = dict(observed)
+    retained: list[object] = []
+    for item in raw["anchors"]:
+        if not isinstance(item, dict):
+            retained.append(item)
+            continue
+        key = (item.get("file"), item.get("digest"))
+        count = item.get("count", 1)
+        if key not in shrunk:
+            retained.append(item)
+            continue
+        keep = min(count, remaining.get(key, 0))
+        remaining[key] = remaining.get(key, 0) - keep
+        if keep:
+            kept_item = dict(item)
+            if keep == 1:
+                kept_item.pop("count", None)
+            else:
+                kept_item["count"] = keep
+            retained.append(kept_item)
+    raw["anchors"] = retained
+    baseline_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
+
+
 def _top_level_package_docstring_violations(repo_root: Path) -> list[dict[str, object]]:
     """Return package roots that do not explain their responsibility.
 
@@ -1296,8 +1357,43 @@ def main(argv: list[str] | None = None) -> int:
 
     observed = {(item["target"], item["file"], item["import"]) for item in baselined}
     stale_baseline_count = 0
+    stale_by_baseline: dict[str, set[tuple[str, str, str]]] = {}
     for baseline_ref in baseline_refs:
-        stale_baseline_count += len(_load_baseline(repo_root / baseline_ref) - observed)
+        stale = _load_baseline(repo_root / baseline_ref) - observed
+        stale_by_baseline[baseline_ref] = stale
+        stale_baseline_count += len(stale)
+
+    # Ratchets shrink as part of the run. An exemption therefore cannot become
+    # live again after the violation it covered has been fixed.
+    for baseline_ref, stale in stale_by_baseline.items():
+        try:
+            _prune_layering_baseline(repo_root / baseline_ref, stale)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            violations.append({"file": baseline_ref, "rule": "layering_baseline_prune_failed", "detail": str(exc)})
+
+    sqlite_policy = manifest.get("sqlite_degradation")
+    if isinstance(sqlite_policy, dict):
+        sqlite_baseline_ref = sqlite_policy.get("baseline")
+        sqlite_roots = sqlite_policy.get("roots")
+        if isinstance(sqlite_baseline_ref, str) and isinstance(sqlite_roots, list) and sqlite_shrunk:
+            sqlite_observed = census_sqlite_degradation_anchors(repo_root, tuple(str(root) for root in sqlite_roots))
+            shrink_counts: dict[tuple[str, str], int] = {}
+            for entry in sqlite_shrunk:
+                file_name = entry.get("file")
+                digest = entry.get("digest")
+                removed = entry.get("removed")
+                if isinstance(file_name, str) and isinstance(digest, str) and isinstance(removed, int):
+                    shrink_counts[(file_name, digest)] = removed
+            try:
+                _prune_sqlite_degradation_baseline(repo_root / sqlite_baseline_ref, shrink_counts, sqlite_observed)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                violations.append(
+                    {
+                        "file": sqlite_baseline_ref,
+                        "rule": "sqlite_degradation_baseline_prune_failed",
+                        "detail": str(exc),
+                    }
+                )
 
     gate = evidence_gate_result(
         gate="layering",
@@ -1332,18 +1428,11 @@ def main(argv: list[str] | None = None) -> int:
         if baselined:
             print(f"  ({len(baselined)} pre-existing baselined violation(s) exempted -- see disallow.baseline)")
         if stale_baseline_count:
-            print(
-                f"  {stale_baseline_count} baseline entr(y/ies) no longer reproduce -- prune them from the "
-                "baseline file to ratchet the count down"
-            )
+            print(f"  pruned {stale_baseline_count} stale layering baseline entr(y/ies)")
         for entry in sqlite_shrunk:
-            # ``_sqlite_degradation_findings`` reports content anchors, not
-            # per-file counts: the entry names the handler that is gone, so the
-            # remedy is dropping that anchor rather than lowering a number.
             print(
-                f"  {entry['anchor']}: sqlite_degradation_anchor_no_longer_reproduces "
-                f"({entry['removed']} site(s) in {entry['file']}) -- drop this anchor from the baseline "
-                "to ratchet the ground down"
+                f"  pruned {entry['anchor']}: sqlite_degradation_anchor_no_longer_reproduces "
+                f"({entry['removed']} stale site(s) in {entry['file']})"
             )
     return 1 if violations or not gate.ok else 0
 

@@ -35,40 +35,6 @@ INSIGHT_SURFACE_FAMILIES: tuple[CliSurfaceFamily, ...] = (
         ),
     ),
     CliSurfaceFamily(
-        slug="work-events",
-        command_args=("analyze", "insights", "work-events"),
-        tags=("insights", "work-events"),
-        contract_variant=CliSurfaceVariant(
-            name="json-insights-work-events",
-            description="insights work-events JSON contract",
-        ),
-        live_variants=(
-            CliSurfaceVariant(
-                name="live-insights-work-events",
-                description="Live archive inferred work-event insight surface",
-                suffix_args=("--limit", "3", "--format", "json"),
-                env="any",
-            ),
-        ),
-    ),
-    CliSurfaceFamily(
-        slug="phases",
-        command_args=("analyze", "insights", "phases"),
-        tags=("insights", "phases"),
-        contract_variant=CliSurfaceVariant(
-            name="json-insights-phases",
-            description="insights phases JSON contract",
-        ),
-        live_variants=(
-            CliSurfaceVariant(
-                name="live-insights-phases",
-                description="Live archive phase interval evidence surface",
-                suffix_args=("--limit", "3", "--format", "json"),
-                env="any",
-            ),
-        ),
-    ),
-    CliSurfaceFamily(
         slug="threads",
         command_args=("analyze", "insights", "threads"),
         tags=("insights", "threads"),

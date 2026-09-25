@@ -11,6 +11,7 @@ report ``ready`` for a surface that actually drifted.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -152,6 +153,76 @@ def test_probe_answers_from_the_binding(
     assert payload["invariant_ready"] is True
     assert payload["coverage_exact"] is True
     assert payload["coverage_pct"] == 100.0
+
+
+def test_absent_index_reports_unavailable_inspection(tmp_path: Path) -> None:
+    payload = fts_readiness_info(tmp_path / "missing-index.db")
+
+    assert payload["inspection_state"] == "unavailable"
+    assert payload["messages_ready"] is False
+    assert payload["coverage_exact"] is False
+    assert payload["coverage_pct"] is None
+    assert payload["message_indexed_count"] is None
+
+
+def test_unbound_fallback_reports_timeout_and_resumes_slow_attempt(
+    seeded: tuple[Path, sqlite3.Connection], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An aggregate miss is deadline-bounded and never duplicated on the next poll.
+
+    ANTI-VACUITY: bypassing the persistent component registry makes the first
+    call wait for the collector and the second call start a duplicate attempt;
+    returning the collector's eventual value immediately fabricates a ready
+    verdict before the declared deadline has elapsed.
+    """
+    import polylogue.daemon.fts_status as fts_status
+
+    db, _conn = seeded
+    monkeypatch.setattr(fts_status, "_FTS_READINESS_DEADLINE_S", 0.02)
+    started = threading.Event()
+    release = threading.Event()
+    completed = threading.Event()
+    calls = {"n": 0}
+
+    from polylogue.operations import status_protocol
+
+    run_collector = status_protocol._run_collector
+
+    def track_completion(spec: object, attempt: object) -> None:
+        run_collector(spec, attempt)  # type: ignore[arg-type]
+        completed.set()
+
+    monkeypatch.setattr(status_protocol, "_run_collector", track_completion)
+
+    def slow_collection(_dbf: Path, *, exact: bool = False) -> dict[str, object]:
+        del exact
+        calls["n"] += 1
+        started.set()
+        release.wait()
+        return {"messages_ready": True, "invariant_ready": True, "coverage_exact": True}
+
+    monkeypatch.setattr(fts_status, "_collect_fts_readiness_info", slow_collection)
+    try:
+        first = fts_readiness_info(db)
+        assert first["inspection_state"] == "timed_out"
+        assert first["messages_ready"] is False
+        assert first["message_indexed_count"] is None
+        assert started.wait(timeout=1.0)
+        assert calls["n"] == 1
+
+        second = fts_readiness_info(db)
+        assert second["inspection_state"] == "refreshing"
+        assert second["messages_ready"] is False
+        assert calls["n"] == 1
+
+        release.set()
+        assert completed.wait(timeout=1.0)
+        third = fts_readiness_info(db)
+        assert third["inspection_state"] == "fresh"
+        assert third["messages_ready"] is True
+        assert calls["n"] == 1
+    finally:
+        release.set()
 
 
 def test_block_write_retires_the_binding(seeded: tuple[Path, sqlite3.Connection]) -> None:

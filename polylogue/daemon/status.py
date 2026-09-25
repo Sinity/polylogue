@@ -3245,8 +3245,14 @@ def build_daemon_status(
         api="running" if daemon_alive else "stopped",
         browser_capture="running" if browser_capture_active else "stopped",
     )
+    inspection_state = str(fts.get("inspection_state", "unavailable"))
+    if inspection_state not in {"fresh", "stale", "refreshing", "timed_out", "unavailable", "degraded"}:
+        inspection_state = "unavailable"
     fts_readiness = FTSReadiness(
         indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
+        inspection_state=cast(
+            Literal["fresh", "stale", "refreshing", "timed_out", "unavailable", "degraded"], inspection_state
+        ),
         messages_ready=bool(fts.get("messages_ready", False)),
         invariant_ready=bool(fts.get("invariant_ready", False)),
         message_indexed_count=None

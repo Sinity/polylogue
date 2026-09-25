@@ -854,14 +854,29 @@ class TestSchemaAnnotations:
         assert "x-polylogue-frequency" in annotations
 
     def test_claude_code_type_enum(self) -> None:
+        """Packaged Claude Code type fields retain evidence without private members.
+
+        Anti-vacuity: the committed ``type`` field has nonzero observed string
+        evidence in its distribution; absence of its values is therefore the
+        expected privacy boundary, not a missing or unannotated field.
+        """
         schema = _load_schema("claude-code")
         if schema is None:
             fail_missing_schema("Claude Code schema not available")
 
         type_schema = schema_property(schema, "type")
         assert type_schema
-        type_values = schema_values(type_schema)
-        assert any(value in type_values for value in ("user", "assistant", "human"))
+        assert "x-polylogue-values" not in type_schema
+        distribution = type_schema["x-polylogue-observed-distribution"]
+        assert isinstance(distribution, dict)
+        non_null_documents = distribution["non_null_documents"]
+        assert isinstance(non_null_documents, int)
+        assert non_null_documents > 0
+        type_counts = distribution["type_counts"]
+        assert isinstance(type_counts, dict)
+        string_count = type_counts.get("string", 0)
+        assert isinstance(string_count, int)
+        assert string_count > 0
 
     def test_claude_ai_sender_semantic(self) -> None:
         schema = _load_schema("claude-ai")

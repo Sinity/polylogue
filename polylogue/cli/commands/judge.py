@@ -14,6 +14,7 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import AssertionKind, AssertionStatus
+from polylogue.surfaces.outcome import decide_outcome
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentPayload,
     AssertionCandidateQueueHealthPayload,
@@ -457,14 +458,21 @@ def judge_command(
         _emit_bulk_result(bulk, "accept", output_format)
         return
 
+    matched = len(filtered) if since is not None or until is not None else review_payload.total
     filtered = filtered[:limit]
     visible_payload = AssertionCandidateReviewListPayload(
         items=tuple(filtered),
-        total=len(filtered),
+        total=matched,
         limit=limit,
         target_ref=target_ref,
         candidate_statuses=tuple(AssertionStatus.from_string(status) for status in statuses),
+        outcome=decide_outcome(
+            matched=matched,
+            degraded=("result_truncated",) if matched > len(filtered) else (),
+        ),
     )
+    if output_format != "json" and matched > len(filtered):
+        click.echo(f"Showing {len(filtered)} of {matched} matching candidates (degraded: result_truncated).")
     if output_format == "json":
         click.echo(serialize_surface_payload(visible_payload, exclude_none=True))
         return

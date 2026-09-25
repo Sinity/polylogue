@@ -210,6 +210,32 @@ def test_archive_debt_converts_embedding_and_fts_readiness(
     assert payload.totals.critical == 2
 
 
+def test_archive_debt_keeps_timed_out_fts_readiness_visible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A timeout is unknown readiness, never an empty FTS debt projection.
+
+    ANTI-VACUITY: treating every mapping as measured makes the empty
+    ``surfaces`` mapping below produce zero debt rows, concealing the timeout
+    from the exact debt route.
+    """
+    _write_current_tier_files(tmp_path)
+    monkeypatch.setattr(
+        module,
+        "fts_readiness_info",
+        lambda _path, exact=False: {
+            "inspection_state": "timed_out",
+            "invariant_ready": False,
+            "surfaces": {},
+        },
+    )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("fts",))
+
+    assert [row.debt_ref for row in payload.rows] == ["debt:fts:readiness:unknown"]
+
+
 def test_archive_debt_preserves_unknown_embedding_message_counts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

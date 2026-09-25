@@ -1123,8 +1123,10 @@ def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
 def _fts_rows(index_db: Path, *, exact: bool) -> list[ArchiveDebtRowPayload]:
     info = fts_readiness_info(index_db, exact=exact)
     surfaces = info.get("surfaces")
-    if not isinstance(surfaces, Mapping):
-        if _bool_value(info.get("invariant_ready")):
+    inspection_state = info.get("inspection_state")
+    unmeasured = inspection_state in {"refreshing", "timed_out", "unavailable", "degraded"}
+    if unmeasured or not isinstance(surfaces, Mapping) or not surfaces:
+        if not unmeasured and _bool_value(info.get("invariant_ready")):
             return []
         return [
             ArchiveDebtRowPayload(

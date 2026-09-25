@@ -157,6 +157,99 @@ def test_candidates_review_emits_status_and_disabled_action_reasons() -> None:
     }
 
 
+def test_candidates_review_reports_matched_total_and_degraded_truncation() -> None:
+    items = (_review_item(), _review_item(), _review_item())
+    payload = AssertionCandidateReviewListPayload(
+        items=items,
+        total=3,
+        limit=2,
+        candidate_statuses=(AssertionStatus.CANDIDATE,),
+    )
+    env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidate_reviews=AsyncMock(return_value=payload)))
+
+    result = CliRunner().invoke(
+        judge_command,
+        ["--review", "--format", "json", "--limit", "2"],
+        obj=env,
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    rendered = json.loads(result.output)
+    assert rendered["total"] == 3
+    assert len(rendered["items"]) == 2
+    assert rendered["outcome"]["state"] == "degraded"
+    assert rendered["outcome"]["detail"]["gaps"] == ["result_truncated"]
+    env.polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(
+        target_ref=None,
+        kinds=None,
+        statuses=(
+            AssertionStatus.CANDIDATE,
+            AssertionStatus.ACCEPTED,
+            AssertionStatus.REJECTED,
+            AssertionStatus.DEFERRED,
+            AssertionStatus.SUPERSEDED,
+        ),
+        limit=2,
+    )
+
+
+def test_candidates_review_since_reports_full_filtered_match_count() -> None:
+    items = (_review_item(), _review_item(), _review_item())
+    payload = AssertionCandidateReviewListPayload(
+        items=items,
+        total=3,
+        limit=50,
+        candidate_statuses=(AssertionStatus.CANDIDATE,),
+    )
+    env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidate_reviews=AsyncMock(return_value=payload)))
+
+    result = CliRunner().invoke(
+        judge_command,
+        ["--review", "--format", "json", "--limit", "2", "--since", "1970-01-01"],
+        obj=env,
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    rendered = json.loads(result.output)
+    assert rendered["total"] == 3
+    assert len(rendered["items"]) == 2
+    assert rendered["outcome"]["state"] == "degraded"
+    env.polylogue.list_assertion_candidate_reviews.assert_awaited_once_with(
+        target_ref=None,
+        kinds=None,
+        statuses=(
+            AssertionStatus.CANDIDATE,
+            AssertionStatus.ACCEPTED,
+            AssertionStatus.REJECTED,
+            AssertionStatus.DEFERRED,
+            AssertionStatus.SUPERSEDED,
+        ),
+        limit=None,
+    )
+
+
+def test_candidates_review_text_names_truncation() -> None:
+    payload = AssertionCandidateReviewListPayload(
+        items=(_review_item(), _review_item(), _review_item()),
+        total=3,
+        limit=2,
+        candidate_statuses=(AssertionStatus.CANDIDATE,),
+    )
+    env = SimpleNamespace(polylogue=SimpleNamespace(list_assertion_candidate_reviews=AsyncMock(return_value=payload)))
+
+    result = CliRunner().invoke(
+        judge_command,
+        ["--review", "--limit", "2"],
+        obj=env,
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "Showing 2 of 3 matching candidates (degraded: result_truncated)." in result.output
+
+
 def test_candidates_accept_emits_bulk_judgment_payload() -> None:
     judgment = AssertionJudgmentPayload(
         judgment_id="judgment-cli-1",

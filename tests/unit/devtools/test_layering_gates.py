@@ -157,8 +157,8 @@ def test_layering_ratchet_reports_stale_baseline_entry(
         tmp_path,
         baseline_entries=[
             {"target": "polylogue/cli", "file": "polylogue/cli/commands.py", "import": "polylogue.storage"},
-            # This entry no longer reproduces (no such file/import exists) --
-            # it should be flagged as prunable without failing the gate.
+            # This entry no longer reproduces (no such file/import exists) and
+            # must be removed so it cannot exempt a later reintroduction.
             {"target": "polylogue/cli", "file": "polylogue/cli/gone.py", "import": "polylogue.storage.gone"},
         ],
     )
@@ -166,7 +166,31 @@ def test_layering_ratchet_reports_stale_baseline_entry(
     exit_code = verify_layering.main([])
     out = capsys.readouterr().out
     assert exit_code == 0
-    assert "1 baseline entr" in out
+    assert "pruned 1 stale layering baseline entr" in out
+    baseline = json.loads((tmp_path / "docs/plans/ratchet-baseline.json").read_text(encoding="utf-8"))
+    assert baseline == [{"target": "polylogue/cli", "file": "polylogue/cli/commands.py", "import": "polylogue.storage"}]
+
+
+def test_fixed_layering_violation_is_not_exempt_when_reintroduced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_ratchet_fixture(
+        tmp_path,
+        baseline_entries=[
+            {"target": "polylogue/cli", "file": "polylogue/cli/commands.py", "import": "polylogue.storage"},
+        ],
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    commands = tmp_path / "polylogue/cli/commands.py"
+    commands.write_text("# fixed\n", encoding="utf-8")
+
+    assert verify_layering.main([]) == 0
+    capsys.readouterr()
+    assert json.loads((tmp_path / "docs/plans/ratchet-baseline.json").read_text(encoding="utf-8")) == []
+
+    commands.write_text("from polylogue.storage import archive_identity\n", encoding="utf-8")
+    assert verify_layering.main([]) == 1
+    assert "imports polylogue.storage (disallow)" in capsys.readouterr().out
 
 
 _DEGRADED_HANDLER_MODULE = """\
@@ -197,9 +221,14 @@ def _write_sqlite_degradation_fixture(tmp_path: Path, *, anchors: list[dict[str,
         encoding="utf-8",
     )
     (plans_dir / "layering.yaml").write_text(
-        f"rules: []\nsqlite_degradation:\n  baseline: {baseline_ref}\n  roots: [polylogue]\n",
+        "rules:\n"
+        "  - target: polylogue/storage\n"
+        "    description: sqlite degradation fixture\n"
+        f"sqlite_degradation:\n  baseline: {baseline_ref}\n  roots: [polylogue]\n",
         encoding="utf-8",
     )
+    (plans_dir / "durable-write-census.yaml").write_text("package: polylogue\nwrites: []\n", encoding="utf-8")
+    (plans_dir / "derived-sweep-census.yaml").write_text("package: polylogue\nsites: []\n", encoding="utf-8")
 
 
 def _fixture_anchor_digest(tmp_path: Path) -> str:
@@ -261,17 +290,44 @@ def test_layering_plaintext_and_json_report_the_same_shrunk_anchors(
     )
     monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
 
-    plaintext_code = verify_layering.main([])
-    plaintext = capsys.readouterr().out
     json_code = verify_layering.main(["--json"])
     payload = json.loads(capsys.readouterr().out)
-    assert plaintext_code == json_code
+    assert json_code == 0
 
     shrunk = payload["sqlite_degradation_shrunk"]
     assert [entry["digest"] for entry in shrunk] == ["1" * 40]
     for entry in shrunk:
-        assert str(entry["anchor"]) in plaintext
-        assert str(entry["removed"]) in plaintext
+        assert str(entry["removed"]) == "2"
+
+    # The JSON run pruned the stale anchor, so the following human run sees
+    # the same clean gate without repeating a stale-baseline advisory.
+    plaintext_code = verify_layering.main([])
+    plaintext = capsys.readouterr().out
+    assert plaintext_code == json_code
+    assert "no longer reproduce" not in plaintext
+
+
+def test_fixed_sqlite_degradation_anchor_is_not_exempt_when_reintroduced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_sqlite_degradation_fixture(tmp_path, anchors=[])
+    digest = _fixture_anchor_digest(tmp_path)
+    _write_sqlite_degradation_fixture(
+        tmp_path,
+        anchors=[{"file": "polylogue/storage/degraded.py", "digest": digest}],
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    handler = tmp_path / "polylogue/storage/degraded.py"
+    handler.write_text("def read(connection):\n    raise RuntimeError('closed')\n", encoding="utf-8")
+
+    assert verify_layering.main([]) == 0
+    capsys.readouterr()
+    baseline = json.loads((tmp_path / "docs/plans/sqlite-degradation-baseline.json").read_text(encoding="utf-8"))
+    assert baseline["anchors"] == []
+
+    handler.write_text(_DEGRADED_HANDLER_MODULE, encoding="utf-8")
+    assert verify_layering.main([]) == 1
+    assert "sqlite_degradation_site_added" in capsys.readouterr().out
 
 
 def test_layering_cli_imports_storage_is_detected(tmp_path: Path) -> None:

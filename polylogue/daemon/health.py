@@ -653,17 +653,26 @@ def _check_fts_readiness_medium() -> HealthAlert:
         payload = fts_readiness_info(dbf)
         raw_surfaces = payload.get("surfaces")
         surfaces = raw_surfaces if isinstance(raw_surfaces, Mapping) else {}
-        broken: list[str] = []
-        for name, surface in surfaces.items():
-            if not isinstance(surface, Mapping) or surface.get("ready"):
-                continue
-            broken.append(_fts_surface_detail(str(name), surface))
-        if broken:
+        inspection_state = payload.get("inspection_state")
+        if inspection_state in {"refreshing", "timed_out", "unavailable", "degraded"}:
             severity = HealthSeverity.ERROR
-            message = "FTS invariant failed: " + "; ".join(broken)
+            detail = payload.get("unavailable_reason")
+            message = f"FTS readiness {inspection_state}" + (f": {detail}" if isinstance(detail, str) else "")
+        elif not surfaces:
+            severity = HealthSeverity.ERROR
+            message = "FTS readiness could not be proven"
         else:
-            severity = HealthSeverity.OK
-            message = "FTS up to date"
+            broken: list[str] = []
+            for name, surface in surfaces.items():
+                if not isinstance(surface, Mapping) or surface.get("ready"):
+                    continue
+                broken.append(_fts_surface_detail(str(name), surface))
+            if broken:
+                severity = HealthSeverity.ERROR
+                message = "FTS invariant failed: " + "; ".join(broken)
+            else:
+                severity = HealthSeverity.OK
+                message = "FTS up to date"
         return HealthAlert(
             check_name="fts_readiness",
             tier=HealthTier.MEDIUM,

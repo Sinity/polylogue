@@ -538,34 +538,63 @@ class TestGenerateSchemaFromSamples:
         assert "count" in properties
 
     def test_identifier_fields_do_not_emit_value_enums(self) -> None:
+        """Observed values stay in stats but are not published from arbitrary fields.
+
+        Anti-vacuity: both fields have two concrete observations, and the
+        distribution annotation records both samples; the absent member list
+        therefore demonstrates the publication policy rather than missing data.
+        """
         result = generate_schema_from_samples(
             [
                 {"resourceId": "1csAnmQr_ThZWh285_IH8hg50f-mLpS1r", "category": "HARM_CATEGORY_HATE_SPEECH"},
                 {"resourceId": "12q0eVTU-RR-IMCjN0peXXKVg3LPwbmVW", "category": "HARM_CATEGORY_HARASSMENT"},
             ]
         )
-        assert not schema_values(schema_property(result, "resourceId"))
-        assert schema_values(schema_property(result, "category"))
+        for name in ("resourceId", "category"):
+            field = schema_property(result, name)
+            assert not schema_values(field)
+            distribution = field["x-polylogue-observed-distribution"]
+            assert isinstance(distribution, dict)
+            assert distribution["documents"] == 2
 
     def test_high_entropy_tail_segments_are_filtered(self) -> None:
+        """Identifiers and model slugs retain shape metadata without member values.
+
+        Anti-vacuity: each field is present in both samples and its distribution
+        records two documents, so suppression is not caused by absent evidence.
+        """
         result = generate_schema_from_samples(
             [
                 {"promptId": "prompts/15BHmKFY05bDKHrhyk4We29IUInZjKq0p", "model": "models/gemini-2.5-pro"},
                 {"promptId": "prompts/26CInJFZ16cELIshzl5Xf30JVJoaLr1q", "model": "models/gemini-2.5-pro"},
             ]
         )
-        assert not schema_values(schema_property(result, "promptId"))
-        assert schema_values(schema_property(result, "model")) == ["models/gemini-2.5-pro"]
+        for name in ("promptId", "model"):
+            field = schema_property(result, name)
+            assert not schema_values(field)
+            distribution = field["x-polylogue-observed-distribution"]
+            assert isinstance(distribution, dict)
+            assert distribution["documents"] == 2
 
     def test_high_entropy_values_filtered_even_without_identifier_field_name(self) -> None:
+        """Arbitrary fields do not publish values, even when repeated consistently.
+
+        Anti-vacuity: ``channel`` contains two distinct token observations and
+        ``role`` repeats a real value in both samples; the stats report both
+        observations while neither field publishes its members.
+        """
         result = generate_schema_from_samples(
             [
                 {"channel": "1csAnmQr_ThZWh285_IH8hg50f-mLpS1r", "role": "assistant"},
                 {"channel": "12q0eVTU-RR-IMCjN0peXXKVg3LPwbmVW", "role": "assistant"},
             ]
         )
-        assert not schema_values(schema_property(result, "channel"))
-        assert schema_values(schema_property(result, "role")) == ["assistant"]
+        for name in ("channel", "role"):
+            field = schema_property(result, name)
+            assert not schema_values(field)
+            distribution = field["x-polylogue-observed-distribution"]
+            assert isinstance(distribution, dict)
+            assert distribution["documents"] == 2
 
 
 class TestGenerateAllSchemas:

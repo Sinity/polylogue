@@ -2229,19 +2229,14 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     fts_info = Mock(
         return_value={
             "indexed_surface": "messages_fts",
-            "messages_ready": True,
-            "invariant_ready": True,
-            "message_indexed_count": 4,
-            "message_indexable_count": 4,
-            "coverage_pct": 100.0,
-            "surfaces": {
-                "messages_fts": {
-                    "ready": True,
-                    "source_rows": 4,
-                    "indexed_rows": 4,
-                    "missing_rows": 0,
-                }
-            },
+            "inspection_state": "timed_out",
+            "messages_ready": False,
+            "invariant_ready": False,
+            "message_indexed_count": None,
+            "message_indexable_count": None,
+            "coverage_pct": None,
+            "coverage_exact": False,
+            "surfaces": {},
         }
     )
     freshness_info = Mock(return_value={"sessions_with_profiles": 3, "total_sessions": 4})
@@ -2263,16 +2258,15 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     assert payload["disk_free_bytes"] == 99
     fts_readiness = payload["fts_readiness"]
     assert isinstance(fts_readiness, dict)
-    assert fts_readiness["messages_ready"] is True
-    assert fts_readiness["invariant_ready"] is True
-    assert fts_readiness["message_indexed_count"] == 4
-    assert fts_readiness["message_indexable_count"] == 4
-    assert fts_readiness["coverage_pct"] == 100.0
+    assert fts_readiness["messages_ready"] is False
+    assert fts_readiness["inspection_state"] == "timed_out"
+    assert fts_readiness["invariant_ready"] is False
+    assert fts_readiness["message_indexed_count"] is None
+    assert fts_readiness["message_indexable_count"] is None
+    assert fts_readiness["coverage_pct"] is None
     surfaces = fts_readiness["surfaces"]
     assert isinstance(surfaces, dict)
-    messages_surface = surfaces["messages_fts"]
-    assert isinstance(messages_surface, dict)
-    assert messages_surface["ready"] is True
+    assert surfaces == {}
     assert db_info.call_count == 1
     assert blob_info.call_count == 1
     assert fts_info.call_count == 1
