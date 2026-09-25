@@ -515,7 +515,7 @@ def test_common_derivation_replaces_physical_vector_with_existing_metadata(
         assert struct.unpack("<f", new_vector[:4])[0] == 0.25
     finally:
         conn.close()
-    assert converge(DerivationRegistry([adapter]), frame).wrote_nothing
+    assert converge(DerivationRegistry([adapter]), frame).made_no_publication_attempts
 
 
 def test_unloadable_sqlite_vec_reports_unknown_coverage_not_a_measured_none(

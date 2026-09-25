@@ -247,7 +247,7 @@ def test_a_drifted_rollup_no_longer_dooms_the_first_profile_computation(
     assert _profile_status(index_db, session_id) == "valid"
     # The reconciliation actually ran: the rollup now carries the new total.
     assert [row[1] for row in _usage_rows(index_db, session_id)] == [6200]
-    assert converge(_registry(index_db, session_id), _frame(index_db)).wrote_nothing
+    assert converge(_registry(index_db, session_id), _frame(index_db)).made_no_publication_attempts
 
 
 def test_a_refused_reconciliation_commits_nothing(archive: tuple[Path, str]) -> None:

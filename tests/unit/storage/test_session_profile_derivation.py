@@ -13,7 +13,7 @@ archive built through the production writer, not a stub.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import closing
 from pathlib import Path
 
@@ -26,6 +26,7 @@ from polylogue.storage.derived.session.derivation import (
     SessionProfileDerivation,
     excess_session_profiles,
     inspect_session_profiles,
+    inspect_session_profiles_async,
     publish_session_profile,
 )
 from polylogue.storage.derived.session.input_binding import (
@@ -33,6 +34,7 @@ from polylogue.storage.derived.session.input_binding import (
     session_input_bindings,
 )
 from polylogue.storage.derived.session.marker_domain import marker_assertions_present as _marker_assertions_present
+from polylogue.storage.derived.session.records import SessionLatencyProfileRecord
 from polylogue.storage.derived.session.summary import (
     SESSION_SUMMARY_DOMAIN,
     SESSION_SUMMARY_RECIPE_VERSION,
@@ -399,7 +401,7 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
     assert not first.by_outcome(Outcome.PENDING), first.outcomes
     assert _status(index_db, session_id) == "valid"
 
-    assert converge(registry, frame).wrote_nothing
+    assert converge(registry, frame).made_no_publication_attempts
 
     _mutate(index_db, session_id, "role", "'assistant'")
     assert converge(registry, frame).done == 3
@@ -511,6 +513,56 @@ def test_prepared_profile_family_rolls_back_when_latency_write_fails(
             for table in ("session_profiles", "session_latency_profiles")
         }
     assert after == before_attempt
+
+
+def test_reader_never_observes_a_mixed_profile_family_during_publish(
+    archive: tuple[Path, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second SQLite reader sees the old pair until the new pair commits."""
+    import polylogue.storage.derived.session.rebuild as rebuild
+
+    index_db, session_id = archive
+    adapter, frame, _ = _converge_session_profile(index_db.parent, index_db, session_id)
+    _mutate(index_db, session_id, "word_count", "word_count + 17")
+    with write_lease("test.settle-usage-for-reader"), closing(_write_connection(index_db)) as conn:
+        binding = session_input_bindings(conn, (session_id,))[session_id]
+        assert publish_session_usage_rollup(
+            conn,
+            session_id,
+            input_binding=binding,
+            recipe_version=session_usage_rollup_recipe_version(),
+        )
+
+    prepared = adapter.compute(frame, session_id)
+
+    def snapshot() -> tuple[object, ...]:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as reader:
+            profile = reader.execute(
+                "SELECT materialized_at, input_content_hash FROM session_profiles WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            latency = reader.execute(
+                "SELECT materialized_at FROM session_latency_profiles WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return tuple(profile or ()), tuple(latency or ())
+
+    before = snapshot()
+    observations: list[tuple[object, ...]] = []
+    original = rebuild.replace_session_latency_profiles_bulk_sync
+
+    def observe_then_write(conn: sqlite3.Connection, records: Sequence[SessionLatencyProfileRecord]) -> None:
+        observations.append(snapshot())
+        original(conn, records)
+
+    monkeypatch.setattr(rebuild, "replace_session_latency_profiles_bulk_sync", observe_then_write)
+    assert adapter.publish(frame, prepared) is True
+    after = snapshot()
+
+    assert observations == [before]
+    assert after != before
+    assert after[0][0] == after[1][0]
 
 
 @pytest.mark.parametrize("input_kind", ("attachment", "session_event"))
@@ -913,3 +965,53 @@ def test_profile_input_demand_is_transactional_and_late_worker_cannot_ack_it(
             "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
         ).fetchone()[0]
     assert current_revision > prepared.demand_revision
+
+
+@pytest.mark.asyncio
+async def test_async_profile_inspection_honors_demand_without_a_binding_change(
+    marker_archive: tuple[Path, Path, str],
+) -> None:
+    """Every read route treats an explicit demand as stale even if its digest is stable."""
+    import aiosqlite
+
+    root, index_db, session_id = marker_archive
+    _converge_session_profile(root, index_db, session_id)
+    with closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            "INSERT INTO session_profile_demand(session_id, revision) VALUES (?, 1) "
+            "ON CONFLICT(session_id) DO UPDATE SET revision = revision + 1",
+            (session_id,),
+        )
+        conn.commit()
+
+    async with aiosqlite.connect(f"file:{index_db}?mode=ro", uri=True) as conn:
+        statuses = await inspect_session_profiles_async(
+            conn,
+            (session_id,),
+            materializer_version=_MATERIALIZER_VERSION,
+        )
+    assert statuses[session_id] == "stale"
+
+
+def test_recipe_seed_includes_orphaned_profile_partitions(
+    marker_archive: tuple[Path, Path, str],
+) -> None:
+    """A one-time recipe seed also schedules retained rows whose source vanished."""
+    root, index_db, session_id = marker_archive
+    _converge_session_profile(root, index_db, session_id)
+    with write_lease("test.profile-recipe-seed"), closing(sqlite3.connect(index_db)) as conn:
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM session_profile_demand WHERE session_id = ?", (session_id,))
+        conn.execute("UPDATE session_profile_demand_state SET materializer_version = -1 WHERE singleton = 1")
+        conn.commit()
+
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+
+    with closing(_write_connection(index_db)) as conn:
+        conn.executescript(INDEX_DDL)
+        conn.commit()
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        demand = conn.execute(
+            "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    assert demand is not None

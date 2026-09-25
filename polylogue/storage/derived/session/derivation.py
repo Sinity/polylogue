@@ -171,6 +171,21 @@ def _classify_partition(
     return _VALID
 
 
+def _classify_partition_with_demand(
+    stored: _StoredPartition,
+    current_binding: str | None,
+    *,
+    materializer_version: int,
+    demanded: bool,
+) -> str:
+    status = _classify_partition(
+        stored,
+        current_binding,
+        materializer_version=materializer_version,
+    )
+    return _STALE if demanded and status == _VALID else status
+
+
 def _stored_partitions(conn: sqlite3.Connection, session_ids: Sequence[str]) -> Mapping[str, _StoredPartition]:
     unique = tuple(dict.fromkeys(session_ids))
     if not unique:
@@ -218,16 +233,11 @@ def inspect_session_profiles(
     built = tuple(session_id for session_id in unique if stored[session_id].present)
     current = session_input_bindings(conn, built) if built else {}
     return {
-        session_id: (
-            _STALE
-            if session_id in demanded
-            and _classify_partition(
-                stored[session_id], current.get(session_id), materializer_version=materializer_version
-            )
-            == _VALID
-            else _classify_partition(
-                stored[session_id], current.get(session_id), materializer_version=materializer_version
-            )
+        session_id: _classify_partition_with_demand(
+            stored[session_id],
+            current.get(session_id),
+            materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }
@@ -272,16 +282,11 @@ def bound_session_profile_partitions(
         ).fetchall()
     }
     return {
-        session_id: (
-            _STALE
-            if session_id in demanded
-            and _classify_partition(
-                stored[session_id], stored[session_id].input_binding, materializer_version=materializer_version
-            )
-            == _VALID
-            else _classify_partition(
-                stored[session_id], stored[session_id].input_binding, materializer_version=materializer_version
-            )
+        session_id: _classify_partition_with_demand(
+            stored[session_id],
+            stored[session_id].input_binding,
+            materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }
@@ -309,20 +314,11 @@ async def bound_session_profile_partitions_async(
     ) as cursor:
         demanded = {str(row[0]) async for row in cursor}
     return {
-        session_id: (
-            _STALE
-            if session_id in demanded
-            and _classify_partition(
-                stored.get(session_id, _ABSENT_PARTITION),
-                stored.get(session_id, _ABSENT_PARTITION).input_binding,
-                materializer_version=materializer_version,
-            )
-            == _VALID
-            else _classify_partition(
-                stored.get(session_id, _ABSENT_PARTITION),
-                stored.get(session_id, _ABSENT_PARTITION).input_binding,
-                materializer_version=materializer_version,
-            )
+        session_id: _classify_partition_with_demand(
+            stored.get(session_id, _ABSENT_PARTITION),
+            stored.get(session_id, _ABSENT_PARTITION).input_binding,
+            materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }
@@ -349,11 +345,18 @@ async def inspect_session_profiles_async(
             stored[str(row[0])] = _partition_row(row)
     built = tuple(session_id for session_id in unique if session_id in stored)
     current = await session_input_bindings_async(conn, built) if built else {}
+    placeholders = ",".join("?" * len(unique))
+    async with conn.execute(
+        f"SELECT session_id FROM session_profile_demand WHERE session_id IN ({placeholders})",
+        unique,
+    ) as cursor:
+        demanded = {str(row[0]) async for row in cursor}
     return {
-        session_id: _classify_partition(
+        session_id: _classify_partition_with_demand(
             stored.get(session_id, _ABSENT_PARTITION),
             current.get(session_id),
             materializer_version=materializer_version,
+            demanded=session_id in demanded,
         )
         for session_id in unique
     }

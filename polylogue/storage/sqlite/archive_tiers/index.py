@@ -1569,6 +1569,17 @@ WHERE EXISTS (
       AND (state.materializer_version != {SESSION_INSIGHT_MATERIALIZER_VERSION}
            OR state.input_recipe_version != '{SESSION_INPUT_RECIPE_VERSION}')
 )
+UNION
+SELECT sp.session_id, 1
+FROM session_profiles AS sp
+LEFT JOIN sessions AS s ON s.session_id = sp.session_id
+WHERE s.session_id IS NULL
+  AND EXISTS (
+    SELECT 1 FROM session_profile_demand_state AS state
+    WHERE state.singleton = 1
+      AND (state.materializer_version != {SESSION_INSIGHT_MATERIALIZER_VERSION}
+           OR state.input_recipe_version != '{SESSION_INPUT_RECIPE_VERSION}')
+  )
 ON CONFLICT(session_id) DO NOTHING;
 UPDATE session_profile_demand_state
 SET materializer_version = {SESSION_INSIGHT_MATERIALIZER_VERSION},

@@ -92,7 +92,7 @@ def test_valid_empty_partition_is_done_without_a_fake_row(test_conn: sqlite3.Con
 
     assert adapter.inspect_partition(test_conn, session_id).status is FtsKeyStatus.VALID
     assert report.done == 0
-    assert report.wrote_nothing
+    assert report.made_no_publication_attempts
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
 
 
@@ -149,7 +149,7 @@ def test_unchanged_second_pass_publishes_zero_replacements(test_conn: sqlite3.Co
 
     assert first.done == 1
     assert second.done == 0
-    assert second.wrote_nothing
+    assert second.made_no_publication_attempts
 
 
 def test_frame_drift_rejects_prepared_partition_before_any_fts_write(

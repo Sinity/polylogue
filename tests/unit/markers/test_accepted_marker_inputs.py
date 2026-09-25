@@ -287,6 +287,46 @@ def test_malformed_carrier_session_is_refused_with_typed_error(workspace_env: di
             asyncio.run(append_accepted_marker_input(_AsyncConnection(source), malformed))
 
 
+def test_prepared_identical_markers_in_one_block_keep_one_stable_candidate(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Repeated syntax with one durable identity is carried once, unchanged."""
+    from polylogue.markers.lowering import assertion_id_for_marker, candidates_for_block
+
+    conn = sqlite3.connect(workspace_env["archive_root"] / "index.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        prepared = prepare_session_write(
+            conn,
+            _session("::note: same lesson\n::note: same lesson", native_id="duplicate-marker"),
+            merge_append=False,
+        )
+        candidates = marker_candidates_for_prepared_write(prepared)
+        assert len(candidates) == 1
+        provenance = candidates[0]["provenance"]
+        assert isinstance(provenance, Mapping)
+        match = candidates[0]["match"]
+        assert isinstance(match, Mapping)
+        expected = candidates_for_block(
+            str(provenance["message_id"]),
+            str(provenance["block_id"]),
+            "::note: same lesson\n::note: same lesson",
+        )[0]
+        assert match["raw_text"] == expected.match.raw_text
+        expected_id = assertion_id_for_marker(expected)
+        assert expected_id is not None
+        evidence_refs = (f"message:{provenance['message_id']}", f"block:{provenance['block_id']}")
+        preserved_id = (
+            "marker-"
+            + hashlib.sha256(
+                "\x1f".join((str(match["kind"]), str(match["raw_text"]), *evidence_refs)).encode()
+            ).hexdigest()[:32]
+        )
+        assert preserved_id == expected_id
+    finally:
+        conn.close()
+
+
 def test_prepared_fallback_append_and_lineage_coordinates_match_writer(workspace_env: dict[str, Path]) -> None:
     """A synthetic ordinal ID or ignored append occurrence offset makes this red."""
     conn = sqlite3.connect(workspace_env["archive_root"] / "index.db")
