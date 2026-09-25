@@ -607,12 +607,12 @@ def make_hook_paste_enrichment_stage(db_path: Path) -> ConvergenceStage:
         selected_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
         if not selected_ids:
             return True
-        from polylogue.sources.live.hook_paste_enrichment import enrich_paste_from_hooks
+        from polylogue.operations.hook_paste_enrichment import retry_recorded_hook_paste
 
         # The stage engine admits this bounded, session-scoped write through
         # the daemon's writer bridge. A completed no-op is success: the hooks
         # may already have been applied or may no longer match a message.
-        enrich_paste_from_hooks(db_path, session_ids=selected_ids)
+        retry_recorded_hook_paste(db_path, selected_ids)
         return True
 
     return ConvergenceStage(
