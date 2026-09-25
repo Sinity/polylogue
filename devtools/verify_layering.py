@@ -1377,9 +1377,13 @@ def main(argv: list[str] | None = None) -> int:
         sqlite_roots = sqlite_policy.get("roots")
         if isinstance(sqlite_baseline_ref, str) and isinstance(sqlite_roots, list) and sqlite_shrunk:
             sqlite_observed = census_sqlite_degradation_anchors(repo_root, tuple(str(root) for root in sqlite_roots))
-            shrink_counts = {
-                (str(entry["file"]), str(entry["digest"])): int(entry["removed"]) for entry in sqlite_shrunk
-            }
+            shrink_counts: dict[tuple[str, str], int] = {}
+            for entry in sqlite_shrunk:
+                file_name = entry.get("file")
+                digest = entry.get("digest")
+                removed = entry.get("removed")
+                if isinstance(file_name, str) and isinstance(digest, str) and isinstance(removed, int):
+                    shrink_counts[(file_name, digest)] = removed
             try:
                 _prune_sqlite_degradation_baseline(repo_root / sqlite_baseline_ref, shrink_counts, sqlite_observed)
             except (OSError, ValueError, json.JSONDecodeError) as exc:
