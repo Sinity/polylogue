@@ -2178,10 +2178,16 @@ class LiveBatchProcessor:
                     # This pass may run with the writer released (the stage
                     # engine no longer holds it across compute), so its write
                     # takes the writer for itself rather than assuming one.
-                    admit_stage_write(
-                        "convergence.hook_paste_enrichment",
-                        lambda: enrich_paste_from_hooks(self._cursor._db_path, session_ids=paste_session_ids),
-                    )
+                    def enrich_and_clear_paste_debt() -> None:
+                        enrich_paste_from_hooks(self._cursor._db_path, session_ids=paste_session_ids)
+                        for paste_session_id in paste_session_ids:
+                            self._cursor.clear_convergence_debt(
+                                stage="hook_paste_enrichment",
+                                subject_type="session_id",
+                                subject_id=str(paste_session_id),
+                            )
+
+                    admit_stage_write("convergence.hook_paste_enrichment", enrich_and_clear_paste_debt)
                 except Exception as exc:
                     # A debug line made this indistinguishable from success:
                     # the stage still recorded its elapsed time and nothing
@@ -2206,7 +2212,7 @@ class LiveBatchProcessor:
                         for paste_session_id in paste_session_ids:
                             self._cursor.record_convergence_debt(
                                 stage="hook_paste_enrichment",
-                                subject_type="session",
+                                subject_type="session_id",
                                 subject_id=str(paste_session_id),
                                 error=paste_error,
                             )

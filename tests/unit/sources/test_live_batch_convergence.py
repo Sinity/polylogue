@@ -13,7 +13,7 @@ import pytest
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-from polylogue.sources.live import WatchSource
+from polylogue.sources.live import WatchSource, hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -92,6 +92,37 @@ def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None
     assert debts == []
     assert converger.session_calls == []
     assert converger.batch_calls == [(source,)]
+
+
+def test_hook_paste_failure_records_canonical_session_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        MagicMock(archive_root=tmp_path),
+        (),
+        cursor=cursor,
+        converger=_SessionFirstConverger(),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    session_id = "codex-session:paste-retry"
+
+    def fail_enrichment(*_args: object, **_kwargs: object) -> int:
+        raise OSError("temporary hook evidence read failure")
+
+    monkeypatch.setattr(hook_paste_enrichment, "enrich_paste_from_hooks", fail_enrichment)
+
+    processor._converge_paths((tmp_path / "session.jsonl",), session_ids=(session_id,))
+
+    debt = cursor.list_convergence_debt()
+    assert len(debt) == 1
+    assert debt[0].stage == "hook_paste_enrichment"
+    assert debt[0].subject_type == "session_id"
+    assert debt[0].subject_id == session_id
+    assert debt[0].last_error == "temporary hook evidence read failure"
 
 
 class _GateTrackingCoordinator:
