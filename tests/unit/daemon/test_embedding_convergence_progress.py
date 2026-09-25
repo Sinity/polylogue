@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -340,3 +340,80 @@ def test_embedding_derivation_emits_intermediate_progress_before_terminal_result
     assert callable(quiet)
     assert quiet(None, "message:m1") is False
     assert events == [{"state": "started", "message_id": "m1", "session_id": None}]
+
+
+def test_embedding_progress_ring_is_request_scoped_monotone_and_signals_overflow() -> None:
+    """The operation-await buffer bounds observations without losing gap evidence."""
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime, _Exchange
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+    runtime = object.__new__(DaemonOperationRuntime)
+    runtime._condition = threading.Condition()
+    runtime._exchanges = {}
+    first = DaemonOperationRequest("maintenance.embeddings.backfill", {}, request_id="embedding-first")
+    second = DaemonOperationRequest("maintenance.embeddings.backfill", {}, request_id="embedding-second")
+    runtime._exchanges[str(first.request_id)] = _Exchange(first, cast(Any, None), 0.0, 0)
+    runtime._exchanges[str(second.request_id)] = _Exchange(second, cast(Any, None), 0.0, 0)
+
+    for ordinal in range(70):
+        runtime.emit_progress(first, {"state": "started", "ordinal": ordinal})
+    runtime.emit_progress(second, {"state": "started", "ordinal": 0})
+
+    first_state = runtime._progress_state(runtime._exchanges[str(first.request_id)], 0)
+    second_state = runtime._progress_state(runtime._exchanges[str(second.request_id)], 0)
+    assert first_state["progress_sequence"] == 70
+    assert first_state["progress_gap"] == {"from_sequence": 1, "to_sequence": 6}
+    first_events = cast(list[dict[str, object]], first_state["progress_events"])
+    assert [frame["sequence"] for frame in first_events] == list(range(7, 71))
+    assert second_state["progress_sequence"] == 1
+    assert second_state["progress_gap"] is None
+
+
+def test_partial_embedding_pass_keeps_catchup_receipt_retryable() -> None:
+    """Bounds and cancellation cannot stamp unfinished backlog completed.
+
+    Anti-vacuity: classifying a no-error pass with pending messages as
+    completed would make operator limits erase the retryable catch-up state.
+    """
+    assert embedding_owner._catchup_receipt_status(failures=0, pending=3, stopped=False) == "interrupted"
+    assert embedding_owner._catchup_receipt_status(failures=0, pending=0, stopped=True) == "interrupted"
+    assert embedding_owner._catchup_receipt_status(failures=1, pending=3, stopped=True) == "failed"
+    assert embedding_owner._catchup_receipt_status(failures=0, pending=0, stopped=False) == "completed"
+
+
+def test_embedding_session_window_reports_max_session_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The accepted operation can report when max_sessions leaves work behind.
+
+    Anti-vacuity: returning only the capped IDs cannot distinguish an exact
+    fit from a truncated window, so the operation would falsely report a full
+    completion.
+    """
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from polylogue.operations.embedding_derivation import select_embedding_session_window
+
+    rows: list[Any] = [
+        SimpleNamespace(session_id="s1", message_count=1),
+        SimpleNamespace(session_id="s2", message_count=1),
+        SimpleNamespace(session_id="s3", message_count=1),
+    ]
+    received: dict[str, object] = {}
+
+    def select(_conn: object, **kwargs: object) -> list[object]:
+        received.update(kwargs)
+        return rows
+
+    monkeypatch.setattr(
+        "polylogue.operations.embedding_derivation.open_readonly_connection",
+        lambda *_args, **_kwargs: nullcontext(object()),
+    )
+    monkeypatch.setattr("polylogue.storage.embeddings.materialization.select_pending_session_window", select)
+
+    selected, limited = select_embedding_session_window(tmp_path / "index.db", archive_root=tmp_path, max_sessions=2)
+
+    assert received["max_sessions"] == 3
+    assert selected == ("s1", "s2")
+    assert limited is True

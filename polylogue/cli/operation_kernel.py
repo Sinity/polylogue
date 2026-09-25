@@ -434,6 +434,55 @@ def configured_accepted_operation(config: Any, operation: str, payload: dict[str
     return {str(key): value for key, value in result.envelope.items()}
 
 
+def configured_operation_to_completion(
+    config: Any,
+    operation: str,
+    payload: dict[str, object],
+    *,
+    progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+) -> dict[str, object]:
+    """Run one accepted daemon operation to its terminal receipt.
+
+    The whole envelope is retained for machine-facing callers while progress
+    frames are delivered to an isolated renderer callback.  A missing daemon
+    is surfaced as the same typed refusal used by the other mutation routes.
+    """
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.daemon_client import DaemonClient
+    from polylogue.operations.archive_root import operation_archive_root
+    from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
+
+    if operation not in MUTATION_OPERATION_NAMES:
+        raise OperationKernelError(f"operation is not a declared mutation: {operation}")
+    root = operation_archive_root(config)
+    spec = daemon_operation_spec(operation)
+    if spec is None:
+        raise OperationKernelError(f"operation is not declared: {operation}")
+    client = DaemonClient(
+        daemon_socket_path(root),
+        timeout_s=spec.deadline_s,
+        auth_token=lambda: resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
+    try:
+        envelope = client.operation_to_completion(
+            operation,
+            dict(payload),
+            archive_root=str(root),
+            progress_callback=progress_callback,
+        )
+    except DaemonOperationProtocolError as exc:
+        raise OperationFailedError("daemon_transport_error", str(exc)) from exc
+    if envelope is None:
+        raise OperationUnavailableError(
+            f"start polylogued run to serve this operation: {operation}", operation=operation
+        )
+    return {str(key): value for key, value in envelope.items()}
+
+
 __all__ = [
     "OperationCancelledError",
     "OperationEnvelopeError",
@@ -445,6 +494,7 @@ __all__ = [
     "OperationResult",
     "OperationUnavailableError",
     "configured_accepted_operation",
+    "configured_operation_to_completion",
     "configured_mutation_operation",
     "configured_read_operation",
     "dispatch",

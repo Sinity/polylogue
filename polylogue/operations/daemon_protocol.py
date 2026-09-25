@@ -443,6 +443,7 @@ class OperationStatusRequest(_OperationPayload):
 
 class OperationAwaitRequest(OperationStatusRequest):
     after_sequence: int = Field(default=0, ge=0)
+    after_progress_sequence: int = Field(default=0, ge=0)
     timeout_ms: int = Field(default=30_000, ge=1, le=30_000)
 
 
@@ -651,6 +652,9 @@ class MutationResult(_OperationPayload):
     result: dict[str, object] | None = None
     cancellation_requested: bool | None = None
     accepted: bool | None = None
+    progress_sequence: int | None = Field(default=None, ge=0)
+    progress_events: list[dict[str, object]] | None = None
+    progress_gap: dict[str, int] | None = None
     # polylogue-oil1q: ``machine_request_state`` reports the accepted frozen
     # source generation for a ``source-generation`` artifact (every ingest).
     # Declaring it keeps ``extra="forbid"`` meaningful instead of making a
@@ -681,6 +685,30 @@ class MutationResult(_OperationPayload):
         elif not self.preview_refs:
             raise ValueError("cancelled preview result requires exact preview references")
         return self
+
+
+class EmbeddingBackfillProgress(_OperationPayload):
+    state: Literal["stopped", "complete"]
+    computed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    estimated_cost_usd: float = Field(ge=0)
+
+
+class EmbeddingBackfillCounts(_OperationPayload):
+    done: int = Field(ge=0)
+    pending: int = Field(ge=0)
+    failed: int = Field(ge=0)
+
+
+class EmbeddingBackfillResult(_OperationPayload):
+    operation: Literal["maintenance.embeddings.backfill"]
+    outcome: Literal["completed", "stopped", "cancelled", "failed"]
+    sequence: int = Field(ge=1)
+    effect: Literal["committed", "no-effect"]
+    affected_count: int = Field(ge=0)
+    stop_reason: str | None = None
+    progress: EmbeddingBackfillProgress
+    result: EmbeddingBackfillCounts
 
 
 class AcceptedOperationReference(_OperationPayload):
@@ -1336,9 +1364,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_contract="maintenance.embeddings.backfill.request/v1",
         result_contract="maintenance.embeddings.backfill.result/v1",
         request_type="EmbeddingBackfillRequest",
-        result_type="MutationResult",
+        result_type="EmbeddingBackfillResult",
         request_model=EmbeddingBackfillRequest,
-        result_model=MutationResult,
+        result_model=EmbeddingBackfillResult,
         idempotent=True,
         handler="maintenance_embeddings_backfill",
     ),

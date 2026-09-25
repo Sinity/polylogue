@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
@@ -77,8 +78,13 @@ class _Exchange:
     acceptance_started: bool = False
     snapshot: PinnedOperationRead | None = None
     binding: MachineRequestBinding | None = None
+    accepted_reference: dict[str, object] | None = None
     queue_ms: int = 0
     started_at: float = field(default_factory=monotonic)
+    progress_events: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=64))
+    progress_sequence: int = 0
+    progress_gap_until: int = 0
+    settled_at: float | None = None
 
 
 class DaemonOperationRuntime:
@@ -229,6 +235,48 @@ class DaemonOperationRuntime:
     def _notify(self) -> None:
         with self._condition:
             self._condition.notify_all()
+
+    def emit_progress(self, request: DaemonOperationRequest, event: Mapping[str, object]) -> None:
+        """Publish one bounded, request-scoped observation for ``operation.await``.
+
+        Progress is deliberately in-memory.  Audit remains the authority for
+        terminal state; a slow waiter may observe a visible gap and must then
+        use the terminal receipt rather than infer missing work from frames.
+        """
+        request_id = str(request.request_id)
+        with self._condition:
+            exchange = self._exchanges.get(request_id)
+            if exchange is None or exchange.request.operation != request.operation:
+                return
+            exchange.progress_sequence += 1
+            frame = {**dict(event), "sequence": exchange.progress_sequence}
+            if len(exchange.progress_events) == exchange.progress_events.maxlen:
+                oldest = exchange.progress_events[0]
+                exchange.progress_gap_until = max(
+                    exchange.progress_gap_until,
+                    _operation_int(oldest["sequence"], field="progress sequence"),
+                )
+            exchange.progress_events.append(frame)
+            self._condition.notify_all()
+
+    @staticmethod
+    def _progress_state(exchange: _Exchange, after_sequence: int) -> dict[str, object]:
+        frames = [
+            frame
+            for frame in exchange.progress_events
+            if _operation_int(frame["sequence"], field="progress sequence") > after_sequence
+        ]
+        gap: dict[str, int] | None = None
+        if exchange.progress_gap_until > after_sequence:
+            gap = {
+                "from_sequence": after_sequence + 1,
+                "to_sequence": exchange.progress_gap_until,
+            }
+        return {
+            "progress_sequence": exchange.progress_sequence,
+            "progress_events": frames,
+            "progress_gap": gap,
+        }
 
     def audit_for_request(self, request: DaemonOperationRequest, context: OperationContext) -> AuditRepository:
         exchange = self._exchanges[str(request.request_id)]
@@ -393,7 +441,7 @@ class DaemonOperationRuntime:
                     outcome="rejected",
                     error={"code": "request_identity_conflict", "retryable": False},
                 ).to_dict()
-            if durable is not None and durable["outcome"] in {"completed", "failed", "cancelled"}:
+            if durable is not None and durable["outcome"] in {"completed", "failed", "cancelled", "interrupted"}:
                 # Initial generation/recipe preconditions were checked at
                 # acceptance. A historical terminal receipt does not reopen
                 # index/source or become false after ordinary reconvergence.
@@ -448,6 +496,31 @@ class DaemonOperationRuntime:
                         error={"code": "request_identity_conflict", "retryable": False},
                     ).to_dict()
             else:
+                # Completed progress exchanges are short-lived replay buffers,
+                # not active work. Keep them long enough for a CLI whose first
+                # await races a fast completion, while bounding total memory.
+                stale = [
+                    key
+                    for key, item in self._exchanges.items()
+                    if item.future is not None
+                    and item.future.done()
+                    and item.settled_at is not None
+                    and monotonic() - item.settled_at > 300.0
+                ]
+                for key in stale:
+                    self._exchanges.pop(key, None)
+                if len(self._exchanges) >= 64:
+                    settled_progress = sorted(
+                        (item.settled_at or item.started_at, key)
+                        for key, item in self._exchanges.items()
+                        if item.future is not None
+                        and item.future.done()
+                        and item.request.operation == "maintenance.embeddings.backfill"
+                    )
+                    for _settled_at, key in settled_progress:
+                        self._exchanges.pop(key, None)
+                        if len(self._exchanges) < 64:
+                            break
                 if len(self._exchanges) >= 64:
                     return operation_envelope(
                         request,
@@ -534,7 +607,9 @@ class DaemonOperationRuntime:
 
                 def settled(_future: Future[DaemonOperationEnvelope]) -> None:
                     with self._condition:
-                        if self._exchanges.get(request_id) is exchange:
+                        exchange.settled_at = monotonic()
+                        retain_progress = request.operation == "maintenance.embeddings.backfill"
+                        if self._exchanges.get(request_id) is exchange and not retain_progress:
                             self._exchanges.pop(request_id)
                         self._condition.notify_all()
 
@@ -562,6 +637,8 @@ class DaemonOperationRuntime:
                         outcome="rejected",
                         error={"code": "request_identity_conflict", "retryable": False},
                     ).to_dict()
+                if record is not None:
+                    exchange.accepted_reference = AcceptedOperationReference.from_record(record).to_dict()
                 if peer_closed and not exchange.future.done():
                     return self._pending_envelope(
                         exchange,
@@ -574,6 +651,11 @@ class DaemonOperationRuntime:
                         ),
                         record=record,
                     )
+                if spec.progress and record is not None:
+                    # Progress-enabled requests always hand the CLI its durable
+                    # reference first. Even a very fast owner must leave the
+                    # first operation.await exchange available to drain frames.
+                    return self._pending_envelope(exchange, outcome="accepted", record=record)
                 if exchange.future.done():
                     try:
                         envelope = exchange.future.result().to_dict()
@@ -645,6 +727,9 @@ class DaemonOperationRuntime:
         if execution_context is not None and execution_context.deadline_monotonic is not None:
             deadline = min(deadline, execution_context.deadline_monotonic)
         after = _operation_int(request.payload.get("after_sequence", 0), field="after sequence")
+        after_progress = _operation_int(
+            request.payload.get("after_progress_sequence", 0), field="after progress sequence"
+        )
         audit = AuditRepository.for_archive_root(self.archive_root)
         if execution_context is not None:
             if execution_context.cancelled:
@@ -729,7 +814,10 @@ class DaemonOperationRuntime:
                         state = machine_request_state(audit, record) if record is not None else None
                 except AuditContinuityError:
                     pending = True
-                    state = {"outcome": "indeterminate", "sequence": 0}
+                    still_executing = (
+                        exchange is not None and exchange.future is not None and not exchange.future.done()
+                    )
+                    state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
                 if state is None:
                     if exchange is None:
                         if cancelled_before_acceptance:
@@ -747,10 +835,29 @@ class DaemonOperationRuntime:
                             )
                         raise ValueError("operation_reference_unknown")
                     state = {"outcome": "running", "sequence": 0}
+                if exchange is not None and "reference" not in state and exchange.accepted_reference is not None:
+                    # A concurrent audit continuity publication may make the
+                    # settled read briefly unavailable while progress remains
+                    # observable. Keep the wait bound to the already returned
+                    # immutable acceptance reference; terminal state still
+                    # comes from the next durable read.
+                    state = {**state, "reference": exchange.accepted_reference}
                 if request.operation != "operation.await":
                     return OperationControlResult(state, snapshot)
                 sequence = _operation_int(state["sequence"], field="state sequence")
-                if not pending and (sequence > after or state["outcome"] not in {"running", "accepted"}):
+                progress_exchange = (
+                    exchange is not None
+                    and (target_spec := daemon_operation_spec(exchange.request.operation)) is not None
+                    and target_spec.progress
+                )
+                if request.operation == "operation.await" and progress_exchange:
+                    assert exchange is not None
+                    progress = self._progress_state(exchange, after_progress)
+                    if progress["progress_events"] or progress["progress_gap"] is not None:
+                        return OperationControlResult({**state, **progress}, snapshot)
+                    if not pending and state["outcome"] not in {"running", "accepted"}:
+                        return OperationControlResult({**state, **progress}, snapshot)
+                elif not pending and (sequence > after or state["outcome"] not in {"running", "accepted"}):
                     return OperationControlResult(state, snapshot)
                 remaining = deadline - monotonic()
                 if remaining <= 0:

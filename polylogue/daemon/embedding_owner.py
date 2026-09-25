@@ -21,23 +21,39 @@ Two rules make that safe and are enforced here rather than documented:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import secrets
 import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, TypeVar, cast
 
+from polylogue.core.enums import OperationStatus
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+from polylogue.operations.audit import MachineRequestBinding
+from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
+from polylogue.operations.machine_lifecycle import machine_request_state
+from polylogue.operations.mutation_transaction import (
+    MutationAuthorization,
+    MutationPlan,
+    MutationPreview,
+    MutationReceipt,
+    MutationTarget,
+    MutationTargetStatus,
+    build_typed_plan,
+)
+from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
 
 if TYPE_CHECKING:
     from typing import SupportsFloat, SupportsInt
 
     from polylogue.daemon.derivation import DerivationReport
-    from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
-    from polylogue.operations.operation_context import OperationContext
 
 T = TypeVar("T")
 
@@ -107,6 +123,15 @@ EMBEDDING_PASS_MAX_MESSAGES = 2_500
 EMBEDDING_PASS_DEADLINE_S = 30.0
 
 
+def _catchup_receipt_status(*, failures: int, pending: int, stopped: bool) -> OperationStatus:
+    """Classify a catch-up receipt without treating bounded work as complete."""
+    if failures:
+        return OperationStatus.FAILED
+    if pending or stopped:
+        return OperationStatus.INTERRUPTED
+    return OperationStatus.COMPLETED
+
+
 @dataclass(frozen=True, slots=True)
 class ComposedEmbeddingConvergence:
     """One retained owner and adapter for the daemon's shared compute capacity."""
@@ -115,6 +140,185 @@ class ComposedEmbeddingConvergence:
 
     async def __call__(self, scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
         return await self.callback(scope)
+
+
+class _EmbeddingBackfillExecution:
+    """Accepted-operation lifecycle for one operator embedding pass."""
+
+    def __init__(self, request: DaemonOperationRequest, context: OperationContext) -> None:
+        if context.runtime is None:
+            raise PermissionError("daemon_required")
+        self.request = request
+        self.context = context
+        self.runtime = context.runtime
+        self.audit = self.runtime.audit_for_request(request, context)
+        self.snapshot: PinnedOperationRead | None = None
+        self.binding: MachineRequestBinding | None = None
+        self.plan: MutationPlan | None = None
+        self.preview_ref: str | None = None
+        self.authorization: MutationAuthorization | None = None
+        self.operation_id: str | None = None
+        self.record: dict[str, object] | None = None
+        self.scope: tuple[str, ...] | None = None
+        self.scope_limited = False
+
+    async def accept(self) -> None:
+        """Pin authority and commit an auditable accepted reference before work."""
+        from polylogue.operations.embedding_derivation import select_embedding_session_window
+
+        def prepare() -> tuple[
+            MachineRequestBinding,
+            tuple[str, ...] | None,
+            bool,
+            dict[str, object] | None,
+        ]:
+            with open_operation_read(
+                self.context.archive_root,
+                publication_guard=self.runtime.publication_guard,
+            ) as pinned:
+                _validate_identity(self.request, self.context, pinned)
+                self.snapshot = pinned
+                self.runtime.observe_snapshot(self.request, pinned)
+                binding = MachineRequestBinding(
+                    pinned.identity.authority_identity_digest,
+                    str(self.request.request_id),
+                    self.context.principal.actor_ref,
+                    self.request.fingerprint,
+                    self.request.operation,
+                )
+                with self.audit.settled_machine_read():
+                    existing = self.audit.machine_request(binding)
+                payload = self.request.payload
+                scope = None
+                if (
+                    payload.get("max_sessions") is not None
+                    or payload.get("max_messages") is not None
+                    or payload.get("min_messages") is not None
+                    or bool(payload.get("rebuild"))
+                ):
+                    scope, scope_limited = select_embedding_session_window(
+                        pinned.archive.index_db_path,
+                        archive_root=self.context.archive_root,
+                        rebuild=bool(payload.get("rebuild")),
+                        max_sessions=cast(int | None, payload.get("max_sessions")),
+                        max_messages=cast(int | None, payload.get("max_messages")),
+                        min_messages=cast(int | None, payload.get("min_messages")),
+                    )
+                else:
+                    scope_limited = False
+                return binding, scope, scope_limited, existing
+
+        binding, scope, scope_limited, existing = await self.runtime.compute_phase(prepare)
+        self.binding, self.scope, self.scope_limited, self.record = binding, scope, scope_limited, existing
+        if existing is not None:
+            self.operation_id = str(self.audit.machine_parts(binding)[0]["operation_id"])
+            return
+
+        payload = dict(self.request.payload)
+
+        def commit_acceptance() -> None:
+            assert self.binding is not None and self.snapshot is not None
+            archive_instance_id = self.audit.ensure_archive_authority(now_ms=int(time.time() * 1000))
+            target_ref = f"embedding-pass:{self.request.request_id}"
+            identity_digest = hashlib.sha256(target_ref.encode()).hexdigest()
+            target = MutationTarget(
+                kind="embedding-pass",
+                ref=target_ref,
+                policy_key="embedding-backfill",
+                identity_digest=identity_digest,
+                effect_identity=f"{self.request.operation}:{target_ref}",
+                durability="derived",
+                recovery="retry_convergent",
+            )
+            parameter_digest = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+            ).hexdigest()
+            self.plan = build_typed_plan(
+                operation=self.request.operation,
+                operation_version=1,
+                archive_instance_id=archive_instance_id,
+                archive_identity_digest=self.binding.archive_identity,
+                targets=(target,),
+                affected_tiers=("embeddings", "ops"),
+                parameter_digest=parameter_digest,
+                required_capabilities=("archive.embeddings.backfill",),
+                destructive_class="maintenance",
+                required_confirmation="role_only",
+                prepared_at_ms=int(time.time() * 1000),
+                expires_at_ms=self.runtime.request_deadline_unix_ms(self.request),
+                context={
+                    **payload,
+                    "scope": list(self.scope) if self.scope is not None else None,
+                    "scope_limited": self.scope_limited,
+                },
+            )
+            preview = MutationPreview("pending-preview", self.plan)
+            self.preview_ref = self.audit.create_preview(self.plan, self.context.principal)
+            preview = MutationPreview(self.preview_ref, self.plan)
+            token = secrets.token_urlsafe(32)
+            authorization = MutationAuthorization(
+                plan_hash=self.plan.plan_hash,
+                actor=self.context.principal.actor_ref,
+                role=self.context.principal.role_label or "",
+                capability="archive.embeddings.backfill",
+                confirmation_strength="role_only",
+                authorized_at=str(int(time.time() * 1000)),
+                preview_ref=self.preview_ref,
+                token=token,
+                expires_at_ms=self.plan.expires_at_ms,
+                capabilities=("archive.embeddings.backfill",),
+                surface=self.context.principal.surface,
+            )
+            auth_ref = self.audit.issue_authorization(preview, self.context.principal, authorization)
+            self.authorization = replace(authorization, authorization_id=str(auth_ref), token=None)
+            with self.audit.bind_machine_request(
+                self.binding,
+                transition="consume_authorization_and_start",
+            ):
+                self.operation_id = self.audit.consume_authorization_and_start(preview, self.authorization)
+            self.record = self.audit.machine_request(self.binding)
+
+        await self.runtime.write_phase("embedding.accept", commit_acceptance)
+
+    async def stop(self, reason: str) -> None:
+        if self.binding is not None and self.record is not None:
+            binding = self.binding
+            await self.runtime.write_phase("embedding.stop", lambda: self.audit.stop_machine_batch(binding, reason))
+
+    async def finalize(self, payload: dict[str, object], *, status: str = "applied") -> None:
+        if self.operation_id is None or self.plan is None:
+            return
+        receipt = MutationReceipt(
+            operation=self.plan.operation,
+            plan_hash=self.plan.plan_hash,
+            status=cast(MutationTargetStatus, status),
+            target_refs=self.plan.target_refs,
+            affected_count=1 if status == "applied" else 0,
+            detail=None,
+            receipt_ref=None,
+            applied_at=str(int(time.time() * 1000)),
+        )
+        summary = "embedding_receipt:" + json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        await self.runtime.write_phase(
+            "embedding.finalize",
+            lambda: self.audit.finalize_attempt(
+                str(self.operation_id), status=status, receipt=receipt, error_summary=summary
+            ),
+        )
+
+    async def state(self) -> dict[str, object]:
+        assert self.binding is not None
+        binding = self.binding
+
+        def read() -> dict[str, object]:
+            with self.audit.settled_machine_read():
+                record = self.audit.machine_request(binding)
+                if record is None:
+                    raise ValueError("embedding request has no durable binding")
+                self.record = record
+                return machine_request_state(self.audit, record)
+
+        return await self.runtime.compute_phase(read)
 
 
 def compose_embedding_convergence(
@@ -127,6 +331,7 @@ def compose_embedding_convergence(
     max_cost_usd: float | None = None,
     stop_after_seconds: int | None = None,
     max_errors: int | None = None,
+    scope_limited: bool = False,
     progress_callback: Callable[[Mapping[str, object]], None] | None = None,
 ) -> ComposedEmbeddingConvergence:
     """Compose the common-kernel embedding owner once for a daemon process.
@@ -207,8 +412,8 @@ def compose_embedding_convergence(
                 {
                     **dict(event),
                     "sequence": progress_count,
-                    "computed": progress_count,
-                    "cost_usd": progress_count * estimated_cost_per_message,
+                    "started_count": progress_count,
+                    "estimated_cost_usd": progress_count * estimated_cost_per_message,
                 }
             )
 
@@ -291,8 +496,20 @@ def compose_embedding_convergence(
                     # deliberately conservative: a failed provider call can
                     # still be billable, while refs/meta/vector inspection is
                     # the sole readiness authority.
-                    from polylogue.core.enums import OperationStatus
                     from polylogue.daemon.embedding_backlog import _upsert_archive_embedding_catchup_run
+
+                    # A receipt with work left is not a completed catch-up.
+                    # Preserve it as retryable interrupted debt even when no
+                    # provider call failed (for example a cost or time cap).
+                    # Cancellation/deadline can also arrive after the last
+                    # derivation observation, so consult the request stop
+                    # signal before declaring a clean completion.
+                    stopped = scope_limited or bool(quiet and quiet())
+                    receipt_status = _catchup_receipt_status(
+                        failures=failures,
+                        pending=report.pending,
+                        stopped=stopped,
+                    )
 
                     await write_bridge.run_async(
                         "embedding.catchup_receipt",
@@ -300,7 +517,7 @@ def compose_embedding_convergence(
                             _upsert_archive_embedding_catchup_run,
                             archive_root / "ops.db",
                             run_id=str(run_id),
-                            status=OperationStatus.FAILED if failures else OperationStatus.COMPLETED,
+                            status=receipt_status,
                             started_at_ms=int(receipt["started_at_ms"]),
                             finished_at_ms=int(time.time() * 1000),
                             scanned_sessions=int(receipt["scanned_sessions"]),
@@ -319,6 +536,8 @@ def compose_embedding_convergence(
                     deferred = "stop_after_seconds"
                 elif max_errors is not None and failures >= max_errors:
                     deferred = "max_errors"
+                elif scope_limited:
+                    deferred = "max_sessions"
                 return EmbeddingConvergenceResult(report, deferred)
             finally:
                 with receipt_lock:
@@ -339,79 +558,116 @@ async def execute_embedding_backfill_operation(
     """
     from polylogue.daemon.execution import daemon_compute_adapter
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, daemon_write_coordinator
-    from polylogue.operations.daemon_execution import operation_envelope
+    from polylogue.operations.embedding_derivation import estimated_embedding_message_cost
 
+    request = validate_execution_request(request, context)
     runtime = context.runtime
     owner_loop = getattr(runtime, "_owner_loop", None) if runtime is not None else None
     if runtime is None or owner_loop is None:
         raise PermissionError("daemon_required")
     root = context.archive_root
-    payload = request.payload
+    execution = _EmbeddingBackfillExecution(request, context)
+    try:
+        await execution.accept()
+        if execution.plan is None:
+            # A replayed request id already has a durable accepted attempt.
+            # Return its authoritative state instead of running provider jobs
+            # a second time.
+            state = await execution.state()
+            return operation_envelope(
+                request,
+                context,
+                snapshot=execution.snapshot,
+                outcome=str(state["outcome"]),
+                reference=execution.record,
+                result=state.get("result", state),
+            )
+        payload = request.payload
+        if bool(payload.get("rebuild")) and execution.record is not None:
+            from polylogue.operations.embedding_derivation import mark_embedding_sessions_needs_reindex
 
-    # The request payload is dict[str, object]; narrow each bound once here so
-    # the int()/float() call sites below are typed rather than each casting.
-    def _bound(key: str) -> int | None:
-        value = payload.get(key)
-        return None if value is None else int(cast("SupportsInt", value))
+            await runtime.write_phase(
+                "embedding.rebuild-mark",
+                lambda: mark_embedding_sessions_needs_reindex(
+                    root / "index.db", embeddings_db_path=root / "embeddings.db"
+                ),
+            )
 
-    max_sessions = _bound("max_sessions")
-    max_messages = _bound("max_messages")
-    min_messages = _bound("min_messages")
-    stop_after_seconds = _bound("stop_after_seconds")
-    max_errors = _bound("max_errors")
-    _raw_cost = payload.get("max_cost_usd")
-    max_cost_usd = None if _raw_cost is None else float(cast("SupportsFloat", _raw_cost))
+        def _bound(key: str) -> int | None:
+            value = payload.get(key)
+            return None if value is None else int(cast("SupportsInt", value))
 
-    # Resolve the bounded session window on the daemon's read side.  The
-    # resulting ids are only intent; all embedding writes still go through the
-    # resident owner and its write coordinator.
-    scope: tuple[str, ...] | None = None
-    if max_sessions is not None or max_messages is not None or min_messages is not None or bool(payload.get("rebuild")):
-        from polylogue.operations.embedding_derivation import (
-            select_embedding_session_window,
+        max_messages = _bound("max_messages")
+        max_cost_usd = (
+            None if payload.get("max_cost_usd") is None else float(cast("SupportsFloat", payload["max_cost_usd"]))
         )
-
-        scope = select_embedding_session_window(
+        stop_after_seconds = _bound("stop_after_seconds")
+        max_errors = _bound("max_errors")
+        owner = compose_embedding_convergence(
             root / "index.db",
-            archive_root=root,
-            rebuild=bool(payload.get("rebuild")),
-            max_sessions=max_sessions,
+            compute_adapter=daemon_compute_adapter(),
+            write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
+            quiet=lambda: runtime.stop_reason(request) is not None,
             max_messages=max_messages,
-            min_messages=min_messages,
+            max_cost_usd=max_cost_usd,
+            stop_after_seconds=stop_after_seconds,
+            max_errors=max_errors,
+            scope_limited=execution.scope_limited,
+            progress_callback=lambda event: runtime.emit_progress(request, event),
         )
-
-    progress_sink = getattr(runtime, "emit_progress", None)
-    owner = compose_embedding_convergence(
-        root / "index.db",
-        compute_adapter=daemon_compute_adapter(),
-        write_bridge=DaemonWriteThreadBridge(daemon_write_coordinator(), owner_loop),
-        max_messages=max_messages,
-        max_cost_usd=max_cost_usd,
-        stop_after_seconds=stop_after_seconds,
-        max_errors=max_errors,
-        progress_callback=progress_sink if callable(progress_sink) else None,
+        result = await owner(execution.scope)
+        report = result.report
+        stop_reason = runtime.stop_reason(request) or result.deferred_reason
+        terminal: dict[str, object] = {
+            "operation": request.operation,
+            "outcome": "completed"
+            if stop_reason is None
+            else ("cancelled" if stop_reason == "cancelled" else "stopped"),
+            "sequence": 1,
+            "effect": "committed" if report is not None and report.done else "no-effect",
+            "affected_count": 0 if report is None else report.done,
+            "stop_reason": stop_reason,
+            "progress": {
+                "state": "stopped" if stop_reason is not None else "complete",
+                "computed": 0 if report is None else report.work.computed,
+                "failed": 0 if report is None else report.failed,
+                "estimated_cost_usd": (
+                    0.0 if report is None else report.work.computed * estimated_embedding_message_cost()
+                ),
+            },
+            "result": {
+                "done": 0 if report is None else report.done,
+                "pending": 0 if report is None else report.pending,
+                "failed": 0 if report is None else report.failed,
+            },
+        }
+        if stop_reason is not None:
+            audit_reason = (
+                "cancelled" if stop_reason == "cancelled" else "deadline" if stop_reason == "deadline" else "refused"
+            )
+            await execution.stop(audit_reason)
+        await execution.finalize(terminal)
+    except Exception as exc:
+        if execution.operation_id is not None:
+            await execution.stop("cancelled" if runtime.stop_reason(request) == "cancelled" else "refused")
+            await execution.finalize(
+                {
+                    "operation": request.operation,
+                    "outcome": "failed",
+                    "sequence": 1,
+                    "effect": "no-effect",
+                    "stop_reason": "refused",
+                    "error": str(exc)[:512],
+                },
+                status="failed",
+            )
+        raise
+    state = await execution.state()
+    return operation_envelope(
+        request,
+        context,
+        snapshot=execution.snapshot,
+        outcome=str(state["outcome"]),
+        reference=execution.record,
+        result=state.get("result", state),
     )
-    result = await owner(scope)
-    from polylogue.operations.embedding_derivation import estimated_embedding_message_cost
-
-    report = result.report
-    payload = {
-        "operation": request.operation,
-        "outcome": "completed" if result.deferred_reason is None else "stopped",
-        "sequence": 1,
-        "effect": "committed" if report is not None and report.done else "no-effect",
-        "affected_count": 0 if report is None else report.done,
-        "stop_reason": result.deferred_reason,
-        "progress": {
-            "state": "stopped" if result.deferred_reason is not None else "complete",
-            "computed": 0 if report is None else report.work.computed,
-            "failed": 0 if report is None else report.failed,
-            "cost_usd": 0.0 if report is None else report.work.computed * estimated_embedding_message_cost(),
-        },
-        "result": {
-            "done": 0 if report is None else report.done,
-            "pending": 0 if report is None else report.pending,
-            "failed": 0 if report is None else report.failed,
-        },
-    }
-    return operation_envelope(request, context, result=payload)
