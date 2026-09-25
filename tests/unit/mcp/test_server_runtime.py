@@ -7,6 +7,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from polylogue.mcp import server as server_module
 from polylogue.mcp.declarations.models import MCPCapabilities
 
@@ -132,28 +134,28 @@ def test_serve_stdio_does_not_arm_the_write_guard_when_read_only() -> None:
     server.run.assert_called_once_with(transport="stdio")
 
 
-def test_serve_stdio_arms_the_write_guard_when_writes_are_enabled() -> None:
-    """Standalone MCP with write or maintenance is a writer process.
+@pytest.mark.parametrize(
+    "capabilities",
+    (
+        MCPCapabilities(write=True),
+        MCPCapabilities(judge=True),
+        MCPCapabilities(maintenance=True),
+    ),
+)
+def test_serve_stdio_does_not_arm_a_hand_maintained_capability_list(capabilities: MCPCapabilities) -> None:
+    """Every MCP capability relies on the shared per-route writer boundary.
 
-    Anti-vacuity: drop the arming in ``serve_stdio`` and this still runs the
-    server, but an unleased ``sqlite3.connect`` onto ``source.db`` would
-    contend through the busy timeout exactly as the 2026-09-05 rehearsal did.
+    Anti-vacuity: restoring capability-conditioned process-global arming here
+    would make this test fail and would reintroduce the omission that let the
+    judge capability write beside a resident daemon.
     """
     server = MagicMock()
-    arm_cm = MagicMock()
-    arm_cm.__enter__.return_value = None
-    arm_cm.__exit__.return_value = None
-    guard_cm = MagicMock()
-    guard_cm.__enter__.return_value = None
-    guard_cm.__exit__.return_value = None
     with (
         patch("polylogue.mcp.server._get_server", return_value=server),
-        patch("polylogue.core.write_lease.arm_write_lease_enforcement", return_value=arm_cm) as arm,
-        patch("polylogue.core.write_lease.install_archive_write_guard", return_value=guard_cm) as guard,
+        patch("polylogue.core.write_lease.arm_write_lease_enforcement") as arm,
+        patch("polylogue.core.write_lease.install_archive_write_guard") as guard,
     ):
-        server_module.serve_stdio(services="services", capabilities=MCPCapabilities(write=True))
-    arm.assert_called_once_with(process_wide=True)
-    guard.assert_called_once_with()
+        server_module.serve_stdio(services="services", capabilities=capabilities)
+    arm.assert_not_called()
+    guard.assert_not_called()
     server.run.assert_called_once_with(transport="stdio")
-    assert arm_cm.__enter__.called
-    assert guard_cm.__enter__.called
