@@ -23,6 +23,7 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.types import AttachmentDirection
 from polylogue.logging import WARNING, emit
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 from polylogue.sources.tool_result_reasons import unknown_reason
@@ -43,7 +44,7 @@ from .base import (
     parser_admission,
     typed_unknown_block,
 )
-from .base_support import AttachmentDirection, derive_attachment_provenance
+from .base_support import derive_attachment_provenance
 from .chatgpt_sidecars import strip_asset_pointer_scheme
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"

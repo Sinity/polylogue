@@ -13,7 +13,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.core.types import ContextInjectionDecision, require_literal
@@ -537,7 +537,10 @@ def read_context_ledger(
     ).fetchall()
     records: list[ContextLedgerRecord] = []
     for row in rows:
-        decision = require_literal(row[3], ContextInjectionDecision, name="stored context injection decision")
+        decision = cast(
+            ContextInjectionDecision,
+            require_literal(row[3], ContextInjectionDecision, name="stored context injection decision"),
+        )
         policy_refs = json.loads(str(row[13]))
         if not isinstance(policy_refs, list) or not all(isinstance(item, str) for item in policy_refs):
             raise ValueError("stored context ledger policy refs are not a string list")

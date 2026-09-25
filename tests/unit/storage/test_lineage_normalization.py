@@ -11,6 +11,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import aiosqlite
 import pytest
@@ -85,7 +86,7 @@ def _msg(
 def test_session_link_writer_rejects_unknown_inheritance_before_storage() -> None:
     with pytest.raises(ValueError, match="lineage inheritance"):
         _upsert_session_link(
-            None,  # Validation must happen before the connection is touched.
+            cast(sqlite3.Connection, None),  # Validation must happen before the connection is touched.
             src_session_id="child",
             dst_origin="codex-session",
             dst_native_id="parent",

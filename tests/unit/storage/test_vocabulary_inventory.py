@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Literal, cast
 
+import pytest
+
 from polylogue.core import types as core_types
 from polylogue.daemon.judgment_automation import JudgmentAutomationReceiptStatus
 from polylogue.storage.sqlite.archive_tiers import vocabulary_inventory
@@ -85,7 +87,7 @@ def test_judgment_scheduler_uses_the_storage_vocabulary_owner() -> None:
     assert JudgmentAutomationReceiptStatus is core_types.JudgmentSchedulerStatus
 
 
-def test_detaching_a_derived_check_from_its_owner_reports_unknown_ownership(monkeypatch) -> None:
+def test_detaching_a_derived_check_from_its_owner_reports_unknown_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
     before = build_inventory()
     ddl = dict(vocabulary_inventory.ARCHIVE_DDL_BY_TIER)
     ddl[ArchiveTier.INDEX] = ddl[ArchiveTier.INDEX].replace(
@@ -107,7 +109,7 @@ def test_detaching_a_derived_check_from_its_owner_reports_unknown_ownership(monk
     )
 
 
-def test_omitting_a_canonical_tier_invalidates_the_inventory(monkeypatch) -> None:
+def test_omitting_a_canonical_tier_invalidates_the_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
     ddl = {tier: sql for tier, sql in vocabulary_inventory.ARCHIVE_DDL_BY_TIER.items() if tier != ArchiveTier.OPS}
     monkeypatch.setattr(vocabulary_inventory, "ARCHIVE_DDL_BY_TIER", ddl)
 
@@ -119,7 +121,7 @@ def test_omitting_a_canonical_tier_invalidates_the_inventory(monkeypatch) -> Non
         raise AssertionError("inventory accepted a canonical tier omission")
 
 
-def test_reintroducing_a_duplicate_owner_makes_ownership_ambiguous(monkeypatch) -> None:
+def test_reintroducing_a_duplicate_owner_makes_ownership_ambiguous(monkeypatch: pytest.MonkeyPatch) -> None:
     before = build_inventory()
     monkeypatch.setattr(core_types, "DuplicateMessageIdentitySource", Literal["content", "native"], raising=False)
 

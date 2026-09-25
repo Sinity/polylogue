@@ -19,7 +19,7 @@ from typing import Literal
 
 from polylogue.core import types as core_types
 from polylogue.core.enums import PolylogueStrEnum
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER as ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _MEMBERSHIP = re.compile(r"(?<!NOT )\b([A-Za-z_][A-Za-z0-9_]*)\s+IN\s*\(([^()]*)\)", re.IGNORECASE)

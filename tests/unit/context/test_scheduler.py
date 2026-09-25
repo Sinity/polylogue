@@ -5,11 +5,13 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
 from polylogue.context.scheduler import ContextItem, read_context_ledger, record_context_ledger, schedule_context
 from polylogue.core.refs import ExecutionContextRef
+from polylogue.core.types import ContextInjectionDecision
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
 
 
@@ -287,7 +289,7 @@ def test_ledger_is_idempotent_for_one_assembly() -> None:
     record_context_ledger(conn, result, observed_at_ms=10)
     assert conn.execute("SELECT COUNT(*) FROM context_injection_ledger").fetchone()[0] == len(result.ledger)
 
-    invalid = replace(result, ledger=(replace(result.ledger[0], decision="skipped"),))
+    invalid = replace(result, ledger=(replace(result.ledger[0], decision=cast(ContextInjectionDecision, "skipped")),))
     with pytest.raises(ValueError, match="context injection decision"):
         record_context_ledger(conn, invalid, observed_at_ms=11)
 
