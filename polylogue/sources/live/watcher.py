@@ -251,6 +251,7 @@ class WatchSource:
     # source may disable that routing when its suffix set is deliberately a
     # hard boundary (for example, the default Codex state database source).
     allow_path_scoped_artifacts: bool = True
+    required: bool = False
 
     def exists(self) -> bool:
         return self.root.exists()

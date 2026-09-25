@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import redirect_stdout
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -435,13 +436,17 @@ def _watch_sources_from_roots(
     for root in roots:
         resolved = root.resolve(strict=False)
         if resolved in known_roots:
+            sources = [
+                replace(source, required=True) if source.root.resolve(strict=False) == resolved else source
+                for source in sources
+            ]
             continue
         if resolved == inbox_root:
-            source = WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES)
+            source = WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES, required=True)
         elif resolved == browser_root:
-            source = WatchSource(name="browser-capture", root=root, suffixes=(".json",))
+            source = WatchSource(name="browser-capture", root=root, suffixes=(".json",), required=True)
         else:
-            source = WatchSource(name=root.name, root=root, suffixes=_ADDITIONAL_SOURCE_SUFFIXES)
+            source = WatchSource(name=root.name, root=root, suffixes=_ADDITIONAL_SOURCE_SUFFIXES, required=True)
         sources.append(source)
         known_roots.add(resolved)
     return tuple(sources)
@@ -3170,6 +3175,7 @@ async def _run_daemon_services_under_active_writer_lease(
                             ColdBuildGeneration.begin,
                             archive_root_path,
                             reason="explicit cold build" if cold_build_index else "empty active index generation",
+                            sources=sources,
                         )
                         register_cold_build_generation(cold_build)
 

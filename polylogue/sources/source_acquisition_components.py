@@ -699,8 +699,12 @@ def replay_zip_entry_acquisition_payloads(
     bytes. Backup verification uses this read-only replay instead of inventing
     a JSON-array indexing rule.
     """
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
-    if entry_provider_hint in GROUP_PROVIDERS:
+    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
+        entry_provider_hint, context.entry.filename
+    ):
         with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
             payload_bytes = handle.read()
             identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)

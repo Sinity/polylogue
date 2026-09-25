@@ -22,6 +22,7 @@ from polylogue.sources.live.cold_build import (
     register_cold_build_generation,
 )
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.connection_profile import (
     WRITE_CONNECTION_PROFILE,
     write_connection_pragma_statements,
@@ -33,7 +34,9 @@ _SYNCHRONOUS_LEVELS = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
 @pytest.fixture
 def cold_build(tmp_path: Path) -> Iterator[ColdBuildGeneration]:
     assert active_index_generation_is_empty(tmp_path) is True
-    generation = ColdBuildGeneration.begin(tmp_path, reason="durability policy")
+    generation = ColdBuildGeneration.begin(
+        tmp_path, reason="durability policy", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
+    )
     register_cold_build_generation(generation)
     try:
         yield generation

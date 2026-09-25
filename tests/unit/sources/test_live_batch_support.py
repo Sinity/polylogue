@@ -3237,6 +3237,32 @@ def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission
     assert sniffed_paths == ["projects/project/session.jsonl"]
 
 
+def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(tmp_path: Path) -> None:
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+
+    bundle = tmp_path / "artifacts.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("tool-results/one.bin", b"\xff\x00opaque")
+        archive.writestr("brain/one.md", b"# note\n")
+    processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
+    records, _total_bytes = processor._extract_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+    assert {record.source_path for _raw_id, record in records} == {
+        f"{bundle}:tool-results/one.bin",
+        f"{bundle}:brain/one.md",
+    }
+    baseline = capture_production_source_baseline(
+        (WatchSource(name="inbox", root=tmp_path, suffixes=(".zip",)),), operation_id="artifacts"
+    )
+    assert {(row.path, row.source_index, row.revision) for row in baseline.accepted} == {
+        (record.source_path, record.source_index, record.blob_hash) for _raw_id, record in records
+    }
+
+
 def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
     """Malformed journals remain typed evidence when decoding cannot recover them."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"

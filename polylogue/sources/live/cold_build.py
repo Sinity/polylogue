@@ -37,7 +37,7 @@ import types
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING
 
 from polylogue.logging import ERROR, emit
 from polylogue.maintenance.candidate_capacity import (
@@ -51,18 +51,17 @@ from polylogue.storage.index_generation import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+if TYPE_CHECKING:
+    from polylogue.sources.live.production_baseline import ProductionSourceBaseline
+    from polylogue.sources.live.watcher import WatchSource
+
 __all__ = [
-    "WANTED_SOURCE_FREEZE_COMMAND",
     "ColdBuildGeneration",
     "active_cold_build_generation",
     "active_index_generation_is_empty",
     "clear_cold_build_generation",
     "register_cold_build_generation",
 ]
-
-
-#: The only route that publishes a frozen wanted-source receipt.
-WANTED_SOURCE_FREEZE_COMMAND: Final = "polylogue ops maintenance wanted-sources --freeze"
 
 
 def _cold_build_owner_id() -> str:
@@ -192,104 +191,6 @@ def _ops_holder_is_attached(conn: sqlite3.Connection, ops_db: Path) -> bool:
     return ops_db.with_name(f"{ops_db.name}-shm").exists()
 
 
-def _require_frozen_wanted_sources(archive_root: Path, *, reason: str, operation_id: str) -> None:
-    """Refuse a cold build that no complete, valid wanted-source receipt authorizes.
-
-    The rebuild's conservation proof needs a denominator fixed *before* the
-    build (polylogue-co2iz). ``require_rebuild_preflight`` has owned that
-    check since #5304, but its only caller was the operator CLI, so the build
-    driver -- the thing whose behaviour the denominator constrains -- started
-    without ever consulting it.
-
-    Like the capacity preflight three lines below, this is not conditioned on
-    the operator having asked for a cold build: the auto-engaged build on an
-    empty active generation is precisely the unattended whole-archive case
-    that must not run unauthorized. It *is* conditioned on a denominator
-    existing at all, and that is a different question from operator intent:
-
-    * the receipt enumerates ``config.source_declarations``, i.e. explicitly
-      configured standalone roots only (discovery roots are ambient provider
-      state the campaign policy excludes by design);
-    * with no declared root, ``build_wanted_source_receipt`` itself refuses
-      ("no source is declared: the rebuild denominator would be empty"), so a
-      receipt requirement there is unsatisfiable, not strict -- it would make
-      every live-capture-only archive permanently unbuildable;
-    * once a receipt *is* published, it is validated unconditionally, even if
-      the roots were later undeclared. A frozen denominator that the current
-      configuration no longer matches is a refusal, never a silent downgrade.
-
-    The refusal is typed (``WantedSourceReceiptError``) and names both the
-    defect and the single command that produces a receipt. There is no branch
-    here that falls back to walking source roots fresh.
-    """
-    from polylogue.config import configured_source_declarations, resolve_runtime_config
-    from polylogue.maintenance.source_manifest_continuity import (
-        WantedSourceReceiptError,
-        campaign_default_wanted_source_policy,
-        require_rebuild_preflight,
-        wanted_source_receipt_is_published,
-    )
-
-    declarations = configured_source_declarations(resolve_runtime_config())
-    if not declarations and not wanted_source_receipt_is_published(archive_root):
-        # The build proceeds -- with no declared root
-        # ``build_wanted_source_receipt`` itself refuses, so requiring a
-        # receipt here would make every live-capture-only archive permanently
-        # unbuildable. But proceeding without a frozen denominator is a named
-        # gap, not a clean run, and this docstring's own promise is "never a
-        # silent downgrade". Reporting ``ok`` made an unauthorized-denominator
-        # build indistinguishable from an authorized one in the event stream,
-        # which is exactly how a whole-archive rebuild runs unnoticed without
-        # the conservation proof polylogue-co2iz requires. The event kind is
-        # the named reason -- ``logging_fields`` registers no
-        # ``degraded_reason`` and an unregistered field is dropped at the emit
-        # boundary rather than recorded.
-        emit(
-            "daemon.cold_build.wanted_sources_undeclared",
-            outcome="degraded",
-            reason=reason,
-            operation_id=operation_id,
-            sources=0,
-        )
-        return
-    try:
-        preflight = require_rebuild_preflight(
-            archive_root,
-            policy=campaign_default_wanted_source_policy(),
-            declarations=declarations,
-        )
-    except WantedSourceReceiptError as refusal:
-        # Same reporting constraint as the capacity refusal below: the digests
-        # and counts have no registered logging field, and a refused build
-        # writes no receipt, so ``error_detail`` is the whole record.
-        detail = (
-            f"cold build refused: {refusal}. {len(declarations)} declared source root(s) form the "
-            f"rebuild denominator and no complete, valid frozen receipt authorizes this build; "
-            f"produce one with `{WANTED_SOURCE_FREEZE_COMMAND}`."
-        )
-        emit(
-            "daemon.cold_build.wanted_sources_refused",
-            level=ERROR,
-            outcome="error",
-            reason=reason,
-            operation_id=operation_id,
-            error_type=type(refusal).__name__,
-            error_detail=detail,
-            sources=len(declarations),
-        )
-        raise WantedSourceReceiptError(detail) from refusal
-    emit(
-        "daemon.cold_build.wanted_sources_authorized",
-        outcome="ok",
-        reason=reason,
-        operation_id=operation_id,
-        content_hash=preflight.receipt_sha256,
-        sources=len(declarations),
-        files=preflight.item_count,
-        bytes=preflight.byte_count,
-    )
-
-
 def active_index_generation_is_empty(archive_root: Path) -> bool:
     """Whether the archive's currently active index generation holds no sessions.
 
@@ -312,6 +213,7 @@ class ColdBuildGeneration:
     reason: str
     operation_id: str
     _store: IndexGenerationStore
+    source_baseline: ProductionSourceBaseline
     _promoted: bool = False
     _discarded: bool = False
     #: Open for the build's lifetime so one-shot ``ops.db`` writers stop
@@ -319,11 +221,17 @@ class ColdBuildGeneration:
     _ops_checkpoint_holder: sqlite3.Connection | None = None
 
     @classmethod
-    def begin(cls, archive_root: Path, *, reason: str, owner_id: str | None = None) -> ColdBuildGeneration:
+    def begin(
+        cls,
+        archive_root: Path,
+        *,
+        reason: str,
+        sources: tuple[WatchSource, ...],
+        owner_id: str | None = None,
+    ) -> ColdBuildGeneration:
         """Create the inactive generation this build will fill.
 
-        Refuses on an unauthorized denominator (``_require_frozen_wanted_sources``)
-        and then on insufficient free space, both *before* the generation
+        Captures the production discovery denominator and checks free space before the generation
         directory exists. A cold build is the whole index again on disk beside the one
         still serving reads, and it is engaged automatically whenever the
         active generation is empty -- so this preflight cannot be conditioned
@@ -348,10 +256,27 @@ class ColdBuildGeneration:
         # ``begin`` is only reached when a cold build is actually starting.
         # That is the only cost gate this needs; intent is not a gate.
         operation_id = f"cold-build-{uuid.uuid4().hex}"
-        # Authorization before allocation, and before the capacity walk: this
-        # is the cheaper of the two preflights and the one whose refusal means
-        # "this build must not happen at all" rather than "not here, not now".
-        _require_frozen_wanted_sources(archive_root, reason=reason, operation_id=operation_id)
+        from polylogue.maintenance.source_manifest_continuity import (
+            _read_wanted_source_receipt,
+            wanted_source_receipt_is_published,
+        )
+        from polylogue.sources.live.production_baseline import (
+            capture_production_source_baseline,
+            load_pending_production_baseline,
+            merge_pending_production_baseline,
+            publish_pending_production_baseline,
+        )
+
+        # Existing manual receipts remain historical evidence. Validate any
+        # published one's integrity without reusing its obsolete roots as the
+        # production denominator. Never require a new manual freeze.
+        if wanted_source_receipt_is_published(archive_root):
+            _read_wanted_source_receipt(archive_root)
+        baseline = merge_pending_production_baseline(
+            capture_production_source_baseline(sources, operation_id=operation_id),
+            load_pending_production_baseline(archive_root),
+        )
+        publish_pending_production_baseline(archive_root, baseline)
         try:
             require_candidate_capacity(archive_root, operation_id=operation_id)
         except InsufficientCapacityError as refusal:
@@ -376,6 +301,16 @@ class ColdBuildGeneration:
         if (archive_root / "source.db").exists():
             snapshot = rebuild_source_evidence_snapshot(archive_root)
         generation = store.create(owner_id=owner_id or _cold_build_owner_id(), source_snapshot=snapshot)
+        baseline_path = Path(generation.index_path).parent / "source-baseline.json"
+        with baseline_path.open("x", encoding="utf-8") as stream:
+            import json
+
+            json.dump(
+                {"generation_id": generation.generation_id, "baseline": baseline.as_dict()},
+                stream,
+                indent=2,
+                sort_keys=True,
+            )
         emit(
             "daemon.cold_build.generation_created",
             outcome="ok",
@@ -391,6 +326,7 @@ class ColdBuildGeneration:
             reason=reason,
             operation_id=operation_id,
             _store=store,
+            source_baseline=baseline,
         )
 
     @property
@@ -492,8 +428,19 @@ class ColdBuildGeneration:
         """Run the readiness pass and swap the active-index pointer."""
         if self.settled:
             raise RuntimeError(f"cold-build generation {self.generation_id} is already settled")
+        import json
+
+        from polylogue.sources.live.production_baseline import (
+            ProductionBaselineError,
+            clear_pending_production_baseline,
+        )
+
+        receipt = json.loads((self.generation_root / "source-baseline.json").read_text(encoding="utf-8"))
+        if receipt != {"generation_id": self.generation_id, "baseline": self.source_baseline.as_dict()}:
+            raise ProductionBaselineError("production source baseline is not bound to this generation")
         with self.open_writer() as archive:
             archive.run_generation_readiness_pass()
+        self.source_baseline.verify(self.archive_root / "source.db")
         # Measured here and nowhere else: after the readiness pass the
         # candidate carries its rows, its deferred indexes and its FTS, which
         # is this build's real peak, and ``promote`` is about to start moving
@@ -503,7 +450,10 @@ class ColdBuildGeneration:
         self._store.observe_candidate_capacity(operation_id=self.operation_id, generation_id=self.generation_id)
         promoted = self._store.promote(self.generation)
         self._promoted = True
-        self._release_ops_checkpoint_holder()
+        try:
+            clear_pending_production_baseline(self.archive_root, self.source_baseline)
+        finally:
+            self._release_ops_checkpoint_holder()
         emit(
             "daemon.cold_build.generation_promoted",
             outcome="ok",

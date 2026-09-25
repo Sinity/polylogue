@@ -85,6 +85,7 @@ from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_t
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import (
     ZipBombError,
+    declared_artifact_provider,
     is_declared_artifact_path,
     provider_detection_path,
 )
@@ -4718,7 +4719,11 @@ class LiveBatchProcessor:
                     zip_path=path,
                 )
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-                entries = [(entry_ordinals[id(info)], info) for info in validator.filter_entries(central_directory)]
+                allowed_path = is_declared_artifact_path if zip_provider_hint is Provider.UNKNOWN else None
+                entries = [
+                    (entry_ordinals[id(info)], info)
+                    for info in validator.filter_entries(central_directory, allowed_path=allowed_path)
+                ]
                 # A GDPR/Takeout export ZIP dropped into a provider-agnostic
                 # inbox (``fallback_provider is Provider.UNKNOWN``) still has
                 # a real dominant provider -- it just isn't visible from any
@@ -4735,6 +4740,9 @@ class LiveBatchProcessor:
                     if info.file_size == 0:
                         continue
                     try:
+                        entry_provider_hint = zip_provider_hint
+                        if zip_provider_hint is Provider.UNKNOWN:
+                            entry_provider_hint = declared_artifact_provider(info.filename) or zip_provider_hint
                         for raw_data in iter_zip_entry_raw_data(
                             zf,
                             ZipEntryReadContext(
@@ -4742,7 +4750,7 @@ class LiveBatchProcessor:
                                 zip_path=path,
                                 entry=info,
                                 file_mtime=file_mtime,
-                                provider_hint=zip_provider_hint,
+                                provider_hint=entry_provider_hint,
                                 blob_store=blob_store,
                             ),
                         ):

@@ -1194,6 +1194,22 @@ def test_configured_root_does_not_duplicate_typed_default(workspace_env: dict[st
 
     assert sum(source.root == default_root for source in sources) == 1
     assert next(source for source in sources if source.root == default_root).name == "codex"
+    assert next(source for source in sources if source.root == default_root).required
+
+
+def test_configured_missing_default_root_remains_a_required_baseline_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+    from polylogue.sources.live.watcher import WatchSource
+
+    missing = tmp_path / "codex"
+    monkeypatch.setattr(daemon_cli, "default_sources", lambda **_kwargs: (WatchSource("codex", missing),))
+    source = daemon_cli._watch_sources_from_roots((missing,))[0]
+    assert source.required
+    baseline = capture_production_source_baseline((source,), operation_id="missing")
+    assert any(row.path == str(missing) and row.disposition == "fault" for row in baseline.decisions)
 
 
 def test_default_sources_watch_the_legacy_data_home_inbox(workspace_env: dict[str, Path]) -> None:

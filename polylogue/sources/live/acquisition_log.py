@@ -19,7 +19,7 @@ Two log events:
 
 Both are wired into real production call sites (see
 ``polylogue/sources/source_acquisition_components.py:read_plain_source_file``
-and ``polylogue/operations/intake_adapters.py:_bounded_source_paths``),
+and ``polylogue/sources/live/discovery.py:_bounded_source_paths``),
 not only exercised from tests.
 """
 
