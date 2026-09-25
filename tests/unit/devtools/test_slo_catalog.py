@@ -502,25 +502,21 @@ surfaces:
 # ---------------------------------------------------------------------------
 
 
-def test_catalog_required_surfaces_are_cheap_local_tier() -> None:
-    """All ``gate: required`` rows must live in the cheap-local tier.
-
-    Promoting a row to ``required`` while leaving it in the ``lab`` tier would
-    create a gate that ``devtools verify`` (default loop) cannot reach but that
-    still blocks PRs once anyone runs the lab loop. Required-but-lab is a
-    contradiction the catalog must forbid by convention.
-    """
+def test_required_catalog_surfaces_are_reachable_in_an_explicit_tier_run() -> None:
+    """Required lab measurements stay gated, but remain explicitly runnable."""
     surfaces = verify_slos._parse_slo_catalog(CATALOG_PATH.read_text())
-    offenders: list[str] = []
-    for name, config in surfaces.items():
-        gate = config.get("gate", "required")
-        tier = config.get("tier", verify_slos.DEFAULT_TIER)
-        if gate == "required" and tier != "cheap-local":
-            offenders.append(f"{name} (tier={tier!r})")
-    assert not offenders, (
-        "required SLO rows must be in the cheap-local tier so the default "
-        f"verify loop can run them; offenders: {offenders}"
-    )
+    required = {name: config for name, config in surfaces.items() if config.get("gate", "required") == "required"}
+
+    default_tiers, error = verify_slos._resolve_active_tiers(tier=None, include_lab=False, all_tiers=False)
+    assert error is None
+    assert default_tiers == frozenset({"cheap-local"})
+
+    explicit_tiers, error = verify_slos._resolve_active_tiers(tier=None, include_lab=True, all_tiers=False)
+    assert error is None
+    unreachable = [
+        name for name, config in required.items() if config.get("tier", verify_slos.DEFAULT_TIER) not in explicit_tiers
+    ]
+    assert not unreachable, f"required SLO surfaces must be reachable through the explicit lab run: {unreachable}"
 
 
 def test_lab_tier_surface_skipped_by_default(
