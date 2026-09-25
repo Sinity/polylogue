@@ -1602,6 +1602,40 @@ def test_index_usage_and_attachment_vocabularies_generate_checks_from_their_owne
         conn.close()
 
 
+def test_message_identity_source_check_uses_core_identity_vocabulary(tmp_path: Path) -> None:
+    """The identity-source CHECK follows the semantic identity type."""
+    from typing import get_args
+
+    from polylogue.core.types import MessageIdentitySource
+
+    conn = _connect(tmp_path / "message-identity-source.db")
+    try:
+        _apply_tier(conn, ArchiveTier.INDEX)
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('identity-source', 'codex-session', ?)",
+            (_HASH,),
+        )
+        for index, identity_source in enumerate(get_args(MessageIdentitySource)):
+            native_id = "native-message" if identity_source == "native" else None
+            content_identity = None if native_id is not None else "content-digest"
+            conn.execute(
+                "INSERT INTO messages "
+                "(session_id, native_id, position, role, message_type, content_hash, content_identity, identity_source) "
+                "VALUES ('codex-session:identity-source', ?, ?, 'user', 'message', ?, ?, ?)",
+                (native_id, index, _HASH, content_identity, identity_source),
+            )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO messages "
+                "(session_id, native_id, position, role, message_type, content_hash, content_identity, identity_source) "
+                "VALUES ('codex-session:identity-source', 'bad-source', 2, 'user', 'message', ?, NULL, 'provider')",
+                (_HASH,),
+            )
+    finally:
+        conn.close()
+
+
 def test_revision_frontier_vocabulary_uses_one_literal_owner(tmp_path: Path) -> None:
     """Both revision tables derive the same closed vocabulary from one owner."""
     from typing import get_args
