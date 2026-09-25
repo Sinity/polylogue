@@ -2897,7 +2897,12 @@ components:
       type: object
     QueryUnitEnvelope:
       additionalProperties: false
-      description: Shared envelope for explicit terminal unit-source query results.
+      description: 'Shared envelope for explicit terminal unit-source query results.
+
+
+        ``items`` contains full typed rows by default. A message ``select`` route
+
+        leaves it empty and returns only requested fields in ``projected_items``.'
       properties:
         mode:
           const: query-unit
