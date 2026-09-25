@@ -1081,7 +1081,7 @@ class TestBoundedArchiveQueryExecutor:
         def counted_shutdown(**kwargs: object) -> None:
             nonlocal calls
             calls += 1
-            shutdown(**kwargs)  # type: ignore[arg-type]
+            shutdown(**kwargs)
 
         with patch.object(server.execution_kernel, "shutdown", side_effect=counted_shutdown):
             server.server_close()

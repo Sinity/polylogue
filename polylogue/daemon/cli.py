@@ -36,11 +36,8 @@ from polylogue.core.stage_admission import (
     admit_stage_write,
     stage_write_admission,
 )
-from polylogue.daemon.api_auth import (
-    API_ALLOW_NO_AUTH_ENV,
-    api_command,
-    resolve_api_auth_token,
-)
+from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV, api_command
+from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
 from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
 from polylogue.daemon.execution import publish_daemon_compute_adapter
