@@ -52,7 +52,7 @@ ATTACHED_UNIT_TRUNCATED_GAP = "attached_unit_truncated"
 
 
 class AttachedUnitPageTooWideError(ValueError):
-    """The page holds more sessions than the page ceiling can give a row each.
+    """The page holds more sessions than the ceiling can probe and serve.
 
     A refusal rather than a smaller number, under the 2026-09-21 ruling: an
     allowance of zero is not a bound on the answer, it is the absence of one,
@@ -65,7 +65,8 @@ class AttachedUnitPageTooWideError(ValueError):
     def __init__(self, session_count: int) -> None:
         super().__init__(
             f"{session_count} sessions on one page leave no rows per session "
-            f"within the declared page ceiling of {_MAX_ROWS_PER_PAGE}"
+            f"after reserving one truncation probe within the declared page "
+            f"ceiling of {_MAX_ROWS_PER_PAGE}"
         )
         self.session_count = session_count
 
@@ -80,7 +81,10 @@ def _per_session_allowance(session_count: int) -> int:
     declared ceilings still hold; only their distribution changed.
     """
 
-    allowance = min(_MAX_ROWS_PER_SESSION, _MAX_ROWS_PER_PAGE // session_count)
+    # One additional row per session is fetched to prove whether the bound
+    # truncated that session. Reserve those probes inside the declared page
+    # ceiling instead of allowing ``count * (allowance + 1)`` to exceed it.
+    allowance = min(_MAX_ROWS_PER_SESSION, _MAX_ROWS_PER_PAGE // session_count - 1)
     if allowance < 1:
         raise AttachedUnitPageTooWideError(session_count)
     return allowance

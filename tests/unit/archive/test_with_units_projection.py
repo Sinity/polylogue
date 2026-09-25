@@ -630,19 +630,17 @@ class TestPageBudgetIsSharedEqually:
 
 
 class TestPageWiderThanTheBudgetIsRefused:
-    """An allowance of zero is refused, not served as an empty answer.
+    """A page must leave room for each session's truncation probe.
 
     Under the 2026-09-21 ruling a computed answer is bounded by a typed
-    refusal or not at all. A page holding more sessions than the ceiling can
-    give a row each has no allowance to distribute, and returning nothing for
-    every session would be exactly the silent truncation this module exists
-    to stop reporting as complete.
+    refusal or not at all. Each session needs one result row and one probe row
+    inside the ceiling, otherwise truncation could be hidden or the SQL fetch
+    would exceed its declared page budget.
     """
 
     def test_a_page_with_no_row_per_session_raises(self) -> None:
-        """Anti-vacuity: return ``max(1, ...)`` instead of raising and the call
-        succeeds while serving one row per session for a page that asked for
-        thousands -- a bound presented as an answer."""
+        """Anti-vacuity: allow one result but no probe, and this stops raising
+        even though it cannot prove whether every session was truncated."""
         from polylogue.archive.query.attached_units import (
             _MAX_ROWS_PER_PAGE,
             AttachedUnitPageTooWideError,
@@ -650,16 +648,29 @@ class TestPageWiderThanTheBudgetIsRefused:
         )
 
         with pytest.raises(AttachedUnitPageTooWideError) as refusal:
-            _per_session_allowance(_MAX_ROWS_PER_PAGE + 1)
-        assert refusal.value.session_count == _MAX_ROWS_PER_PAGE + 1
+            _per_session_allowance(_MAX_ROWS_PER_PAGE // 2 + 1)
+        assert refusal.value.session_count == _MAX_ROWS_PER_PAGE // 2 + 1
         assert refusal.value.code == "attached_unit_page_exceeds_row_budget"
 
-    def test_the_widest_servable_page_is_not_refused(self) -> None:
-        """Pins the opposite direction so "refuse everything" fails.
+    def test_probe_rows_fit_inside_the_page_ceiling(self) -> None:
+        """A maximum-size request accounts for both rows and probes.
 
-        Anti-vacuity: raise on ``allowance <= 1`` instead of ``< 1`` and the
-        widest page that can still serve a row each is wrongly refused.
+        Anti-vacuity: remove the reserved probe from the allowance arithmetic
+        and the computed fetch exceeds the declared page ceiling.
         """
+        from polylogue.archive.query.attached_units import (
+            _MAX_ROWS_PER_PAGE,
+            _per_session_allowance,
+        )
+
+        session_count = 1000
+        allowance = _per_session_allowance(session_count)
+        assert session_count * (allowance + 1) <= _MAX_ROWS_PER_PAGE
+        assert allowance == 4
+
+    def test_widest_servable_page_gets_one_row_and_one_probe(self) -> None:
         from polylogue.archive.query.attached_units import _MAX_ROWS_PER_PAGE, _per_session_allowance
 
-        assert _per_session_allowance(_MAX_ROWS_PER_PAGE) == 1
+        session_count = _MAX_ROWS_PER_PAGE // 2
+        assert _per_session_allowance(session_count) == 1
+        assert session_count * (_per_session_allowance(session_count) + 1) == _MAX_ROWS_PER_PAGE

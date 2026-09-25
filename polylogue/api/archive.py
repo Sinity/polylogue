@@ -435,13 +435,14 @@ def _read_session_transcript_page(
     they differ only in which storage read composes the rows.
     """
 
+    normalized_offset = max(int(offset), 0)
     try:
         resolved_id = archive.resolve_session_id(session_id)
     except KeyError:
         return None
     summary = archive.read_summary(resolved_id)
     envelope = (
-        archive.read_session_page(resolved_id, limit=limit, offset=offset)
+        archive.read_session_page(resolved_id, limit=limit, offset=normalized_offset)
         if limit is not None
         else archive.read_session(resolved_id)
     )
@@ -459,7 +460,7 @@ def _read_session_transcript_page(
         ),
         word_count=summary.word_count,
         limit=limit,
-        offset=offset,
+        offset=normalized_offset,
     )
 
 
@@ -3078,20 +3079,21 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         the rows it serves.
         """
 
+        normalized_offset = max(int(offset), 0)
         return await run_archive_read(
             _active_archive_root(self.config),
             operation="archive.session.page",
             arguments={
                 "session_id": session_id,
                 "limit": limit,
-                "offset": offset,
+                "offset": normalized_offset,
                 "content_projection": content_projection,
             },
             work=lambda archive: _read_session_transcript_page(
                 archive,
                 session_id,
                 limit=limit,
-                offset=offset,
+                offset=normalized_offset,
                 content_projection=content_projection,
             ),
             page_size=limit,

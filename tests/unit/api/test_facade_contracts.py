@@ -392,6 +392,42 @@ async def test_archive_read_capability_is_the_real_facade_route(tmp_path: Path) 
         await archive.close()
 
 
+async def test_get_session_page_reports_the_normalized_offset(tmp_path: Path) -> None:
+    """The returned page offset matches the storage window for negative input."""
+    archive = _archive(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="normalized-page-offset",
+        messages=[
+            ParsedMessage(
+                provider_message_id="first",
+                role=Role.USER,
+                text="first message",
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first message")],
+            ),
+            ParsedMessage(
+                provider_message_id="second",
+                role=Role.ASSISTANT,
+                text="second message",
+                position=1,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second message")],
+            ),
+        ],
+    )
+    try:
+        with ArchiveStore.open_existing(tmp_path) as store:
+            session_id = write_index_session(store, session)
+
+        page = await archive.get_session_page(session_id, limit=1, offset=-4)
+
+        assert page is not None
+        assert page.offset == 0
+        assert [message.text for message in page.session.messages] == ["first message"]
+    finally:
+        await archive.close()
+
+
 def _materialize_run_projection(index_db: Path) -> SessionInsightCounts:
     """Run the session-insight materializer for richer digest-derived projections.
 
