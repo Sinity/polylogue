@@ -721,6 +721,10 @@ class RevisionBackfillResult:
     #: the stage ledger.  It is diagnostic metadata, not parsed-content
     #: identity, for the same equality reason as ``stage_timings_s``.
     whale_envelope: dict[str, int] = field(default_factory=dict, compare=False)
+    #: Enrichment fallbacks are counts, not elapsed time. Keep them outside
+    #: ``stage_timings_s`` so consumers can safely compare that ledger with
+    #: route duration.
+    stage_counts: dict[str, int] = field(default_factory=dict, compare=False)
 
 
 #: Stage-timing keys that are decode work (read-only blob->ParsedSession
@@ -2644,6 +2648,10 @@ def backfill_historical_revision_evidence(
     retaining every other fresh-build optimization. ``True`` is rejected by
     policy unless the generation is empty and exclusively owned.
     """
+    # The legacy diagnostic counter is process-local, so start every
+    # backfill with an empty snapshot. Its values are returned separately
+    # below and never mixed into the duration ledger.
+    reset_replay_enrichment_degradations()
     if use_session_shards and owned_inactive_generation is None:
         raise ValueError("sealed replay shards require an owned inactive generation")
     if use_session_shards and (replay_commit_batch_size or commit_batch_size or 0) > 1:
@@ -2653,6 +2661,7 @@ def backfill_historical_revision_evidence(
     quarantined = 0
     shard_lowering_degraded = 0
     stage_timings: dict[str, float] = {}
+    stage_counts: dict[str, int] = {}
     whale_envelope: dict[str, int] = {}
     logical_keys: set[str] = set()
     # A full replay into an inactive candidate is the production cold-build boundary.  The
@@ -3213,6 +3222,13 @@ def backfill_historical_revision_evidence(
         finally:
             if decode_prefetcher is not None:
                 stage_timings.update(decode_prefetcher.close())
+                stage_counts.update(decode_prefetcher.counts())
+        stage_counts.update(
+            {
+                f"replay_enrichment_degraded.{reason}": count
+                for reason, count in replay_enrichment_degradations().items()
+            }
+        )
         if replay_batched:
             archive.commit()
         if fresh_build:
@@ -3259,6 +3275,7 @@ def backfill_historical_revision_evidence(
         shard_lowering_degraded,
         stage_timings_s=stage_timings,
         whale_envelope=whale_envelope,
+        stage_counts=stage_counts,
     )
 
 
@@ -4467,14 +4484,19 @@ class _ReplaySpillPrefetcher:
             self._thread.join()
             self._thread = None
         stats: dict[str, float] = {}
-        if self.hits or self.reparse_hits or self.decode_seconds:
-            stats["spill_prefetch.hits"] = float(self.hits)
-            stats["spill_prefetch.reparse_hits"] = float(self.reparse_hits)
-            stats["spill_prefetch.consumed"] = float(self.consumed)
+        if self.decode_seconds:
             stats["spill_prefetch.decode_concurrent"] = self.decode_seconds
-        for reason, count in replay_enrichment_degradations().items():
-            stats[f"replay_enrichment_degraded.{reason}"] = float(count)
         return stats
+
+    def counts(self) -> dict[str, int]:
+        """Return discrete prefetch work counts separately from durations."""
+        if not (self.hits or self.reparse_hits or self.consumed):
+            return {}
+        return {
+            "spill_prefetch.hits": self.hits,
+            "spill_prefetch.reparse_hits": self.reparse_hits,
+            "spill_prefetch.consumed": self.consumed,
+        }
 
     def _drop_buffer_locked(self) -> None:
         self._buffer.clear()
