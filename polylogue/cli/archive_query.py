@@ -176,6 +176,18 @@ def _is_daemon_unavailable(exc: Exception) -> bool:
     return isinstance(exc, OperationUnavailableError)
 
 
+def _is_session_not_found(exc: Exception) -> bool:
+    """Whether the daemon completed a read and rejected its session identity.
+
+    The text of a daemon-unavailable refusal can legitimately mention a missing
+    socket or endpoint.  Only a completed operation failure may establish that
+    the requested session is absent.
+    """
+    from polylogue.cli.operation_kernel import OperationFailedError
+
+    return isinstance(exc, OperationFailedError) and _read_failure_detail(exc).lower().startswith("session not found")
+
+
 def _read_failure_as_usage_error(exc: Exception) -> NoReturn:
     """Re-raise a declared read's typed refusal as the CLI's own refusal.
 
@@ -551,7 +563,7 @@ def _transcript_or_page(
     through to ordinary page execution — but an *ambiguous* reference is a real
     identity failure and must not broaden into a text search.
     """
-    from polylogue.cli.operation_kernel import OperationFailedError, OperationKernelError
+    from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
         return _read_session_windows(config, ref, daemon_disabled=daemon_disabled, message_limit=message_limit)
@@ -564,10 +576,10 @@ def _transcript_or_page(
         # second read.
         detail = _read_failure_detail(exc)
         if certain:
-            if "not found" in detail:
+            if _is_session_not_found(exc):
                 _fail(f"Session not found: {ref}")
             _read_failure_as_usage_error(exc)
-        if isinstance(exc, OperationFailedError) and exc.code.lower().startswith("session not found"):
+        if _is_session_not_found(exc):
             return None
         if "ambiguous" in detail:
             raise click.UsageError(detail) from exc
@@ -1830,7 +1842,17 @@ def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_form
 
 
 def _message_query_line(item: dict[str, object]) -> str:
-    return f"{item['message_id']} [{item['role']}] {bound_display_text(item.get('text'))}"
+    parts: list[str] = []
+    message_id = item.get("message_id")
+    if message_id is not None:
+        parts.append(str(message_id))
+    role = item.get("role")
+    if role is not None:
+        parts.append(f"[{role}]")
+    text = bound_display_text(item.get("text"))
+    if text:
+        parts.append(text)
+    return " ".join(parts)
 
 
 def _action_query_line(item: dict[str, object]) -> str:

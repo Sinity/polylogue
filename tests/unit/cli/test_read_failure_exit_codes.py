@@ -202,6 +202,32 @@ def test_ref_shaped_query_does_not_invent_a_direct_route_when_the_daemon_is_abse
     assert dispatch.call_count == 1, result.output
 
 
+def test_exact_ref_daemon_unavailable_is_not_reported_as_a_missing_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exact query preserves a daemon-unavailable typed error.
+
+    The exact-ref transcript adapter used to classify every detail containing
+    ``not found`` as a missing session.  Transport absence therefore became a
+    false identity claim even though ``session.read`` has no local fallback.
+    Anti-vacuity: restore that broad string check and this route prints
+    ``Session not found`` instead of the daemon remedy.
+    """
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    unavailable = OperationUnavailableError("session not found while contacting the daemon", operation="session.read")
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=unavailable) as dispatch:
+        result = CliRunner().invoke(cli, ["find", "id:exact-session"])
+
+    assert result.exit_code == FAILED_READ_EXIT_CODE, result.output
+    assert "Session not found" not in result.output
+    assert "session not found while contacting the daemon" in result.output
+    assert "polylogued run" in result.output
+    assert dispatch.call_count == 1, result.output
+
+
 def test_a_machine_caller_still_gets_a_parseable_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

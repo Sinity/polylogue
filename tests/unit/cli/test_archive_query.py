@@ -127,6 +127,43 @@ def test_message_select_renders_projected_items_from_the_unit_envelope(
         assert "codex-session:projected:n:u1 [user]" in rendered
 
 
+def test_message_select_plaintext_renders_a_role_only_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Plaintext formats only the fields the message ``select`` actually returned.
+
+    Anti-vacuity: make ``_message_query_line`` index ``message_id`` again and
+    the real root query-unit handler raises ``KeyError`` before writing this
+    role-only projection.
+    """
+    import polylogue.cli.archive_query as archive_query
+
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
+    payload: dict[str, object] = {
+        "mode": "query-unit",
+        "unit": "message",
+        "items": [],
+        "projected_items": [{"role": "user"}],
+        "outcome": {"state": "ok", "reason": None, "detail": {}},
+    }
+    monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
+    monkeypatch.setattr(archive_query, "daemon_route_disabled", lambda *, flag=False: False)
+    monkeypatch.setattr(archive_query, "dispatch_read", lambda *_args, **_kwargs: (payload, None))
+
+    _execute_archive_query_stdout(
+        AppEnv(),
+        RootModeRequest.from_params(
+            {
+                "query": ("messages where role:user | select role",),
+                "output_format": "plaintext",
+                "limit": 1,
+            }
+        ),
+    )
+
+    assert capsys.readouterr().out == "[user]\n"
+
+
 def test_session_list_row_renders_read_time_display_label() -> None:
     """A summary with no stored title still names its computed display label.
 
