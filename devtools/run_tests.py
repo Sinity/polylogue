@@ -408,6 +408,7 @@ def _run(
     started = time.monotonic()
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
+        env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
         outcome = executor(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
@@ -421,6 +422,14 @@ def _run(
             },
         )
     returncode = outcome.returncode
+    if outcome.slot.startswith("agentctl job") and (
+        not isinstance(outcome.receipt, dict) or not isinstance(outcome.receipt.get("worktree_provenance"), dict)
+    ):
+        return (
+            125,
+            time.monotonic() - started,
+            {"diagnosis": "worktree_provenance_unavailable", "pytest_slot": outcome.slot},
+        )
     # Exit 1 is "tests failed", the only outcome a rerun can speak to. Exit 2
     # (interrupted), 3 (internal error), 4 (usage) and the signal codes
     # describe the run itself. This is the same adjudication `devtools verify`
@@ -454,6 +463,11 @@ def _run(
             # and a glob over them reaches an arbitrary one.
             **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
             **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
+            **(
+                {"worktree_provenance": outcome.receipt["worktree_provenance"]}
+                if isinstance(outcome.receipt, dict) and isinstance(outcome.receipt.get("worktree_provenance"), dict)
+                else {}
+            ),
         },
     )
 
@@ -630,6 +644,9 @@ def main(argv: list[str] | None = None) -> int:
     if step is not None:
         rc = int(step["exit"])
         metadata = step
+    provenance = metadata.get("worktree_provenance")
+    if isinstance(provenance, dict):
+        run.record_execution_worktree(provenance)
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )
