@@ -1940,7 +1940,7 @@ def rebuild_session_insights_sync(
         # the exact captured revision inside the same index transaction as
         # both retained profile relations or an absent session's retirement;
         # a later writer's revision survives.
-        completed_ids = {bundle.profile_record.session_id for bundle in record_bundles}
+        completed_ids: set[str] = {bundle.profile_record.session_id for bundle in record_bundles}
         completed_ids.update(retired_ids)
         for demanded_session_id, expected_revision in demand_revisions.items():
             if expected_revision > 0 and demanded_session_id in completed_ids:
