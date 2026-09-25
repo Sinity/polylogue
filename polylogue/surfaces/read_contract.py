@@ -62,6 +62,20 @@ class ReadPreset:
             body_offset=_optional_int(params.get("body_offset")),
             neighbor_limit=_optional_int(params.get("neighbor_limit")),
             neighbor_window_hours=_optional_int(params.get("neighbor_window_hours")),
+            context_related_limit=_optional_int(params.get("context_related_limit")),
+            context_max_sessions=_optional_int(params.get("context_max_sessions")),
+            correlation_repo_path=(
+                str(params["correlation_repo_path"]) if params.get("correlation_repo_path") is not None else None
+            ),
+            correlation_since_hours=_optional_int(params.get("correlation_since_hours")),
+            correlation_confidence_threshold=(
+                float(str(params["correlation_confidence_threshold"]))
+                if params.get("correlation_confidence_threshold") is not None
+                else None
+            ),
+            correlation_github_api=(
+                bool(params["correlation_github_api"]) if params.get("correlation_github_api") is not None else None
+            ),
             redact_paths=bool(params.get("redact_paths", True)),
             include_assertions=bool(params.get("include_assertions", False)),
         )
