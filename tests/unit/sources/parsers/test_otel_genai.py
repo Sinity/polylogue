@@ -210,6 +210,43 @@ def test_supported_schema_wins_conflicting_unsupported_copy() -> None:
     assert conflicts[0].payload["schema_url"] == "https://example.invalid/genai/99.0.0"
 
 
+def test_canonical_span_precedes_schema_url_for_equal_rank_and_start() -> None:
+    payload = _payload()
+    canonical_span = copy.deepcopy(_spans(payload)[1])
+    canonical_span["traceId"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    canonical_span["spanId"] = "bbbbbbbbbbbbbbbb"
+    conversation = next(attr for attr in canonical_span["attributes"] if attr["key"] == "gen_ai.conversation.id")
+    conversation["value"] = {"stringValue": "a-canonical"}
+    schema_first_span = copy.deepcopy(canonical_span)
+    schema_conversation = next(
+        attr for attr in schema_first_span["attributes"] if attr["key"] == "gen_ai.conversation.id"
+    )
+    schema_conversation["value"] = {"stringValue": "z-schema"}
+    scope_z = {"schemaUrl": "https://example.invalid/z", "spans": [canonical_span]}
+    scope_a = {"schemaUrl": "https://example.invalid/a", "spans": [schema_first_span]}
+    payload["resourceSpans"][0]["scopeSpans"].extend((scope_a, scope_z))
+
+    forward = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+    payload["resourceSpans"][0]["scopeSpans"].reverse()
+    reversed_result = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+
+    assert [session.model_dump(mode="json") for session in forward] == [
+        session.model_dump(mode="json") for session in reversed_result
+    ]
+    assert {session.provider_session_id for session in forward} == {
+        "synthetic-agent:conversation:a-canonical",
+        "synthetic-agent:conversation:conversation-demo-7",
+    }
+    selected = next(session for session in forward if session.provider_session_id.endswith(":a-canonical"))
+    assert selected.messages == []
+    assert [event.event_type for event in selected.session_events] == [
+        "otel_span_evidence",
+        "otel_conflicting_span_id",
+    ]
+    assert selected.session_events[0].payload["schema_url"] == "https://example.invalid/z"
+    assert selected.session_events[1].payload["schema_url"] == "https://example.invalid/a"
+
+
 def test_evidence_only_genai_span_remains_an_admitted_session() -> None:
     payload = _payload()
     chat = _spans(payload)[1]

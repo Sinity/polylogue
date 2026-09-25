@@ -184,8 +184,8 @@ def _span_variant_key(item: tuple[dict[str, object], str | None]) -> tuple[int, 
     return (
         schema_rank,
         _span_key(span)[0],
-        schema_url or "",
         json.dumps(span, sort_keys=True, separators=(",", ":")),
+        schema_url or "",
     )
 
 
@@ -318,11 +318,11 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         ordered = sorted(copies, key=_span_variant_key)
         selected = ordered[0]
         spans.append((coordinate[0], *selected))
-        selected_identity = (selected[1], _span_variant_key(selected)[3])
+        selected_identity = (selected[1], _span_variant_key(selected)[2])
         seen = {selected_identity}
         alternatives = []
         for item in ordered[1:]:
-            identity = (item[1], _span_variant_key(item)[3])
+            identity = (item[1], _span_variant_key(item)[2])
             if identity not in seen:
                 alternatives.append(item)
                 seen.add(identity)

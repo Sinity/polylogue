@@ -141,7 +141,7 @@ invented as zero.
 
 Within a resource, trace ID plus span ID identifies one span. Repeated exact
 copies normalize once. If copies conflict, the pinned schema wins, followed by
-an earlier start time, the schema URL, and canonical span JSON bytes. Other distinct copies remain
+an earlier start time and canonical span JSON bytes. Schema URL resolves an otherwise identical span tie. Other distinct copies remain
 in `otel_conflicting_span_id` evidence events. The selected copy determines
 conversation grouping, so export order cannot change the session identity.
 Spans with no messages still produce an evidence session.
