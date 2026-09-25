@@ -122,7 +122,16 @@ surfaces:
   daemon_warm_status:
     description: >-
       Installed warm CLI status including operation startup and local
-      rendering. CURRENT COMMON-HEAD REPRODUCTION: 2026-09-25 at
+      rendering. CURRENT WORKER-HEAD REPRODUCTION: 2026-09-25 at
+      fcf3fcae08ca8d42ed45fccae820c4bf9e235d9f, managed Python 3.14.4
+      workstation run, 5 rounds, p50 2386.2 ms (mean 2369.5, stddev 131.1;
+      estimated p95 2585.2 ms). Focused receipt
+      20260925T043821Z-focused-test-3382898-e7572d2d passed; the checkout
+      import was confirmed and the lane returned a nonempty JSON response.
+      This reproduces the over-budget result and keeps the 400/800 ms target;
+      no recalibration. The prior common-head measurement below remains
+      evidence for the separate phase-attribution run.
+      CURRENT COMMON-HEAD REPRODUCTION: 2026-09-25 at
       0fb01e982c236c1ad3ad06c046f02d3d019c8258, managed Python 3.14.4
       workstation run, 5 rounds, p50 2266.1 ms (mean 2259.4, stddev 74.3;
       estimated p95 2381.6 ms). The focused receipt is
@@ -191,6 +200,19 @@ surfaces:
   daemon_concurrent_reads:
     description: >-
       Mixed interactive reads while representative background work progresses.
+      CURRENT WORKER-HEAD RE-TEST: 2026-09-25 at
+      fcf3fcae08ca8d42ed45fccae820c4bf9e235d9f, managed Python 3.14.4,
+      5 rounds, p50 125.9 ms (mean 139.8, stddev 35.2; estimated p95
+      197.6 ms). Focused receipt
+      20260925T043633Z-focused-test-3376922-d4ba4282 passed. The worker
+      requests distinct limit/offset pairs; the controlled archive-path
+      injection and cache-hit control remain covered by the passing
+      20260925T003346Z-focused-test-2452791-04e859c2 receipt below.
+      Worker-head AC2 checks also passed at this revision: the archive-path
+      latency injection plus cache-hit control in receipt
+      20260925T044302Z-focused-test-3394086-b1e67291, and the unique
+      mixed-load request series across rounds in receipt
+      20260925T044340Z-focused-test-3396273-0b1aa3c3.
       GRADUATED 2026-09-22 (polylogue-dpm6o AC3, polylogue-gd9i1 AC2) on a
       5-round distribution AND a proven-valid series. MEASURED at 9ef655cb8,
       2 runs on a loaded host: p50 113.1 / 116.6 ms, p95 120.7 / 126.1 ms --
@@ -214,6 +236,19 @@ surfaces:
       scheduler. Gates the interactive side; the profile additionally asserts
       nonzero background throughput, a bounded background admission wait, and
       that the write load did not grow the state the measured read joins.
+      CURRENT WORKER-HEAD REPRODUCTION: 2026-09-25 at
+      fcf3fcae08ca8d42ed45fccae820c4bf9e235d9f, managed Python 3.14.4
+      workstation run, 5 rounds, p50 1477.3 ms (mean 1489.3, stddev 39.6;
+      estimated p95 1554.4 ms). Focused receipt
+      20260925T043736Z-focused-test-3380360-dc19d8d1 passed with nonempty
+      reads, writes, and background progress. This run measures latency but
+      its devtools receipt did not retain the phase payload. Keep the product
+      target at 250/500 ms as a real performance defect; retain the separate
+      4000/6000 ms informational ceiling as a shared-host noise ceiling.
+      A follow-up structured capture at receipt
+      20260925T044006Z-focused-test-3388060-1144ab53 was flaky (initial exit
+      1, then one green retry) and its benchmark JSON had empty extra_info;
+      it is invalid for phase attribution and is not scored.
       The previous ruling said a recalibration was owed but could not be taken
       because the lane could not declare a p95. Both reasons are now fixed
       (polylogue-bp12n.4 AC4), and the recalibration is taken -- but not in the
