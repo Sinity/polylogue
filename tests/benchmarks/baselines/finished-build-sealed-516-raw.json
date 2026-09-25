@@ -6,14 +6,15 @@
     "machine": "x86_64",
     "python_implementation": "CPython",
     "python_version": "3.14.4",
-    "system": "Linux"
+    "system": "Linux",
+    "thread_inherit_context": true
   },
   "measurement": {
     "receipt": {
-      "archive_bytes": 214466560,
+      "archive_bytes": 214568960,
       "arm": "deferred-index-fresh-shard",
-      "candidate_identity": "index-generation:gen-1789951706179-bc8fd37c",
-      "canonical_logical_digest": "f5e184806826b5790bb4af76d708376f642b73e9ac6d27bcee06a689d5330060",
+      "candidate_identity": "index-generation:gen-1790325640654-afa26ec0",
+      "canonical_logical_digest": "0b407212adf4d21216879a4cd5b7d6ade0f9da5fc737eca28c5dc1d5ad13a11d",
       "deferred_raw_count": 0,
       "deferred_secondary_indexes": true,
       "derived_table_census": [
@@ -26,7 +27,9 @@
         "delegation_refresh_scope",
         "derived_refresh_guard",
         "file_edits",
+        "ingest_marker_witnesses",
         "messages",
+        "messages_fts_readiness_binding",
         "paste_spans",
         "raw_revision_heads",
         "repo_checkouts",
@@ -38,14 +41,13 @@
         "session_latency_profiles",
         "session_links",
         "session_model_usage",
-        "session_phases",
         "session_profiles",
         "session_provider_usage_events",
         "session_refs",
         "session_repos",
+        "session_summary_bindings",
         "session_tags",
         "session_usage_rollup_bindings",
-        "session_work_events",
         "session_working_dirs",
         "sessions",
         "web_content_constructs",
@@ -61,9 +63,9 @@
       "input_digest": "b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed",
       "metrics": {
         "append_file_count": 0,
-        "archive_bytes_after": 214466560,
+        "archive_bytes_after": 214568960,
         "archive_bytes_before": 0,
-        "archive_write_bytes_delta": 214466560,
+        "archive_write_bytes_delta": 214568960,
         "cgroup_memory_current_mb": null,
         "cgroup_memory_peak_mb": null,
         "cgroup_memory_swap_current_mb": null,
@@ -71,7 +73,7 @@
         "changed_session_count": 516,
         "changed_session_ids": [],
         "changed_session_ids_omitted": 0,
-        "convergence_time_s": 31.602297927543987,
+        "convergence_time_s": 13.526065585698234,
         "cursor_fingerprint_read_bytes": 0,
         "deferred_file_count": 0,
         "excluded_file_count": 0,
@@ -79,18 +81,18 @@
         "failed_bytes": 0,
         "failed_file_count": 0,
         "failed_paths": [],
-        "files_per_second": 11.059042,
+        "files_per_second": 24.136638,
         "full_file_count": 516,
         "ingest_worker_count_max": 4,
         "ingested_bytes": 210554832,
-        "ingested_mb_per_second": 4.512664,
+        "ingested_mb_per_second": 9.849003,
         "ingested_message_count": 0,
         "ingested_session_count": 516,
         "input_bytes": 210554832,
         "needed_file_count": 516,
         "new_sessions": [],
         "new_sessions_omitted": 0,
-        "parse_time_s": 13.25158957747044,
+        "parse_time_s": 6.18648337230843,
         "queued_file_count": 516,
         "raw_compaction_runs": 0,
         "read_amplification": 1.0,
@@ -98,56 +100,57 @@
         "refused_bytes_by_reason": {},
         "rss_current_mb": null,
         "rss_peak_children_mb": null,
-        "rss_peak_self_mb": 1822.62890625,
+        "rss_peak_self_mb": 1842.203125,
         "skipped_file_count": 0,
         "source_group_count": 516,
-        "source_mb_per_second": 4.512664,
+        "source_mb_per_second": 9.849003,
         "source_payload_read_bytes": 210554832,
         "stage_timings_s": {
-          "census": 6.580680435989052,
-          "census_receipt": 0.004516885994235054,
-          "replay.adoptable_check": 0.01825217710575089,
-          "replay.classify_cohort": 0.8087758687906899,
-          "revision_replay.index.attachments": 0.4833038922806736,
-          "revision_replay.index.delegation_facts": 0.0003568546671885997,
-          "revision_replay.index.full_replace": 2.2042643578606658,
-          "revision_replay.index.full_replace.action_pairs": 0.00037951706326566637,
-          "revision_replay.index.full_replace.field_path_union": 0.00099238968687132,
-          "revision_replay.index.full_replace.file_edits": 0.01353210920933634,
-          "revision_replay.index.full_replace.fts_probe": 0.00039114055107347667,
-          "revision_replay.index.full_replace.shard_copy": 1.7128752019780222,
-          "revision_replay.index.full_replace.web_constructs": 0.02754176771850325,
-          "revision_replay.index.graph_resolve": 0.11899694969179109,
-          "revision_replay.index.graph_resolve.inbound_dispatch_blocks": 0.0075615536770783365,
-          "revision_replay.index.graph_resolve.inbound_lookup": 0.023368122143438086,
-          "revision_replay.index.graph_resolve.outbound_links": 0.044081927044317126,
-          "revision_replay.index.graph_resolve.root_current_check": 0.0076121297897771,
-          "revision_replay.index.graph_resolve.root_init": 0.03292938100639731,
-          "revision_replay.index.ingest_flags": 0.009271103626815602,
-          "revision_replay.index.model_usage_seed": 0.020811143302125856,
-          "revision_replay.index.parent_links": 0.0033597342553548515,
-          "revision_replay.index.paste_spans": 0.0018345999415032566,
-          "revision_replay.index.prepare": 1.7293196509126574,
-          "revision_replay.index.provider_usage_rollup": 0.017820006207330152,
-          "revision_replay.index.repo_edges": 0.0035227596818003803,
-          "revision_replay.index.session_counts": 0.07638905080966651,
-          "revision_replay.index.session_events": 0.03153211445896886,
-          "revision_replay.index.session_link": 0.055208280798979104,
-          "revision_replay.index.session_refs": 0.0035660019202623516,
-          "revision_replay.index.session_upsert": 0.20371764717856422,
-          "revision_replay.index.working_dirs": 0.0013195468054618686,
-          "revision_replay.index_parsed_write": 5.202601824566955,
-          "spill_load": 6.670909141481388,
-          "spill_prefetch.consumed": 0.0,
-          "spill_prefetch.decode_concurrent": 30.041250056005083,
+          "census": 6.0024881010031095,
+          "census_receipt": 0.004329411007347517,
+          "replay.adoptable_check": 0.013170111837098375,
+          "replay.classify_cohort": 0.22758923303626943,
+          "revision_replay.index.attachments": 0.38838300709903706,
+          "revision_replay.index.delegation_facts": 0.0003007750492542982,
+          "revision_replay.index.full_replace": 1.9702291889116168,
+          "revision_replay.index.full_replace.action_pairs": 0.00034316795063205063,
+          "revision_replay.index.full_replace.field_path_union": 0.0008824249525787309,
+          "revision_replay.index.full_replace.file_edits": 0.008898725034669042,
+          "revision_replay.index.full_replace.fts_probe": 0.000323542975820601,
+          "revision_replay.index.full_replace.shard_copy": 1.551186368931667,
+          "revision_replay.index.full_replace.web_constructs": 0.017685964034171775,
+          "revision_replay.index.graph_resolve": 0.4715916197746992,
+          "revision_replay.index.graph_resolve.anchored_branch_points": 0.02295862893515732,
+          "revision_replay.index.graph_resolve.inbound_dispatch_blocks": 0.006994294744799845,
+          "revision_replay.index.graph_resolve.inbound_lookup": 0.021716696937801316,
+          "revision_replay.index.graph_resolve.outbound_links": 0.040718584961723536,
+          "revision_replay.index.graph_resolve.root_current_check": 0.006993379240157083,
+          "revision_replay.index.graph_resolve.root_init": 0.36800005596887786,
+          "revision_replay.index.ingest_flags": 0.008808307218714617,
+          "revision_replay.index.model_usage_seed": 0.016634586747386493,
+          "revision_replay.index.parent_links": 0.002836889078025706,
+          "revision_replay.index.paste_spans": 0.0013734350359300151,
+          "revision_replay.index.prepare": 1.469469418967492,
+          "revision_replay.index.provider_usage_rollup": 0.014693217017338611,
+          "revision_replay.index.repo_edges": 0.0029199528944445774,
+          "revision_replay.index.session_counts": 0.42641395414830185,
+          "revision_replay.index.session_events": 0.02604845403402578,
+          "revision_replay.index.session_link": 0.04091807395161595,
+          "revision_replay.index.session_refs": 0.0030733949242858216,
+          "revision_replay.index.session_upsert": 0.5097044131834991,
+          "revision_replay.index.working_dirs": 0.0006513228872790933,
+          "revision_replay.index_parsed_write": 5.535880511946743,
+          "spill_load": 0.18399527130532078,
+          "spill_prefetch.consumed": 515.0,
+          "spill_prefetch.decode_concurrent": 6.130523949788767,
           "spill_prefetch.hits": 0.0,
-          "spill_prefetch.reparse_hits": 1.0,
-          "total": 44.85388750501443
+          "spill_prefetch.reparse_hits": 516.0,
+          "total": 19.712548958006664
         },
         "stale_cursor_write_count": 0,
         "succeeded_file_count": 516,
         "time_budget_exceeded": false,
-        "total_time_s": 46.65865231002681,
+        "total_time_s": 21.37828795600217,
         "unaccounted_bytes": 0,
         "updated_sessions": [],
         "updated_sessions_omitted": 0
@@ -161,18 +164,19 @@
       "refused_raw_count": 0,
       "resources": {
         "child_cpu_seconds": 0.0,
-        "elapsed_seconds": 46.65865231002681,
-        "peak_rss_self_bytes": 1911164928,
-        "read_io_bytes": 958291968,
-        "self_cpu_seconds": 33.157476,
-        "storage_bytes": 214467383,
-        "write_io_bytes": 470355968
+        "elapsed_seconds": 21.37828795600217,
+        "peak_rss_self_bytes": 1931689984,
+        "peak_rss_source": "interval",
+        "read_io_bytes": 0,
+        "self_cpu_seconds": 32.107877,
+        "storage_bytes": 214569823,
+        "write_io_bytes": 463785984
       },
       "route": {
         "callable_identity": "polylogue.sources.revision_backfill.backfill_historical_revision_evidence",
         "variant": "deferred-index-fresh-shard"
       },
-      "schema_identity": "2bcf45c17b0a5103e6b1aaa09b0b9019334116071916f10cfd97cd1545822a45",
+      "schema_identity": "cf7d63e98bbae22426ee561cdb9011baef99d767bc437ab34ff71abdd886f49b",
       "schema_object_census": [
         [
           "index",
@@ -249,10 +253,6 @@
         [
           "index",
           "idx_blocks_type_tool"
-        ],
-        [
-          "index",
-          "idx_candidate_source_membership_pending"
         ],
         [
           "index",
@@ -372,15 +372,15 @@
         ],
         [
           "index",
+          "idx_session_links_branch_point"
+        ],
+        [
+          "index",
           "idx_session_links_dst"
         ],
         [
           "index",
           "idx_session_links_dst_native"
-        ],
-        [
-          "index",
-          "idx_session_phases_session"
         ],
         [
           "index",
@@ -421,14 +421,6 @@
         [
           "index",
           "idx_session_repos_repo"
-        ],
-        [
-          "index",
-          "idx_session_work_events_session"
-        ],
-        [
-          "index",
-          "idx_session_work_events_type"
         ],
         [
           "index",
@@ -504,10 +496,6 @@
         ],
         [
           "table",
-          "candidate_source_membership"
-        ],
-        [
-          "table",
           "delegation_facts"
         ],
         [
@@ -521,6 +509,14 @@
         [
           "table",
           "file_edits"
+        ],
+        [
+          "table",
+          "ingest_index_incarnation"
+        ],
+        [
+          "table",
+          "ingest_marker_witnesses"
         ],
         [
           "table",
@@ -549,6 +545,10 @@
         [
           "table",
           "messages_fts_idx"
+        ],
+        [
+          "table",
+          "messages_fts_readiness_binding"
         ],
         [
           "table",
@@ -608,10 +608,6 @@
         ],
         [
           "table",
-          "session_phases"
-        ],
-        [
-          "table",
           "session_profiles"
         ],
         [
@@ -628,39 +624,15 @@
         ],
         [
           "table",
+          "session_summary_bindings"
+        ],
+        [
+          "table",
           "session_tags"
         ],
         [
           "table",
           "session_usage_rollup_bindings"
-        ],
-        [
-          "table",
-          "session_work_events"
-        ],
-        [
-          "table",
-          "session_work_events_fts"
-        ],
-        [
-          "table",
-          "session_work_events_fts_config"
-        ],
-        [
-          "table",
-          "session_work_events_fts_content"
-        ],
-        [
-          "table",
-          "session_work_events_fts_data"
-        ],
-        [
-          "table",
-          "session_work_events_fts_docsize"
-        ],
-        [
-          "table",
-          "session_work_events_fts_idx"
         ],
         [
           "table",
@@ -712,6 +684,30 @@
         ],
         [
           "trigger",
+          "messages_fts_readiness_binding_blocks_ad"
+        ],
+        [
+          "trigger",
+          "messages_fts_readiness_binding_blocks_ai"
+        ],
+        [
+          "trigger",
+          "messages_fts_readiness_binding_blocks_au"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_action_pairs_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_action_pairs_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_action_pairs_update"
+        ],
+        [
+          "trigger",
           "query_unit_frame_blocks_delete"
         ],
         [
@@ -748,6 +744,18 @@
         ],
         [
           "trigger",
+          "query_unit_frame_repos_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_repos_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_repos_update"
+        ],
+        [
+          "trigger",
           "query_unit_frame_session_links_delete"
         ],
         [
@@ -772,6 +780,18 @@
         ],
         [
           "trigger",
+          "query_unit_frame_session_repos_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_repos_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_repos_update"
+        ],
+        [
+          "trigger",
           "query_unit_frame_session_tags_delete"
         ],
         [
@@ -781,6 +801,18 @@
         [
           "trigger",
           "query_unit_frame_session_tags_update"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_working_dirs_delete"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_working_dirs_insert"
+        ],
+        [
+          "trigger",
+          "query_unit_frame_session_working_dirs_update"
         ],
         [
           "trigger",
@@ -804,6 +836,66 @@
         ],
         [
           "trigger",
+          "session_profile_binding_attachments_ad"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_attachments_au"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_events_ad"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_events_ai"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_events_au"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_messages_ad"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_messages_ai"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_messages_au"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_refs_ad"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_refs_ai"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_refs_au"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_sessions_au"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_usage_ad"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_usage_ai"
+        ],
+        [
+          "trigger",
+          "session_profile_binding_usage_au"
+        ],
+        [
+          "trigger",
           "session_profiles_delegation_facts_ai"
         ],
         [
@@ -812,15 +904,19 @@
         ],
         [
           "trigger",
-          "session_work_events_fts_ad"
+          "session_summary_binding_messages_ad"
         ],
         [
           "trigger",
-          "session_work_events_fts_ai"
+          "session_summary_binding_messages_ai"
         ],
         [
           "trigger",
-          "session_work_events_fts_au"
+          "session_summary_binding_messages_au"
+        ],
+        [
+          "trigger",
+          "session_summary_binding_sessions_ad"
         ],
         [
           "view",
@@ -843,57 +939,59 @@
           "threads"
         ]
       ],
+      "shard_lowering_degraded_count": 0,
       "skipped_raw_count": 0,
       "snapshot": "derived-model-equivalent-and-ready",
       "stage_timings_s": {
-        "census": 6.580680435989052,
-        "census_receipt": 0.004516885994235054,
-        "replay.adoptable_check": 0.01825217710575089,
-        "replay.classify_cohort": 0.8087758687906899,
-        "revision_replay.index.attachments": 0.4833038922806736,
-        "revision_replay.index.delegation_facts": 0.0003568546671885997,
-        "revision_replay.index.full_replace": 2.2042643578606658,
-        "revision_replay.index.full_replace.action_pairs": 0.00037951706326566637,
-        "revision_replay.index.full_replace.field_path_union": 0.00099238968687132,
-        "revision_replay.index.full_replace.file_edits": 0.01353210920933634,
-        "revision_replay.index.full_replace.fts_probe": 0.00039114055107347667,
-        "revision_replay.index.full_replace.shard_copy": 1.7128752019780222,
-        "revision_replay.index.full_replace.web_constructs": 0.02754176771850325,
-        "revision_replay.index.graph_resolve": 0.11899694969179109,
-        "revision_replay.index.graph_resolve.inbound_dispatch_blocks": 0.0075615536770783365,
-        "revision_replay.index.graph_resolve.inbound_lookup": 0.023368122143438086,
-        "revision_replay.index.graph_resolve.outbound_links": 0.044081927044317126,
-        "revision_replay.index.graph_resolve.root_current_check": 0.0076121297897771,
-        "revision_replay.index.graph_resolve.root_init": 0.03292938100639731,
-        "revision_replay.index.ingest_flags": 0.009271103626815602,
-        "revision_replay.index.model_usage_seed": 0.020811143302125856,
-        "revision_replay.index.parent_links": 0.0033597342553548515,
-        "revision_replay.index.paste_spans": 0.0018345999415032566,
-        "revision_replay.index.prepare": 1.7293196509126574,
-        "revision_replay.index.provider_usage_rollup": 0.017820006207330152,
-        "revision_replay.index.repo_edges": 0.0035227596818003803,
-        "revision_replay.index.session_counts": 0.07638905080966651,
-        "revision_replay.index.session_events": 0.03153211445896886,
-        "revision_replay.index.session_link": 0.055208280798979104,
-        "revision_replay.index.session_refs": 0.0035660019202623516,
-        "revision_replay.index.session_upsert": 0.20371764717856422,
-        "revision_replay.index.working_dirs": 0.0013195468054618686,
-        "revision_replay.index_parsed_write": 5.202601824566955,
-        "spill_load": 6.670909141481388,
-        "spill_prefetch.consumed": 0.0,
-        "spill_prefetch.decode_concurrent": 30.041250056005083,
+        "census": 6.0024881010031095,
+        "census_receipt": 0.004329411007347517,
+        "replay.adoptable_check": 0.013170111837098375,
+        "replay.classify_cohort": 0.22758923303626943,
+        "revision_replay.index.attachments": 0.38838300709903706,
+        "revision_replay.index.delegation_facts": 0.0003007750492542982,
+        "revision_replay.index.full_replace": 1.9702291889116168,
+        "revision_replay.index.full_replace.action_pairs": 0.00034316795063205063,
+        "revision_replay.index.full_replace.field_path_union": 0.0008824249525787309,
+        "revision_replay.index.full_replace.file_edits": 0.008898725034669042,
+        "revision_replay.index.full_replace.fts_probe": 0.000323542975820601,
+        "revision_replay.index.full_replace.shard_copy": 1.551186368931667,
+        "revision_replay.index.full_replace.web_constructs": 0.017685964034171775,
+        "revision_replay.index.graph_resolve": 0.4715916197746992,
+        "revision_replay.index.graph_resolve.anchored_branch_points": 0.02295862893515732,
+        "revision_replay.index.graph_resolve.inbound_dispatch_blocks": 0.006994294744799845,
+        "revision_replay.index.graph_resolve.inbound_lookup": 0.021716696937801316,
+        "revision_replay.index.graph_resolve.outbound_links": 0.040718584961723536,
+        "revision_replay.index.graph_resolve.root_current_check": 0.006993379240157083,
+        "revision_replay.index.graph_resolve.root_init": 0.36800005596887786,
+        "revision_replay.index.ingest_flags": 0.008808307218714617,
+        "revision_replay.index.model_usage_seed": 0.016634586747386493,
+        "revision_replay.index.parent_links": 0.002836889078025706,
+        "revision_replay.index.paste_spans": 0.0013734350359300151,
+        "revision_replay.index.prepare": 1.469469418967492,
+        "revision_replay.index.provider_usage_rollup": 0.014693217017338611,
+        "revision_replay.index.repo_edges": 0.0029199528944445774,
+        "revision_replay.index.session_counts": 0.42641395414830185,
+        "revision_replay.index.session_events": 0.02604845403402578,
+        "revision_replay.index.session_link": 0.04091807395161595,
+        "revision_replay.index.session_refs": 0.0030733949242858216,
+        "revision_replay.index.session_upsert": 0.5097044131834991,
+        "revision_replay.index.working_dirs": 0.0006513228872790933,
+        "revision_replay.index_parsed_write": 5.535880511946743,
+        "spill_load": 0.18399527130532078,
+        "spill_prefetch.consumed": 515.0,
+        "spill_prefetch.decode_concurrent": 6.130523949788767,
         "spill_prefetch.hits": 0.0,
-        "spill_prefetch.reparse_hits": 1.0,
-        "total": 44.85388750501443
+        "spill_prefetch.reparse_hits": 516.0,
+        "total": 19.712548958006664
       },
       "work": {
-        "code_identity": "sha256:e56a02baa6bd9a26d2e101ab6a6a2cb996434fe58dc3a9a700436598bee659f5",
+        "code_identity": "sha256:32d9d6d19087305649c8536b462819eec36447b777b06bfae704047293ebd28b",
         "profile_identity": "finished-build:sealed-516-raw:thread-4:owned-inactive-generation:session-shard",
         "source_identity": "sha256:b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed"
       },
       "worker_count": 4,
       "worker_mode": "thread",
-      "writer_apply_seconds": 31.602297927543987
+      "writer_apply_seconds": 13.526065585698234
     },
     "rejected_alternatives": [
       {
@@ -905,10 +1003,6 @@
         "reason": "does not exercise the selected sealed-shard transport"
       },
       {
-        "arm": "retained-index-shard",
-        "reason": "sealed shards require the owned inactive-generation route"
-      },
-      {
         "arm": "deferred-index-fresh-shard-process",
         "reason": "production raw replay dispatches parsing through ThreadPoolExecutor only"
       }
@@ -917,19 +1011,22 @@
       "classified_full": 516,
       "input_digest": "b970c56fd5478c928e12eb97c92737fe351907e1e1edeafc14c7104489a345ed",
       "logical_key_count": 516,
-      "peak_rss_bytes": 413851648,
+      "peak_rss_bytes": 178987008,
       "quarantined": 0,
       "scanned": 516,
-      "self_cpu_seconds": 6.643069000000001,
-      "wall_seconds": 7.04069556700415
+      "self_cpu_seconds": 6.353097,
+      "wall_seconds": 6.372049238998443
     },
     "verdict": {
       "conclusion": "single-arm-observation",
       "reason": "one selected production profile; no transport or width ranking claimed"
     }
   },
-  "measurement_digest": "de9cd211e2892b1a71944abcab4458e26300f9b1f332b5efbbc3ae3c17457553",
+  "measurement_digest": "7196f5516afa0971d96ae243fcfa87de5f2220234976a777b79969700bab5af3",
   "name": "finished-build-sealed-516-raw",
-  "reason": "First committed measurement for the sealed 516-raw finished build (polylogue-cjyfw). Run 2026-09-21 on the 24-core free-threaded CPython 3.14.4 workstation: one selected production arm (owned inactive generation, sealed session-shard transport, 4 parse threads) over the 210,554,832-byte sealed Codex slice; 46.7 s elapsed, 33.2 s self CPU, 1.91 GiB peak RSS, 214,467,383 archive bytes, zero refused/deferred/failed raws and zero open convergence debt. Explained-not-ratcheted: a later arm that moves these numbers records why it moved.",
-  "supersedes": null
+  "reason": "Current candidate finished-build observation on the identical sealed 516-raw input: 21.38s versus 46.66s baseline, 1,842 MiB peak RSS versus 1,823 MiB; all 516 raws completed, FTS parity and zero debt. Candidate schema identity and logical digest differ from the older baseline, so compare throughput only across those candidate versions.",
+  "supersedes": {
+    "measurement_digest": "de9cd211e2892b1a71944abcab4458e26300f9b1f332b5efbbc3ae3c17457553",
+    "reason": "First committed measurement for the sealed 516-raw finished build (polylogue-cjyfw). Run 2026-09-21 on the 24-core free-threaded CPython 3.14.4 workstation: one selected production arm (owned inactive generation, sealed session-shard transport, 4 parse threads) over the 210,554,832-byte sealed Codex slice; 46.7 s elapsed, 33.2 s self CPU, 1.91 GiB peak RSS, 214,467,383 archive bytes, zero refused/deferred/failed raws and zero open convergence debt. Explained-not-ratcheted: a later arm that moves these numbers records why it moved."
+  }
 }

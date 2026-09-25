@@ -1,0 +1,68 @@
+{
+  "format": "polylogue.measurement-baseline.v1",
+  "host": {
+    "cpu_count": 24,
+    "free_threaded": true,
+    "machine": "x86_64",
+    "python_implementation": "CPython",
+    "python_version": "3.14.4",
+    "system": "Linux",
+    "thread_inherit_context": true
+  },
+  "measurement": {
+    "measurements": [
+      {
+        "existing_archive_batches": 0,
+        "failed_files": 0,
+        "files": 10,
+        "outside_writer_hold_s": 3.533833566951216,
+        "payload_bytes": 57455,
+        "population": "empty",
+        "raw_compaction_runs": 1,
+        "raw_compaction_time_s": 0.008143,
+        "retention_selects_per_page": 3,
+        "route": "FairIntakeDispatcher -> FileIntakeAdapter -> LiveBatchProcessor -> raw compaction",
+        "succeeded_files": 10,
+        "total_s": 4.68527072899451,
+        "writer_hold_count": 31,
+        "writer_hold_s": 1.151437162043294
+      },
+      {
+        "existing_archive_batches": 2,
+        "failed_files": 0,
+        "files": 10,
+        "outside_writer_hold_s": 3.8457603960414417,
+        "payload_bytes": 57455,
+        "population": "medium",
+        "raw_compaction_runs": 1,
+        "raw_compaction_time_s": 0.008256,
+        "retention_selects_per_page": 3,
+        "route": "FairIntakeDispatcher -> FileIntakeAdapter -> LiveBatchProcessor -> raw compaction",
+        "succeeded_files": 10,
+        "total_s": 4.72221051499946,
+        "writer_hold_count": 31,
+        "writer_hold_s": 0.8764501189580187
+      },
+      {
+        "existing_archive_batches": 4,
+        "failed_files": 0,
+        "files": 10,
+        "outside_writer_hold_s": 3.6451457559887785,
+        "payload_bytes": 57455,
+        "population": "large",
+        "raw_compaction_runs": 1,
+        "raw_compaction_time_s": 0.007971,
+        "retention_selects_per_page": 3,
+        "route": "FairIntakeDispatcher -> FileIntakeAdapter -> LiveBatchProcessor -> raw compaction",
+        "succeeded_files": 10,
+        "total_s": 4.540195605994086,
+        "writer_hold_count": 31,
+        "writer_hold_s": 0.8950498500053072
+      }
+    ]
+  },
+  "measurement_digest": "d1f53ebb02c5367915e42027d94cfeec82f7655bd2489d4bb110125e7091fa13",
+  "name": "dispatcher-retention-scale",
+  "reason": "Recorded synthetic production-dispatcher empty/medium/large retention scale with admitted files, bytes, compaction, and writer-held/outside costs; machine timing varies, while the fixed three retention SELECTs per page are the regression invariant.",
+  "supersedes": null
+}
