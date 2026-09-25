@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from polylogue.core.enums import Origin, Provider, ToolOutcome, ToolResultUnknownReason
 from polylogue.core.sources import origin_from_provider
@@ -14,12 +15,12 @@ from polylogue.sources.parsers import otel_genai
 FIXTURE = Path(__file__).parents[3] / "fixtures" / "otel-genai" / "trace.json"
 
 
-def _payload() -> dict[str, object]:
-    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+def _payload() -> dict[str, Any]:
+    return cast(dict[str, Any], json.loads(FIXTURE.read_text(encoding="utf-8")))
 
 
-def _spans(payload: dict[str, object]) -> list[dict[str, object]]:
-    return payload["resourceSpans"][0]["scopeSpans"][0]["spans"]  # type: ignore[index,return-value]
+def _spans(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    return cast(list[dict[str, Any]], payload["resourceSpans"][0]["scopeSpans"][0]["spans"])
 
 
 def test_otel_genai_reaches_dispatch_and_preserves_typed_messages() -> None:
@@ -51,12 +52,12 @@ def test_otel_genai_reaches_dispatch_and_preserves_typed_messages() -> None:
 
 def test_otel_genai_keeps_unsupported_schema_as_evidence_without_messages() -> None:
     payload = _payload()
-    unsupported_scope = copy.deepcopy(payload["resourceSpans"][0]["scopeSpans"][0])  # type: ignore[index]
+    unsupported_scope = copy.deepcopy(payload["resourceSpans"][0]["scopeSpans"][0])
     unsupported_scope["schemaUrl"] = "https://example.invalid/genai/99.0.0"
     unsupported_span = unsupported_scope["spans"][1]
     unsupported_span["traceId"] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     unsupported_span["spanId"] = "bbbbbbbbbbbbbbbb"
-    payload["resourceSpans"][0]["scopeSpans"].append(unsupported_scope)  # type: ignore[index]
+    payload["resourceSpans"][0]["scopeSpans"].append(unsupported_scope)
 
     session = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")[0]
 

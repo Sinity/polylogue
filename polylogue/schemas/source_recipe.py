@@ -64,6 +64,8 @@ def contracts_match_except_key_limit(previous: JSONDocument, current: JSONDocume
     for revision_key in ("identity_revision", "zip_member_revision"):
         previous_revision = previous_without_limit.get(revision_key, 1)
         current_revision = current_without_limit.get(revision_key, 1)
+        if type(previous_revision) is not int or type(current_revision) is not int:
+            return False
         if previous_revision == current_revision:
             continue
         # Identity revisions change how contributions are grouped, but a
