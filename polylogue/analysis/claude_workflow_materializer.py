@@ -24,11 +24,7 @@ from polylogue.analysis.claude_workflow_evidence import (
     project_claude_workflow_evidence,
 )
 from polylogue.analysis.work_evidence import WorkEvidenceGraph
-from polylogue.archive.artifact_taxonomy import classify_artifact
-from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.json import JSONDecodeError
-from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.logging import get_logger
@@ -39,7 +35,6 @@ from polylogue.sources.parsers.claude.orchestration import (
     ClaudeOrchestrationFact,
     parse_claude_orchestration_artifact,
 )
-from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
@@ -198,8 +193,6 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
     with sqlite_connection(source_db) as source_conn:
         source_conn.row_factory = sqlite3.Row
         source_conn.execute("PRAGMA foreign_keys = ON")
-        _ensure_current_artifact_inventory(source_conn, blob_store=blob_store)
-        source_conn.commit()
         raw_artifacts = _load_current_artifacts(source_conn)
         retained_revisions = _count_retained_revisions(source_conn)
 
@@ -262,128 +255,6 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
         retained_raw_revision_count=retained_revisions,
         existing_graph_refs=existing_graph_refs,
     )
-
-
-def _raw_payload_has_session_evidence(blob_store: BlobStore, row: sqlite3.Row) -> bool:
-    """Keep session-shaped JSON payloads out of path-only artifact inventory."""
-    path = Path(str(row["source_path"]))
-    blob_hash = bytes(row["blob_hash"]).hex()
-    if path.suffix.lower() == ".jsonl":
-        try:
-            return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=Provider.CLAUDE_CODE) is not None
-        except (OSError, ValueError):
-            return False
-    if path.suffix.lower() != ".json":
-        return False
-    try:
-        with blob_store.open(blob_hash) as handle:
-            document = json_loads(handle.read())
-    except (OSError, JSONDecodeError, ValueError):
-        return False
-    return classify_artifact(document, provider=Provider.CLAUDE_CODE).parse_as_session
-
-
-def _ensure_current_artifact_inventory(conn: sqlite3.Connection, *, blob_store: BlobStore) -> None:
-    """Refresh current pointers for OriginSpec-declared Claude artifacts.
-
-    Canonical configured acquisition already writes these rows.  The same
-    source-tier invariant is repaired here for daemon/direct raw writers so all
-    production routes converge on one inventory rather than a Workflow-only
-    registry.
-    """
-
-    rows = conn.execute(
-        """
-        WITH ranked AS (
-            SELECT rowid AS raw_rowid, *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY origin, source_path, source_index
-                       ORDER BY acquired_at_ms DESC, rowid DESC
-                   ) AS revision_rank
-            FROM raw_sessions
-            WHERE origin = ?
-        )
-        SELECT * FROM ranked WHERE revision_rank = 1
-        ORDER BY source_path, source_index
-        """,
-        (Origin.CLAUDE_CODE_SESSION.value,),
-    ).fetchall()
-    for row in rows:
-        rule = artifact_rule_for_path(Provider.CLAUDE_CODE, str(row["source_path"]))
-        if rule is None:
-            continue
-        # Session-shaped content only disqualifies a rule that did not expect it.
-        # A `parse_policy="session"` rule (agent_transcript,
-        # coordinator_session_stream) declares that its artifacts ARE sessions --
-        # `raw_artifacts.parse_as_session` exists to record exactly that, and the
-        # live archive carries 8201 and 3915 such rows. Deleting them here made
-        # this module fight the artifact-observation sweep, which writes the same
-        # rows from the same taxonomy: the durable table ended up reflecting
-        # whichever pass ran last, and `_SESSION_KINDS` at the top of this file --
-        # summed into `session_parser_raw_reads_if_authorship_or_event_semantics_change`
-        # -- could never be anything but zero. Content evidence still overrides a
-        # `fact` rule, which is the case the original guard was written for.
-        if rule.parse_policy != "session" and _raw_payload_has_session_evidence(blob_store, row):
-            conn.execute(
-                "DELETE FROM raw_artifacts WHERE origin = ? AND source_path = ? AND source_index = ?",
-                (row["origin"], row["source_path"], row["source_index"]),
-            )
-            continue
-        existing = conn.execute(
-            """
-            SELECT artifact_id, first_observed_at_ms
-            FROM raw_artifacts
-            WHERE origin = ? AND source_path = ? AND source_index = ?
-            """,
-            (row["origin"], row["source_path"], row["source_index"]),
-        ).fetchone()
-        source_name = str(row["capture_mode"] or Provider.CLAUDE_CODE.value)
-        observation_id = (
-            str(existing["artifact_id"])
-            if existing is not None
-            else artifact_observation_id(
-                source_name=source_name,
-                source_path=str(row["source_path"]),
-                source_index=int(row["source_index"]),
-            )
-        )
-        first_observed = int(existing["first_observed_at_ms"]) if existing is not None else int(row["acquired_at_ms"])
-        support_status = "supported_parseable" if rule.parse_policy == "session" else "recognized_unparsed"
-        conn.execute(
-            """
-            INSERT INTO raw_artifacts(
-                artifact_id, raw_id, origin, source_path, source_index,
-                artifact_kind, support_status, classification_reason,
-                parse_as_session, schema_eligible, malformed_jsonl_lines,
-                decode_error, cohort_id, link_group_key, sidecar_agent_type,
-                first_observed_at_ms, last_observed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, NULL, ?, ?)
-            ON CONFLICT(artifact_id) DO UPDATE SET
-                raw_id = excluded.raw_id,
-                artifact_kind = excluded.artifact_kind,
-                support_status = excluded.support_status,
-                classification_reason = excluded.classification_reason,
-                parse_as_session = excluded.parse_as_session,
-                schema_eligible = excluded.schema_eligible,
-                link_group_key = excluded.link_group_key,
-                last_observed_at_ms = excluded.last_observed_at_ms
-            """,
-            (
-                observation_id,
-                row["raw_id"],
-                row["origin"],
-                row["source_path"],
-                row["source_index"],
-                rule.kind,
-                support_status,
-                f"OriginSpec Claude artifact rule: {rule.coverage_role}",
-                int(rule.parse_policy == "session"),
-                int(rule.parse_policy == "session"),
-                _agent_link_group(str(row["source_path"])),
-                first_observed,
-                int(row["acquired_at_ms"]),
-            ),
-        )
 
 
 def _load_current_artifacts(conn: sqlite3.Connection) -> tuple[_RawArtifact, ...]:
@@ -827,14 +698,6 @@ def _path_identity_fact(raw: _RawArtifact) -> ClaudeOrchestrationFact | None:
         content_key=None,
         payload={},
     )
-
-
-def _agent_link_group(source_path: str) -> str | None:
-    normalized = _normalize_path(source_path).lower()
-    for suffix in (".meta.json", ".jsonl", ".ndjson"):
-        if normalized.endswith(suffix) and PurePosixPath(normalized).name.startswith("agent-"):
-            return normalized[: -len(suffix)]
-    return None
 
 
 def _normalize_path(value: str) -> str:
