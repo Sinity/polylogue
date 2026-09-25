@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -154,17 +155,22 @@ def test_transcript_window_agrees_across_daemon_and_direct(tmp_path: Path) -> No
                 archive=pinned.archive,
                 serving_identity="direct",
             )
-            direct_next = execute_read_operation(
-                "session.read",
-                {"ref": session_id, "continuation": daemon_body["continuation"]},
-                archive=pinned.archive,
-                serving_identity="direct",
+            direct_next = cast(
+                "dict[str, Any]",
+                execute_read_operation(
+                    "session.read",
+                    {"ref": session_id, "continuation": daemon_body["continuation"]},
+                    archive=pinned.archive,
+                    serving_identity="direct",
+                ),
             )
-        daemon_next = stack.client.operation(
+        daemon_next_envelope = stack.client.operation(
             "session.read",
             {"ref": session_id, "continuation": direct_body["continuation"]},
             archive_root=str(stack.archive_root),
         )
+        assert daemon_next_envelope is not None
+        daemon_next = daemon_next_envelope["result"]
 
     assert daemon_body["session"] == direct_body["session"]
     assert daemon_body["total"] == direct_body["total"]
@@ -195,7 +201,7 @@ def test_session_owner_continuation_refusal_names_its_dialect(tmp_path: Path) ->
             db_path=archive_root / "index.db",
         )
 
-        async def owner_page() -> object:
+        async def owner_page() -> Any:
             async with Polylogue.open(config=config) as api:
                 return await execute_session_operation(
                     api,
