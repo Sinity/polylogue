@@ -381,9 +381,11 @@ def _session_id_page(
 ) -> tuple[tuple[str, ...], str | None]:
     rows = conn.execute(
         """
-        SELECT session_id FROM session_profile_demand
-        WHERE session_id > COALESCE(?, '')
-        ORDER BY session_id LIMIT ?
+        SELECT d.session_id
+        FROM session_profile_demand AS d
+        JOIN sessions AS s ON s.session_id = d.session_id
+        WHERE d.session_id > COALESCE(?, '')
+        ORDER BY d.session_id LIMIT ?
         """,
         (cursor, limit + 1),
     ).fetchall()
@@ -627,7 +629,20 @@ class SessionProfileDerivation:
                 return _session_id_page(conn, cursor=cursor, limit=limit)
             finally:
                 conn.close()
-        keys = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+        scoped = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
+        conn = self._read_connection()
+        try:
+            existing = {
+                str(row[0])
+                for chunk in _chunked(scoped, SESSION_PARTITION_INSPECT_CHUNK)
+                for row in conn.execute(
+                    f"SELECT session_id FROM sessions WHERE session_id IN ({','.join('?' * len(chunk))})",
+                    chunk,
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+        keys = tuple(key for key in scoped if key in existing)
         start = bisect.bisect(keys, cursor) if cursor is not None else 0
         page = keys[start : start + limit]
         return page, (page[-1] if start + len(page) < len(keys) and page else None)

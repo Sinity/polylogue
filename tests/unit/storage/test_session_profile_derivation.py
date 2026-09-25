@@ -34,6 +34,7 @@ from polylogue.storage.derived.session.input_binding import (
     session_input_bindings,
 )
 from polylogue.storage.derived.session.marker_domain import marker_assertions_present as _marker_assertions_present
+from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.derived.session.records import SessionLatencyProfileRecord
 from polylogue.storage.derived.session.summary import (
     SESSION_SUMMARY_DOMAIN,
@@ -350,6 +351,46 @@ def test_publishing_an_excess_key_removes_the_orphan(archive: tuple[Path, str]) 
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         assert excess_session_profiles(conn) == ()
+
+
+def test_scoped_rebuild_retires_a_deleted_session_before_acknowledging_demand(
+    archive: tuple[Path, str],
+) -> None:
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    with write_lease("test.delete-session"), closing(_write_connection(index_db)) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+        assert conn.execute(
+            "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        for table in ("session_profiles", "session_latency_profiles"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
+        rebuild_session_insights_sync(conn, session_ids=(session_id,))
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        for table in ("session_profiles", "session_latency_profiles", "session_profile_demand"):
+            assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("scoped", (False, True))
+def test_deleted_profile_demand_uses_excess_route(archive: tuple[Path, str], scoped: bool) -> None:
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    with write_lease("test.delete-session"), closing(_write_connection(index_db)) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: _write_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: (session_id,) if scoped else None,
+    )
+    assert adapter.required_page(None, cursor=None, limit=10) == ((), None)
+    assert adapter.excess_page(None, cursor=None, limit=10) == ((session_id,), None)
 
 
 def test_the_adapter_converges_through_the_kernel_against_a_real_archive(

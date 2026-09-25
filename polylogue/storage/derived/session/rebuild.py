@@ -1932,11 +1932,18 @@ def rebuild_session_insights_sync(
             [bundle.latency_profile_record for bundle in record_bundles],
         )
         add_timing("write_latency_profiles", t0)
+        retired_ids = tuple(session_id for session_id in chunk if session_id not in message_counts)
+        for retired_id in retired_ids:
+            for table in _PER_SESSION_INSIGHT_TABLES:
+                conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (retired_id,))
         # A bulk rebuild also completes local profile demand. Acknowledge only
         # the exact captured revision inside the same index transaction as
-        # both retained profile relations; a later writer's revision survives.
+        # both retained profile relations or an absent session's retirement;
+        # a later writer's revision survives.
+        completed_ids = {bundle.profile_record.session_id for bundle in record_bundles}
+        completed_ids.update(retired_ids)
         for demanded_session_id, expected_revision in demand_revisions.items():
-            if expected_revision > 0:
+            if expected_revision > 0 and demanded_session_id in completed_ids:
                 conn.execute(
                     "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
                     (demanded_session_id, expected_revision),
