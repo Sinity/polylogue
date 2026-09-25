@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import math
+
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import AcceptedOperationReference
 from polylogue.operations.machine_receipts import encode_machine_receipt
@@ -26,6 +29,36 @@ def _audit_int(value: object, *, field: str) -> int:
 
     if type(value) is not int:
         raise ValueError(f"audit {field} is not an integer")
+    return value
+
+
+def _embedding_terminal_receipt(raw: object) -> dict[str, object] | None:
+    """Decode the bounded domain summary stored in the terminal audit event."""
+    if not isinstance(raw, str) or not raw.startswith("embedding_receipt:"):
+        return None
+    try:
+        value = json.loads(raw.removeprefix("embedding_receipt:"))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict) or value.get("operation") != "maintenance.embeddings.backfill":
+        return None
+    if value.get("outcome") not in {"completed", "stopped", "cancelled", "failed"}:
+        return None
+    if type(value.get("sequence")) is not int or value["sequence"] < 1:
+        return None
+    progress = value.get("progress")
+    result = value.get("result")
+    if not isinstance(progress, dict) or not isinstance(result, dict):
+        return None
+    for field in ("computed", "failed", "done", "pending"):
+        container = progress if field in {"computed", "failed"} else result
+        if type(container.get(field)) is not int or container[field] < 0:
+            return None
+    cost = progress.get("estimated_cost_usd")
+    if not isinstance(cost, (int, float)) or isinstance(cost, bool):
+        return None
+    if not math.isfinite(float(cost)) or cost < 0:
+        return None
     return value
 
 
@@ -127,11 +160,25 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         outcome = "accepted"
     else:
         outcome = "completed"
+    if (
+        record.get("operation_name") == "maintenance.embeddings.backfill"
+        and record.get("stop_reason")
+        and outcome in {"completed", "failed"}
+    ):
+        outcome = "cancelled" if record["stop_reason"] == "cancelled" else "interrupted"
     result: dict[str, object] | None = None
     if kind == "source-generation" and len(attempted) == 1 and attempted[0]["outcome"] == "completed":
         receipt = attempted[0]["receipt"]
         if isinstance(receipt, dict) and receipt.get("kind") == "ingest/v1":
             result = receipt
+    if record.get("operation_name") == "maintenance.embeddings.backfill" and attempted:
+        run = audit.get_operation(str(attempted[0]["operation_id"])) if attempted[0]["operation_id"] else None
+        result = None if run is None else _embedding_terminal_receipt(run.get("error_summary"))
+        if outcome in {"completed", "cancelled", "interrupted", "failed"} and result is None:
+            # This route's CLI result carries partial counts and cost data that
+            # generic operation counters cannot reconstruct. Missing or
+            # malformed audit data must not be presented as a complete result.
+            outcome = "indeterminate"
     return {
         **state,
         "sequence": sequence,

@@ -85,6 +85,7 @@ def test_discovery_schema_validates_the_declared_control_request() -> None:
 
     schema = daemon_operation_schema()["operation.await"]["request_schema"]
     validate({"request_id": "synthetic-request", "timeout_ms": 1}, schema)
+    validate({"request_id": "synthetic-request", "after_progress_sequence": 2}, schema)
     with pytest.raises(ValidationError):
         validate({"request_id": "synthetic-request", "timeout_ms": 30_001}, schema)
     with pytest.raises(ValidationError):
