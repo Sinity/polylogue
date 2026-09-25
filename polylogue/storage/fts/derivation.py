@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
@@ -66,7 +67,7 @@ class FtsPartitionInput:
     key: str
     generation: int
     recipe_id: str
-    rows: tuple[FtsInputRow, ...]
+    row_count: int
     digest: str
 
 
@@ -96,11 +97,10 @@ class FtsPartitionInspection:
 class FtsPartitionReplacement:
     """Lease-free session replacement in the kernel's structural vocabulary.
 
-    ``payload`` is the complete value projection read from ``blocks``.  The
-    binding includes its recipe and SQLite generation; publication reads the
-    same projection again under ``BEGIN IMMEDIATE`` before replacing just this
-    session's FTS rows.  Sessions with no searchable blocks are valid without
-    a marker row because their correct replacement is empty.
+    ``payload`` binds the complete value projection read from ``blocks`` by
+    count and digest. Publication hashes it again under ``BEGIN IMMEDIATE``
+    before replacing this session's FTS rows. Sessions with no searchable
+    blocks are valid without a marker row.
     """
 
     key: str
@@ -191,20 +191,24 @@ def _schema_compatible(conn: sqlite3.Connection) -> bool:
     return row is not None and int(row[0]) == len(expected)
 
 
-def _digest(rows: Sequence[FtsInputRow]) -> str:
-    payload = [
-        [
-            row.rowid,
-            row.block_id,
-            row.message_id,
-            row.session_id,
-            row.block_type,
-            row.search_text,
-            None if row.source_hash is None else row.source_hash.hex(),
-        ]
-        for row in rows
-    ]
-    return hashlib.sha256(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+def _digest(rows: Iterable[Sequence[object]]) -> tuple[int, str]:
+    """Hash the original JSON binding without retaining a partition's text."""
+    digest = hashlib.sha256()
+    digest.update(b"[")
+    count = 0
+    for row in rows:
+        if count:
+            digest.update(b",")
+        digest.update(
+            json.dumps(
+                [*row[:6], None if row[6] is None else cast(bytes, row[6]).hex()],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+        count += 1
+    digest.update(b"]")
+    return count, digest.hexdigest()
 
 
 def _orphan_binding(conn: sqlite3.Connection) -> FtsOrphanBinding:
@@ -328,7 +332,7 @@ class FtsDerivationAdapter:
         return tuple(sorted(keys))
 
     def input_for(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInput:
-        """Bind every canonical input value, not only its identifier."""
+        """Bind every canonical input value without retaining searchable text."""
         if key == GLOBAL_PARTITION:
             where = "b.search_text != ''"
             params: tuple[object, ...] = ()
@@ -336,17 +340,8 @@ class FtsDerivationAdapter:
             where = "b.session_id = ? AND b.search_text != ''"
             params = (key,)
         hash_expr = "b.content_hash" if _has_content_hash(conn) else "NULL"
-        rows = tuple(
-            FtsInputRow(
-                rowid=int(row[0]),
-                block_id=str(row[1]),
-                message_id=str(row[2]),
-                session_id=str(row[3]),
-                block_type=str(row[4]),
-                search_text=str(row[5]),
-                source_hash=None if row[6] is None else bytes(row[6]),
-            )
-            for row in conn.execute(
+        row_count, digest = _digest(
+            conn.execute(
                 f"""
                 SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type,
                        b.search_text, {hash_expr}
@@ -355,9 +350,9 @@ class FtsDerivationAdapter:
                 ORDER BY b.rowid
                 """,
                 params,
-            ).fetchall()
+            )
         )
-        return FtsPartitionInput(key, _generation(conn), self.recipe_id, rows, _digest(rows))
+        return FtsPartitionInput(key, _generation(conn), self.recipe_id, row_count, digest)
 
     def inspect_partition(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInspection:
         """Inspect membership against ``blocks`` without consulting state tables."""
@@ -752,7 +747,7 @@ class FtsDerivationAdapter:
                     ).hexdigest(),
                     payload=input_snapshot,
                     generation_binding=generation_binding,
-                    empty=not input_snapshot.rows,
+                    empty=input_snapshot.row_count == 0,
                 )
         finally:
             conn.close()
