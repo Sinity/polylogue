@@ -1174,19 +1174,14 @@ def _message_row_projection(
 def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
     """Read one bounded window or evidence relation for an exact session reference.
 
-    A whole transcript can exceed the declared 8 MiB result bound, so the
-    windowed kinds are windowed by construction: the reader composes only
-    ``[offset, offset + limit)`` at the storage layer and hands back a
-    snapshot-bound continuation for the next window.
+    Transcript window arithmetic, snapshot binding and continuation validation
+    are owned by operations.transcript_window. The legacy transcript envelope
+    keeps its session-read-v1 projection dialect because its projection
+    arguments differ from the typed sessions.read owner contract.
     """
 
-    from polylogue.archive.query.transaction import (
-        QueryContinuation,
-        QueryContinuationInvalidError,
-        QueryTransactionRequest,
-        archive_snapshot_epoch,
-        validate_continuation_epoch,
-    )
+    from polylogue.operations.session_contracts import SessionRead
+    from polylogue.operations.transcript_window import read_transcript_window_sync
     from polylogue.surfaces.outcome import decide_outcome
     from polylogue.surfaces.projection_spec import ProjectionSpec
 
@@ -1210,67 +1205,58 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     if projection is not None:
         limit = projection.body_limit or limit
         offset = projection.body_offset if projection.body_offset is not None else offset
-
-    arguments: dict[str, object] = {
-        "ref": ref,
-        "projection": dict(raw_projection) if raw_projection else {},
-    }
-    continuation_token = payload.get("continuation")
-    if continuation_token:
-        decoded = QueryContinuation.decode(str(continuation_token))
-        transaction = decoded.request
-        if (
-            transaction.operation != "session.read"
-            or transaction.projection != _SESSION_READ_PROJECTION
-            or decoded.result_ref != transaction.result_ref
-            or dict(transaction.arguments) != arguments
-        ):
-            raise QueryContinuationInvalidError("continuation belongs to another session read")
-        limit, offset = transaction.page_size, transaction.offset
-        framed = transaction.with_archive_epoch(validate_continuation_epoch(transaction, archive=archive))
-    else:
-        framed = QueryTransactionRequest(
-            operation="session.read",
-            arguments=arguments,
-            page_size=limit,
-            offset=offset,
-            projection=_SESSION_READ_PROJECTION,
-            stable_order="position",
-        ).with_archive_epoch(archive_snapshot_epoch(archive))
-
+    continuation = payload.get("continuation")
+    request = SessionRead.model_validate(
+        {"ref": ref, "continuation": str(continuation)}
+        if continuation
+        else {"ref": ref, "limit": limit, "offset": offset}
+    )
     try:
         session_id = archive.resolve_session_id(ref.removeprefix("session:"))
     except KeyError as exc:
         raise ValueError(f"session not found: {ref}") from exc
-    envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
     excluded_blocks = frozenset(projection.exclude_block_kinds) if projection is not None else frozenset()
-    # The window this kind serves is ``read_session_page``, which composes a
-    # prefix-sharing child's inherited prefix.  ``sessions.message_count`` is the
-    # child's OWN stored row count (the divergent tail), so for a lineage child
-    # it is smaller than the sequence being paged -- and because ``next_offset``
-    # is computed against it, pagination stopped before the composed tail.
-    # ``transcript`` and ``messages`` are declared as two row vocabularies over
-    # the *same* window (``read_contracts.SessionReadKind``), so they must agree
-    # on its length.
-    total = envelope.total_message_count if envelope.total_message_count is not None else len(envelope.messages)
-    returned = len(envelope.messages)
-    next_offset = offset + returned if offset + returned < total else None
+    latest_envelope: ArchiveSessionEnvelope | None = None
+
+    def read(window_limit: int, window_offset: int) -> tuple[list[object], int, object]:
+        nonlocal latest_envelope
+        latest_envelope = archive.read_session_page(session_id, limit=window_limit, offset=window_offset)
+        total = (
+            latest_envelope.total_message_count
+            if latest_envelope.total_message_count is not None
+            else len(latest_envelope.messages)
+        )
+        return (
+            list(latest_envelope.messages),
+            total,
+            {
+                "complete": latest_envelope.lineage_complete,
+                "truncation_reason": latest_envelope.lineage_truncation_reason,
+            },
+        )
+
+    window = read_transcript_window_sync(
+        archive,
+        request,
+        read=read,
+        transaction_operation="session.read",
+        projection=_SESSION_READ_PROJECTION,
+        extra_arguments={"projection": dict(raw_projection) if raw_projection else {}},
+    )
+    assert latest_envelope is not None
+    envelope = replace(latest_envelope, messages=tuple(window.rows))
     result: dict[str, object] = {
-        "outcome": decide_outcome(matched=returned).to_dict(),
+        "outcome": decide_outcome(matched=len(window.rows)).to_dict(),
         "session": _session_identity_projection(envelope, excluded_blocks=excluded_blocks),
         "session_id": session_id,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "next_offset": next_offset,
-        "continuation": (
-            QueryContinuation(framed.next(offset=next_offset), framed.result_ref).encode()
-            if next_offset is not None
-            else None
-        ),
-        "complete": next_offset is None,
+        "total": window.total,
+        "limit": window.limit,
+        "offset": window.offset,
+        "next_offset": window.next_offset,
+        "continuation": window.continuation,
+        "complete": window.complete,
     }
-    _require_deliverable_window(result, limit=limit)
+    _require_deliverable_window(result, limit=window.limit)
     return result
 
 
