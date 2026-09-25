@@ -56,6 +56,7 @@ from polylogue.pipeline.services.process_pool import (
     parallel_threads_effective,
     resolve_revision_backfill_census_dispatch,
 )
+from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -1396,6 +1397,17 @@ def _census_historical_revision_evidence(
             return
         sessions, payload_bytes, revision_kind = outcome
         stored_provider, _blob_hash, _source_path, _stored_kind, _stored_size = archive.raw_revision_descriptor(raw_id)
+        if sessions:
+            parsed_provider = Provider.from_string(sessions[0].source_name)
+            record_session_artifact_observation(
+                archive,
+                raw_id=raw_id,
+                provider=parsed_provider,
+                source_path=_source_path,
+                source_index=source_index,
+                observed_at_ms=archive.raw_revision_observed_at_ms(raw_id),
+                manage_transaction=not batched,
+            )
         if stored_provider is Provider.UNKNOWN and sessions:
             # Acquisition deliberately did not decode an UNKNOWN source-only
             # member.  A successful replay now has durable shape evidence for

@@ -21,6 +21,7 @@ from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.logging import get_logger
+from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
@@ -380,6 +381,15 @@ def _ingest_append_plans_archive(
                         )
                         failed.append(plan)
                         continue
+                    record_session_artifact_observation(
+                        archive,
+                        raw_id=raw_id,
+                        provider=provider,
+                        source_path=str(plan.path),
+                        source_index=plan.source_index,
+                        observed_at_ms=acquired_at_ms,
+                        manage_transaction=True,
+                    )
                     if len(sessions) != 1 or plan.cursor_fingerprint is None:
                         archive.mark_raw_parse_failed(
                             raw_id,
