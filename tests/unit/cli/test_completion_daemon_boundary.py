@@ -2,9 +2,9 @@
 
 Shell completion is the coldest, most latency-sensitive route the CLI has: it
 runs in a fresh process on a keystroke. The law these tests pin is that the
-archive-backed completers ask the resident daemon or say so -- they never open
-the archive themselves, and never fall through to the local reader, which costs
-seconds.
+archive-backed completers ask the resident daemon, use recent cached values,
+or explain a cold cache. They never open the archive themselves or fall through
+to the local reader, which costs seconds.
 
 Deliberately not a timing threshold. A latency assertion is flaky on a loaded
 machine and proves less than the structural fact: no database was opened.
@@ -33,6 +33,7 @@ from polylogue.cli.shell_completion_values import (
 )
 from polylogue.config import get_config
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.frozen_clock import FrozenClock
 
 pytestmark = pytest.mark.contract
 
@@ -143,9 +144,12 @@ def test_cold_cache_completion_says_how_to_populate_values(tmp_path: Path) -> No
     assert "polylogued" in DAEMON_REQUIRED_COMPLETION_MESSAGE, "the refusal must name how to fix it"
 
 
-def test_daemon_off_completion_uses_values_cached_from_daemon(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A prior daemon answer remains useful offline without opening SQLite."""
+def test_daemon_off_completion_uses_recent_values_from_same_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
+    """A prior daemon answer remains useful offline until its bounded expiry."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-a"))
     from polylogue.cli import operation_kernel
 
     monkeypatch.setattr(
@@ -164,6 +168,11 @@ def test_daemon_off_completion_uses_values_cached_from_daemon(tmp_path: Path, mo
 
     monkeypatch.setattr(operation_kernel, "dispatch", unavailable)
     assert [item.value for item in completion_values("tag", "rel", limit=5)] == ["release-tag"]
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-b"))
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-a"))
+    frozen_clock.advance(24 * 60 * 60 + 1)
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
 
 
 def test_a_declared_vocabulary_still_completes_without_a_daemon(monkeypatch: pytest.MonkeyPatch) -> None:

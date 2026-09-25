@@ -8,8 +8,9 @@ session/tag/repo/action read models; cwd-prefix has no archive source yet and
 degrades to an empty completion list.
 
 The daemon-only operation avoids opening the archive on a cold shell process.
-Successful daemon answers are retained in a small disposable XDG cache so
-subsequent completion still has recent candidates while the daemon is offline.
+Successful daemon answers are retained for 24 hours in a small disposable XDG
+cache so subsequent completion still has recent candidates while the daemon is
+offline. The cache is scoped to the selected archive file set.
 Declared vocabularies are answered here and never leave the process: an origin
 is a declaration, not archive content, so ``--origin`` completes on a fresh
 install with no daemon and no archive.
@@ -22,6 +23,8 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from pathlib import Path
@@ -72,8 +75,10 @@ _COMPLETION_DEADLINE_MS = 1000
 DAEMON_REQUIRED_COMPLETION_MESSAGE = (
     "polylogue: no cached values — run `polylogued run` to populate shell completion suggestions"
 )
-_COMPLETION_CACHE_VERSION = 1
+_COMPLETION_CACHE_VERSION = 2
 _COMPLETION_CACHE_MAX_VALUES = 256
+_COMPLETION_CACHE_TTL_SECONDS = 24 * 60 * 60
+_COMPLETION_CACHE_MAX_BYTES = 1024 * 1024
 
 
 def _completion_cache_path() -> Path:
@@ -82,51 +87,90 @@ def _completion_cache_path() -> Path:
     return cache_home() / "shell-completions.json"
 
 
-def _read_completion_cache(source: str, incomplete: str, *, limit: int) -> list[CompletionItem]:
+def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_root: str) -> list[CompletionItem]:
     """Read recent daemon answers without opening the archive."""
     try:
-        payload = json.loads(_completion_cache_path().read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or payload.get("version") != _COMPLETION_CACHE_VERSION:
+        with _completion_cache_path().open("r", encoding="utf-8") as stream:
+            raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
+        if len(raw) > _COMPLETION_CACHE_MAX_BYTES:
+            return []
+        payload = json.loads(raw)
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != _COMPLETION_CACHE_VERSION
+            or payload.get("archive_root") != archive_root
+        ):
             return []
         values_by_source = payload.get("values")
         values = values_by_source.get(source) if isinstance(values_by_source, dict) else None
         if not isinstance(values, list):
             return []
         prefix = incomplete.casefold()
+        now = time.time()
         return [
-            CompletionItem(value) for value in values if isinstance(value, str) and value.casefold().startswith(prefix)
+            CompletionItem(row["value"])
+            for row in values
+            if isinstance(row, dict)
+            and isinstance(row.get("value"), str)
+            and isinstance(row.get("seen_at"), (int, float))
+            and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
+            and row["value"].casefold().startswith(prefix)
         ][:limit]
     except (OSError, ValueError, TypeError):
         return []
 
 
-def _remember_completion_values(source: str, value: object) -> None:
+def _remember_completion_values(source: str, value: object, *, archive_root: str) -> None:
     """Merge daemon-returned candidates into the small, disposable XDG cache."""
     items = render_completion_values(value)
     if not items:
         return
     path = _completion_cache_path()
-    values: dict[str, list[str]] = {}
+    now = time.time()
+    values: dict[str, list[dict[str, object]]] = {}
     try:
-        prior = json.loads(path.read_text(encoding="utf-8"))
-        raw_values = prior.get("values") if isinstance(prior, dict) else None
+        with path.open("r", encoding="utf-8") as stream:
+            raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
+        prior = json.loads(raw) if len(raw) <= _COMPLETION_CACHE_MAX_BYTES else None
+        raw_values = (
+            prior.get("values") if isinstance(prior, dict) and prior.get("archive_root") == archive_root else None
+        )
         if isinstance(raw_values, dict):
             values = {
-                key: [item for item in rows if isinstance(item, str)]
+                key: [
+                    row
+                    for row in rows
+                    if isinstance(row, dict)
+                    and isinstance(row.get("value"), str)
+                    and isinstance(row.get("seen_at"), (int, float))
+                    and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
+                ]
                 for key, rows in raw_values.items()
-                if isinstance(key, str) and isinstance(rows, list)
+                if isinstance(key, str) and key in {"session_id", "tag", "repo", "tool"} and isinstance(rows, list)
             }
     except (OSError, ValueError, TypeError):
         pass
-    merged = list(dict.fromkeys([*(values.get(source, [])), *(item.value for item in items)]))
-    values[source] = merged[-_COMPLETION_CACHE_MAX_VALUES:]
-    with suppress(OSError):
+    merged = {str(row["value"]): row for row in values.get(source, [])}
+    for item in items:
+        if len(item.value) <= 512:
+            merged[item.value] = {"value": item.value, "seen_at": now}
+    values[source] = list(merged.values())[-_COMPLETION_CACHE_MAX_VALUES:]
+    temporary: str | None = None
+    try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            json.dump({"version": _COMPLETION_CACHE_VERSION, "values": values}, stream)
-            stream.flush()
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=".shell-completions-", delete=False
+        ) as stream:
+            temporary = stream.name
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump({"version": _COMPLETION_CACHE_VERSION, "archive_root": archive_root, "values": values}, stream)
+        os.replace(temporary, path)
+    except OSError:
+        pass
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                os.unlink(temporary)
 
 
 CompletionCallback = Callable[[click.Context, click.Parameter, str], list[CompletionItem]]
@@ -159,8 +203,8 @@ def _with_csv_prefix(items: list[CompletionItem], prefix: str) -> list[Completio
 def completion_values(source: str, incomplete: str, *, limit: int) -> list[CompletionItem]:
     """Ask the declared ``completion`` operation for one value vocabulary.
 
-    The resident daemon answers from its open snapshot or nothing does: the
-    dispatch is ``daemon_only`` precisely so that a TAB press can never fall
+    The resident daemon answers from its open snapshot; the dispatch is
+    ``daemon_only`` precisely so that a TAB press can never fall
     through to the local reader, which would open the archive and take seconds.
     A missing daemon falls back to recently observed values in the small XDG
     cache; this path never opens the archive. If the cache is cold, a displayed
@@ -180,21 +224,25 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
         return []
 
     try:
+        config = get_config()
+        from polylogue.operations.archive_root import operation_archive_root
+
+        archive_root = str(operation_archive_root(config))
         result = dispatch(
-            get_config(),
+            config,
             lower_completion(source, incomplete, limit=limit),
             deadline_ms=_COMPLETION_DEADLINE_MS,
             daemon_only=True,
         )
     except OperationUnavailableError:
-        cached = _read_completion_cache(source, incomplete, limit=limit)
+        cached = _read_completion_cache(source, incomplete, limit=limit, archive_root=archive_root)
         return cached or [completion_message(DAEMON_REQUIRED_COMPLETION_MESSAGE)]
     except Exception:
         # Deliberately broad: see the docstring. Any other typed refusal or
         # transport failure is rendered as no completion rather than a
         # traceback in the prompt.
         return []
-    _remember_completion_values(source, result.value)
+    _remember_completion_values(source, result.value, archive_root=archive_root)
     return render_completion_values(result.value)
 
 
