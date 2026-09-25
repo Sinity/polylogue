@@ -91,7 +91,7 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
         assert stored_word_count[0] == expected_word_count[0]
         assert profile_count == (1,)
 
-        assert (await composed.callback((recovered.target_session_id,))).wrote_nothing
+        assert (await composed.callback((recovered.target_session_id,))).made_no_publication_attempts
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)

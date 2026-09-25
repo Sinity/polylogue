@@ -363,8 +363,8 @@ class DerivationReport:
         return self.count(Outcome.FAILED)
 
     @property
-    def wrote_nothing(self) -> bool:
-        """True when the kernel made no publication attempt.
+    def made_no_publication_attempts(self) -> bool:
+        """True when this pass invoked no publisher.
 
         This is deliberately scoped to the kernel's work counter, not to a
         certified outcome: an adapter can commit a replacement and then fail

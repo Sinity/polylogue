@@ -127,7 +127,7 @@ def test_session_inspection_cannot_certify_a_partition_from_mixed_commits(
     restarted = _converger_for(recovered.index_db, recovered.root, adapter)
     assert restarted.converge_derivations(frame).done == 1
     assert adapter.inspect(frame, (recovered.target_session_id,)) == {recovered.target_session_id: "valid"}
-    assert restarted.converge_derivations(frame).wrote_nothing
+    assert restarted.converge_derivations(frame).made_no_publication_attempts
 
 
 @pytest.mark.asyncio

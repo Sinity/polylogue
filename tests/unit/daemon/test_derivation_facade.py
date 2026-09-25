@@ -353,7 +353,7 @@ def test_the_facade_reconstructs_the_pending_set_on_every_call() -> None:
     converger = DaemonConverger([], derivations=[adapter])
     converger.converge_derivations(FRAME)
 
-    assert converger.converge_derivations(FRAME).wrote_nothing
+    assert converger.converge_derivations(FRAME).made_no_publication_attempts
 
     adapter.output.clear()
     fresh_converger = DaemonConverger([], derivations=[adapter])
@@ -366,7 +366,7 @@ def test_a_budget_bounds_the_facade_pass_without_losing_the_remainder() -> None:
 
     assert converger.converge_derivations(FRAME, budget=1).done == 1
     assert converger.converge_derivations(FRAME, budget=1).done == 1
-    assert converger.converge_derivations(FRAME).wrote_nothing
+    assert converger.converge_derivations(FRAME).made_no_publication_attempts
 
 
 def test_the_facade_resumes_where_the_last_bounded_pass_stopped() -> None:

@@ -151,7 +151,7 @@ def test_restart_without_ops_hints_recovers_index_loss_and_new_admission(tmp_pat
     _admit(tmp_path, ("second",), path="second.json")
     restarted = _run(tmp_path)
     assert restarted.done == 2 and restarted.failed == 0
-    assert _run(tmp_path).wrote_nothing
+    assert _run(tmp_path).made_no_publication_attempts
 
 
 @pytest.mark.parametrize("mutation", ["descriptor", "blob", "generation"])
@@ -273,7 +273,7 @@ def test_discovery_budget_bounds_raw_enumeration(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 5
 
-    assert _run(tmp_path).wrote_nothing
+    assert _run(tmp_path).made_no_publication_attempts
 
 
 @pytest.mark.parametrize("limit", [1, 2])
@@ -297,7 +297,7 @@ def test_bounded_source_pass_publishes_every_selected_observation(tmp_path: Path
         ]
     before = _snapshot(tmp_path)
     unchanged = converge_raw_observations(tmp_path, source_roots=(source,), limit=limit, max_payload_bytes=1_000_000)
-    assert unchanged.wrote_nothing
+    assert unchanged.made_no_publication_attempts
     assert _snapshot(tmp_path) == before
 
 

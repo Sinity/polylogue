@@ -255,7 +255,7 @@ def test_session_summary_inspection_repairs_corruption_then_second_pass_writes_n
     repaired = converge(DerivationRegistry([adapter]), frame)
     assert repaired.done == 1
     report = converge(DerivationRegistry([adapter]), frame)
-    assert report.wrote_nothing
+    assert report.made_no_publication_attempts
 
 
 def test_session_summary_census_marks_a_corrupt_counter_stale(tmp_path: Path) -> None:
