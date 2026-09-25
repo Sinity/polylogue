@@ -137,6 +137,9 @@ class DerivationFrame:
     #: correctness state: a ``None`` scope re-enumerates required keys from
     #: the output domain after restart.
     scope: object | None = None
+    # The composed session pass discovers its index work from the transaction-
+    # owned profile demand table. Other domain passes retain full discovery.
+    profile_demand_only: bool = False
 
     def recipe_version(self, domain: str) -> str:
         return self.recipe_versions.get(domain, "")

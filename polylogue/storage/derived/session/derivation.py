@@ -623,6 +623,14 @@ class SessionProfileDerivation:
     def required_page(self, frame: object, *, cursor: str | None, limit: int) -> tuple[tuple[str, ...], str | None]:
         """Keyset-page archive work; bounded incremental scopes stay bounded too."""
         scope = self._session_scope(frame)
+        if getattr(frame, "profile_demand_only", False):
+            from polylogue.storage.derived.session.profile_demand import profile_demand_page
+
+            conn = self._read_connection()
+            try:
+                return profile_demand_page(conn, cursor=cursor, limit=limit, scope=scope)
+            finally:
+                conn.close()
         if scope is None:
             conn = self._read_connection()
             try:

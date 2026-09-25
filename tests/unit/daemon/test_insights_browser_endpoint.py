@@ -21,7 +21,9 @@ path through the in-process handler harness (same shape as
 
 from __future__ import annotations
 
+import asyncio
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
@@ -29,6 +31,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
+
+import pytest
 
 from polylogue.daemon.http import (
     INSIGHT_KINDS,
@@ -236,6 +240,82 @@ class TestInsightsEndpointDispatch:
             assert "materialized" in kinds[kind]
             assert kinds[kind]["outcome"]["state"] in {"ok", "empty"}
         assert payload["outcome"]["state"] in {"ok", "empty"}
+
+    def test_working_dir_demand_withholds_profile_readiness(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path-only change is stale even when the session timestamp stays fixed."""
+        from polylogue.daemon.execution import BoundedComputeAdapter
+        from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+        from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+
+        session_id = _seed_minimum_archive(workspace_env)
+        root = workspace_env["archive_root"]
+
+        async def converge() -> None:
+            compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+            coordinator = DaemonWriteCoordinator()
+            try:
+                composed = compose_session_profile_callback(
+                    root,
+                    compute_adapter=compute,
+                    write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+                    now=lambda: 0.0,
+                )
+                await composed.callback(None)
+            finally:
+                compute.shutdown(wait=True)
+                await coordinator.shutdown(timeout=1.0)
+
+        def profile_panel() -> dict[str, object]:
+            handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=profile")
+            _, send_json = _capture_responses(handler)
+            handler.do_GET()
+            _, payload = send_json.call_args.args
+            return cast(dict[str, object], payload["kinds"]["profile"])
+
+        asyncio.run(converge())
+        ready = profile_panel()
+        assert ready["readiness_tag"] == "q-ready"
+        assert ready["materialized"] is True
+        # Model a writer replacing the row between the archive read and the
+        # partition read. A valid newer row cannot certify the older payload.
+        from polylogue.operations import session_profile_convergence
+
+        with sqlite3.connect(root / "index.db") as conn:
+            version = int(
+                conn.execute(
+                    "SELECT materializer_version FROM session_profiles WHERE session_id = ?", (session_id,)
+                ).fetchone()[0]
+            )
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                session_profile_convergence,
+                "session_profile_partition_status",
+                lambda *_args: ("valid", "replacement-binding", version),
+            )
+            raced = profile_panel()
+        assert raced["readiness_tag"] == "q-partial"
+        assert raced["materialized"] is False
+        with sqlite3.connect(root / "index.db") as conn:
+            before = conn.execute("SELECT updated_at_ms FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+            conn.execute(
+                "INSERT INTO session_working_dirs(session_id, path, position) VALUES (?, ?, 0)",
+                (session_id, "/work/changed"),
+            )
+            conn.commit()
+            assert (
+                conn.execute("SELECT updated_at_ms FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                == before
+            )
+        stale = profile_panel()
+        assert stale["readiness_tag"] == "q-partial"
+        assert stale["materialized"] is False
+        assert cast(dict[str, object], stale["outcome"])["state"] == "degraded"
+        assert cast(dict[str, object], stale["staleness"])["stale"] is True
+
+        asyncio.run(converge())
+        assert profile_panel()["readiness_tag"] == "q-ready"
 
     def test_include_param_restricts_kinds(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_minimum_archive(workspace_env)

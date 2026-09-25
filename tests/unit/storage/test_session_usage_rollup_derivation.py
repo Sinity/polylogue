@@ -522,8 +522,14 @@ def test_prepared_profile_requires_a_current_usage_certificate(archive: tuple[Pa
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN")
         prepared = prepare_session_insight_partition(conn, session_id)
+        pending = conn.execute(
+            "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        expected_demand_revision = 0 if pending is None else int(pending[0])
     with write_lease("test.prepared_refusal"), closing(_write_connection(index_db)) as conn:
-        assert publish_prepared_session_profile(conn, prepared) is False
+        assert (
+            publish_prepared_session_profile(conn, prepared, expected_demand_revision=expected_demand_revision) is False
+        )
     assert _usage_rows(index_db, session_id) == before_usage
     with closing(_read_connection(index_db)) as conn:
         assert (
@@ -546,7 +552,11 @@ def test_prepared_profile_requires_a_current_usage_certificate(archive: tuple[Pa
         conn.row_factory = sqlite3.Row
         conn.execute("BEGIN")
         fresh = prepare_session_insight_partition(conn, session_id)
+        pending = conn.execute(
+            "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        expected_demand_revision = 0 if pending is None else int(pending[0])
     with write_lease("test.prepared_success"), closing(_write_connection(index_db)) as conn:
-        assert publish_prepared_session_profile(conn, fresh) is True
+        assert publish_prepared_session_profile(conn, fresh, expected_demand_revision=expected_demand_revision) is True
     assert _rollup_status(index_db, session_id) == "valid"
     assert _profile_status(index_db, session_id) == "valid"

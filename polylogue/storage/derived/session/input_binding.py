@@ -43,6 +43,8 @@ __all__ = [
     "SESSION_INPUT_EXCLUDED_COLUMNS",
     "SESSION_INPUT_PROJECTION_COLUMNS",
     "SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS",
+    "SESSION_WORKING_DIR_PROJECTION_COLUMNS",
+    "SESSION_WORKING_DIR_EXCLUDED_COLUMNS",
     "SESSION_ROW_EXCLUDED_COLUMNS",
     "SESSION_ROW_PROJECTION_COLUMNS",
     "SessionInputDigest",
@@ -57,7 +59,7 @@ __all__ = [
 #: Bumped when the meaning of a session-scoped derivation changes without the
 #: projection changing. Every stored binding compares unequal afterwards, which
 #: is the whole invalidation mechanism: there is no separate freshness ledger.
-SESSION_INPUT_RECIPE_VERSION = "4"
+SESSION_INPUT_RECIPE_VERSION = "5"
 
 #: The exact session-row columns session-scoped aggregates read. The profile
 #: caches several of these directly (``source_sort_key``, ``source_updated_at``,
@@ -188,6 +190,11 @@ SESSION_PROVIDER_USAGE_EVENT_PROJECTION_COLUMNS: tuple[str, ...] = (
     "total_reasoning_output_tokens",
     "total_tokens",
 )
+
+SESSION_WORKING_DIR_PROJECTION_COLUMNS: tuple[str, ...] = ("position", "path")
+SESSION_WORKING_DIR_EXCLUDED_COLUMNS: Mapping[str, str] = {
+    "session_id": "the partition key: the projection selects and orders by it",
+}
 
 #: The same partition for the three non-message input relations the binding
 #: also projects. Each entry says why the column is not a value the profile
@@ -357,6 +364,20 @@ ORDER BY se.session_id, se.position
 """
 
 
+def session_working_dir_binding_sql(session_count: int) -> str:
+    """Ordered working-directory values consumed by profile hydration."""
+    if session_count < 1:
+        raise ValueError("session_working_dir_binding_sql requires at least one session")
+    placeholders = ",".join("?" * session_count)
+    projected = ", ".join(f"swd.{column}" for column in SESSION_WORKING_DIR_PROJECTION_COLUMNS)
+    return f"""
+SELECT swd.session_id, {projected}
+FROM session_working_dirs AS swd
+WHERE swd.session_id IN ({placeholders})
+ORDER BY swd.session_id, swd.position, swd.path
+"""
+
+
 def session_provider_usage_event_binding_sql(session_count: int) -> str:
     """Ordered provider-usage projection consumed by the usage-rollup refresh."""
     if session_count < 1:
@@ -463,6 +484,7 @@ def session_input_bindings(
         ("attachments", session_attachment_binding_sql(len(unique))),
         ("session_events", session_event_binding_sql(len(unique))),
         ("provider_usage_events", session_provider_usage_event_binding_sql(len(unique))),
+        ("session_working_dirs", session_working_dir_binding_sql(len(unique))),
     ):
         cursor = conn.execute(sql, unique)
         try:
@@ -496,6 +518,7 @@ async def session_input_bindings_async(
         ("attachments", session_attachment_binding_sql(len(unique))),
         ("session_events", session_event_binding_sql(len(unique))),
         ("provider_usage_events", session_provider_usage_event_binding_sql(len(unique))),
+        ("session_working_dirs", session_working_dir_binding_sql(len(unique))),
     ):
         async with conn.execute(sql, unique) as cursor:
             async for row in cursor:

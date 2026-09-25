@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from dataclasses import asdict
 from pathlib import Path
@@ -16,6 +17,7 @@ from polylogue.daemon.session_profile_composition import compose_session_profile
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import make_session_profile_frame
 from polylogue.storage.derived.session.derivation import SESSION_PROFILE_DOMAIN, SESSION_PROFILE_RECIPE_VERSION
+from polylogue.storage.derived.session.input_binding import session_input_bindings
 from polylogue.storage.derived.session.marker_domain import SESSION_MARKER_DOMAIN, SESSION_MARKER_RECIPE_VERSION
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_DOMAIN, SESSION_SUMMARY_RECIPE_VERSION
 from polylogue.storage.derived.session.usage_rollup import (
@@ -23,6 +25,85 @@ from polylogue.storage.derived.session.usage_rollup import (
     session_usage_rollup_recipe_version,
 )
 from tests.infra.convergence_harness import seed_partial_convergence_archive
+
+
+@pytest.mark.asyncio
+async def test_working_dir_edits_refresh_profile_through_composed_demand(tmp_path: Path) -> None:
+    """A path-only edit moves the input fence and the published cwd evidence."""
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    session_id = recovered.target_session_id
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        assert (await composed.callback((session_id,))).done
+        with sqlite3.connect(recovered.index_db) as conn:
+            original_session = conn.execute(
+                "SELECT content_hash, updated_at_ms, message_count FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            original_messages = conn.execute(
+                "SELECT message_id, content_hash, input_tokens FROM messages WHERE session_id = ? ORDER BY position",
+                (session_id,),
+            ).fetchall()
+            previous_binding = session_input_bindings(conn, (session_id,))[session_id]
+
+        edits = (
+            (
+                "INSERT INTO session_working_dirs(session_id, path, position) VALUES (?, ?, 0)",
+                (session_id, "/work/one"),
+                "/work/one",
+            ),
+            ("UPDATE session_working_dirs SET path = ? WHERE session_id = ?", ("/work/two", session_id), "/work/two"),
+            ("DELETE FROM session_working_dirs WHERE session_id = ?", (session_id,), None),
+        )
+        for sql, params, expected_path in edits:
+            with sqlite3.connect(recovered.index_db) as conn:
+                conn.execute(sql, params)
+                conn.commit()
+                changed_binding = session_input_bindings(conn, (session_id,))[session_id]
+                assert changed_binding != previous_binding
+                assert conn.execute(
+                    "SELECT input_content_hash FROM session_profiles WHERE session_id = ?", (session_id,)
+                ).fetchone() == (None,)
+                assert (
+                    conn.execute("SELECT 1 FROM session_profile_demand WHERE session_id = ?", (session_id,)).fetchone()
+                    is not None
+                )
+            report = await composed.callback((session_id,))
+            assert any(
+                item.key.domain == SESSION_PROFILE_DOMAIN and item.outcome is Outcome.DONE for item in report.outcomes
+            )
+            with sqlite3.connect(recovered.index_db) as conn:
+                stored_binding, evidence_json = conn.execute(
+                    "SELECT input_content_hash, evidence_payload_json FROM session_profiles WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                assert stored_binding == changed_binding
+                cwd_paths = json.loads(evidence_json)["cwd_paths"]
+                assert (expected_path in cwd_paths) if expected_path is not None else not cwd_paths
+                assert (
+                    conn.execute(
+                        "SELECT content_hash, updated_at_ms, message_count FROM sessions WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone()
+                    == original_session
+                )
+                assert (
+                    conn.execute(
+                        "SELECT message_id, content_hash, input_tokens FROM messages WHERE session_id = ? ORDER BY position",
+                        (session_id,),
+                    ).fetchall()
+                    == original_messages
+                )
+            previous_binding = changed_binding
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
 
 
 @pytest.mark.asyncio
@@ -91,7 +172,38 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
         assert stored_word_count[0] == expected_word_count[0]
         assert profile_count == (1,)
 
-        assert (await composed.callback((recovered.target_session_id,))).made_no_publication_attempts
+        scoped_unchanged = await composed.callback((recovered.target_session_id,))
+        assert scoped_unchanged.made_no_publication_attempts
+        assert scoped_unchanged.work.inspected == 0
+
+        # The periodic pass still owns another seed obligation. It may settle
+        # that session once, then its next unchanged pass has no index work.
+        periodic = await composed.callback(None)
+        assert any(item.key.key == recovered.unrelated_session_id for item in periodic.outcomes)
+        periodic_unchanged = await composed.callback(None)
+        assert periodic_unchanged.made_no_publication_attempts
+        assert periodic_unchanged.work.inspected == 0
+
+        with sqlite3.connect(recovered.index_db) as conn:
+            conn.execute(
+                "UPDATE messages SET input_tokens = COALESCE(input_tokens, 0) + 1 WHERE session_id = ?",
+                (recovered.target_session_id,),
+            )
+            conn.commit()
+        changed = await composed.callback((recovered.target_session_id,))
+        assert any(
+            item.key.domain == SESSION_PROFILE_DOMAIN and item.outcome is Outcome.DONE for item in changed.outcomes
+        )
+        assert changed.work.inspected >= 3
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert (
+                conn.execute(
+                    "SELECT 1 FROM session_profile_demand WHERE session_id = ?",
+                    (recovered.target_session_id,),
+                ).fetchone()
+                is None
+            )
+        assert (await composed.callback(None)).work.inspected == 0
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)

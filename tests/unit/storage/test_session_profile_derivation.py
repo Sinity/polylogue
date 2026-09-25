@@ -1084,8 +1084,10 @@ async def test_async_profile_inspection_honors_demand_without_a_binding_change(
     assert statuses[session_id] == "stale"
 
 
+@pytest.mark.parametrize("seed_field", ["materializer_version", "summary_recipe_version", "usage_recipe_version"])
 def test_recipe_seed_includes_orphaned_profile_partitions(
     marker_archive: tuple[Path, Path, str],
+    seed_field: str,
 ) -> None:
     """A one-time recipe seed also schedules retained rows whose source vanished."""
     root, index_db, session_id = marker_archive
@@ -1093,7 +1095,11 @@ def test_recipe_seed_includes_orphaned_profile_partitions(
     with write_lease("test.profile-recipe-seed"), closing(sqlite3.connect(index_db)) as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM session_profile_demand WHERE session_id = ?", (session_id,))
-        conn.execute("UPDATE session_profile_demand_state SET materializer_version = -1 WHERE singleton = 1")
+        invalid_value = -1 if seed_field == "materializer_version" else "previous-recipe"
+        conn.execute(
+            f"UPDATE session_profile_demand_state SET {seed_field} = ? WHERE singleton = 1",
+            (invalid_value,),
+        )
         conn.commit()
 
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL

@@ -4537,9 +4537,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if "profile" in includes:
             from polylogue.analysis.archive import SessionProfileInsight
+            from polylogue.config import active_archive_root
+            from polylogue.operations.session_profile_convergence import session_profile_partition_status
             from polylogue.storage.derived.session.profiles import hydrate_session_profile
 
             profile_outcome: OutcomeEnvelope | None = None
+            partition_status: str | None = None
+            profile_row_matches = False
             try:
                 # Archive read returns the full record directly; hydrate it into
                 # the domain ``SessionProfile`` for the panel projection. Native
@@ -4547,6 +4551,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 # materialized, so the except below is the unavailable-surface
                 # path, not the unmaterialized one.
                 profile_record = await poly.get_session_profile_record(conv_id)
+                if profile_record is not None:
+                    partition_status, stored_binding, stored_version = await asyncio.to_thread(
+                        session_profile_partition_status, active_archive_root(poly.config), conv_id
+                    )
+                    profile_row_matches = (
+                        profile_record.input_content_hash is not None
+                        and profile_record.input_content_hash == stored_binding
+                        and profile_record.materializer_version == stored_version
+                    )
             except ArchiveInsightUnavailableError as exc:
                 # The insight surface could not answer; the panel reports
                 # q-error rather than 503-ing the whole envelope.
@@ -4563,16 +4576,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 if profile is not None and profile_insight is not None
                 else _empty_profile_panel_payload(profile_outcome or decide_outcome(matched=0))
             )
+            if profile is not None and (partition_status != "valid" or not profile_row_matches):
+                # The retained row remains readable as evidence, but it is
+                # not a current materialization of this session's inputs.
+                row_count = int(profile.message_count or 0)
+                panel["outcome"] = decide_outcome(matched=row_count, degraded=("session_profile_stale",)).to_dict()
+                panel["readiness_tag"] = "q-partial"
+                panel["materialized"] = False
             panel_outcomes.append(OutcomeEnvelope.model_validate(panel["outcome"]))
-            # Compare the materialized record's provenance against the
-            # session's current ``updated_at`` via the typed
-            # :func:`polylogue.analysis.provenance.is_stale` helper so the
-            # reader sees explicit staleness, not just q-ready/q-missing
-            # presence chips.
+            # Retain provenance time diagnostics alongside the exact profile
+            # partition verdict used for readiness above.
             if profile is not None:
                 conv_updated_at = conv.updated_at.isoformat() if conv.updated_at else None
                 staleness = _profile_staleness(profile_record, conv_updated_at)
                 if staleness is not None:
+                    if partition_status != "valid" or not profile_row_matches:
+                        staleness["stale"] = True
+                        staleness["reason"] = "session_profile_stale"
                     panel["staleness"] = staleness
             kinds["profile"] = panel
 

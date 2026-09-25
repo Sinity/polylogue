@@ -474,6 +474,14 @@ class SessionUsageRollupDerivation:
         if limit < 1:
             raise ValueError("session usage rollup page limit must be positive")
         scope = self._session_scope(frame)
+        if getattr(frame, "profile_demand_only", False):
+            from polylogue.storage.derived.session.profile_demand import profile_demand_page
+
+            conn = self._read_connection()
+            try:
+                return profile_demand_page(conn, cursor=cursor, limit=limit, scope=scope)
+            finally:
+                conn.close()
         if scope is not None:
             keys = tuple(sorted(dict.fromkeys(str(key) for key in scope)))
             start = bisect.bisect(keys, cursor) if cursor is not None else 0
