@@ -164,6 +164,8 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
             temporary = stream.name
             os.fchmod(stream.fileno(), 0o600)
             json.dump({"version": _COMPLETION_CACHE_VERSION, "archive_root": archive_root, "values": values}, stream)
+        # This disposable cache does not require a durability barrier on each TAB press.
+        # ast-grep-ignore: replace-without-parent-fsync
         os.replace(temporary, path)
     except OSError:
         pass
@@ -220,14 +222,14 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
         from polylogue.cli.lowering import lower_completion
         from polylogue.cli.operation_kernel import OperationUnavailableError, dispatch
         from polylogue.config import get_config
+        from polylogue.operations.archive_root import operation_archive_root
+
+        config = get_config()
+        archive_root = str(operation_archive_root(config))
     except Exception:
         return []
 
     try:
-        config = get_config()
-        from polylogue.operations.archive_root import operation_archive_root
-
-        archive_root = str(operation_archive_root(config))
         result = dispatch(
             config,
             lower_completion(source, incomplete, limit=limit),
