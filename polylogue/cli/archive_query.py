@@ -753,6 +753,16 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         env.record_timing("db-open", db_open_started_at)
         raw_items = payload.get("items")
         items = [item for item in raw_items if isinstance(item, dict)] if isinstance(raw_items, list) else []
+        item_key = "items"
+        if not items:
+            raw_projected_items = payload.get("projected_items")
+            items = (
+                [item for item in raw_projected_items if isinstance(item, dict)]
+                if isinstance(raw_projected_items, list)
+                else []
+            )
+            if items:
+                item_key = "projected_items"
         if not items:
             _emit_unit_no_results(payload, unit=unit_source.unit, output_format=output_format)
         text_line = (
@@ -760,7 +770,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             if payload.get("mode") == "query-unit-aggregate"
             else _query_unit_text_line(unit_source.unit)
         )
-        emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields)
+        emit_rows(payload, items, output_format=output_format, text_line=text_line, fields=fields, item_key=item_key)
         return
 
     if aggregate is not None:

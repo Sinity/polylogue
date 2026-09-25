@@ -2856,9 +2856,31 @@ async def test_query_units_selects_message_fields_without_materializing_full_row
                 ),
             )
 
+        projection_reads: set[tuple[str, str]] = set()
+        query_message_projection = ArchiveStore.query_message_projection
+
+        def _record_projection_reads(self: ArchiveStore, *args: object, **kwargs: object) -> object:
+            def _authorizer(
+                action: int,
+                table: str | None,
+                column: str | None,
+                _database: str | None,
+                _trigger: str | None,
+            ) -> int:
+                if action == sqlite3.SQLITE_READ and table is not None and column is not None:
+                    projection_reads.add((table, column))
+                return sqlite3.SQLITE_OK
+
+            self._conn.set_authorizer(_authorizer)
+            try:
+                return query_message_projection(self, *args, **kwargs)
+            finally:
+                self._conn.set_authorizer(None)
+
         def _full_row_fallback(*args: object, **kwargs: object) -> object:
             raise AssertionError("message select must use the field projection read")
 
+        monkeypatch.setattr(ArchiveStore, "query_message_projection", _record_projection_reads)
         monkeypatch.setattr(ArchiveStore, "query_messages", _full_row_fallback)
         first = await archive.query_units("messages where role:user | select message_id, role", limit=1)
         assert first.outcome.state == "ok"
@@ -2870,6 +2892,8 @@ async def test_query_units_selects_message_fields_without_materializing_full_row
             "message_id": "codex-session:unit-field-select:n:u1",
             "role": "user",
         }
+        assert {("messages", "message_id"), ("messages", "role")} <= projection_reads
+        assert not {table for table, _column in projection_reads if table == "blocks"}
         assert first.continuation is not None
 
         second = await archive.query_units(continuation=first.continuation)

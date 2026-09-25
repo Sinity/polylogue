@@ -18,6 +18,7 @@ from polylogue.cli.archive_query import (
     _decode_cursor,
     _emit_delete,
     _emit_stats,
+    _execute_archive_query_stdout,
     _has_value,
     _limit,
     _message_type,
@@ -60,10 +61,70 @@ from polylogue.cli.render.rows import (
 from polylogue.cli.render.rows import (
     summary_line_renderer as _summary_line_renderer,
 )
+from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+
+
+@pytest.mark.parametrize("output_format", ["json", "yaml", "ndjson", "csv", "plaintext"])
+def test_message_select_renders_projected_items_from_the_unit_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], output_format: str
+) -> None:
+    """The root CLI consumes message projection rows rather than treating ``items=[]`` as empty.
+
+    The real query-unit handler receives the public envelope produced by the
+    operation boundary.  Anti-vacuity: restoring its old ``payload[\"items\"]``
+    only read makes every format take the no-results exit before it renders
+    the selected message id and role.
+    """
+    import polylogue.cli.archive_query as archive_query
+
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
+    payload: dict[str, object] = {
+        "mode": "query-unit",
+        "unit": "message",
+        "items": [],
+        "projected_items": [{"message_id": "codex-session:projected:n:u1", "role": "user"}],
+        "outcome": {"state": "ok", "reason": None, "detail": {}},
+    }
+    monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
+    monkeypatch.setattr(archive_query, "daemon_route_disabled", lambda *, flag=False: False)
+    monkeypatch.setattr(archive_query, "dispatch_read", lambda *_args, **_kwargs: (payload, None))
+
+    _execute_archive_query_stdout(
+        AppEnv(),
+        RootModeRequest.from_params(
+            {
+                "query": ("messages where role:user | select message_id, role",),
+                "output_format": output_format,
+                "limit": 1,
+            }
+        ),
+    )
+
+    rendered = capsys.readouterr().out
+    expected = {"message_id": "codex-session:projected:n:u1", "role": "user"}
+    if output_format == "json":
+        document = json.loads(rendered)
+        assert document["items"] == []
+        assert document["projected_items"] == [expected]
+        assert document["outcome"]["state"] == "ok"
+    elif output_format == "yaml":
+        import yaml
+
+        document = yaml.safe_load(rendered)
+        assert document["items"] == []
+        assert document["projected_items"] == [expected]
+        assert document["outcome"]["state"] == "ok"
+    elif output_format == "ndjson":
+        assert [json.loads(line) for line in rendered.splitlines()] == [expected]
+    elif output_format == "csv":
+        assert list(csv.DictReader(io.StringIO(rendered))) == [expected]
+    else:
+        assert "codex-session:projected:n:u1 [user]" in rendered
 
 
 def test_session_list_row_renders_read_time_display_label() -> None:

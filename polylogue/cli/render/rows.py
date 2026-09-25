@@ -143,6 +143,7 @@ def emit_rows(
     output_format: str,
     text_line: TextLine,
     fields: str | None,
+    item_key: str = "items",
 ) -> None:
     """Write one terminal envelope's rows in the requested format.
 
@@ -159,22 +160,22 @@ def emit_rows(
         env.finish_timing("execute")
         env.begin_timing("render")
     try:
-        projected_items = [project_payload(item, fields) for item in items]
+        rendered_items = [project_payload(item, fields) for item in items]
         if output_format == "json":
-            projected_envelope = {**envelope, "items": projected_items}
+            projected_envelope = {**envelope, item_key: rendered_items}
             click.echo(json.dumps(projected_envelope, indent=2, sort_keys=True))
             return
         if output_format == "ndjson":
-            for item in projected_items:
+            for item in rendered_items:
                 click.echo(json.dumps(item, sort_keys=True))
             return
         if output_format == "csv":
-            click.echo(csv_text(projected_items), nl=False)
+            click.echo(csv_text(rendered_items), nl=False)
             return
         if output_format == "yaml":
             import yaml
 
-            projected_envelope = {**envelope, "items": projected_items}
+            projected_envelope = {**envelope, item_key: rendered_items}
             click.echo(yaml.safe_dump(projected_envelope, sort_keys=False, allow_unicode=True), nl=False)
             return
         if output_format not in {"markdown", "plaintext"}:
