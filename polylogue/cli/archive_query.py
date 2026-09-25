@@ -158,24 +158,6 @@ def _read_failure_detail(exc: Exception) -> str:
     return str(getattr(exc, "detail", None) or exc)
 
 
-def _is_daemon_unavailable(exc: Exception) -> bool:
-    """Is this failure "no daemon answered", rather than a fact about the archive?
-
-    The distinction decides whether the missing-archive branch may claim the
-    read. A daemon that did not answer says nothing about what the archive
-    holds, and browse mode renders a missing archive as a *valid empty answer*
-    -- so routing a ``daemon_required`` refusal through that branch made
-    ``polylogue read --all`` print ``outcome: empty (no_rows_in_scope)`` and
-    exit 0 for a read that was never executed. That is the silent failure
-    polylogue-3eexy names, and the direct-read fallback is all that hides it
-    today: once the CLI no longer executes reads in-process, this branch is
-    what the operator would see.
-    """
-    from polylogue.cli.operation_kernel import OperationUnavailableError
-
-    return isinstance(exc, OperationUnavailableError)
-
-
 def _is_session_not_found(exc: Exception) -> bool:
     """Whether the daemon completed a read and rejected its session identity.
 
@@ -897,17 +879,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             # session, not a malformed command line: same wording and exit
             # class as an exact-ref read of the same reference.
             _fail(f"Session not found: {session_scope_id}")
-        if not index_db_path.exists() and not _is_daemon_unavailable(exc):
-            _missing_archive_refusal(
-                params,
-                index_db_path=index_db_path,
-                output_format=output_format,
-                origin=origin,
-                query=query,
-                fields=fields,
-                typo_hint=typo_hint,
-            )
-            return
         _read_failure_as_usage_error(exc)
     env.record_timing("db-open", db_open_started_at)
     if bool(params.get("verbose")):
