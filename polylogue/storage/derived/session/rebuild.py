@@ -1966,6 +1966,14 @@ def rebuild_session_insights_sync(
             t0 = time.perf_counter()
             reconcile_session_usage_rollups(conn, chunk)
             add_timing("reconcile_session_usage_rollups", t0)
+        demand_placeholders = ",".join("?" * len(chunk))
+        demand_revisions = {
+            str(row[0]): int(row[1])
+            for row in conn.execute(
+                f"SELECT session_id, revision FROM session_profile_demand WHERE session_id IN ({demand_placeholders})",
+                chunk,
+            ).fetchall()
+        }
         if chunk_degraded_ids and not chunk_full_ids:
             t0 = time.perf_counter()
             degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
@@ -2039,19 +2047,13 @@ def rebuild_session_insights_sync(
         )
         add_timing("write_latency_profiles", t0)
         # A bulk rebuild also completes local profile demand. Acknowledge only
-        # rows whose exact input digest still matches inside the same index
-        # transaction as both retained profile relations.
-        expected_bindings = {
-            str(bundle.profile_record.session_id): bundle.profile_record.input_content_hash
-            for bundle in record_bundles
-            if bundle.profile_record.input_content_hash is not None
-        }
-        current_bindings = session_input_bindings(conn, tuple(expected_bindings)) if expected_bindings else {}
-        for demanded_session_id, expected_binding in expected_bindings.items():
-            if current_bindings.get(demanded_session_id) == expected_binding:
+        # the exact captured revision inside the same index transaction as
+        # both retained profile relations; a later writer's revision survives.
+        for demanded_session_id, expected_revision in demand_revisions.items():
+            if expected_revision > 0:
                 conn.execute(
-                    "DELETE FROM session_profile_demand WHERE session_id = ?",
-                    (demanded_session_id,),
+                    "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
+                    (demanded_session_id, expected_revision),
                 )
         if marker_conn is not None:
             _lower_marker_candidates(marker_conn, record_bundles)
