@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+import uuid
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -852,6 +853,144 @@ ContentCacheKey = tuple[Provider, str, str, str | None]
 _DEFAULT_CONTENT_CACHE_BYTES: Final[int] = 256 * 1024 * 1024
 
 
+class RetainedPreparationRetryableError(RuntimeError):
+    """A supplied retained parse cannot be trusted; retry without quarantining bytes."""
+
+
+@dataclass(slots=True)
+class PreparedRetainedInput:
+    raw_id: str
+    provider: Provider
+    blob_hash: str
+    source_path: str
+    revision_kind: RawRevisionKind
+    payload_bytes: int
+    native_id: str | None
+    parser_fingerprint: str
+    fallback_timestamp: str | None
+    sessions_path: Path | None
+    parser_error: str | None = None
+    enriched: bool = False
+
+
+def prepare_retained_jsonl_carrier(
+    raw_id: str,
+    provider_token: str,
+    blob_hash: str,
+    source_path: str,
+    kind_token: str,
+    native_id: str | None,
+    blob_root: str,
+    source_db_path: str,
+    directory: str,
+) -> tuple[str | None, str | None]:
+    """Decode retained JSONL in a worker, returning only a private carrier path."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    provider = Provider(provider_token)
+    if not is_stream_record_provider(source_path, str(provider)):
+        raise RetainedPreparationRetryableError(f"retained JSONL worker cannot parse {raw_id}")
+    kind = RawRevisionKind(kind_token)
+    fallback_id = native_id if kind is RawRevisionKind.APPEND else None
+    path = Path(directory) / f"retained-{uuid.uuid4().hex}.pickle"
+    try:
+        publisher = ArchiveBlobPublisher(Path(source_db_path), Path(blob_root))
+        with publisher.open(blob_hash) as stream:
+            sessions = _parse_stream(
+                provider,
+                stream,
+                source_path,
+                fallback_id_override=fallback_id,
+                archive_root=Path(blob_root).parent,
+            )
+    except (OSError, sqlite3.OperationalError) as exc:
+        raise RetainedPreparationRetryableError(f"retained JSONL read failed for raw {raw_id}") from exc
+    except Exception as exc:
+        return None, str(exc)
+    try:
+        with path.open("xb") as handle:
+            pickle.dump(sessions, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        return str(path), None
+    except Exception as exc:
+        path.unlink(missing_ok=True)
+        raise RetainedPreparationRetryableError(f"retained JSONL carrier write failed for raw {raw_id}") from exc
+
+
+def _prepared_retained_outcome(
+    archive: ArchiveStore, raw_id: str, prepared_inputs: Mapping[str, PreparedRetainedInput]
+) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+    prepared = prepared_inputs.get(raw_id)
+    if prepared is None:
+        raise RetainedPreparationRetryableError(f"prepared retained input is missing for raw {raw_id}")
+    provider, blob_hash, source_path, kind, size = archive.raw_revision_descriptor(raw_id)
+    native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
+    fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
+    mismatched = (
+        ("raw_id", prepared.raw_id, raw_id),
+        ("provider", prepared.provider, provider),
+        ("blob_hash", prepared.blob_hash, blob_hash),
+        ("source_path", prepared.source_path, source_path),
+        ("payload_bytes", prepared.payload_bytes, size),
+        ("native_id", prepared.native_id, native_id),
+        ("parser_fingerprint", prepared.parser_fingerprint, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        ("fallback_timestamp", prepared.fallback_timestamp, fallback_timestamp),
+    )
+    changed = [name for name, expected, actual in mismatched if expected != actual]
+    if prepared.revision_kind != kind and not (
+        prepared.revision_kind is RawRevisionKind.UNKNOWN and kind is RawRevisionKind.FULL
+    ):
+        changed.append("revision_kind")
+    if changed:
+        raise RetainedPreparationRetryableError(
+            f"prepared retained descriptor changed for raw {raw_id}: {', '.join(changed)}"
+        )
+    from polylogue.storage.blob_store import BlobStore
+
+    if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash):
+        raise RetainedPreparationRetryableError(f"prepared retained blob changed for raw {raw_id}")
+    if prepared.parser_error is not None:
+        return RuntimeError(prepared.parser_error)
+    if prepared.sessions_path is None:
+        raise RetainedPreparationRetryableError(f"prepared retained carrier is missing for raw {raw_id}")
+    try:
+        with prepared.sessions_path.open("rb") as handle:
+            sessions = pickle.load(handle)
+    except Exception as exc:
+        raise RetainedPreparationRetryableError(f"prepared retained carrier unavailable for raw {raw_id}") from exc
+    if not isinstance(sessions, list) or any(not isinstance(session, ParsedSession) for session in sessions):
+        raise RetainedPreparationRetryableError(f"prepared retained carrier is invalid for raw {raw_id}")
+    if prepared.enriched:
+        return sessions, size, kind
+    descriptor = (provider, blob_hash, source_path, kind, size, native_id)
+    outcome = _enrich_retained_parse_outcome(archive, raw_id, descriptor=descriptor, outcome=(sessions, size, kind))
+    if isinstance(outcome, Exception):
+        raise RetainedPreparationRetryableError(f"prepared retained enrichment failed for raw {raw_id}") from outcome
+    staged = prepared.sessions_path.with_name(f"{prepared.sessions_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with staged.open("xb") as handle:
+            pickle.dump(outcome[0], handle, protocol=pickle.HIGHEST_PROTOCOL)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(staged, prepared.sessions_path)
+        _fsync_directory(prepared.sessions_path.parent)
+    except Exception as exc:
+        raise RetainedPreparationRetryableError(
+            f"prepared retained enrichment carrier failed for raw {raw_id}"
+        ) from exc
+    finally:
+        staged.unlink(missing_ok=True)
+    prepared.enriched = True
+    return outcome
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 class RawParsePrefetchCache:
     """Bounded, thread-safe store of parse results computed off the writer hold.
 
@@ -1303,6 +1442,7 @@ def _census_historical_revision_evidence(
     ingest_workers: int = 1,
     commit_batch_size: int | None = None,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
 ) -> _RevisionCensusState:
     """Persist a complete bounded parser census without mutating index.db.
 
@@ -1620,7 +1760,11 @@ def _census_historical_revision_evidence(
                 # forbids concurrent parse threads -- ~5000x writer commit
                 # latency -- was taken on a GIL build.
                 with stream_retained_raws(
-                    archive, dispatch_raw_ids, ingest_workers=ingest_workers, prefetch_cache=prefetch_cache
+                    archive,
+                    dispatch_raw_ids,
+                    ingest_workers=ingest_workers,
+                    prefetch_cache=prefetch_cache,
+                    prepared_inputs=prepared_inputs,
                 ) as parsed_outcomes:
                     for raw_id, source_index in pending_rows:
                         if raw_id in head_by_older:
@@ -1646,7 +1790,11 @@ def _census_historical_revision_evidence(
                     # individually, exactly as if no chain had been proven.
                     fallback_outcomes = (
                         _parse_retained_raws(
-                            archive, unresolved, ingest_workers=ingest_workers, prefetch_cache=prefetch_cache
+                            archive,
+                            unresolved,
+                            ingest_workers=ingest_workers,
+                            prefetch_cache=prefetch_cache,
+                            prepared_inputs=prepared_inputs,
                         )
                         if unresolved
                         else {}
@@ -1677,6 +1825,7 @@ def _census_historical_revision_evidence(
                                     [older_raw_id],
                                     ingest_workers=ingest_workers,
                                     prefetch_cache=prefetch_cache,
+                                    prepared_inputs=prepared_inputs,
                                 ),
                             )
                             index += 1
@@ -1707,6 +1856,7 @@ def _load_frozen_revision_evidence(
     max_payload_bytes: int | None,
     ingest_workers: int,
     prefetch_cache: RawParsePrefetchCache | None,
+    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     shard_transport: _FrozenReplayShardTransport | None = None,
 ) -> _RevisionCensusState:
     """Parse a phase-2 source snapshot without changing its durable ledger."""
@@ -1743,6 +1893,7 @@ def _load_frozen_revision_evidence(
         archive,
         parseable_raw_ids,
         ingest_workers=ingest_workers,
+        prepared_inputs=prepared_inputs,
         prefetch_cache=prefetch_cache,
     )
     state = _RevisionCensusState(0, 0, 0, set(), {}, {}, set(frozen_codex_state_raw_ids))
@@ -2593,6 +2744,7 @@ def backfill_historical_revision_evidence(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     pipeline_decode: bool | None = None,
     deadline_check: Callable[[], None] | None = None,
     use_session_shards: bool = False,
@@ -2785,6 +2937,7 @@ def backfill_historical_revision_evidence(
             archive_root,
             index_path=active_index_path,
             max_cached_payload_bytes=spill_cache_bytes,
+            prepared_inputs=prepared_inputs,
         ) as spill,
         prepare_pool if prepare_pool is not None else nullcontext(),
     ):
@@ -2802,6 +2955,7 @@ def backfill_historical_revision_evidence(
                 max_payload_bytes=max_payload_bytes,
                 ingest_workers=ingest_workers,
                 prefetch_cache=prefetch_cache,
+                prepared_inputs=prepared_inputs,
                 shard_transport=shard_transport,
             )
         else:
@@ -2813,6 +2967,7 @@ def backfill_historical_revision_evidence(
                 ingest_workers=ingest_workers,
                 commit_batch_size=commit_batch_size,
                 prefetch_cache=prefetch_cache,
+                prepared_inputs=prepared_inputs,
             )
         stage_timings["census"] = time.perf_counter() - census_started
         receipt_started = time.perf_counter()
@@ -2854,7 +3009,7 @@ def backfill_historical_revision_evidence(
         # raw_session_memberships): the live raw-materialization path
         # (storage/derived/raw.py) replays ONE authority component per call,
         # where a prefetcher could never get ahead of the writer anyway.
-        effective_pipeline_decode = (
+        effective_pipeline_decode = prepared_inputs is None and (
             pipeline_decode
             if pipeline_decode is not None
             else (
@@ -3469,6 +3624,7 @@ def _parse_retained_raws(
     *,
     ingest_workers: int,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
     """Parse a batch of retained raws, deduplicating byte-identical inputs.
 
@@ -3512,7 +3668,11 @@ def _parse_retained_raws(
     is byte-identical to today's behavior.
     """
     with stream_retained_raws(
-        archive, raw_ids, ingest_workers=ingest_workers, prefetch_cache=prefetch_cache
+        archive,
+        raw_ids,
+        ingest_workers=ingest_workers,
+        prefetch_cache=prefetch_cache,
+        prepared_inputs=prepared_inputs,
     ) as outcomes:
         return {raw_id: outcomes[raw_id] for raw_id in raw_ids}
 
@@ -3756,6 +3916,7 @@ def stream_retained_raws(
     *,
     ingest_workers: int,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
 ) -> Iterator[_OrderedParseOutcomes]:
     """Parse ``raw_ids`` lazily, in caller order, with the executor owned here.
 
@@ -3768,6 +3929,23 @@ def stream_retained_raws(
     exit the executor is shut down and queued work cancelled, whether the body
     completed or raised.
     """
+    if prepared_inputs is not None:
+        strict_inputs = prepared_inputs
+
+        class PreparedOutcomes(Mapping[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]):
+            def __iter__(self) -> Iterator[str]:
+                return iter(raw_ids)
+
+            def __len__(self) -> int:
+                return len(raw_ids)
+
+            def __getitem__(self, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
+                if raw_id not in raw_ids:
+                    raise KeyError(raw_id)
+                return _prepared_retained_outcome(archive, raw_id, strict_inputs)
+
+        yield cast("_OrderedParseOutcomes", PreparedOutcomes())
+        return
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
     for raw_id in raw_ids:
         provider, blob_hash, source_path, kind, size = archive.raw_revision_descriptor(raw_id)
@@ -4825,7 +5003,9 @@ class _ParsedSessionSpill:
         *,
         index_path: Path | None = None,
         max_cached_payload_bytes: int | None,
+        prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     ) -> None:
+        self._prepared_inputs = prepared_inputs
         # Place the spill beside the RESOLVED index tier, not the archive
         # root: on deployments where the .db files are symlinks (e.g. root
         # SSD config dir -> NVMe data disk), a spill in archive_root would
@@ -4924,6 +5104,10 @@ class _ParsedSessionSpill:
         return directory
 
     def add(self, raw_id: str, sessions: list[ParsedSession], *, payload_bytes: int) -> None:
+        if self._prepared_inputs is not None:
+            # The sealed carrier remains the replay source for every cohort
+            # lookup; do not duplicate it in the process-local spill.
+            return
         tree_bytes = estimate_parsed_tree_bytes(sessions)
         self._largest_tree_bytes_seen = max(self._largest_tree_bytes_seen, tree_bytes)
         if tree_bytes > self._decoded_budget and self._retain_whale(
@@ -5023,6 +5207,12 @@ class _ParsedSessionSpill:
         }
 
     def for_raw(self, archive: ArchiveStore, raw_id: str) -> tuple[list[ParsedSession], int]:
+        if self._prepared_inputs is not None:
+            outcome = _prepared_retained_outcome(archive, raw_id, self._prepared_inputs)
+            if isinstance(outcome, Exception):
+                raise RetainedPreparationRetryableError(f"parser-refused raw {raw_id} reached replay") from outcome
+            sessions, payload_bytes, _kind = outcome
+            return sessions, payload_bytes
         decoded = self._decoded.get(raw_id)
         if decoded is not None:
             return decoded[0], decoded[1]

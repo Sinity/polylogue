@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -152,6 +153,178 @@ def test_restart_without_ops_hints_recovers_index_loss_and_new_admission(tmp_pat
     restarted = _run(tmp_path)
     assert restarted.done == 2 and restarted.failed == 0
     assert _run(tmp_path).made_no_publication_attempts
+
+
+def test_missing_prepared_raw_retries_without_quarantining_source(tmp_path: Path) -> None:
+    """A lost worker carrier must not become a parser verdict about retained bytes."""
+    from polylogue.sources.revision_backfill import (
+        RetainedPreparationRetryableError,
+        backfill_historical_revision_evidence,
+    )
+
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path, ("prepared-retry",))
+    with pytest.raises(RetainedPreparationRetryableError, match="missing"):
+        backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id], prepared_inputs={})
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (0,)
+
+
+def test_retained_jsonl_replay_consumes_worker_carrier_without_inline_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Losing the strict carrier path would reparse this raw inside replay."""
+    from polylogue.sources import revision_backfill
+
+    bootstrap_archive_root(tmp_path)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"prepared-session"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"prepared text"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=payload, source_path="prepared-session.jsonl", acquired_at_ms=1
+        )
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    monkeypatch.setattr(
+        revision_backfill,
+        "parse_retained_raw_sessions",
+        lambda *_args: pytest.fail("retained replay parsed inline"),
+    )
+    assert adapter.publish(frame, replacement)
+    assert replacement.scratch_directory is not None and not replacement.scratch_directory.exists()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM sessions").fetchone() == ("prepared-session",)
+
+
+def test_retained_worker_exit_keeps_raw_retryable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dead process reports preparation failure without a source parser refusal."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from polylogue.storage.derived import raw as raw_module
+
+    class DeadPool:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> DeadPool:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def submit(self, *_args: object) -> DeadPool:
+            return self
+
+        def result(self, **_kwargs: object) -> str:
+            raise BrokenProcessPool("worker died")
+
+    bootstrap_archive_root(tmp_path)
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"worker-exit"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"retry"}]}}\n'
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=payload, source_path="worker-exit.jsonl", acquired_at_ms=1
+        )
+    monkeypatch.setattr(raw_module, "ProcessPoolExecutor", DeadPool)
+    with pytest.raises(RetainedPreparationRetryableError, match="worker exited"):
+        RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+
+
+def test_retained_blob_io_failure_retries_without_quarantine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A transient blob read error must not become a durable parser refusal."""
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.derived import raw as raw_module
+
+    class InlinePool:
+        def __init__(self, **_kwargs: object) -> None:
+            self._task: Callable[..., tuple[str | None, str | None]] | None = None
+            self._args: tuple[object, ...] = ()
+
+        def __enter__(self) -> InlinePool:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def submit(self, task: Callable[..., tuple[str | None, str | None]], *args: object) -> InlinePool:
+            self._task, self._args = task, args
+            return self
+
+        def result(self, **_kwargs: object) -> tuple[str | None, str | None]:
+            assert self._task is not None
+            return self._task(*self._args)
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"session_meta","payload":{"id":"io-retry"}}\n',
+            source_path="io-retry.jsonl",
+            acquired_at_ms=1,
+        )
+
+    def fail_blob_open(*_args: object) -> None:
+        raise OSError(errno.EMFILE, "too many open files")
+
+    monkeypatch.setattr(raw_module, "ProcessPoolExecutor", InlinePool)
+    monkeypatch.setattr(ArchiveBlobPublisher, "open", fail_blob_open)
+    with pytest.raises(RetainedPreparationRetryableError, match="read failed"):
+        RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+
+
+def test_retained_parser_error_keeps_semantic_quarantine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A parser verdict from a live worker follows the canonical source census."""
+    from polylogue.storage.derived import raw as raw_module
+
+    class ParserRefusalPool:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> ParserRefusalPool:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def submit(self, *_args: object) -> ParserRefusalPool:
+            return self
+
+        def result(self, **_kwargs: object) -> tuple[None, str]:
+            return None, "synthetic parser refusal"
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=b"{bad json}\n", source_path="bad-session.jsonl", acquired_at_ms=1
+        )
+    adapter = RawObservationDerivation(tmp_path)
+    frame = raw_observation_frame(tmp_path)
+    monkeypatch.setattr(raw_module, "ProcessPoolExecutor", ParserRefusalPool)
+    replacement = adapter.compute(frame, raw_id)
+    assert replacement.prepared_inputs is not None
+    assert adapter.publish(frame, replacement)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "failed",
+        )
 
 
 @pytest.mark.parametrize("mutation", ["descriptor", "blob", "generation"])
