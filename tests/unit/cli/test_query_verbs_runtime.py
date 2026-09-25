@@ -324,7 +324,7 @@ def test_declared_message_anchor_reaches_the_real_option_builder() -> None:
 
     assert context.params["around"] == "message-7"
     options = read_view_handlers.read_view_options_for_view("messages", context.params)
-    assert options is not None
+    assert isinstance(options, read_view_handlers.ReadViewMessageOptions)
     assert options.around == "message-7"
 
 

@@ -931,7 +931,7 @@ class _ReadCommand(click.Command):
     def get_params(self, ctx: click.Context) -> list[click.Parameter]:
         params = list(super().get_params(ctx))
         names = {param.name for param in params}
-        types: dict[str, click.ParamType | type[str] | type[int] | type[float]] = {
+        types: dict[str, type[str] | type[int] | type[float]] = {
             "string": str,
             "integer": int,
             "float": float,
@@ -1218,6 +1218,7 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
 @click.pass_context
 def read_verb(
     ctx: click.Context,
+    /,
     view: str,
     destination: str,
     output_format: str | None,

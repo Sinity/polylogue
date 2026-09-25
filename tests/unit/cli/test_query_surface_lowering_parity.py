@@ -183,4 +183,6 @@ def test_semantic_lane_is_desugared_once_for_cli_and_daemon() -> None:
     assert cli.similar_text == "semantic evidence"
     assert cli.retrieval_lane == "auto"
     assert cli.query_terms == ()
-    assert operation.payload["params"]["similar_text"] == "semantic evidence"
+    params = operation.payload["params"]
+    assert isinstance(params, dict)
+    assert params["similar_text"] == "semantic evidence"

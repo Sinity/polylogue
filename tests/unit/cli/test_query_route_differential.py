@@ -258,6 +258,7 @@ def test_exclude_text_filters_before_list_pagination_and_count(
 
     assert LONE_C in _ids(baseline)
     assert _ids(filtered) == (PARENT_B, CHILD_A, PARENT_A)
+    assert isinstance(baseline["total"], int)
     assert filtered["total"] == baseline["total"] - 1
 
     _, page = _run(["--exclude-text", "weigh", "find", "--format", "json", "--limit", "1", "--offset", "1"])
