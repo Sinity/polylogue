@@ -868,8 +868,15 @@ class TestSchemaAnnotations:
         assert type_schema
         assert "x-polylogue-values" not in type_schema
         distribution = type_schema["x-polylogue-observed-distribution"]
-        assert distribution["non_null_documents"] > 0
-        assert distribution["type_counts"].get("string", 0) > 0
+        assert isinstance(distribution, dict)
+        non_null_documents = distribution["non_null_documents"]
+        assert isinstance(non_null_documents, int)
+        assert non_null_documents > 0
+        type_counts = distribution["type_counts"]
+        assert isinstance(type_counts, dict)
+        string_count = type_counts.get("string", 0)
+        assert isinstance(string_count, int)
+        assert string_count > 0
 
     def test_claude_ai_sender_semantic(self) -> None:
         schema = _load_schema("claude-ai")

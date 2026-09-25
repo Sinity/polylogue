@@ -553,7 +553,9 @@ class TestGenerateSchemaFromSamples:
         for name in ("resourceId", "category"):
             field = schema_property(result, name)
             assert not schema_values(field)
-            assert field["x-polylogue-observed-distribution"]["documents"] == 2
+            distribution = field["x-polylogue-observed-distribution"]
+            assert isinstance(distribution, dict)
+            assert distribution["documents"] == 2
 
     def test_high_entropy_tail_segments_are_filtered(self) -> None:
         """Identifiers and model slugs retain shape metadata without member values.
@@ -570,7 +572,9 @@ class TestGenerateSchemaFromSamples:
         for name in ("promptId", "model"):
             field = schema_property(result, name)
             assert not schema_values(field)
-            assert field["x-polylogue-observed-distribution"]["documents"] == 2
+            distribution = field["x-polylogue-observed-distribution"]
+            assert isinstance(distribution, dict)
+            assert distribution["documents"] == 2
 
     def test_high_entropy_values_filtered_even_without_identifier_field_name(self) -> None:
         """Arbitrary fields do not publish values, even when repeated consistently.
@@ -588,7 +592,9 @@ class TestGenerateSchemaFromSamples:
         for name in ("channel", "role"):
             field = schema_property(result, name)
             assert not schema_values(field)
-            assert field["x-polylogue-observed-distribution"]["documents"] == 2
+            distribution = field["x-polylogue-observed-distribution"]
+            assert isinstance(distribution, dict)
+            assert distribution["documents"] == 2
 
 
 class TestGenerateAllSchemas:

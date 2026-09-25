@@ -14,11 +14,16 @@ from polylogue.context.compiler import (
     context_snapshot_record_from_image,
 )
 from polylogue.core.refs import ActorRef, EvidenceRef, ExecutionContextRef, ObjectRef
-from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
+    ArchiveContextDeliveryEnvelope,
+    write_context_delivery,
+)
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
 
-def _delivery(database_path: Path, *, recipient_ref: str, snapshot_suffix: str = "fixture"):
+def _delivery(
+    database_path: Path, *, recipient_ref: str, snapshot_suffix: str = "fixture"
+) -> ArchiveContextDeliveryEnvelope:
     conn = sqlite3.connect(database_path)
     conn.executescript(USER_DDL)
     image = ContextImage(
