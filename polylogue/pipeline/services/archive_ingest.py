@@ -366,7 +366,10 @@ async def parse_sources_archive(
                 source_path=source_path,
                 source_index=source_index,
                 observed_at_ms=acquired_at_ms,
-                manage_transaction=not batched,
+                # Blob publication reserves through another source connection
+                # before the next file is parsed. Close this source write now;
+                # the batching threshold applies to index.db only.
+                manage_transaction=True,
             )
             counters["raw_rows"] += 1
             index_changed = (

@@ -28,7 +28,11 @@ from polylogue.pipeline.services.process_pool import _initialize_worker_logging
 from polylogue.scenarios import build_default_corpus_specs
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
-from polylogue.storage.blob_publication import ArchiveBlobPublisher, BlobPublicationReceipt
+from polylogue.storage.blob_publication import (
+    ArchiveBlobPublisher,
+    BlobPublicationReceipt,
+    BlobPublicationReservationStore,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
 from polylogue.storage.sqlite.maintenance import SqliteOptimizeObservation
@@ -155,6 +159,49 @@ def test_direct_grouped_reingest_reserves_raw_blob_until_source_commit(
     assert final_gc.deleted_count == 0
     assert final_gc.skipped_reserved == 0
     assert final_gc.skipped_referenced >= 1
+
+
+@pytest.mark.asyncio
+async def test_batched_session_artifact_observation_releases_source_writer_before_next_reservation(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "8000")
+    source_root = tmp_path / ".claude" / "projects" / "example"
+    source_root.mkdir(parents=True)
+    for number in (1, 2):
+        (source_root / f"session-{number}.jsonl").write_text(
+            f'{{"type":"user","uuid":"u{number}","sessionId":"s{number}",'
+            f'"message":{{"content":"hello {number}"}}}}\n'
+            f'{{"type":"assistant","uuid":"a{number}","sessionId":"s{number}",'
+            '"message":{"content":"reply"}}\n',
+            encoding="utf-8",
+        )
+
+    original_open = BlobPublicationReservationStore._open_connection
+    reservations = 0
+
+    def open_without_lock_wait(store: BlobPublicationReservationStore) -> sqlite3.Connection:
+        nonlocal reservations
+        reservations += 1
+        conn = original_open(store)
+        conn.execute("PRAGMA busy_timeout = 0")
+        return conn
+
+    monkeypatch.setattr(BlobPublicationReservationStore, "_open_connection", open_without_lock_wait)
+    archive_root = workspace_env["archive_root"]
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=source_root)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] == 2
+    assert reservations == 2
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (2,)
 
 
 def test_process_pool_reingest_reserves_before_publish_and_consumes_with_source_ref(
