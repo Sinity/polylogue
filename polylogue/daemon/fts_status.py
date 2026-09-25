@@ -271,11 +271,7 @@ def _collect_fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, 
             archive_info = _archive_readiness_info(archive_index, exact=exact)
             if archive_info is not None:
                 return archive_info
-        return {
-            "messages_ready": False,
-            "coverage_pct": None,
-            "coverage_exact": False,
-        }
+        return _unreadable_fts_readiness("FTS index database is absent")
     try:
         # Readiness reports a skewed or unstamped tier as not-ready data; it must
         # not raise the status surface out of service.

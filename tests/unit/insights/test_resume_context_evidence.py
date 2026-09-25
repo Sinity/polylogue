@@ -94,6 +94,27 @@ def test_context_delivery_joins_successor_without_becoming_resume_topology(tmp_p
     assert result.context_invocations[0].execution_context_ref == invocation.execution_context_ref
 
 
+@pytest.mark.parametrize("consumed_preparation_refs", [None, ()])
+def test_direct_delivery_outranks_unrelated_preparation(
+    tmp_path: Path, consumed_preparation_refs: tuple[str, ...] | None
+) -> None:
+    receipt = _delivery(tmp_path / "direct-delivery.db", recipient_ref="session:codex-session:successor")
+    unrelated_preparation = "context-snapshot:unrelated"
+
+    result = classify_resume_context_evidence(
+        successor_session_id="codex-session:successor",
+        topology_link_type="continuation",
+        topology_source_evidence_refs=(_SOURCE_REF,),
+        context_deliveries=(receipt,),
+        preparation_refs=(unrelated_preparation,),
+        consumed_preparation_refs=consumed_preparation_refs,
+    )
+
+    assert result.arm == "context_assisted_continuation"
+    assert result.context_delivery_refs == (receipt.snapshot_ref,)
+    assert result.preparation_refs == (unrelated_preparation,)
+
+
 def test_same_contract_distinguishes_native_resume_and_bare_continuation() -> None:
     native_resume = classify_resume_context_evidence(
         successor_session_id="codex-session:native-resume",

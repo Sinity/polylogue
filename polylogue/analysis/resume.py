@@ -287,6 +287,12 @@ def classify_resume_context_evidence(
             unavailable_reason=unavailable_reason,
         )
 
+    if topology_link_type in {"resume", "continuation"} and not topology_evidence:
+        return evidence("unavailable", unavailable_reason="topology relation has no exact source evidence refs")
+
+    if topology_link_type == "continuation" and successor_ref is not None and delivery_refs:
+        return evidence("context_assisted_continuation")
+
     if preparations and consumed_snapshots is None:
         return evidence("unavailable", unavailable_reason="work-evidence consumption projection is incomplete")
 
@@ -295,9 +301,6 @@ def classify_resume_context_evidence(
     )
     if unused_preparations:
         return evidence("prepared_unused_context", unused_preparations=unused_preparations)
-
-    if topology_link_type in {"resume", "continuation"} and not topology_evidence:
-        return evidence("unavailable", unavailable_reason="topology relation has no exact source evidence refs")
 
     if topology_link_type == "resume":
         if successor_ref is None:
@@ -314,8 +317,6 @@ def classify_resume_context_evidence(
     if topology_link_type == "continuation":
         if successor_ref is None:
             return evidence("unavailable", unavailable_reason="successor identity is unresolved")
-        if delivery_refs:
-            return evidence("context_assisted_continuation")
         if not context_receipts_complete:
             return evidence("unavailable", unavailable_reason="context-delivery lookup is incomplete")
         return evidence("bare_continuation")

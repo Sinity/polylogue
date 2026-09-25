@@ -155,6 +155,16 @@ def test_probe_answers_from_the_binding(
     assert payload["coverage_pct"] == 100.0
 
 
+def test_absent_index_reports_unavailable_inspection(tmp_path: Path) -> None:
+    payload = fts_readiness_info(tmp_path / "missing-index.db")
+
+    assert payload["inspection_state"] == "unavailable"
+    assert payload["messages_ready"] is False
+    assert payload["coverage_exact"] is False
+    assert payload["coverage_pct"] is None
+    assert payload["message_indexed_count"] is None
+
+
 def test_unbound_fallback_reports_timeout_and_resumes_slow_attempt(
     seeded: tuple[Path, sqlite3.Connection], monkeypatch: pytest.MonkeyPatch
 ) -> None:
