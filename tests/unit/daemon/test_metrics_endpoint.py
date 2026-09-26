@@ -253,7 +253,7 @@ class TestFormatMetricsExpositionShape:
         for spec in ARCHIVE_TIER_SPECS.values():
             initialize_archive_database(tmp_path / spec.filename, spec.tier)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
         body = format_metrics(tmp_path / "index.db")
 
@@ -1024,6 +1024,34 @@ def _capture_text(handler: DaemonAPIHandler) -> MagicMock:
 
 
 class TestMetricsEndpoint:
+    def test_archive_collector_failure_keeps_process_counters_on_http_route(
+        self,
+        workspace_env: dict[str, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from polylogue.daemon import metrics as metrics_module
+
+        def fail_storage(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("unreadable /synthetic/private-input")
+
+        monkeypatch.setattr(metrics_module, "_emit_archive_storage_metrics", fail_storage)
+        monkeypatch.setattr(
+            metrics_module,
+            "diagnostic_snapshot",
+            lambda: {"queued": 3, "dropped": 7, "failures": 2, "delivered": 11, "undrained": 1},
+        )
+        handler = _make_handler("GET", "/metrics")
+        send_text = _capture_text(handler)
+        handler.do_GET()
+        status, body = send_text.call_args.args
+        assert status == HTTPStatus.OK
+        assert "polylogue_daemon_uptime_seconds " in body
+        assert 'polylogue_diagnostic_delivery_total{outcome="dropped"} 7' in body
+        assert (
+            'polylogue_daemon_metrics_collection_available{group="archive_storage",reason="collector_failed"} 0' in body
+        )
+        assert "/synthetic/private-input" not in body
+
     def test_metrics_route_responds_200_with_prometheus_content_type(
         self,
         workspace_env: dict[str, Path],

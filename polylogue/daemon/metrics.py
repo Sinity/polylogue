@@ -97,14 +97,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol, TypedDict
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.process_start import uptime_seconds
-from polylogue.logging import ERROR, WARNING, diagnostic_snapshot, emit
+from polylogue.logging import WARNING, diagnostic_snapshot, emit
 from polylogue.operations.storage_io_observation import IoPhaseObservation, storage_io_observation
 from polylogue.storage import archive_layout
 from polylogue.storage.archive_layout import (
@@ -130,6 +130,45 @@ _KNOWN_STORAGE_ROUTES: frozenset[str] = frozenset(
         "unknown",
     }
 )
+
+
+def _collection_reason(exc: Exception) -> str:
+    if isinstance(exc, sqlite3.DatabaseError):
+        return "archive_unreadable"
+    if isinstance(exc, (FileNotFoundError, PermissionError)):
+        return "schema_unavailable"
+    return "collector_failed"
+
+
+def _collect_group(
+    lines: list[str],
+    states: list[tuple[dict[str, str], int]],
+    group: str,
+    collect: Callable[[list[str]], object],
+    *,
+    path: Path | None = None,
+) -> None:
+    """Append a complete group, or report its absence without exposing exception text."""
+    pending: list[str] = []
+    try:
+        collect(pending)
+    except Exception as exc:
+        reason = "collector_failed" if group.startswith("process_") else _collection_reason(exc)
+        emit(
+            "daemon.metrics.collection_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason=reason,
+            path=path,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        available = 0
+    else:
+        lines.extend(pending)
+        reason = "none"
+        available = 1
+    states.append(({"group": group, "reason": reason}, available))
 
 
 class EmbeddingMetricState(TypedDict):
@@ -409,7 +448,7 @@ def _ops_attempt_counts(ops_db: Path) -> dict[str, int] | None:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             if not _table_exists(conn, "ingest_attempts"):
                 return None
@@ -426,8 +465,6 @@ def _ops_attempt_counts(ops_db: Path) -> dict[str, int] | None:
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        return None
-    if not rows:
         return None
     counts = {"running": 0, "completed": 0, "failed": 0, "stale_cursor_writes": 0}
     for row in rows:
@@ -473,7 +510,7 @@ def _ops_recent_attempt_durations(ops_db: Path, *, limit: int = 50) -> list[floa
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             if not _table_exists(conn, "ingest_attempts"):
                 return []
@@ -644,7 +681,7 @@ def _ops_latest_ingest_memory(ops_db: Path) -> list[tuple[str, float]]:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             if not _table_exists(conn, "daemon_stage_events"):
                 return []
@@ -746,7 +783,7 @@ def _ops_storage_route_counts(ops_db: Path) -> dict[str, int] | None:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             if not _table_exists(conn, "ingest_attempts"):
                 return None
@@ -945,7 +982,7 @@ def _archive_latest_embedding_run_state(ops_db: Path | None) -> ArchiveEmbedding
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             if not _table_exists(conn, "embedding_catchup_runs"):
                 return None
@@ -1082,21 +1119,7 @@ def _emit_embedding_metrics(lines: list[str], state: EmbeddingMetricState) -> No
 # ---------------------------------------------------------------------------
 
 
-def format_metrics(
-    db: Path,
-    *,
-    now_monotonic: float | None = None,
-) -> str:
-    """Render the Prometheus text exposition for the daemon archive at ``db``.
-
-    Exposes a stable set of series derived from existing daemon state
-    tables. Missing tables degrade to zero samples rather than raising.
-    Caller injects ``now_monotonic`` in tests to keep uptime stable.
-    """
-    from polylogue.storage.archive_identity import ArchiveLocation
-
-    uptime_s = uptime_seconds(now_monotonic=now_monotonic)
-    lines: list[str] = []
+def _emit_cache_metrics(lines: list[str]) -> None:
     from polylogue.core.result_cache_metrics import result_cache_metrics
 
     cache_stats = result_cache_metrics()
@@ -1135,25 +1158,9 @@ def format_metrics(
         metric_type="counter",
         samples=[(None, cache_stats["evictions"])],
     )
-    # ``configured_root`` stays fixed at db's original parent even though
-    # ``db`` itself gets reassigned below to the active index path -- an
-    # index-only external generation is explicitly allowed to have no
-    # sibling tiers of its own, so ops.db/source.db/embeddings.db/user.db
-    # must always resolve against the configured root, never against
-    # wherever the active index generation happens to physically live.
-    configured_root = db.parent
-    index_db = ArchiveLocation.resolve(configured_root).active_index_path
-    if index_db.exists():
-        db = index_db
 
-    _emit_metric(
-        lines,
-        name="polylogue_daemon_uptime_seconds",
-        help_text="Daemon process uptime in seconds.",
-        metric_type="gauge",
-        samples=[(None, uptime_s)],
-    )
 
+def _emit_build_metrics(lines: list[str]) -> None:
     # Build info — version/revision/dirty labels so dashboards can break out
     # per-release and operators can attest a running daemon against a
     # consuming flake's locked `rev`/`narHash` for this input (polylogue-6rvt).
@@ -1186,9 +1193,9 @@ def format_metrics(
             )
         ],
     )
-    _emit_archive_storage_metrics(lines, db, configured_root=configured_root)
-    _emit_hook_flow_metrics(lines, configured_root)
 
+
+def _emit_status_metrics(lines: list[str]) -> None:
     from polylogue.daemon.status_snapshot import snapshot_state_for_metrics
 
     snapshot = snapshot_state_for_metrics()
@@ -1209,6 +1216,8 @@ def format_metrics(
         samples=[({"state": state}, 1 if state == snapshot_state else 0) for state in ("fresh", "stale", "missing")],
     )
 
+
+def _emit_writer_metrics(lines: list[str]) -> None:
     from polylogue.daemon.write_coordinator import daemon_write_telemetry_payload
 
     write_telemetry = daemon_write_telemetry_payload()
@@ -1224,6 +1233,8 @@ def format_metrics(
         samples=[(None, int(detached_writer_failures) if isinstance(detached_writer_failures, (int, float)) else 0)],
     )
 
+
+def _emit_diagnostic_metrics(lines: list[str]) -> None:
     diagnostic = diagnostic_snapshot()
     _emit_metric(
         lines,
@@ -1242,6 +1253,8 @@ def format_metrics(
         samples=[(None, diagnostic["queued"])],
     )
 
+
+def _emit_io_metrics(lines: list[str]) -> None:
     io_observation = storage_io_observation()
 
     def io_labels(sample: IoPhaseObservation) -> dict[str, str]:
@@ -1288,14 +1301,132 @@ def format_metrics(
         + [({"phase": phase}, 0) for phase in io_observation.unavailable_phases],
     )
 
-    _emit_periodic_loop_metrics(lines)
 
+def _process_metric_lines(*, now_monotonic: float | None = None) -> tuple[list[str], list[tuple[dict[str, str], int]]]:
+    lines: list[str] = []
+    states: list[tuple[dict[str, str], int]] = []
+    _collect_group(lines, states, "process_cache", _emit_cache_metrics)
+
+    def emit_uptime(group: list[str]) -> None:
+        _emit_metric(
+            group,
+            name="polylogue_daemon_uptime_seconds",
+            help_text="Daemon process uptime in seconds.",
+            metric_type="gauge",
+            samples=[(None, uptime_seconds(now_monotonic=now_monotonic))],
+        )
+
+    _collect_group(
+        lines,
+        states,
+        "process_uptime",
+        emit_uptime,
+    )
+
+    _collect_group(lines, states, "process_build", _emit_build_metrics)
+    _collect_group(lines, states, "process_status", _emit_status_metrics)
+    _collect_group(lines, states, "process_writer", _emit_writer_metrics)
+    _collect_group(lines, states, "process_diagnostic", _emit_diagnostic_metrics)
+    _collect_group(lines, states, "process_io", _emit_io_metrics)
+    _collect_group(lines, states, "process_periodic", _emit_periodic_loop_metrics)
+    return lines, states
+
+
+def format_metrics(
+    db: Path,
+    *,
+    now_monotonic: float | None = None,
+) -> str:
+    """Render the Prometheus text exposition for the daemon archive at ``db``.
+
+    Process counters remain available when an archive metric group fails.
+    Missing archive measurements carry collection availability evidence.
+    Caller injects ``now_monotonic`` in tests to keep uptime stable.
+    """
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    lines, states = _process_metric_lines(now_monotonic=now_monotonic)
+    # ``configured_root`` stays fixed at db's original parent even though
+    # ``db`` itself gets reassigned below to the active index path -- an
+    # index-only external generation is explicitly allowed to have no
+    # sibling tiers of its own, so ops.db/source.db/embeddings.db/user.db
+    # must always resolve against the configured root, never against
+    # wherever the active index generation happens to physically live.
+    configured_root = db.parent
+    resolution_reason: str | None = None
+    try:
+        index_db = ArchiveLocation.resolve(configured_root).active_index_path
+        if index_db.exists():
+            db = index_db
+    except Exception as exc:
+        resolution_reason = _collection_reason(exc)
+        emit(
+            "daemon.metrics.collection_failed",
+            level=WARNING,
+            outcome="degraded",
+            reason=resolution_reason,
+            path=db,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        states.append(({"group": "archive_resolution", "reason": resolution_reason}, 0))
+
+    _collect_group(
+        lines,
+        states,
+        "archive_storage",
+        lambda group: _emit_archive_storage_metrics(group, db, configured_root=configured_root),
+        path=db,
+    )
+    _collect_group(lines, states, "hook_flow", lambda group: _emit_hook_flow_metrics(group, configured_root), path=db)
+    if resolution_reason is not None:
+        states.append(({"group": "archive_index", "reason": resolution_reason}, 0))
+    elif db.exists():
+        _collect_group(
+            lines,
+            states,
+            "archive_index",
+            lambda group: _format_archive_metrics(group, db, configured_root),
+            path=db,
+        )
+    else:
+        ops_attempts_available = False
+
+        def collect_ops_or_discovery(group: list[str]) -> None:
+            nonlocal ops_attempts_available
+            ops_attempts_available = _format_archive_metrics(group, db, configured_root) is True
+
+        _collect_group(
+            lines,
+            states,
+            "ops_or_discovery",
+            collect_ops_or_discovery,
+            path=configured_root / "ops.db",
+        )
+        states.append(
+            (
+                {"group": "ops_attempts", "reason": "none" if ops_attempts_available else "schema_unavailable"},
+                1 if ops_attempts_available else 0,
+            )
+        )
+        states.append(({"group": "archive_index", "reason": "schema_unavailable"}, 0))
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_metrics_collection_available",
+        help_text="1 when a metrics collection group completed for this scrape.",
+        metric_type="gauge",
+        samples=states,
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -> bool | None:
     if not db.exists():
-        ops_body = _format_ops_only_metrics(lines, configured_root / "ops.db")
-        if ops_body is not None:
-            return ops_body
-        # Fresh install — emit the discovery skeleton with zeros so the
-        # scraper sees a stable series set on day zero.
+        ops_attempts_available = _format_ops_only_metrics(lines, configured_root / "ops.db")
+        if ops_attempts_available is not None:
+            return ops_attempts_available
+        # Fresh install: expose family metadata without pretending an absent
+        # index was measured as zero.
         for name, help_text in (
             ("polylogue_live_ingest_attempts_total", "Total live ingest attempts by status."),
             ("polylogue_live_ingest_attempts_in_flight", "Live ingest attempts currently running."),
@@ -1341,8 +1472,10 @@ def format_metrics(
                 if name.endswith("_total")
                 else "gauge"
             )
-            _emit_metric(lines, name=name, help_text=help_text, metric_type=metric_type, samples=[])
-        return "\n".join(lines) + "\n"
+            _emit_metric(
+                lines, name=name, help_text=help_text, metric_type=metric_type, samples=[], omit_when_empty=True
+            )
+        return False
 
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -1490,10 +1623,10 @@ def format_metrics(
     finally:
         conn.close()
 
-    return "\n".join(lines) + "\n"
+    return None
 
 
-def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
+def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
     attempts = _ops_attempt_counts(ops_db)
     durations = _ops_recent_attempt_durations(ops_db)
     debt = _ops_convergence_debt_by_stage(ops_db)
@@ -1501,33 +1634,50 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
     if attempts is None and not durations and not debt and not memory:
         return None
 
-    resolved_attempts = attempts or {"running": 0, "completed": 0, "failed": 0, "stale_cursor_writes": 0}
     _emit_metric(
         lines,
         name="polylogue_live_ingest_attempts_total",
         help_text="Total live ingest attempts by status.",
         metric_type="counter",
-        samples=[
-            ({"status": "completed"}, resolved_attempts["completed"]),
-            ({"status": "failed"}, resolved_attempts["failed"]),
-            ({"status": "running"}, resolved_attempts["running"]),
-        ],
+        samples=(
+            [
+                ({"status": "completed"}, attempts["completed"]),
+                ({"status": "failed"}, attempts["failed"]),
+                ({"status": "running"}, attempts["running"]),
+            ]
+            if attempts is not None
+            else []
+        ),
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
         name="polylogue_live_ingest_attempts_in_flight",
         help_text="Live ingest attempts currently running.",
         metric_type="gauge",
-        samples=[(None, resolved_attempts["running"])],
+        samples=[(None, attempts["running"])] if attempts is not None else [],
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
         name="polylogue_stale_cursor_writes_total",
         help_text="Total stale-cursor writes observed across ingest attempts.",
         metric_type="counter",
-        samples=[(None, resolved_attempts["stale_cursor_writes"])],
+        samples=[(None, attempts["stale_cursor_writes"])] if attempts is not None else [],
+        omit_when_empty=True,
     )
-    _emit_storage_route_metrics(lines, _ops_storage_route_counts(ops_db) or {})
+    route_counts = _ops_storage_route_counts(ops_db)
+    if route_counts is not None:
+        _emit_storage_route_metrics(lines, route_counts)
+    else:
+        _emit_metric(
+            lines,
+            name="polylogue_live_ingest_storage_route_total",
+            help_text="Live ingest attempts grouped by storage route.",
+            metric_type="counter",
+            samples=[],
+            omit_when_empty=True,
+        )
     _emit_metric(
         lines,
         name="polylogue_live_ingest_attempt_duration_seconds",
@@ -1540,13 +1690,15 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
         ]
         if durations
         else [],
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
         name="polylogue_convergence_debt_count",
         help_text="Unresolved convergence-debt rows by stage and status.",
         metric_type="gauge",
-        samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt] if debt else [(None, 0)],
+        samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt],
+        omit_when_empty=True,
     )
     _emit_metric(
         lines,
@@ -1554,6 +1706,7 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
         help_text="Latest live ingest memory sample in MiB by kind.",
         metric_type="gauge",
         samples=[({"kind": kind}, value) for kind, value in memory],
+        omit_when_empty=True,
     )
     _emit_ops_throughput_metrics(lines, ops_db)
     for name, help_text in (
@@ -1577,8 +1730,8 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
             "Latest embedding catch-up run estimated provider cost in USD.",
         ),
     ):
-        _emit_metric(lines, name=name, help_text=help_text, metric_type="gauge", samples=[])
-    return "\n".join(lines) + "\n"
+        _emit_metric(lines, name=name, help_text=help_text, metric_type="gauge", samples=[], omit_when_empty=True)
+    return attempts is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1764,7 +1917,7 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     try:
-        conn = open_readonly_connection(ops_db)
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             if not _table_exists(conn, "ingest_attempts"):
                 return False
@@ -2154,26 +2307,15 @@ def _emit_archive_source_index_link_metrics(
 
 
 def _archive_user_version(path: Path) -> int:
-    try:
-        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-        # This probe exists to report the on-disk version, including a skewed one.
-        conn = open_readonly_connection(path, validate_schema=False)
-        try:
-            return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        emit(
-            "daemon.metrics.probe_failed",
-            level=WARNING,
-            outcome="degraded",
-            reason="user_version_unreadable",
-            path=path,
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return 0
+    # This probe reports the on-disk version, including a skewed one. A read
+    # failure is not version zero; the containing storage group is unavailable.
+    conn = open_readonly_connection(path, validate_schema=False)
+    try:
+        return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    finally:
+        conn.close()
 
 
 def _emit_raw_record_metrics(lines: list[str], conn: sqlite3.Connection, *, db_path: Path | None = None) -> None:
@@ -2258,26 +2400,37 @@ def _emit_archive_raw_record_metrics(lines: list[str], conn: sqlite3.Connection)
 def handle_metrics(responder: MetricsResponder, db: Path) -> None:
     """Serve ``GET /metrics`` — Prometheus text exposition.
 
-    Errors degrade to a single ``polylogue_daemon_metrics_collection_error``
-    sample (gauge value 1) so the scrape still succeeds and the operator
-    sees the failure as a series rather than a 5xx page in Prometheus.
+    Unexpected failures retain the HTTP 200 scrape contract with a bounded
+    error reason. Normal collector failures are isolated by ``format_metrics``.
     """
     try:
         body = format_metrics(db)
     except Exception as exc:
         emit(
             "daemon.metrics.collection_failed",
-            level=ERROR,
+            level=WARNING,
             outcome="degraded",
             reason="metrics_collection_failed",
             error_type=type(exc).__name__,
             error_detail=str(exc),
         )
-        body = (
-            "# HELP polylogue_daemon_metrics_collection_error Metrics collection failed.\n"
-            "# TYPE polylogue_daemon_metrics_collection_error gauge\n"
-            f'polylogue_daemon_metrics_collection_error{{error="{_escape_label_value(str(exc))}"}} 1\n'
+        lines, states = _process_metric_lines()
+        states.append(({"group": "archive_index", "reason": "collector_failed"}, 0))
+        _emit_metric(
+            lines,
+            name="polylogue_daemon_metrics_collection_available",
+            help_text="1 when a metrics collection group completed for this scrape.",
+            metric_type="gauge",
+            samples=states,
         )
+        _emit_metric(
+            lines,
+            name="polylogue_daemon_metrics_collection_error",
+            help_text="Metrics collection failed.",
+            metric_type="gauge",
+            samples=[({"reason": "collector_failed"}, 1)],
+        )
+        body = "\n".join(lines) + "\n"
     responder._send_text(HTTPStatus.OK, body, content_type=PROMETHEUS_CONTENT_TYPE)
 
 
